@@ -16,6 +16,8 @@ cargo test --workspace --locked
 
 The checkout selects the pinned Rust 1.99.1 toolchain. This is a dependency-free repository bootstrap: the executable reports its version/target and the unimplemented CAD, UI and MCP capabilities. It does not launch the CAD application yet. See [BUILDING.md](docs/BUILDING.md) for prerequisites, lint/format commands, layout and validation boundaries.
 
+[Bootstrap CI](.github/workflows/ci.yml) defines macOS, Windows and Linux checks and retains diagnostic binaries. It does not publish a release or install the application. Hosted CI and physical cross-platform behavior remain unverified until actually run.
+
 ## UX reference
 
 Open [mockup/index.html](mockup/index.html) directly, or run `node mockup/serve.mjs` and visit `http://127.0.0.1:4173`. Run `node mockup/verify.mjs` for the prototype's illustrative checks. Node.js is only used by prototype development tools, not by the native application.

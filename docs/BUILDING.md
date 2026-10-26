@@ -42,3 +42,11 @@ The native application, CAD kernel, sketch solver, viewport, MCP server, project
 The foundation gate [CAD-49](https://plans.tokenet.de/CAD/49) selects/proves native dependencies. [CAD-50](https://plans.tokenet.de/CAD/50) adds their clean bootstrap, complete desktop runtime bundling and installable platform packages. A whole-product `./build` wrapper and native `open/archive/install` behavior belong with that packaging work, when the actual product components and archive formats are known.
 
 macOS local execution, Windows/Linux CI execution, physical GPU performance, installer behavior, signing and human workflow acceptance are separate results. No push, public release or installation is part of the repository bootstrap.
+
+## CI
+
+`.github/workflows/ci.yml` defines a native build/test matrix for `ubuntu-24.04`, `macos-15` and `windows-2025`. Each runner selects `rust-toolchain.toml`, checks formatting/Clippy/tests, builds the release bootstrap and runs diagnostics. The checkout/upload actions are pinned to verified upstream commit revisions, with read-only repository permissions and no persisted checkout credentials.
+
+Artifacts named `multicad-bootstrap-<OS>-<ARCH>` retain the executable, license and this guide for seven days. These are diagnostic bootstrap binaries, not desktop installers or a completed CAD application. No deployment, release publishing, signing or push step is configured.
+
+The workflow can execute only after the repository is hosted on GitHub and a run is triggered. Local setup does not prove those hosted runs passed. Kernel/solver runtime bundling and full desktop artifacts remain CAD-50 work.
