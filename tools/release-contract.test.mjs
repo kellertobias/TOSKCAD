@@ -26,7 +26,9 @@ function fixture(message, initial = false) {
   git(dir,['init','-b','main']);
   git(dir,['config','user.name','Release test']);git(dir,['config','user.email','test@example.invalid']);
   writeFileSync(join(dir,'Cargo.toml'),'[workspace.package]\nversion = "0.1.0-dev"\n');
-  git(dir,['add','Cargo.toml']);git(dir,['commit','-m','chore: initial fixture']);
+  // A clone has no installed dependencies: preview must bypass its config.
+  writeFileSync(join(dir,'release.config.cjs'),"require('multicad-deliberately-uninstalled-fixture');\n");
+  git(dir,['add','Cargo.toml','release.config.cjs']);git(dir,['commit','-m','chore: initial fixture']);
   if(!initial)git(dir,['tag','v1.2.3']);
   git(dir,['commit','--allow-empty','-m',message]);
   return dir;
@@ -39,6 +41,7 @@ for(const [message,expected,initial] of [
   ['feat!: replace project format','2.0.0',false],
   ['ci: configure runners',null,false],
   ['feat: first native feature','0.1.0',true],
+  ['fix: first reference repair','0.0.1',true],
 ])test(`actual release-engine preview: ${message}`,async()=>{
   const dir=fixture(message,initial);
   try{

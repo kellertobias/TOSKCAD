@@ -10,7 +10,7 @@ export const targets = Object.freeze(['linux-x64', 'macos-arm64', 'windows-x64']
 export const outputDirectory = join(root, 'artifacts/release');
 const run = (command, args, options = {}) => execFileSync(command, args, {
   cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options,
-}).trim();
+})?.trim() ?? '';
 export const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 export const archiveName = (version, target) => `multicad-bootstrap-${requireVersion(version)}-${target}.zip`;
 

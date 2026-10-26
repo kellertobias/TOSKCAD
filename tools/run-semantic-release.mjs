@@ -68,6 +68,10 @@ export async function runRelease({ dryRun = false, sourceRoot = root, stdout, st
       git(["--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main"]);
       git(["--git-dir", remote, "update-ref", "refs/heads/main", commit]);
       git(["clone", "--quiet", "--no-hardlinks", "--branch", "main", remote, cwd]);
+      // The cloned config resolves dependencies relative to the clone, which
+      // intentionally has no node_modules. Use the explicit source-resolved
+      // options below; prevent cosmiconfig from loading that cloned module.
+      rmSync(join(cwd, "release.config.cjs"), { force: true });
       options.repositoryUrl = pathToFileURL(remote).href;
       options.plugins = previewPlugins;
       options.dryRun = true;
