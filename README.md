@@ -4,6 +4,18 @@ An open-source native parametric CAD application planned for macOS, Windows and 
 
 The [product plan](https://plans.tokenet.de/CAD/48) is maintained in PLAINER. [CAD-107](https://plans.tokenet.de/CAD/107) establishes the local repository and kernel-neutral bootstrap. [CAD-49](https://plans.tokenet.de/CAD/49) must prove the native geometry/solver/UI foundation before dependency integration and desktop packaging in [CAD-50](https://plans.tokenet.de/CAD/50).
 
+## Native project setup
+
+Install Rust through rustup and the host linker tools, then run:
+
+```sh
+cargo build --workspace --locked
+cargo run --locked -- --diagnostics
+cargo test --workspace --locked
+```
+
+The checkout selects the pinned Rust 1.99.1 toolchain. This is a dependency-free repository bootstrap: the executable reports its version/target and the unimplemented CAD, UI and MCP capabilities. It does not launch the CAD application yet. See [BUILDING.md](docs/BUILDING.md) for prerequisites, lint/format commands, layout and validation boundaries.
+
 ## UX reference
 
 Open [mockup/index.html](mockup/index.html) directly, or run `node mockup/serve.mjs` and visit `http://127.0.0.1:4173`. Run `node mockup/verify.mjs` for the prototype's illustrative checks. Node.js is only used by prototype development tools, not by the native application.

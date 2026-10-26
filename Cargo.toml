@@ -1,0 +1,28 @@
+[workspace]
+members = ["crates/multicad-core", "crates/multicad-app"]
+default-members = ["crates/multicad-app"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.99.1"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+multicad-core = { path = "crates/multicad-core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

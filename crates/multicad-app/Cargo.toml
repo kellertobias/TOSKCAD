@@ -1,0 +1,19 @@
+[package]
+name = "multicad-app"
+description = "Native MultiCAD bootstrap executable"
+default-run = "multicad"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "multicad"
+path = "src/main.rs"
+
+[dependencies]
+multicad-core.workspace = true
+
+[lints]
+workspace = true
