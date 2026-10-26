@@ -1,0 +1,22 @@
+{
+  "name": "multicad-release-tools",
+  "private": true,
+  "description": "CI-only release tooling; not part of the native application runtime",
+  "license": "GPL-3.0-or-later",
+  "engines": { "node": ">=22.14.0" },
+  "scripts": {
+    "test": "node --test tools/release-contract.test.mjs tools/package-release.test.mjs",
+    "release": "node tools/run-semantic-release.mjs",
+    "release:dry-run": "node tools/run-semantic-release.mjs --dry-run",
+    "release:package": "node tools/package-release.mjs build",
+    "release:verify": "node tools/package-release.mjs verify"
+  },
+  "devDependencies": {
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/github": "11.0.6",
+    "@semantic-release/release-notes-generator": "14.1.1",
+    "conventional-changelog-conventionalcommits": "9.3.1",
+    "semantic-release": "24.2.9",
+    "semver": "7.8.5"
+  }
+}

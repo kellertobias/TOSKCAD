@@ -25,7 +25,7 @@ The initial workspace contains only safe Rust bootstrap metadata and a diagnosti
 
 The application source uses `GPL-3.0-or-later`; the complete text is in `LICENSE`. No third-party runtime packages are included in the bootstrap. This choice does not certify future OCCT/solver/UI dependency compatibility or distribution compliance: CAD-49 must inventory the selected versions, licenses, linking boundaries and notice/source requirements before integration.
 
-The pinned Rust toolchain and initial CI are build infrastructure. Windows/Linux runtime and physical performance acceptance require their own evidence. No signing credentials, releases, repository publication or automatic push are configured by the bootstrap.
+The pinned Rust toolchain and CI are build infrastructure. Forgejo is authoritative for branches; GitHub builds mirrored commits and mints tag-only releases without version-bump commits. [Release wiring](../RELEASING.md) remains inactive until repositories exist and mirror tag reconciliation is verified. No repositories, remote URLs, signing credentials or publication are created by the bootstrap. Windows/Linux runtime and physical performance acceptance require their own evidence.
 
 ## References
 

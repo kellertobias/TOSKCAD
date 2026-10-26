@@ -19,5 +19,6 @@
 
 - Use the pinned Rust toolchain and committed lockfile. Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` for relevant Rust changes.
 - Test observable behavior and failure cases. Do not claim a CAD workflow, valid manufacturing file, cross-platform runtime or performance result from a placeholder or source inspection.
-- Node.js is only needed for optional prototype maintenance; `node mockup/verify.mjs` checks illustrative UX behavior, not CAD correctness.
+- Node.js is developer/CI-only for prototype maintenance and release tooling, never a native runtime dependency. `node mockup/verify.mjs` checks illustrative UX behavior, not CAD correctness; `npm test` checks release contracts.
+- Forgejo owns branches; GitHub runs builds and creates tag-only releases on tested mirrored commits. Do not add release commits, tracked version/changelog updates, npm publication or Forgejo credentials to GitHub. Read `docs/RELEASING.md` before changing release wiring. Keep publication disabled until the real repositories and deployed tag reconciliation are verified. No push is currently authorized.
 - macOS interactive checks and Windows/Linux CI results are separate evidence. Do not experiment on the user's Windows computer.

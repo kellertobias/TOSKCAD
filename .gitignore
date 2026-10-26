@@ -1,6 +1,7 @@
 # Rust build output and local release artifacts
 /target/
 /artifacts/
+/node_modules/
 
 # Local configuration, credentials and editor state
 .env

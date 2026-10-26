@@ -10,6 +10,7 @@ pub struct BuildInfo {
     pub version: &'static str,
     pub target_os: &'static str,
     pub target_arch: &'static str,
+    pub commit: Option<&'static str>,
 }
 
 impl BuildInfo {
@@ -17,9 +18,13 @@ impl BuildInfo {
     pub const fn current() -> Self {
         Self {
             product: "MultiCAD",
-            version: env!("CARGO_PKG_VERSION"),
+            version: match option_env!("MULTICAD_RELEASE_VERSION") {
+                Some(version) => version,
+                None => env!("CARGO_PKG_VERSION"),
+            },
             target_os: std::env::consts::OS,
             target_arch: std::env::consts::ARCH,
+            commit: option_env!("MULTICAD_BUILD_COMMIT"),
         }
     }
 }

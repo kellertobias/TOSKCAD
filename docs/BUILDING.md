@@ -6,7 +6,7 @@ Install [Rust through rustup](https://www.rust-lang.org/tools/install) and the h
 
 `rust-toolchain.toml` pins Rust **1.99.1**, Clippy and rustfmt. Rustup selects the toolchain inside the checkout and downloads it if missing; it does not require changing the global default. The pin was checked against the [official stable manifest](https://static.rust-lang.org/dist/channel-rust-stable.toml), dated 2026-10-15. Keep toolchain updates explicit and validate them on all CI targets.
 
-The bootstrap has no crates.io dependencies and no Python, Node.js, FreeCAD, OCCT, solver or GUI runtime requirement. Node.js is optional for the separate UX prototype only.
+The bootstrap has no crates.io dependencies and no Python, Node.js, FreeCAD, OCCT, solver or GUI runtime requirement. Node.js is development tooling for the separate UX prototype and release automation; it is not part of the compiled application. Cargo-only development does not require Node.js. Release tools require Node.js 22.14 or newer (CI uses 24) and `npm ci --ignore-scripts --no-audit --no-fund`.
 
 ## Commands
 
@@ -45,8 +45,10 @@ macOS local execution, Windows/Linux CI execution, physical GPU performance, ins
 
 ## CI
 
-`.github/workflows/ci.yml` defines a native build/test matrix for `ubuntu-24.04`, `macos-15` and `windows-2025`. Each runner selects `rust-toolchain.toml`, checks formatting/Clippy/tests, builds the release bootstrap and runs diagnostics. The checkout/upload actions are pinned to verified upstream commit revisions, with read-only repository permissions and no persisted checkout credentials.
+`.github/workflows/release.yml` defines quality checks and a native build/test/archive matrix for `ubuntu-24.04` (x64), `macos-15` (ARM64) and `windows-2025` (x64). Each build selects `rust-toolchain.toml`, tests the workspace, builds the release bootstrap and checks its compiled version, source commit and target. A separate job checks formatting, Clippy, release contracts and the prototype. Actions are pinned to verified upstream commit revisions, with read-only build permissions and no persisted checkout credentials.
 
-Artifacts named `multicad-bootstrap-<OS>-<ARCH>` retain the executable, license and this guide for seven days. These are diagnostic bootstrap binaries, not desktop installers or a completed CAD application. No deployment, release publishing, signing or push step is configured.
+Artifacts named `release-<target>-<commit>` retain versioned ZIP archives, identity manifests and SHA-256 checksums for seven days. The ZIP includes the executable, license, diagnostics and this guide. These are diagnostic bootstrap binaries, not desktop installers or a completed CAD application. `npm run release:package -- 0.1.0` builds a local host archive from committed source; it does not create a Git tag or publish anything.
+
+Forgejo owns branches and mirrors them to GitHub. GitHub alone builds and mints tag-only releases on the tested commit. Publishing requires explicit activation variables and verified mirror tag reconciliation; both remain unset until repositories exist. Only the release job receives write permission. See [RELEASING.md](RELEASING.md) for topology, versioning, activation and recovery. There is no deployment or signing configuration.
 
 The workflow can execute only after the repository is hosted on GitHub and a run is triggered. Local setup does not prove those hosted runs passed. Kernel/solver runtime bundling and full desktop artifacts remain CAD-50 work.

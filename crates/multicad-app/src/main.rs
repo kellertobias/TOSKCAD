@@ -49,11 +49,16 @@ fn main() -> ExitCode {
             "{} {}\n\
              Stage: repository-bootstrap\n\
              Target: {}/{}\n\
+             Source commit: {}\n\
              CAD kernel: not integrated\n\
              Native UI: not implemented\n\
              MCP server: not implemented\n\
              Runtime: compiled Rust; no Python or Node.js runtime dependency",
-            build.product, build.version, build.target_os, build.target_arch
+            build.product,
+            build.version,
+            build.target_os,
+            build.target_arch,
+            build.commit.unwrap_or("not stamped")
         ),
     }
     ExitCode::SUCCESS
