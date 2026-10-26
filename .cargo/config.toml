@@ -1,3 +1,7 @@
 # Avoid requiring a separately installed Visual C++ runtime in Windows archives.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+[env]
+# Explicit back-deployment floor; do not inherit the developer's SDK version.
+MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = false }
+

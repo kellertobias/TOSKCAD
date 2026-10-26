@@ -12,7 +12,7 @@ From any working directory, invoke the repository's `build` executable (Windows:
 ./build archive install # explicit macOS install/start into /Applications/MultiCAD.app
 ```
 
-ZIP output supports the current host: macOS ARM64, Linux x64 or Windows x64. Other operating systems build on their own GitHub runners; the wrapper does not dispatch remote workflows. On PowerShell use `./build.ps1` with the same arguments. Install is not performed by any other command and has not been authorized/tested in this session.
+ZIP output supports the current host: macOS 13+ ARM64, Linux x64 or Windows x64. Other operating systems build on their own GitHub runners; the wrapper does not dispatch remote workflows. On PowerShell use `./build.ps1` with the same arguments. Install is not performed by any other command and has not been authorized/tested in this session.
 
 ## Prerequisites and bootstrap
 
