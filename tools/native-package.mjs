@@ -9,7 +9,11 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const run=(command,args,options={})=>execFileSync(command,args,{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe'],...options})?.trim()??'';
 const escapeXML=value=>value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 export function nativeSourceHash(source){
-  const paths=[];walk(source,path=>paths.push(path));paths.sort();const hash=createHash('sha256');
+  const paths=[];walk(source,path=>paths.push(path));
+  // Rust Path ordering compares components (a/child precedes a.cpp), not the
+  // flattened path string. Keep source identity identical to the build helper.
+  paths.sort((a,b)=>{const aa=a.split(sep),bb=b.split(sep);for(let i=0;i<Math.min(aa.length,bb.length);i++){const order=Buffer.compare(Buffer.from(aa[i]),Buffer.from(bb[i]));if(order)return order;}return aa.length-bb.length;});
+  const hash=createHash('sha256');
   for(const path of paths){hash.update(relative(source,path).split(sep).join('/'));hash.update(Buffer.from([0]));hash.update(createHash('sha256').update(readFileSync(path)).digest());}
   return hash.digest('hex');
 }

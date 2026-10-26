@@ -234,14 +234,27 @@ mod tests {
     fn native_source_edits_change_identity_without_depending_on_checkout_path() {
         let directory = tempfile::tempdir().unwrap();
         for name in ["a", "b"] {
-            fs::create_dir_all(directory.path().join(name)).unwrap();
-            fs::write(directory.path().join(name).join("source.cpp"), "source").unwrap();
+            fs::create_dir_all(directory.path().join(name).join("nested")).unwrap();
+            fs::write(
+                directory.path().join(name).join("nested/source.cpp"),
+                "source",
+            )
+            .unwrap();
+            fs::write(directory.path().join(name).join("nested.cpp"), "flat").unwrap();
         }
+        assert_eq!(
+            source_digest(&directory.path().join("a")),
+            "dedfba9092ed6c79fa868edb60508eb5373cf77e22910d45ee6368b770075067"
+        );
         assert_eq!(
             source_digest(&directory.path().join("a")),
             source_digest(&directory.path().join("b"))
         );
-        fs::write(directory.path().join("b/source.cpp"), "modified source").unwrap();
+        fs::write(
+            directory.path().join("b/nested/source.cpp"),
+            "modified source",
+        )
+        .unwrap();
         assert_ne!(
             source_digest(&directory.path().join("a")),
             source_digest(&directory.path().join("b"))

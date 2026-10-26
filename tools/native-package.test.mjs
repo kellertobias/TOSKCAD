@@ -19,7 +19,8 @@ test('native build entry loads without a pre-existing node_modules directory',()
 test('native source identity includes content and relative names, not checkout location',()=>{
   const directory=mkdtempSync(join(tmpdir(),'multicad-source-id-'));
   try{
-    for(const name of ['a','b']){mkdirSync(join(directory,name,'nested'),{recursive:true});writeFileSync(join(directory,name,'nested/source.cpp'),'source');}
+    for(const name of ['a','b']){mkdirSync(join(directory,name,'nested'),{recursive:true});writeFileSync(join(directory,name,'nested/source.cpp'),'source');writeFileSync(join(directory,name,'nested.cpp'),'flat');}
+    assert.equal(nativeSourceHash(join(directory,'a')),'dedfba9092ed6c79fa868edb60508eb5373cf77e22910d45ee6368b770075067');
     assert.equal(nativeSourceHash(join(directory,'a')),nativeSourceHash(join(directory,'b')));
     writeFileSync(join(directory,'b/nested/source.cpp'),'edited source');
     assert.notEqual(nativeSourceHash(join(directory,'a')),nativeSourceHash(join(directory,'b')));
