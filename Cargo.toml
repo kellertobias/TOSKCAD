@@ -2,6 +2,7 @@
 members = ["crates/multicad-core", "crates/multicad-app"]
 default-members = ["crates/multicad-app"]
 resolver = "3"
+exclude = ["spikes/native-foundation"]
 
 [workspace.package]
 version = "0.1.0-dev"

@@ -2,6 +2,7 @@
 /target/
 /artifacts/
 /node_modules/
+/spikes/native-foundation/target/
 
 # Local configuration, credentials and editor state
 .env

@@ -1,0 +1,12 @@
+{
+  "occt": {
+    "version": "7.9.3",
+    "repository": "https://github.com/Open-Cascade-SAS/OCCT",
+    "tag": "V7_9_3",
+    "commit": "a016080bf6738d6aeae020badee4e888ad1540a5",
+    "url": "https://codeload.github.com/Open-Cascade-SAS/OCCT/tar.gz/refs/tags/V7_9_3",
+    "sha256": "5ecf094ec6b12d5413dfb851d8c3590c354058aee556e32e408bdfbf8c357d57",
+    "directory": "OCCT-7_9_3",
+    "license": "LGPL-2.1-only WITH OCCT-exception-1.0"
+  }
+}
