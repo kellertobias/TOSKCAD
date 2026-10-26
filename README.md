@@ -1,7 +1,19 @@
-# MultiCAD UX concept
+# MultiCAD
 
-Start with the interactive [UX prototype](mockup/index.html). Open the file directly, or run `node mockup/serve.mjs` and visit `http://127.0.0.1:4173`.
+An open-source native parametric CAD application planned for macOS, Windows and Linux, with compiled Rust application code and native geometry adapters. The CAD application is not implemented yet.
 
-The revised layout uses six colored modes: **Parameters, Sketch, Model, Drawings, Render, Export**, plus contextual ribbons and global Measure/Library/MCP controls. Use **Explore workflows** for review paths and the file picker for project examples.
+The [product plan](https://plans.tokenet.de/CAD/48) is maintained in PLAINER. [CAD-107](https://plans.tokenet.de/CAD/107) establishes the local repository and kernel-neutral bootstrap. [CAD-49](https://plans.tokenet.de/CAD/49) must prove the native geometry/solver/UI foundation before dependency integration and desktop packaging in [CAD-50](https://plans.tokenet.de/CAD/50).
 
-See the [workflow guide and prototype boundaries](mockup/README.md). CAD geometry and outputs are simulated; this is a design artifact, not the production application stack.
+## UX reference
+
+Open [mockup/index.html](mockup/index.html) directly, or run `node mockup/serve.mjs` and visit `http://127.0.0.1:4173`. Run `node mockup/verify.mjs` for the prototype's illustrative checks. Node.js is only used by prototype development tools, not by the native application.
+
+The prototype illustrates **Parameters, Sketch, Model, Drawings, Render, Export**, contextual ribbons, and global Measure/Library/MCP controls. Use **Explore workflows** for examples. CAD geometry and outputs are simulated.
+
+The latest agreed corrections are recorded in the [architecture boundaries](docs/architecture/0001-project-boundaries.md): Parameters has no sidebars/ribbon; Sketch starts in the 3D viewer and exposes editing tools only after New Sketch or opening an existing sketch; no Face Sketch command in Model; sheet metal includes attached fasteners. The prototype is preserved as a reference and has not been revised to implement these latest corrections.
+
+See the [workflow guide and prototype boundaries](mockup/README.md).
+
+## Contributing and license
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before development. The application source is licensed under [GNU GPL v3 or later](LICENSE) (`GPL-3.0-or-later`). Future native dependencies require their own version/license/distribution review before integration.

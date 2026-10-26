@@ -1,0 +1,16 @@
+# Rust build output and local release artifacts
+/target/
+/artifacts/
+
+# Local configuration, credentials and editor state
+.env
+.env.*
+!.env.example
+.build.local.env
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# Retain Cargo.lock: this workspace ships an application.
