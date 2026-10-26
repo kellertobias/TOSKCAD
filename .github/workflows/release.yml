@@ -17,6 +17,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  foundation:
+    name: Native dependency proof
+    uses: ./.github/workflows/native-foundation.yml
+
   metadata:
     name: Select build/release version
     runs-on: ubuntu-24.04
@@ -103,7 +107,7 @@ jobs:
 
   release:
     name: Mint GitHub tag and hosted release
-    needs: [metadata, quality, build]
+    needs: [metadata, quality, build, foundation]
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.metadata.outputs.release == 'true' &&

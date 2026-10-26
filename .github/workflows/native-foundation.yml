@@ -1,0 +1,54 @@
+name: Native foundation proof
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-foundation:
+    name: Source-built CAD proof / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    env:
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Linux native window development libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev
+      - run: node tools/foundation-deps.mjs
+      - run: cargo fmt --manifest-path spikes/native-foundation/Cargo.toml --all -- --check
+      - run: cargo build --manifest-path spikes/native-foundation/Cargo.toml --locked
+      - run: cargo clippy --manifest-path spikes/native-foundation/Cargo.toml --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path spikes/native-foundation/Cargo.toml --workspace --locked
+      - name: Real geometry and STEP lifecycle
+        if: runner.os != 'Windows'
+        run: spikes/native-foundation/target/debug/multicad-foundation-lab --verify artifacts/foundation
+      - name: Real geometry and STEP lifecycle / Windows
+        if: runner.os == 'Windows'
+        run: spikes/native-foundation/target/debug/multicad-foundation-lab.exe --verify artifacts/foundation
+      - name: CPU layout and tessellation at three pixel scales
+        if: runner.os != 'Windows'
+        run: spikes/native-foundation/target/debug/multicad-foundation-lab --benchmark-ui artifacts/foundation
+      - name: CPU layout and tessellation / Windows
+        if: runner.os == 'Windows'
+        run: spikes/native-foundation/target/debug/multicad-foundation-lab.exe --benchmark-ui artifacts/foundation
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: foundation-proof-${{ matrix.os }}-${{ github.sha }}
+          path: artifacts/foundation/
+          if-no-files-found: error
+          retention-days: 7

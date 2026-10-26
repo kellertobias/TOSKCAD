@@ -37,6 +37,7 @@ Like ToskLight, a history with no semantic tag uses a disposable `v0.0.0` analys
 
 - Metadata fetches full history and previews a release only for a main-branch push; other events use the latest reachable version or development version.
 - Quality runs formatting, Clippy, actual release-engine contract tests and prototype checks.
+- The reusable native-foundation workflow separately source-builds the CAD-49 laboratory on all three operating systems, runs its checks and retains proof reports/STEP output. It gates publication but does not add the lab to product release assets. Until hosted runs exist, this is configuration rather than platform validation.
 - The native matrix tests/builds/smoke-checks version-stamped executables on Linux x64, macOS ARM64 and Windows x64, then produces versioned ZIPs, per-target identity records and SHA-256 checksums.
 - Publication waits for every quality/build result and both activation variables. It verifies all three archives' version/SHA/target/checksum records, rejects missing/stale/extra files and writes the aggregate release manifest.
 - The publisher verifies the checkout/current GitHub main SHA and the expected version again before tagging. It creates no branch commit. Hosted release assets are only the verified ZIPs, checksums and aggregate manifest; success/failure issue comments are disabled.
