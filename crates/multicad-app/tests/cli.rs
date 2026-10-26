@@ -10,15 +10,15 @@ fn run(arguments: &[&str]) -> Output {
 }
 
 #[test]
-fn help_and_default_entry_explain_the_bootstrap_boundary() {
-    for arguments in [&[][..], &["--help"][..], &["-h"][..]] {
+fn help_explains_the_native_host_boundary() {
+    for arguments in [&["--help"][..], &["-h"][..]] {
         let output = run(arguments);
         assert!(output.status.success());
         assert!(output.stderr.is_empty());
         let text = String::from_utf8(output.stdout).expect("help is UTF-8");
         assert!(text.contains("Usage: multicad"));
-        assert!(text.contains("Repository bootstrap only."));
-        assert!(text.contains("not implemented yet"));
+        assert!(text.contains("Launches the native application host"));
+        assert!(text.contains("under development"));
     }
 }
 
@@ -49,14 +49,41 @@ fn diagnostics_report_the_compiled_target_and_unimplemented_capabilities() {
         std::env::consts::OS,
         std::env::consts::ARCH
     )));
-    assert!(text.contains("Stage: repository-bootstrap"));
+    assert!(text.contains("Stage: native-integration"));
     assert!(text.contains(&format!(
         "Source commit: {}",
         option_env!("MULTICAD_BUILD_COMMIT").unwrap_or("not stamped")
     )));
-    assert!(text.contains("CAD kernel: not integrated"));
-    assert!(text.contains("Native UI: not implemented"));
+    assert!(text.contains("CAD kernel: OCCT 7.9.3"));
+    assert!(text.contains("Native UI: eframe 0.36.2 / wgpu"));
     assert!(text.contains("MCP server: not implemented"));
+}
+
+#[test]
+fn packaged_runtime_smoke_emits_real_step_and_reports_output_errors() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_multicad"))
+        .arg("--self-test")
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let step = std::fs::read_to_string(directory.path().join("native-smoke.step")).unwrap();
+    assert!(step.starts_with("ISO-10303-21;"));
+    assert!(step.contains("MANIFOLD_SOLID_BREP"));
+    let file = directory.path().join("existing-file");
+    std::fs::write(&file, b"preserve").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_multicad"))
+        .arg("--self-test")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read(file).unwrap(), b"preserve");
 }
 
 #[test]

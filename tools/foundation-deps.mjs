@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const directory=join(root,'artifacts/native-deps');
-const pin=JSON.parse(readFileSync(join(root,'spikes/native-foundation/native-dependencies.json'),'utf8')).occt;
+const pin=JSON.parse(readFileSync(join(root,'native-dependencies.json'),'utf8')).occt;
 mkdirSync(directory,{recursive:true});
 const archive=join(directory,'occt-7.9.3.tar.gz');
 if(!existsSync(archive)) {

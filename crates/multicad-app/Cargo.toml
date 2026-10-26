@@ -1,6 +1,6 @@
 [package]
 name = "multicad-app"
-description = "Native MultiCAD bootstrap executable"
+description = "Native MultiCAD application entry point"
 default-run = "multicad"
 version.workspace = true
 edition.workspace = true
@@ -14,6 +14,12 @@ path = "src/main.rs"
 
 [dependencies]
 multicad-core.workspace = true
+multicad-kernel.workspace = true
+multicad-solver.workspace = true
+multicad-ui.workspace = true
+
+[dev-dependencies]
+tempfile = "=3.27.0"
 
 [lints]
 workspace = true

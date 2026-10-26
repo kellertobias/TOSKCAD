@@ -1,0 +1,22 @@
+[package]
+name = "multicad-kernel"
+description = "Owned OCCT boundary; general modeling policy is implemented separately"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cxx = "=1.0.205"
+
+[build-dependencies]
+cxx-build = "=1.0.205"
+multicad-native-build.workspace = true
+
+# The audited CXX declaration is the only unsafe-code exception in this crate.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
