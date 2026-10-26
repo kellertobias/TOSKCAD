@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Kernel-neutral bootstrap metadata. The parametric document and geometry APIs
-//! are separate planned work; this crate does not simulate either one.
+//! Canonical source definitions and dependency identities. No GUI, solver IDs,
+//! native pointers or tessellations are part of the document.
+
+pub mod document;
 
 /// Identity of the compiled application, independent of GUI or native adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
