@@ -1,54 +1,64 @@
-# Building the bootstrap
-
-## Prerequisites
-
-Install [Rust through rustup](https://www.rust-lang.org/tools/install) and the host platform's C/C++ linker tools: Apple Command Line Tools on macOS, Visual Studio Build Tools with C++ support on Windows, or a C toolchain on Linux. Installing these system tools can require administrator access.
-
-`rust-toolchain.toml` pins Rust **1.99.1**, Clippy and rustfmt. Rustup selects the toolchain inside the checkout and downloads it if missing; it does not require changing the global default. The pin was checked against the [official stable manifest](https://static.rust-lang.org/dist/channel-rust-stable.toml), dated 2026-10-15. Keep toolchain updates explicit and validate them on all CI targets.
-
-The bootstrap has no crates.io dependencies and no Python, Node.js, FreeCAD, OCCT, solver or GUI runtime requirement. Node.js is development tooling for the separate UX prototype and release automation; it is not part of the compiled application. Cargo-only development does not require Node.js. Release tools require Node.js 22.14 or newer (CI uses 24) and `npm ci --ignore-scripts --no-audit --no-fund`.
+# Building the native development host
 
 ## Commands
 
-From the repository root:
+From any working directory, invoke the repository's `build` executable (Windows: `build.ps1`):
 
 ```sh
-cargo build --workspace --locked
-cargo run --locked -- --diagnostics
+./build                 # acquire pinned source/dependencies; build every component
+./build open            # rebuild; replace only the previous wrapper-owned process; launch
+./build check           # formatting, Clippy and tests
+./build archive         # clean release products; runtime ZIP and corresponding-source ZIP
+./build archive install # explicit macOS install/start into /Applications/MultiCAD.app
+```
+
+ZIP output supports the current host: macOS ARM64, Linux x64 or Windows x64. Other operating systems build on their own GitHub runners; the wrapper does not dispatch remote workflows. On PowerShell use `./build.ps1` with the same arguments. Install is not performed by any other command and has not been authorized/tested in this session.
+
+## Prerequisites and bootstrap
+
+Install Node.js 22.14+ for developer orchestration, Rust through rustup, CMake 3.16+ and the host compiler/SDK. macOS needs Apple Command Line Tools (`xcode-select --install`; CMake: `brew install cmake`). Windows needs Visual Studio Build Tools with C++ and Windows SDK. Linux needs a C++ toolchain plus development packages for Wayland/xkbcommon (Ubuntu: `sudo apt-get install build-essential cmake libwayland-dev libxkbcommon-dev`). System SDK/package-manager installation can need administrator interaction; the wrapper detects missing tools and prints the continuation rather than hiding global installs.
+
+The wrapper selects Rust 1.99.1 from `rust-toolchain.toml` without changing the global default, acquires the checksum-pinned official OCCT source, fetches locked Cargo dependencies and builds the complete workspace. Node.js is build tooling only. The running application needs no Python, Node.js, FreeCAD, Qt or preinstalled OCCT.
+
+OCCT is statically linked and compiled into a cache under `target/native/occt/<target>/<identity>`. Identity includes the source archive hash, compiler version/arguments, target, relevant SDK/ABI variables and build-configuration source. A filesystem lock serializes creation across Cargo check/test/build. Removing Cargo product output does not discard this expensive native cache. Rust package-manager caches remain normal Cargo caches. Cross-compiling from this Mac is not configured.
+
+## Outputs and runtime checks
+
+Default builds assemble a new development layout under `artifacts/development/build-*/`; `latest.json` records its location. macOS includes `MultiCAD.app`; Windows/Linux include the native executable and resources. `open` starts the new host only after a successful build, and only stops the previous process recorded by this wrapper after verifying its executable path. It does not terminate unrelated MultiCAD/Finder processes. The current host owns no editable project; a graceful close/unsaved-document protocol must replace the launcher's SIGTERM path before document sessions are integrated.
+
+Archive builds require clean committed source, stamp the requested version/source SHA, run tests, clean/rebuild shipped release products and verify the packaged executable's version/identity, dependency closure and real STEP smoke result. `MULTICAD_RELEASE_VERSION` overrides the development archive version. ZIPs, manifests and SHA-256 checksums are under `artifacts/release/`:
+
+- `multicad-<version>-<target>.zip`: native application layout and third-party notices.
+- `multicad-<version>-<target>-sources.zip`: exact application source, lockfile, vendored Cargo sources, pinned OCCT archive and offline build/relink instructions.
+
+Source archives are deliberately larger than runtime artifacts. Static LGPL OCCT does not remove its source/relinking obligations. macOS packages have local ad-hoc signatures and are not notarized; Windows/Linux packages are unsigned portable development layouts, not publisher-signed installers. Linux targets an Ubuntu 24.04+ desktop/system graphics stack; Windows requires a supported system graphics driver. The MSVC target uses the static CRT and packaging rejects imports of an unbundled VC runtime. No Windows/Linux binary is claimed tested until its runner actually executes.
+
+`archive install` requires an explicit invocation. It refuses while an installed application is running, stages the new macOS bundle, retains the previous installation as a sibling backup, restores it on replacement failure and opens the new copy. Existing application configuration is not removed. `/Applications` must be writable through normal OS permissions; the script does not hide privilege escalation. Install/start is not part of the checks performed here.
+
+Useful headless checks:
+
+```sh
 cargo run --locked -- --version
+cargo run --locked -- --diagnostics
+cargo run --locked -- --self-test artifacts/native-smoke
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cargo build --workspace --release --locked
 ```
 
-The executable is `target/debug/multicad` (or `multicad.exe` on Windows); release output is under `target/release/`. With no arguments it prints help. The diagnostics command explicitly reports the repository-bootstrap stage and the unimplemented CAD/UI/MCP capabilities. It does not launch a GUI or open a modeling project.
+With no arguments `multicad` opens the native host. `--self-test` creates an actual constrained-profile solid, cut and STEP round-trip, including clean native shutdown; it is a runtime dependency smoke check, not a completed CAD workflow.
 
-After the pinned toolchain is installed, the current dependency-free workspace also supports `cargo build --workspace --locked --offline` and `cargo test --workspace --locked --offline`. Commit `Cargo.lock`; do not delete it as part of normal setup.
+## Components and limits
 
-## Layout
-
-| Path | Responsibility |
+| Component | Responsibility |
 | --- | --- |
-| `crates/multicad-core` | Kernel-neutral bootstrap metadata; shared modeling APIs arrive in their own plans. |
-| `crates/multicad-app` | Native executable and command-line smoke tests. GUI integration is gated. |
-| `docs/architecture` | Product boundaries and recorded architecture decisions. |
-| `mockup` | Offline HTML/SVG UX reference, excluded from the native runtime. |
+| `multicad-core` | Kernel/UI-independent core; canonical document and commands have their own plans. |
+| `multicad-native-build` | Build-time OCCT source verification and native caching, excluded from runtime. |
+| `multicad-kernel` | Opaque native-owned shapes and audited CXX boundary; general geometry policy remains CAD-54. |
+| `multicad-solver` | Replaceable Rust constraint-solver mapping; broad sketch integration remains CAD-61. |
+| `multicad-ui` | Native window host; full shell, viewport and domain modules remain CAD-57/58. |
+| `multicad-app` | Composition/entry point, diagnostics and packaged runtime smoke checks. |
 
-## What this setup does not validate
+The canonical document/command registry, native project files, modeled workspaces, MCP, full manufacturing exports and production viewport are not implemented by CAD-50. The older `spikes/native-foundation` workspace stays a bounded reference and is not shipped as the product UI.
 
-The native application, CAD kernel, sketch solver, viewport, MCP server, project file format and manufacturing exporters are not implemented. A successful bootstrap build does not satisfy their acceptance criteria.
-
-The foundation gate [CAD-49](https://plans.tokenet.de/CAD/49) selects/proves native dependencies. [CAD-50](https://plans.tokenet.de/CAD/50) adds their clean bootstrap, complete desktop runtime bundling and installable platform packages. A whole-product `./build` wrapper and native `open/archive/install` behavior belong with that packaging work, when the actual product components and archive formats are known.
-
-macOS local execution, Windows/Linux CI execution, physical GPU performance, installer behavior, signing and human workflow acceptance are separate results. No push, public release or installation is part of the repository bootstrap.
-
-## CI
-
-`.github/workflows/release.yml` defines quality checks and a native build/test/archive matrix for `ubuntu-24.04` (x64), `macos-15` (ARM64) and `windows-2025` (x64). Each build selects `rust-toolchain.toml`, tests the workspace, builds the release bootstrap and checks its compiled version, source commit and target. A separate job checks formatting, Clippy, release contracts and the prototype. Actions are pinned to verified upstream commit revisions, with read-only build permissions and no persisted checkout credentials.
-
-Artifacts named `release-<target>-<commit>` retain versioned ZIP archives, identity manifests and SHA-256 checksums for seven days. The ZIP includes the executable, license, diagnostics and this guide. These are diagnostic bootstrap binaries, not desktop installers or a completed CAD application. `npm run release:package -- 0.1.0` builds a local host archive from committed source; it does not create a Git tag or publish anything.
-
-Forgejo owns branches and mirrors them to GitHub. GitHub alone builds and mints tag-only releases on the tested commit. Publishing requires explicit activation variables and verified mirror tag reconciliation; both remain unset until repositories exist. Only the release job receives write permission. See [RELEASING.md](RELEASING.md) for topology, versioning, activation and recovery. There is no deployment or signing configuration.
-
-The workflow can execute only after the repository is hosted on GitHub and a run is triggered. Local setup does not prove those hosted runs passed. Kernel/solver runtime bundling and full desktop artifacts remain CAD-50 work.
+GitHub Actions builds three targets using the same package code. Read-only build/check jobs are separate from the gated tag-only publisher. Hosted execution, physical Windows/Linux behavior, signing, low-power performance and human acceptance remain separate evidence. Forgejo remains authoritative; see [RELEASING.md](RELEASING.md). Nothing is pushed automatically.

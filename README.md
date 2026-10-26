@@ -1,24 +1,25 @@
 # MultiCAD
 
-The first native CAD dependency laboratory is under [spikes/native-foundation](spikes/native-foundation/README.md). It tests real constrained profiles, source-built OCCT solids/STEP, a Rust window and proof-only file/session behavior. It is separate from the production bootstrap and does not establish completed application workflows.
+The first native CAD dependency laboratory is under [spikes/native-foundation](spikes/native-foundation/README.md). It tests real constrained profiles, source-built OCCT solids/STEP, a Rust window and proof-only file/session behavior. It is separate from the native application host and does not establish completed application workflows.
 
-An open-source native parametric CAD application planned for macOS, Windows and Linux, with compiled Rust application code and native geometry adapters. The CAD application is not implemented yet.
+An open-source native parametric CAD application planned for macOS, Windows and Linux, with compiled Rust application code and native geometry adapters. The native host and adapters are implemented; CAD workflows remain under development.
 
 The [product plan](https://plans.tokenet.de/CAD/48) is maintained in PLAINER. [CAD-107](https://plans.tokenet.de/CAD/107) establishes the local repository and kernel-neutral bootstrap. [CAD-49](https://plans.tokenet.de/CAD/49) must prove the native geometry/solver/UI foundation before dependency integration and desktop packaging in [CAD-50](https://plans.tokenet.de/CAD/50).
 
-## Native project setup
-
-Install Rust through rustup and the host linker tools, then run:
+## Native development
 
 ```sh
-cargo build --workspace --locked
-cargo run --locked -- --diagnostics
-cargo test --workspace --locked
+./build
+./build open
+./build check
+./build archive
 ```
 
-The checkout selects the pinned Rust 1.99.1 toolchain. This is a dependency-free repository bootstrap: the executable reports its version/target and the unimplemented CAD, UI and MCP capabilities. It does not launch the CAD application yet. See [BUILDING.md](docs/BUILDING.md) for prerequisites, lint/format commands, layout and validation boundaries.
+Windows uses `./build.ps1`. The wrapper acquires the pinned native/Cargo dependencies, builds every shipped component and assembles the host application. Archives include a native runtime layout, notices and matching corresponding source. `./build archive install` is the explicit macOS install action; it is not run automatically. See [BUILDING.md](docs/BUILDING.md) for prerequisites, output paths and validation limits.
 
-[CI and releases](.github/workflows/release.yml) follow the ToskLight model: Forgejo is the authoritative source, its mirror sends commits to GitHub, and GitHub builds/tests macOS, Windows and Linux artifacts and mints tag-only hosted releases. Publication stays disabled until the repositories and mirror tag reconciliation are verified. No remote is configured and nothing has been pushed. See [RELEASING.md](docs/RELEASING.md).
+The native host, owned OCCT adapter and solver are integrated. CAD workspaces, canonical documents/commands, native project files and MCP remain subsequent work. The foundation laboratory remains a separate reference, not the production UI.
+
+[CI and releases](.github/workflows/release.yml) keep Forgejo authoritative and GitHub responsible for builds and tag-only hosted releases. Publishing remains disabled until the repositories and mirror tag reconciliation are verified. No remote is configured and nothing has been pushed. See [RELEASING.md](docs/RELEASING.md).
 
 ## UX reference
 

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+BUILD_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if ! command -v node >/dev/null 2>&1; then
+  echo "MultiCAD build needs Node.js 22.14+ for developer tooling. Install Node.js, then rerun this command." >&2
+  exit 1
+fi
+exec node "$BUILD_ROOT/tools/build.mjs" "$@"

@@ -46,7 +46,7 @@ jobs:
   quality:
     name: Formatting, Clippy and release contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +58,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: rustup show active-toolchain
+      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev
+      - run: node tools/foundation-deps.mjs
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: npm test
@@ -67,7 +69,7 @@ jobs:
     name: Build and test / ${{ matrix.target }}
     needs: metadata
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +93,9 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: rustup show active-toolchain
+      - name: Linux native window development libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev
       - name: Test, build, smoke-check and archive the exact version
         run: node tools/package-release.mjs build "$env:MULTICAD_RELEASE_VERSION"
         if: runner.os == 'Windows'
