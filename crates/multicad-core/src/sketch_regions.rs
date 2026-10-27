@@ -58,6 +58,45 @@ pub struct Region {
     pub holes: Vec<Boundary>,
     pub area_mm2: f64,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointLocation {
+    Outside,
+    Boundary,
+    Inside,
+}
+impl Region {
+    pub fn classify(&self, point: Point) -> PointLocation {
+        if point.iter().any(|v| !v.is_finite()) {
+            return PointLocation::Outside;
+        }
+        if std::iter::once(&self.outer)
+            .chain(&self.holes)
+            .flat_map(|b| &b.edges)
+            .any(|e| e.curve.contains(point, DEFAULT_TOLERANCE_MM))
+        {
+            return PointLocation::Boundary;
+        }
+        if self
+            .outer
+            .edges
+            .iter()
+            .map(|e| e.curve.winding(point))
+            .sum::<i32>()
+            != 0
+            && self
+                .holes
+                .iter()
+                .all(|h| h.edges.iter().map(|e| e.curve.winding(point)).sum::<i32>() == 0)
+        {
+            PointLocation::Inside
+        } else {
+            PointLocation::Outside
+        }
+    }
+    pub fn contains(&self, point: Point) -> bool {
+        self.classify(point) == PointLocation::Inside
+    }
+}
 
 /// Pin the selected bounded area, including its holes. A new inner loop changes
 /// this intent instead of silently changing a previously selected profile.
@@ -403,7 +442,33 @@ fn intersections(a: &ExactCurve, b: &ExactCurve, tol: f64) -> Intersections {
 pub fn extract(source: &Source) -> Extraction {
     extract_with_tolerance(source, DEFAULT_TOLERANCE_MM)
 }
+/// Exact geometric input from a checked evaluation. Callers retain the source
+/// revision stamp; this function does not resolve dimensional expressions.
+pub fn extract_geometry(
+    points: &[crate::constraint_sketch::Point],
+    curves: &[crate::constraint_sketch::Curve],
+) -> Extraction {
+    extract(&Source {
+        u: [1., 0., 0.],
+        sketch: crate::constraint_sketch::Sketch {
+            points: points.to_vec(),
+            curves: curves.to_vec(),
+            constraints: vec![],
+        },
+    })
+}
 pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction {
+    if source.has_expressions() {
+        return Extraction {
+            regions: vec![],
+            diagnostics: vec![diagnostic(
+                Problem::InvalidSource,
+                vec![],
+                None,
+                "Parameter-driven profiles require current evaluated geometry",
+            )],
+        };
+    }
     if !tolerance_mm.is_finite() || !(1e-10..=1e-3).contains(&tolerance_mm) {
         return Extraction {
             regions: vec![],

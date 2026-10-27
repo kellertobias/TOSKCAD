@@ -2355,7 +2355,7 @@ mod tests {
         let edge = source.sketch.curves[0].id;
         source.add_constraint(multicad_core::constraint_sketch::ConstraintKind::Length {
             line: edge,
-            dimension: multicad_core::constraint_sketch::Dimension {
+            dimension: multicad_core::constraint_sketch::Dimension::Literal {
                 value: 90.,
                 unit: "mm".into(),
             },

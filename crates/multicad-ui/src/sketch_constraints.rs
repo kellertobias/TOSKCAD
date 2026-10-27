@@ -81,7 +81,7 @@ impl Tool {
         }
         let a = selection[0];
         let b = selection.get(1).copied().unwrap_or(a);
-        let dimension = Dimension {
+        let dimension = Dimension::Literal {
             value,
             unit: unit.into(),
         };
@@ -549,12 +549,16 @@ impl ConstraintEditor {
                 });
                 if let Some(d) = c.kind.dimension_mut() {
                     ui.horizontal(|ui| {
-                        changed |= ui
-                            .add(egui::DragValue::new(&mut d.value).speed(0.1))
-                            .changed();
-                        changed |= ui
-                            .add(egui::TextEdit::singleline(&mut d.unit).desired_width(35.))
-                            .changed();
+                        match d {
+                            Dimension::Literal {value,unit} => {
+                                changed |= ui.add(egui::DragValue::new(value).speed(0.1)).changed();
+                                changed |= ui.add(egui::TextEdit::singleline(unit).desired_width(35.)).changed();
+                            }
+                            Dimension::Expression {expression} => {
+                                ui.label(&expression.text).on_hover_text("Parameter expression; editing requires a current evaluated sketch");
+                                ui.small(&expression.unit);
+                            }
+                        }
                         changed |= ui.checkbox(&mut c.reference, "Reference").changed();
                     });
                     if let Some(measurement) = self
@@ -758,7 +762,7 @@ mod tests {
         let (mut source, _, _) = Source::read_evaluated(session.document(), id, 0, &valid).unwrap();
         source.add_constraint(Kind::Radius {
             curve,
-            dimension: Dimension {
+            dimension: Dimension::Literal {
                 value: 5.,
                 unit: "mm".into(),
             },
@@ -794,7 +798,7 @@ mod tests {
         for value in [80., 90.] {
             source.add_constraint(Kind::Length {
                 line: edge,
-                dimension: Dimension {
+                dimension: Dimension::Literal {
                     value,
                     unit: "mm".into(),
                 },
@@ -826,7 +830,7 @@ mod tests {
         let before = session.document().clone();
         source.add_constraint(Kind::Length {
             line: edge,
-            dimension: Dimension {
+            dimension: Dimension::Literal {
                 value: 100.,
                 unit: "mm".into(),
             },

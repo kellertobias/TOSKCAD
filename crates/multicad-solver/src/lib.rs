@@ -5,6 +5,8 @@ pub mod draw;
 pub use adapter::*;
 mod transaction;
 pub use transaction::*;
+mod evaluated;
+pub use evaluated::*;
 
 /// Solve a perturbed rectangle. Solver handles stay private to this adapter.
 pub fn rectangle(width: f64, depth: f64) -> Result<[f64; 2], String> {

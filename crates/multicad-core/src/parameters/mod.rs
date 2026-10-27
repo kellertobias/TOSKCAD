@@ -1,5 +1,7 @@
 //! Typed, bounded expression evaluation over the canonical document.
+mod bound;
 mod expression;
+pub use bound::*;
 mod units;
 use crate::document::{Document, DocumentError, EntityData, EntityId, Link};
 use serde::Serialize;

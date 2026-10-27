@@ -2,12 +2,17 @@
 //! deliberately absent; evaluators reconstruct them from this source.
 use super::*;
 use crate::{
-    document::{Definition, Document, DocumentError, EntityData, Mutation},
+    document::{Definition, Document, DocumentError, EntityData, Link, Mutation},
     parameters::Unit,
     sketch::{self, Frame},
 };
 use std::collections::BTreeSet;
 pub const TYPE: &str = "core.constrained_sketch";
+pub const V2_CAPABILITY: &str = "core.constrained_sketch.2";
+const DIMENSION_LINK_PREFIX: &str = "dimension/";
+pub fn requires_v2(document: &Document) -> bool {
+    document.entities().any(|e|matches!(&e.data,EntityData::Sketch {definition,..} if definition.type_id==TYPE&&definition.schema_version==2))
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
@@ -111,6 +116,11 @@ impl Source {
     /// Render/query facade for both source providers. Never write this derived
     /// view back over a constrained sketch: edits use the solver transaction.
     pub fn display_geometry(&self) -> Result<Vec<sketch::Geometry>, DocumentError> {
+        if self.has_expressions() {
+            return Err(invalid(
+                "Parameter-driven sketch requires current evaluated geometry; authored point guesses are not a display or manufacturing result",
+            ));
+        }
         let p = |id| {
             self.sketch
                 .points
@@ -196,19 +206,27 @@ impl Source {
         Ok(lines[0])
     }
     pub fn from_definition(definition: &Definition) -> Result<Self, DocumentError> {
-        if definition.type_id != TYPE || definition.schema_version != 1 {
+        if definition.type_id != TYPE || !(1..=2).contains(&definition.schema_version) {
             return Err(invalid("Unsupported constrained sketch provider/version"));
         }
         let source: Self = serde_json::from_value(definition.data.clone())
             .map_err(|e| invalid(format!("Invalid constrained sketch source: {e}")))?;
         source.validate()?;
+        if definition.schema_version == 1 && source.has_expressions() {
+            return Err(invalid(
+                "Parameter-driven dimensions require constrained sketch schema 2",
+            ));
+        }
         Ok(source)
     }
+    /// Literal-only new sketches remain schema 1 during the evaluated-UI
+    /// transition. `replace` preserves schema 2 after its first introduction,
+    /// including when the final expression is later replaced by a literal.
     pub fn definition(&self) -> Result<Definition, DocumentError> {
         self.validate()?;
         Ok(Definition {
             type_id: TYPE.into(),
-            schema_version: 1,
+            schema_version: if self.has_expressions() { 2 } else { 1 },
             data: serde_json::to_value(self).map_err(|e| invalid(e.to_string()))?,
         })
     }
@@ -303,19 +321,23 @@ impl Source {
                 return Err(invalid("Only dimensions can be reference-only"));
             }
             if let Some(d) = dimension {
-                let unit =
-                    Unit::parse(&d.unit).ok_or_else(|| invalid("Unknown sketch dimension unit"))?;
+                let unit = Unit::parse(d.unit())
+                    .ok_or_else(|| invalid("Unknown sketch dimension unit"))?;
                 let expected = if angle {
                     Unit::Degree
                 } else {
                     Unit::Millimeter
                 };
-                let value = d.value * unit.scale() / expected.scale();
-                if unit.dimension() != expected.dimension()
-                    || !value.is_finite()
-                    || value.abs() > 1e9
-                {
+                if unit.dimension() != expected.dimension() {
                     return Err(invalid("Invalid sketch dimension units/value"));
+                }
+                match d {
+                    Dimension::Literal { .. } => {
+                        d.value_in(expected, None).map_err(invalid)?;
+                    }
+                    Dimension::Expression { expression } => {
+                        expression.validate().map_err(|e| invalid(e.to_string()))?
+                    }
                 }
             }
         }
@@ -325,7 +347,7 @@ impl Source {
         document: &Document,
         id: EntityId,
     ) -> Result<(Self, Frame, EntityId), DocumentError> {
-        Self::read_impl(document, id, None)
+        Self::read_impl(document, id, None, false)
     }
     pub fn read_evaluated(
         document: &Document,
@@ -333,12 +355,23 @@ impl Source {
         revision: u64,
         report: &crate::references::ReferenceReport,
     ) -> Result<(Self, Frame, EntityId), DocumentError> {
-        Self::read_impl(document, id, Some((revision, report)))
+        Self::read_impl(document, id, Some((revision, report)), false)
+    }
+    /// Canonical source plus a guarded local plane for a numerical evaluator.
+    /// Callers must solve dimensions before displaying or manufacturing v2 data.
+    pub fn read_for_evaluation(
+        document: &Document,
+        id: EntityId,
+        revision: u64,
+        report: Option<&crate::references::ReferenceReport>,
+    ) -> Result<(Self, Frame, EntityId), DocumentError> {
+        Self::read_impl(document, id, report.map(|r| (revision, r)), true)
     }
     fn read_impl(
         document: &Document,
         id: EntityId,
         evaluated: Option<(u64, &crate::references::ReferenceReport)>,
+        allow_semantic: bool,
     ) -> Result<(Self, Frame, EntityId), DocumentError> {
         let entity = document
             .get(id)
@@ -350,6 +383,11 @@ impl Source {
             return Err(invalid("Select a sketch"));
         };
         let source = Self::from_definition(definition)?;
+        if definition.schema_version == 2 && !allow_semantic {
+            return Err(invalid(
+                "Constrained sketch schema 2 requires an EvaluatedSketch; raw authored geometry is unavailable",
+            ));
+        }
         let Some(EntityData::Plane { normal, .. }) = document.get(*plane).map(|e| &e.data) else {
             return Err(invalid("Sketch plane is missing"));
         };
@@ -368,21 +406,80 @@ impl Source {
             .get(id)
             .ok_or_else(|| invalid("Sketch is missing"))?
             .clone();
-        let EntityData::Sketch { definition, .. } = &mut entity.data else {
+        let EntityData::Sketch {
+            definition, inputs, ..
+        } = &mut entity.data
+        else {
             return Err(invalid("Select a sketch"));
         };
+        let previous_version = definition.schema_version;
         *definition = self.definition()?;
+        if previous_version == 2 {
+            definition.schema_version = 2;
+        }
+        inputs.retain(|link| !link.role.starts_with(DIMENSION_LINK_PREFIX));
+        inputs.extend(self.dimension_links());
         Ok(vec![Mutation::Replace(entity)])
+    }
+    pub fn has_expressions(&self) -> bool {
+        self.sketch
+            .constraints
+            .iter()
+            .any(|c| c.kind.dimension().is_some_and(|d| d.expression().is_some()))
+    }
+    pub fn dimension_links(&self) -> Vec<Link> {
+        self.sketch
+            .constraints
+            .iter()
+            .flat_map(|c| {
+                c.kind
+                    .dimension()
+                    .and_then(Dimension::expression)
+                    .into_iter()
+                    .flat_map(move |e| {
+                        e.bindings.iter().map(move |b| {
+                            Link::new(
+                                b.target,
+                                format!("{DIMENSION_LINK_PREFIX}{}/{}", c.id, b.alias),
+                            )
+                        })
+                    })
+            })
+            .collect()
     }
 }
 pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     for entity in document.entities() {
         if let EntityData::Sketch {
-            plane, definition, ..
+            plane,
+            definition,
+            inputs,
         } = &entity.data
             && definition.type_id == TYPE
         {
             let source = Source::from_definition(definition)?;
+            let expected = source.dimension_links();
+            let actual: Vec<_> = inputs
+                .iter()
+                .filter(|l| l.role.starts_with(DIMENSION_LINK_PREFIX))
+                .cloned()
+                .collect();
+            if actual.len() != expected.len() || expected.iter().any(|link| !actual.contains(link))
+            {
+                return Err(invalid(
+                    "Sketch expression bindings and canonical dependency links disagree",
+                ));
+            }
+            for link in expected {
+                if document
+                    .get(link.target)
+                    .is_some_and(|e| !matches!(e.data, EntityData::Parameter { .. }))
+                {
+                    return Err(invalid(
+                        "Sketch expression binding targets a non-parameter entity",
+                    ));
+                }
+            }
             if let Some(EntityData::Plane { normal, .. }) = document.get(*plane).map(|e| &e.data)
                 && sketch::dot(source.u, *normal).abs() > 1e-9
             {

@@ -2,7 +2,7 @@
 use multicad_core::{
     constraint_sketch::{Axis, ConstraintKind as Kind, CurveKind, Dimension, Sketch},
     document::EntityId,
-    parameters::Unit,
+    parameters::{EvaluatedParameters, Unit},
 };
 use sketch_solver::{Along, Constraint, Pair, Source, Status};
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,13 +61,14 @@ pub struct Evaluation {
     pub measurements: BTreeMap<EntityId, Measurement>,
 }
 
-struct Adapter {
+struct Adapter<'a> {
     solver: sketch_solver::Sketch,
     entities: BTreeMap<EntityId, sketch_solver::EntityId>,
     source_entities: Vec<EntityId>,
     source_constraints: Vec<EntityId>,
+    parameters: Option<&'a EvaluatedParameters>,
 }
-impl Adapter {
+impl Adapter<'_> {
     fn entity(&self, id: EntityId) -> Result<sketch_solver::EntityId, InputError> {
         self.entities
             .get(&id)
@@ -107,7 +108,7 @@ impl Adapter {
             } => Constraint::Distance {
                 a: e(*a)?,
                 b: e(*b)?,
-                value: dimension_value(dimension, Unit::Millimeter)?,
+                value: dimension_value(dimension, Unit::Millimeter, self.parameters)?,
                 along: match axis {
                     Axis::Direct => Along::Direct,
                     Axis::X => Along::X,
@@ -116,15 +117,15 @@ impl Adapter {
             },
             Kind::Length { line, dimension } => Constraint::Length {
                 line: e(*line)?,
-                value: dimension_value(dimension, Unit::Millimeter)?,
+                value: dimension_value(dimension, Unit::Millimeter, self.parameters)?,
             },
             Kind::Radius { curve, dimension } => Constraint::Radius {
                 curve: e(*curve)?,
-                value: dimension_value(dimension, Unit::Millimeter)?,
+                value: dimension_value(dimension, Unit::Millimeter, self.parameters)?,
             },
             Kind::Diameter { curve, dimension } => Constraint::Diameter {
                 curve: e(*curve)?,
-                value: dimension_value(dimension, Unit::Millimeter)?,
+                value: dimension_value(dimension, Unit::Millimeter, self.parameters)?,
             },
             Kind::Angle {
                 from,
@@ -133,24 +134,17 @@ impl Adapter {
             } => Constraint::Angle {
                 from: e(*from)?,
                 to: e(*to)?,
-                degrees: dimension_value(dimension, Unit::Degree)?,
+                degrees: dimension_value(dimension, Unit::Degree, self.parameters)?,
             },
         })
     }
 }
-fn dimension_value(d: &Dimension, target: Unit) -> Result<f64, InputError> {
-    let unit = Unit::parse(&d.unit).ok_or_else(|| error(None, "Unknown dimension unit"))?;
-    let value = d.value * unit.scale() / target.scale();
-    if unit.dimension() != target.dimension()
-        || !value.is_finite()
-        || value.abs() > COORDINATE_LIMIT_MM
-    {
-        return Err(error(
-            None,
-            "Dimension has incompatible units or exceeds the finite value limit",
-        ));
-    }
-    Ok(value)
+fn dimension_value(
+    d: &Dimension,
+    target: Unit,
+    parameters: Option<&EvaluatedParameters>,
+) -> Result<f64, InputError> {
+    d.value_in(target, parameters).map_err(|e| error(None, e))
 }
 fn dimension(kind: &Kind) -> Option<&Dimension> {
     match kind {
@@ -170,6 +164,20 @@ pub fn evaluate(source: &Sketch) -> Result<Evaluation, InputError> {
 }
 pub fn evaluate_with(
     source: &Sketch,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Evaluation, InputError> {
+    evaluate_context(source, None, interrupt)
+}
+pub fn evaluate_with_parameters(
+    source: &Sketch,
+    parameters: &EvaluatedParameters,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Evaluation, InputError> {
+    evaluate_context(source, Some(parameters), interrupt)
+}
+fn evaluate_context(
+    source: &Sketch,
+    parameters: Option<&EvaluatedParameters>,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Evaluation, InputError> {
     if source.points.len() > MAX_UNKNOWNS / 2
@@ -195,6 +203,7 @@ pub fn evaluate_with(
         entities: BTreeMap::new(),
         source_entities: vec![],
         source_constraints: vec![],
+        parameters,
     };
     for p in &source.points {
         if p.position_mm
@@ -357,13 +366,13 @@ pub fn evaluate_with(
         .filter(|c| dimension(&c.kind).is_some())
         .map(|c| {
             let d = dimension(&c.kind).expect("filtered dimensions");
-            let unit = Unit::parse(&d.unit).ok_or_else(|| error(Some(c.id), "Unknown unit"))?;
+            let unit = Unit::parse(d.unit()).ok_or_else(|| error(Some(c.id), "Unknown unit"))?;
             let (value, base) = measure(&c.kind, &a, &sol)?;
             Ok((
                 c.id,
                 Measurement {
                     value: value * base.scale() / unit.scale(),
-                    unit: d.unit.clone(),
+                    unit: d.unit().into(),
                 },
             ))
         })

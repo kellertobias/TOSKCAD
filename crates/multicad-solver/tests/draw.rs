@@ -141,7 +141,7 @@ fn drawing_conflicts_retain_solver_diagnostics_without_a_commit_preview() {
     for value in [40., 41.] {
         source.add_constraint(ConstraintKind::Length {
             line,
-            dimension: Dimension {
+            dimension: Dimension::Literal {
                 value,
                 unit: "mm".into(),
             },

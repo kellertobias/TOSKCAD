@@ -46,7 +46,7 @@ fn curve(s: &mut Source, kind: CurveKind) -> EntityId {
     id
 }
 fn dim(value: f64, unit: &str) -> Dimension {
-    Dimension {
+    Dimension::Literal {
         value,
         unit: unit.into(),
     }

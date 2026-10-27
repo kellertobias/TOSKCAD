@@ -36,13 +36,72 @@ pub fn prepare_draw(
             message: e.to_string(),
         })
     };
-    let (source, _, _) = match report {
-        Some(report) => {
-            Source::read_evaluated(session.document(), sketch, expected_revision, report)
-        }
-        None => Source::read(session.document(), sketch),
+    let (source, _, _) =
+        Source::read_for_evaluation(session.document(), sketch, expected_revision, report)
+            .map_err(input)?;
+    let semantic = matches!(&session.document().get(sketch).expect("read sketch").data,multicad_core::document::EntityData::Sketch {definition,..} if definition.schema_version==2);
+    if semantic {
+        let evaluated = crate::evaluate_document_sketch_with_parameters(
+            session.document(),
+            expected_revision,
+            sketch,
+            report,
+            session.parameters(),
+        )
+        .map_err(EditError::Input)?;
+        let solved = evaluated.solved().ok_or_else(|| {
+            EditError::Input(InputError {
+                source: Some(sketch),
+                message: "Resolve the current sketch before drawing".into(),
+            })
+        })?;
+        let drawing_source = Source {
+            u: source.u,
+            sketch: solved.clone(),
+        };
+        let draft = sketch_draw::draft(&drawing_source, request).map_err(input)?;
+        let mut canonical = source.clone();
+        canonical.sketch.points.extend(
+            draft
+                .source
+                .sketch
+                .points
+                .iter()
+                .filter(|p| !source.sketch.points.iter().any(|old| old.id == p.id))
+                .cloned(),
+        );
+        canonical.sketch.curves.extend(
+            draft
+                .source
+                .sketch
+                .curves
+                .iter()
+                .filter(|c| !source.sketch.curves.iter().any(|old| old.id == c.id))
+                .cloned(),
+        );
+        canonical.sketch.constraints.extend(
+            draft
+                .source
+                .sketch
+                .constraints
+                .iter()
+                .filter(|c| !source.sketch.constraints.iter().any(|old| old.id == c.id))
+                .cloned(),
+        );
+        let edit = crate::transaction::prepare_edit_seeded(
+            session,
+            expected_revision,
+            actor,
+            sketch,
+            canonical,
+            report,
+            Some(&draft.source.sketch),
+        )?;
+        return Ok(DrawEdit {
+            edit,
+            created_curves: draft.created_curves,
+        });
     }
-    .map_err(input)?;
     let draft = sketch_draw::draft(&source, request).map_err(input)?;
     let edit = prepare_edit(session, expected_revision, actor, sketch, draft.source)?;
     Ok(DrawEdit {

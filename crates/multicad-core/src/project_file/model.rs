@@ -162,7 +162,7 @@ impl CacheKey {
     ) -> Result<Self, String> {
         dependencies.insert(
             "multicad.core.semantics".into(),
-            ContentHash::of(b"document.1;plane.offset.1"),
+            ContentHash::of(b"document.1;plane.offset.1;constrained_sketch.2"),
         );
         Ok(Self {
             source: ContentHash::document(document)?,
@@ -307,6 +307,9 @@ impl ProjectFile {
         let mut required = self.resources.required_capabilities.clone();
         required.insert("core.document.1".into());
         if self.document.entities().any(|e|matches!(&e.data,EntityData::Plane{anchor:Some(link),..} if link.role=="offset_plane")) {required.insert("core.plane.offset.1".into());}
+        if crate::constraint_sketch::source::requires_v2(&self.document) {
+            required.insert(crate::constraint_sketch::source::V2_CAPABILITY.into());
+        }
         required
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -357,5 +360,9 @@ impl ProjectFile {
     }
 }
 pub fn supported_capabilities() -> BTreeSet<String> {
-    BTreeSet::from(["core.document.1".into(), "core.plane.offset.1".into()])
+    BTreeSet::from([
+        "core.document.1".into(),
+        "core.plane.offset.1".into(),
+        crate::constraint_sketch::source::V2_CAPABILITY.into(),
+    ])
 }

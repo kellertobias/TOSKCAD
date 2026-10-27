@@ -3,6 +3,7 @@
 use crate::document::EntityId;
 use serde::{Deserialize, Serialize};
 
+pub mod binding;
 pub mod source;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -44,10 +45,55 @@ pub enum CurveKind {
     },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Dimension {
-    pub value: f64,
-    pub unit: String,
+#[serde(untagged, deny_unknown_fields)]
+pub enum Dimension {
+    Literal {
+        value: f64,
+        unit: String,
+    },
+    Expression {
+        expression: crate::parameters::BoundExpression,
+    },
+}
+impl Dimension {
+    pub fn unit(&self) -> &str {
+        match self {
+            Self::Literal { unit, .. } => unit,
+            Self::Expression { expression } => &expression.unit,
+        }
+    }
+    pub fn expression(&self) -> Option<&crate::parameters::BoundExpression> {
+        match self {
+            Self::Expression { expression } => Some(expression),
+            _ => None,
+        }
+    }
+    pub fn value_in(
+        &self,
+        target: crate::parameters::Unit,
+        parameters: Option<&crate::parameters::EvaluatedParameters>,
+    ) -> Result<f64, String> {
+        let unit =
+            crate::parameters::Unit::parse(self.unit()).ok_or("Unknown sketch dimension unit")?;
+        if unit.dimension() != target.dimension() {
+            return Err("Incompatible sketch dimension units".into());
+        }
+        let value = match self {
+            Self::Literal { value, .. } => *value * unit.scale() / target.scale(),
+            Self::Expression { expression } => expression
+                .evaluate(
+                    parameters
+                        .ok_or("Parameter-driven sketch requires an evaluated parameter context")?,
+                )
+                .map_err(|e| e.to_string())?
+                .in_unit(target)
+                .ok_or("Incompatible expression dimension")?,
+        };
+        if !value.is_finite() || value.abs() > 1e9 {
+            return Err("Sketch dimension result is nonfinite or exceeds limits".into());
+        }
+        Ok(value)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Axis {
@@ -125,6 +171,16 @@ pub enum ConstraintKind {
     },
 }
 impl ConstraintKind {
+    pub fn dimension(&self) -> Option<&Dimension> {
+        match self {
+            Self::Distance { dimension, .. }
+            | Self::Length { dimension, .. }
+            | Self::Radius { dimension, .. }
+            | Self::Diameter { dimension, .. }
+            | Self::Angle { dimension, .. } => Some(dimension),
+            _ => None,
+        }
+    }
     pub fn references(&self) -> Vec<EntityId> {
         match self {
             Self::Fix { point } => vec![*point],

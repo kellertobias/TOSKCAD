@@ -25,7 +25,7 @@ fn solve_preview_commit_undo_reopen_and_attribution_share_one_source() {
     let edge = source.add_rectangle([0., 0.], [39., 60.]).unwrap();
     source.add_constraint(ConstraintKind::Length {
         line: edge,
-        dimension: Dimension {
+        dimension: Dimension::Literal {
             value: 40.,
             unit: "mm".into(),
         },
@@ -84,7 +84,7 @@ fn conflict_returns_no_preview_and_stale_candidates_cannot_commit() {
     for value in [40., 41.] {
         source.add_constraint(ConstraintKind::Length {
             line: edge,
-            dimension: Dimension {
+            dimension: Dimension::Literal {
                 value,
                 unit: "mm".into(),
             },
@@ -130,7 +130,7 @@ fn canonical_boundary_rejects_malformed_source_and_unsupported_versions() {
         unreachable!()
     };
     if let EntityData::Sketch { definition, .. } = &mut entity.data {
-        definition.schema_version = 2;
+        definition.schema_version = 99;
     }
     let before = session.document().clone();
     assert!(

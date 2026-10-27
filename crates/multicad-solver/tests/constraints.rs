@@ -28,7 +28,7 @@ fn constrain(s: &mut Sketch, kind: ConstraintKind) -> EntityId {
     id
 }
 fn dim(value: f64, unit: &str) -> Dimension {
-    Dimension {
+    Dimension::Literal {
         value,
         unit: unit.into(),
     }
@@ -351,12 +351,18 @@ fn malformed_references_units_values_and_identity_are_rejected_without_mutation(
     assert!(evaluate(&bad).is_err());
     let mut bad = s.clone();
     if let ConstraintKind::Length { dimension, .. } = &mut bad.constraints[3].kind {
-        dimension.unit = "deg".into();
+        *dimension = Dimension::Literal {
+            value: 10.,
+            unit: "deg".into(),
+        };
     }
     assert!(evaluate(&bad).is_err());
     let mut bad = s.clone();
     if let ConstraintKind::Length { dimension, .. } = &mut bad.constraints[3].kind {
-        dimension.value = f64::INFINITY;
+        *dimension = Dimension::Literal {
+            value: f64::INFINITY,
+            unit: "mm".into(),
+        };
     }
     assert!(evaluate(&bad).is_err());
     let mut bad = s.clone();
