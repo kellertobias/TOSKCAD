@@ -145,7 +145,7 @@ impl ProfileSelection {
                 for (i, region) in profiles.regions.iter().enumerate() {
                     let intent = region.intent();
                     let selected = self.selected.contains(&intent);
-                    if ui
+                    let response = ui
                         .selectable_label(
                             selected,
                             format!(
@@ -157,13 +157,10 @@ impl ProfileSelection {
                         )
                         .on_hover_text(
                             "Exact closed profile from current solved curves; holes remain cutouts",
-                        )
-                        .clicked()
-                    {
-                        self.choose(
-                            intent,
-                            ui.input(|i| i.modifiers.shift || i.modifiers.command),
                         );
+                    if response.clicked() {
+                        let modifiers = crate::selection_input::click_modifiers(ui, &response);
+                        self.choose(intent, modifiers.shift || modifiers.command);
                         changed = true;
                     }
                 }
@@ -207,6 +204,174 @@ mod tests {
             },
         });
         source
+    }
+    #[test]
+    fn inspector_profile_rows_preserve_release_modifiers_when_keys_are_released_in_the_same_frame()
+    {
+        fn frame(
+            ctx: &egui::Context,
+            selection: &mut ProfileSelection,
+            owner: EntityId,
+            profiles: &Extraction,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(450., 600.))),
+                    focused: true,
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    selection.show(ui, owner, profiles);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        }
+        fn click(
+            ctx: &egui::Context,
+            selection: &mut ProfileSelection,
+            owner: EntityId,
+            profiles: &Extraction,
+            label: &str,
+            modifiers: egui::Modifiers,
+        ) {
+            let output = frame(ctx, selection, owner, profiles, vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Missing Inspector row {label}"));
+            frame(
+                ctx,
+                selection,
+                owner,
+                profiles,
+                vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers,
+                    },
+                ],
+            );
+            frame(
+                ctx,
+                selection,
+                owner,
+                profiles,
+                vec![
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers,
+                    },
+                    egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+                ],
+            );
+        }
+        let source = fixture();
+        let before = source.clone();
+        let profiles = sketch_regions::extract(&source);
+        assert_eq!(profiles.regions.len(), 2);
+        let owner = EntityId::new();
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(|style| style.animation_time = 0.);
+        let mut selection = ProfileSelection::default();
+        click(
+            &ctx,
+            &mut selection,
+            owner,
+            &profiles,
+            "Profiles · 2 closed areas",
+            egui::Modifiers::NONE,
+        );
+        let row = |index: usize| {
+            let region = &profiles.regions[index];
+            format!(
+                "Area {} · {:.2} mm² · {} holes",
+                index + 1,
+                region.area_mm2,
+                region.holes.len()
+            )
+        };
+        let inner = profiles
+            .regions
+            .iter()
+            .position(|r| r.holes.is_empty())
+            .unwrap();
+        let outer = profiles
+            .regions
+            .iter()
+            .position(|r| r.holes.len() == 1)
+            .unwrap();
+        let a = profiles.regions[inner].intent();
+        let b = profiles.regions[outer].intent();
+        click(
+            &ctx,
+            &mut selection,
+            owner,
+            &profiles,
+            &row(inner),
+            egui::Modifiers::NONE,
+        );
+        assert_eq!(selection.selected(), std::slice::from_ref(&a));
+        click(
+            &ctx,
+            &mut selection,
+            owner,
+            &profiles,
+            &row(outer),
+            egui::Modifiers::SHIFT,
+        );
+        assert_eq!(selection.selected(), &[a.clone(), b.clone()]);
+        click(
+            &ctx,
+            &mut selection,
+            owner,
+            &profiles,
+            &row(inner),
+            egui::Modifiers::SHIFT,
+        );
+        assert_eq!(selection.selected(), std::slice::from_ref(&b));
+        click(
+            &ctx,
+            &mut selection,
+            owner,
+            &profiles,
+            &row(inner),
+            egui::Modifiers::COMMAND,
+        );
+        assert_eq!(selection.selected(), &[b.clone(), a.clone()]);
+        click(
+            &ctx,
+            &mut selection,
+            owner,
+            &profiles,
+            &row(outer),
+            egui::Modifiers::COMMAND,
+        );
+        assert_eq!(selection.selected(), std::slice::from_ref(&a));
+        click(
+            &ctx,
+            &mut selection,
+            owner,
+            &profiles,
+            &row(outer),
+            egui::Modifiers::NONE,
+        );
+        assert_eq!(selection.selected(), &[b]);
+        assert_eq!(source, before);
     }
     #[test]
     fn picking_prioritizes_points_and_curves_then_distinct_exact_nested_regions() {
