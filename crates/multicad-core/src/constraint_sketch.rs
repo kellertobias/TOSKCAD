@@ -3,6 +3,8 @@
 use crate::document::EntityId;
 use serde::{Deserialize, Serialize};
 
+pub mod source;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sketch {

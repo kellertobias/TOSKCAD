@@ -295,7 +295,7 @@ impl SketchEditor {
             ui.separator();
             let mut open = None;
             for e in session.document().entities() {
-                if matches!(&e.data, EntityData::Sketch { definition, .. } if definition.type_id == sketch::TYPE) {
+                if matches!(&e.data, EntityData::Sketch { definition, .. } if definition.type_id == sketch::TYPE || definition.type_id == multicad_core::constraint_sketch::source::TYPE) {
                     let response = ui.selectable_label(self.selected == Some(e.id), &e.name);
                     if response.clicked() {
                         if self.selected != Some(e.id) { self.editing = false; self.tool = None; self.first = None; }
@@ -337,6 +337,13 @@ impl SketchEditor {
                                         "Rectangle · {:.2} × {:.2}",
                                         (b[0] - a[0]).abs(),
                                         (b[1] - a[1]).abs()
+                                    ),
+                                    Geometry::Circle { radius_mm, .. } => {
+                                        format!("Circle · R {radius_mm:.2} mm")
+                                    }
+                                    Geometry::Arc { center, a, .. } => format!(
+                                        "Arc · R {:.2} mm",
+                                        (a[0] - center[0]).hypot(a[1] - center[1])
                                     ),
                                 };
                                 if ui

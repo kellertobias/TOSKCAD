@@ -171,6 +171,7 @@ impl Document {
         }
         self.topological_order()?;
         crate::sketch::validate(self)?;
+        crate::constraint_sketch::source::validate(self)?;
         Ok(())
     }
 }

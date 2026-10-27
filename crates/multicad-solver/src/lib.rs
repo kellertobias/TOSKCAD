@@ -2,6 +2,8 @@ use sketch_solver::{Along, Constraint, Pair, Sketch, Solution, Status};
 
 mod adapter;
 pub use adapter::*;
+mod transaction;
+pub use transaction::*;
 
 /// Solve a perturbed rectangle. Solver handles stay private to this adapter.
 pub fn rectangle(width: f64, depth: f64) -> Result<[f64; 2], String> {

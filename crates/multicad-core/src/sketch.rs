@@ -90,11 +90,26 @@ pub enum Geometry {
         a: [f64; 2],
         b: [f64; 2],
     },
+    Circle {
+        id: EntityId,
+        center: [f64; 2],
+        radius_mm: f64,
+    },
+    Arc {
+        id: EntityId,
+        center: [f64; 2],
+        a: [f64; 2],
+        b: [f64; 2],
+        clockwise: bool,
+    },
 }
 impl Geometry {
     pub fn id(&self) -> EntityId {
         match self {
-            Self::Line { id, .. } | Self::Rectangle { id, .. } => *id,
+            Self::Line { id, .. }
+            | Self::Rectangle { id, .. }
+            | Self::Circle { id, .. }
+            | Self::Arc { id, .. } => *id,
         }
     }
     pub fn segments(&self) -> Vec<[[f64; 2]; 2]> {
@@ -105,12 +120,72 @@ impl Geometry {
                 let d = [a[0], b[1]];
                 vec![[a, c], [c, b], [b, d], [d, a]]
             }
+            Self::Circle {
+                center, radius_mm, ..
+            } => arc_segments(center, radius_mm, 0., std::f64::consts::TAU),
+            Self::Arc {
+                center,
+                a,
+                b,
+                clockwise,
+                ..
+            } => {
+                let start = (a[1] - center[1]).atan2(a[0] - center[0]);
+                let end = (b[1] - center[1]).atan2(b[0] - center[0]);
+                let sweep = if clockwise {
+                    -((start - end).rem_euclid(std::f64::consts::TAU))
+                } else {
+                    (end - start).rem_euclid(std::f64::consts::TAU)
+                };
+                arc_segments(
+                    center,
+                    (a[0] - center[0]).hypot(a[1] - center[1]),
+                    start,
+                    sweep,
+                )
+            }
         }
     }
     fn validate(&self) -> Result<(), DocumentError> {
+        if let Self::Circle {
+            id,
+            center,
+            radius_mm,
+        } = self
+        {
+            if id.is_nil()
+                || center.iter().any(|v| !v.is_finite() || v.abs() > 1e9)
+                || !radius_mm.is_finite()
+                || !(1e-7..=1e9).contains(radius_mm)
+            {
+                return Err(invalid("Invalid circle"));
+            }
+            return Ok(());
+        }
+        if let Self::Arc {
+            id, center, a, b, ..
+        } = self
+        {
+            let r = (a[0] - center[0]).hypot(a[1] - center[1]);
+            let s = (b[0] - center[0]).hypot(b[1] - center[1]);
+            if id.is_nil()
+                || center
+                    .iter()
+                    .chain(a)
+                    .chain(b)
+                    .any(|v| !v.is_finite() || v.abs() > 1e9)
+                || r < 1e-7
+                || (r - s).abs() > 1e-7
+                || (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-7
+            {
+                return Err(invalid("Invalid circular arc"));
+            }
+            return Ok(());
+        }
         let (a, b, rectangle) = match self {
             Self::Line { a, b, .. } => (*a, *b, false),
             Self::Rectangle { a, b, .. } => (*a, *b, true),
+            _ => return Err(invalid("Unsupported geometry")),
         };
         if self.id().is_nil()
             || a.into_iter()
@@ -129,6 +204,18 @@ impl Geometry {
         }
         Ok(())
     }
+}
+/// Display tessellation only; source circles/arcs retain their exact parameters.
+fn arc_segments(center: [f64; 2], radius: f64, start: f64, sweep: f64) -> Vec<[[f64; 2]; 2]> {
+    let count = ((sweep.abs() / std::f64::consts::TAU * 96.).ceil() as usize).clamp(2, 96);
+    let point = |i: usize| {
+        let angle = start + sweep * i as f64 / count as f64;
+        [
+            center[0] + radius * angle.cos(),
+            center[1] + radius * angle.sin(),
+        ]
+    };
+    (0..count).map(|i| [point(i), point(i + 1)]).collect()
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -153,6 +240,19 @@ impl Sketch {
         else {
             return Err(invalid("Select a sketch"));
         };
+        if definition.type_id == crate::constraint_sketch::source::TYPE {
+            let (source, frame, plane) =
+                crate::constraint_sketch::source::Source::read(document, id)?;
+            let geometry = source.display_geometry()?;
+            return Ok((
+                Self {
+                    u: source.u,
+                    geometry,
+                },
+                frame,
+                plane,
+            ));
+        }
         if definition.type_id != TYPE || definition.schema_version != 1 {
             return Err(invalid("Unsupported sketch provider or version"));
         }
@@ -269,6 +369,11 @@ fn replace(
         .ok_or_else(|| invalid("Sketch is missing"))?
         .clone();
     if let EntityData::Sketch { definition, .. } = &mut entity.data {
+        if definition.type_id != TYPE {
+            return Err(invalid(
+                "Constrained sketches require the solver transaction API",
+            ));
+        }
         *definition = source.definition()?;
     }
     Ok(vec![Mutation::Replace(entity)])
