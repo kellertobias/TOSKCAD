@@ -1165,7 +1165,20 @@ impl Application {
 impl eframe::App for Application {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
-        crate::native_window::align_title_buttons(_frame, 40.0 * ui.ctx().zoom_factor() as f64);
+        {
+            if let Err(error) = crate::native_window::guard_application_quit(_frame) {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.heading("Native close protection unavailable");
+                    ui.label("MultiCAD cannot protect unsaved documents from macOS Quit. Editing is unavailable until this window can be protected.");
+                    ui.label(error);
+                    if ui.button("Close window").on_hover_text("Close this window without entering the editor").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                return;
+            }
+            crate::native_window::align_title_buttons(_frame, 40.0 * ui.ctx().zoom_factor() as f64);
+        }
         self.show(ui);
     }
 }
