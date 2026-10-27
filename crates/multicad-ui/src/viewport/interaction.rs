@@ -46,6 +46,12 @@ impl Interaction {
         self.action_error = None;
         self.last_query = None;
     }
+    pub fn has_topology_selection(&self) -> bool {
+        self.selected.is_some()
+    }
+    pub fn hovered_instance(&self) -> Option<EntityId> {
+        self.hovered.as_ref().map(|hit| hit.instance)
+    }
     pub fn selected_id(&self) -> Option<EntityId> {
         self.parts
             .first()
@@ -429,6 +435,9 @@ impl Interaction {
                     && (modifiers.command || modifiers.shift || self.filter == PickFilter::Parts)
                 {
                     self.select_part(hit.instance, modifiers.command || modifiers.shift);
+                    // The host captures the actual clicked occurrence even when
+                    // a Parts/modifier click stores a set rather than a face.
+                    self.hovered = Some(hit);
                 } else {
                     self.selected = self.hovered.clone();
                     Arc::make_mut(&mut self.parts).clear();

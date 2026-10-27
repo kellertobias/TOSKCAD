@@ -200,6 +200,15 @@ fn viewport_modifier_click_adds_parts_and_scene_refresh_retains_only_existing_id
                     DisplayStyle::Filled,
                     true,
                 );
+                if response.clicked() {
+                    assert!(interaction.hovered_instance().is_some());
+                    if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
+                        assert_eq!(interaction.hovered_instance(), interaction.range_anchor);
+                        assert!(!interaction.has_topology_selection());
+                    } else {
+                        assert!(interaction.has_topology_selection());
+                    }
+                }
             },
         )
         .drop_without_applying_deltas();
@@ -357,4 +366,22 @@ fn canonical_tree_selection_maps_definition_occurrences_without_mutating_source(
     );
     assert_eq!(session.document(), &before);
     assert_eq!(session.revision(), 0);
+}
+
+#[test]
+fn topology_and_hover_accessors_distinguish_face_hits_from_body_sets() {
+    let (_, scene, ids) = fixture();
+    let mut interaction = Interaction::default();
+    assert!(!interaction.has_topology_selection());
+    assert_eq!(interaction.hovered_instance(), None);
+    let hit = scene
+        .pick_face(Ray::new([10., 6., 100.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    interaction.selected = Some(hit.clone());
+    interaction.hovered = Some(hit);
+    assert!(interaction.has_topology_selection());
+    assert_eq!(interaction.hovered_instance(), Some(ids[0]));
+    interaction.clear();
+    assert!(!interaction.has_topology_selection());
+    assert_eq!(interaction.hovered_instance(), None);
 }
