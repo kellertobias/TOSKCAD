@@ -49,7 +49,9 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
 }
 
 mod sketch_constraints;
+pub mod sketch_context;
 pub mod sketch_editor;
+pub mod sketch_plane;
 
 pub mod theme;
 
