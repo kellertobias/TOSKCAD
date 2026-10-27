@@ -59,6 +59,7 @@ pub struct SketchEditor {
     revision: u64,
     fit_requested: bool,
     constraints: crate::sketch_constraints::ConstraintEditor,
+    solid: crate::viewport::Interaction,
 }
 impl Default for SketchEditor {
     fn default() -> Self {
@@ -87,6 +88,7 @@ impl Default for SketchEditor {
             revision: 0,
             fit_requested: false,
             constraints: Default::default(),
+            solid: Default::default(),
         }
     }
 }
@@ -403,7 +405,18 @@ impl SketchEditor {
         self.message = "Moved sketch in one transaction".into();
         Ok(())
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, session: &mut Session, sketch_mode: bool) {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        sketch_mode: bool,
+        feed: &mut crate::viewport::SceneFeed,
+    ) {
+        let scene = feed
+            .visible()
+            .filter(|s| s.stamp().document == session.document().id())
+            .cloned();
+        let current = feed.is_current(session.document().id(), session.revision());
         if self.revision != session.revision() {
             self.cancel_move();
             self.first = None;
@@ -420,6 +433,7 @@ impl SketchEditor {
         egui::Panel::left("source-tree").default_size(205.).resizable(true).show(ui, |ui| {
             ui.heading("Parts & sketches");
             ui.separator();
+            if let Some(scene)=&scene&&ui.add_enabled_ui(!self.has_pending_edits(),|ui|self.solid.tree(ui,session.document(),scene)).inner {self.selected=None;self.editing=false;self.tool=None;self.first=None;}
             let mut open = None;
             for e in session.document().entities() {
                 if matches!(&e.data, EntityData::Sketch { definition, .. } if definition.type_id == sketch::TYPE || definition.type_id == multicad_core::constraint_sketch::source::TYPE) {
@@ -428,6 +442,7 @@ impl SketchEditor {
                         if self.selected!=Some(e.id) && self.has_pending_edits(){self.message="Apply or discard pending edits before switching sketches".into();continue;}
                         if self.selected != Some(e.id) { self.editing = false; self.tool = None; self.first = None; }
                         self.selected = Some(e.id);
+                        self.solid.clear();
                         self.element = None;
                         self.cancel_move();
                     }
@@ -449,6 +464,9 @@ impl SketchEditor {
                 egui::ScrollArea::vertical()
                     .id_salt("sketch-inspector-content")
                     .show(ui, |ui| {
+                        if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
+                        else if feed.pending() {ui.small("Rebuilding model…");}
+                        self.solid.inspector(ui,session.document());
                         if let Some(id) = self.selected {
                             let view = self
                                 .preview
@@ -587,9 +605,18 @@ impl SketchEditor {
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
-            .show(ui, |ui| self.canvas(ui, session, sketch_mode));
+            .show(ui, |ui| {
+                self.canvas(ui, session, sketch_mode, scene, current)
+            });
     }
-    fn canvas(&mut self, ui: &mut egui::Ui, session: &mut Session, sketch_mode: bool) {
+    fn canvas(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        sketch_mode: bool,
+        scene: Option<std::sync::Arc<crate::viewport::Scene>>,
+        current: bool,
+    ) {
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         if response.dragged_by(egui::PointerButton::Secondary) {
             self.camera.orbit(ui.input(|i| i.pointer.delta()));
@@ -626,6 +653,19 @@ impl SketchEditor {
         ] {
             if let Some(segment) = self.camera.segment([0.; 3], axis, rect) {
                 painter.line_segment(segment, Stroke::new(1., color));
+            }
+        }
+        if let Some(scene) = &scene {
+            self.solid.show(
+                ui,
+                &response,
+                scene.clone(),
+                self.camera,
+                self.style,
+                current && !self.editing && !self.picking && !self.moving,
+            );
+            if self.solid.selected_id().is_some() && !self.editing {
+                self.selected = None;
             }
         }
         if self.picking && sketch_mode {
@@ -703,6 +743,19 @@ impl SketchEditor {
             .or_else(|| self.constraints.preview_document())
             .unwrap_or(session.document());
         let mut points = vec![];
+        if let Some(scene) = &scene
+            && let Some([low, high]) = scene.world_bounds()
+        {
+            for corner in 0..8 {
+                points.push(std::array::from_fn(|i| {
+                    if corner & (1 << i) == 0 {
+                        low[i] as f32
+                    } else {
+                        high[i] as f32
+                    }
+                }));
+            }
+        }
         let affected = self.constraints.affected();
         for e in doc.entities() {
             if let Ok((source, frame, _)) = Sketch::read(doc, e.id) {
@@ -855,6 +908,7 @@ impl SketchEditor {
                         ui.checkbox(&mut snap, "Snap sketch points to spacing");
                     },
                     |ui| {
+                        self.solid.filter_control(ui);
                         let transform = icons::compact_button(
                             ui,
                             Icon::Transform,
@@ -1118,8 +1172,10 @@ mod tests {
         let a = editor.camera.project([20., 20., 0.], rect);
         let b = editor.camera.project([80., 60., 0.], rect);
         let mut frame = |events| {
-            ctx.run_ui(input(events), |ui| editor.canvas(ui, &mut s, true))
-                .drop_without_applying_deltas();
+            ctx.run_ui(input(events), |ui| {
+                editor.canvas(ui, &mut s, true, None, false)
+            })
+            .drop_without_applying_deltas();
         };
         frame(vec![]);
         for p in [Pos2::new(a[0], a[1]), Pos2::new(b[0], b[1])] {
@@ -1157,8 +1213,10 @@ mod tests {
         let start = Pos2::new(end[0], end[1]);
         let finish = start + Vec2::new(30., 0.);
         let mut frame = |events| {
-            ctx.run_ui(input(events), |ui| editor.canvas(ui, &mut session, true))
-                .drop_without_applying_deltas();
+            ctx.run_ui(input(events), |ui| {
+                editor.canvas(ui, &mut session, true, None, false)
+            })
+            .drop_without_applying_deltas();
         };
         frame(vec![]);
         frame(vec![]);
@@ -1192,8 +1250,10 @@ mod tests {
         let p = before.target;
         let initial = before.project(p, rect);
         let mut frame = |events| {
-            ctx.run_ui(input(events), |ui| editor.canvas(ui, &mut session, true))
-                .drop_without_applying_deltas();
+            ctx.run_ui(input(events), |ui| {
+                editor.canvas(ui, &mut session, true, None, false)
+            })
+            .drop_without_applying_deltas();
         };
         frame(vec![]);
         frame(vec![]);

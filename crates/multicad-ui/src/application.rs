@@ -25,6 +25,7 @@ pub struct Project {
     pub editor: ParameterEditor,
     pub sketch: SketchEditor,
     pub path: Option<PathBuf>,
+    pub scene: crate::viewport::SceneFeed,
 }
 impl Project {
     pub fn new(document: Document) -> Result<Self, String> {
@@ -35,6 +36,7 @@ impl Project {
             editor,
             sketch: SketchEditor::default(),
             path: None,
+            scene: Default::default(),
         })
     }
     fn dirty(&self) -> bool {
@@ -83,6 +85,7 @@ pub struct Application {
     shortcut_help: bool,
     focus_search: bool,
     focus_command: bool,
+    scene_backends: Option<crate::viewport::BackendFactory>,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -113,10 +116,17 @@ impl Application {
             shortcut_help: false,
             focus_search: false,
             focus_command: false,
+            scene_backends: None,
         })
     }
     pub fn current(&self) -> &Project {
         &self.projects[self.active]
+    }
+    pub fn set_scene_backends(&mut self, factory: crate::viewport::BackendFactory) {
+        for project in &mut self.projects {
+            project.scene.set_backend(factory());
+        }
+        self.scene_backends = Some(factory);
     }
     pub fn current_mut(&mut self) -> &mut Project {
         &mut self.projects[self.active]
@@ -963,6 +973,22 @@ impl Application {
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if let Some(factory) = &self.scene_backends {
+            for project in &mut self.projects {
+                if !project.scene.has_backend() {
+                    project.scene.set_backend(factory());
+                }
+            }
+        }
+        {
+            let project = self.current_mut();
+            project
+                .scene
+                .tick(project.session.document(), project.session.revision());
+            if project.scene.pending() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+        }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.close_allowed
             && self.projects.iter().any(Project::dirty)
@@ -1005,7 +1031,7 @@ impl Application {
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
                     let before = p.session.revision();
-                    p.sketch.show(ui, &mut p.session, sketch_mode);
+                    p.sketch.show(ui, &mut p.session, sketch_mode, &mut p.scene);
                     if p.session.revision() != before {
                         let label = p
                             .session

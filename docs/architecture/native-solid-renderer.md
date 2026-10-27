@@ -11,7 +11,8 @@ motion updates a 96-byte uniform without uploading meshes or placements again.
 Scene or selection changes rebuild instance groups; unchanged mesh buffers remain
 cached. Assets absent from the new scene are released.
 
-Triangles carry their source face index. Part or current-face selection changes
+Triangles carry their source face index. B-rep edge buffers use separate topology
+tokens and share the same instance placements. Part, face or edge selection changes
 their display color. The shader applies rigid placements, the shared camera
 projection and simple directional lighting. Depth testing selects the nearest
 surface independently of instance order. Perspective clipping uses homogeneous
@@ -43,8 +44,24 @@ hardware.
 
 ## Integration still required
 
-The application canvas does not yet submit document solids to this callback.
-The host must adopt accepted scene results and pass its camera and selection to
-`paint_scene`. B-rep edge and vertex layers, their picking, visual styles, section
-and tool overlays, and the full physical performance scenes remain CAD-57 work.
-Visible reference repair remains unfinished under CAD-55.
+The application canvas consumes a per-project `SceneFeed`. The native composition
+root registers its backend factory through `Application::set_scene_backends`.
+Each backend accepts a source snapshot and request stamp, then polls without
+blocking. Source revisions and retries receive new generations. Obsolete success
+and failure replies cannot replace a newer result. Failed requests retain the
+previous visible scene and expose an explicit Retry action. Only pending work
+requests periodic repaint; an idle scene does not run an animation loop.
+
+The canvas provides filled, wireframe, filled with all edges, and filled with
+visible edges. Its Auto selection filter prefers vertices, then B-rep edges,
+then faces; explicit Parts, Faces, Edges and Vertices filters are also available.
+Visible-edge and filled styles reject occluded edge/point candidates. A fixed
+screen tolerance and mesh display error govern picking visibility; neither alters
+manufacturing geometry or persisted reference resolution. Selected vertices have
+a screen overlay. Part rows are virtualized in the document tree.
+
+The production composition root still needs the canonical feature compiler to
+supply geometry programs. Registering a display backend does not implement solid
+creation commands. Section and tool-preview layers and the full physical
+performance scenes remain CAD-57 work. Visible reference repair remains unfinished
+under CAD-55.

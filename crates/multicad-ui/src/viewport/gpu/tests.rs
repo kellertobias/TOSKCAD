@@ -60,6 +60,28 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             mesh.face_indices,
             solid.topology_snapshot(id, 0).unwrap().elements,
         )
+        .unwrap()
+        .with_topology_display(
+            solid
+                .display_edges(0.1)
+                .unwrap()
+                .into_iter()
+                .map(|e| crate::viewport::DisplayEdge {
+                    index: e.index,
+                    points_mm: e.points_mm,
+                })
+                .collect(),
+            solid
+                .display_vertices()
+                .unwrap()
+                .into_iter()
+                .map(|v| crate::viewport::DisplayPoint {
+                    index: v.index,
+                    position_mm: v.position_mm,
+                })
+                .collect(),
+            0.1,
+        )
         .unwrap(),
     );
     let far = Instance {
@@ -127,10 +149,17 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
         .unwrap()
         .key
         .ordinal;
-    for (perspective, reverse, selection, oblique) in [
-        (false, false, None, false),
-        (true, true, None, false),
-        (false, true, Some(Selection::Part(near.id)), false),
+    let mut images = vec![];
+    for (perspective, reverse, selection, oblique, style) in [
+        (false, false, None, false, DisplayStyle::Filled),
+        (true, true, None, false, DisplayStyle::Filled),
+        (
+            false,
+            true,
+            Some(Selection::Part(near.id)),
+            false,
+            DisplayStyle::Filled,
+        ),
         (
             true,
             false,
@@ -139,8 +168,12 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
                 ordinal: cap,
             }),
             false,
+            DisplayStyle::Filled,
         ),
-        (true, false, None, true),
+        (true, false, None, true, DisplayStyle::Filled),
+        (true, false, None, true, DisplayStyle::AllEdges),
+        (true, false, None, true, DisplayStyle::VisibleEdges),
+        (true, false, None, true, DisplayStyle::Wire),
     ] {
         let parts = if reverse {
             vec![near.clone(), far.clone()]
@@ -163,9 +196,12 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             &device,
             &queue,
             &scene,
-            camera,
-            egui::vec2(256., 256.),
-            selection,
+            View {
+                camera,
+                size: egui::vec2(256., 256.),
+                selection,
+                style,
+            },
         );
         assert_eq!(renderer.meshes.len(), 1);
         assert_eq!(renderer.draws.len(), 1);
@@ -204,7 +240,7 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            renderer.paint(&mut pass);
+            renderer.paint(&mut pass, style);
         }
         encoder.copy_texture_to_buffer(
             color.as_image_copy(),
@@ -237,27 +273,52 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             .unwrap();
         let pixels = readback.slice(..).get_mapped_range().unwrap();
         let center = &pixels[(128 * 256 + 128) * 4..(128 * 256 + 128) * 4 + 4];
-        assert!(
-            u16::from(center[0]) > u16::from(center[2]) * 2,
-            "Front red solid disappeared: {center:?}"
-        );
-        if selection.is_some() {
-            assert!(center[1] > 80, "Selection highlight missing: {center:?}");
+        let coverage = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[0] > 40)
+            .count();
+        if style == DisplayStyle::Wire {
+            assert!(
+                (200..5000).contains(&coverage),
+                "Wireframe coverage is invalid: {coverage}"
+            );
+        } else {
+            assert!(
+                u16::from(center[0]) > u16::from(center[2]) * 2,
+                "Front red solid disappeared: {center:?}"
+            );
+            if selection.is_some() {
+                assert!(center[1] > 80, "Selection highlight missing: {center:?}");
+            }
+            assert!(coverage > 5000, "Viewport is mostly empty");
         }
-        assert!(
-            pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .filter(|p| p[0] > 40)
-                .count()
-                > 5000,
-            "Viewport is mostly empty"
-        );
+        if oblique {
+            images.push((style, pixels.to_vec()));
+        }
         println!(
-            "projection perspective={perspective}, reverse={reverse}, selection={selection:?}, oblique={oblique}, center RGBA={center:?}"
+            "projection perspective={perspective}, reverse={reverse}, selection={selection:?}, oblique={oblique}, style={style:?}, center RGBA={center:?}"
         );
         drop(pixels);
         readback.unmap();
     }
+    let image = |style| &images.iter().find(|(s, _)| *s == style).unwrap().1;
+    let differences = |a: DisplayStyle, b: DisplayStyle| {
+        image(a)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(image(b).as_chunks::<4>().0)
+            .filter(|(a, b)| a != b)
+            .count()
+    };
+    assert!(
+        differences(DisplayStyle::AllEdges, DisplayStyle::VisibleEdges) > 20,
+        "Hidden edges did not change"
+    );
+    assert!(
+        differences(DisplayStyle::Filled, DisplayStyle::VisibleEdges) > 20,
+        "Visible edges did not render"
+    );
 }

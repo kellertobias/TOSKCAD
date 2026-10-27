@@ -123,12 +123,20 @@ impl Camera {
     }
     /// Clip source segments before perspective division so geometry behind the
     /// eye never folds across the viewport.
-    pub fn segment(
+    pub fn segment(&self, a: [f64; 3], b: [f64; 3], rect: Rect) -> Option<[eframe::egui::Pos2; 2]> {
+        self.clip_segment(a, b, rect).map(|points| {
+            points.map(|p| {
+                let p = self.project(p.map(|v| v as f32), rect);
+                eframe::egui::Pos2::new(p[0], p[1])
+            })
+        })
+    }
+    pub fn clip_segment(
         &self,
         mut a: [f64; 3],
         mut b: [f64; 3],
         rect: Rect,
-    ) -> Option<[eframe::egui::Pos2; 2]> {
+    ) -> Option<[[f64; 3]; 2]> {
         let depth = |p: [f64; 3]| self.project(p.map(|v| v as f32), rect)[2];
         let za = depth(a);
         let zb = depth(b);
@@ -147,10 +155,7 @@ impl Camera {
                 }
             }
         }
-        Some([a, b].map(|p| {
-            let p = self.project(p.map(|v| v as f32), rect);
-            eframe::egui::Pos2::new(p[0], p[1])
-        }))
+        Some([a, b])
     }
     pub fn fit(&mut self, points: &[[f32; 3]], rect: Rect) {
         if points.is_empty() {

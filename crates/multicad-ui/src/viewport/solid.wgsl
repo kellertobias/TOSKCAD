@@ -11,6 +11,7 @@ struct Vertex {
 struct Fragment {
     @builtin(position) position: vec4<f32>, @location(0) world: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) emphasis: u32,
 }
 @vertex fn vertex(v: Vertex) -> Fragment {
     let local = vec4(v.position, 1.0);
@@ -27,10 +28,17 @@ struct Fragment {
     }
     var out: Fragment;
     out.position = vec4(x, y, depth, w);
+    if v.face >= 0x10000000u {out.position.z -= 0.000002 * w;}
     out.world = world;
     out.color = v.color;
-    if v.selection.y == 1u || v.selection.x == v.face {out.color = vec4(0.95,0.65,0.18,1.0);}
+    out.emphasis = 0u;
+    if v.selection.y == 1u || v.selection.x == v.face {out.color = vec4(0.95,0.65,0.18,1.0);out.emphasis=1u;}
     return out;
+}
+@fragment fn line_fragment(v:Fragment)->@location(0) vec4<f32> {
+    if v.emphasis==1u {return vec4(0.95,0.65,0.18,1.0);}
+    if camera.clip.w>0.5 {return vec4(0.53,0.66,0.79,1.0);}
+    return vec4(0.07,0.1,0.15,1.0);
 }
 @fragment fn fragment(v: Fragment) -> @location(0) vec4<f32> {
     let normal = normalize(cross(dpdx(v.world),dpdy(v.world)));

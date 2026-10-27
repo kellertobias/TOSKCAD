@@ -19,6 +19,28 @@ fn geometry(solid: &Solid, id: EntityId) -> Arc<Geometry> {
             mesh.face_indices,
             solid.topology_snapshot(id, 0).unwrap().elements,
         )
+        .unwrap()
+        .with_topology_display(
+            solid
+                .display_edges(0.1)
+                .unwrap()
+                .into_iter()
+                .map(|e| DisplayEdge {
+                    index: e.index,
+                    points_mm: e.points_mm,
+                })
+                .collect(),
+            solid
+                .display_vertices()
+                .unwrap()
+                .into_iter()
+                .map(|v| DisplayPoint {
+                    index: v.index,
+                    position_mm: v.position_mm,
+                })
+                .collect(),
+            0.1,
+        )
         .unwrap(),
     )
 }
@@ -257,4 +279,129 @@ fn malformed_meshes_placements_and_rays_fail_and_unnamed_faces_remain_body_only(
     assert_eq!(hit.instance, part.id);
     assert!(hit.intent.is_none());
     assert!(Scene::new(stamp(), vec![], vec![part]).is_err());
+}
+#[test]
+fn screen_picking_uses_real_vertices_edges_and_faces_with_occlusion() {
+    let geometry = box_geometry();
+    let far = instance(&geometry, [0.; 3]);
+    let near = instance(&geometry, [-10., -10., 30.]);
+    let scene = Scene::new(stamp(), vec![geometry], vec![far.clone(), near.clone()]).unwrap();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.));
+    let camera = Camera {
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        scale: 3.,
+        target: [40., 20., 20.],
+        perspective: false,
+    };
+    let screen = |p| {
+        let p = camera.project(p, rect);
+        Pos2::new(p[0], p[1])
+    };
+    let corner = screen([0., 0., 18.]);
+    assert!(
+        scene
+            .pick_screen(camera, rect, corner, PickFilter::Vertices, false)
+            .is_none()
+    );
+    let hidden = scene
+        .pick_screen(camera, rect, corner, PickFilter::Vertices, true)
+        .unwrap();
+    assert_eq!(hidden.instance, far.id);
+    assert_eq!(hidden.key.kind, TopologyKind::Vertex);
+    assert!(hidden.intent.is_some());
+    let automatic = scene
+        .pick_screen(camera, rect, corner, PickFilter::Auto, false)
+        .unwrap();
+    assert_eq!(automatic.instance, near.id);
+    assert_eq!(automatic.key.kind, TopologyKind::Face);
+    let vertex = scene
+        .pick_screen(
+            camera,
+            rect,
+            screen([-10., -10., 48.]) + Vec2::new(2., 2.),
+            PickFilter::Auto,
+            false,
+        )
+        .unwrap();
+    assert_eq!(vertex.instance, near.id);
+    assert_eq!(vertex.key.kind, TopologyKind::Vertex);
+    let edge = scene
+        .pick_screen(
+            camera,
+            rect,
+            screen([30., -10., 48.]),
+            PickFilter::Auto,
+            false,
+        )
+        .unwrap();
+    assert_eq!(edge.instance, near.id);
+    assert_eq!(edge.key.kind, TopologyKind::Edge);
+    assert!(edge.intent.is_some());
+    assert!(
+        matches!(resolve(edge.intent.as_ref().unwrap(),&scene.topology_snapshot(near.id).unwrap(),0),Resolution::Resolved {key,..} if key==edge.key)
+    );
+}
+#[test]
+fn perspective_edge_hit_reprojects_to_the_pointer_and_display_data_is_validated() {
+    let geometry = box_geometry();
+    let part = instance(&geometry, [0.; 3]);
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.));
+    let camera = Camera {
+        yaw: -0.6,
+        pitch: 0.6,
+        scale: 3.,
+        target: [50., 30., 18.],
+        perspective: true,
+    };
+    let scene = Scene::new(stamp(), vec![geometry.clone()], vec![part]).unwrap();
+    for edge in geometry.edges() {
+        let a = edge.points_mm[0];
+        let b = edge.points_mm[1];
+        let point = std::array::from_fn(|i| (a[i] * 0.73 + b[i] * 0.27) as f32);
+        let screen = camera.project(point, rect);
+        let pointer = Pos2::new(screen[0], screen[1]);
+        let hit = scene
+            .pick_screen(camera, rect, pointer, PickFilter::Edges, true)
+            .unwrap();
+        let projected = camera.project(hit.point_mm.map(|v| v as f32), rect);
+        assert!((Pos2::new(projected[0], projected[1]) - pointer).length() < 0.01);
+    }
+    let id = EntityId::new();
+    let solid = Solid::box_named([10.; 3], id, Default::default()).unwrap();
+    let mesh = solid.mesh(Default::default()).unwrap();
+    let fresh = || {
+        Geometry::new(
+            id,
+            mesh.vertices.as_chunks::<3>().0.to_vec(),
+            mesh.indices.clone(),
+            mesh.face_indices.clone(),
+            solid.topology_snapshot(id, 0).unwrap().elements,
+        )
+        .unwrap()
+    };
+    assert!(
+        fresh()
+            .with_topology_display(
+                vec![DisplayEdge {
+                    index: 999,
+                    points_mm: vec![[0.; 3], [1.; 3]]
+                }],
+                vec![],
+                0.1
+            )
+            .is_err()
+    );
+    assert!(
+        fresh()
+            .with_topology_display(
+                vec![],
+                vec![DisplayPoint {
+                    index: 0,
+                    position_mm: [f64::NAN; 3]
+                }],
+                0.1
+            )
+            .is_err()
+    );
 }

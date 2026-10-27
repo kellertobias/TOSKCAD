@@ -113,7 +113,7 @@ impl Transform {
             ]
         })
     }
-    fn inverse_ray(self, ray: Ray) -> Ray {
+    pub(super) fn inverse_ray(self, ray: Ray) -> Ray {
         let transpose =
             |v: Point| std::array::from_fn(|i| (0..3).map(|j| self.rotation[j][i] * v[j]).sum());
         Ray {
@@ -178,6 +178,19 @@ pub struct Geometry {
     topology: Vec<TopologyElement>,
     nodes: Vec<Node>,
     order: Vec<usize>,
+    edges: Vec<DisplayEdge>,
+    points: Vec<DisplayPoint>,
+    display_error_mm: f64,
+}
+#[derive(Clone, Debug)]
+pub struct DisplayEdge {
+    pub index: u32,
+    pub points_mm: Vec<Point>,
+}
+#[derive(Clone, Debug)]
+pub struct DisplayPoint {
+    pub index: u32,
+    pub position_mm: Point,
 }
 impl Geometry {
     pub fn new(
@@ -227,6 +240,9 @@ impl Geometry {
             triangle_faces,
             topology,
             nodes: vec![],
+            edges: vec![],
+            points: vec![],
+            display_error_mm: 0.1,
         };
         result.build(0..result.order.len());
         Ok(result)
@@ -242,6 +258,70 @@ impl Geometry {
     }
     pub fn triangle_faces(&self) -> &[u32] {
         &self.triangle_faces
+    }
+    pub fn with_topology_display(
+        mut self,
+        edges: Vec<DisplayEdge>,
+        points: Vec<DisplayPoint>,
+        error_mm: f64,
+    ) -> Result<Self, String> {
+        let mut ids = BTreeSet::new();
+        let mut count = 0usize;
+        let valid_point = |p: Point| p.iter().all(|v| v.is_finite() && v.abs() <= 1e7);
+        for edge in &edges {
+            count = count.saturating_add(edge.points_mm.len());
+            if edge.index >= 100_000
+                || !ids.insert((TopologyKind::Edge, edge.index))
+                || edge.points_mm.len() < 2
+                || edge.points_mm.iter().any(|p| !valid_point(*p))
+            {
+                return Err("Invalid B-rep display edge".into());
+            }
+        }
+        for point in &points {
+            if point.index >= 100_000
+                || !ids.insert((TopologyKind::Vertex, point.index))
+                || !valid_point(point.position_mm)
+            {
+                return Err("Invalid B-rep display point".into());
+            }
+        }
+        let keys: BTreeSet<_> = self
+            .topology
+            .iter()
+            .map(|e| (e.key.kind, e.key.ordinal))
+            .collect();
+        if count > 1_000_000
+            || points.len() > 100_000
+            || !error_mm.is_finite()
+            || !(0.001..=1e7).contains(&error_mm)
+            || (!keys.is_empty() && !ids.is_subset(&keys))
+        {
+            return Err("Invalid display topology association or budget".into());
+        }
+        self.edges = edges;
+        self.points = points;
+        self.display_error_mm = error_mm;
+        Ok(self)
+    }
+    pub fn edges(&self) -> &[DisplayEdge] {
+        &self.edges
+    }
+    pub fn points(&self) -> &[DisplayPoint] {
+        &self.points
+    }
+    pub(super) fn near_ray(&self, ray: Ray, radius: f64) -> bool {
+        let b = self.nodes[0].bounds;
+        let r = radius + self.display_error_mm;
+        Bounds {
+            min: b.min.map(|v| v - r),
+            max: b.max.map(|v| v + r),
+        }
+        .hit(ray, f64::INFINITY)
+        .is_some()
+    }
+    pub(super) fn display_error_mm(&self) -> f64 {
+        self.display_error_mm
     }
     fn triangle(&self, index: usize) -> [Point; 3] {
         std::array::from_fn(|i| self.vertices[self.indices[index * 3 + i] as usize])
@@ -327,13 +407,19 @@ impl Geometry {
         }
         best
     }
-    /// Mesh/index/BVH payload only; excludes allocations, provenance and GPU memory.
+    /// Mesh/BVH/edge/point payload; excludes allocations, provenance and GPU memory.
     pub fn storage_bytes(&self) -> usize {
         self.vertices.len() * std::mem::size_of::<Point>()
             + self.indices.len() * 4
             + self.triangle_faces.len() * 4
             + self.order.len() * std::mem::size_of::<usize>()
             + self.nodes.len() * std::mem::size_of::<Node>()
+            + self
+                .edges
+                .iter()
+                .map(|e| e.points_mm.len() * std::mem::size_of::<Point>())
+                .sum::<usize>()
+            + self.points.len() * std::mem::size_of::<DisplayPoint>()
     }
 }
 #[derive(Clone)]
@@ -355,6 +441,7 @@ pub struct Scene {
     instances: Vec<Instance>,
     world_bounds: Option<[Point; 2]>,
 }
+#[derive(Clone)]
 pub struct Hit {
     pub instance: EntityId,
     pub geometry: EntityId,
@@ -363,6 +450,7 @@ pub struct Hit {
     pub point_mm: Point,
     /// None means body selection only; an unnamed face cannot become source intent.
     pub intent: Option<GeometryIntent>,
+    pub stamp: SceneStamp,
 }
 impl Scene {
     pub fn new(
@@ -468,6 +556,26 @@ impl Scene {
             distance_mm: distance,
             point_mm: ray.point(distance),
             intent,
+            stamp: self.stamp,
+        })
+    }
+    pub(super) fn make_hit(
+        &self,
+        instance: EntityId,
+        key: TopologyKey,
+        point_mm: Point,
+        distance_mm: f64,
+    ) -> Option<Hit> {
+        let part = self.instances.iter().find(|i| i.id == instance)?;
+        let snapshot = self.topology_snapshot(instance)?;
+        Some(Hit {
+            instance,
+            geometry: part.geometry,
+            key,
+            point_mm,
+            distance_mm,
+            intent: GeometryIntent::capture(&snapshot, key).ok(),
+            stamp: self.stamp,
         })
     }
     pub fn storage_bytes(&self) -> usize {

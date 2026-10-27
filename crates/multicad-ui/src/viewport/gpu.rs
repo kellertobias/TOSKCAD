@@ -1,6 +1,6 @@
 //! Cached instanced solid rendering in eframe's depth-enabled WGPU pass.
 use super::{Geometry, Scene};
-use crate::camera::Camera;
+use crate::{camera::Camera, navigation::DisplayStyle};
 use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
@@ -12,11 +12,15 @@ use std::{collections::BTreeMap, sync::Arc};
 pub enum Selection {
     Part(EntityId),
     Face { instance: EntityId, ordinal: u32 },
+    Edge { instance: EntityId, ordinal: u32 },
+    Vertex { instance: EntityId, ordinal: u32 },
 }
 struct Mesh {
     source: Arc<Geometry>,
     vertices: wgpu::Buffer,
     count: u32,
+    edges: Option<wgpu::Buffer>,
+    edge_count: u32,
 }
 struct Draw {
     geometry: EntityId,
@@ -24,7 +28,7 @@ struct Draw {
     count: u32,
 }
 struct Renderer {
-    pipeline: wgpu::RenderPipeline,
+    pipelines: [wgpu::RenderPipeline; 3],
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     meshes: BTreeMap<EntityId, Mesh>,
@@ -58,7 +62,7 @@ impl Renderer {
             label: Some("CAD camera layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -80,16 +84,41 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:Some("CAD depth-tested instanced solids"),layout:Some(&pipeline_layout),
+        let pipeline = |topology, entry, compare, write, bias| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:Some("CAD instanced geometry"),layout:Some(&pipeline_layout),
             vertex:wgpu::VertexState {module:&shader,entry_point:Some("vertex"),compilation_options:Default::default(),buffers:&[
                 Some(wgpu::VertexBufferLayout {array_stride:16,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32]}),
                 Some(wgpu::VertexBufferLayout {array_stride:80,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![2=>Float32x4,3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Uint32x4]})]},
-            primitive:Default::default(),depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::LessEqual),stencil:Default::default(),bias:Default::default()}),
-            multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some("fragment"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:None,
-        });
+            primitive:wgpu::PrimitiveState {topology,..Default::default()},depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(write),depth_compare:Some(compare),stencil:Default::default(),bias}),
+            multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(entry),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:None,
+        })
+        };
+        let pipelines = [
+            pipeline(
+                wgpu::PrimitiveTopology::TriangleList,
+                "fragment",
+                wgpu::CompareFunction::LessEqual,
+                true,
+                Default::default(),
+            ),
+            pipeline(
+                wgpu::PrimitiveTopology::LineList,
+                "line_fragment",
+                wgpu::CompareFunction::LessEqual,
+                false,
+                Default::default(),
+            ),
+            pipeline(
+                wgpu::PrimitiveTopology::LineList,
+                "line_fragment",
+                wgpu::CompareFunction::Always,
+                false,
+                Default::default(),
+            ),
+        ];
         Self {
-            pipeline,
+            pipelines,
             uniform,
             bind_group,
             meshes: BTreeMap::new(),
@@ -103,10 +132,14 @@ impl Renderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: &Arc<Scene>,
-        camera: Camera,
-        size: egui::Vec2,
-        selection: Option<Selection>,
+        view: View,
     ) {
+        let View {
+            camera,
+            size,
+            selection,
+            style,
+        } = view;
         if !self.scene.as_ref().is_some_and(|s| Arc::ptr_eq(s, scene))
             || self.selection != selection
         {
@@ -141,12 +174,31 @@ impl Renderer {
                     contents: &bytes,
                     usage: wgpu::BufferUsages::VERTEX,
                 });
+                let mut edge_bytes = vec![];
+                for edge in geometry.edges() {
+                    for segment in edge.points_mm.windows(2) {
+                        for p in segment {
+                            floats(&mut edge_bytes, p.map(|v| v as f32));
+                            words(&mut edge_bytes, [0x1000_0000 + edge.index]);
+                        }
+                    }
+                }
+                let edge_count = (edge_bytes.len() / 16) as u32;
+                let edges = (!edge_bytes.is_empty()).then(|| {
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Cached B-rep edges"),
+                        contents: &edge_bytes,
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+                });
                 self.meshes.insert(
                     *id,
                     Mesh {
                         source: geometry.clone(),
                         vertices: buffer,
                         count: geometry.indices().len() as u32,
+                        edges,
+                        edge_count,
                     },
                 );
             }
@@ -168,6 +220,14 @@ impl Renderer {
                             instance: id,
                             ordinal,
                         }) if id == instance.id => (ordinal, 0),
+                        Some(Selection::Edge {
+                            instance: id,
+                            ordinal,
+                        }) if id == instance.id => (0x1000_0000 + ordinal, 0),
+                        Some(Selection::Vertex {
+                            instance: id,
+                            ordinal,
+                        }) if id == instance.id => (0x2000_0000 + ordinal, 0),
                         _ => (u32::MAX, 0),
                     };
                     words(&mut bytes, [face, part, 0, 0]);
@@ -217,17 +277,44 @@ impl Renderer {
             &mut bytes,
             [size.x.max(1.), size.y.max(1.), camera.scale, distance],
         );
-        floats(&mut bytes, [0.1, far, f32::from(camera.perspective), 0.]);
+        floats(
+            &mut bytes,
+            [
+                0.1,
+                far,
+                f32::from(camera.perspective),
+                f32::from(style == DisplayStyle::Wire),
+            ],
+        );
         queue.write_buffer(&self.uniform, 0, &bytes);
     }
-    fn paint(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
+    fn paint(&self, pass: &mut wgpu::RenderPass<'_>, style: DisplayStyle) {
         pass.set_bind_group(0, &self.bind_group, &[]);
-        for draw in &self.draws {
-            let mesh = &self.meshes[&draw.geometry];
-            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            pass.set_vertex_buffer(1, draw.instances.slice(..));
-            pass.draw(0..mesh.count, 0..draw.count);
+        if style != DisplayStyle::Wire {
+            pass.set_pipeline(&self.pipelines[0]);
+            for draw in &self.draws {
+                let mesh = &self.meshes[&draw.geometry];
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, draw.instances.slice(..));
+                pass.draw(0..mesh.count, 0..draw.count);
+            }
+        }
+        if style != DisplayStyle::Filled {
+            pass.set_pipeline(
+                &self.pipelines[if style == DisplayStyle::VisibleEdges {
+                    1
+                } else {
+                    2
+                }],
+            );
+            for draw in &self.draws {
+                let mesh = &self.meshes[&draw.geometry];
+                if let Some(edges) = &mesh.edges {
+                    pass.set_vertex_buffer(0, edges.slice(..));
+                    pass.set_vertex_buffer(1, draw.instances.slice(..));
+                    pass.draw(0..mesh.edge_count, 0..draw.count);
+                }
+            }
         }
     }
 }
@@ -238,11 +325,16 @@ pub(crate) fn install(state: &egui_wgpu::RenderState) {
         .callback_resources
         .insert(Renderer::new(&state.device, state.target_format));
 }
-struct Callback {
-    scene: Arc<Scene>,
+#[derive(Clone, Copy)]
+struct View {
     camera: Camera,
     size: egui::Vec2,
     selection: Option<Selection>,
+    style: DisplayStyle,
+}
+struct Callback {
+    scene: Arc<Scene>,
+    view: View,
 }
 impl CallbackTrait for Callback {
     fn prepare(
@@ -254,14 +346,7 @@ impl CallbackTrait for Callback {
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(renderer) = resources.get_mut::<Renderer>() {
-            renderer.prepare(
-                device,
-                queue,
-                &self.scene,
-                self.camera,
-                self.size,
-                self.selection,
-            );
+            renderer.prepare(device, queue, &self.scene, self.view);
         }
         vec![]
     }
@@ -272,7 +357,7 @@ impl CallbackTrait for Callback {
         resources: &CallbackResources,
     ) {
         if let Some(renderer) = resources.get::<Renderer>() {
-            renderer.paint(pass);
+            renderer.paint(pass, self.view.style);
         }
     }
 }
@@ -284,6 +369,7 @@ pub fn paint_scene(
     scene: Arc<Scene>,
     camera: Camera,
     selection: Option<Selection>,
+    style: DisplayStyle,
 ) {
     if !rect.is_finite()
         || rect.width() <= 0.
@@ -302,9 +388,12 @@ pub fn paint_scene(
         rect,
         Callback {
             scene,
-            camera,
-            size: rect.size(),
-            selection,
+            view: View {
+                camera,
+                size: rect.size(),
+                selection,
+                style,
+            },
         },
     ));
 }
