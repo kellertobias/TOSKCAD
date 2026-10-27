@@ -48,6 +48,125 @@ fn evaluated(session: &Session) -> Evaluation {
     evaluate(session.document(), stamp(session), || Ok(())).unwrap()
 }
 #[test]
+fn duplicate_instance_transaction_shares_native_assets_and_renders_all_placements() {
+    let mut session = Session::new(document().unwrap()).unwrap();
+    let before = session.document().clone();
+    let original = session
+        .document()
+        .entities()
+        .find(|e| matches!(e.data, EntityData::Instance { .. }))
+        .unwrap()
+        .clone();
+    let EntityData::Instance { component, .. } = original.data else {
+        unreachable!()
+    };
+    let second = Entity::new(
+        "Second panel",
+        EntityData::Instance {
+            component,
+            placement: Placement {
+                translation_mm: [140., 0., 0.],
+                ..Default::default()
+            },
+        },
+    );
+    let third = Entity::new(
+        "Third rotated panel",
+        EntityData::Instance {
+            component,
+            placement: Placement {
+                translation_mm: [0., 100., 30.],
+                rotation_xyzw: [
+                    0.,
+                    0.,
+                    std::f64::consts::FRAC_1_SQRT_2,
+                    std::f64::consts::FRAC_1_SQRT_2,
+                ],
+            },
+        },
+    );
+    session
+        .apply(Request {
+            expected_revision: 0,
+            actor: Actor::local(Channel::Ui),
+            label: "Duplicate panel instances".into(),
+            edits: vec![
+                Mutation::Insert(second.clone()),
+                Mutation::Insert(third.clone()),
+            ],
+        })
+        .unwrap();
+    let result = evaluated(&session);
+    assert_eq!(result.scene.instances().len(), 3);
+    assert_eq!(result.scene.geometries().len(), 2); // Raw source and one shared drilled asset.
+    let ids: std::collections::BTreeSet<_> =
+        result.scene.instances().iter().map(|i| i.id).collect();
+    assert_eq!(
+        ids,
+        std::collections::BTreeSet::from([original.id, second.id, third.id])
+    );
+    let asset = result.scene.instances()[0].geometry;
+    assert!(result.scene.instances().iter().all(|i| i.geometry == asset));
+    let snapshot = result.scene.reference_snapshots();
+    for (id, point) in [
+        (original.id, [10., 10., 18.]),
+        (second.id, [150., 10., 18.]),
+        (third.id, [-10., 110., 48.]),
+    ] {
+        assert_eq!(snapshot[&id].owner, id);
+        let hit = result
+            .scene
+            .pick_face(Ray::new([point[0], point[1], 100.], [0., 0., -1.]).unwrap())
+            .unwrap();
+        assert_eq!(hit.instance, id);
+        for (actual, expected) in hit.point_mm.into_iter().zip(point) {
+            near(actual, expected);
+        }
+    }
+    for center in [[20., 25., 100.], [160., 25., 100.], [-25., 120., 100.]] {
+        assert!(
+            result
+                .scene
+                .pick_face(Ray::new(center, [0., 0., -1.]).unwrap())
+                .is_none()
+        );
+    }
+    session.undo(1, Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(session.document(), &before);
+    assert_eq!(evaluated(&session).scene.instances().len(), 1);
+}
+#[test]
+fn unsupported_instance_components_fail_instead_of_disappearing_from_the_fixture() {
+    let mut document = document().unwrap();
+    let other = Entity::new(
+        "Unsupported empty Part",
+        EntityData::Part {
+            features: vec![],
+            material: None,
+            tags: Default::default(),
+        },
+    );
+    let instance = Entity::new(
+        "Unsupported component instance",
+        EntityData::Instance {
+            component: other.id,
+            placement: Default::default(),
+        },
+    );
+    document.insert(other).unwrap();
+    document.insert(instance).unwrap();
+    let result = evaluate(
+        &document,
+        SceneStamp {
+            document: document.id(),
+            revision: 0,
+            generation: 1,
+        },
+        || Ok(()),
+    );
+    assert!(matches!(result,Err(error) if error.contains("unsupported component")));
+}
+#[test]
 fn placed_instance_keeps_raw_producer_frames_and_exposes_true_world_attachment_and_hole() {
     let mut session = Session::new(document().unwrap()).unwrap();
     let mut instance = session

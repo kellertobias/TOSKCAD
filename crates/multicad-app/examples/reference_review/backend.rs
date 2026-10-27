@@ -349,23 +349,49 @@ pub fn evaluate(
         panel.id
     };
     check()?;
-    let instance = document
+    let parts: Vec<_> = document
         .entities()
-        .find(|e| matches!(e.data, EntityData::Instance { .. }))
-        .ok_or("Missing review instance")?;
-    let EntityData::Instance { placement, .. } = instance.data else {
-        unreachable!("filtered instance")
+        .filter(
+            |e| matches!(&e.data, EntityData::Part {features,..} if features.as_slice()==[hole.id]),
+        )
+        .collect();
+    let [part] = parts.as_slice() else {
+        return Err("Review backend requires one known drilled Part".into());
     };
-    let scene = Arc::new(viewport::Scene::new(
-        stamp,
-        geometries,
-        vec![viewport::Instance {
-            id: instance.id,
-            geometry: display_id,
-            transform: viewport::Transform::from_placement(placement)?,
-            color: [137, 174, 199, 255],
-        }],
-    )?);
+    let EntityData::Part { material, .. } = part.data else {
+        unreachable!("filtered Part")
+    };
+    let color = material
+        .and_then(|id| document.get(id))
+        .and_then(|entity| {
+            if let EntityData::Material { color_rgba, .. } = entity.data {
+                Some(color_rgba)
+            } else {
+                None
+            }
+        })
+        .unwrap_or([137, 174, 199, 255]);
+    let mut instances = vec![];
+    for instance in document.entities() {
+        if let EntityData::Instance {
+            component,
+            placement,
+        } = instance.data
+        {
+            if component != part.id {
+                return Err(
+                    "Review backend cannot render an instance of an unsupported component".into(),
+                );
+            }
+            instances.push(viewport::Instance {
+                id: instance.id,
+                geometry: display_id,
+                transform: viewport::Transform::from_placement(placement)?,
+                color,
+            });
+        }
+    }
+    let scene = Arc::new(viewport::Scene::new(stamp, geometries, instances)?);
     Ok(Evaluation {
         scene,
         report,
