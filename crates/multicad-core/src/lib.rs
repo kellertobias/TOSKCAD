@@ -12,6 +12,7 @@ pub mod references;
 pub mod sketch;
 pub mod sketch_draw;
 pub mod sketch_regions;
+pub mod sketch_transform;
 
 /// Identity of the compiled application, independent of GUI or native adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
