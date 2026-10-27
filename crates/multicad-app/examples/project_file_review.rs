@@ -18,7 +18,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let opened = store
             .open_project(std::path::Path::new(&path))
             .map_err(|e| e.to_string())?;
-        report(&opened.file, &directory.join("verified-resources.json"))?;
+        let output = args
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| directory.join("verified-resources.json"));
+        report(&opened.file, &output)?;
         return Ok(());
     }
     let parameter = Entity::new(
