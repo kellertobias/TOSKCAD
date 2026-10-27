@@ -1004,7 +1004,19 @@ impl Application {
                 } else {
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
+                    let before = p.session.revision();
                     p.sketch.show(ui, &mut p.session, sketch_mode);
+                    if p.session.revision() != before {
+                        let label = p
+                            .session
+                            .activity()
+                            .last()
+                            .map(|a| a.label.clone())
+                            .unwrap_or_else(|| "Sketch updated".into());
+                        self.message = label;
+                        self.message_error = false;
+                        ctx.request_repaint();
+                    }
                 }
             });
         if let Some(action) = self.file_action {

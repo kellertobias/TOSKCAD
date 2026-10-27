@@ -507,7 +507,13 @@ impl SketchEditor {
                                         self.message = e;
                                     }
                                     if self.editing && !self.moving {
+                                        let before = session.revision();
                                         self.constraints.show(ui, session, id, self.element);
+                                        if session.revision() != before {
+                                            self.message =
+                                                "Constraints applied · one undoable source edit"
+                                                    .into();
+                                        }
                                         if self.constraints.dirty() {
                                             self.tool = None;
                                             self.first = None;
@@ -756,6 +762,8 @@ impl SketchEditor {
                         let p = project(frame.point(point.position_mm), &self.camera);
                         let color = if self.constraints.selected(point.id) {
                             Color32::YELLOW
+                        } else if !self.constraints.free(point.id) {
+                            Color32::from_rgb(100, 205, 140)
                         } else {
                             Color32::from_rgb(95, 175, 200)
                         };

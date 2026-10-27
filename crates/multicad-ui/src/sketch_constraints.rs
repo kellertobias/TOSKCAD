@@ -284,6 +284,11 @@ impl ConstraintEditor {
     pub fn selected(&self, id: EntityId) -> bool {
         self.selection.contains(&id)
     }
+    pub fn free(&self, id: EntityId) -> bool {
+        self.result
+            .as_ref()
+            .is_some_and(|r| r.evaluation.diagnostics.free_entities.contains(&id))
+    }
     fn toggle(&mut self, id: EntityId) {
         if let Some(i) = self.selection.iter().position(|s| *s == id) {
             self.selection.remove(i);
@@ -423,7 +428,12 @@ impl ConstraintEditor {
                 .width(125.)
                 .show_ui(ui, |ui| {
                     for tool in Tool::ALL {
-                        ui.selectable_value(&mut self.tool, tool, tool.label());
+                        if ui
+                            .selectable_value(&mut self.tool, tool, tool.label())
+                            .clicked()
+                        {
+                            ui.close();
+                        }
                     }
                 });
             if ui
