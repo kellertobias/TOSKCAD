@@ -77,7 +77,7 @@ impl Default for SketchEditor {
                 target: [0.; 3],
                 ..Default::default()
             },
-            style: DisplayStyle::Wire,
+            style: DisplayStyle::VisibleEdges,
             grid: true,
             spacing: 10.,
             snap: true,
@@ -131,6 +131,11 @@ impl SketchEditor {
         };
     }
     pub fn toggle_transform(&mut self) {
+        if self.selected.is_none() {
+            self.moving = false;
+            self.message = "Select a sketch to transform.".into();
+            return;
+        }
         if self.constraints.dirty() {
             self.message = "Apply or discard constraint edits before transforming".into();
             return;
@@ -146,6 +151,7 @@ impl SketchEditor {
     pub fn cancel(&mut self) {
         self.repair.cancel();
         self.solid.clear();
+        self.moving = false;
         self.picking = false;
         self.tool = None;
         self.first = None;
@@ -212,6 +218,7 @@ impl SketchEditor {
         self.selected = Some(id);
         self.editing = true;
         self.element = None;
+        self.message = "Editing sketch · dimensions in millimeters".into();
         Ok(())
     }
     pub fn finish(&mut self) -> Result<(), String> {
@@ -465,6 +472,7 @@ impl SketchEditor {
             }) {
                 self.selected = None;
                 self.editing = false;
+                self.moving = false;
                 self.tool = None;
             }
         }
@@ -1035,14 +1043,14 @@ impl SketchEditor {
                         self.solid
                             .section
                             .control(ui, scene.as_ref().and_then(|s| s.world_bounds()));
-                        let transform = icons::compact_button(
+                        let transform = ui.add_enabled_ui(self.selected.is_some(),|ui|icons::compact_button(
                             ui,
                             Icon::Transform,
                             &format!(
                                 "Transform gizmo · {} coordinates · right-click to choose axes",
                                 coordinates.label()
                             ),
-                        );
+                        )).inner.on_disabled_hover_text("Select a sketch to transform");
                         if transform.clicked() {
                             moving = !moving;
                         }
@@ -1184,6 +1192,102 @@ mod tests {
             events,
             ..Default::default()
         }
+    }
+    #[test]
+    fn unavailable_transform_does_not_trap_model_picking() {
+        use crate::viewport::{self, Instance, Scene, SceneStamp, Transform};
+        use multicad_core::document::*;
+        use multicad_kernel::{MeshOptions, Solid};
+        use std::sync::Arc;
+        let producer = Entity::new(
+            "Box source",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.box".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let part = Entity::new(
+            "Box",
+            EntityData::Part {
+                features: vec![producer.id],
+                material: None,
+                tags: Default::default(),
+            },
+        );
+        let instance = Entity::new(
+            "Box instance",
+            EntityData::Instance {
+                component: part.id,
+                placement: Default::default(),
+            },
+        );
+        let mut doc = Document::new("Picking after unavailable transform").unwrap();
+        for entity in [producer.clone(), part, instance.clone()] {
+            doc.insert(entity).unwrap();
+        }
+        let mut session = Session::new(doc).unwrap();
+        let before = session.document().clone();
+        let native = Solid::box_named([100., 60., 18.], producer.id, Default::default()).unwrap();
+        let mesh = native.mesh(MeshOptions::default()).unwrap();
+        let geometry = Arc::new(
+            viewport::Geometry::new(
+                producer.id,
+                mesh.vertices.as_chunks::<3>().0.to_vec(),
+                mesh.indices,
+                mesh.face_indices,
+                native.topology_snapshot(producer.id, 0).unwrap().elements,
+            )
+            .unwrap(),
+        );
+        let scene = Arc::new(
+            Scene::new(
+                SceneStamp {
+                    document: session.document().id(),
+                    revision: 0,
+                    generation: 1,
+                },
+                vec![geometry],
+                vec![Instance {
+                    id: instance.id,
+                    geometry: producer.id,
+                    transform: Transform::default(),
+                    color: [140, 165, 190, 255],
+                }],
+            )
+            .unwrap(),
+        );
+        let ctx = egui::Context::default();
+        let mut editor = SketchEditor::default();
+        editor.toggle_transform(); // There is no selected sketch or part-move provider.
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000., 700.));
+        let point = editor.camera.project([50., 30., 18.], rect);
+        let point = Pos2::new(point[0], point[1]);
+        let mut frame = |events| {
+            ctx.run_ui(input(events), |ui| {
+                editor.canvas(ui, &mut session, false, Some(scene.clone()), true)
+            })
+            .drop_without_applying_deltas()
+        };
+        frame(vec![]);
+        frame(vec![]);
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        assert_eq!(editor.selected_solid(), Some(instance.id));
+        assert_eq!(session.document(), &before);
     }
     #[test]
     fn attached_sketch_opens_and_edits_only_with_a_current_resolved_frame() {
