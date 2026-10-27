@@ -2,7 +2,7 @@
 //! shared sketch command API; display occurrences never become history parents.
 use crate::{
     camera::Camera,
-    viewport::{Scene, SceneStamp, Transform},
+    viewport::{Scene, SceneStamp, SectionPlane, Transform},
 };
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
 use multicad_core::{
@@ -48,6 +48,7 @@ pub struct PlaneContext<'a> {
     pub report: Option<&'a ReferenceReport>,
     /// Preferred displayed occurrence. This is never a canonical sketch parent.
     pub occurrence: Option<EntityId>,
+    pub section: Option<SectionPlane>,
 }
 #[derive(Default)]
 pub struct PlanePicker {
@@ -223,7 +224,7 @@ fn face_choice(
     let Some(ray) = camera.ray(pointer, rect) else {
         return Ok(None);
     };
-    let Some(hit) = scene.pick_face(ray) else {
+    let Some(hit) = scene.pick_face_section(ray, context.section) else {
         return Ok(None);
     };
     if !matches!(
@@ -710,6 +711,7 @@ mod tests {
             scene: Some(&scene),
             report: None,
             occurrence: None,
+            section: None,
         };
         let mut camera = Camera {
             target: [-15., 40., 48.],
@@ -759,6 +761,7 @@ mod tests {
             scene: Some(&scene),
             report: None,
             occurrence: None,
+            section: None,
         };
         let mut camera = Camera {
             target: [20., 25., 18.],
@@ -840,6 +843,7 @@ mod tests {
                 scene: Some(&scene),
                 report: None,
                 occurrence: None,
+                section: None,
             };
             let mut camera = Camera {
                 target: if named { [20., 0., 9.] } else { [20., 10., 9.] },
@@ -856,6 +860,71 @@ mod tests {
             );
             assert!(picker.current_preview(context).unwrap().is_none());
         }
+    }
+    #[test]
+    fn face_picking_uses_visible_section_geometry_and_keeps_local_source_identity() {
+        let placement = Placement {
+            translation_mm: [10., 20., 30.],
+            rotation_xyzw: [
+                0.,
+                0.,
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ],
+        };
+        let (document, scene, producer, occurrence) = fixture(
+            |id| Solid::box_named([100., 60., 18.], id, Default::default()).unwrap(),
+            placement,
+        );
+        let before = document.clone();
+        let mut camera = Camera {
+            target: [-15., 40., 48.],
+            scale: 3.,
+            ..Default::default()
+        };
+        camera.orient(AxisView::PositiveZ);
+        let context = PlaneContext {
+            document: &document,
+            revision: 0,
+            scene: Some(&scene),
+            report: None,
+            occurrence: Some(occurrence),
+            section: None,
+        };
+        let mut picker = PlanePicker::default();
+        picker.update_hover(Some(rect().center()), camera, rect(), context);
+        let top = picker.click_hovered(context).unwrap();
+        let PlaneChoice::Face(top) = top.choice else {
+            panic!("Top face missing")
+        };
+        close(top.world_frame.origin, [10., 20., 48.]);
+        let clipped = PlaneContext {
+            section: Some(SectionPlane::new([0., 0., -1.], -39.).unwrap()),
+            ..context
+        };
+        picker.update_hover(Some(rect().center()), camera, rect(), clipped);
+        let bottom = picker.click_hovered(clipped).unwrap();
+        let PlaneChoice::Face(bottom) = bottom.choice else {
+            panic!("Retained bottom face missing")
+        };
+        assert_ne!(bottom.key, top.key);
+        assert_eq!(bottom.producer, producer);
+        assert_eq!(bottom.occurrence, occurrence);
+        assert_eq!(bottom.snapshot.owner, producer);
+        assert!(
+            bottom
+                .snapshot
+                .elements
+                .iter()
+                .find(|e| e.key == bottom.key)
+                .unwrap()
+                .origins
+                .iter()
+                .any(|o| o.role == "cap.start")
+        );
+        close(bottom.local_frame.origin, [0., 0., 0.]);
+        close(bottom.world_frame.origin, [10., 20., 30.]);
+        assert_eq!(document, before);
     }
     #[test]
     fn pointer_datum_selection_and_existing_plane_offsets_use_core_frames() {
@@ -878,6 +947,7 @@ mod tests {
                 scene: None,
                 report: None,
                 occurrence: None,
+                section: None,
             };
             let mut picker = PlanePicker::default();
             picker.update_hover(Some(rect().center()), camera, rect(), context);
@@ -900,6 +970,7 @@ mod tests {
             scene: None,
             report: None,
             occurrence: None,
+            section: None,
         };
         let mut camera = Camera {
             target: [20., 15., 42.],
@@ -961,6 +1032,7 @@ mod tests {
             scene: None,
             report: Some(&report),
             occurrence: None,
+            section: None,
         };
         let mut picker = PlanePicker::default();
         picker.choose(PlaneChoice::Existing(plane.id));
@@ -1067,6 +1139,7 @@ mod tests {
             scene: Some(&scene),
             report: Some(&report),
             occurrence: Some(placed.id),
+            section: None,
         };
         let mut picker = PlanePicker::default();
         picker.choose(PlaneChoice::Existing(attached.id));
@@ -1145,6 +1218,7 @@ mod tests {
             scene: Some(&final_part_scene),
             report: None,
             occurrence: None,
+            section: None,
         };
         let mut camera = Camera {
             target: [20., 25., 18.],
@@ -1230,6 +1304,7 @@ mod tests {
             scene: Some(&scene),
             report: Some(&report),
             occurrence: Some(occurrence),
+            section: None,
         };
         let stale = Scene::new(
             SceneStamp {
@@ -1363,6 +1438,7 @@ mod tests {
             scene: None,
             report: None,
             occurrence: None,
+            section: None,
         };
         let ctx = egui::Context::default();
         let mut picker = PlanePicker::default();
