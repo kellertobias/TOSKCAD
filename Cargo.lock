@@ -1833,6 +1833,7 @@ dependencies = [
  "cxx-build",
  "eframe",
  "multicad-core",
+ "multicad-kernel",
  "multicad-solver",
  "raw-window-handle",
  "serde_json",

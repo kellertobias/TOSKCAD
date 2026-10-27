@@ -70,13 +70,11 @@ impl Camera {
         let p = rect.center() + Vec2::new(right, -up) * self.scale * factor;
         [p.x, p.y, z]
     }
-    /// Inverse projection against a datum; edge-on planes have no unique hit.
-    pub fn on_plane(
-        &self,
-        point: eframe::egui::Pos2,
-        rect: Rect,
-        frame: multicad_core::sketch::Frame,
-    ) -> Option<[f64; 2]> {
+    /// A normalized world ray shared by surface picking and datum intersections.
+    pub fn ray(&self, point: eframe::egui::Pos2, rect: Rect) -> Option<crate::viewport::Ray> {
+        if !self.scale.is_finite() || self.scale <= 0. || !point.is_finite() || !rect.is_finite() {
+            return None;
+        }
         let (s, c) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
         let right = [c as f64, -s as f64, 0.];
@@ -96,6 +94,18 @@ impl Camera {
                 -forward[i]
             }
         });
+        crate::viewport::Ray::new(origin, direction).ok()
+    }
+    /// Inverse projection against a datum; edge-on planes have no unique hit.
+    pub fn on_plane(
+        &self,
+        point: eframe::egui::Pos2,
+        rect: Rect,
+        frame: multicad_core::sketch::Frame,
+    ) -> Option<[f64; 2]> {
+        let ray = self.ray(point, rect)?;
+        let origin = ray.origin();
+        let direction = ray.direction();
         let dot = multicad_core::sketch::dot;
         let denominator = dot(direction, frame.n);
         if denominator.abs() < 1e-8 {
