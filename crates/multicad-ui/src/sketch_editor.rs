@@ -56,6 +56,7 @@ pub struct SketchEditor {
     drag: Option<MoveDrag>,
     message: String,
     revision: u64,
+    fit_requested: bool,
 }
 impl Default for SketchEditor {
     fn default() -> Self {
@@ -82,6 +83,7 @@ impl Default for SketchEditor {
             drag: None,
             message: "Choose New Sketch, or open a sketch from the document.".into(),
             revision: 0,
+            fit_requested: false,
         }
     }
 }
@@ -102,6 +104,21 @@ fn commit(
         .map_err(|e| e.to_string())
 }
 impl SketchEditor {
+    pub fn request_fit(&mut self) {
+        self.fit_requested = true;
+    }
+    pub fn home_view(&mut self) {
+        self.camera = Camera {
+            target: [0.; 3],
+            ..Default::default()
+        };
+    }
+    pub fn toggle_transform(&mut self) {
+        self.moving = !self.moving;
+        self.cancel_move();
+        self.tool = None;
+        self.first = None;
+    }
     pub fn has_move_preview(&self) -> bool {
         self.preview.is_some()
     }
@@ -272,9 +289,6 @@ impl SketchEditor {
                 self.editing = false;
                 self.tool = None;
             }
-        }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.cancel();
         }
         egui::Panel::left("source-tree").default_size(205.).resizable(true).show(ui, |ui| {
             ui.heading("Parts & sketches");
@@ -660,7 +674,8 @@ impl SketchEditor {
                         ..Default::default()
                     };
                 }
-                if actions.fit {
+                if actions.fit || self.fit_requested {
+                    self.fit_requested = false;
                     self.camera.fit(&points, rect);
                 }
             });
@@ -899,5 +914,43 @@ mod tests {
         assert_eq!(session.revision(), 2);
         let origin = Sketch::read(session.document(), id).unwrap().1.origin;
         assert_eq!(origin, [10., 0., 0.]);
+    }
+    #[test]
+    fn middle_mouse_drag_still_pans_the_view_without_editing_source() {
+        let ctx = egui::Context::default();
+        let mut editor = SketchEditor::default();
+        let mut session = session();
+        let before = editor.camera;
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000., 700.));
+        let p = before.target;
+        let initial = before.project(p, rect);
+        let mut frame = |events| {
+            ctx.run_ui(input(events), |ui| editor.canvas(ui, &mut session, true))
+                .drop_without_applying_deltas();
+        };
+        frame(vec![]);
+        frame(vec![]);
+        let start = egui::pos2(450., 350.);
+        let end = start + Vec2::new(30., 20.);
+        frame(vec![
+            egui::Event::PointerMoved(start),
+            egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Middle,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        frame(vec![egui::Event::PointerMoved(end)]);
+        frame(vec![egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Middle,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        let actual = editor.camera.project(p, rect);
+        assert!((actual[0] - initial[0] - 30.).abs() < 0.01);
+        assert!((actual[1] - initial[1] - 20.).abs() < 0.01);
+        assert_eq!(session.revision(), 0);
     }
 }

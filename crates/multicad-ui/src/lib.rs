@@ -49,3 +49,5 @@ pub mod theme;
 
 #[cfg(target_os = "macos")]
 mod native_window;
+
+pub mod shortcuts;

@@ -2,6 +2,8 @@
 use eframe::egui::{self, Color32, Pos2, Stroke, Vec2};
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Hammer,
+    Keyboard,
     Transform,
     ArrowUp,
     ArrowDown,
@@ -91,7 +93,10 @@ pub fn labeled_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Respo
     response.on_hover_text(label)
 }
 pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(76.0, 78.0), egui::Sense::click());
+    tool_with_hint(ui, icon, label, label)
+}
+pub fn tool_with_hint(ui: &mut egui::Ui, icon: Icon, label: &str, hint: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(76.0, 92.0), egui::Sense::click());
     if response.hovered() {
         ui.painter()
             .rect_filled(rect, 3, Color32::from_rgb(42, 51, 65));
@@ -130,7 +135,7 @@ pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
-    response.on_hover_text(label)
+    response.on_hover_text(hint)
 }
 pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color32, size: f32) {
     let p = ui.painter();
@@ -156,6 +161,29 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
         p.circle_stroke(v(x, y), r * scale, stroke);
     };
     match icon {
+        Icon::Hammer => {
+            path(&[[3., 19.], [12., 8.], [16., 11.], [7., 22.], [3., 19.]]);
+            path(&[
+                [10., 6.],
+                [15., 2.],
+                [22., 7.],
+                [19., 12.],
+                [15., 9.],
+                [13., 11.],
+                [9., 8.],
+                [10., 6.],
+            ]);
+        }
+        Icon::Keyboard => {
+            rect(2., 5., 20., 14.);
+            for y in [9., 12.] {
+                for x in [6., 10., 14., 18.] {
+                    line([x, y], [x + 0.5, y]);
+                }
+            }
+            line([7., 16.], [17., 16.]);
+        }
+
         Icon::Transform => {
             line([5., 19.], [20., 19.]);
             path(&[[16., 15.], [20., 19.], [16., 23.]]);
@@ -386,4 +414,34 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
 
 pub fn mini_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     icon_button(ui, icon, label, 14.)
+}
+#[cfg(test)]
+mod ribbon_tests {
+    use super::*;
+    #[test]
+    fn two_line_labels_fit_inside_equal_height_tiles() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            for label in [
+                "Apply and rebuild",
+                "Fillet / chamfer",
+                "Attached fastener",
+                "Projection / section",
+            ] {
+                let response = tool(ui, Icon::Hammer, label);
+                let text = ui.painter().layout(
+                    label.into(),
+                    egui::FontId::proportional(11.),
+                    Color32::WHITE,
+                    64.,
+                );
+                assert_eq!(response.rect.height(), 92.);
+                assert!(
+                    response.rect.height() * 2. / 3. + text.size().y <= response.rect.height() - 4.,
+                    "{label}"
+                );
+            }
+        })
+        .drop_without_applying_deltas();
+    }
 }

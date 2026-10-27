@@ -33,6 +33,23 @@ impl Camera {
         self.target[1] -= -s * x + c * (-sp * up);
         self.target[2] -= cp * up;
     }
+    /// Keyboard panning uses screen units per second, independent of frame rate.
+    pub fn pan_keyboard(&mut self, direction: Vec2, seconds: f32) -> bool {
+        if !direction.is_finite()
+            || !seconds.is_finite()
+            || seconds <= 0.
+            || direction == Vec2::ZERO
+        {
+            return false;
+        }
+        let direction = if direction.length_sq() > 1. {
+            direction.normalized()
+        } else {
+            direction
+        };
+        self.pan(direction * 360.0 * seconds.min(0.05));
+        true
+    }
     pub fn zoom(&mut self, scroll: f32) {
         self.scale = (self.scale * (scroll * 0.002).exp()).clamp(0.02, 100.0);
     }
@@ -232,5 +249,31 @@ mod plane_tests {
                 .on_plane(rect.center(), rect, Datum::Xy.frame())
                 .is_none()
         );
+    }
+}
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    #[test]
+    fn keyboard_pan_speed_is_independent_of_frame_rate_and_bounds_bad_input() {
+        let mut a = Camera::default();
+        let mut b = a;
+        for _ in 0..60 {
+            a.pan_keyboard(Vec2::new(1., -1.), 1. / 60.);
+        }
+        for _ in 0..120 {
+            b.pan_keyboard(Vec2::new(1., -1.), 1. / 120.);
+        }
+        for (a, b) in a.target.into_iter().zip(b.target) {
+            assert!((a - b).abs() < 0.002);
+        }
+        let before = a;
+        assert!(!a.pan_keyboard(Vec2::X, f32::NAN));
+        assert!(!a.pan_keyboard(Vec2::ZERO, 1.));
+        assert_eq!(a, before);
+        let mut normal = before;
+        normal.pan_keyboard(Vec2::X, 0.05);
+        a.pan_keyboard(Vec2::X, 10.);
+        assert_eq!(a, normal);
     }
 }

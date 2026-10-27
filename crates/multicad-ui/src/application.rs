@@ -4,6 +4,7 @@ use crate::{
     icons::{self, Icon},
     parameter_editor::ParameterEditor,
     registry::{Command, Mode, Registry},
+    shortcuts::{self, Action as ShortcutAction, ShortcutMap},
     sketch_editor::{DrawTool, SketchEditor},
 };
 use eframe::egui::{self, Color32, RichText};
@@ -77,6 +78,11 @@ pub struct Application {
     history_open: bool,
     close_confirm: bool,
     close_allowed: bool,
+    pub shortcuts: ShortcutMap,
+    shortcut_runtime: shortcuts::Runtime,
+    shortcut_help: bool,
+    focus_search: bool,
+    focus_command: bool,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -102,6 +108,11 @@ impl Application {
             history_open: false,
             close_confirm: false,
             close_allowed: false,
+            shortcuts: ShortcutMap::standard(),
+            shortcut_runtime: shortcuts::Runtime::default(),
+            shortcut_help: false,
+            focus_search: false,
+            focus_command: false,
         })
     }
     pub fn current(&self) -> &Project {
@@ -124,6 +135,7 @@ impl Application {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
+            Command::KeyboardShortcuts => self.shortcut_help = true,
             Command::Parameter => {
                 if args.len() < 3 {
                     return Err("Usage: param <name> <unit> <expression>".into());
@@ -419,6 +431,7 @@ impl Application {
                 ui.add_space(12.0);
                 ui.menu_button("File", |ui| {
                     for (label, command) in [
+                        ("Keyboard shortcuts (F1)", Command::KeyboardShortcuts),
                         ("New document", Command::New),
                         ("New window", Command::NewWindow),
                         ("Open source snapshot…", Command::Open),
@@ -460,7 +473,13 @@ impl Application {
                 ] {
                     let enabled = self.enabled(command);
                     if ui
-                        .add_enabled_ui(enabled, |ui| icons::compact_button(ui, icon, label))
+                        .add_enabled_ui(enabled, |ui| {
+                            icons::compact_button(
+                                ui,
+                                icon,
+                                &self.command_help(command, label, ui.ctx()),
+                            )
+                        })
                         .inner
                         .clicked()
                     {
@@ -485,7 +504,7 @@ impl Application {
                     + ui.spacing().item_spacing.x * 5.0;
                 let search_width = (ui.available_width() - width - 30.).clamp(100., 220.);
                 let ideal = ui.ctx().content_rect().center().x - search_width * 0.5;
-                let left_gap = (ideal - ui.cursor().left())
+                let left_gap = (ideal - ui.cursor().left() - ui.spacing().item_spacing.x)
                     .max(0.)
                     .min((ui.available_width() - width - search_width - 16.).max(0.));
                 let (_, left_drag) =
@@ -495,14 +514,30 @@ impl Application {
                 }
                 let search = ui.add_sized(
                     [search_width, 28.],
-                    egui::TextEdit::singleline(&mut self.find).hint_text("Find a tool…"),
+                    egui::TextEdit::singleline(&mut self.find)
+                        .hint_text("Find a tool…")
+                        .horizontal_align(egui::Align::Center)
+                        .vertical_align(egui::Align::Center)
+                        .margin(egui::Margin::symmetric(24, 4)),
                 );
+                icons::paint_sized(
+                    ui,
+                    Icon::Hammer,
+                    egui::pos2(search.rect.left() + 13., search.rect.center().y),
+                    Color32::from_rgb(170, 190, 214),
+                    16.,
+                );
+                if self.focus_search {
+                    search.request_focus();
+                    self.focus_search = false;
+                    self.find_open = true;
+                }
                 if search.changed() || search.gained_focus() || search.clicked() {
                     self.find_open = true;
                 }
                 search
                     .clone()
-                    .on_hover_text("Find tools by name or command alias");
+                    .on_hover_text("Find tools by name or command alias · Cmd/Ctrl+F");
                 let mut open = self.find_open;
                 egui::Popup::from_response(&search)
                     .open_bool(&mut open)
@@ -652,7 +687,12 @@ impl Application {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         egui::Frame::new()
             .fill(Color32::BLACK)
-            .inner_margin(egui::Margin::symmetric(crate::theme::GUTTER, 0))
+            .inner_margin(egui::Margin {
+                left: crate::theme::GUTTER,
+                right: crate::theme::GUTTER,
+                top: 0,
+                bottom: 8,
+            })
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -668,7 +708,12 @@ impl Application {
                             let enabled = self.enabled(tool.action);
                             if ui
                                 .add_enabled_ui(enabled, |ui| {
-                                    icons::tool(ui, tool.icon, tool.label)
+                                    icons::tool_with_hint(
+                                        ui,
+                                        tool.icon,
+                                        tool.label,
+                                        &self.command_help(tool.action, tool.label, ui.ctx()),
+                                    )
                                 })
                                 .inner
                                 .on_disabled_hover_text(
@@ -764,6 +809,10 @@ impl Application {
                     .frame(egui::Frame::new().fill(Color32::BLACK).inner_margin(4))
                     .font(egui::TextStyle::Monospace),
             );
+            if self.focus_command {
+                response.request_focus();
+                self.focus_command = false;
+            }
             response.clone().on_hover_text(format!(
                 "Enter a command: params, param, start, rect, apply, undo, save\n{}",
                 self.message
@@ -811,6 +860,89 @@ impl Application {
             }
         });
     }
+    fn shortcut_context(&self, ctx: &egui::Context) -> shortcuts::Context<'static> {
+        let workspace = self.registry.workspace(self.mode);
+        shortcuts::Context {
+            mode: self.mode,
+            workspace: workspace.tabs[self.tab.min(workspace.tabs.len() - 1)].title,
+            sketch_editing: self.current().sketch.editing,
+            viewport: self.mode != Mode::Parameters,
+            text_input: ctx.text_edit_focused(),
+            blocked: self.file_action.is_some()
+                || self.close_confirm
+                || self.history_open
+                || self.shortcut_help
+                || egui::Popup::is_any_open(ctx),
+        }
+    }
+    fn command_help(&self, command: Command, label: &str, ctx: &egui::Context) -> String {
+        self.shortcuts
+            .hint(command, &self.shortcut_context(ctx))
+            .map(|key| format!("{label} · {key}"))
+            .unwrap_or_else(|| label.into())
+    }
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.shortcut_help
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.shortcut_help = false;
+        }
+        let context = self.shortcut_context(ctx);
+        let frame = self
+            .shortcut_runtime
+            .collect(ctx, &self.shortcuts, &context);
+        for action in frame.actions {
+            match action {
+                ShortcutAction::Command(command) => {
+                    if self.enabled(command) {
+                        self.execute(command, &[], Channel::Ui);
+                    }
+                }
+                ShortcutAction::FindTool => self.focus_search = true,
+                ShortcutAction::FocusCommand => self.focus_command = true,
+                ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
+                    let count = self.registry.workspace(self.mode).tabs.len();
+                    self.tab = if action == ShortcutAction::NextWorkspace {
+                        (self.tab + 1) % count
+                    } else {
+                        (self.tab + count - 1) % count
+                    };
+                    ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+                    self.message = format!(
+                        "{} workspace",
+                        self.registry.workspace(self.mode).tabs[self.tab].title
+                    );
+                    self.message_error = false;
+                }
+                ShortcutAction::Fit => self.current_mut().sketch.request_fit(),
+                ShortcutAction::Home => self.current_mut().sketch.home_view(),
+                ShortcutAction::Projection => {
+                    let camera = &mut self.current_mut().sketch.camera;
+                    camera.perspective = !camera.perspective;
+                }
+                ShortcutAction::Transform => self.current_mut().sketch.toggle_transform(),
+                ShortcutAction::Cancel => {
+                    self.current_mut().sketch.cancel();
+                    self.message = "Interaction cancelled".into();
+                    self.message_error = false;
+                }
+                ShortcutAction::Pan(_) => {}
+            }
+        }
+        if self.mode != Mode::Parameters
+            && !self.shortcut_context(ctx).blocked
+            && !self.focus_search
+            && !self.focus_command
+            && !ctx.text_edit_focused()
+            && self
+                .current_mut()
+                .sketch
+                .camera
+                .pan_keyboard(frame.pan, ctx.input(|i| i.stable_dt))
+        {
+            ctx.request_repaint();
+        }
+    }
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.viewport().close_requested())
@@ -820,12 +952,7 @@ impl Application {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_confirm = true;
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            self.execute(Command::Save, &[], Channel::Ui);
-        }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
-            self.execute(Command::New, &[], Channel::Ui);
-        }
+        self.handle_shortcuts(&ctx);
         egui::Panel::top("header")
             .frame(
                 egui::Frame::new()
@@ -874,6 +1001,12 @@ impl Application {
         }
         if self.history_open {
             egui::Window::new("Command and MCP history").open(&mut self.history_open).show(&ctx,|ui|{ui.label("External MCP transport is not connected. UI and command-line actions use the shared transaction API.");for entry in self.projects[self.active].session.activity(){ui.label(format!("r{} · {:?} · {} · {}",entry.change.revision,entry.actor.channel,entry.actor.id,entry.label));}});
+        }
+        if self.shortcut_help {
+            egui::Window::new("Keyboard shortcuts").open(&mut self.shortcut_help).show(&ctx,|ui|{
+                ui.label("WASD pans the view. Tab / Shift+Tab cycles ribbon workspaces. Text inputs keep their typing and Tab behavior.");
+                egui::ScrollArea::vertical().max_height(460.).show(ui,|ui|{egui::Grid::new("shortcut-list").striped(true).show(ui,|ui|{ui.strong("Key");ui.strong("Context");ui.strong("Action");ui.end_row();for binding in self.shortcuts.bindings(){ui.monospace(binding.chord.label());ui.label(binding.scope.label());ui.label(binding.label);ui.end_row();}});});
+            });
         }
         if self.close_confirm {
             egui::Window::new("Unsaved documents")
@@ -1001,6 +1134,146 @@ mod tests {
             Channel::CommandLine,
         )
         .unwrap();
+    }
+    fn shortcut_frame(ctx: &egui::Context, app: &mut Application, mut events: Vec<egui::Event>) {
+        let releases: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = e
+                {
+                    Some(egui::Event::Key {
+                        key: *key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: *modifiers,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        events.extend(releases);
+        ctx.run_ui(
+            egui::RawInput {
+                focused: true,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1360., 860.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| app.show(ui),
+        )
+        .drop_without_applying_deltas();
+    }
+    fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+    #[test]
+    fn tab_cycles_ribbon_workspaces_and_preserves_text_input_navigation() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.mode = Mode::Model;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.tab, 1);
+        assert_eq!(app.mode, Mode::Model);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::SHIFT)],
+        );
+        assert_eq!(app.tab, 0);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::SHIFT)],
+        );
+        assert_eq!(app.tab, app.registry.workspace(Mode::Model).tabs.len() - 1);
+        app.focus_command = true;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        assert!(ctx.text_edit_focused());
+        let before = app.tab;
+        let camera = app.current().sketch.camera;
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![
+                key_event(egui::Key::W, egui::Modifiers::NONE),
+                egui::Event::Text("wasd".into()),
+            ],
+        );
+        assert_eq!(app.command, "wasd");
+        assert_eq!(app.current().sketch.camera, camera);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.tab, before);
+    }
+    #[test]
+    fn mode_shortcuts_use_existing_transactions_and_ignore_unavailable_tools() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.current_mut().editor.rows[0].name = "width".into();
+        app.current_mut().editor.rows[0].expression = "600".into();
+        app.current_mut().editor.ensure_blank_row();
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::E, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.current().session.revision(), 1);
+        assert!(!app.current().editor.dirty());
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::E, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Line));
+        assert_eq!(app.current().session.revision(), 2);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Q, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.mode, Mode::Model);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::E, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.current().session.revision(), 2);
+        app.file_action = Some(FileAction::Open);
+        let before = app.tab;
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.tab, before);
     }
     #[test]
     fn centered_search_accepts_input_without_dragging_or_changing_modes() {
