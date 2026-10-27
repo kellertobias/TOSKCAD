@@ -180,8 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut storage = files::SnapshotStore;
     storage.save(&path, &document)?;
     let mut app = Application::with_document(Box::new(storage), document)?;
-    app.projects[0].path = Some(path);
-    app.projects[0].session.mark_saved(0)?;
+    app.projects[0].imported_from = Some(path);
     app.mode = Mode::Model;
     app.current_mut()
         .sketch

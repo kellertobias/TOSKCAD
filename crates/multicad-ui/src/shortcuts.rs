@@ -245,6 +245,13 @@ impl ShortcutMap {
         }
         add(
             Scope::Global,
+            Chord::primary_shift(Key::S),
+            Command(crate::registry::Command::SaveAs),
+            "Save project as",
+            true,
+        );
+        add(
+            Scope::Global,
             Chord::primary(Key::Z),
             Command(crate::registry::Command::Undo),
             "Undo",

@@ -39,10 +39,10 @@ fn main() -> ExitCode {
     };
     let build = BuildInfo::current();
     let result = match action {
-        Action::Run => multicad_ui::launch_with_storage(Box::new(files::SnapshotStore)),
+        Action::Run => multicad_ui::launch_with_storage(Box::new(files::ProjectStore::default())),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nIncludes Parameters and initial datum Sketch tools. Solid modeling, native project containers and MCP server remain under development.",
+                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nIncludes Parameters and initial datum Sketch tools. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Solid modeling and MCP server remain under development.",
                 build.product, build.version
             );
             Ok(())
@@ -53,7 +53,7 @@ fn main() -> ExitCode {
         }
         Action::Diagnostics => {
             println!(
-                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters and datum Sketch starter\nNative project format: source JSON snapshot only; container/recovery pending\nMCP server: not implemented\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
+                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters and datum Sketch starter\nNative project format: versioned .multicad container; atomic saves and explicit recovery copies\nMCP server: not implemented\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
                 build.product,
                 build.version,
                 build.target_os,

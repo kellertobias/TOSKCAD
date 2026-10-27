@@ -4,6 +4,32 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
+#[path = "files/native.rs"]
+mod native;
+pub use native::ProjectStore;
+fn read_source(path: &Path) -> Result<Document, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("Source snapshot exceeds 16 MiB".into());
+    }
+    if bytes.starts_with(b"MCADPRJ\0") {
+        return Err(
+            "This is a native project. Use Open project instead of Import source snapshot.".into(),
+        );
+    }
+    let doc: Document = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    Ok(parameters::evaluate(&doc)
+        .map_err(|e| e.to_string())?
+        .document)
+}
+#[allow(
+    dead_code,
+    reason = "The legacy adapter is constructed by acceptance examples, not the production executable"
+)]
 pub struct SnapshotStore;
 impl multicad_ui::application::DocumentStorage for SnapshotStore {
     fn save(&mut self, path: &Path, document: &Document) -> Result<(), String> {
@@ -20,18 +46,40 @@ impl multicad_ui::application::DocumentStorage for SnapshotStore {
         Ok(())
     }
     fn load(&mut self, path: &Path) -> Result<Document, String> {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mut bytes = Vec::new();
-        file.take(16 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > 16 * 1024 * 1024 {
-            return Err("Source snapshot exceeds 16 MiB".into());
-        }
-        let doc: Document = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        Ok(parameters::evaluate(&doc)
-            .map_err(|e| e.to_string())?
-            .document)
+        read_source(path)
+    }
+    fn save_project(
+        &mut self,
+        path: &Path,
+        project: &multicad_core::project_file::ProjectFile,
+        mode: multicad_ui::storage::SaveMode,
+    ) -> Result<multicad_ui::storage::SavedProject, multicad_ui::storage::StorageError> {
+        ProjectStore::default().save_project(path, project, mode)
+    }
+    fn open_project(
+        &mut self,
+        path: &Path,
+    ) -> Result<multicad_ui::storage::LoadedProject, multicad_ui::storage::StorageError> {
+        ProjectStore::default().open_project(path)
+    }
+    fn write_recovery(
+        &mut self,
+        project: &multicad_core::project_file::ProjectFile,
+        revision: u64,
+        original: Option<&Path>,
+    ) -> Result<multicad_ui::storage::RecoveryEntry, multicad_ui::storage::StorageError> {
+        ProjectStore::default().write_recovery(project, revision, original)
+    }
+    fn recoveries(
+        &mut self,
+    ) -> Result<multicad_ui::storage::RecoveryListing, multicad_ui::storage::StorageError> {
+        ProjectStore::default().recoveries()
+    }
+    fn restore_recovery(
+        &mut self,
+        id: multicad_core::document::EntityId,
+    ) -> Result<multicad_ui::storage::LoadedProject, multicad_ui::storage::StorageError> {
+        ProjectStore::default().restore_recovery(id)
     }
 }
 #[cfg(test)]

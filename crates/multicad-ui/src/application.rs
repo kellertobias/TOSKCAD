@@ -1,4 +1,7 @@
 //! Native application composition over canonical sessions and declarative tools.
+pub use crate::storage::DocumentStorage;
+mod files;
+use crate::storage::{FileStamp, FileWorker};
 use crate::{
     controls::{self, TabColors},
     icons::{self, Icon},
@@ -8,19 +11,24 @@ use crate::{
     sketch_editor::{DrawTool, SketchEditor},
 };
 use eframe::egui::{self, Color32};
+use files::{PendingFile, Replacement};
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
-    document::{Document, Entity, EntityData, Mutation},
+    document::{Document, Entity, EntityData, EntityId, Mutation},
+    project_file::{ProjectFile, ProjectResources},
 };
 use std::{
-    collections::VecDeque,
-    path::{Path, PathBuf},
+    collections::{BTreeMap, VecDeque},
+    path::PathBuf,
 };
-pub trait DocumentStorage {
-    fn save(&mut self, path: &Path, document: &Document) -> Result<(), String>;
-    fn load(&mut self, path: &Path) -> Result<Document, String>;
-}
 pub struct Project {
+    local_id: EntityId,
+    pub resources: ProjectResources,
+    pub file_stamp: Option<FileStamp>,
+    pub imported_from: Option<PathBuf>,
+    recovery_revision: Option<u64>,
+    observed_revision: u64,
+    recovery_due: Option<f64>,
     pub session: Session,
     pub editor: ParameterEditor,
     pub sketch: SketchEditor,
@@ -32,12 +40,22 @@ impl Project {
         let session = Session::new(document).map_err(|e| e.to_string())?;
         let editor = ParameterEditor::new(&session);
         Ok(Self {
+            local_id: EntityId::new(),
+            resources: ProjectResources::default(),
+            file_stamp: None,
+            imported_from: None,
+            recovery_revision: None,
+            observed_revision: 0,
+            recovery_due: None,
             session,
             editor,
             sketch: SketchEditor::default(),
             path: None,
             scene: Default::default(),
         })
+    }
+    fn snapshot(&self) -> Result<ProjectFile, String> {
+        ProjectFile::with_resources(self.session.document().clone(), self.resources.clone())
     }
     fn dirty(&self) -> bool {
         self.session.dirty() || self.editor.dirty() || self.sketch.has_pending_edits()
@@ -54,6 +72,7 @@ impl Project {
 enum FileAction {
     Save,
     Open,
+    Import,
 }
 struct CommandRecord {
     input: String,
@@ -66,7 +85,11 @@ pub struct Application {
     pub mode: Mode,
     pub registry: Registry,
     tab: usize,
-    storage: Box<dyn DocumentStorage>,
+    storage: FileWorker,
+    pending_files: BTreeMap<u64, PendingFile>,
+    replacement: Option<Replacement>,
+    recoveries: crate::storage::RecoveryListing,
+    recovery_open: bool,
     message: String,
     command: String,
     command_log: VecDeque<CommandRecord>,
@@ -91,7 +114,7 @@ pub struct Application {
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
-        Ok(Self {
+        let mut app = Self {
             projects: vec![Project::new(
                 Document::new("Untitled").map_err(|e| e.to_string())?,
             )?],
@@ -99,7 +122,11 @@ impl Application {
             mode: Mode::Parameters,
             registry: Registry::default(),
             tab: 0,
-            storage,
+            storage: FileWorker::new(storage)?,
+            pending_files: BTreeMap::new(),
+            replacement: None,
+            recoveries: Default::default(),
+            recovery_open: false,
             message: "New document. Add a parameter in the blank row.".into(),
             command: String::new(),
             command_log: VecDeque::new(),
@@ -121,7 +148,12 @@ impl Application {
             focus_command: false,
             text_input_was_focused: false,
             scene_backends: None,
-        })
+        };
+        app.discover_recoveries()?;
+        Ok(app)
+    }
+    fn should_defer_close(&self) -> bool {
+        self.projects.iter().any(Project::dirty) || !self.pending_files.is_empty()
     }
     pub fn current(&self) -> &Project {
         &self.projects[self.active]
@@ -132,7 +164,7 @@ impl Application {
     ) -> Result<Self, String> {
         let mut app = Self::new(storage)?;
         app.projects[0] = Project::new(document)?;
-        app.message = "Source snapshot loaded".into();
+        app.message = "Source snapshot imported · Save As creates a native project".into();
         Ok(app)
     }
     pub fn set_scene_backends(&mut self, factory: crate::viewport::BackendFactory) {
@@ -252,22 +284,41 @@ impl Application {
                     .spawn()
                     .map_err(|e| e.to_string())?;
             }
-            Command::Save => {
+            Command::Save | Command::SaveAs => {
                 if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
                     return Err("Apply or cancel pending edits before saving".into());
                 }
-                if let Some(path) = self.current().path.clone() {
-                    self.save_to(path)?;
+                if command == Command::Save
+                    && self.current().file_stamp.is_some()
+                    && self.current().path.is_some()
+                {
+                    self.save_to(self.current().path.clone().unwrap())?;
                 } else {
-                    self.file_path = "Untitled.multicad.json".into();
-                    self.file_document = Some(self.current().session.document().id());
+                    self.file_path = self
+                        .current()
+                        .path
+                        .as_ref()
+                        .map(|p| p.with_extension("multicad").to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Untitled.multicad".into());
+                    self.file_document = Some(self.current().local_id);
                     self.file_action = Some(FileAction::Save);
+                    self.replacement = None;
                 }
             }
-            Command::Open => {
-                self.file_action = Some(FileAction::Open);
+            Command::Open | Command::ImportSource => {
+                self.file_action = Some(if command == Command::Open {
+                    FileAction::Open
+                } else {
+                    FileAction::Import
+                });
                 self.file_path.clear();
+                self.replacement = None;
             }
+            Command::RecoverProjects => {
+                self.recovery_open = true;
+                self.discover_recoveries()?;
+            }
+            Command::RecoverySnapshot => self.snapshot_now(self.active)?,
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
@@ -380,7 +431,11 @@ impl Application {
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
             Command::Undo => self.current().session.can_undo() && !pending(),
             Command::Redo => self.current().session.can_redo() && !pending(),
-            Command::Save | Command::NewSketch => !pending(),
+            Command::Save | Command::SaveAs | Command::RecoverySnapshot => {
+                !pending() && !self.file_busy()
+            }
+            Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
+            Command::NewSketch => !pending(),
             Command::Rectangle
             | Command::Line
             | Command::Dimension
@@ -390,71 +445,6 @@ impl Application {
             }
             Command::Extension(_) => false,
             _ => true,
-        }
-    }
-    fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
-        if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
-            return Err("Apply or cancel pending edits before saving".into());
-        }
-        if self.file_action.is_some()
-            && self.file_document != Some(self.current().session.document().id())
-        {
-            return Err("Return to the document that opened this Save window, or cancel it".into());
-        }
-        let doc = self.current().session.document().clone();
-        let rev = self.current().session.revision();
-        self.storage.save(&path, &doc)?;
-        self.current_mut()
-            .session
-            .mark_saved(rev)
-            .map_err(|e| e.to_string())?;
-        self.current_mut().path = Some(path);
-        self.message = "Document source snapshot saved atomically".into();
-        self.message_error = false;
-        Ok(())
-    }
-    fn load_path(&mut self, path: PathBuf) -> Result<(), String> {
-        if let Some(index) = self
-            .projects
-            .iter()
-            .position(|p| p.path.as_ref() == Some(&path))
-        {
-            self.active = index;
-            self.message = "Document source snapshot already open".into();
-            self.message_error = false;
-            return Ok(());
-        }
-        let document = self.storage.load(&path)?;
-        let mut project = Project::new(document)?;
-        project.session.mark_saved(0).map_err(|e| e.to_string())?;
-        project.path = Some(path);
-        self.projects.push(project);
-        self.active = self.projects.len() - 1;
-        self.mode = Mode::Parameters;
-        self.tab = 0;
-        self.message = "Document source snapshot loaded".into();
-        self.message_error = false;
-        Ok(())
-    }
-    fn complete_file_action(&mut self) {
-        let Some(action) = self.file_action else {
-            return;
-        };
-        let path = PathBuf::from(&self.file_path);
-        let result = match action {
-            FileAction::Open => self.load_path(path),
-            FileAction::Save => self.save_to(path),
-        };
-        match result {
-            Ok(()) => {
-                self.file_action = None;
-                self.file_document = None;
-                self.message_error = false;
-            }
-            Err(error) => {
-                self.message = error;
-                self.message_error = true;
-            }
         }
     }
     fn example(&mut self) -> Result<(), String> {
@@ -520,10 +510,14 @@ impl Application {
                         ("Keyboard shortcuts (F1)", Command::KeyboardShortcuts),
                         ("New document", Command::New),
                         ("New window", Command::NewWindow),
-                        ("Open source snapshot…", Command::Open),
-                        ("Save source snapshot…", Command::Save),
+                        ("Open project…", Command::Open),
+                        ("Save project", Command::Save),
+                        ("Save project as…", Command::SaveAs),
+                        ("Import source snapshot…", Command::ImportSource),
+                        ("Create recovery snapshot", Command::RecoverySnapshot),
+                        ("Recover projects…", Command::RecoverProjects),
                     ] {
-                        if ui.button(label).clicked() {
+                        if ui.add_enabled(self.enabled(command), egui::Button::new(label)).clicked() {
                             action = Some(command);
                             ui.close();
                         }
@@ -1073,6 +1067,8 @@ impl Application {
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.poll_files();
+        self.schedule_recovery(&ctx);
         if let Some(factory) = &self.scene_backends {
             for project in &mut self.projects {
                 if !project.scene.has_backend() {
@@ -1082,8 +1078,9 @@ impl Application {
         }
         {
             let project = self.current_mut();
-            project.scene.tick_at(
+            project.scene.tick_project(
                 project.session.document(),
+                &project.resources,
                 project.session.revision(),
                 ctx.input(|i| i.time),
             );
@@ -1093,7 +1090,7 @@ impl Application {
         }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.close_allowed
-            && self.projects.iter().any(Project::dirty)
+            && self.should_defer_close()
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_confirm = true;
@@ -1150,28 +1147,7 @@ impl Application {
                     }
                 }
             });
-        if let Some(action) = self.file_action {
-            let mut open = true;
-            egui::Window::new(match action {
-                FileAction::Open => "Open document source snapshot",
-                FileAction::Save => "Save document source snapshot",
-            })
-            .open(&mut open)
-            .show(&ctx, |ui| {
-                ui.label("Interim canonical document JSON. Native project containers and recovery are separate work.");
-                ui.add_sized(
-                    [500.0, 28.0],
-                    egui::TextEdit::singleline(&mut self.file_path).hint_text("Document path"),
-                ).on_hover_text("Path to a MultiCAD canonical source snapshot");
-                if ui.button(match action {FileAction::Open => "Open", FileAction::Save => "Save"}).clicked() {
-                    self.complete_file_action();
-                }
-            });
-            if !open {
-                self.file_action = None;
-                self.file_document = None;
-            }
-        }
+        self.file_windows(&ctx);
         if self.history_open {
             egui::Window::new("Command and MCP history").open(&mut self.history_open).show(&ctx,|ui|{ui.label("External MCP transport is not connected. UI and command-line actions use the shared transaction API.");for entry in self.projects[self.active].session.activity(){ui.label(format!("r{} · {:?} · {} · {}",entry.change.revision,entry.actor.channel,entry.actor.id,entry.label));}});
         }
@@ -1185,7 +1161,7 @@ impl Application {
             egui::Window::new("Unsaved documents")
                 .collapsible(false)
                 .show(&ctx, |ui| {
-                    ui.label("Save or apply/discard pending edits before closing.");
+                    ui.label(if self.pending_files.is_empty() {"Save or apply/discard pending edits before closing."} else {"A file operation is still running. Keep this window open until it completes."});
                     if ui.button("Cancel").clicked() {
                         self.close_confirm = false;
                     }
@@ -1209,6 +1185,7 @@ impl eframe::App for Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     struct MemoryStorage;
     impl DocumentStorage for MemoryStorage {
         fn save(&mut self, _: &Path, _: &Document) -> Result<(), String> {
@@ -1216,6 +1193,31 @@ mod tests {
         }
         fn load(&mut self, _: &Path) -> Result<Document, String> {
             Err("No file".into())
+        }
+        fn save_project(
+            &mut self,
+            _: &Path,
+            _: &ProjectFile,
+            _: crate::storage::SaveMode,
+        ) -> Result<crate::storage::SavedProject, crate::storage::StorageError> {
+            Ok(crate::storage::SavedProject {
+                stamp: FileStamp {
+                    manifest: multicad_core::project_file::ContentHash::of(b"memory"),
+                    length: 1,
+                },
+                warnings: vec![],
+            })
+        }
+    }
+    fn wait_files(app: &mut Application) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_files.is_empty() {
+            app.poll_files();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "file worker timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
     #[test]
@@ -1839,6 +1841,38 @@ mod tests {
                     Document::new("Recovered source").map_err(|e| e.to_string())
                 }
             }
+            fn open_project(
+                &mut self,
+                path: &Path,
+            ) -> Result<crate::storage::LoadedProject, crate::storage::StorageError> {
+                let doc = self
+                    .load(path)
+                    .map_err(crate::storage::StorageError::Message)?;
+                Ok(crate::storage::LoadedProject {
+                    file: ProjectFile::new(doc).unwrap(),
+                    stamp: Some(FileStamp {
+                        manifest: multicad_core::project_file::ContentHash::of(b"retry"),
+                        length: 2,
+                    }),
+                    diagnostics: vec![],
+                })
+            }
+            fn save_project(
+                &mut self,
+                path: &Path,
+                doc: &ProjectFile,
+                _: crate::storage::SaveMode,
+            ) -> Result<crate::storage::SavedProject, crate::storage::StorageError> {
+                self.save(path, &doc.document)
+                    .map_err(crate::storage::StorageError::Message)?;
+                Ok(crate::storage::SavedProject {
+                    stamp: FileStamp {
+                        manifest: multicad_core::project_file::ContentHash::of(b"saved"),
+                        length: 3,
+                    },
+                    warnings: vec![],
+                })
+            }
             fn save(&mut self, path: &Path, _: &Document) -> Result<(), String> {
                 if path == Path::new("denied.json") {
                     Err("Write denied".into())
@@ -1852,13 +1886,15 @@ mod tests {
         app.execute(Command::Open, &[], Channel::Ui);
         app.file_path = "missing.json".into();
         app.complete_file_action();
+        wait_files(&mut app);
         assert!(app.message_error);
         assert!(app.file_action.is_some());
         assert_eq!(app.current().session.document(), &original);
         app.file_path = "valid.json".into();
         app.complete_file_action();
+        wait_files(&mut app);
         assert!(!app.message_error);
-        assert_eq!(app.message, "Document source snapshot loaded");
+        assert_eq!(app.message, "Project opened");
         assert!(app.file_action.is_none());
         assert_eq!(app.projects.len(), 2);
         assert_eq!(app.current().session.document().name(), "Recovered source");
@@ -1874,14 +1910,16 @@ mod tests {
         app.file_path = "denied.json".into();
         let original = app.current().session.document().clone();
         app.complete_file_action();
+        wait_files(&mut app);
         assert!(app.message_error);
         assert!(app.file_action.is_some());
         assert!(app.current().path.is_none());
         assert_eq!(app.current().session.document(), &original);
         app.file_path = "saved.json".into();
         app.complete_file_action();
+        wait_files(&mut app);
         assert!(!app.message_error);
-        assert_eq!(app.message, "Document source snapshot saved atomically");
+        assert_eq!(app.message, "Project saved atomically");
         assert!(app.file_action.is_none());
         assert!(app.file_document.is_none());
         assert_eq!(app.current().path.as_deref(), Some(Path::new("saved.json")));
