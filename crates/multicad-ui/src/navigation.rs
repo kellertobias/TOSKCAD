@@ -97,11 +97,13 @@ fn axis_points(camera: &Camera, rect: Rect) -> Vec<(AxisView, [f32; 3])> {
         .into_iter()
         .map(|axis| {
             let mut point = view.project(axis.vector(), rect);
-            if (Pos2::new(point[0], point[1]) - rect.center()).length() < 12.0 {
-                let sign = axis.vector().iter().sum::<f32>();
-                point[0] = rect.center().x + sign * 12.0;
-                point[1] = rect.center().y - sign * 12.0;
-            }
+            // Smoothly separate a foreshortened pair. A hard radius threshold
+            // causes a visible jump when an endpoint crosses that threshold.
+            let radius = (Pos2::new(point[0], point[1]) - rect.center()).length();
+            let blend = (1.0 - radius / 18.0).clamp(0.0, 1.0).powi(2);
+            let sign = axis.vector().iter().sum::<f32>();
+            point[0] += sign * 12.0 * blend;
+            point[1] -= sign * 12.0 * blend;
             (axis, point)
         })
         .collect();
@@ -135,7 +137,7 @@ pub fn orientation(ui: &mut egui::Ui, camera: &mut Camera) -> egui::Response {
     let mut chosen = None;
     for (axis, point) in points {
         let center = Pos2::new(point[0], point[1]);
-        let hit = Rect::from_center_size(center, Vec2::splat(22.0));
+        let hit = Rect::from_center_size(center, Vec2::splat(18.0));
         let r = ui.interact(hit, ui.id().with(axis.label()), Sense::click());
         r.widget_info(|| {
             egui::WidgetInfo::labeled(
@@ -145,23 +147,18 @@ pub fn orientation(ui: &mut egui::Ui, camera: &mut Camera) -> egui::Response {
             )
         });
         let color = axis.color();
-        ui.painter().circle_filled(
+        ui.painter().circle_filled(center, 8.0, color);
+        ui.painter().circle_stroke(
             center,
-            10.0,
-            if r.hovered() {
-                color
-            } else {
-                Color32::from_rgb(28, 35, 45)
-            },
+            8.0,
+            Stroke::new(1.0, if r.hovered() { Color32::WHITE } else { color }),
         );
-        ui.painter()
-            .circle_stroke(center, 10.0, Stroke::new(1.3, color));
         ui.painter().text(
             center,
             Align2::CENTER_CENTER,
             axis.label(),
-            FontId::proportional(10.0),
-            if r.hovered() { Color32::BLACK } else { color },
+            FontId::proportional(9.0),
+            Color32::WHITE,
         );
         if r.clicked() {
             chosen = Some(axis);
@@ -188,8 +185,10 @@ pub fn toolbar(ui: &mut egui::Ui, camera: &mut Camera, style: &mut DisplayStyle)
         .inner_margin(4)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().interact_size.y = 24.0;
+            ui.spacing_mut().button_padding = Vec2::new(3.0, 2.0);
             ui.horizontal(|ui| {
-                actions.home = icons::button(ui, Icon::Home, "Home view").clicked();
+                actions.home = icons::compact_button(ui, Icon::Home, "Home view").clicked();
                 actions.fit = icons::button(
                     ui,
                     Icon::Fit,
@@ -227,11 +226,12 @@ pub fn toolbar(ui: &mut egui::Ui, camera: &mut Camera, style: &mut DisplayStyle)
                         }
                     })
                     .response;
-                icons::paint(
+                icons::paint_sized(
                     ui,
                     style.icon(),
                     response.rect.center() - Vec2::new(3.0, 0.0),
                     Color32::from_rgb(192, 207, 226),
+                    16.0,
                 );
                 let c = response.rect.right_center() - Vec2::new(4.0, 0.0);
                 ui.painter().line_segment(
@@ -299,6 +299,32 @@ mod tests {
                 "Axis {} did not control the camera",
                 axis.label()
             );
+        }
+    }
+    #[test]
+    fn orbiting_axis_endpoints_move_continuously_across_foreshortening() {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(104.0));
+        for pitch in [-1.57, -0.6, 0.0, 0.6, 1.57] {
+            let mut previous: Option<Vec<(AxisView, [f32; 3])>> = None;
+            for step in 0..=6284 {
+                let camera = Camera {
+                    yaw: step as f32 * 0.001,
+                    pitch,
+                    ..Default::default()
+                };
+                let points = axis_points(&camera, rect);
+                if let Some(before) = previous {
+                    for (axis, p) in &points {
+                        let b = before.iter().find(|b| b.0 == *axis).unwrap().1;
+                        assert!(
+                            (Pos2::new(p[0], p[1]) - Pos2::new(b[0], b[1])).length() < 0.15,
+                            "{} jumped during orbit",
+                            axis.label()
+                        );
+                    }
+                }
+                previous = Some(points);
+            }
         }
     }
     #[test]

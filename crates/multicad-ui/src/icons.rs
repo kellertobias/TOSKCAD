@@ -40,7 +40,47 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, size: f32) -> egui::R
     } else {
         Color32::from_gray(91)
     };
-    paint(ui, icon, rect.center(), color);
+    paint_sized(
+        ui,
+        icon,
+        rect.center(),
+        color,
+        if size <= 24.0 { 16.0 } else { 24.0 },
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.on_hover_text(label)
+}
+pub fn compact_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
+    icon_button(ui, icon, label, 24.0)
+}
+pub fn labeled_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        label.into(),
+        egui::FontId::proportional(12.0),
+        Color32::WHITE,
+    );
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(16.0 + 6.0 + galley.size().x + 12.0, 26.0),
+        egui::Sense::click(),
+    );
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 4, Color32::from_white_alpha(30));
+    }
+    paint_sized(
+        ui,
+        icon,
+        Pos2::new(rect.left() + 14.0, rect.center().y),
+        Color32::WHITE,
+        16.0,
+    );
+    ui.painter().galley(
+        Pos2::new(rect.left() + 28.0, rect.center().y - galley.size().y * 0.5),
+        galley,
+        Color32::WHITE,
+    );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
@@ -54,10 +94,11 @@ pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     })
     .inner
 }
-pub(crate) fn paint(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color32) {
+pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color32, size: f32) {
     let p = ui.painter();
-    let stroke = Stroke::new(1.65, color);
-    let v = |x: f32, y: f32| center + Vec2::new(x - 12.0, y - 12.0);
+    let scale = size / 24.0;
+    let stroke = Stroke::new((1.65 * scale).max(1.25), color);
+    let v = |x: f32, y: f32| center + Vec2::new(x - 12.0, y - 12.0) * scale;
     let path = |points: &[[f32; 2]]| {
         p.add(egui::Shape::line(
             points.iter().map(|a| v(a[0], a[1])).collect(),
@@ -67,14 +108,14 @@ pub(crate) fn paint(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color32) {
     let line = |a: [f32; 2], b: [f32; 2]| path(&[a, b]);
     let rect = |x: f32, y: f32, w: f32, h: f32| {
         p.rect_stroke(
-            egui::Rect::from_min_size(v(x, y), Vec2::new(w, h)),
+            egui::Rect::from_min_size(v(x, y), Vec2::new(w, h) * scale),
             2,
             stroke,
             egui::StrokeKind::Inside,
         );
     };
     let circle = |x: f32, y: f32, r: f32| {
-        p.circle_stroke(v(x, y), r, stroke);
+        p.circle_stroke(v(x, y), r * scale, stroke);
     };
     match icon {
         Icon::Save => {
@@ -253,8 +294,8 @@ pub(crate) fn paint(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color32) {
             }
         }
         Icon::Link => {
-            let a = egui::Rect::from_min_size(v(2.0, 8.0), Vec2::new(12.0, 8.0));
-            let b = egui::Rect::from_min_size(v(10.0, 8.0), Vec2::new(12.0, 8.0));
+            let a = egui::Rect::from_min_size(v(2.0, 8.0), Vec2::new(12.0, 8.0) * scale);
+            let b = egui::Rect::from_min_size(v(10.0, 8.0), Vec2::new(12.0, 8.0) * scale);
             p.rect_stroke(a, 4, stroke, egui::StrokeKind::Inside);
             p.rect_stroke(b, 4, stroke, egui::StrokeKind::Inside);
             line([8.0, 12.0], [16.0, 12.0]);
