@@ -375,16 +375,19 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
+        let pending = self.current().editor.dirty() || self.current().sketch.has_pending_edits();
         match command {
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
-            Command::Undo => self.current().session.can_undo() && !self.current().editor.dirty(),
-            Command::Redo => self.current().session.can_redo() && !self.current().editor.dirty(),
-            Command::NewSketch => !self.current().editor.dirty(),
+            Command::Undo => self.current().session.can_undo() && !pending,
+            Command::Redo => self.current().session.can_redo() && !pending,
+            Command::Save | Command::NewSketch => !pending,
             Command::Rectangle
             | Command::Line
             | Command::Dimension
             | Command::FinishSketch
-            | Command::Delete => self.mode == Mode::Sketch && self.current().sketch.editing,
+            | Command::Delete => {
+                self.mode == Mode::Sketch && self.current().sketch.editing && !pending
+            }
             Command::Extension(_) => false,
             _ => true,
         }
@@ -1561,6 +1564,72 @@ mod tests {
             vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
         );
         assert_eq!(app.tab, before);
+    }
+    #[test]
+    fn pending_sketch_preview_disables_source_actions_until_it_is_cancelled() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        app.invoke(Command::Rectangle, &["0", "0", "80", "60"], Channel::Ui)
+            .unwrap();
+        app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
+        assert!(app.current().session.can_undo() && app.current().session.can_redo());
+        shortcut_frame(&ctx, &mut app, vec![]);
+        app.current_mut().sketch.toggle_transform();
+        shortcut_frame(&ctx, &mut app, vec![]);
+        let sketch = &app.current().sketch;
+        let rect = sketch.viewport_rect.unwrap();
+        let end = sketch
+            .camera
+            .project([62. / sketch.camera.scale, 0., 0.], rect);
+        let start = egui::pos2(end[0], end[1]);
+        let before = app.current().session.document().clone();
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(start + egui::vec2(30., 0.))],
+        );
+        assert!(app.current().sketch.has_pending_edits());
+        for command in [
+            Command::Save,
+            Command::Undo,
+            Command::Redo,
+            Command::NewSketch,
+            Command::FinishSketch,
+            Command::Delete,
+            Command::Line,
+            Command::Rectangle,
+            Command::Dimension,
+        ] {
+            assert!(
+                !app.enabled(command),
+                "Pending preview left {command:?} enabled"
+            );
+        }
+        assert_eq!(app.current().session.document(), &before);
+        assert!(app.invoke(Command::Save, &[], Channel::Ui).is_err());
+        assert!(app.invoke(Command::Undo, &[], Channel::Ui).is_err());
+        app.current_mut().sketch.cancel();
+        assert!(app.enabled(Command::Save));
+        assert!(app.enabled(Command::Undo));
+        assert!(app.enabled(Command::Redo));
+        assert!(app.enabled(Command::NewSketch));
+        assert!(app.enabled(Command::FinishSketch));
+        assert_eq!(app.current().session.document(), &before);
     }
     #[test]
     fn centered_search_accepts_input_without_dragging_or_changing_modes() {
