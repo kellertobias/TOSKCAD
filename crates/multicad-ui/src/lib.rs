@@ -36,7 +36,7 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         "MultiCAD",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            theme::configure(&cc.egui_ctx);
             application(cc)
         }),
     )
@@ -44,3 +44,8 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
 }
 
 pub mod sketch_editor;
+
+pub mod theme;
+
+#[cfg(target_os = "macos")]
+mod native_window;

@@ -629,28 +629,29 @@ impl SketchEditor {
                         ui.checkbox(&mut snap, "Snap sketch points to spacing");
                     },
                     |ui| {
-                        if icons::compact_button(ui, Icon::Link, "Toggle transform gizmo").clicked()
-                        {
+                        let transform = icons::compact_button(
+                            ui,
+                            Icon::Transform,
+                            &format!(
+                                "Transform gizmo · {} coordinates · right-click to choose axes",
+                                coordinates.label()
+                            ),
+                        );
+                        if transform.clicked() {
                             moving = !moving;
                         }
-                        egui::ComboBox::from_id_salt("coordinates")
-                            .selected_text(coordinates.label())
-                            .width(82.)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut coordinates, Coordinates::World, "World");
+                        transform.context_menu(|ui| {
+                            ui.strong("Transform coordinates");
+                            ui.selectable_value(&mut coordinates, Coordinates::World, "World");
+                            ui.selectable_value(&mut coordinates, Coordinates::Object, "Object");
+                            for d in Datum::ALL {
                                 ui.selectable_value(
                                     &mut coordinates,
-                                    Coordinates::Object,
-                                    "Object",
+                                    Coordinates::Custom(d),
+                                    format!("Custom {} datum", d.label()),
                                 );
-                                for d in Datum::ALL {
-                                    ui.selectable_value(
-                                        &mut coordinates,
-                                        Coordinates::Custom(d),
-                                        format!("Custom {} datum", d.label()),
-                                    );
-                                }
-                            });
+                            }
+                        });
                     },
                 );
                 if actions.home {

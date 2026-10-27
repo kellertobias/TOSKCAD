@@ -106,7 +106,7 @@ impl ParameterEditor {
                     id: e.id,
                     name: e.name.clone(),
                     description: e.description.clone(),
-                    expression: expression.clone(),
+                    expression: multicad_core::parameters::display_input(expression),
                     unit: unit.clone(),
                     exposed: *exposed,
                 }
@@ -154,6 +154,10 @@ impl ParameterEditor {
         let mut edits = Vec::new();
         let mut present = BTreeSet::new();
         for row in self.rows.iter().filter(|r| !r.empty()) {
+            multicad_core::parameters::validate_input(&row.expression).map_err(|mut e| {
+                e.entity = Some(row.id);
+                CommandError::from(e)
+            })?;
             let entity = row.entity(session.document());
             present.insert(row.id);
             edits.push(if session.document().get(row.id).is_some() {
@@ -259,9 +263,14 @@ impl ParameterEditor {
             ui.heading("Parameters");
             ui.add_space(20.0);
             ui.label("Filter");
-            ui.text_edit_singleline(&mut self.search);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text("Filter parameters…")
+                    .desired_width(240.),
+            )
+            .on_hover_text("Filter rows by parameter name or description");
         });
-        ui.label("Names and expressions are editable. Complete the blank row to add another. Units: mm, cm, m, in, ft, deg, rad, count, ratio, %.");
+        ui.label("Enter a value or a formula such as =600 - $height. Comparisons return 1 or 0 (ratio). Complete a row to add another.");
         let width = ui.available_width();
         let columns = [0.14, 0.22, 0.23, 0.07, 0.13, 0.07, 0.14].map(|f| f * width);
         let headers = [
@@ -339,8 +348,9 @@ impl ParameterEditor {
                                         cell.size(),
                                         egui::TextEdit::singleline(&mut row.name)
                                             .hint_text("name")
-                                            .frame(egui::Frame::new()),
+                                            .frame(crate::theme::input_frame()),
                                     )
+                                    .on_hover_text(cell_help(column))
                                     .changed()
                             }
                             1 => {
@@ -349,8 +359,9 @@ impl ParameterEditor {
                                         cell.size(),
                                         egui::TextEdit::singleline(&mut row.description)
                                             .hint_text("Description")
-                                            .frame(egui::Frame::new()),
+                                            .frame(crate::theme::input_frame()),
                                     )
+                                    .on_hover_text(cell_help(column))
                                     .changed()
                             }
                             2 => {
@@ -359,8 +370,9 @@ impl ParameterEditor {
                                         cell.size(),
                                         egui::TextEdit::singleline(&mut row.expression)
                                             .hint_text("Value or expression")
-                                            .frame(egui::Frame::new()),
+                                            .frame(crate::theme::input_frame()),
                                     )
+                                    .on_hover_text(cell_help(column))
                                     .changed()
                             }
                             3 => {
@@ -368,8 +380,9 @@ impl ParameterEditor {
                                     .add_sized(
                                         cell.size(),
                                         egui::TextEdit::singleline(&mut row.unit)
-                                            .frame(egui::Frame::new()),
+                                            .frame(crate::theme::input_frame()),
                                     )
+                                    .on_hover_text(cell_help(column))
                                     .changed()
                             }
                             4 => {
@@ -389,17 +402,17 @@ impl ParameterEditor {
                                     ui.label("-");
                                 }
                             }
-                            5 => changed |= ui.checkbox(&mut row.exposed, "").changed(),
+                            5 => changed |= ui.checkbox(&mut row.exposed, "").on_hover_text("Expose this default to symbols and external clients. A supplied value replaces its formula.").changed(),
                             6 if !row.empty() => {
-                                if ui.small_button("Up").clicked() && index > 0 {
-                                    movement = Some((index, index - 1));
-                                }
-                                if ui.small_button("Down").clicked() {
-                                    movement = Some((index, index + 1));
-                                }
-                                if ui.small_button("x").clicked() {
-                                    delete = Some(index);
-                                }
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing=Vec2::new(4.,0.);
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y=0.;
+                                        if ui.add_enabled_ui(index>0,|ui|crate::icons::mini_button(ui,crate::icons::Icon::ArrowUp,"Move parameter up")).inner.clicked(){movement=Some((index,index-1));}
+                                        if crate::icons::mini_button(ui,crate::icons::Icon::ArrowDown,"Move parameter down").clicked(){movement=Some((index,index+1));}
+                                    });
+                                    if crate::icons::compact_button(ui,crate::icons::Icon::Trash,"Delete parameter").clicked(){delete=Some(index);}
+                                });
                             }
                             _ => {}
                         },
@@ -427,6 +440,16 @@ impl ParameterEditor {
         }
     }
 }
+
+fn cell_help(column: usize) -> &'static str {
+    match column {
+        0 => "Stable parameter name used by $references",
+        1 => "Describe the parameter",
+        2 => "Value, or =formula with $parameter references",
+        _ => "Unit: mm, cm, m, in, ft, deg, rad, count, ratio or %",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

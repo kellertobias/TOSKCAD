@@ -52,6 +52,11 @@ enum FileAction {
     Save,
     Open,
 }
+struct CommandRecord {
+    input: String,
+    result: String,
+    error: bool,
+}
 pub struct Application {
     pub projects: Vec<Project>,
     pub active: usize,
@@ -61,7 +66,9 @@ pub struct Application {
     storage: Box<dyn DocumentStorage>,
     message: String,
     command: String,
-    command_log: VecDeque<String>,
+    command_log: VecDeque<CommandRecord>,
+    command_history_open: bool,
+    message_error: bool,
     file_action: Option<FileAction>,
     file_path: String,
     file_document: Option<multicad_core::document::EntityId>,
@@ -85,6 +92,8 @@ impl Application {
             message: "New document. Add a parameter in the blank row.".into(),
             command: String::new(),
             command_log: VecDeque::new(),
+            command_history_open: false,
+            message_error: false,
             file_action: None,
             file_path: String::new(),
             file_document: None,
@@ -277,7 +286,16 @@ impl Application {
         Ok(())
     }
     fn execute(&mut self, command: Command, args: &[&str], channel: Channel) {
+        self.message_error = false;
+        self.message = self
+            .registry
+            .tools
+            .iter()
+            .find(|t| t.action == command)
+            .map(|t| t.label.to_string())
+            .unwrap_or_default();
         if let Err(error) = self.invoke(command, args, channel) {
+            self.message_error = true;
             self.message = error.clone();
             if matches!(
                 command,
@@ -351,7 +369,7 @@ impl Application {
             ("rail_gap", "12.5", "Drawer rail clearance"),
             (
                 "drawer_width",
-                "width - 2 * stock - rail_gap",
+                "=$width - 2 * $stock - $rail_gap",
                 "Derived drawer width",
             ),
         ] {
@@ -418,7 +436,7 @@ impl Application {
                         ui.close();
                     }
                 });
-                let short: String = title.chars().take(26).collect();
+                let short: String = title.chars().take(20).collect();
                 ui.menu_button(format!("{short}  v"), |ui| {
                     for (index, project) in self.projects.iter().enumerate() {
                         if ui
@@ -449,9 +467,6 @@ impl Application {
                         action = Some(command);
                     }
                 }
-                if ui.small_button("Find tool…").clicked() {
-                    self.find_open = true;
-                }
                 let width = Mode::ALL
                     .iter()
                     .map(|m| {
@@ -468,6 +483,63 @@ impl Application {
                     })
                     .sum::<f32>()
                     + ui.spacing().item_spacing.x * 5.0;
+                let search_width = (ui.available_width() - width - 30.).clamp(100., 220.);
+                let ideal = ui.max_rect().center().x - search_width * 0.5;
+                let left_gap = (ideal - ui.cursor().left())
+                    .max(0.)
+                    .min((ui.available_width() - width - search_width - 16.).max(0.));
+                let (_, left_drag) =
+                    ui.allocate_exact_size(egui::vec2(left_gap, 30.), egui::Sense::drag());
+                if left_drag.drag_started() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                let search = ui.add_sized(
+                    [search_width, 28.],
+                    egui::TextEdit::singleline(&mut self.find).hint_text("Find a tool…"),
+                );
+                if search.changed() || search.gained_focus() || search.clicked() {
+                    self.find_open = true;
+                }
+                search
+                    .clone()
+                    .on_hover_text("Find tools by name or command alias");
+                let mut open = self.find_open;
+                egui::Popup::from_response(&search)
+                    .open_bool(&mut open)
+                    .align(egui::RectAlign::BOTTOM_START)
+                    .width(search_width.max(260.))
+                    .show(|ui| {
+                        let query = self.find.to_lowercase();
+                        let mut found = false;
+                        for tool in &self.registry.tools {
+                            if !query.is_empty()
+                                && !tool.label.to_lowercase().contains(&query)
+                                && !tool.aliases.iter().any(|a| a.contains(&query))
+                            {
+                                continue;
+                            }
+                            found = true;
+                            if ui
+                                .add_enabled(
+                                    self.enabled(tool.action),
+                                    egui::Button::new(tool.label),
+                                )
+                                .on_disabled_hover_text("Unavailable in this context")
+                                .on_hover_text(format!("Command: {}", tool.id))
+                                .clicked()
+                            {
+                                action = Some(tool.action);
+                            }
+                        }
+                        if !found {
+                            ui.label("No matching tools");
+                        }
+                    });
+                if action.is_some() {
+                    open = false;
+                    search.surrender_focus();
+                }
+                self.find_open = open;
                 let (_, drag) = ui.allocate_exact_size(
                     egui::vec2(
                         (ui.available_width()
@@ -573,53 +645,136 @@ impl Application {
                 });
             });
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for id in &workspace.tabs[self.tab].tools {
-                    if self.mode == Mode::Sketch
-                        && !self.current().sketch.editing
-                        && *id != "new-sketch"
-                    {
-                        continue;
-                    }
-                    let tool = *self.registry.tool(id).expect("registered tool");
-                    let enabled = self.enabled(tool.action);
-                    if ui
-                        .add_enabled_ui(enabled, |ui| icons::tool(ui, tool.icon, tool.label))
-                        .inner
-                        .on_disabled_hover_text(
-                            "This component is not available in the current context",
-                        )
-                        .clicked()
-                    {
-                        action = Some(tool.action);
-                    }
-                }
+        egui::Frame::new()
+            .fill(crate::theme::PANEL)
+            .inner_margin(egui::Margin::symmetric(crate::theme::GUTTER, 0))
+            .show(ui, |ui| {
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for id in &workspace.tabs[self.tab].tools {
+                            if self.mode == Mode::Sketch
+                                && !self.current().sketch.editing
+                                && *id != "new-sketch"
+                            {
+                                continue;
+                            }
+                            let tool = *self.registry.tool(id).expect("registered tool");
+                            let enabled = self.enabled(tool.action);
+                            if ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    icons::tool(ui, tool.icon, tool.label)
+                                })
+                                .inner
+                                .on_disabled_hover_text(
+                                    "This component is not available in the current context",
+                                )
+                                .clicked()
+                            {
+                                action = Some(tool.action);
+                            }
+                        }
+                    });
+                })
             });
-        });
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
         }
     }
+    fn submit_line(&mut self, line: String) {
+        match self.registry.parse_line(&line) {
+            Ok((command, args)) => self.execute(command, &args, Channel::CommandLine),
+            Err(error) => {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
+        self.command_log.push_back(CommandRecord {
+            input: line,
+            result: self.message.clone(),
+            error: self.message_error,
+        });
+        if self.command_log.len() > 100 {
+            self.command_log.pop_front();
+        }
+    }
     fn command_line(&mut self, ui: &mut egui::Ui) {
+        if self.command_history_open {
+            ui.strong("Command history");
+            egui::ScrollArea::vertical()
+                .max_height(190.)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for record in &self.command_log {
+                        ui.monospace(format!("> {}", record.input));
+                        ui.colored_label(
+                            if record.error {
+                                Color32::LIGHT_RED
+                            } else {
+                                Color32::GRAY
+                            },
+                            &record.result,
+                        );
+                    }
+                    ui.separator();
+                    ui.small("Document transactions");
+                    for entry in self.current().session.activity() {
+                        ui.small(format!(
+                            "r{} · {:?} · {}",
+                            entry.change.revision, entry.actor.channel, entry.label
+                        ));
+                    }
+                });
+            ui.separator();
+        }
         ui.horizontal(|ui| {
-            ui.label(RichText::new(">").monospace().strong());
+            if ui
+                .add_sized(
+                    [24., 28.],
+                    egui::Button::new(
+                        RichText::new(if self.command_history_open {
+                            "⌃"
+                        } else {
+                            ">"
+                        })
+                        .monospace(),
+                    ),
+                )
+                .on_hover_text(if self.command_history_open {
+                    "Collapse command history"
+                } else {
+                    "Expand command history"
+                })
+                .clicked()
+            {
+                self.command_history_open = !self.command_history_open;
+            }
+            let width = ui.available_width();
+            let status_width = (width * 0.43).min(560.);
             let response = ui.add_sized(
-                [ui.available_width(), 28.0],
+                [(width - status_width - 8.).max(100.), 28.],
                 egui::TextEdit::singleline(&mut self.command)
-                    .hint_text("Command: params, sketch, start, rect, apply, undo, save…")
+                    .hint_text("Command…")
                     .font(egui::TextStyle::Monospace),
             );
+            response
+                .clone()
+                .on_hover_text("Enter a command: params, param, start, rect, apply, undo, save");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let text = format!("{} · r{}", self.message, self.current().session.revision());
+                ui.add_sized(
+                    [status_width, 28.],
+                    egui::Label::new(RichText::new(&text).small().color(if self.message_error {
+                        Color32::LIGHT_RED
+                    } else {
+                        Color32::GRAY
+                    }))
+                    .truncate(),
+                )
+                .on_hover_text(text);
+            });
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let line = std::mem::take(&mut self.command);
-                self.command_log.push_back(line.clone());
-                if self.command_log.len() > 100 {
-                    self.command_log.pop_front();
-                }
-                match self.registry.parse_line(&line) {
-                    Ok((command, args)) => self.execute(command, &args, Channel::CommandLine),
-                    Err(error) => self.message = error,
-                }
+                self.submit_line(line);
                 response.request_focus();
             }
         });
@@ -639,25 +794,30 @@ impl Application {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
             self.execute(Command::New, &[], Channel::Ui);
         }
-        egui::Panel::top("header").show(ui, |ui| self.header(ui));
+        egui::Panel::top("header")
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(8, 2)),
+            )
+            .show(ui, |ui| self.header(ui));
         egui::Panel::top("ribbon")
             .frame(egui::Frame::new())
             .show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("command-entry").show(ui, |ui| self.command_line(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(&self.message);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.small(format!("Revision {}", self.current().session.revision()));
-                });
-            });
-        });
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| {
                 if self.mode == Mode::Parameters {
                     let p = self.current_mut();
-                    p.editor.show(ui, &p.session);
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: 8,
+                            right: 8,
+                            top: 12,
+                            bottom: 8,
+                        })
+                        .show(ui, |ui| p.editor.show(ui, &p.session));
                 } else {
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
@@ -668,39 +828,11 @@ impl Application {
             let mut open = true;
             egui::Window::new(match action{FileAction::Open=>"Open document source snapshot",FileAction::Save=>"Save document source snapshot"}).open(&mut open).show(&ctx,|ui|{
             ui.label("Interim canonical document JSON. Native project containers and recovery are separate work.");ui.add_sized([500.0,28.0],egui::TextEdit::singleline(&mut self.file_path));
-            if ui.button(match action{FileAction::Open=>"Open",FileAction::Save=>"Save"}).clicked(){let path=PathBuf::from(&self.file_path);let result=match action{FileAction::Open=>self.load_path(path),FileAction::Save=>self.save_to(path)};match result{Ok(())=>self.file_action=None,Err(error)=>self.message=error}}
+            if ui.button(match action{FileAction::Open=>"Open",FileAction::Save=>"Save"}).clicked(){let path=PathBuf::from(&self.file_path);let result=match action{FileAction::Open=>self.load_path(path),FileAction::Save=>self.save_to(path)};match result{Ok(())=>self.file_action=None,Err(error)=>{self.message=error;self.message_error=true;}}}
         });
             if !open {
                 self.file_action = None;
             }
-        }
-        if self.find_open {
-            let mut open = true;
-            egui::Window::new("Find a tool")
-                .open(&mut open)
-                .show(&ctx, |ui| {
-                    ui.text_edit_singleline(&mut self.find);
-                    let mut invoke = None;
-                    for tool in &self.registry.tools {
-                        if tool
-                            .label
-                            .to_lowercase()
-                            .contains(&self.find.to_lowercase())
-                            && ui
-                                .add_enabled(
-                                    self.enabled(tool.action),
-                                    egui::Button::new(tool.label),
-                                )
-                                .clicked()
-                        {
-                            invoke = Some(tool.action);
-                        }
-                    }
-                    if let Some(command) = invoke {
-                        self.execute(command, &[], Channel::Ui);
-                    }
-                });
-            self.find_open = open;
         }
         if self.history_open {
             egui::Window::new("Command and MCP history").open(&mut self.history_open).show(&ctx,|ui|{ui.label("External MCP transport is not connected. UI and command-line actions use the shared transaction API.");for entry in self.projects[self.active].session.activity(){ui.label(format!("r{} · {:?} · {} · {}",entry.change.revision,entry.actor.channel,entry.actor.id,entry.label));}});
@@ -722,7 +854,9 @@ impl Application {
     }
 }
 impl eframe::App for Application {
-    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        crate::native_window::align_title_buttons(_frame, 40.0 * ui.ctx().zoom_factor() as f64);
         self.show(ui);
     }
 }
@@ -829,6 +963,62 @@ mod tests {
             Channel::CommandLine,
         )
         .unwrap();
+    }
+    #[test]
+    fn centered_search_accepts_input_without_dragging_or_changing_modes() {
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let mut frame = |events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1360., 860.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            )
+            .drop_without_applying_deltas();
+        };
+        frame(vec![]);
+        frame(vec![]);
+        let point = egui::pos2(680., 20.);
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        frame(vec![egui::Event::Text("model".into())]);
+        assert_eq!(app.find, "model");
+        assert!(app.find_open);
+        assert_eq!(app.mode, Mode::Parameters);
+    }
+    #[test]
+    fn command_history_keeps_manual_inputs_results_and_error_severity() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.submit_line("param height mm 120".into());
+        app.submit_line("param width mm =600 - $height".into());
+        assert!(!app.message_error);
+        assert_eq!(app.command_log.len(), 2);
+        app.submit_line("not-a-command".into());
+        assert!(app.message_error);
+        assert!(app.command_log.back().unwrap().error);
+        assert_eq!(app.command_log.back().unwrap().input, "not-a-command");
+        app.submit_line("params".into());
+        assert!(!app.message_error);
+        for _ in 0..110 {
+            app.submit_line("params".into());
+        }
+        assert_eq!(app.command_log.len(), 100);
     }
     #[test]
     fn save_dialog_stays_bound_to_document_and_rejects_unapplied_drafts() {

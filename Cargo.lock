@@ -1824,8 +1824,11 @@ dependencies = [
 name = "multicad-ui"
 version = "0.1.0-dev"
 dependencies = [
+ "cxx",
+ "cxx-build",
  "eframe",
  "multicad-core",
+ "raw-window-handle",
  "serde_json",
 ]
 

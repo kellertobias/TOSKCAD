@@ -12,5 +12,15 @@ eframe.workspace = true
 multicad-core.workspace = true
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 
-[lints]
-workspace = true
+[target.'cfg(target_os = "macos")'.dependencies]
+cxx = "=1.0.205"
+raw-window-handle = "=0.6.2"
+
+[build-dependencies]
+cxx-build = "=1.0.205"
+
+# Only the small audited native-window bridge may declare unsafe FFI.
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

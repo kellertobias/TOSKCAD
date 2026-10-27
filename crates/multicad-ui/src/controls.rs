@@ -57,7 +57,7 @@ pub fn tab(ui: &mut egui::Ui, label: &str, selected: bool, colors: TabColors) ->
             label,
         )
     });
-    response
+    response.on_hover_text(label)
 }
 #[cfg(test)]
 mod tests {

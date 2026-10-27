@@ -2,6 +2,10 @@
 use eframe::egui::{self, Color32, Pos2, Stroke, Vec2};
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Transform,
+    ArrowUp,
+    ArrowDown,
+    Trash,
     Save,
     Undo,
     Redo,
@@ -152,6 +156,24 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
         p.circle_stroke(v(x, y), r * scale, stroke);
     };
     match icon {
+        Icon::Transform => {
+            line([5., 19.], [20., 19.]);
+            path(&[[16., 15.], [20., 19.], [16., 23.]]);
+            line([5., 19.], [5., 3.]);
+            path(&[[1., 7.], [5., 3.], [9., 7.]]);
+            line([5., 19.], [16., 8.]);
+            path(&[[10., 8.], [16., 8.], [16., 14.]]);
+        }
+        Icon::ArrowUp => path(&[[5., 15.], [12., 8.], [19., 15.]]),
+        Icon::ArrowDown => path(&[[5., 9.], [12., 16.], [19., 9.]]),
+        Icon::Trash => {
+            line([4., 6.], [20., 6.]);
+            rect(6., 6., 12., 15.);
+            path(&[[9., 6.], [9., 3.], [15., 3.], [15., 6.]]);
+            line([10., 10.], [10., 17.]);
+            line([14., 10.], [14., 17.]);
+        }
+
         Icon::Save => {
             path(&[
                 [4.0, 3.0],
@@ -360,4 +382,8 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             line([3.0, 12.0], [21.0, 12.0]);
         }
     }
+}
+
+pub fn mini_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
+    icon_button(ui, icon, label, 14.)
 }
