@@ -145,6 +145,7 @@ impl SketchEditor {
     }
     pub fn cancel(&mut self) {
         self.repair.cancel();
+        self.solid.clear();
         self.picking = false;
         self.tool = None;
         self.first = None;
@@ -195,10 +196,18 @@ impl SketchEditor {
         Ok(())
     }
     pub fn open(&mut self, doc: &Document, id: EntityId) -> Result<(), String> {
+        Sketch::read(doc, id).map_err(|e| e.to_string())?;
+        self.activate_sketch(id)
+    }
+    pub fn open_at(&mut self, doc: &Document, id: EntityId, revision: u64) -> Result<(), String> {
+        self.read_sketch(doc, id, revision)
+            .map_err(|e| e.to_string())?;
+        self.activate_sketch(id)
+    }
+    fn activate_sketch(&mut self, id: EntityId) -> Result<(), String> {
         if self.has_pending_edits() {
             return Err("Apply or discard pending edits before opening a sketch".into());
         }
-        Sketch::read(doc, id).map_err(|e| e.to_string())?;
         self.cancel();
         self.selected = Some(id);
         self.editing = true;
@@ -244,7 +253,9 @@ impl SketchEditor {
             return Err("Apply or discard constraint edits before drawing".into());
         }
         let id = self.selected.ok_or("Select a sketch")?;
-        let gid = if let Ok((mut source, _, _)) = Source::read(session.document(), id) {
+        let gid = if let Ok((mut source, _, _)) =
+            self.read_source(session.document(), id, session.revision())
+        {
             let gid = match tool {
                 DrawTool::Line => {
                     let start = source.add_point(a);
@@ -298,7 +309,8 @@ impl SketchEditor {
         let element = self
             .element
             .ok_or("Select a line or rectangle in the Inspector")?;
-        if let Ok((mut source, _, _)) = Source::read(session.document(), id) {
+        if let Ok((mut source, _, _)) = self.read_source(session.document(), id, session.revision())
+        {
             if !source.sketch.curves.iter().any(|c| c.id == element) {
                 return Err("Select a curve to delete".into());
             }
@@ -351,8 +363,9 @@ impl SketchEditor {
         self.first = None;
         self.moving = false;
         if let Some(value) = value {
-            let (mut source, _, _) =
-                Source::read(session.document(), id).map_err(|e| e.to_string())?;
+            let (mut source, _, _) = self
+                .read_source(session.document(), id, session.revision())
+                .map_err(|e| e.to_string())?;
             source.add_constraint(self.constraints.dimension_kind(value, unit)?);
             let edit = multicad_solver::prepare_edit(
                 session,
@@ -435,6 +448,7 @@ impl SketchEditor {
         if self.evaluated.is_none() {
             self.repair.cancel();
         }
+        self.constraints.set_evaluation(self.evaluated.clone());
         let mut scene = feed
             .visible()
             .filter(|s| s.stamp().document == session.document().id())
@@ -473,10 +487,10 @@ impl SketchEditor {
                     if response.double_clicked() && sketch_mode { open = Some(e.id); }
                 }
             }
-            if let Some(id) = open && let Err(error) = self.open(session.document(), id) { self.message = error; }
+            if let Some(id) = open && let Err(error) = self.open_at(session.document(), id,session.revision()) { self.message = error; }
             if sketch_mode && self.selected.is_some() && !self.editing && ui.button("Open selected sketch").clicked() {
                 let id = self.selected.expect("selected");
-                if let Err(error) = self.open(session.document(), id) { self.message = error; }
+                if let Err(error) = self.open_at(session.document(), id,session.revision()) { self.message = error; }
             }
         });
         egui::Panel::right("source-inspector")
@@ -693,6 +707,18 @@ impl SketchEditor {
             Sketch::read_evaluated(doc, id, revision, report)
         } else {
             Sketch::read(doc, id)
+        }
+    }
+    fn read_source(
+        &self,
+        doc: &Document,
+        id: EntityId,
+        revision: u64,
+    ) -> Result<(Source, Frame, EntityId), multicad_core::document::DocumentError> {
+        if let Some(report) = &self.evaluated {
+            Source::read_evaluated(doc, id, revision, report)
+        } else {
+            Source::read(doc, id)
         }
     }
     fn canvas(
@@ -922,7 +948,7 @@ impl SketchEditor {
             && self.editing
             && !self.moving
             && let (Some(id), Some(tool)) = (self.selected, self.tool)
-            && let Ok((_, frame, _)) = Sketch::read(session.document(), id)
+            && let Ok((_, frame, _)) = self.read_sketch(session.document(), id, session.revision())
             && let Some(pointer) = response.hover_pos()
             && let Some(mut p) = self.camera.on_plane(pointer, rect, frame)
         {
@@ -1156,6 +1182,112 @@ mod tests {
             events,
             ..Default::default()
         }
+    }
+    #[test]
+    fn attached_sketch_opens_and_edits_only_with_a_current_resolved_frame() {
+        use multicad_core::{document::*, references::*};
+        use multicad_kernel::Solid;
+        use std::collections::BTreeMap;
+        let panel = Entity::new(
+            "Panel",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.panel".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let native = Solid::box_named([100., 60., 18.], panel.id, Default::default()).unwrap();
+        let snapshot = native.topology_snapshot(panel.id, 0).unwrap();
+        let top = snapshot
+            .elements
+            .iter()
+            .find(|e| {
+                e.key.kind == TopologyKind::Face && e.origins.iter().any(|o| o.role == "cap.end")
+            })
+            .unwrap();
+        let mut intent = GeometryIntent::capture(&snapshot, top.key).unwrap();
+        intent.attachment = Some(Attachment {
+            anchor: top
+                .origins
+                .iter()
+                .find(|o| o.role == "cap.end")
+                .unwrap()
+                .clone(),
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        let mut link = Link::new(panel.id, "face");
+        link.geometry = Some(intent);
+        let plane = Entity::new(
+            "Attached plane",
+            EntityData::Plane {
+                origin_mm: [999.; 3],
+                normal: [0., 0., 1.],
+                anchor: Some(link),
+            },
+        );
+        let source = Source {
+            u: [1., 0., 0.],
+            sketch: Default::default(),
+        };
+        let sketch = Entity::new(
+            "Attached sketch",
+            EntityData::Sketch {
+                plane: plane.id,
+                definition: source.definition().unwrap(),
+                inputs: vec![],
+            },
+        );
+        let mut doc = Document::new("Attached editing").unwrap();
+        for entity in [panel, plane.clone(), sketch.clone()] {
+            doc.insert(entity).unwrap();
+        }
+        let mut session = Session::new(doc).unwrap();
+        let mut editor = SketchEditor::default();
+        assert!(editor.open_at(session.document(), sketch.id, 0).is_err());
+        editor.evaluated = Some(inspect(
+            session.document(),
+            0,
+            &BTreeMap::from([(snapshot.owner, snapshot)]),
+        ));
+        editor.open_at(session.document(), sketch.id, 0).unwrap();
+        assert_eq!(
+            editor
+                .read_sketch(session.document(), sketch.id, 0)
+                .unwrap()
+                .1
+                .origin,
+            [0., 0., 18.]
+        );
+        editor
+            .add(
+                &mut session,
+                DrawTool::Rectangle,
+                [5., 5.],
+                [15., 15.],
+                Channel::Ui,
+            )
+            .unwrap();
+        assert_eq!(session.revision(), 1);
+        assert_eq!(session.document().get(plane.id), Some(&plane));
+        assert!(editor.open_at(session.document(), sketch.id, 1).is_err());
+        let before = session.document().clone();
+        assert!(
+            editor
+                .add(
+                    &mut session,
+                    DrawTool::Line,
+                    [0., 0.],
+                    [10., 0.],
+                    Channel::Ui
+                )
+                .is_err()
+        );
+        assert_eq!(session.document(), &before);
     }
     #[test]
     fn pending_constraint_draft_blocks_drawing_switching_finishing_and_transform() {
