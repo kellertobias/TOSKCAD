@@ -5,10 +5,12 @@ use crate::{
     document::EntityId,
     sketch_transform::{self, Transform, TransformErrorKind, TransformOptions},
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_PATTERN_INSTANCES: usize = 256;
 pub const PLACEMENT_TOLERANCE_MM: f64 = 1e-7;
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Pattern {
     /// Count includes the original; instance i uses i * step_mm.
     Linear { step_mm: [f64; 2], count: usize },
@@ -19,9 +21,18 @@ pub enum Pattern {
         count: usize,
     },
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct PatternOptions {
     pub expand_connected: bool,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatternRequest {
+    pub selection: BTreeSet<EntityId>,
+    pub pattern: Pattern,
+    #[serde(default)]
+    pub options: PatternOptions,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PatternInstance {

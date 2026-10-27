@@ -4,8 +4,10 @@ use crate::{
     constraint_sketch::{Axis, Constraint, ConstraintKind, Curve, CurveKind, source::Source},
     document::EntityId,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Transform {
     Translate {
         delta_mm: [f64; 2],
@@ -19,7 +21,8 @@ pub enum Transform {
         direction: [f64; 2],
     },
 }
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct TransformOptions {
     /// Explicit caller consent to include curves connected through moved points.
     pub expand_connected: bool,
@@ -27,6 +30,14 @@ pub struct TransformOptions {
     /// parameter-binding fields; these IDs do not create those source semantics.
     pub protected_geometry: BTreeSet<EntityId>,
     pub protected_constraints: BTreeSet<EntityId>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransformRequest {
+    pub selection: BTreeSet<EntityId>,
+    pub transform: Transform,
+    #[serde(default)]
+    pub options: TransformOptions,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TransformReport {
