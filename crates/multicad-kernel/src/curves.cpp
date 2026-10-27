@@ -13,6 +13,7 @@
 #include <Geom2dAPI_InterCurveCurve.hxx>
 #include <Geom2dInt_GInter.hxx>
 #include <Geom2d_BSplineCurve.hxx>
+#include <Geom2d_Circle.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
 #include <GeomAPI.hxx>
 #include <Standard_Failure.hxx>
@@ -51,6 +52,26 @@ Handle(Geom2d_Curve) curve(const CurvedEdgeData &edge) {
     if (!segment.IsDone())
       throw std::runtime_error("Degenerate exact line");
     return segment.Value();
+  }
+  if (edge.kind == 2 || edge.kind == 3) {
+    const auto direction = edge.kind == 2 ? gp_Dir2d(edge.a.x - edge.center.x,
+                                                     edge.a.y - edge.center.y)
+                                          : gp_Dir2d(1., 0.);
+    Handle(Geom2d_Circle) circle = new Geom2d_Circle(
+        gp_Ax2d(p2(edge.center), direction), edge.radius, !edge.clockwise);
+    if (edge.kind == 3)
+      return circle;
+    const double first =
+        std::atan2(edge.a.y - edge.center.y, edge.a.x - edge.center.x);
+    const double last =
+        std::atan2(edge.b.y - edge.center.y, edge.b.x - edge.center.x);
+    const double tau = 2. * std::acos(-1.);
+    const double sweep =
+        std::fmod((edge.clockwise ? first - last : last - first) + tau, tau);
+    if (!(sweep > 0. && sweep < tau))
+      throw std::runtime_error(
+          "Arc sweep must be positive and smaller than a full circle");
+    return new Geom2d_TrimmedCurve(circle, 0., sweep);
   }
   if (edge.kind != 1)
     throw std::runtime_error("Unsupported exact curved edge");
@@ -257,7 +278,7 @@ CurveQueryData curve_intersections(const CurvedEdgeData &first,
   return guarded([&] {
     if (!std::isfinite(tolerance) || tolerance < 1e-7 || tolerance > 1e-3)
       throw std::runtime_error("Invalid query tolerance");
-    if (self && first.kind == 0)
+    if (self && first.kind != 1)
       return CurveQueryData{};
     return query(curve(first), curve(second), tolerance, self);
   });

@@ -37,6 +37,16 @@ fn empty_spline() -> ffi::SplineData {
         weights: vec![],
     }
 }
+fn arc_sweep(center: [f64; 2], a: [f64; 2], b: [f64; 2], clockwise: bool) -> f64 {
+    let first = (a[1] - center[1]).atan2(a[0] - center[0]);
+    let last = (b[1] - center[1]).atan2(b[0] - center[0]);
+    (if clockwise {
+        first - last
+    } else {
+        last - first
+    })
+    .rem_euclid(std::f64::consts::TAU)
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct BSpline2d {
     pub degree: u32,
@@ -126,7 +136,20 @@ impl BSpline2d {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum CurvedEdge2d {
-    Line { a: [f64; 2], b: [f64; 2] },
+    Line {
+        a: [f64; 2],
+        b: [f64; 2],
+    },
+    Arc {
+        center: [f64; 2],
+        a: [f64; 2],
+        b: [f64; 2],
+        clockwise: bool,
+    },
+    Circle {
+        center: [f64; 2],
+        radius_mm: f64,
+    },
     BSpline(BSpline2d),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -152,6 +175,13 @@ impl CurvedEdge2d {
         self.data(policy, 0)?;
         Ok(match self {
             Self::Line { a, b } => [0., (b[0] - a[0]).hypot(b[1] - a[1])],
+            Self::Arc {
+                center,
+                a,
+                b,
+                clockwise,
+            } => [0., arc_sweep(*center, *a, *b, *clockwise)],
+            Self::Circle { .. } => [0., std::f64::consts::TAU],
             Self::BSpline(s) => [s.knots[0], *s.knots.last().expect("validated knots")],
         })
     }
@@ -171,6 +201,9 @@ impl CurvedEdge2d {
                     kind: 0,
                     a: p(*a),
                     b: p(*b),
+                    center: p([0.; 2]),
+                    radius: 0.,
+                    clockwise: false,
                     spline: empty_spline(),
                     source_index,
                 }
@@ -181,7 +214,54 @@ impl CurvedEdge2d {
                     kind: 1,
                     a: p(s.poles[0]),
                     b: p(*s.poles.last().expect("validated poles")),
+                    center: p([0.; 2]),
+                    radius: 0.,
+                    clockwise: false,
                     spline: s.data(),
+                    source_index,
+                }
+            }
+            Self::Arc {
+                center,
+                a,
+                b,
+                clockwise,
+            } => {
+                for point in [center, a, b] {
+                    policy.point([point[0], point[1], 0.])?;
+                }
+                let radius = (a[0] - center[0]).hypot(a[1] - center[1]);
+                policy.length(radius)?;
+                if (radius - (b[0] - center[0]).hypot(b[1] - center[1])).abs()
+                    > policy.linear_tolerance_mm
+                    || (a[0] - b[0]).hypot(a[1] - b[1]) < policy.minimum_feature_mm
+                {
+                    return Err(input(
+                        "Arc endpoints must be distinct and lie on the same authored circle",
+                    ));
+                }
+                ffi::CurvedEdgeData {
+                    kind: 2,
+                    a: p(*a),
+                    b: p(*b),
+                    center: p(*center),
+                    radius,
+                    clockwise: *clockwise,
+                    spline: empty_spline(),
+                    source_index,
+                }
+            }
+            Self::Circle { center, radius_mm } => {
+                policy.point([center[0], center[1], 0.])?;
+                policy.length(*radius_mm)?;
+                ffi::CurvedEdgeData {
+                    kind: 3,
+                    a: p([center[0] + radius_mm, center[1]]),
+                    b: p([center[0] + radius_mm, center[1]]),
+                    center: p(*center),
+                    radius: *radius_mm,
+                    clockwise: false,
+                    spline: empty_spline(),
                     source_index,
                 }
             }
@@ -306,6 +386,26 @@ impl CurvedProfile {
                             policy.point(self.frame.point(*pole))?;
                         }
                     }
+                    CurvedEdge2d::Arc { center, .. } | CurvedEdge2d::Circle { center, .. } => {
+                        let radius = match curve {
+                            CurvedEdge2d::Arc { a, .. } => {
+                                (a[0] - center[0]).hypot(a[1] - center[1])
+                            }
+                            CurvedEdge2d::Circle { radius_mm, .. } => *radius_mm,
+                            _ => unreachable!(),
+                        };
+                        for axis in 0..3 {
+                            let extent = radius * self.frame.u[axis].hypot(self.frame.v[axis]);
+                            let position = self.frame.point(*center)[axis];
+                            if !position.is_finite()
+                                || position.abs() + extent > policy.maximum_coordinate_mm
+                            {
+                                return Err(input(
+                                    "Curved profile circle envelope exceeds model bounds",
+                                ));
+                            }
+                        }
+                    }
                 }
                 edges.push(data);
             }
@@ -410,7 +510,9 @@ impl Solid {
                         v: profile.frame.normal().map(|v| v * height_mm.signum()),
                     })
                 }
-                CurvedEdge2d::BSpline(_) => None,
+                CurvedEdge2d::BSpline(_)
+                | CurvedEdge2d::Arc { .. }
+                | CurvedEdge2d::Circle { .. } => None,
             })
             .collect();
         solid.name_profile_prism(profile.frame, height_mm, feature, origins, &frames)?;

@@ -55,6 +55,13 @@ fn reverse_profile(p: &mut CurvedProfile) {
             match edge {
                 CurvedEdge2d::Line { a, b } => std::mem::swap(a, b),
                 CurvedEdge2d::BSpline(s) => reverse(s),
+                CurvedEdge2d::Arc {
+                    a, b, clockwise, ..
+                } => {
+                    std::mem::swap(a, b);
+                    *clockwise = !*clockwise;
+                }
+                CurvedEdge2d::Circle { .. } => {}
             }
         }
     }
@@ -374,4 +381,121 @@ fn invalid_boundaries_do_not_heal_crossings_touching_holes_or_open_wires() {
         budget.area_mm2(policy()).unwrap_err().kind,
         GeometryErrorKind::Limit
     );
+}
+
+#[test]
+fn mixed_true_arcs_circles_and_spline_profiles_have_exact_material_and_origins() {
+    let circle = CurvedEdge2d::Circle {
+        center: [5., 2.],
+        radius_mm: 0.5,
+    };
+    let mut p = arch_profile();
+    p.holes.push(vec![circle.clone()]);
+    let expected = 100. / 3. - std::f64::consts::PI * 0.25;
+    near(p.area_mm2(policy()).unwrap(), expected);
+    near(
+        Solid::extrude_curved_profile(&p, 4., policy())
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        expected * 4.,
+    );
+    let arc = CurvedEdge2d::Arc {
+        center: [0., 0.],
+        a: [10., 0.],
+        b: [0., 10.],
+        clockwise: false,
+    };
+    let domain = arc.domain(policy()).unwrap();
+    near(domain[1], std::f64::consts::FRAC_PI_2);
+    let mid = arc.evaluate(domain[1] * 0.5, policy()).unwrap();
+    near(mid.point[0], 10. * std::f64::consts::FRAC_1_SQRT_2);
+    near(mid.point[1], mid.point[0]);
+    // A linear B-spline is still an exact authored spline, not a display segment.
+    let closure = CurvedEdge2d::BSpline(BSpline2d {
+        degree: 1,
+        poles: vec![[0., 10.], [0., 0.]],
+        knots: vec![0., 1.],
+        multiplicities: vec![2, 2],
+        weights: None,
+    });
+    let mut mixed = CurvedProfile {
+        frame: Default::default(),
+        outer: vec![arc.clone(), closure, line([0., 0.], [10., 0.])],
+        holes: vec![vec![CurvedEdge2d::Circle {
+            center: [3., 3.],
+            radius_mm: 1.,
+        }]],
+    };
+    let feature = EntityId::new();
+    let origins: Vec<_> = (0..4)
+        .map(|_| Origin {
+            source: EntityId::new(),
+            role: "curve".into(),
+        })
+        .collect();
+    let solid =
+        Solid::extrude_curved_profile_named(&mixed, 3., feature, &origins, policy()).unwrap();
+    near(solid.volume_mm3().unwrap(), 72. * std::f64::consts::PI);
+    let before = solid.topology_snapshot(feature, 0).unwrap();
+    reverse_profile(&mut mixed);
+    let mut reordered = origins.clone();
+    reordered[..3].reverse();
+    let after = Solid::extrude_curved_profile_named(&mixed, 5., feature, &reordered, policy())
+        .unwrap()
+        .topology_snapshot(feature, 1)
+        .unwrap();
+    for face in before
+        .elements
+        .iter()
+        .filter(|e| e.key.kind == TopologyKind::Face)
+    {
+        let intent = GeometryIntent::capture(&before, face.key).unwrap();
+        assert!(matches!(
+            resolve(&intent, &after, 1),
+            Resolution::Resolved { .. }
+        ));
+    }
+    let clockwise = CurvedEdge2d::Arc {
+        center: [0., 0.],
+        a: [0., 10.],
+        b: [10., 0.],
+        clockwise: true,
+    };
+    near(
+        clockwise
+            .evaluate(clockwise.domain(policy()).unwrap()[1], policy())
+            .unwrap()
+            .point[0],
+        10.,
+    );
+    let hit = arc
+        .intersections(
+            &CurvedEdge2d::BSpline(BSpline2d {
+                degree: 1,
+                poles: vec![[0., 0.], [10., 10.]],
+                knots: vec![0., 1.],
+                multiplicities: vec![2, 2],
+                weights: None,
+            }),
+            policy(),
+        )
+        .unwrap();
+    assert_eq!(hit.points.len(), 1);
+    near(
+        hit.points[0].point[0],
+        10. * std::f64::consts::FRAC_1_SQRT_2,
+    );
+    let invalid = CurvedEdge2d::Arc {
+        center: [0., 0.],
+        a: [1., 0.],
+        b: [0., 2.],
+        clockwise: false,
+    };
+    assert!(invalid.evaluate(0., policy()).is_err());
+    let invalid = CurvedEdge2d::Circle {
+        center: [0., 0.],
+        radius_mm: -1.,
+    };
+    assert!(invalid.evaluate(0., policy()).is_err());
 }

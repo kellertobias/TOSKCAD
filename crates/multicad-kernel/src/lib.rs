@@ -78,6 +78,9 @@ mod ffi {
         pub kind: u8,
         pub a: Point3,
         pub b: Point3,
+        pub center: Point3,
+        pub radius: f64,
+        pub clockwise: bool,
         pub spline: SplineData,
         pub source_index: u32,
     }
