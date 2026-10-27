@@ -5,9 +5,40 @@
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "multicad::kernel")]
 mod ffi {
+    #[derive(Clone, Debug, PartialEq)]
     pub struct Mesh {
         pub vertices: Vec<f64>,
         pub indices: Vec<u32>,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct Point3 {
+        pub x: f64,
+        pub y: f64,
+        pub z: f64,
+    }
+    pub struct Frame3 {
+        pub origin: Point3,
+        pub u: Point3,
+        pub v: Point3,
+    }
+    pub struct CurveEdge {
+        pub kind: u8,
+        pub a: Point3,
+        pub mid: Point3,
+        pub b: Point3,
+        pub radius: f64,
+    }
+    pub struct Bounds3 {
+        pub min: Point3,
+        pub max: Point3,
+    }
+    pub struct FaceInfo {
+        pub index: u32,
+        pub planar: bool,
+        pub origin: Point3,
+        pub normal: Point3,
+        pub center: Point3,
+        pub area: f64,
     }
     unsafe extern "C++" {
         include!("bridge.hpp");
@@ -25,11 +56,40 @@ mod ffi {
         fn valid(shape: &Shape) -> Result<bool>;
         fn write_step(shape: &Shape, path: &str) -> Result<()>;
         fn read_step(path: &str) -> Result<UniquePtr<Shape>>;
+        fn cylinder(frame: &Frame3, radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn profile_extrude(
+            frame: &Frame3,
+            edges: &[CurveEdge],
+            offsets: &[u32],
+            height: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        fn boolean_shapes(
+            a: &Shape,
+            b: &Shape,
+            operation: u8,
+            fuzzy: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        fn transform_shape(
+            shape: &Shape,
+            rotation: &[f64],
+            translation: &Point3,
+        ) -> Result<UniquePtr<Shape>>;
+        fn bounds(shape: &Shape) -> Result<Bounds3>;
+        fn faces(shape: &Shape) -> Result<Vec<FaceInfo>>;
+        fn solid_count(shape: &Shape) -> Result<u32>;
+        fn tessellate(
+            shape: &Shape,
+            deflection: f64,
+            angle: f64,
+            max_triangles: u32,
+        ) -> Result<Mesh>;
     }
 }
 pub use ffi::Mesh;
 pub struct Shape(cxx::UniquePtr<ffi::Shape>);
 pub type Error = Box<dyn std::error::Error>;
+mod geometry;
+pub use geometry::*;
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")

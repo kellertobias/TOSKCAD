@@ -1800,6 +1800,8 @@ dependencies = [
  "cxx",
  "cxx-build",
  "multicad-native-build",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
