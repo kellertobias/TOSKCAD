@@ -1,5 +1,8 @@
-//! Native host only. Document, command, viewport and domain integrations are
-//! separate components and do not depend on this crate.
+pub mod camera;
+pub mod icons;
+pub mod navigation;
+// Native host and reusable interaction controls. Domain and kernel ownership
+// remain outside the UI.
 pub use eframe::{
     App as NativeApplication, AppCreator, CreationContext, Frame as NativeFrame, egui,
 };
