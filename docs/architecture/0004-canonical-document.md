@@ -77,10 +77,10 @@ can name an expression variable while its target remains a stable entity UUID.
 | Viewport | Retained display meshes, picking and selection state | Renders derived results; never becomes manufacturing geometry or a second editable model |
 | UI and MCP | Interaction and attributable requests | Query the same document and submit the same typed commands; no workspace-owned document copies |
 
-The native host currently remains empty; these consumer contracts do not imply
-completed UI, file loading, evaluation or MCP wiring. The foundation laboratory's
-private proof document remains separate and must not become a second production
-source of truth.
+The native host uses this source model through shared parameter and transaction
+APIs. The [native editing contract](0005-native-editing.md) describes its current
+UI and source snapshot wiring, plus the remaining evaluation and persistence limits.
+The foundation laboratory's private proof document remains separate.
 
 ## Serialization evidence and limits
 
@@ -95,5 +95,6 @@ Tests exercise a mixed-material assembly with independent parts from a shared
 sketch, drawing/export definitions, real temporary-file DTO round trips, retained
 identities after unrelated edits/reordering, deterministic dependencies, rollback,
 deletion/repair, unavailable modules and corrupted data. The JSON DTO is not a
-native project file: crash recovery, migrations, atomic saves and manufacturing
+native project file. Source snapshot atomic writes are described in
+[0005](0005-native-editing.md); container recovery, migrations and manufacturing
 payload persistence still require CAD-56.

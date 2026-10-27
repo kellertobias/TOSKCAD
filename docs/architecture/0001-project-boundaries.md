@@ -1,6 +1,6 @@
 # 0001: Native application and bootstrap boundaries
 
-Status: accepted product direction; kernel, solver and UI implementation choices remain gated by [CAD-49](https://plans.tokenet.de/CAD/49).
+Status: layout rules partially superseded by [0005](0005-native-editing.md); accepted product direction; kernel, solver and UI implementation choices remain gated by [CAD-49](https://plans.tokenet.de/CAD/49).
 
 ## Decision
 

@@ -17,7 +17,7 @@ The [product plan](https://plans.tokenet.de/CAD/48) is maintained in PLAINER. [C
 
 Windows uses `./build.ps1`. The wrapper acquires the pinned native/Cargo dependencies, builds every shipped component and assembles the host application. Archives include a native runtime layout, notices and matching corresponding source. `./build archive install` is the explicit macOS install action; it is not run automatically. See [BUILDING.md](docs/BUILDING.md) for prerequisites, output paths and validation limits.
 
-The native host, owned OCCT adapter and solver are integrated. The [canonical document](docs/architecture/0004-canonical-document.md) provides stable identities, mixed-material parts/instances and a dependency graph. Transactional commands, CAD workspaces, native project files and MCP remain subsequent work. The foundation laboratory remains a separate reference, not the production UI.
+The native host, owned OCCT adapter and solver are integrated. The [canonical document](docs/architecture/0004-canonical-document.md) provides stable identities, mixed-material parts/instances and a dependency graph. Typed parameters, transactional commands, a native parameter table and a datum-sketch starter are implemented. See the [native editing contract and limits](docs/architecture/0005-native-editing.md). Native project containers, solid modeling workflows and MCP transport remain under development. The foundation laboratory remains a separate reference, not the production UI.
 
 [CI and releases](.github/workflows/release.yml) keep Forgejo authoritative and GitHub responsible for builds and tag-only hosted releases. Publishing remains disabled until the repositories and mirror tag reconciliation are verified. No remote is configured and nothing has been pushed. See [RELEASING.md](docs/RELEASING.md).
 
@@ -27,7 +27,7 @@ Open [mockup/index.html](mockup/index.html) directly, or run `node mockup/serve.
 
 The prototype illustrates **Parameters, Sketch, Model, Drawings, Render, Export**, contextual ribbons, and global Measure/Library/MCP controls. Use **Explore workflows** for examples. CAD geometry and outputs are simulated.
 
-The latest agreed corrections are recorded in the [architecture boundaries](docs/architecture/0001-project-boundaries.md): Parameters has no sidebars/ribbon; Sketch starts in the 3D viewer and exposes editing tools only after New Sketch or opening an existing sketch; no Face Sketch command in Model; sheet metal includes attached fasteners. The prototype is preserved as a reference and has not been revised to implement these latest corrections.
+The [current native layout](docs/architecture/0005-native-editing.md) has five modes, a full-width Parameters table with an action ribbon, and rendering under Export. Sketch tools appear after creating or opening a sketch; Model has no Face Sketch command. The prototype remains an illustrative reference and retains its earlier layout.
 
 See the [workflow guide and prototype boundaries](mockup/README.md).
 
