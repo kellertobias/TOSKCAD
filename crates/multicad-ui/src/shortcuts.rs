@@ -1,6 +1,7 @@
 //! Declarative bindings resolved from specific workspace to global context.
 //! Keyboard navigation never edits source documents directly.
 use crate::registry::{Command, Mode};
+use crate::sketch_editor::DrawTool;
 use eframe::egui::{self, Key, Modifiers, Vec2};
 use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,8 +365,27 @@ impl ShortcutMap {
             false,
         );
         for (key, command, label) in [
-            (Key::E, crate::registry::Command::Line, "Line"),
-            (Key::R, crate::registry::Command::Rectangle, "Rectangle"),
+            (
+                Key::E,
+                crate::registry::Command::Draw(DrawTool::Line),
+                "Line",
+            ),
+            (
+                Key::R,
+                crate::registry::Command::Draw(DrawTool::Rectangle),
+                "Rectangle",
+            ),
+            (
+                Key::F,
+                crate::registry::Command::Draw(DrawTool::Circle),
+                "Circle",
+            ),
+            (Key::G, crate::registry::Command::Draw(DrawTool::Arc), "Arc"),
+            (
+                Key::T,
+                crate::registry::Command::Draw(DrawTool::Polyline),
+                "Polyline",
+            ),
             (Key::C, crate::registry::Command::Dimension, "Dimension"),
             (
                 Key::Q,
@@ -528,7 +548,7 @@ mod tests {
         c.sketch_editing = true;
         assert_eq!(
             map.resolve(Key::E, Modifiers::NONE, &c).unwrap().action,
-            Action::Command(Command::Line)
+            Action::Command(Command::Draw(DrawTool::Line))
         );
         assert_eq!(
             map.resolve(Key::Q, Modifiers::NONE, &c).unwrap().action,
@@ -568,6 +588,41 @@ mod tests {
             })
             .is_err()
         );
+    }
+    #[test]
+    fn drawing_keys_use_sketch_scope_and_fit_returns_when_editing_ends() {
+        let map = ShortcutMap::standard();
+        let mut c = context(Mode::Sketch);
+        c.sketch_editing = true;
+        for (key, tool) in [
+            (Key::E, DrawTool::Line),
+            (Key::R, DrawTool::Rectangle),
+            (Key::F, DrawTool::Circle),
+            (Key::G, DrawTool::Arc),
+            (Key::T, DrawTool::Polyline),
+        ] {
+            assert_eq!(
+                map.resolve(key, Modifiers::NONE, &c).unwrap().action,
+                Action::Command(Command::Draw(tool))
+            );
+        }
+        assert_eq!(
+            map.resolve(Key::C, Modifiers::NONE, &c).unwrap().action,
+            Action::Command(Command::Dimension)
+        );
+        c.sketch_editing = false;
+        assert_eq!(
+            map.resolve(Key::F, Modifiers::NONE, &c).unwrap().action,
+            Action::Fit
+        );
+        for key in [Key::E, Key::R, Key::G, Key::T] {
+            assert!(map.resolve(key, Modifiers::NONE, &c).is_none());
+        }
+        c.sketch_editing = true;
+        c.text_input = true;
+        for key in [Key::E, Key::R, Key::F, Key::G, Key::T] {
+            assert!(map.resolve(key, Modifiers::NONE, &c).is_none());
+        }
     }
     #[test]
     fn text_modal_and_modifier_guards_preserve_typing() {

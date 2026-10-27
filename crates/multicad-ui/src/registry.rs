@@ -1,5 +1,5 @@
 //! Declarative workspace/ribbon catalog shared by buttons and command entry.
-use crate::icons::Icon;
+use crate::{icons::Icon, sketch_editor::DrawTool};
 use eframe::egui::Color32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
@@ -54,8 +54,8 @@ pub enum Command {
     New,
     NewWindow,
     NewSketch,
-    Rectangle,
-    Line,
+    Draw(DrawTool),
+    Construction,
     Dimension,
     FinishSketch,
     Delete,
@@ -200,18 +200,11 @@ impl Default for Registry {
                 aliases: &["start", "new-sketch"],
             },
             Tool {
-                id: "rectangle",
-                label: "Rectangle",
-                icon: Icon::Rectangle,
-                action: Command::Rectangle,
-                aliases: &["rect", "rectangle"],
-            },
-            Tool {
-                id: "line",
-                label: "Line",
-                icon: Icon::Line,
-                action: Command::Line,
-                aliases: &["line"],
+                id: "construction",
+                label: "Construction",
+                icon: Icon::Construction,
+                action: Command::Construction,
+                aliases: &["construction"],
             },
             Tool {
                 id: "finish-sketch",
@@ -239,6 +232,15 @@ impl Default for Registry {
             tools,
             workspaces: vec![],
         };
+        for tool in DrawTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::Draw(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for mode in Mode::ALL {
             registry.tools.push(Tool {
                 id: mode.title(),
@@ -323,6 +325,10 @@ impl Default for Registry {
                             "new-sketch",
                             "rectangle",
                             "line",
+                            "circle",
+                            "arc",
+                            "polyline",
+                            "construction",
                             "dimension",
                             "delete",
                             "finish-sketch",
@@ -419,7 +425,7 @@ mod tests {
                 .iter()
                 .map(|t| t.action)
                 .collect::<Vec<_>>(),
-            vec![Command::Rectangle]
+            vec![Command::Draw(DrawTool::Rectangle)]
         );
         assert_eq!(
             registry
@@ -453,7 +459,10 @@ mod tests {
         }
         assert_eq!(
             r.parse_line("rect 0 0 80 60").unwrap(),
-            (Command::Rectangle, vec!["0", "0", "80", "60"])
+            (
+                Command::Draw(DrawTool::Rectangle),
+                vec!["0", "0", "80", "60"]
+            )
         );
         assert!(r.parse_line("rm -rf /").is_err());
         assert!(
@@ -461,6 +470,29 @@ mod tests {
                 .tabs
                 .iter()
                 .any(|t| t.title == "Render")
+        );
+    }
+    #[test]
+    fn drawing_catalog_drives_command_aliases_and_all_common_ribbon_buttons() {
+        let registry = Registry::default();
+        let common = &registry.workspace(Mode::Sketch).tabs[0];
+        for draw in DrawTool::ALL {
+            let tool = registry.tool(draw.id()).unwrap();
+            assert_eq!(tool.action, Command::Draw(draw));
+            assert_eq!(tool.label, draw.label());
+            assert!(common.tools.contains(&draw.id()));
+            for alias in draw.aliases() {
+                assert_eq!(registry.parse_line(alias).unwrap().0, Command::Draw(draw));
+            }
+        }
+        assert!(common.tools.contains(&"construction"));
+        assert_eq!(
+            registry.resolve("construction").unwrap().action,
+            Command::Construction
+        );
+        assert_eq!(
+            registry.parse_line("rect 0 0 1 1").unwrap().0,
+            Command::Draw(DrawTool::Rectangle)
         );
     }
 }

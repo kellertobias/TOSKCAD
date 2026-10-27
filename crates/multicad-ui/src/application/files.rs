@@ -877,7 +877,8 @@ mod tests {
         drain(&mut app);
         app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
             .unwrap();
-        app.invoke(Command::Rectangle, &[], Channel::Ui).unwrap();
+        app.invoke(Command::Draw(DrawTool::Rectangle), &[], Channel::Ui)
+            .unwrap();
         let ctx = egui::Context::default();
         let escape = |app: &mut Application| {
             ctx.run_ui(

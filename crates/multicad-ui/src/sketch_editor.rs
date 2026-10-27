@@ -16,6 +16,9 @@ use multicad_core::{
 pub enum DrawTool {
     Line,
     Rectangle,
+    Circle,
+    Arc,
+    Polyline,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coordinates {
@@ -44,6 +47,14 @@ pub struct SketchEditor {
     pub picking: bool,
     pub tool: Option<DrawTool>,
     first: Option<[f64; 2]>,
+    first_anchor: Option<EntityId>,
+    arc_start: Option<([f64; 2], Option<EntityId>)>,
+    arc_clockwise: bool,
+    polyline_start: Option<([f64; 2], EntityId)>,
+    polyline_segments: usize,
+    last_draw_line: Option<[(EntityId, [f64; 2]); 2]>,
+    construction: bool,
+    draw_preview_id: EntityId,
     element: Option<EntityId>,
     pub camera: Camera,
     style: DisplayStyle,
@@ -79,6 +90,14 @@ impl Default for SketchEditor {
             picking: false,
             tool: None,
             first: None,
+            first_anchor: None,
+            arc_start: None,
+            arc_clockwise: false,
+            polyline_start: None,
+            polyline_segments: 0,
+            last_draw_line: None,
+            construction: false,
+            draw_preview_id: EntityId::new(),
             element: None,
             camera: Camera {
                 target: [0.; 3],
@@ -128,6 +147,120 @@ fn commit(
         .map_err(|e| e.to_string())
 }
 impl SketchEditor {
+    fn clear_drawing_progress(&mut self) {
+        self.first = None;
+        self.first_anchor = None;
+        self.arc_start = None;
+        self.polyline_start = None;
+        self.polyline_segments = 0;
+    }
+    pub fn construction(&self) -> bool {
+        self.construction
+    }
+    pub fn toggle_construction(
+        &mut self,
+        session: &mut Session,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.editing || self.has_pending_edits() {
+            return Err("Open a sketch and apply or discard pending edits first".into());
+        }
+        if self.tool.is_some() || self.element.is_none() {
+            self.construction = !self.construction;
+            self.message = if self.construction {
+                "Construction drawing on"
+            } else {
+                "Construction drawing off"
+            }
+            .into();
+            return Ok(());
+        }
+        let id = self.selected.ok_or("Select a sketch")?;
+        let (mut source, _, _) = self
+            .read_source(session.document(), id, session.revision())
+            .map_err(|e| e.to_string())?;
+        let curve = source
+            .sketch
+            .curves
+            .iter_mut()
+            .find(|curve| Some(curve.id) == self.element)
+            .ok_or("Select a curve")?;
+        curve.construction = !curve.construction;
+        let edit = multicad_solver::prepare_edit(
+            session,
+            session.revision(),
+            Actor::local(channel),
+            id,
+            source,
+        )
+        .map_err(|e| e.to_string())?;
+        session
+            .commit(
+                edit.preview
+                    .ok_or("Construction edit conflicts with constraints")?,
+            )
+            .map_err(|e| e.to_string())?;
+        self.revision = session.revision();
+        Ok(())
+    }
+    /// All interactive and exact-entry creation uses the same guarded typed
+    /// command. UI state never writes a derived display facade into the source.
+    pub fn draw(
+        &mut self,
+        session: &mut Session,
+        request: &multicad_core::sketch_draw::DrawRequest,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.editing {
+            return Err("Create or open a sketch first".into());
+        }
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before drawing".into());
+        }
+        let id = self.selected.ok_or("Select a sketch")?;
+        let result = multicad_solver::draw::prepare_draw(
+            session,
+            session.revision(),
+            Actor::local(channel),
+            id,
+            self.evaluated.as_ref(),
+            request,
+        )
+        .map_err(|e| e.to_string())?;
+        self.last_draw_line = result.created_curves.last().and_then(|id| {
+            let candidate = result.edit.evaluation.candidate.as_ref()?;
+            let curve = candidate.curves.iter().find(|curve| curve.id == *id)?;
+            let multicad_core::constraint_sketch::CurveKind::Line { start, end } = curve.kind
+            else {
+                return None;
+            };
+            Some([start, end].map(|id| {
+                (
+                    id,
+                    candidate
+                        .points
+                        .iter()
+                        .find(|p| p.id == id)
+                        .expect("solved curve points")
+                        .position_mm,
+                )
+            }))
+        });
+        let selected = result.created_curves.first().copied();
+        session
+            .commit(result.edit.preview.ok_or_else(|| {
+                format!(
+                    "Sketch rejected: {:?}",
+                    result.edit.evaluation.diagnostics.state
+                )
+            })?)
+            .map_err(|e| e.to_string())?;
+        self.clear_drawing_progress();
+        self.element = selected;
+        self.revision = session.revision();
+        self.message = "Geometry committed · Undo restores the previous sketch".into();
+        Ok(())
+    }
     pub fn selected_solid(&self) -> Option<EntityId> {
         self.solid.selected_id()
     }
@@ -156,7 +289,7 @@ impl SketchEditor {
         self.moving = !self.moving;
         self.cancel_move();
         self.tool = None;
-        self.first = None;
+        self.clear_drawing_progress();
     }
     pub fn has_pending_edits(&self) -> bool {
         self.preview.is_some() || self.constraints.dirty() || self.repair.has_pending()
@@ -168,7 +301,7 @@ impl SketchEditor {
         self.picking = false;
         self.plane_picker.cancel();
         self.tool = None;
-        self.first = None;
+        self.clear_drawing_progress();
         self.cancel_move();
     }
     fn cancel_move(&mut self) {
@@ -384,8 +517,16 @@ impl SketchEditor {
         self.cancel_move();
         self.moving = false;
         self.tool = Some(tool);
-        self.first = None;
-        self.message = "Click the first point, then the second point · Esc cancels".into();
+        self.clear_drawing_progress();
+        self.message = match tool {
+            DrawTool::Circle => "Click the center, then the radius · Esc cancels",
+            DrawTool::Arc => "Click the center, start, then end · Esc cancels",
+            DrawTool::Polyline => {
+                "Click connected vertices; click the first vertex to close · Esc ends"
+            }
+            _ => "Click the first point, then the second point · Esc cancels",
+        }
+        .into();
         Ok(())
     }
     pub fn add(
@@ -402,54 +543,31 @@ impl SketchEditor {
         if self.has_pending_edits() {
             return Err("Apply or discard pending edits before drawing".into());
         }
-        let id = self.selected.ok_or("Select a sketch")?;
-        let gid = if let Ok((mut source, _, _)) =
-            self.read_source(session.document(), id, session.revision())
-        {
-            let gid = match tool {
-                DrawTool::Line => {
-                    let start = source.add_point(a);
-                    let end = source.add_point(b);
-                    source.add_line(start, end)
-                }
-                DrawTool::Rectangle => source.add_rectangle(a, b).map_err(|e| e.to_string())?,
-            };
-            let edit = multicad_solver::prepare_edit(
-                session,
-                session.revision(),
-                Actor::local(channel),
-                id,
-                source,
-            )
-            .map_err(|e| e.to_string())?;
-            let preview = edit.preview.ok_or_else(|| {
-                format!("Sketch rejected: {:?}", edit.evaluation.diagnostics.state)
-            })?;
-            session.commit(preview).map_err(|e| e.to_string())?;
-            gid
-        } else {
-            let gid = EntityId::new();
-            let geometry = match tool {
-                DrawTool::Line => Geometry::Line { id: gid, a, b },
-                DrawTool::Rectangle => Geometry::Rectangle { id: gid, a, b },
-            };
-            let edits =
-                sketch::append(session.document(), id, geometry).map_err(|e| e.to_string())?;
-            commit(
-                session,
-                match tool {
-                    DrawTool::Line => "Draw line",
-                    DrawTool::Rectangle => "Draw rectangle",
-                },
-                edits,
-                channel,
-            )?;
-            gid
+        use multicad_core::sketch_draw::{DrawInput, DrawRequest, PointInput};
+        let point = PointInput::Position;
+        let input = match tool {
+            DrawTool::Line | DrawTool::Polyline => DrawInput::Line {
+                start: point(a),
+                end: point(b),
+            },
+            DrawTool::Rectangle => DrawInput::Rectangle {
+                a: point(a),
+                b: point(b),
+            },
+            DrawTool::Circle => DrawInput::Circle {
+                center: point(a),
+                radius_mm: (b[0] - a[0]).hypot(b[1] - a[1]),
+            },
+            DrawTool::Arc => return Err("An arc needs a center, start and end point".into()),
         };
-        self.first = None;
-        self.element = Some(gid);
-        self.message = "Geometry committed · Undo restores the previous sketch".into();
-        Ok(())
+        self.draw(
+            session,
+            &DrawRequest {
+                input,
+                construction: self.construction,
+            },
+            channel,
+        )
     }
     pub fn delete(&mut self, session: &mut Session, channel: Channel) -> Result<(), String> {
         if self.has_pending_edits() {
@@ -510,7 +628,7 @@ impl SketchEditor {
             .ok_or("Select a curve in the Inspector first")?;
         self.constraints.begin_dimension(session, id, element)?;
         self.tool = None;
-        self.first = None;
+        self.clear_drawing_progress();
         self.moving = false;
         if let Some(value) = value {
             let (mut source, _, _) = self
@@ -636,7 +754,7 @@ impl SketchEditor {
         self.refresh_contexts(session.document(), session.revision());
         if self.revision != session.revision() {
             self.cancel_move();
-            self.first = None;
+            self.clear_drawing_progress();
             self.revision = session.revision();
             if self.selected.is_some_and(|id| {
                 !matches!(
@@ -653,14 +771,14 @@ impl SketchEditor {
         egui::Panel::left("source-tree").default_size(205.).resizable(true).show(ui, |ui| {
             ui.heading("Parts & sketches");
             ui.separator();
-            if let Some(scene)=&scene&&ui.add_enabled_ui(!self.has_pending_edits(),|ui|self.solid.tree(ui,session.document(),scene)).inner {self.selected=None;self.editing=false;self.tool=None;self.first=None;}
+            if let Some(scene)=&scene&&ui.add_enabled_ui(!self.has_pending_edits(),|ui|self.solid.tree(ui,session.document(),scene)).inner {self.selected=None;self.editing=false;self.tool=None;self.clear_drawing_progress();}
             let mut open = None;
             for e in session.document().entities() {
                 if matches!(&e.data, EntityData::Sketch { definition, .. } if definition.type_id == sketch::TYPE || definition.type_id == multicad_core::constraint_sketch::source::TYPE) {
                     let response = ui.selectable_label(self.selected == Some(e.id), &e.name);
                     if response.clicked() {
                         if self.selected!=Some(e.id) && self.has_pending_edits(){self.message="Apply or discard pending edits before switching sketches".into();continue;}
-                        if self.selected != Some(e.id) { self.editing = false; self.tool = None; self.first = None; }
+                        if self.selected != Some(e.id) { self.editing = false; self.tool = None; self.clear_drawing_progress(); }
                         self.selected = Some(e.id);
                         self.solid.clear();
                         self.element = None;
@@ -691,7 +809,7 @@ impl SketchEditor {
                         if let Some(evaluation)=feed.references() {
                             self.repair.show(ui,session,evaluation);
                         }
-                        if self.repair.has_pending() {self.tool=None;self.first=None;self.moving=false;self.cancel_move();}
+                        if self.repair.has_pending() {self.tool=None;self.clear_drawing_progress();self.moving=false;self.cancel_move();}
                         self.solid.inspector(ui,session.document());
                         if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() && self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision())) {
                             self.fit_requested=true;
@@ -702,6 +820,13 @@ impl SketchEditor {
                             let chosen = self.plane_picker.show_inspector(ui,context);
                             if self.plane_picker.take_cancel_requested() { self.cancel(); }
                             if let Some(preview) = chosen && let Err(error) = self.create_on_plane(session,preview,Channel::Ui) {self.message=error;}
+                        }
+                        if self.editing && let Some(tool)=self.tool {
+                            ui.strong(tool.label());
+                            ui.small(tool.usage());
+                            if ui.checkbox(&mut self.construction,"Construction geometry").on_hover_text("Construction curves constrain the sketch but are excluded from solid profiles").changed() {self.message=if self.construction {"Construction drawing on"}else{"Construction drawing off"}.into();}
+                            if tool==DrawTool::Arc {ui.checkbox(&mut self.arc_clockwise,"Clockwise arc").on_hover_text("Direction around the sketch's positive normal");}
+                            ui.separator();
                         }
                         if let Some(id) = self.selected {
                             let view = self
@@ -746,7 +871,7 @@ impl SketchEditor {
                                         {
                                             self.element = Some(g.id());
                                             self.tool = None;
-                                            self.first = None;
+                                            self.clear_drawing_progress();
                                         }
                                     }
                                     if self.editing
@@ -770,7 +895,7 @@ impl SketchEditor {
                                         }
                                         if self.constraints.dirty() {
                                             self.tool = None;
-                                            self.first = None;
+                                            self.clear_drawing_progress();
                                         }
                                     }
                                     if self.moving {
@@ -1053,6 +1178,14 @@ impl SketchEditor {
                     .map(|c| c.id)
                     .collect();
                 for g in &source.geometry {
+                    let construction = constrained.as_ref().is_some_and(|(source, _, _)| {
+                        source
+                            .sketch
+                            .curves
+                            .iter()
+                            .any(|curve| curve.id == g.id() && curve.construction)
+                    });
+                    let mut dash_offset = 0.;
                     let selected = self.selected == Some(e.id);
                     let conflicted =
                         affected.contains(&g.id()) || conflicted_curves.contains(&g.id());
@@ -1076,10 +1209,19 @@ impl SketchEditor {
                             points.extend([a.map(|v| v as f32), b.map(|v| v as f32)]);
                         }
                         if let Some(segment) = self.camera.segment(a, b, rect) {
-                            painter.line_segment(
-                                segment,
-                                Stroke::new(if selected { 2. } else { 1. }, color),
-                            );
+                            let stroke = Stroke::new(if selected { 2. } else { 1. }, color);
+                            if construction {
+                                painter.extend(egui::Shape::dashed_line_with_offset(
+                                    &segment,
+                                    stroke,
+                                    &[5.],
+                                    &[4.],
+                                    dash_offset,
+                                ));
+                                dash_offset = (dash_offset + segment[0].distance(segment[1])) % 9.;
+                            } else {
+                                painter.line_segment(segment, stroke);
+                            }
                         }
                     }
                 }
@@ -1110,25 +1252,120 @@ impl SketchEditor {
             && let Some(pointer) = response.hover_pos()
             && let Some(mut p) = self.camera.on_plane(pointer, rect, frame)
         {
+            use multicad_core::sketch_draw::{DrawInput, DrawRequest, PointInput};
+            let mut anchor = None;
             if self.snap {
-                p = p.map(|v| (v / self.spacing).round() * self.spacing);
+                if let Ok((source, _, _)) =
+                    self.read_source(session.document(), id, session.revision())
+                {
+                    let nearest = source
+                        .sketch
+                        .points
+                        .iter()
+                        .filter_map(|point| {
+                            let screen = project(frame.point(point.position_mm), &self.camera);
+                            let distance = screen.distance(pointer);
+                            (distance <= 8.).then_some((distance, point.id, point.position_mm))
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0));
+                    if let Some((_, id, point)) = nearest {
+                        anchor = Some(id);
+                        p = point;
+                    }
+                }
+                if anchor.is_none() {
+                    p = p.map(|v| (v / self.spacing).round() * self.spacing);
+                }
+            }
+            // Closing a chain is an explicit vertex target, independent of the
+            // optional grid/near-point snapping preference.
+            if tool == DrawTool::Polyline
+                && let Some((stored, start_id)) = self.polyline_start
+            {
+                let current = self
+                    .read_source(session.document(), id, session.revision())
+                    .ok()
+                    .and_then(|(source, _, _)| {
+                        source
+                            .sketch
+                            .points
+                            .iter()
+                            .find(|p| p.id == start_id)
+                            .map(|p| p.position_mm)
+                    })
+                    .unwrap_or(stored);
+                if project(frame.point(current), &self.camera).distance(pointer) <= 8. {
+                    p = current;
+                    anchor = Some(start_id);
+                }
+            }
+            if tool == DrawTool::Arc
+                && let (Some(center), Some((start, _))) = (self.first, self.arc_start)
+            {
+                let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                let direction = [p[0] - center[0], p[1] - center[1]];
+                let length = direction[0].hypot(direction[1]);
+                if length > 1e-9 {
+                    if (length - radius).abs() > 1e-7 {
+                        anchor = None;
+                    }
+                    p = std::array::from_fn(|i| center[i] + direction[i] * radius / length);
+                }
             }
             let cursor = project(frame.point(p), &self.camera);
-            painter.circle_stroke(cursor, 4., Stroke::new(1., Color32::WHITE));
+            painter.circle_stroke(
+                cursor,
+                if anchor.is_some() { 5. } else { 4. },
+                Stroke::new(
+                    1.,
+                    if anchor.is_some() {
+                        Color32::YELLOW
+                    } else {
+                        Color32::WHITE
+                    },
+                ),
+            );
+            let point = |position, anchor: Option<EntityId>| {
+                anchor
+                    .map(PointInput::Existing)
+                    .unwrap_or(PointInput::Position(position))
+            };
             if let Some(a) = self.first {
-                let g = match tool {
-                    DrawTool::Line => Geometry::Line {
-                        id: EntityId::new(),
+                let ghost = match tool {
+                    DrawTool::Line | DrawTool::Polyline => Geometry::Line {
+                        id: self.draw_preview_id,
                         a,
                         b: p,
                     },
                     DrawTool::Rectangle => Geometry::Rectangle {
-                        id: EntityId::new(),
+                        id: self.draw_preview_id,
                         a,
                         b: p,
                     },
+                    DrawTool::Circle => Geometry::Circle {
+                        id: self.draw_preview_id,
+                        center: a,
+                        radius_mm: (p[0] - a[0]).hypot(p[1] - a[1]),
+                    },
+                    DrawTool::Arc => {
+                        if let Some((start, _)) = self.arc_start {
+                            Geometry::Arc {
+                                id: self.draw_preview_id,
+                                center: a,
+                                a: start,
+                                b: p,
+                                clockwise: self.arc_clockwise,
+                            }
+                        } else {
+                            Geometry::Circle {
+                                id: self.draw_preview_id,
+                                center: a,
+                                radius_mm: (p[0] - a[0]).hypot(p[1] - a[1]),
+                            }
+                        }
+                    }
                 };
-                for [a, b] in g.segments() {
+                for [a, b] in ghost.segments() {
                     if let Some(segment) = self.camera.segment(frame.point(a), frame.point(b), rect)
                     {
                         painter.line_segment(segment, Stroke::new(1., Color32::LIGHT_YELLOW));
@@ -1137,11 +1374,63 @@ impl SketchEditor {
             }
             if response.clicked() {
                 if let Some(a) = self.first {
-                    if let Err(e) = self.add(session, tool, a, p, Channel::Ui) {
-                        self.message = e;
+                    if tool == DrawTool::Arc && self.arc_start.is_none() {
+                        if (p[0] - a[0]).hypot(p[1] - a[1]) >= 1e-7 {
+                            self.arc_start = Some((p, anchor));
+                            self.message =
+                                "Choose the arc end · endpoint follows the chosen radius".into();
+                        }
+                    } else {
+                        let start = point(a, self.first_anchor);
+                        let end = point(p, anchor);
+                        let closing = tool == DrawTool::Polyline
+                            && self
+                                .polyline_start
+                                .is_some_and(|(_, id)| anchor == Some(id));
+                        let input = match tool {
+                            DrawTool::Line | DrawTool::Polyline => DrawInput::Line { start, end },
+                            DrawTool::Rectangle => DrawInput::Rectangle { a: start, b: end },
+                            DrawTool::Circle => DrawInput::Circle {
+                                center: start,
+                                radius_mm: (p[0] - a[0]).hypot(p[1] - a[1]),
+                            },
+                            DrawTool::Arc => {
+                                let (b, anchor) = self.arc_start.expect("arc start chosen");
+                                DrawInput::Arc {
+                                    center: start,
+                                    start: point(b, anchor),
+                                    end,
+                                    clockwise: self.arc_clockwise,
+                                }
+                            }
+                        };
+                        let first = self.polyline_start;
+                        let segments = self.polyline_segments;
+                        if closing && segments < 2 {
+                            self.message = "A closed polyline needs at least three vertices".into();
+                        } else if let Err(error) = self.draw(
+                            session,
+                            &DrawRequest {
+                                input,
+                                construction: self.construction,
+                            },
+                            Channel::Ui,
+                        ) {
+                            self.message = error;
+                        } else if tool == DrawTool::Polyline
+                            && !closing
+                            && let Some([start, end]) = self.last_draw_line
+                        {
+                            self.polyline_start = first.or(Some((start.1, start.0)));
+                            self.polyline_segments = segments + 1;
+                            self.first = Some(end.1);
+                            self.first_anchor = Some(end.0);
+                            self.message="Continue the polyline · click its first vertex to close · Esc ends".into();
+                        }
                     }
                 } else {
                     self.first = Some(p);
+                    self.first_anchor = anchor;
                 }
             }
         }
@@ -1234,7 +1523,7 @@ impl SketchEditor {
         if self.coordinates != coordinates || self.moving != moving {
             self.cancel_move();
             self.tool = None;
-            self.first = None;
+            self.clear_drawing_progress();
         }
         self.coordinates = coordinates;
         self.moving = moving;
@@ -1610,6 +1899,240 @@ mod tests {
             .undo(session.revision(), Actor::local(Channel::Ui))
             .unwrap();
         assert_eq!(session.document(), &before);
+    }
+    fn gesture_frame(
+        ctx: &egui::Context,
+        editor: &mut SketchEditor,
+        session: &mut Session,
+        events: Vec<egui::Event>,
+    ) {
+        ctx.run_ui(input(events), |ui| {
+            editor.canvas(ui, session, true, None, false)
+        })
+        .drop_without_applying_deltas();
+    }
+    fn click_sketch(
+        ctx: &egui::Context,
+        editor: &mut SketchEditor,
+        session: &mut Session,
+        point: [f64; 2],
+    ) {
+        let (_, frame, _) = editor
+            .read_sketch(
+                session.document(),
+                editor.selected.unwrap(),
+                session.revision(),
+            )
+            .unwrap();
+        let screen = editor.camera.project(
+            frame.point(point).map(|v| v as f32),
+            editor.viewport_rect.unwrap(),
+        );
+        let screen = Pos2::new(screen[0], screen[1]);
+        for pressed in [true, false] {
+            gesture_frame(
+                ctx,
+                editor,
+                session,
+                vec![
+                    egui::Event::PointerMoved(screen),
+                    egui::Event::PointerButton {
+                        pos: screen,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+    }
+    #[test]
+    fn pointer_circle_uses_radius_then_endpoint_snaps_reuse_actual_point_ids() {
+        use multicad_core::constraint_sketch::CurveKind;
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xz, Channel::Ui).unwrap();
+        editor.snap = false;
+        editor.set_tool(DrawTool::Circle).unwrap();
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        let before = session.document().clone();
+        click_sketch(&ctx, &mut editor, &mut session, [10., 10.]);
+        assert_eq!(
+            session.document(),
+            &before,
+            "The center click is only UI state"
+        );
+        click_sketch(&ctx, &mut editor, &mut session, [25., 10.]);
+        let id = editor.selected.unwrap();
+        let (source, frame, _) = Source::read(session.document(), id).unwrap();
+        let CurveKind::Circle { center, radius_mm } = source.sketch.curves[0].kind else {
+            panic!("circle missing")
+        };
+        assert!((radius_mm - 15.).abs() < 1e-5);
+        assert_eq!(frame.n, Datum::Xz.frame().n);
+        assert_eq!(source.sketch.points.len(), 1);
+        editor.snap = true;
+        editor.set_tool(DrawTool::Line).unwrap();
+        click_sketch(&ctx, &mut editor, &mut session, [10.2, 10.2]);
+        click_sketch(&ctx, &mut editor, &mut session, [40., 10.]);
+        let (source, _, _) = Source::read(session.document(), id).unwrap();
+        assert_eq!(
+            source.sketch.points.len(),
+            2,
+            "Snapping joins the authored center point"
+        );
+        let CurveKind::Line { start, .. } = source.sketch.curves[1].kind else {
+            panic!("line missing")
+        };
+        assert_eq!(start, center);
+    }
+    #[test]
+    fn pointer_arc_center_start_end_projects_radius_and_cancel_never_commits_partial_arc() {
+        use multicad_core::constraint_sketch::CurveKind;
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.snap = false;
+        editor.set_tool(DrawTool::Arc).unwrap();
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        let before = session.document().clone();
+        click_sketch(&ctx, &mut editor, &mut session, [0., 0.]);
+        click_sketch(&ctx, &mut editor, &mut session, [10., 0.]);
+        assert_eq!(session.document(), &before);
+        editor.cancel();
+        assert_eq!(session.document(), &before);
+        editor.set_tool(DrawTool::Arc).unwrap();
+        for point in [[0., 0.], [10., 0.], [5., 20.]] {
+            click_sketch(&ctx, &mut editor, &mut session, point);
+        }
+        let id = editor.selected.unwrap();
+        let (source, _, _) = Source::read(session.document(), id).unwrap();
+        let CurveKind::Arc {
+            center,
+            start,
+            end,
+            clockwise,
+        } = source.sketch.curves[0].kind
+        else {
+            panic!("arc missing")
+        };
+        let point = |id| {
+            source
+                .sketch
+                .points
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap()
+                .position_mm
+        };
+        let c = point(center);
+        let a = point(start);
+        let b = point(end);
+        assert!(!clockwise);
+        assert!(((a[0] - c[0]).hypot(a[1] - c[1]) - 10.).abs() < 1e-5);
+        assert!(((b[0] - c[0]).hypot(b[1] - c[1]) - 10.).abs() < 1e-5);
+        assert!(((b[1] - c[1]).atan2(b[0] - c[0]) - 20_f64.atan2(5.)).abs() < 1e-5);
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &before);
+        session
+            .redo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(Source::read(session.document(), id).unwrap().0, source);
+    }
+    #[test]
+    fn pointer_polyline_closes_shared_vertices_even_with_snapping_off_and_undo_retains_identity() {
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.snap = false;
+        editor.set_tool(DrawTool::Polyline).unwrap();
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        for point in [[0., 0.], [30., 0.], [20., 20.], [0., 0.]] {
+            click_sketch(&ctx, &mut editor, &mut session, point);
+        }
+        let id = editor.selected.unwrap();
+        let (source, _, _) = Source::read(session.document(), id).unwrap();
+        assert_eq!(source.sketch.points.len(), 3);
+        assert_eq!(source.sketch.curves.len(), 3);
+        assert!(editor.first.is_none());
+        let regions = multicad_core::sketch_regions::extract(&source);
+        assert!(regions.diagnostics.is_empty());
+        assert_eq!(regions.regions.len(), 1);
+        assert!((regions.regions[0].area_mm2 - 300.).abs() < 1e-4);
+        let before = session.document().clone();
+        click_sketch(&ctx, &mut editor, &mut session, [60., 40.]);
+        editor.cancel();
+        assert_eq!(session.document(), &before);
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(
+            Source::read(session.document(), id)
+                .unwrap()
+                .0
+                .sketch
+                .curves
+                .len(),
+            2
+        );
+        session
+            .redo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(Source::read(session.document(), id).unwrap().0, source);
+    }
+    #[test]
+    fn construction_toggle_distinguishes_active_drawing_from_selected_curve_edit() {
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.set_tool(DrawTool::Line).unwrap();
+        let before = session.document().clone();
+        editor
+            .toggle_construction(&mut session, Channel::Ui)
+            .unwrap();
+        assert!(editor.construction());
+        assert_eq!(session.document(), &before);
+        editor
+            .add(
+                &mut session,
+                DrawTool::Line,
+                [0., 0.],
+                [20., 0.],
+                Channel::Ui,
+            )
+            .unwrap();
+        let id = editor.selected.unwrap();
+        let (source, _, _) = Source::read(session.document(), id).unwrap();
+        assert!(source.sketch.curves[0].construction);
+        assert!(
+            multicad_core::sketch_regions::extract(&source)
+                .diagnostics
+                .is_empty()
+        );
+        editor.tool = None;
+        editor
+            .toggle_construction(&mut session, Channel::Ui)
+            .unwrap();
+        assert!(
+            !Source::read(session.document(), id)
+                .unwrap()
+                .0
+                .sketch
+                .curves[0]
+                .construction
+        );
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(Source::read(session.document(), id).unwrap().0, source);
     }
     #[test]
     fn unavailable_transform_does_not_trap_model_picking() {

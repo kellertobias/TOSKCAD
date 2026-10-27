@@ -2,6 +2,8 @@
 pub use crate::storage::DocumentStorage;
 mod closing;
 mod files;
+#[cfg(test)]
+use crate::sketch_editor::DrawTool;
 use crate::storage::{FileStamp, FileWorker};
 use crate::{
     controls::{self, TabColors},
@@ -9,7 +11,7 @@ use crate::{
     parameter_editor::ParameterEditor,
     registry::{Command, Mode, Registry},
     shortcuts::{self, Action as ShortcutAction, ShortcutMap},
-    sketch_editor::{DrawTool, SketchEditor},
+    sketch_editor::SketchEditor,
 };
 use eframe::egui::{self, Color32};
 use files::{PendingFile, Replacement};
@@ -185,11 +187,7 @@ impl Application {
         if !args.is_empty()
             && !matches!(
                 command,
-                Command::Parameter
-                    | Command::NewSketch
-                    | Command::Rectangle
-                    | Command::Line
-                    | Command::Dimension
+                Command::Parameter | Command::NewSketch | Command::Draw(_) | Command::Dimension
             )
         {
             return Err("This command does not accept arguments yet".into());
@@ -341,35 +339,26 @@ impl Application {
                 self.mode = Mode::Sketch;
                 self.tab = 0;
             }
-            Command::Rectangle | Command::Line => {
-                let tool = if command == Command::Rectangle {
-                    DrawTool::Rectangle
-                } else {
-                    DrawTool::Line
-                };
+            Command::Draw(tool) => {
+                if !self.enabled(command) {
+                    return Err(
+                        "Open a sketch and apply or cancel pending edits before drawing".into(),
+                    );
+                }
                 if args.is_empty() {
                     self.current_mut().sketch.set_tool(tool)?;
                 } else {
-                    if args.len() != 4 {
-                        return Err("Usage: rect <x1> <y1> <x2> <y2> (mm)".into());
-                    }
-                    let values: Vec<f64> = args
-                        .iter()
-                        .map(|s| {
-                            s.parse::<f64>().map_err(|_| {
-                                "Coordinates must be numbers in millimeters".to_string()
-                            })
-                        })
-                        .collect::<Result<_, _>>()?;
+                    let request = tool.parse(args, self.current().sketch.construction())?;
                     let p = self.current_mut();
-                    p.sketch.add(
-                        &mut p.session,
-                        tool,
-                        [values[0], values[1]],
-                        [values[2], values[3]],
-                        channel,
-                    )?;
+                    p.sketch.draw(&mut p.session, &request, channel)?;
                 }
+            }
+            Command::Construction => {
+                if !self.enabled(command) {
+                    return Err("Open a sketch and apply or cancel pending edits before changing construction geometry".into());
+                }
+                let p = self.current_mut();
+                p.sketch.toggle_construction(&mut p.session, channel)?;
             }
             Command::Dimension => {
                 if self.mode != Mode::Sketch {
@@ -437,8 +426,8 @@ impl Application {
             }
             Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
             Command::NewSketch => !pending(),
-            Command::Rectangle
-            | Command::Line
+            Command::Draw(_)
+            | Command::Construction
             | Command::Dimension
             | Command::FinishSketch
             | Command::Delete => {
@@ -976,10 +965,16 @@ impl Application {
         }
     }
     fn command_help(&self, command: Command, label: &str, ctx: &egui::Context) -> String {
-        self.shortcuts
+        let hint = self
+            .shortcuts
             .hint(command, &self.shortcut_context(ctx))
             .map(|key| format!("{label} · {key}"))
-            .unwrap_or_else(|| label.into())
+            .unwrap_or_else(|| label.into());
+        if let Command::Draw(tool) = command {
+            format!("{hint}\nCommand: {}", tool.usage())
+        } else {
+            hint
+        }
     }
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let shell_interaction = self.find_open
@@ -1286,7 +1281,7 @@ mod tests {
         app.invoke(Command::NewSketch, &["xy"], Channel::CommandLine)
             .unwrap();
         app.invoke(
-            Command::Rectangle,
+            Command::Draw(DrawTool::Rectangle),
             &["0", "0", "80", "60"],
             Channel::CommandLine,
         )
@@ -1332,7 +1327,7 @@ mod tests {
         app.invoke(Command::NewSketch, &["xy"], Channel::CommandLine)
             .unwrap();
         app.invoke(
-            Command::Rectangle,
+            Command::Draw(DrawTool::Rectangle),
             &["0", "0", "80", "60"],
             Channel::CommandLine,
         )
@@ -1348,13 +1343,17 @@ mod tests {
         );
         let before = app.current().session.document().clone();
         assert!(
-            app.invoke(Command::Line, &["1", "1", "1", "1"], Channel::CommandLine)
-                .is_err()
+            app.invoke(
+                Command::Draw(DrawTool::Line),
+                &["1", "1", "1", "1"],
+                Channel::CommandLine
+            )
+            .is_err()
         );
         assert_eq!(app.current().session.document(), &before);
         app.invoke(Command::FinishSketch, &[], Channel::CommandLine)
             .unwrap();
-        assert!(!app.enabled(Command::Rectangle));
+        assert!(!app.enabled(Command::Draw(DrawTool::Rectangle)));
         app.invoke(Command::Undo, &[], Channel::CommandLine)
             .unwrap();
         assert!(
@@ -1371,6 +1370,109 @@ mod tests {
             Channel::CommandLine,
         )
         .unwrap();
+    }
+    #[test]
+    fn all_drawing_aliases_dispatch_typed_requests_and_invalid_inputs_leave_no_history() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::NewSketch, &["xy"], Channel::CommandLine)
+            .unwrap();
+        for (line, count) in [
+            ("line 0 0 10 0", 1),
+            ("rect 20 0 40 10", 4),
+            ("circle 60 0 5", 1),
+            ("arc 100 0 110 0 100 10 cw", 1),
+            ("polyline 200 0 220 0 220 10 closed", 3),
+        ] {
+            let before = app.current().session.revision();
+            let (command, args) = app.registry.parse_line(line).unwrap();
+            let id = app.current().sketch.selected.unwrap();
+            let old = multicad_core::constraint_sketch::source::Source::read(
+                app.current().session.document(),
+                id,
+            )
+            .unwrap()
+            .0;
+            app.invoke(command, &args, Channel::CommandLine).unwrap();
+            let next = multicad_core::constraint_sketch::source::Source::read(
+                app.current().session.document(),
+                id,
+            )
+            .unwrap()
+            .0;
+            assert_eq!(next.sketch.curves.len(), old.sketch.curves.len() + count);
+            assert_eq!(app.current().session.revision(), before + 1);
+            assert_eq!(
+                app.current()
+                    .session
+                    .activity()
+                    .last()
+                    .unwrap()
+                    .actor
+                    .channel,
+                Channel::CommandLine
+            );
+        }
+        let before = app.current().session.document().clone();
+        let revision = app.current().session.revision();
+        for line in [
+            "line 0 0 0 0",
+            "circle 0 0 NaN",
+            "arc 0 0 10 0 0 11",
+            "polyline 0 0 10 0 closed",
+            "rect 0 0 10 10 extra",
+        ] {
+            let (command, args) = app.registry.parse_line(line).unwrap();
+            assert!(app.invoke(command, &args, Channel::CommandLine).is_err());
+            assert_eq!(app.current().session.document(), &before);
+            assert_eq!(app.current().session.revision(), revision);
+        }
+    }
+    #[test]
+    fn drawing_and_construction_commands_require_an_open_idle_sketch() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let source = app.current().session.document().clone();
+        for command in DrawTool::ALL
+            .into_iter()
+            .map(Command::Draw)
+            .chain([Command::Construction])
+        {
+            assert!(!app.enabled(command));
+            assert!(app.invoke(command, &[], Channel::CommandLine).is_err());
+            assert_eq!(app.current().session.document(), &source);
+        }
+        app.invoke(Command::NewSketch, &["xy"], Channel::CommandLine)
+            .unwrap();
+        app.invoke(Command::Construction, &[], Channel::CommandLine)
+            .unwrap();
+        assert!(app.current().sketch.construction());
+        app.invoke(
+            Command::Draw(DrawTool::Circle),
+            &["0", "0", "5"],
+            Channel::CommandLine,
+        )
+        .unwrap();
+        let id = app.current().sketch.selected.unwrap();
+        let source = multicad_core::constraint_sketch::source::Source::read(
+            app.current().session.document(),
+            id,
+        )
+        .unwrap()
+        .0;
+        assert!(source.sketch.curves[0].construction);
+        app.invoke(Command::FinishSketch, &[], Channel::Ui).unwrap();
+        let before = app.current().session.document().clone();
+        for tool in DrawTool::ALL {
+            assert!(!app.enabled(Command::Draw(tool)));
+            assert!(
+                app.invoke(Command::Draw(tool), &[], Channel::CommandLine)
+                    .is_err()
+            );
+        }
+        assert!(
+            app.invoke(Command::Construction, &[], Channel::CommandLine)
+                .is_err()
+        );
+        assert_eq!(app.current().session.document(), &before);
     }
     fn shortcut_frame(ctx: &egui::Context, app: &mut Application, mut events: Vec<egui::Event>) {
         let releases: Vec<_> = events
@@ -1589,8 +1691,12 @@ mod tests {
         let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
         app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
             .unwrap();
-        app.invoke(Command::Rectangle, &["0", "0", "80", "60"], Channel::Ui)
-            .unwrap();
+        app.invoke(
+            Command::Draw(DrawTool::Rectangle),
+            &["0", "0", "80", "60"],
+            Channel::Ui,
+        )
+        .unwrap();
         app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
         assert!(app.current().session.can_undo() && app.current().session.can_redo());
         shortcut_frame(&ctx, &mut app, vec![]);
@@ -1629,14 +1735,21 @@ mod tests {
             Command::NewSketch,
             Command::FinishSketch,
             Command::Delete,
-            Command::Line,
-            Command::Rectangle,
+            Command::Draw(DrawTool::Line),
+            Command::Draw(DrawTool::Rectangle),
+            Command::Draw(DrawTool::Circle),
+            Command::Draw(DrawTool::Arc),
+            Command::Draw(DrawTool::Polyline),
+            Command::Construction,
             Command::Dimension,
         ] {
             assert!(
                 !app.enabled(command),
                 "Pending preview left {command:?} enabled"
             );
+            if matches!(command, Command::Draw(_) | Command::Construction) {
+                assert!(app.invoke(command, &[], Channel::CommandLine).is_err());
+            }
         }
         assert_eq!(app.current().session.document(), &before);
         assert!(app.invoke(Command::Save, &[], Channel::Ui).is_err());
