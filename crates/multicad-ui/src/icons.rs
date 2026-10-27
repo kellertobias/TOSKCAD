@@ -87,7 +87,7 @@ pub fn labeled_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Respo
     response.on_hover_text(label)
 }
 pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(112.0, 64.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(84.0, 78.0), egui::Sense::click());
     if response.hovered() {
         ui.painter()
             .rect_filled(rect.shrink(2.0), 5, Color32::from_rgb(42, 51, 65));
@@ -108,15 +108,18 @@ pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     paint_sized(
         ui,
         icon,
-        Pos2::new(rect.center().x, rect.top() + 18.0),
+        Pos2::new(rect.center().x, rect.top() + rect.height() / 3.0),
         color,
         24.0,
     );
     let galley = ui
         .painter()
-        .layout(label.into(), egui::FontId::proportional(12.0), color, 100.0);
+        .layout(label.into(), egui::FontId::proportional(11.0), color, 72.0);
     ui.painter().galley(
-        Pos2::new(rect.center().x - galley.size().x * 0.5, rect.top() + 35.0),
+        Pos2::new(
+            rect.center().x - galley.size().x * 0.5,
+            rect.top() + rect.height() * 5.0 / 6.0 - galley.size().y * 0.5,
+        ),
         galley,
         color,
     );
