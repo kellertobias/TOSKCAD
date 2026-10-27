@@ -1,0 +1,1064 @@
+//! Reusable source hierarchy tree and Inspector tools. Collapse and selection are
+//! host/UI state; model edits use the same prepared commands as external callers.
+use crate::{
+    egui::{self, Color32},
+    icons::{self, Icon},
+};
+use multicad_core::{
+    commands::{Actor, Change, Channel, Session},
+    document::{Document, EntityData, EntityId},
+    hierarchy::{self, Action, ContainerKind, Index},
+};
+use std::collections::{BTreeMap, BTreeSet};
+#[derive(Clone, Copy)]
+pub struct TreeOptions {
+    pub enabled: bool,
+    pub allow_open_sketch: bool,
+}
+impl Default for TreeOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_open_sketch: true,
+        }
+    }
+}
+#[derive(Default)]
+pub struct TreeEvents {
+    pub selection: Option<BTreeSet<EntityId>>,
+    pub open_sketch: Option<EntityId>,
+    pub change: Option<Change>,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeKind {
+    Root,
+    Component,
+    Group,
+    Body,
+    Sketch,
+    Instance,
+    Plane,
+    Feature,
+}
+impl NodeKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Root => "Root",
+            Self::Component => "Component",
+            Self::Group => "Group",
+            Self::Body => "Body",
+            Self::Sketch => "Sketch",
+            Self::Instance => "Instance",
+            Self::Plane => "Plane",
+            Self::Feature => "Feature",
+        }
+    }
+    fn icon(self) -> Icon {
+        match self {
+            Self::Root => Icon::Home,
+            Self::Component | Self::Body => Icon::Box,
+            Self::Group => Icon::Library,
+            Self::Sketch => Icon::Sketch,
+            Self::Instance => Icon::Link,
+            Self::Plane => Icon::Grid,
+            Self::Feature => Icon::Cut,
+        }
+    }
+    fn container(self) -> bool {
+        matches!(self, Self::Root | Self::Component | Self::Group)
+    }
+}
+fn kind(data: &EntityData) -> Option<NodeKind> {
+    match data {
+        EntityData::Assembly { .. } => Some(NodeKind::Component),
+        EntityData::Group {} => Some(NodeKind::Group),
+        EntityData::Part { .. } => Some(NodeKind::Body),
+        EntityData::Sketch { .. } => Some(NodeKind::Sketch),
+        EntityData::Instance { .. } => Some(NodeKind::Instance),
+        EntityData::Plane { .. } => Some(NodeKind::Plane),
+        EntityData::Feature { .. } => Some(NodeKind::Feature),
+        _ => None,
+    }
+}
+#[derive(Clone)]
+pub struct TreeRow {
+    pub id: EntityId,
+    pub depth: usize,
+    pub name: String,
+    pub kind: NodeKind,
+    pub owner: String,
+    pub local_visible: bool,
+    pub effective_visible: bool,
+    pub active: bool,
+    pub expandable: bool,
+    key: egui::Id,
+}
+#[derive(Clone)]
+struct Destination {
+    id: Option<EntityId>,
+    path: String,
+}
+struct TreeView {
+    stamp: (EntityId, u64),
+    rows: Vec<TreeRow>,
+    destinations: Vec<Destination>,
+    active: String,
+    diagnostics: Vec<String>,
+}
+fn container_path(document: &Document, index: &Index<'_>, id: Option<EntityId>) -> String {
+    let mut path = vec![];
+    let mut next = id;
+    while let Some(id) = next {
+        if id == document.id() {
+            break;
+        }
+        let Some(entity) = document.get(id) else {
+            break;
+        };
+        path.push(entity.name.clone());
+        next = index.parent(id).ok().flatten();
+    }
+    path.push(document.name().into());
+    path.reverse();
+    path.join(" / ")
+}
+impl TreeView {
+    fn build(
+        document: &Document,
+        revision: u64,
+        collapsed: &BTreeSet<EntityId>,
+        salt: egui::Id,
+    ) -> Result<Self, String> {
+        let index = Index::new(document).map_err(|error| error.to_string())?;
+        let mut destinations = vec![Destination {
+            id: None,
+            path: format!("{} (root)", document.name()),
+        }];
+        for entity in document.entities() {
+            if hierarchy::container_kind(&entity.data).is_some() {
+                destinations.push(Destination {
+                    id: Some(entity.id),
+                    path: container_path(document, &index, Some(entity.id)),
+                });
+            }
+        }
+        destinations[1..].sort_by(|a, b| a.path.cmp(&b.path));
+        let mut counts = BTreeMap::new();
+        for target in &destinations {
+            *counts.entry(target.path.clone()).or_insert(0usize) += 1;
+        }
+        for target in &mut destinations {
+            if counts[&target.path] > 1
+                && let Some(id) = target.id
+            {
+                target.path = format!("{} [{}]", target.path, &id.to_string()[..8]);
+            }
+        }
+        let active = container_path(document, &index, document.hierarchy().active_component);
+        let diagnostics = index.diagnostics().into_iter().map(|diagnostic| {
+            let hierarchy::HierarchyDiagnostic::SharedLegacyInstance { entry, parents } = diagnostic;
+            let name = document.get(entry).map(|entity| entity.name.as_str()).unwrap_or("Missing instance");
+            let paths = parents.into_iter().map(|parent| container_path(document, &index, Some(parent))).collect::<Vec<_>>().join("; ");
+            format!("{name} is shared by {paths}. Move it to choose one owner; its source has not been duplicated.")
+        }).collect();
+        let mut rows = vec![];
+        let mut pending = vec![(document.id(), 0usize, salt.with(document.id()))];
+        while let Some((id, depth, key)) = pending.pop() {
+            let root = id == document.id();
+            let (name, node_kind) = if root {
+                (document.name().to_owned(), NodeKind::Root)
+            } else {
+                let Some(entity) = document.get(id) else {
+                    continue;
+                };
+                let Some(kind) = kind(&entity.data) else {
+                    continue;
+                };
+                (entity.name.clone(), kind)
+            };
+            let children = if node_kind.container() {
+                index
+                    .children(if root { None } else { Some(id) })
+                    .map_err(|error| error.to_string())?
+            } else {
+                vec![]
+            };
+            let owner = if root {
+                "Document root".into()
+            } else {
+                match index.owning_component(id) {
+                    Ok(owner) => container_path(document, &index, owner),
+                    Err(_) => "Shared legacy ownership; move explicitly to resolve".into(),
+                }
+            };
+            let local_visible = !document.hierarchy().hidden.contains(&id);
+            let mut effective_visible = crate::viewport::source_visible(document, &index, id)?;
+            if let Some(EntityData::Instance { component, .. }) =
+                document.get(id).map(|entity| &entity.data)
+            {
+                effective_visible &= crate::viewport::source_visible(document, &index, *component)?;
+            }
+            let active = if root {
+                document.hierarchy().active_component.is_none()
+            } else {
+                document.hierarchy().active_component == Some(id)
+            };
+            let expandable = !children.is_empty();
+            rows.push(TreeRow {
+                id,
+                depth,
+                name,
+                kind: node_kind,
+                owner,
+                local_visible,
+                effective_visible,
+                active,
+                expandable,
+                key,
+            });
+            if !collapsed.contains(&id) {
+                pending.extend(
+                    children
+                        .into_iter()
+                        .rev()
+                        .map(|child| (child, depth + 1, key.with(child))),
+                );
+            }
+        }
+        Ok(Self {
+            stamp: (document.id(), revision),
+            rows,
+            destinations,
+            active,
+            diagnostics,
+        })
+    }
+}
+#[derive(Clone)]
+enum Tool {
+    Create {
+        document: EntityId,
+        revision: u64,
+        kind: ContainerKind,
+        name: String,
+        parent: Option<EntityId>,
+    },
+    Rename {
+        document: EntityId,
+        revision: u64,
+        id: EntityId,
+        name: String,
+    },
+    Move {
+        document: EntityId,
+        revision: u64,
+        entries: Vec<EntityId>,
+        parent: Option<EntityId>,
+        before: Option<EntityId>,
+    },
+}
+impl Tool {
+    fn document(&self) -> EntityId {
+        match self {
+            Self::Create { document, .. }
+            | Self::Rename { document, .. }
+            | Self::Move { document, .. } => *document,
+        }
+    }
+    fn revision(&self) -> u64 {
+        match self {
+            Self::Create { revision, .. }
+            | Self::Rename { revision, .. }
+            | Self::Move { revision, .. } => *revision,
+        }
+    }
+}
+pub struct ModelTree {
+    salt: egui::Id,
+    collapsed: BTreeSet<EntityId>,
+    view: Option<TreeView>,
+    anchor: Option<EntityId>,
+    tool: Option<Tool>,
+}
+impl Default for ModelTree {
+    fn default() -> Self {
+        Self {
+            salt: egui::Id::new(EntityId::new()),
+            collapsed: BTreeSet::new(),
+            view: None,
+            anchor: None,
+            tool: None,
+        }
+    }
+}
+impl ModelTree {
+    pub fn tool_active(&self) -> bool {
+        self.tool.is_some()
+    }
+    pub fn cancel_tool(&mut self) {
+        self.tool = None;
+    }
+    pub fn begin_create(
+        &mut self,
+        session: &Session,
+        kind: ContainerKind,
+        parent: Option<EntityId>,
+    ) {
+        self.tool = Some(Tool::Create {
+            document: session.document().id(),
+            revision: session.revision(),
+            kind,
+            name: match kind {
+                ContainerKind::Component => "Component",
+                ContainerKind::Group => "Group",
+            }
+            .into(),
+            parent,
+        });
+    }
+    pub fn begin_rename(&mut self, session: &Session, id: EntityId) -> Result<(), String> {
+        let entity = session
+            .document()
+            .get(id)
+            .ok_or("The selected container no longer exists")?;
+        if hierarchy::container_kind(&entity.data).is_none() {
+            return Err("Rename a component or group".into());
+        }
+        self.tool = Some(Tool::Rename {
+            document: session.document().id(),
+            revision: session.revision(),
+            id,
+            name: entity.name.clone(),
+        });
+        Ok(())
+    }
+    pub fn begin_move(&mut self, session: &Session, entries: Vec<EntityId>) -> Result<(), String> {
+        if entries.is_empty() {
+            return Err("Select model entries to move".into());
+        }
+        for id in &entries {
+            if !session
+                .document()
+                .get(*id)
+                .is_some_and(|entity| hierarchy::is_model_entry(&entity.data))
+            {
+                return Err("The selection contains an unsupported model entry".into());
+            }
+        }
+        self.tool = Some(Tool::Move {
+            document: session.document().id(),
+            revision: session.revision(),
+            entries,
+            parent: session.document().hierarchy().active_component,
+            before: None,
+        });
+        Ok(())
+    }
+    fn ensure_view(&mut self, session: &Session) -> Result<(), String> {
+        let stamp = (session.document().id(), session.revision());
+        if self.view.as_ref().is_none_or(|view| view.stamp != stamp) {
+            self.view = Some(TreeView::build(
+                session.document(),
+                session.revision(),
+                &self.collapsed,
+                self.salt,
+            )?);
+        }
+        Ok(())
+    }
+    pub fn rows(&mut self, session: &Session) -> Result<&[TreeRow], String> {
+        self.ensure_view(session)?;
+        Ok(&self.view.as_ref().unwrap().rows)
+    }
+    pub fn set_expanded(&mut self, id: EntityId, expanded: bool) {
+        if expanded {
+            self.collapsed.remove(&id);
+        } else {
+            self.collapsed.insert(id);
+        }
+        self.view = None;
+    }
+    fn execute(&mut self, session: &mut Session, revision: u64, action: Action) -> TreeEvents {
+        let mut events = TreeEvents::default();
+        match hierarchy::prepare(session, revision, Actor::local(Channel::Ui), action) {
+            Ok(pending) => {
+                let created = pending.created;
+                match session.commit(pending.prepared) {
+                    Ok(change) => {
+                        events.message = Some(
+                            session
+                                .activity()
+                                .last()
+                                .map(|activity| activity.label.clone())
+                                .unwrap_or_else(|| "Hierarchy unchanged".into()),
+                        );
+                        events.change = Some(change);
+                        if let Some(id) = created {
+                            events.selection = Some(BTreeSet::from([id]));
+                        }
+                        self.view = None;
+                    }
+                    Err(error) => events.error = Some(error.to_string()),
+                }
+            }
+            Err(error) => events.error = Some(error.to_string()),
+        }
+        events
+    }
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        selected: &BTreeSet<EntityId>,
+        options: TreeOptions,
+    ) -> TreeEvents {
+        if let Err(error) = self.ensure_view(session) {
+            return TreeEvents {
+                error: Some(error),
+                ..Default::default()
+            };
+        }
+        let mut events = TreeEvents::default();
+        let mut action = None;
+        let mut create = None;
+        let mut rename = None;
+        let mut moving = None;
+        let mut toggle = None;
+        ui.horizontal(|ui| {
+            ui.strong("Model");
+            let response = ui
+                .add_enabled_ui(options.enabled, |ui| {
+                    icons::compact_button(ui, Icon::New, "Create component or group")
+                })
+                .inner;
+            egui::Popup::menu(&response).show(|ui| {
+                for (kind, label) in [
+                    (ContainerKind::Component, "New component"),
+                    (ContainerKind::Group, "New group"),
+                ] {
+                    if ui.button(label).clicked() {
+                        create = Some((kind, session.document().hierarchy().active_component));
+                        ui.close();
+                    }
+                }
+            });
+        });
+        let view = self.view.as_ref().unwrap();
+        ui.small(format!("Active: {}", view.active));
+        for warning in &view.diagnostics {
+            ui.collapsing("Legacy ownership needs attention", |ui| {
+                ui.colored_label(Color32::LIGHT_YELLOW, warning);
+            });
+        }
+        let rows = &view.rows;
+        egui::ScrollArea::vertical()
+            .id_salt(self.salt)
+            .show_rows(ui, 26., rows.len(), |ui, range| {
+                for row_index in range {
+                    let row = &rows[row_index];
+                    ui.push_id(row.key, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space((row.depth as f32 * 10.).min(80.));
+                            if row.expandable {
+                                let collapsed = self.collapsed.contains(&row.id);
+                                if ui.add_sized([16., 24.], egui::Button::new(if collapsed { ">" } else { "v" }).frame(false))
+                                    .on_hover_text("Expand or collapse this container without editing the document").clicked() {
+                                    toggle = Some((row.id, collapsed));
+                                }
+                            } else {
+                                ui.add_space(16.);
+                            }
+                            let icon = ui.add_enabled_ui(options.enabled, |ui| {
+                                icons::mini_button(ui, row.kind.icon(), &format!("Select {} {}", row.kind.label(), row.name))
+                            }).inner;
+                            let width = (ui.available_width() - 28.).max(32.);
+                            let label = if row.active { format!("{} · active", row.name) } else { row.name.clone() };
+                            let color = if row.effective_visible { ui.visuals().text_color() } else { Color32::GRAY };
+                            let response = ui.add_enabled_ui(options.enabled, |ui| {
+                                ui.add_sized([width, 24.], egui::Button::new(egui::RichText::new(label).color(color))
+                                    .selected(selected.contains(&row.id)).frame(false).truncate())
+                            }).inner;
+                            response.clone().on_hover_text(format!("{}\nOwning component: {}\nCmd/Ctrl-click toggles; Shift-click selects a range", row.kind.label(), row.owner));
+                            if response.clicked() || icon.clicked() {
+                                let modifiers = ui.input(|input| input.modifiers);
+                                let mut next = if modifiers.command { selected.clone() } else { BTreeSet::new() };
+                                if modifiers.shift && let Some(start) = self.anchor.and_then(|id| rows.iter().position(|row| row.id == id)) {
+                                    next.extend(rows[start.min(row_index)..=start.max(row_index)].iter().map(|row| row.id));
+                                } else if !modifiers.command || !next.remove(&row.id) {
+                                    next.insert(row.id);
+                                }
+                                self.anchor = Some(row.id);
+                                events.selection = Some(next);
+                            }
+                            if response.double_clicked() && options.enabled {
+                                if row.kind == NodeKind::Sketch && options.allow_open_sketch {
+                                    events.open_sketch = Some(row.id);
+                                } else if matches!(row.kind, NodeKind::Component | NodeKind::Root) {
+                                    action = Some(Action::SetActive { component: if row.kind == NodeKind::Root { None } else { Some(row.id) } });
+                                }
+                            }
+                            let mut visible = row.local_visible;
+                            let visibility = ui.add_enabled(options.enabled && !matches!(row.kind, NodeKind::Plane | NodeKind::Feature),
+                                egui::Checkbox::new(&mut visible, "").indeterminate(row.local_visible && !row.effective_visible));
+                            let hint = if matches!(row.kind, NodeKind::Plane | NodeKind::Feature) {
+                                "This source is evaluated through its sketch or body; standalone visibility is unavailable"
+                            } else if row.local_visible && !row.effective_visible {
+                                "Local visibility is on; an ancestor or the component definition is hidden"
+                            } else {
+                                "Show or hide this source; descendant visibility is inherited"
+                            };
+                            if visibility.on_hover_text(hint).changed() {
+                                action = Some(Action::SetVisible { id: row.id, visible });
+                            }
+                            response.context_menu(|ui| {
+                                ui.add_enabled_ui(options.enabled, |ui| {
+                                    if matches!(row.kind, NodeKind::Root | NodeKind::Component)
+                                        && ui.button("Activate modeling scope").clicked() {
+                                        action = Some(Action::SetActive { component: if row.kind == NodeKind::Root { None } else { Some(row.id) } });
+                                        ui.close();
+                                    }
+                                    if row.kind.container() {
+                                        for (kind, label) in [(ContainerKind::Component, "New child component"), (ContainerKind::Group, "New child group")] {
+                                            if ui.button(label).clicked() {
+                                                create = Some((kind, if row.kind == NodeKind::Root { None } else { Some(row.id) }));
+                                                ui.close();
+                                            }
+                                        }
+                                    }
+                                    if matches!(row.kind, NodeKind::Component | NodeKind::Group) && ui.button("Rename").clicked() {
+                                        rename = Some(row.id);
+                                        ui.close();
+                                    }
+                                    if row.kind != NodeKind::Root && ui.button("Move to container…").clicked() {
+                                        moving = Some(if selected.contains(&row.id) { selected.iter().copied().collect() } else { vec![row.id] });
+                                        ui.close();
+                                    }
+                                    if row.kind == NodeKind::Sketch && options.allow_open_sketch && ui.button("Open sketch").clicked() {
+                                        events.open_sketch = Some(row.id);
+                                        ui.close();
+                                    }
+                                    let legacy = row.kind == NodeKind::Component
+                                        && matches!(&session.document().get(row.id).unwrap().data, EntityData::Assembly { instances } if !instances.is_empty());
+                                    if legacy && ui.button("Normalize legacy membership")
+                                        .on_hover_text("Preserve IDs and order; shared legacy instances must be moved explicitly first").clicked() {
+                                        action = Some(Action::NormalizeLegacy { component: row.id });
+                                        ui.close();
+                                    }
+                                });
+                            });
+                        });
+                    });
+                }
+            });
+        if let Some((id, expanded)) = toggle {
+            self.set_expanded(id, expanded);
+        }
+        if let Some((kind, parent)) = create {
+            self.begin_create(session, kind, parent);
+        }
+        if let Some(id) = rename
+            && let Err(error) = self.begin_rename(session, id)
+        {
+            events.error = Some(error);
+        }
+        if let Some(ids) = moving
+            && let Err(error) = self.begin_move(session, ids)
+        {
+            events.error = Some(error);
+        }
+        if let Some(action) = action {
+            return self.execute(session, session.revision(), action);
+        }
+        events
+    }
+    pub fn inspector(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        selected: &BTreeSet<EntityId>,
+        options: TreeOptions,
+    ) -> TreeEvents {
+        let enabled = options.enabled;
+        if let Err(error) = self.ensure_view(session) {
+            return TreeEvents {
+                error: Some(error),
+                ..Default::default()
+            };
+        }
+        let mut events = TreeEvents::default();
+        if let Some(tool) = self.tool.as_mut() {
+            let current =
+                tool.revision() == session.revision() && tool.document() == session.document().id();
+            let mut apply = false;
+            let mut cancel = false;
+            let view = self.view.as_ref().unwrap();
+            ui.add_enabled_ui(enabled, |ui| {
+                match tool {
+                    Tool::Create { kind, name, parent, .. } => {
+                        ui.strong(match kind { ContainerKind::Component => "New component", ContainerKind::Group => "New group" });
+                        ui.label("Name");
+                        ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY)).on_hover_text("Name for the new model container");
+                        parent_choice(ui, "create-parent", parent, &view.destinations);
+                    }
+                    Tool::Rename { name, .. } => {
+                        ui.strong("Rename container");
+                        ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY)).on_hover_text("New component or group name; identity and references remain stable");
+                    }
+                    Tool::Move { entries, parent, before, .. } => {
+                        ui.strong(format!("Move {} model entries", entries.len()));
+                        ui.label("Geometry and source identities are retained. A group preserves its enclosing component scope.");
+                        let prior = *parent;
+                        parent_choice(ui, "move-parent", parent, &view.destinations);
+                        if prior != *parent { *before = None; }
+                        let key = parent.unwrap_or(session.document().id());
+                        let siblings = session.document().hierarchy().members.get(&key).cloned().unwrap_or_default();
+                        egui::ComboBox::from_id_salt("move-before")
+                            .selected_text(before.and_then(|id| session.document().get(id).map(|entity| entity.name.clone())).unwrap_or_else(|| "Append at end".into()))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(before, None, "Append at end");
+                                for id in siblings {
+                                    if !entries.contains(&id) && let Some(entity) = session.document().get(id) {
+                                        ui.selectable_value(before, Some(id), format!("Before {}", entity.name));
+                                    }
+                                }
+                            }).response.on_hover_text("Order relative to an explicit member; normalize legacy membership before reordering its instances");
+                    }
+                }
+                if !current {
+                    ui.colored_label(Color32::LIGHT_RED, "The document changed. Cancel and reopen this tool to review the current state.");
+                }
+                ui.horizontal(|ui| {
+                    apply = ui.add_enabled(current, egui::Button::new("Apply")).on_hover_text("Commit one undoable hierarchy transaction").clicked();
+                    cancel = ui.button("Cancel").on_hover_text("Discard this source-neutral form").clicked();
+                });
+            });
+            if cancel {
+                self.tool = None;
+            } else if apply {
+                return self.apply_tool(session);
+            }
+            return events;
+        }
+        let Some(id) = selected.first().copied() else {
+            return events;
+        };
+        let root = id == session.document().id();
+        let entity = session.document().get(id);
+        let node_kind = if root {
+            Some(NodeKind::Root)
+        } else {
+            entity.and_then(|entity| kind(&entity.data))
+        };
+        let Some(node_kind) = node_kind else {
+            return events;
+        };
+        ui.strong(if root {
+            session.document().name()
+        } else {
+            &entity.unwrap().name
+        });
+        ui.label(node_kind.label());
+        if let Ok(index) = Index::new(session.document()) {
+            match index.owning_component(id) {
+                Ok(owner) => {
+                    ui.label(format!(
+                        "Owning component: {}",
+                        container_path(session.document(), &index, owner)
+                    ));
+                }
+                Err(error) => {
+                    ui.colored_label(Color32::LIGHT_YELLOW, error.to_string());
+                }
+            }
+            if let Some(EntityData::Instance { component, .. }) = entity.map(|entity| &entity.data)
+            {
+                ui.label(format!(
+                    "Definition: {}",
+                    session
+                        .document()
+                        .get(*component)
+                        .map(|entity| entity.name.as_str())
+                        .unwrap_or("Missing source")
+                ));
+            }
+        }
+        if let Some(EntityData::Part { material, tags, .. }) = entity.map(|entity| &entity.data) {
+            if let Some(material) = material.and_then(|id| session.document().get(id)) {
+                ui.label(format!("Material: {}", material.name));
+            }
+            if !tags.is_empty() {
+                ui.label(format!(
+                    "Tags: {}",
+                    tags.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+        let mut action = None;
+        let mut rename = false;
+        let mut moving = false;
+        ui.add_enabled_ui(enabled, |ui| {
+            if matches!(node_kind, NodeKind::Root | NodeKind::Component) && ui.button("Activate modeling scope")
+                .on_hover_text("New source geometry belongs to this component; nested components retain their own scope").clicked() {
+                action = Some(Action::SetActive { component: if root { None } else { Some(id) } });
+            }
+            if matches!(node_kind, NodeKind::Component | NodeKind::Group) {
+                rename = ui.button("Rename…").on_hover_text("Rename this container without changing its identity").clicked();
+            }
+            if !root {
+                moving = ui.button("Move to container…").on_hover_text("Choose an explicit parent and ordering position; this does not transform geometry").clicked();
+            }
+            if node_kind == NodeKind::Sketch && options.allow_open_sketch
+                && ui.button("Open selected sketch").on_hover_text("Open this sketch in the Sketch workspace").clicked() {
+                events.open_sketch = Some(id);
+            }
+        });
+        if rename && let Err(error) = self.begin_rename(session, id) {
+            events.error = Some(error);
+        }
+        if moving && let Err(error) = self.begin_move(session, selected.iter().copied().collect()) {
+            events.error = Some(error);
+        }
+        if let Some(action) = action {
+            return self.execute(session, session.revision(), action);
+        }
+        events
+    }
+    fn apply_tool(&mut self, session: &mut Session) -> TreeEvents {
+        let Some(tool) = self.tool.clone() else {
+            return TreeEvents::default();
+        };
+        if tool.document() != session.document().id() {
+            return TreeEvents {
+                error: Some(
+                    "This hierarchy tool belongs to another document; cancel and reopen it".into(),
+                ),
+                ..Default::default()
+            };
+        }
+        let revision = tool.revision();
+        let action = match tool {
+            Tool::Create {
+                kind, name, parent, ..
+            } => Action::Create { kind, name, parent },
+            Tool::Rename { id, name, .. } => Action::Rename { id, name },
+            Tool::Move {
+                entries,
+                parent,
+                before,
+                ..
+            } => Action::Move {
+                entries,
+                parent,
+                before,
+            },
+        };
+        let events = self.execute(session, revision, action);
+        if events.error.is_none() {
+            self.tool = None;
+        }
+        events
+    }
+}
+fn parent_choice(
+    ui: &mut egui::Ui,
+    id: &str,
+    parent: &mut Option<EntityId>,
+    destinations: &[Destination],
+) {
+    ui.label("Parent container");
+    let current = destinations
+        .iter()
+        .find(|entry| entry.id == *parent)
+        .map(|entry| entry.path.as_str())
+        .unwrap_or("Missing container");
+    egui::ComboBox::from_id_salt(id)
+        .width(ui.available_width())
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for destination in destinations {
+                ui.selectable_value(parent, destination.id, &destination.path);
+            }
+        })
+        .response
+        .on_hover_text("Full model paths distinguish nested components and groups");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use multicad_core::{
+        commands::Request,
+        document::{Entity, Mutation},
+        hierarchy::Hierarchy,
+    };
+    fn fixture() -> (Session, EntityId, EntityId, EntityId) {
+        let component = Entity::new("Cabinet", EntityData::Assembly { instances: vec![] });
+        let group = Entity::new("Panels", EntityData::Group {});
+        let body = Entity::new(
+            "Side",
+            EntityData::Part {
+                features: vec![],
+                material: None,
+                tags: BTreeSet::new(),
+            },
+        );
+        let document = Document::new("Workshop")
+            .unwrap()
+            .edited(&[
+                Mutation::Insert(component.clone()),
+                Mutation::Insert(group.clone()),
+                Mutation::Insert(body.clone()),
+                Mutation::SetHierarchy(Hierarchy {
+                    members: BTreeMap::from([
+                        (component.id, vec![group.id]),
+                        (group.id, vec![body.id]),
+                    ]),
+                    active_component: Some(component.id),
+                    ..Default::default()
+                }),
+            ])
+            .unwrap();
+        (
+            Session::new(document).unwrap(),
+            component.id,
+            group.id,
+            body.id,
+        )
+    }
+    #[test]
+    fn recursive_rows_collapse_locally_and_report_scope_and_visibility() {
+        let (mut session, component, group, body) = fixture();
+        let mut tree = ModelTree::default();
+        let before = session.document().clone();
+        let rows = tree.rows(&session).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[3].id, body);
+        assert_eq!(rows[3].depth, 3);
+        assert_eq!(rows[3].owner, "Workshop / Cabinet");
+        assert!(rows[1].active);
+        tree.set_expanded(group, false);
+        assert_eq!(tree.rows(&session).unwrap().len(), 3);
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), 0);
+        tree.set_expanded(group, true);
+        let event = tree.execute(
+            &mut session,
+            0,
+            Action::SetVisible {
+                id: component,
+                visible: false,
+            },
+        );
+        assert!(event.error.is_none());
+        let row = tree
+            .rows(&session)
+            .unwrap()
+            .iter()
+            .find(|row| row.id == body)
+            .unwrap();
+        assert!(row.local_visible);
+        assert!(!row.effective_visible);
+        session.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert!(
+            tree.rows(&session)
+                .unwrap()
+                .iter()
+                .find(|row| row.id == body)
+                .unwrap()
+                .effective_visible
+        );
+    }
+    #[test]
+    fn inspector_forms_cancel_stale_guard_and_commit_one_typed_transaction() {
+        let (mut session, component, group, body) = fixture();
+        let mut tree = ModelTree::default();
+        let before = session.document().clone();
+        tree.begin_create(&session, ContainerKind::Group, Some(component));
+        assert!(tree.tool_active());
+        tree.cancel_tool();
+        assert_eq!(session.document(), &before);
+        tree.begin_rename(&session, group).unwrap();
+        if let Some(Tool::Rename { name, .. }) = &mut tree.tool {
+            *name = "Carcass panels".into();
+        }
+        let events = tree.apply_tool(&mut session);
+        assert!(events.error.is_none());
+        assert_eq!(session.revision(), 1);
+        assert_eq!(
+            session.document().get(group).unwrap().name,
+            "Carcass panels"
+        );
+        assert!(!tree.tool_active());
+        tree.begin_move(&session, vec![body]).unwrap();
+        if let Some(Tool::Move { parent, .. }) = &mut tree.tool {
+            *parent = None;
+        }
+        let events = tree.apply_tool(&mut session);
+        assert!(events.error.is_none());
+        assert_eq!(
+            Index::new(session.document())
+                .unwrap()
+                .owning_component(body)
+                .unwrap(),
+            None
+        );
+        session.undo(2, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(
+            Index::new(session.document())
+                .unwrap()
+                .owning_component(body)
+                .unwrap(),
+            Some(component)
+        );
+        tree.begin_create(&session, ContainerKind::Component, None);
+        let pending = session
+            .prepare(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Change document".into(),
+                edits: vec![Mutation::RenameDocument("Changed".into())],
+            })
+            .unwrap();
+        session.commit(pending).unwrap();
+        let snapshot = session.document().clone();
+        let revision = session.revision();
+        assert!(tree.apply_tool(&mut session).error.is_some());
+        assert!(tree.tool_active());
+        assert_eq!(session.document(), &snapshot);
+        assert_eq!(session.revision(), revision);
+        tree.cancel_tool();
+    }
+    #[test]
+    fn duplicate_names_have_unambiguous_destination_paths_and_cycles_reject() {
+        let (mut session, component, group, _) = fixture();
+        let other = Entity::new("Cabinet", EntityData::Assembly { instances: vec![] });
+        let prepared = session
+            .prepare(Request {
+                expected_revision: 0,
+                actor: Actor::local(Channel::Ui),
+                label: "Other component".into(),
+                edits: vec![Mutation::Insert(other)],
+            })
+            .unwrap();
+        session.commit(prepared).unwrap();
+        let mut tree = ModelTree::default();
+        tree.ensure_view(&session).unwrap();
+        let paths: Vec<_> = tree
+            .view
+            .as_ref()
+            .unwrap()
+            .destinations
+            .iter()
+            .map(|target| &target.path)
+            .collect();
+        assert_eq!(paths.iter().collect::<BTreeSet<_>>().len(), paths.len());
+        tree.begin_move(&session, vec![component]).unwrap();
+        if let Some(Tool::Move { parent, .. }) = &mut tree.tool {
+            *parent = Some(group);
+        }
+        let before = session.document().clone();
+        assert!(tree.apply_tool(&mut session).error.is_some());
+        assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn headless_widget_build_preserves_source_and_empty_inspector() {
+        let (mut session, _, _, _) = fixture();
+        let before = session.document().clone();
+        let mut tree = ModelTree::default();
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let events = tree.show(ui, &mut session, &BTreeSet::new(), TreeOptions::default());
+            assert!(events.change.is_none());
+            let result = tree.inspector(ui, &mut session, &BTreeSet::new(), TreeOptions::default());
+            assert!(result.change.is_none());
+        })
+        .drop_without_applying_deltas();
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), 0);
+    }
+    #[test]
+    fn form_cannot_target_another_document_at_the_same_revision() {
+        let (session, _, _, _) = fixture();
+        let mut tree = ModelTree::default();
+        tree.begin_create(&session, ContainerKind::Group, None);
+        let mut other = Session::new(Document::new("Other").unwrap()).unwrap();
+        let before = other.document().clone();
+        assert!(tree.apply_tool(&mut other).error.is_some());
+        assert_eq!(other.document(), &before);
+        assert!(tree.tool_active());
+    }
+    #[test]
+    fn tree_pointer_selection_is_source_neutral_and_modifier_aware() {
+        let (mut session, component, group, body) = fixture();
+        let mut tree = ModelTree::default();
+        let before = session.document().clone();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut selected = BTreeSet::new();
+        let mut frame = |events: Vec<egui::Event>| {
+            ctx.run_ui(
+                egui::RawInput {
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(340., 480.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let event = tree.show(ui, &mut session, &selected, TreeOptions::default());
+                    if let Some(next) = event.selection {
+                        selected = next;
+                    }
+                    assert!(event.change.is_none());
+                },
+            )
+        };
+        frame(vec![]).drop_without_applying_deltas();
+        let output = frame(vec![]);
+        let ax = output.platform_output.accesskit_update.as_ref().unwrap();
+        let points: Vec<_> = ["Cabinet · active", "Panels", "Side"]
+            .iter()
+            .map(|label| {
+                let bounds = ax
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .and_then(|(_, node)| node.bounds())
+                    .unwrap();
+                egui::Pos2::new(
+                    ((bounds.x0 + bounds.x1) * 0.5) as f32,
+                    ((bounds.y0 + bounds.y1) * 0.5) as f32,
+                )
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        for (index, modifiers) in [
+            (0, egui::Modifiers::NONE),
+            (1, egui::Modifiers::COMMAND),
+            (2, egui::Modifiers::SHIFT),
+        ] {
+            for pressed in [true, false] {
+                let pos = points[index];
+                frame(vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    },
+                ])
+                .drop_without_applying_deltas();
+            }
+        }
+        assert_eq!(selected, BTreeSet::from([group, body]));
+        assert!(!selected.contains(&component));
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), 0);
+    }
+}
