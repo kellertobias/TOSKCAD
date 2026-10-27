@@ -72,6 +72,7 @@ pub struct SketchEditor {
     fit_requested: bool,
     constraints: crate::sketch_constraints::ConstraintEditor,
     sketch_evaluation: crate::sketch_evaluation::SketchEvaluationFeed,
+    profiles: crate::sketch_selection::ProfileSelection,
     solid: crate::viewport::Interaction,
     repair: crate::reference_repair::RepairPanel,
     evaluated: Option<multicad_core::references::ReferenceReport>,
@@ -119,6 +120,7 @@ impl Default for SketchEditor {
             fit_requested: false,
             constraints: Default::default(),
             sketch_evaluation: Default::default(),
+            profiles: Default::default(),
             solid: Default::default(),
             repair: Default::default(),
             evaluated: None,
@@ -266,6 +268,32 @@ impl SketchEditor {
     }
     pub fn selected_solid(&self) -> Option<EntityId> {
         self.solid.selected_id()
+    }
+    /// Snapshot-bound profile choices for a subsequent typed solid command.
+    /// Retained display geometry never supplies a manufacturing selection.
+    pub fn selected_profiles(
+        &self,
+        document: &Document,
+        revision: u64,
+    ) -> Result<(EntityId, Vec<multicad_core::sketch_regions::RegionIntent>), String> {
+        let id = self.selected.ok_or("Select a sketch profile")?;
+        let presentation = self
+            .sketch_evaluation
+            .current(id)
+            .filter(|p| p.stamp.document == document.id() && p.stamp.revision == revision)
+            .ok_or("Wait for current valid sketch profiles")?;
+        if self.profiles.selected().is_empty() {
+            return Err("Select one or more closed profile areas".into());
+        }
+        if self
+            .profiles
+            .selected()
+            .iter()
+            .any(|intent| presentation.regions.resolve(intent).is_none())
+        {
+            return Err("A selected profile boundary changed; select it again".into());
+        }
+        Ok((id, self.profiles.selected().to_vec()))
     }
     pub fn set_display_style(&mut self, style: DisplayStyle) {
         self.style = style;
@@ -920,13 +948,18 @@ impl SketchEditor {
                                             ),
                                         };
                                         if ui
-                                            .selectable_label(self.element == Some(g.id()), label)
+                                            .selectable_label(self.element == Some(g.id()) || self.constraints.selected(g.id()), label)
                                             .clicked()
                                         {
                                             self.element = Some(g.id());
+                                            if !self.constraints.select_geometry(g.id(),Some(g.id()),ui.input(|i|i.modifiers.shift || i.modifiers.command)) {self.element=None;}
+                                            self.profiles.clear();
                                             self.tool = None;
                                             self.clear_drawing_progress();
                                         }
+                                    }
+                                    if let Some(presentation)=self.sketch_evaluation.current(id) {
+                                        self.profiles.show(ui,id,&presentation.regions);
                                     }
                                     if self.editing
                                         && ui
@@ -1359,7 +1392,9 @@ impl SketchEditor {
                     let color = if selected && conflicted {
                         Color32::LIGHT_RED
                     } else if selected
-                        && (self.element == Some(g.id()) || self.constraints.selected(g.id()))
+                        && (self.element == Some(g.id())
+                            || self.constraints.selected(g.id())
+                            || self.profiles.boundary_selected(g.id()))
                     {
                         Color32::from_rgb(255, 195, 80)
                     } else if selected {
@@ -1612,6 +1647,69 @@ impl SketchEditor {
                     self.first = Some(p);
                     self.first_anchor = anchor;
                 }
+            }
+        }
+        if sketch_mode
+            && self.editing
+            && self.tool.is_none()
+            && !self.moving
+            && !self.has_pending_edits()
+            && response.clicked()
+            && let Some(id) = self.selected
+            && let Ok((_, frame, _)) = self.read_sketch(session.document(), id, session.revision())
+            && let Some(presentation) = self.sketch_evaluation.current(id)
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            use crate::sketch_selection::{self, Hit};
+            let hit = presentation.evaluated.solved().and_then(|solved| {
+                sketch_selection::pick(
+                    pointer,
+                    self.camera,
+                    rect,
+                    frame,
+                    &solved.points,
+                    &presentation.geometry,
+                    &presentation.regions,
+                )
+            });
+            let extend = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+            match hit {
+                Some(Hit::Point(point)) => {
+                    self.element = None;
+                    self.constraints.select_geometry(point, None, extend);
+                    self.profiles.clear();
+                    self.message = format!(
+                        "{} selected sketch entities · Shift-click adds or removes",
+                        self.constraints.selection().len()
+                    );
+                }
+                Some(Hit::Curve(curve)) => {
+                    self.element = Some(curve);
+                    if !self.constraints.select_geometry(curve, Some(curve), extend) {
+                        self.element = None;
+                    }
+                    self.profiles.clear();
+                    self.message = format!(
+                        "{} selected sketch entities · Shift-click adds or removes",
+                        self.constraints.selection().len()
+                    );
+                }
+                Some(Hit::Region(region)) => {
+                    self.element = None;
+                    self.constraints.clear_geometry_selection();
+                    self.profiles.reconcile(id, &presentation.regions);
+                    self.profiles.choose(region, extend);
+                    self.message = format!(
+                        "{} closed profile areas selected",
+                        self.profiles.selected().len()
+                    );
+                }
+                None if !extend => {
+                    self.element = None;
+                    self.constraints.clear_geometry_selection();
+                    self.profiles.clear();
+                }
+                None => {}
             }
         }
         if self.moving && self.selected.is_some() {
@@ -2278,6 +2376,15 @@ mod tests {
         session: &mut Session,
         point: [f64; 2],
     ) {
+        click_sketch_modifiers(ctx, editor, session, point, egui::Modifiers::NONE);
+    }
+    fn click_sketch_modifiers(
+        ctx: &egui::Context,
+        editor: &mut SketchEditor,
+        session: &mut Session,
+        point: [f64; 2],
+        modifiers: egui::Modifiers,
+    ) {
         settle(editor, session);
         let (_, frame, _) = editor
             .read_sketch(
@@ -2292,21 +2399,132 @@ mod tests {
         );
         let screen = Pos2::new(screen[0], screen[1]);
         for pressed in [true, false] {
-            gesture_frame(
-                ctx,
-                editor,
-                session,
-                vec![
-                    egui::Event::PointerMoved(screen),
-                    egui::Event::PointerButton {
-                        pos: screen,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
+            let raw = input(vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::PointerMoved(screen),
+                egui::Event::PointerButton {
+                    pos: screen,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers,
+                },
+            ]);
+            settle(editor, session);
+            ctx.run_ui(raw, |ui| editor.canvas(ui, session, true, None, false))
+                .drop_without_applying_deltas();
         }
+    }
+    #[test]
+    fn pointer_selection_is_additive_and_profile_intents_never_silently_acquire_new_holes() {
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor
+            .add(
+                &mut session,
+                DrawTool::Rectangle,
+                [0., 0.],
+                [80., 60.],
+                Channel::Ui,
+            )
+            .unwrap();
+        editor
+            .draw(
+                &mut session,
+                &multicad_core::sketch_draw::DrawRequest {
+                    input: multicad_core::sketch_draw::DrawInput::Circle {
+                        center: multicad_core::sketch_draw::PointInput::Position([20., 20.]),
+                        radius_mm: 6.,
+                    },
+                    construction: false,
+                },
+                Channel::Ui,
+            )
+            .unwrap();
+        editor.tool = None;
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        click_sketch(&ctx, &mut editor, &mut session, [60., 40.]);
+        assert_eq!(
+            editor
+                .selected_profiles(session.document(), session.revision())
+                .unwrap()
+                .1
+                .len(),
+            1
+        );
+        click_sketch_modifiers(
+            &ctx,
+            &mut editor,
+            &mut session,
+            [23., 20.],
+            egui::Modifiers::SHIFT,
+        );
+        assert_eq!(
+            editor
+                .selected_profiles(session.document(), session.revision())
+                .unwrap()
+                .1
+                .len(),
+            2
+        );
+        let before = session.document().clone();
+        click_sketch(&ctx, &mut editor, &mut session, [40., 0.]);
+        click_sketch_modifiers(
+            &ctx,
+            &mut editor,
+            &mut session,
+            [40., 60.],
+            egui::Modifiers::SHIFT,
+        );
+        assert_eq!(editor.constraints.selection().len(), 2);
+        assert!(editor.profiles.selected().is_empty());
+        click_sketch_modifiers(
+            &ctx,
+            &mut editor,
+            &mut session,
+            [40., 60.],
+            egui::Modifiers::SHIFT,
+        );
+        assert_eq!(editor.constraints.selection().len(), 1);
+        assert!(
+            editor.element.is_none(),
+            "Toggled-off curve stayed a quick-action target"
+        );
+        click_sketch(&ctx, &mut editor, &mut session, [0., 0.]);
+        assert_eq!(editor.constraints.selection().len(), 1);
+        assert!(
+            editor.element.is_none(),
+            "A point became a curve action target"
+        );
+        assert_eq!(session.document(), &before, "Selection edited source");
+        click_sketch(&ctx, &mut editor, &mut session, [60., 40.]);
+        editor
+            .draw(
+                &mut session,
+                &multicad_core::sketch_draw::DrawRequest {
+                    input: multicad_core::sketch_draw::DrawInput::Circle {
+                        center: multicad_core::sketch_draw::PointInput::Position([50., 30.]),
+                        radius_mm: 4.,
+                    },
+                    construction: false,
+                },
+                Channel::Ui,
+            )
+            .unwrap();
+        assert!(
+            editor
+                .selected_profiles(session.document(), session.revision())
+                .is_err(),
+            "Old profiles were available while source was pending"
+        );
+        settle(&mut editor, &session);
+        assert!(
+            editor
+                .selected_profiles(session.document(), session.revision())
+                .is_err(),
+            "New hole silently changed the manufacturing profile"
+        );
     }
     #[test]
     fn pointer_circle_uses_radius_then_endpoint_snaps_reuse_actual_point_ids() {

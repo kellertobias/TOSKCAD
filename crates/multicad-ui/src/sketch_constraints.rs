@@ -448,6 +448,29 @@ impl ConstraintEditor {
     pub fn selected(&self, id: EntityId) -> bool {
         self.selection.contains(&id)
     }
+    pub fn selection(&self) -> &[EntityId] {
+        &self.selection
+    }
+    pub fn select_geometry(
+        &mut self,
+        id: EntityId,
+        element: Option<EntityId>,
+        extend: bool,
+    ) -> bool {
+        if !extend {
+            self.selection.clear();
+            self.selection.push(id);
+        } else {
+            self.toggle(id);
+        }
+        let selected = self.selected(id);
+        self.last_element = element.filter(|_| selected);
+        selected
+    }
+    pub fn clear_geometry_selection(&mut self) {
+        self.selection.clear();
+        self.last_element = None;
+    }
     pub fn free(&self, id: EntityId) -> bool {
         self.result
             .as_ref()
@@ -507,12 +530,14 @@ impl ConstraintEditor {
             return;
         }
         if self.owner != Some(id) || (!self.dirty() && self.revision != session.revision()) {
+            if self.owner != Some(id) {
+                self.selection.clear();
+                self.last_element = None;
+            }
             self.owner = Some(id);
             self.revision = session.revision();
             self.result = None;
             self.error = None;
-            self.selection.clear();
-            self.last_element = None;
             self.dimension_fields.clear();
         }
         let mut source = if let Some(draft) = &self.draft {
@@ -523,6 +548,10 @@ impl ConstraintEditor {
             ui.colored_label(Color32::LIGHT_RED, "Sketch source is unavailable");
             return;
         };
+        self.selection.retain(|id| {
+            source.sketch.points.iter().any(|p| p.id == *id)
+                || source.sketch.curves.iter().any(|c| c.id == *id)
+        });
         if self.last_element != element {
             self.last_element = element;
             self.selection = element.into_iter().collect();
