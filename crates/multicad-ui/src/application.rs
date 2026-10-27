@@ -85,6 +85,7 @@ pub struct Application {
     shortcut_help: bool,
     focus_search: bool,
     focus_command: bool,
+    text_input_was_focused: bool,
     scene_backends: Option<crate::viewport::BackendFactory>,
 }
 impl Application {
@@ -116,6 +117,7 @@ impl Application {
             shortcut_help: false,
             focus_search: false,
             focus_command: false,
+            text_input_was_focused: false,
             scene_backends: None,
         })
     }
@@ -397,6 +399,7 @@ impl Application {
             .map_err(|e| e.to_string())?;
         self.current_mut().path = Some(path);
         self.message = "Document source snapshot saved atomically".into();
+        self.message_error = false;
         Ok(())
     }
     fn load_path(&mut self, path: PathBuf) -> Result<(), String> {
@@ -406,6 +409,8 @@ impl Application {
             .position(|p| p.path.as_ref() == Some(&path))
         {
             self.active = index;
+            self.message = "Document source snapshot already open".into();
+            self.message_error = false;
             return Ok(());
         }
         let document = self.storage.load(&path)?;
@@ -417,7 +422,29 @@ impl Application {
         self.mode = Mode::Parameters;
         self.tab = 0;
         self.message = "Document source snapshot loaded".into();
+        self.message_error = false;
         Ok(())
+    }
+    fn complete_file_action(&mut self) {
+        let Some(action) = self.file_action else {
+            return;
+        };
+        let path = PathBuf::from(&self.file_path);
+        let result = match action {
+            FileAction::Open => self.load_path(path),
+            FileAction::Save => self.save_to(path),
+        };
+        match result {
+            Ok(()) => {
+                self.file_action = None;
+                self.file_document = None;
+                self.message_error = false;
+            }
+            Err(error) => {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
     }
     fn example(&mut self) -> Result<(), String> {
         let mut project =
@@ -914,15 +941,35 @@ impl Application {
             .unwrap_or_else(|| label.into())
     }
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.find_open
+        let shell_interaction = self.find_open
+            || self.file_action.is_some()
+            || self.shortcut_help
+            || self.history_open
+            || self.close_confirm;
+        // egui clears keyboard focus for Escape before this application pass.
+        // Remember text ownership so that same key cannot also cancel a tool.
+        if (shell_interaction || ctx.text_edit_focused() || self.text_input_was_focused)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
-            self.find_open = false;
-        }
-        if self.shortcut_help
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-        {
-            self.shortcut_help = false;
+            if self.file_action.is_some() {
+                self.file_action = None;
+                self.file_document = None;
+            } else if self.find_open {
+                self.find_open = false;
+            } else if self.shortcut_help {
+                self.shortcut_help = false;
+            } else if self.history_open {
+                self.history_open = false;
+            } else if self.close_confirm {
+                self.close_confirm = false;
+            }
+            self.focus_search = false;
+            self.focus_command = false;
+            ctx.memory_mut(|memory| {
+                if let Some(focused) = memory.focused() {
+                    memory.surrender_focus(focused);
+                }
+            });
         }
         let context = self.shortcut_context(ctx);
         let frame = self
@@ -1061,12 +1108,24 @@ impl Application {
             });
         if let Some(action) = self.file_action {
             let mut open = true;
-            egui::Window::new(match action{FileAction::Open=>"Open document source snapshot",FileAction::Save=>"Save document source snapshot"}).open(&mut open).show(&ctx,|ui|{
-            ui.label("Interim canonical document JSON. Native project containers and recovery are separate work.");ui.add_sized([500.0,28.0],egui::TextEdit::singleline(&mut self.file_path));
-            if ui.button(match action{FileAction::Open=>"Open",FileAction::Save=>"Save"}).clicked(){let path=PathBuf::from(&self.file_path);let result=match action{FileAction::Open=>self.load_path(path),FileAction::Save=>self.save_to(path)};match result{Ok(())=>self.file_action=None,Err(error)=>{self.message=error;self.message_error=true;}}}
-        });
+            egui::Window::new(match action {
+                FileAction::Open => "Open document source snapshot",
+                FileAction::Save => "Save document source snapshot",
+            })
+            .open(&mut open)
+            .show(&ctx, |ui| {
+                ui.label("Interim canonical document JSON. Native project containers and recovery are separate work.");
+                ui.add_sized(
+                    [500.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.file_path).hint_text("Document path"),
+                ).on_hover_text("Path to a MultiCAD canonical source snapshot");
+                if ui.button(match action {FileAction::Open => "Open", FileAction::Save => "Save"}).clicked() {
+                    self.complete_file_action();
+                }
+            });
             if !open {
                 self.file_action = None;
+                self.file_document = None;
             }
         }
         if self.history_open {
@@ -1092,6 +1151,7 @@ impl Application {
                     }
                 });
         }
+        self.text_input_was_focused = ctx.text_edit_focused();
     }
 }
 impl eframe::App for Application {
@@ -1370,7 +1430,52 @@ mod tests {
             vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
         );
         assert!(!app.find_open);
+        assert!(!ctx.text_edit_focused());
         assert_eq!(app.current().sketch.tool, Some(DrawTool::Line));
+    }
+    #[test]
+    fn escape_closes_shell_dialogs_or_leaves_input_before_cancelling_model_interaction() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        app.current_mut().sketch.set_tool(DrawTool::Line).unwrap();
+        shortcut_frame(&ctx, &mut app, vec![]);
+        app.execute(Command::Open, &[], Channel::Ui);
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(app.file_action.is_none());
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Line));
+        assert_eq!(app.current().session.revision(), 1);
+        app.history_open = true;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(!app.history_open);
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Line));
+        app.focus_command = true;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        assert!(ctx.text_edit_focused());
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(!ctx.text_edit_focused());
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Line));
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(app.current().sketch.tool.is_none());
     }
     #[test]
     fn mode_shortcuts_use_existing_transactions_and_ignore_unavailable_tools() {
@@ -1519,6 +1624,64 @@ mod tests {
         app.current_mut().editor.rows[0].name = "unfinished".into();
         assert!(app.save_to(PathBuf::from("draft.json")).is_err());
         assert!(app.current().path.is_none());
+    }
+    #[test]
+    fn successful_file_retry_clears_error_status_and_keeps_failed_attempts_source_neutral() {
+        struct RetryStorage;
+        impl DocumentStorage for RetryStorage {
+            fn load(&mut self, path: &Path) -> Result<Document, String> {
+                if path == Path::new("missing.json") {
+                    Err("No file".into())
+                } else {
+                    Document::new("Recovered source").map_err(|e| e.to_string())
+                }
+            }
+            fn save(&mut self, path: &Path, _: &Document) -> Result<(), String> {
+                if path == Path::new("denied.json") {
+                    Err("Write denied".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let mut app = Application::new(Box::new(RetryStorage)).unwrap();
+        let original = app.current().session.document().clone();
+        app.execute(Command::Open, &[], Channel::Ui);
+        app.file_path = "missing.json".into();
+        app.complete_file_action();
+        assert!(app.message_error);
+        assert!(app.file_action.is_some());
+        assert_eq!(app.current().session.document(), &original);
+        app.file_path = "valid.json".into();
+        app.complete_file_action();
+        assert!(!app.message_error);
+        assert_eq!(app.message, "Document source snapshot loaded");
+        assert!(app.file_action.is_none());
+        assert_eq!(app.projects.len(), 2);
+        assert_eq!(app.current().session.document().name(), "Recovered source");
+        let loaded = app.current().session.document().id();
+        app.message_error = true;
+        app.load_path(PathBuf::from("valid.json")).unwrap();
+        assert!(!app.message_error);
+        assert_eq!(app.projects.len(), 2);
+        assert_eq!(app.current().session.document().id(), loaded);
+
+        app.execute(Command::New, &[], Channel::Ui);
+        app.execute(Command::Save, &[], Channel::Ui);
+        app.file_path = "denied.json".into();
+        let original = app.current().session.document().clone();
+        app.complete_file_action();
+        assert!(app.message_error);
+        assert!(app.file_action.is_some());
+        assert!(app.current().path.is_none());
+        assert_eq!(app.current().session.document(), &original);
+        app.file_path = "saved.json".into();
+        app.complete_file_action();
+        assert!(!app.message_error);
+        assert_eq!(app.message, "Document source snapshot saved atomically");
+        assert!(app.file_action.is_none());
+        assert!(app.file_document.is_none());
+        assert_eq!(app.current().path.as_deref(), Some(Path::new("saved.json")));
     }
     #[test]
     fn native_parameter_editor_and_ribbon_render_without_modeling_sidebars() {
