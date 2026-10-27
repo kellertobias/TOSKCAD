@@ -534,10 +534,16 @@ impl ModelTree {
             }
         }
         let view = self.view.as_ref().unwrap();
-        ui.small(format!("Active: {}", view.active));
+        ui.add(
+            egui::Label::new(egui::RichText::new(format!("Active: {}", view.active)).small())
+                .wrap(),
+        );
         for warning in &view.diagnostics {
             ui.collapsing("Legacy ownership needs attention", |ui| {
-                ui.colored_label(Color32::LIGHT_YELLOW, warning);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(warning).color(Color32::LIGHT_YELLOW))
+                        .wrap(),
+                );
             });
         }
         let rows = &view.rows;
@@ -553,9 +559,14 @@ impl ModelTree {
         scroll.show_rows(ui, 26., rows.len(), |ui, range| {
                 for row_index in range {
                     let row = &rows[row_index];
-                    ui.push_id(row.key, |ui| {
+                    // A row consumes exactly its parent's width. Child widget
+                    // minimums must never feed a wider size back into the panel.
+                    let (row_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(0.), 26.), egui::Sense::hover());
+                    let mut row_ui = ui.new_child(egui::UiBuilder::new().max_rect(row_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                    row_ui.set_clip_rect(row_rect.intersect(ui.clip_rect()));
+                    row_ui.push_id(row.key, |ui| {
                         ui.horizontal(|ui| {
-                            ui.add_space((row.depth as f32 * 10.).min(80.));
+                            ui.add_space((row.depth as f32 * 10.).min(80.).min((row_rect.width() - 100.).max(0.)));
                             if row.expandable {
                                 let collapsed = self.collapsed.contains(&row.id);
                                 if ui.add_sized([16., 24.], egui::Button::new(if collapsed { ">" } else { "v" }).frame(false))
@@ -568,13 +579,11 @@ impl ModelTree {
                             let icon = ui.add_enabled_ui(options.enabled && row.available, |ui| {
                                 icons::mini_button(ui, row.kind.icon(), &format!("Select {} {}", row.kind.label(), row.name))
                             }).inner;
-                            let width = (ui.available_width() - 28.).max(32.);
+                            let trailing = ui.spacing().interact_size.y.max(24.);
+                            let width = (ui.available_width() - trailing - 2. * ui.spacing().item_spacing.x).max(0.);
                             let label = if row.active { format!("{} · active", row.name) } else { row.name.clone() };
                             let color = if row.effective_visible { ui.visuals().text_color() } else { Color32::GRAY };
-                            let response = ui.add_enabled_ui(options.enabled && row.available, |ui| {
-                                ui.add_sized([width, 24.], egui::Button::new(egui::RichText::new(label).color(color))
-                                    .selected(selected.contains(&row.id)).frame(false).truncate())
-                            }).inner;
+                            let response = flat_row_label(ui, width, &label, options.enabled && row.available, selected.contains(&row.id), color);
                             let role = if row.history_of.is_some() { "Feature used by body (reference only)" } else { row.kind.label() };
                             response.clone().on_hover_text(format!("{}\nOwning component: {}\nCmd/Ctrl-click toggles; Shift-click selects a range", role, row.owner));
                             if response.clicked() || icon.clicked() {
@@ -608,7 +617,7 @@ impl ModelTree {
                                 }
                             }
                             if row.history_of.is_some() {
-                                ui.add_space(24.);
+                                ui.add_space(trailing);
                             } else {
                             let mut visible = row.local_visible;
                             let visibility = ui.add_enabled(options.enabled && !matches!(row.kind, NodeKind::Plane | NodeKind::Feature),
@@ -899,6 +908,63 @@ impl ModelTree {
         }
         events
     }
+}
+fn flat_row_label(
+    ui: &mut egui::Ui,
+    width: f32,
+    label: &str,
+    enabled: bool,
+    selected: bool,
+    color: Color32,
+) -> egui::Response {
+    let enabled = enabled && ui.is_enabled();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(width, 24.),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    if selected || response.hovered() && enabled {
+        ui.painter().rect_filled(
+            rect,
+            3,
+            if selected {
+                ui.visuals().selection.bg_fill
+            } else {
+                ui.visuals().widgets.hovered.weak_bg_fill
+            },
+        );
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(1.),
+            3,
+            egui::Stroke::new(1., ui.visuals().selection.stroke.color),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let color = if enabled {
+        color
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let galley = egui::WidgetText::from(label).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (width - 4.).max(0.),
+        egui::TextStyle::Button,
+    );
+    ui.painter()
+        .with_clip_rect(rect.intersect(ui.clip_rect()))
+        .galley(
+            egui::pos2(rect.left() + 2., rect.center().y - galley.size().y * 0.5),
+            galley,
+            color,
+        );
+    response
 }
 fn parent_choice(
     ui: &mut egui::Ui,
@@ -1332,5 +1398,101 @@ mod tests {
         assert_eq!(row.history_of, Some(body));
         assert!(!row.available);
         assert_eq!(row.name, "Missing feature");
+    }
+    #[test]
+    fn resizable_tree_rows_do_not_expand_the_panel_or_starve_the_viewport_over_time() {
+        use multicad_core::document::Definition;
+        let (session, component, group, body) = fixture();
+        let mut component_entity = session.document().get(component).unwrap().clone();
+        component_entity.name = "Cabinet with a long descriptive name ".repeat(15);
+        let feature = Entity::new(
+            "Extrusion with an unusually long history label ".repeat(15),
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.extrude".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let mut body_entity = session.document().get(body).unwrap().clone();
+        body_entity.name = "An unusually long body label ".repeat(20);
+        let EntityData::Part { features, .. } = &mut body_entity.data else {
+            unreachable!()
+        };
+        features.push(feature.id);
+        let mut edits = vec![
+            Mutation::Replace(component_entity),
+            Mutation::Replace(body_entity),
+            Mutation::Insert(feature),
+        ];
+        let mut state = session.document().hierarchy().clone();
+        let mut parent = group;
+        for depth in 0..12 {
+            let nested = Entity::new(format!("Nested organization {depth}"), EntityData::Group {});
+            state.members.insert(parent, vec![nested.id]);
+            parent = nested.id;
+            edits.push(Mutation::Insert(nested));
+        }
+        state.members.insert(parent, vec![body]);
+        edits.push(Mutation::SetHierarchy(state));
+        let document = session.document().edited(&edits).unwrap();
+        for pixels_per_point in [1., 2.] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(pixels_per_point);
+            let mut session = Session::new(document.clone()).unwrap();
+            let mut tree = ModelTree::default();
+            for _ in 0..360 {
+                let mut left_width = 0.;
+                let mut viewport_width = 0.;
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1360., 860.),
+                        )),
+                        focused: true,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let left = egui::Panel::left("bounded-tree")
+                            .default_size(225.)
+                            .resizable(true)
+                            .show(ui, |ui| {
+                                let event = tree.show(
+                                    ui,
+                                    &mut session,
+                                    &BTreeSet::new(),
+                                    TreeOptions::default(),
+                                );
+                                assert!(event.change.is_none());
+                            });
+                        left_width = left.response.rect.width();
+                        egui::Panel::right("bounded-inspector")
+                            .default_size(250.)
+                            .resizable(true)
+                            .show(ui, |ui| {
+                                ui.label("Inspector");
+                            });
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            viewport_width = ui.available_width();
+                        });
+                    },
+                )
+                .drop_without_applying_deltas();
+                assert!(
+                    left_width <= 230.,
+                    "tree width grew to {left_width} at scale {pixels_per_point}"
+                );
+                assert!(
+                    viewport_width >= 800.,
+                    "tree starved viewport: {viewport_width}"
+                );
+            }
+            assert_eq!(session.document(), &document);
+            assert_eq!(session.revision(), 0);
+        }
     }
 }
