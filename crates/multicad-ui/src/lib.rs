@@ -4,6 +4,7 @@ pub mod controls;
 pub mod icons;
 pub mod navigation;
 pub mod parameter_editor;
+pub mod reference_repair;
 pub mod registry;
 // Native host and reusable interaction controls. Domain and kernel ownership
 // remain outside the UI.

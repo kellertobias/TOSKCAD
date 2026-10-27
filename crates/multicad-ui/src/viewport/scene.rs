@@ -509,6 +509,53 @@ impl Scene {
     pub fn geometries(&self) -> &BTreeMap<EntityId, Arc<Geometry>> {
         &self.geometries
     }
+    /// Evaluation-local provenance for canonical geometry producers and placed
+    /// instances. Hidden upstream assets remain available for reference intent.
+    pub fn reference_snapshots(&self) -> BTreeMap<EntityId, TopologySnapshot> {
+        let mut snapshots: BTreeMap<_, _> = self
+            .geometries
+            .iter()
+            .map(|(id, g)| {
+                (
+                    *id,
+                    TopologySnapshot {
+                        owner: *id,
+                        revision: self.stamp.revision,
+                        elements: g.topology.clone(),
+                    },
+                )
+            })
+            .collect();
+        for instance in &self.instances {
+            if let Some(snapshot) = self.topology_snapshot(instance.id) {
+                snapshots.insert(instance.id, snapshot);
+            }
+        }
+        snapshots
+    }
+    /// Explicit repair inspection view. The previous valid model is retained by
+    /// the host; this temporary view exposes one current source without editing it.
+    pub fn isolated_source(&self, source: EntityId) -> Result<Arc<Self>, String> {
+        let instance = if let Some(instance) = self.instances.iter().find(|i| i.id == source) {
+            instance.clone()
+        } else {
+            if !self.geometries.contains_key(&source) {
+                return Err("Repair source has no current display geometry".into());
+            }
+            Instance {
+                id: source,
+                geometry: source,
+                transform: Transform::default(),
+                color: [145, 173, 195, 255],
+            }
+        };
+        let geometry = self
+            .geometries
+            .get(&instance.geometry)
+            .ok_or("Repair source geometry is unavailable")?
+            .clone();
+        Self::new(self.stamp, vec![geometry], vec![instance]).map(Arc::new)
+    }
     pub fn world_bounds(&self) -> Option<[Point; 2]> {
         self.world_bounds
     }

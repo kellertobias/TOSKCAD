@@ -135,6 +135,38 @@ fn display_detail_follows_projected_size_and_preserves_selection_intent() {
     assert!(changed.refresh_hit(&hit).is_none());
 }
 #[test]
+fn reference_inspection_keeps_hidden_producers_and_can_isolate_placed_or_raw_sources() {
+    let geometry = box_geometry();
+    let placed = instance(&geometry, [10., 20., 30.]);
+    let source = geometry.id();
+    let scene = Scene::new(stamp(), vec![geometry], vec![placed.clone()]).unwrap();
+    let snapshots = scene.reference_snapshots();
+    assert_eq!(snapshots[&source].owner, source);
+    let cap = |snapshot: &TopologySnapshot| {
+        snapshot
+            .elements
+            .iter()
+            .find(|e| {
+                e.origins.iter().any(|o| o.role == "cap.end") && e.key.kind == TopologyKind::Face
+            })
+            .unwrap()
+            .frames[0]
+            .frame
+            .origin_mm
+    };
+    assert_eq!(cap(&snapshots[&source]), [0., 0., 18.]);
+    assert_eq!(cap(&snapshots[&placed.id]), [10., 20., 48.]);
+    let raw = scene.isolated_source(source).unwrap();
+    assert_eq!(raw.instances()[0].id, source);
+    let ray = Ray::new([20., 25., 100.], [0., 0., -1.]).unwrap();
+    assert_eq!(raw.pick_face(ray).unwrap().point_mm[2], 18.);
+    let world = scene.isolated_source(placed.id).unwrap();
+    assert_eq!(world.pick_face(ray).unwrap().point_mm[2], 48.);
+    assert_eq!(scene.instances().len(), 1);
+    assert_eq!(scene.instances()[0].id, placed.id);
+    assert!(scene.isolated_source(EntityId::new()).is_err());
+}
+#[test]
 fn closest_surface_wins_independently_of_instance_order_and_yields_semantic_intent() {
     let geometry = box_geometry();
     let far = instance(&geometry, [0.; 3]);

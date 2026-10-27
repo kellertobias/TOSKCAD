@@ -20,6 +20,7 @@ pub struct Interaction {
     part: Option<EntityId>,
     pub filter: PickFilter,
     pub section: SectionView,
+    reference_highlight: Option<Selection>,
     last_stamp: Option<SceneStamp>,
     last_query: Option<(
         Pos2,
@@ -31,6 +32,9 @@ pub struct Interaction {
     )>,
 }
 impl Interaction {
+    pub fn highlight_reference(&mut self, selection: Option<Selection>) {
+        self.reference_highlight = selection;
+    }
     pub fn clear(&mut self) {
         self.selected = None;
         self.hovered = None;
@@ -213,7 +217,7 @@ impl Interaction {
             response.rect,
             scene,
             camera,
-            selection,
+            self.reference_highlight.or(selection),
             style,
             self.section.plane(),
         );

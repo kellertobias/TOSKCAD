@@ -7,7 +7,7 @@ mod picking;
 pub use gpu::{Selection, paint_scene, paint_scene_section};
 pub use picking::{PickFilter, PickOptions};
 mod feed;
-pub use feed::{BackendFactory, SceneBackend, SceneFeed, SceneReply};
+pub use feed::{BackendFactory, ReferenceEvaluation, SceneBackend, SceneFeed, SceneReply};
 mod interaction;
 pub use interaction::Interaction;
 mod grid;

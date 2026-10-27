@@ -60,6 +60,8 @@ pub struct SketchEditor {
     fit_requested: bool,
     constraints: crate::sketch_constraints::ConstraintEditor,
     solid: crate::viewport::Interaction,
+    repair: crate::reference_repair::RepairPanel,
+    evaluated: Option<multicad_core::references::ReferenceReport>,
     pub viewport_rect: Option<Rect>,
 }
 impl Default for SketchEditor {
@@ -90,6 +92,8 @@ impl Default for SketchEditor {
             fit_requested: false,
             constraints: Default::default(),
             solid: Default::default(),
+            repair: Default::default(),
+            evaluated: None,
             viewport_rect: None,
         }
     }
@@ -137,9 +141,10 @@ impl SketchEditor {
         self.first = None;
     }
     pub fn has_pending_edits(&self) -> bool {
-        self.preview.is_some() || self.constraints.dirty()
+        self.preview.is_some() || self.constraints.dirty() || self.repair.has_pending()
     }
     pub fn cancel(&mut self) {
+        self.repair.cancel();
         self.picking = false;
         self.tool = None;
         self.first = None;
@@ -420,19 +425,30 @@ impl SketchEditor {
         sketch_mode: bool,
         feed: &mut crate::viewport::SceneFeed,
     ) {
-        let scene = feed
+        self.evaluated = feed
+            .references()
+            .filter(|e| {
+                e.stamp.document == session.document().id()
+                    && e.stamp.revision == session.revision()
+            })
+            .map(|e| e.report.clone());
+        if self.evaluated.is_none() {
+            self.repair.cancel();
+        }
+        let mut scene = feed
             .visible()
             .filter(|s| s.stamp().document == session.document().id())
             .cloned();
-        let current = feed.is_current(session.document().id(), session.revision());
         if self.revision != session.revision() {
             self.cancel_move();
             self.first = None;
             self.revision = session.revision();
-            if self
-                .selected
-                .is_some_and(|id| Sketch::read(session.document(), id).is_err())
-            {
+            if self.selected.is_some_and(|id| {
+                !matches!(
+                    session.document().get(id).map(|e| &e.data),
+                    Some(EntityData::Sketch { .. })
+                )
+            }) {
                 self.selected = None;
                 self.editing = false;
                 self.tool = None;
@@ -476,6 +492,9 @@ impl SketchEditor {
                         else if feed.refining() {ui.small("Refining display…");}
                         else if feed.pending() {ui.small("Rebuilding model…");}
                         if let Some(error)=feed.quality_error() {ui.colored_label(Color32::LIGHT_YELLOW,error);if ui.button("Retry display refinement").clicked(){feed.retry_quality();}}
+                        if let Some(evaluation)=feed.references() {
+                            self.repair.show(ui,session,evaluation);
+                        }
                         self.solid.inspector(ui,session.document());
                         if let Some(id) = self.selected {
                             let view = self
@@ -484,7 +503,7 @@ impl SketchEditor {
                                 .map(|p| p.document())
                                 .or_else(|| self.constraints.preview_document())
                                 .unwrap_or(session.document());
-                            match Sketch::read(view, id) {
+                            match self.read_sketch(view, id,session.revision()) {
                                 Ok((source, frame, _)) => {
                                     ui.strong(&session.document().get(id).expect("read").name);
                                     ui.label(format!("{} elements · mm", source.geometry.len()));
@@ -613,17 +632,67 @@ impl SketchEditor {
                         }
                     });
             });
+        let mut current = feed.is_current(session.document().id(), session.revision());
+        let mut repair_view = false;
+        self.solid.highlight_reference(None);
+        if self.repair.viewing_candidates()
+            && let Some(evaluation) = feed.references()
+            && evaluation.stamp.revision == session.revision()
+            && let Some((source, key)) = self.repair.highlight()
+            && let Ok(candidate) = evaluation.candidate.isolated_source(source)
+        {
+            scene = Some(candidate);
+            repair_view = true;
+            current = false;
+            use crate::viewport::Selection;
+            use multicad_core::references::TopologyKind;
+            self.solid.highlight_reference(Some(match key.kind {
+                TopologyKind::Face => Selection::Face {
+                    instance: source,
+                    ordinal: key.ordinal,
+                },
+                TopologyKind::Edge => Selection::Edge {
+                    instance: source,
+                    ordinal: key.ordinal,
+                },
+                TopologyKind::Vertex => Selection::Vertex {
+                    instance: source,
+                    ordinal: key.ordinal,
+                },
+            }));
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
             .show(ui, |ui| {
                 self.canvas(ui, session, sketch_mode, scene.clone(), current)
             });
+        if repair_view && let Some(rect) = self.viewport_rect {
+            ui.painter().text(
+                rect.left_top() + Vec2::new(14., 12.),
+                Align2::LEFT_TOP,
+                "Reference repair · current source preview",
+                FontId::proportional(12.),
+                Color32::LIGHT_YELLOW,
+            );
+        }
         if let (Some(scene), Some(rect)) = (&scene, self.viewport_rect)
             && let Some(bounds) = scene.world_bounds()
             && let Some(quality) =
                 crate::viewport::DisplayQuality::for_view(self.camera, rect, bounds)
         {
             feed.note_quality(quality, ui.input(|i| i.time));
+        }
+    }
+    fn read_sketch(
+        &self,
+        doc: &Document,
+        id: EntityId,
+        revision: u64,
+    ) -> Result<(Sketch, sketch::Frame, EntityId), multicad_core::document::DocumentError> {
+        if let Some(report) = &self.evaluated {
+            Sketch::read_evaluated(doc, id, revision, report)
+        } else {
+            Sketch::read(doc, id)
         }
     }
     fn canvas(
@@ -774,8 +843,12 @@ impl SketchEditor {
         }
         let affected = self.constraints.affected();
         for e in doc.entities() {
-            if let Ok((source, frame, _)) = Sketch::read(doc, e.id) {
-                let constrained = Source::read(doc, e.id).ok();
+            if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
+                let constrained = if let Some(report) = &self.evaluated {
+                    Source::read_evaluated(doc, e.id, session.revision(), report).ok()
+                } else {
+                    Source::read(doc, e.id).ok()
+                };
                 let conflicted_curves: std::collections::BTreeSet<_> = constrained
                     .as_ref()
                     .into_iter()

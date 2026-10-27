@@ -1,8 +1,17 @@
 //! Per-document, nonblocking display publication. Source compilation is supplied
 //! by the native composition root; the UI never owns geometry kernel handles.
 use super::{DisplayQuality, Refinement, Scene, SceneStamp, SceneStore};
-use multicad_core::document::{Document, EntityId};
-use std::sync::Arc;
+use multicad_core::{
+    document::{Document, EntityId},
+    references::{ReferenceGate, ReferenceReport, TopologySnapshot, inspect},
+};
+use std::{collections::BTreeMap, sync::Arc};
+pub struct ReferenceEvaluation {
+    pub stamp: SceneStamp,
+    pub report: ReferenceReport,
+    pub snapshots: BTreeMap<EntityId, TopologySnapshot>,
+    pub candidate: Arc<Scene>,
+}
 pub struct SceneReply {
     pub stamp: SceneStamp,
     pub result: Result<Arc<Scene>, String>,
@@ -37,6 +46,8 @@ pub struct SceneFeed {
     quality_unsupported: bool,
     demand: Option<(DisplayQuality, f64)>,
     requested_quality: Option<DisplayQuality>,
+    references: Option<ReferenceEvaluation>,
+    reference_gate: ReferenceGate<Arc<Scene>>,
 }
 impl SceneFeed {
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
@@ -47,12 +58,19 @@ impl SceneFeed {
         self.source_valid = false;
         self.quality_unsupported = false;
         self.requested_quality = None;
+        self.references = None;
+        self.reference_gate = ReferenceGate::default();
     }
     pub fn has_backend(&self) -> bool {
         self.backend.is_some()
     }
     pub fn visible(&self) -> Option<&Arc<Scene>> {
         self.store.visible()
+    }
+    pub fn references(&self) -> Option<&ReferenceEvaluation> {
+        self.references
+            .as_ref()
+            .filter(|e| self.last_source == Some((e.stamp.document, e.stamp.revision)))
     }
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -187,7 +205,30 @@ impl SceneFeed {
             self.pending = false;
             match reply.result {
                 Ok(scene) if scene.stamp() == reply.stamp => {
-                    if let Err(error) = self.store.publish(scene) {
+                    let has_references = document
+                        .entities()
+                        .any(|e| e.references().iter().any(|l| l.geometry.is_some()));
+                    let snapshots = if has_references {
+                        scene.reference_snapshots()
+                    } else {
+                        BTreeMap::new()
+                    };
+                    let report = inspect(document, revision, &snapshots);
+                    let approved =
+                        self.reference_gate
+                            .consider(revision, scene.clone(), report.clone());
+                    if !self.refining || report.all_resolved() {
+                        self.references = Some(ReferenceEvaluation {
+                            stamp: reply.stamp,
+                            report,
+                            snapshots,
+                            candidate: scene.clone(),
+                        });
+                    }
+                    let publication=approved.and_then(|valid|if valid {self.store.publish(scene)} else {
+                        Err("Geometry references need repair. The previous valid model is retained.".into())
+                    });
+                    if let Err(error) = publication {
                         if self.refining {
                             self.quality_error = Some(error)
                         } else {

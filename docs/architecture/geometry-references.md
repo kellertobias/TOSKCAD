@@ -22,8 +22,16 @@ dependents. Reports and topology snapshots are serializable inspection data;
 they are derived results rather than canonical document source. Saving a
 document preserves the intent needed to regenerate them. `ReferenceGate` retains
 its last valid presentation when a new report contains unresolved references and
-rejects stale reports. A host must wire that gate to its actual scene and use
-the current document revision.
+rejects stale reports. The native `SceneFeed` applies that gate before publishing
+a source scene. An unresolved candidate stays available for explicit repair
+inspection while the previous valid scene remains visible and normal model
+picking is disabled. Source revision and display generation checks still apply.
+
+`Scene::reference_snapshots` includes hidden upstream geometry producers as well
+as placed instances with world-space frames. `ReferenceEvaluation` exposes the
+current report, snapshots and candidate scene to the Inspector. The repair view
+can isolate a current source and highlight an explicitly chosen face, edge or
+vertex without replacing the retained valid scene or changing the document.
 
 `prepare_repair` accepts an explicit current candidate and produces a shared
 transaction preview. Cancel drops the preview. Commit replaces the source link
@@ -56,6 +64,9 @@ trips. Native OCCT tests additionally cover dimension changes followed by a
 face-mounted drill circle and actual Boolean hole, a split and explicit fragment
 repair, deleted-face rejection, transformed frames and wire winding with holes.
 Worker tests also verify named result publication and revision guards across
-rebuilds. These are backend fixtures. The canonical feature compiler, visible
-repair controls and scene wiring remain separate integration work; native
-interactive repair behavior is not established by these tests.
+rebuilds. The `reference_review` native fixture adds parameter-driven panel
+thickness, splitting and top removal, with an attached circle and an actual
+Boolean drilling. Its tests exercise the application scene gate, explicit
+repair, undo/redo and source save/reopen. This is an acceptance fixture; the
+general canonical feature compiler remains separate production modeling work.
+Interactive verification of the new repair Inspector is still required.
