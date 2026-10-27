@@ -1779,6 +1779,7 @@ dependencies = [
  "multicad-kernel",
  "multicad-solver",
  "multicad-ui",
+ "serde_json",
  "tempfile",
 ]
 
@@ -1825,6 +1826,7 @@ version = "0.1.0-dev"
 dependencies = [
  "eframe",
  "multicad-core",
+ "serde_json",
 ]
 
 [[package]]

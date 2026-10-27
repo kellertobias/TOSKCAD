@@ -17,6 +17,8 @@ multicad-core.workspace = true
 multicad-kernel.workspace = true
 multicad-solver.workspace = true
 multicad-ui.workspace = true
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+tempfile = "=3.27.0"
 
 [dev-dependencies]
 tempfile = "=3.27.0"

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod files;
 mod self_test;
 
 use multicad_core::BuildInfo;
@@ -38,7 +39,7 @@ fn main() -> ExitCode {
     };
     let build = BuildInfo::current();
     let result = match action {
-        Action::Run => multicad_ui::launch(),
+        Action::Run => multicad_ui::launch_with_storage(Box::new(files::SnapshotStore)),
         Action::Help => {
             println!(
                 "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nCAD workspaces, native project files and MCP remain under development.",

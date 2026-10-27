@@ -12,7 +12,8 @@
 - `mockup/` is the offline HTML/SVG UX reference, not the production application. Preserve it unless the user explicitly requests mockup changes.
 - CAD-49 must prove the kernel/solver/UI choices before CAD-50 integrates native dependencies and desktop packaging. Do not declare those gates complete from a scaffold or mockup test.
 - Keep a single canonical parametric document and typed transactional API shared by the UI and MCP. Display meshes are not manufacturing geometry.
-- Parameters uses the full window, without sidebars or a ribbon. Sketch starts in the 3D viewer; New Sketch selects a plane there, or an existing sketch is opened, before editing tools appear. No Face Sketch command in Model.
+- Parameters uses the full window without sidebars, with a dedicated action ribbon for Apply/Rebuild and Discard (user revision 2026-10-27). Sketch starts in the 3D viewer; New Sketch selects a plane there, or an existing sketch is opened, before editing tools appear. No Face Sketch command in Model.
+- Top-level modes are Parameters, Sketch, Model, Drawings and Export. Export contains Common, Print and Render; materials are defined in Model.
 - MCP provides external application control and attributable previews/history. Do not introduce built-in AI chat. FDM design aids belong in Model; print packaging belongs in Export.
 
 ## Verification
