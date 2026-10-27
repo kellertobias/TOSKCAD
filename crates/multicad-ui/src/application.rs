@@ -584,7 +584,8 @@ impl Application {
                             + 24.0
                     })
                     .sum::<f32>()
-                    + ui.spacing().item_spacing.x * 5.0;
+                    + ui.spacing().item_spacing.x * 5.0
+                    + 28.;
                 let search_width = (ui.available_width() - width - 30.).clamp(100., 220.);
                 let ideal = ui.ctx().content_rect().center().x - search_width * 0.5;
                 let left_gap = (ideal - ui.cursor().left() - ui.spacing().item_spacing.x)
@@ -717,6 +718,20 @@ impl Application {
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     }
+                    let user=icons::compact_button(ui,Icon::User,"Local user · session and controls");
+                    egui::Popup::menu(&user).show(|ui| {
+                        ui.strong("Local session");
+                        ui.label("Actor: local-user");
+                        ui.small("Document transactions record their actor and control channel.");
+                        if ui.button("Keyboard shortcuts").clicked() {
+                            action=Some(Command::KeyboardShortcuts);
+                            ui.close();
+                        }
+                        if ui.button("Command and MCP history").clicked() {
+                            self.history_open=true;
+                            ui.close();
+                        }
+                    });
                     for mode in Mode::ALL.into_iter().rev() {
                         let color = mode.color().gamma_multiply(1.6);
                         if controls::tab(

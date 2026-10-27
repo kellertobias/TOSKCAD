@@ -2,6 +2,7 @@
 use eframe::egui::{self, Color32, Pos2, Stroke, Vec2};
 #[derive(Clone, Copy)]
 pub enum Icon {
+    User,
     Hammer,
     Keyboard,
     Transform,
@@ -162,6 +163,19 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
         p.circle_stroke(v(x, y), r * scale, stroke);
     };
     match icon {
+        Icon::User => {
+            circle(12., 7., 3.5);
+            path(&[
+                [4., 21.],
+                [4., 18.],
+                [6., 14.],
+                [9., 12.5],
+                [15., 12.5],
+                [18., 14.],
+                [20., 18.],
+                [20., 21.],
+            ]);
+        }
         Icon::Section => {
             path(&[
                 [4., 6.],
