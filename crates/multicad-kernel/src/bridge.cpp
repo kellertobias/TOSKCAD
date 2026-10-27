@@ -31,7 +31,12 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <array>
+#include <set>
 #include <stdexcept>
 
 namespace multicad::kernel {
@@ -47,7 +52,44 @@ template <class F> auto guard(F fn) -> decltype(fn()) {
 static std::unique_ptr<Shape> checked(const TopoDS_Shape &s) {
   if (s.IsNull() || !BRepCheck_Analyzer(s).IsValid())
     throw std::runtime_error("OCCT produced an invalid shape");
-  return std::make_unique<Shape>(Shape{s});
+  return std::make_unique<Shape>(Shape{s, {}, {}});
+}
+static const std::array<TopAbs_ShapeEnum, 3> topologyKinds = {
+    TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX};
+static TopTools_IndexedMapOfShape topology_map(const TopoDS_Shape &s,
+                                             uint8_t kind) {
+  TopTools_IndexedMapOfShape map;
+  TopExp::MapShapes(s, topologyKinds.at(kind), map);
+  if (map.Extent() > 100000)
+    throw std::runtime_error("Topology budget exceeded");
+  return map;
+}
+// These ordinals live only within this result. Rust assigns persistent source
+// intent and follows these exact OCCT history relations; no geometric matching.
+template <class Operation>
+static void record_history(Shape &result, const Shape &input, uint8_t operand,
+                           Operation &operation) {
+  for (uint8_t kind = 0; kind < 3; ++kind) {
+    auto in = topology_map(input.value, kind);
+    auto out = topology_map(result.value, kind);
+    for (int i = 1; i <= in.Extent(); ++i) {
+      std::set<int> descendants;
+      auto append = [&](const TopoDS_Shape &candidate) {
+        auto index = out.FindIndex(candidate);
+        if (index > 0)
+          descendants.insert(index);
+      };
+      append(in(i));
+      for (const auto &candidate : operation.Modified(in(i))) append(candidate);
+      for (const auto &candidate : operation.Generated(in(i))) append(candidate);
+      for (auto index : descendants) {
+        if (result.ancestry.size() >= 1000000)
+          throw std::runtime_error("Topology history budget exceeded");
+        result.ancestry.push_back(NativeAncestry{kind, operand,
+            static_cast<uint32_t>(index - 1), static_cast<uint32_t>(i - 1)});
+      }
+    }
+  }
 }
 std::unique_ptr<Shape> extrude(double w, double d, double h) {
   return guard([&] {
@@ -170,6 +212,7 @@ std::unique_ptr<Shape> profile_extrude(
         offsets[offsets.size() - 1] != edges.size())
       throw std::runtime_error("Invalid profile wire offsets");
     BRepBuilderAPI_MakeFace face;
+    std::vector<std::pair<TopoDS_Edge, uint32_t>> sourceEdges;
     for (size_t wireIndex = 0; wireIndex + 1 < offsets.size(); ++wireIndex) {
       if (offsets[wireIndex] >= offsets[wireIndex + 1] ||
           offsets[wireIndex + 1] > edges.size())
@@ -193,6 +236,7 @@ std::unique_ptr<Shape> profile_extrude(
         }
         if (!wire.IsDone())
           throw std::runtime_error("Profile edges are not connected");
+        sourceEdges.emplace_back(wire.Edge(), e.source_index);
       }
       auto w = wire.Wire();
       if (wireIndex == 0) {
@@ -208,7 +252,20 @@ std::unique_ptr<Shape> profile_extrude(
     BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(axes(f).Direction()) * height);
     if (!prism.IsDone())
       throw std::runtime_error("Profile extrusion failed");
-    return checked(prism.Shape());
+    auto result = checked(prism.Shape());
+    auto faces = topology_map(result->value, 0);
+    auto seed = [&](const TopoDS_Shape &shape, uint8_t role, uint32_t index) {
+      const auto faceIndex = faces.FindIndex(shape);
+      if (faceIndex > 0)
+        result->seeds.push_back(NativeSeed{
+            static_cast<uint32_t>(faceIndex - 1), index, role});
+    };
+    seed(prism.FirstShape(), 0, 0);
+    seed(prism.LastShape(), 1, 0);
+    for (const auto &entry : sourceEdges)
+      for (const auto &generated : prism.Generated(entry.first))
+        seed(generated, 2, entry.second);
+    return result;
   });
 }
 std::unique_ptr<Shape> boolean_shapes(const Shape &a, const Shape &b,
@@ -237,7 +294,10 @@ std::unique_ptr<Shape> boolean_shapes(const Shape &a, const Shape &b,
     auto result = op.Shape();
     if (!TopExp_Explorer(result, TopAbs_SOLID).More())
       return nullptr;
-    return checked(result);
+    auto owned = checked(result);
+    record_history(*owned, a, 0, op);
+    record_history(*owned, b, 1, op);
+    return owned;
   });
 }
 std::unique_ptr<Shape> transform_shape(const Shape &s,
@@ -252,7 +312,9 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
     BRepBuilderAPI_Transform operation(s.value, tr, true);
     if (!operation.IsDone())
       throw std::runtime_error("Rigid transform failed");
-    return checked(operation.Shape());
+    auto result = checked(operation.Shape());
+    record_history(*result, s, 0, operation);
+    return result;
   });
 }
 Bounds3 bounds(const Shape &s) {
@@ -277,13 +339,13 @@ uint32_t solid_count(const Shape &s) {
 rust::Vec<FaceInfo> faces(const Shape &s) {
   return guard([&] {
     rust::Vec<FaceInfo> out;
-    uint32_t index = 0;
-    for (TopExp_Explorer e(s.value, TopAbs_FACE); e.More(); e.Next()) {
-      auto face = TopoDS::Face(e.Current());
+    auto map = topology_map(s.value, 0);
+    for (int index = 1; index <= map.Extent(); ++index) {
+      auto face = TopoDS::Face(map(index));
       BRepAdaptor_Surface surface(face, true);
       GProp_GProps p;
       BRepGProp::SurfaceProperties(face, p);
-      FaceInfo info{index++, false, Point3{0, 0, 0}, Point3{0, 0, 0},
+      FaceInfo info{static_cast<uint32_t>(index - 1), false, Point3{0, 0, 0}, Point3{0, 0, 0},
                     data(p.CentreOfMass()), p.Mass()};
       if (surface.GetType() == GeomAbs_Plane) {
         auto plane = surface.Plane();
@@ -298,5 +360,50 @@ rust::Vec<FaceInfo> faces(const Shape &s) {
     }
     return out;
   });
+}
+rust::Vec<TopologyNode> topology(const Shape &s) {
+  return guard([&] {
+    rust::Vec<TopologyNode> result;
+    auto faces = topology_map(s.value, 0);
+    TopTools_IndexedDataMapOfShapeListOfShape edgeFaces, vertexFaces;
+    TopExp::MapShapesAndAncestors(s.value, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+    TopExp::MapShapesAndAncestors(s.value, TopAbs_VERTEX, TopAbs_FACE, vertexFaces);
+    for (uint8_t kind = 0; kind < 3; ++kind) {
+      auto elements = topology_map(s.value, kind);
+      for (int i = 1; i <= elements.Extent(); ++i) {
+        std::set<uint32_t> incident;
+        auto append = [&](const TopTools_ListOfShape &list) {
+          for (const auto &face : list) {
+            auto index = faces.FindIndex(face);
+            if (index > 0 && !(kind == 0 && index == i))
+              incident.insert(static_cast<uint32_t>(index - 1));
+          }
+        };
+        if (kind == 0) {
+          for (TopExp_Explorer e(elements(i), TopAbs_EDGE); e.More(); e.Next())
+            if (edgeFaces.Contains(e.Current())) append(edgeFaces.FindFromKey(e.Current()));
+        } else {
+          const auto &ancestors = kind == 1 ? edgeFaces : vertexFaces;
+          if (ancestors.Contains(elements(i))) append(ancestors.FindFromKey(elements(i)));
+        }
+        TopologyNode node{kind, static_cast<uint32_t>(i - 1), {}};
+        for (auto index : incident) node.incident_faces.push_back(index);
+        result.push_back(std::move(node));
+      }
+    }
+    return result;
+  });
+}
+rust::Vec<Ancestry> ancestry(const Shape &s) {
+  rust::Vec<Ancestry> result;
+  for (const auto &entry : s.ancestry)
+    result.push_back(Ancestry{entry.kind, entry.operand, entry.output, entry.input});
+  return result;
+}
+rust::Vec<Seed> seeds(const Shape &s) {
+  rust::Vec<Seed> result;
+  for (const auto &entry : s.seeds)
+    result.push_back(Seed{entry.face, entry.source_index, entry.role});
+  return result;
 }
 } // namespace multicad::kernel

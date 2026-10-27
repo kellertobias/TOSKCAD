@@ -70,13 +70,7 @@ impl Frame {
 pub fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(a, b)| a * b).sum()
 }
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Geometry {
@@ -231,6 +225,21 @@ impl Sketch {
         document: &Document,
         id: EntityId,
     ) -> Result<(Self, Frame, EntityId), DocumentError> {
+        Self::read_impl(document, id, None)
+    }
+    pub fn read_evaluated(
+        document: &Document,
+        id: EntityId,
+        revision: u64,
+        report: &crate::references::ReferenceReport,
+    ) -> Result<(Self, Frame, EntityId), DocumentError> {
+        Self::read_impl(document, id, Some((revision, report)))
+    }
+    fn read_impl(
+        document: &Document,
+        id: EntityId,
+        evaluated: Option<(u64, &crate::references::ReferenceReport)>,
+    ) -> Result<(Self, Frame, EntityId), DocumentError> {
         let entity = document
             .get(id)
             .ok_or_else(|| invalid("Sketch does not exist"))?;
@@ -241,8 +250,12 @@ impl Sketch {
             return Err(invalid("Select a sketch"));
         };
         if definition.type_id == crate::constraint_sketch::source::TYPE {
-            let (source, frame, plane) =
-                crate::constraint_sketch::source::Source::read(document, id)?;
+            use crate::constraint_sketch::source::Source;
+            let (source, frame, plane) = if let Some((revision, report)) = evaluated {
+                Source::read_evaluated(document, id, revision, report)?
+            } else {
+                Source::read(document, id)?
+            };
             let geometry = source.display_geometry()?;
             return Ok((
                 Self {
@@ -257,9 +270,7 @@ impl Sketch {
             return Err(invalid("Unsupported sketch provider or version"));
         }
         let source = Self::source(definition)?;
-        let EntityData::Plane {
-            origin_mm, normal, ..
-        } = &document
+        let EntityData::Plane { normal, .. } = &document
             .get(*plane)
             .ok_or_else(|| invalid("Sketch plane is missing"))?
             .data
@@ -272,12 +283,7 @@ impl Sketch {
         {
             return Err(invalid("Sketch basis must be orthonormal to its plane"));
         }
-        let frame = Frame {
-            origin: *origin_mm,
-            u: source.u,
-            v: cross(*normal, source.u),
-            n: *normal,
-        };
+        let frame = crate::references::plane_frame(document, *plane, source.u, evaluated)?;
         Ok((source, frame, *plane))
     }
     fn source(definition: &Definition) -> Result<Self, DocumentError> {

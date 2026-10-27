@@ -2,7 +2,8 @@
 
 [`GeometryWorker`](../../crates/multicad-kernel/src/worker.rs) evaluates a numeric
 geometry program on a dedicated thread. Native solid handles stay on that thread;
-the caller receives copied display meshes, surface metadata and opaque solid keys.
+the caller receives copied display meshes, surface metadata, provenance and opaque
+solid keys.
 The numerical rules are owned by [ADR-0006](0006-geometry-policy.md).
 
 ## Submission and publication
@@ -11,6 +12,13 @@ A program contains a document revision, numerical policy, ordered operations and
 output indices. Operations reference earlier entries, which makes cycles invalid.
 Outputs retain their requested order, including `None` for empty volumetric results.
 A program with no operations and no outputs represents an empty document.
+
+`NamedBox` and `NamedExtrude` carry canonical feature and authored curve identities.
+Boolean and transform operations propagate their native ancestry. Each published
+solid contains owned topology elements. `topology_snapshot(owner)` binds them to
+the canonical output entity supplied by the feature compiler and the receipt's
+source revision. Unnamed operations produce no inferred provenance. The source
+intent and repair rules are described in [Geometry references](geometry-references.md).
 
 `submit` validates the program and attempts a nonblocking enqueue. The queue holds
 four pending commands. Each program permits at most 4096 operations, 1024 outputs

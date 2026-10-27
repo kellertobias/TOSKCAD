@@ -288,6 +288,7 @@ impl ProfileEdge {
             mid: point([0.; 3]),
             b: point(frame.point(b)),
             radius: 0.,
+            source_index: 0,
         };
         match *self {
             Self::Line { .. } => policy.length(distance(a, b))?,
@@ -353,6 +354,7 @@ impl Profile {
         }
         let mut edges = vec![];
         let mut offsets = vec![0];
+        let mut source_offset = 0;
         for wire in std::iter::once(&self.outer).chain(&self.holes) {
             if wire.is_empty() {
                 return Err(input("Profile wires cannot be empty"));
@@ -375,14 +377,19 @@ impl Profile {
                 return Err(input("Profile has degenerate signed area"));
             }
             if area < 0. {
-                for e in wire.iter().rev() {
-                    edges.push(e.reversed().checked(self.frame, policy)?);
+                for (i, e) in wire.iter().enumerate().rev() {
+                    let mut edge = e.reversed().checked(self.frame, policy)?;
+                    edge.source_index = (source_offset + i) as u32;
+                    edges.push(edge);
                 }
             } else {
-                for e in wire {
-                    edges.push(e.checked(self.frame, policy)?);
+                for (i, e) in wire.iter().enumerate() {
+                    let mut edge = e.checked(self.frame, policy)?;
+                    edge.source_index = (source_offset + i) as u32;
+                    edges.push(edge);
                 }
             }
+            source_offset += wire.len();
             offsets.push(edges.len() as u32);
         }
         Ok((frame, edges, offsets))
@@ -433,8 +440,9 @@ impl Default for MeshOptions {
 /// requires_sync::<multicad_kernel::Solid>();
 /// ```
 pub struct Solid {
-    native: Shape,
+    pub(crate) native: Shape,
     policy: GeometryPolicy,
+    pub(crate) provenance: Vec<multicad_core::references::TopologyElement>,
 }
 impl Solid {
     fn adopt(
@@ -452,6 +460,7 @@ impl Solid {
         let solid = Self {
             native: Shape(handle),
             policy,
+            provenance: vec![],
         };
         if !ffi::valid(&solid.native.0).map_err(|e| native(operation, e))?
             || solid.solid_count()? == 0
@@ -535,17 +544,21 @@ impl Solid {
         if handle.is_null() {
             return Ok(None);
         }
-        Self::adopt(handle, policy, "boolean").map(Some)
+        let mut result = Self::adopt(handle, policy, "boolean")?;
+        result.inherit_provenance(&[self, other], None)?;
+        Ok(Some(result))
     }
     pub fn transformed(&self, transform: RigidTransform) -> Result<Self, GeometryError> {
         transform.validate(self.policy)?;
         let r: Vec<_> = transform.rotation.into_iter().flatten().collect();
-        Self::adopt(
+        let mut result = Self::adopt(
             ffi::transform_shape(&self.native.0, &r, &point(transform.translation_mm))
                 .map_err(|e| native("transform", e))?,
             self.policy,
             "transform",
-        )
+        )?;
+        result.inherit_provenance(&[self], Some(transform))?;
+        Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
         ffi::volume(&self.native.0).map_err(|e| native("volume", e))

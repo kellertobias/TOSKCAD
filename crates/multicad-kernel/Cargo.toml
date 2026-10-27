@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 cxx = "=1.0.205"
+multicad-core.workspace = true
 
 [dev-dependencies]
 tempfile = "=3.27.0"

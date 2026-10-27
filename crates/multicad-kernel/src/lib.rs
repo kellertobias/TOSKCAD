@@ -27,6 +27,7 @@ mod ffi {
         pub mid: Point3,
         pub b: Point3,
         pub radius: f64,
+        pub source_index: u32,
     }
     pub struct Bounds3 {
         pub min: Point3,
@@ -39,6 +40,22 @@ mod ffi {
         pub normal: Point3,
         pub center: Point3,
         pub area: f64,
+    }
+    pub struct TopologyNode {
+        pub kind: u8,
+        pub index: u32,
+        pub incident_faces: Vec<u32>,
+    }
+    pub struct Ancestry {
+        pub kind: u8,
+        pub operand: u8,
+        pub output: u32,
+        pub input: u32,
+    }
+    pub struct Seed {
+        pub face: u32,
+        pub source_index: u32,
+        pub role: u8,
     }
     unsafe extern "C++" {
         include!("bridge.hpp");
@@ -76,6 +93,9 @@ mod ffi {
         ) -> Result<UniquePtr<Shape>>;
         fn bounds(shape: &Shape) -> Result<Bounds3>;
         fn faces(shape: &Shape) -> Result<Vec<FaceInfo>>;
+        fn topology(shape: &Shape) -> Result<Vec<TopologyNode>>;
+        fn ancestry(shape: &Shape) -> Result<Vec<Ancestry>>;
+        fn seeds(shape: &Shape) -> Result<Vec<Seed>>;
         fn solid_count(shape: &Shape) -> Result<u32>;
         fn tessellate(
             shape: &Shape,
@@ -92,6 +112,7 @@ mod geometry;
 pub use geometry::*;
 mod worker;
 pub use worker::*;
+mod provenance;
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")

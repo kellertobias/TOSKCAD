@@ -325,6 +325,21 @@ impl Source {
         document: &Document,
         id: EntityId,
     ) -> Result<(Self, Frame, EntityId), DocumentError> {
+        Self::read_impl(document, id, None)
+    }
+    pub fn read_evaluated(
+        document: &Document,
+        id: EntityId,
+        revision: u64,
+        report: &crate::references::ReferenceReport,
+    ) -> Result<(Self, Frame, EntityId), DocumentError> {
+        Self::read_impl(document, id, Some((revision, report)))
+    }
+    fn read_impl(
+        document: &Document,
+        id: EntityId,
+        evaluated: Option<(u64, &crate::references::ReferenceReport)>,
+    ) -> Result<(Self, Frame, EntityId), DocumentError> {
         let entity = document
             .get(id)
             .ok_or_else(|| invalid("Sketch does not exist"))?;
@@ -335,27 +350,13 @@ impl Source {
             return Err(invalid("Select a sketch"));
         };
         let source = Self::from_definition(definition)?;
-        let Some(EntityData::Plane {
-            origin_mm, normal, ..
-        }) = document.get(*plane).map(|e| &e.data)
-        else {
+        let Some(EntityData::Plane { normal, .. }) = document.get(*plane).map(|e| &e.data) else {
             return Err(invalid("Sketch plane is missing"));
         };
         if sketch::dot(source.u, *normal).abs() > 1e-9 {
             return Err(invalid("Sketch basis must be orthogonal to its plane"));
         }
-        let u = source.u;
-        let n = *normal;
-        let frame = Frame {
-            origin: *origin_mm,
-            u,
-            n,
-            v: [
-                n[1] * u[2] - n[2] * u[1],
-                n[2] * u[0] - n[0] * u[2],
-                n[0] * u[1] - n[1] * u[0],
-            ],
-        };
+        let frame = crate::references::plane_frame(document, *plane, source.u, evaluated)?;
         Ok((source, frame, *plane))
     }
     pub fn replace(

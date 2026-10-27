@@ -354,6 +354,73 @@ pub fn inspect(
     }
     ReferenceReport { revision, entries }
 }
+/// Authored datum coordinates are never a fallback for unresolved attachments.
+pub(crate) fn plane_frame(
+    document: &Document,
+    plane: EntityId,
+    u: [f64; 3],
+    evaluated: Option<(u64, &ReferenceReport)>,
+) -> Result<crate::sketch::Frame, crate::document::DocumentError> {
+    use crate::document::DocumentError;
+    let invalid = |message: &str| DocumentError::Invalid(message.into());
+    let Some(EntityData::Plane {
+        origin_mm,
+        normal,
+        anchor,
+    }) = document.get(plane).map(|e| &e.data)
+    else {
+        return Err(invalid("Sketch plane is missing"));
+    };
+    if let Some(link) = anchor
+        && let Some(intent) = &link.geometry
+    {
+        let Some((revision, report)) = evaluated else {
+            return Err(invalid(
+                "Attached sketch requires current reference evaluation",
+            ));
+        };
+        let diagnostic = report
+            .get(ReferenceAddress {
+                owner: plane,
+                reference: intent.id,
+            })
+            .ok_or_else(|| invalid("Sketch attachment has no reference diagnostic"))?;
+        if report.revision != revision
+            || diagnostic.intent != *intent
+            || diagnostic.source != link.target
+        {
+            return Err(invalid(
+                "Sketch attachment evaluation is stale or belongs to another source",
+            ));
+        }
+        let Resolution::Resolved {
+            frame: Some(frame), ..
+        } = diagnostic.resolution
+        else {
+            return Err(invalid(
+                "Sketch attachment is unresolved or has no planar frame",
+            ));
+        };
+        frame.validate().map_err(DocumentError::Invalid)?;
+        return Ok(crate::sketch::Frame {
+            origin: frame.origin_mm,
+            u: frame.u,
+            v: frame.v,
+            n: frame.normal(),
+        });
+    }
+    let n = *normal;
+    Ok(crate::sketch::Frame {
+        origin: *origin_mm,
+        u,
+        n,
+        v: [
+            n[1] * u[2] - n[2] * u[1],
+            n[2] * u[0] - n[0] * u[2],
+            n[0] * u[1] - n[1] * u[0],
+        ],
+    })
+}
 /// A failed reference attempt retains the last valid presentation. The host
 /// supplies its actual document revision; stale reports cannot publish a result.
 pub struct ReferenceGate<T> {

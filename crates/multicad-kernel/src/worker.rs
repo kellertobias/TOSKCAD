@@ -4,6 +4,10 @@ use crate::{
     BooleanOperation, Bounds, Face, GeometryError, GeometryErrorKind, GeometryPolicy, Mesh,
     MeshOptions, PlaneFrame, Profile, RigidTransform, Solid,
 };
+use multicad_core::{
+    document::EntityId,
+    references::{Origin, TopologyElement, TopologySnapshot},
+};
 use std::{
     collections::BTreeSet,
     path::PathBuf,
@@ -27,6 +31,10 @@ pub enum GeometryOperation {
     Box {
         size_mm: [f64; 3],
     },
+    NamedBox {
+        size_mm: [f64; 3],
+        feature: EntityId,
+    },
     Cylinder {
         frame: PlaneFrame,
         radius_mm: f64,
@@ -35,6 +43,12 @@ pub enum GeometryOperation {
     Extrude {
         profile: Profile,
         height_mm: f64,
+    },
+    NamedExtrude {
+        profile: Profile,
+        height_mm: f64,
+        feature: EntityId,
+        curve_origins: Vec<Origin>,
     },
     Transform {
         source: usize,
@@ -81,7 +95,8 @@ impl GeometryProgram {
             let references = match operation {
                 GeometryOperation::Transform { source, .. } => vec![*source],
                 GeometryOperation::Boolean { a, b, .. } => vec![*a, *b],
-                GeometryOperation::Extrude { profile, .. } => {
+                GeometryOperation::Extrude { profile, .. }
+                | GeometryOperation::NamedExtrude { profile, .. } => {
                     if profile.outer.len() > 4096
                         || profile.holes.len() > 128
                         || profile.holes.iter().any(|h| h.len() > 4096)
@@ -99,6 +114,14 @@ impl GeometryProgram {
                 }
                 _ => vec![],
             };
+            if let GeometryOperation::NamedExtrude { curve_origins, .. } = operation
+                && curve_origins.len() > 4096
+            {
+                return Err(error(
+                    GeometryErrorKind::Limit,
+                    "Curve provenance budget exceeded",
+                ));
+            }
             if references.into_iter().any(|r| r >= i) {
                 return Err(error(
                     GeometryErrorKind::Input,
@@ -135,6 +158,18 @@ pub struct SolidSnapshot {
     pub volume_mm3: f64,
     pub solid_count: u32,
     pub mesh: Mesh,
+    pub topology: Vec<TopologyElement>,
+}
+impl SolidSnapshot {
+    /// The compiler supplies the canonical output entity; local ordinals never
+    /// identify that entity and cannot escape their evaluated revision.
+    pub fn topology_snapshot(&self, owner: EntityId) -> TopologySnapshot {
+        TopologySnapshot {
+            owner,
+            revision: self.key.revision,
+            elements: self.topology.clone(),
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct GeometrySnapshot {
@@ -472,6 +507,9 @@ fn compute(
         };
         let solid = match operation {
             GeometryOperation::Box { size_mm } => Some(Solid::box_solid(*size_mm, program.policy)?),
+            GeometryOperation::NamedBox { size_mm, feature } => {
+                Some(Solid::box_named(*size_mm, *feature, program.policy)?)
+            }
             GeometryOperation::Cylinder {
                 frame,
                 radius_mm,
@@ -485,6 +523,18 @@ fn compute(
             GeometryOperation::Extrude { profile, height_mm } => {
                 Some(Solid::extrude_profile(profile, *height_mm, program.policy)?)
             }
+            GeometryOperation::NamedExtrude {
+                profile,
+                height_mm,
+                feature,
+                curve_origins,
+            } => Some(Solid::extrude_profile_named(
+                profile,
+                *height_mm,
+                *feature,
+                curve_origins,
+                program.policy,
+            )?),
             GeometryOperation::Transform { source, placement } => {
                 Some(get(*source)?.transformed(*placement)?)
             }
@@ -525,6 +575,7 @@ fn compute(
                 volume_mm3: solid.volume_mm3()?,
                 solid_count: solid.solid_count()?,
                 mesh,
+                topology: solid.provenance.clone(),
             })
         } else {
             None

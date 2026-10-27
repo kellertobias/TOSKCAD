@@ -31,6 +31,31 @@ and intent as one attributable, undoable operation, preserving its reference UUI
 and authored attachment offsets. Stale, unnameable and wrong-kind candidates
 fail without changing source.
 
-The protocol tests exercise reorder, split, deletion, repair, undo/redo, stale
-results and JSON round trips with synthetic topology snapshots. They do not
-establish native topology provenance or visible application repair behavior.
+`Solid::extrude_profile_named` supplies native prism caps and sides with semantic
+feature and curve origins. Authored curve order remains identifiable when a wire
+is rewound for OCCT. Planar side frames come from the authored line and extrusion
+direction; cap frames come from the authored profile plane and signed height.
+Curved sides have no planar attachment frame. `box_named` uses this same path.
+
+The native adapter records exact unchanged, Modified and Generated subshapes
+from Boolean and rigid transform operations. Rust propagates their provenance
+and semantic frames. Split fragments retain their common source origin and
+therefore resolve ambiguously. Conflicting frames are omitted rather than
+chosen by iteration order. Face adjacency supplies boundary discriminators and
+edge/vertex provenance. Imported or otherwise unnamed geometry has no inferred
+source identity and cannot be captured as a stable reference.
+
+`Sketch::read_evaluated` and constrained `Source::read_evaluated` require a current,
+matching diagnostic to obtain an attached sketch's world frame. The ordinary
+read methods reject geometry attachments so they cannot accidentally display or
+manufacture them on the saved datum fallback. The canonical document can still
+save and load an unresolved attachment for repair.
+
+Protocol tests exercise reorder, repair, undo/redo, stale results and JSON round
+trips. Native OCCT tests additionally cover dimension changes followed by a
+face-mounted drill circle and actual Boolean hole, a split and explicit fragment
+repair, deleted-face rejection, transformed frames and wire winding with holes.
+Worker tests also verify named result publication and revision guards across
+rebuilds. These are backend fixtures. The canonical feature compiler, visible
+repair controls and scene wiring remain separate integration work; native
+interactive repair behavior is not established by these tests.
