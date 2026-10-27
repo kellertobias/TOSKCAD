@@ -371,6 +371,12 @@ pub(crate) fn plane_frame(
     else {
         return Err(invalid("Sketch plane is missing"));
     };
+    if anchor
+        .as_ref()
+        .is_some_and(|link| link.role == crate::sketch::OFFSET_PLANE_ROLE)
+    {
+        return crate::sketch::offset_plane_frame(document, plane, u, evaluated);
+    }
     if let Some(link) = anchor
         && let Some(intent) = &link.geometry
     {

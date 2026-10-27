@@ -1,10 +1,18 @@
 //! Source-only datum sketches. Coordinates are millimeters, never display pixels.
-use crate::document::{
-    Definition, Document, DocumentError, Entity, EntityData, EntityId, Mutation,
+use crate::{
+    commands::{Actor, CommandError, ErrorCode, Prepared, Request, Session},
+    document::{Definition, Document, DocumentError, Entity, EntityData, EntityId, Link, Mutation},
+    references::{
+        Attachment, GeometryIntent, Origin, ReferenceFrame, ReferenceReport, Resolution,
+        TopologyKey, TopologyKind, TopologySnapshot,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 pub const TYPE: &str = "core.datum_sketch";
+/// A parent-local normal-only Plane offset. Origin is [0, 0, offset], normal is
+/// local +Z, and the sketch's U descriptor is a local XY unit vector.
+pub const OFFSET_PLANE_ROLE: &str = "offset_plane";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Datum {
     Xy,
@@ -69,6 +77,394 @@ impl Frame {
 }
 pub fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(a, b)| a * b).sum()
+}
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+fn validate_frame(frame: Frame) -> Result<(), DocumentError> {
+    let reference = ReferenceFrame {
+        origin_mm: frame.origin,
+        u: frame.u,
+        v: frame.v,
+    };
+    reference.validate().map_err(invalid)?;
+    if reference
+        .normal()
+        .into_iter()
+        .zip(frame.n)
+        .any(|(a, b)| !b.is_finite() || (a - b).abs() > 1e-9)
+    {
+        return Err(invalid(
+            "Plane frame must have a right-handed orthonormal basis",
+        ));
+    }
+    Ok(())
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlaneOptions {
+    pub normal_offset_mm: f64,
+    pub angle_rad: f64,
+}
+impl PlaneOptions {
+    /// Display preview and transactional creation share this validated transform.
+    pub fn apply(self, frame: Frame) -> Result<Frame, DocumentError> {
+        self.validate()?;
+        validate_frame(frame)?;
+        let (s, c) = self.angle_rad.sin_cos();
+        let frame = Frame {
+            origin: std::array::from_fn(|i| frame.origin[i] + frame.n[i] * self.normal_offset_mm),
+            u: std::array::from_fn(|i| frame.u[i] * c + frame.v[i] * s),
+            v: std::array::from_fn(|i| frame.v[i] * c - frame.u[i] * s),
+            n: frame.n,
+        };
+        validate_frame(frame)?;
+        Ok(frame)
+    }
+    fn validate(self) -> Result<(), DocumentError> {
+        if !self.normal_offset_mm.is_finite()
+            || self.normal_offset_mm.abs() > 1e9
+            || !self.angle_rad.is_finite()
+            || self.angle_rad.abs() > 1e6
+        {
+            return Err(invalid(
+                "Plane offset/rotation is nonfinite or exceeds source limits",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Copy)]
+pub enum CreationPlane<'a> {
+    Datum(Datum),
+    Existing {
+        id: EntityId,
+        report: Option<&'a ReferenceReport>,
+    },
+    Face {
+        snapshot: &'a TopologySnapshot,
+        key: TopologyKey,
+        anchor: Option<&'a Origin>,
+    },
+}
+pub struct NewSketch {
+    pub prepared: Prepared,
+    pub sketch: EntityId,
+    pub plane: EntityId,
+    /// Current producer-local frame; occurrence placement stays in UI context.
+    pub frame: Frame,
+}
+fn command_error(code: ErrorCode, message: impl Into<String>) -> CommandError {
+    CommandError {
+        code,
+        message: message.into(),
+        involved: vec![],
+        parameter: None,
+    }
+}
+fn plane_basis(normal: [f64; 3]) -> Result<[f64; 3], DocumentError> {
+    if normal.iter().any(|v| !v.is_finite()) || (dot(normal, normal) - 1.).abs() > 1e-9 {
+        return Err(invalid("Construction plane has an invalid normal"));
+    }
+    let raw = if normal[0].hypot(normal[1]) > 1e-7 {
+        [-normal[1], normal[0], 0.]
+    } else {
+        let projection = normal[0];
+        std::array::from_fn(|i| f64::from(i == 0) - projection * normal[i])
+    };
+    let length = dot(raw, raw).sqrt();
+    Ok(raw.map(|v| v / length))
+}
+/// Inspect current plane geometry without using saved datum coordinates in place
+/// of missing attachment evaluation. A Plane has no intrinsic in-plane roll.
+pub fn inspect_plane(
+    document: &Document,
+    id: EntityId,
+    revision: u64,
+    report: Option<&ReferenceReport>,
+) -> Result<Frame, DocumentError> {
+    if report.is_some_and(|r| r.revision != revision) {
+        return Err(invalid("Construction plane evaluation is stale"));
+    }
+    let Some(EntityData::Plane { normal, anchor, .. }) = document.get(id).map(|e| &e.data) else {
+        return Err(invalid("Construction plane is missing"));
+    };
+    if anchor
+        .as_ref()
+        .is_some_and(|l| l.geometry.is_none() && l.role != OFFSET_PLANE_ROLE)
+    {
+        return Err(invalid("Unsupported construction plane anchor role"));
+    }
+    let frame = crate::references::plane_frame(
+        document,
+        id,
+        plane_basis(*normal)?,
+        report.map(|r| (revision, r)),
+    )?;
+    validate_frame(frame)?;
+    Ok(frame)
+}
+fn offset_descriptor(entity: &Entity) -> Result<(EntityId, f64), DocumentError> {
+    let EntityData::Plane {
+        origin_mm,
+        normal,
+        anchor: Some(link),
+    } = &entity.data
+    else {
+        return Err(invalid("Offset plane descriptor is missing"));
+    };
+    if link.role != OFFSET_PLANE_ROLE
+        || link.geometry.is_some()
+        || *normal != [0., 0., 1.]
+        || origin_mm[0] != 0.
+        || origin_mm[1] != 0.
+        || !origin_mm[2].is_finite()
+        || origin_mm[2].abs() > 1e9
+    {
+        return Err(invalid(
+            "Offset plane requires parent-local +Z and a normal-only offset",
+        ));
+    }
+    Ok((link.target, origin_mm[2]))
+}
+/// Explicit offset chains are bounded and remain attached to the current parent.
+pub(crate) fn offset_plane_frame(
+    document: &Document,
+    plane: EntityId,
+    u: [f64; 3],
+    evaluated: Option<(u64, &ReferenceReport)>,
+) -> Result<Frame, DocumentError> {
+    if u.iter().any(|v| !v.is_finite()) || (dot(u, u) - 1.).abs() > 1e-9 || u[2].abs() > 1e-9 {
+        return Err(invalid(
+            "Offset-plane sketch U must be a unit vector in parent-local XY",
+        ));
+    }
+    let mut current = plane;
+    let mut offset = 0.;
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) || visited.len() > 128 {
+            return Err(invalid(
+                "Offset plane chain is cyclic or exceeds 128 planes",
+            ));
+        }
+        let entity = document
+            .get(current)
+            .ok_or_else(|| invalid("Offset plane parent is missing"))?;
+        let EntityData::Plane { anchor, .. } = &entity.data else {
+            return Err(invalid("Offset plane parent must be another Plane"));
+        };
+        if anchor.as_ref().is_some_and(|l| l.role == OFFSET_PLANE_ROLE) {
+            let (parent, distance) = offset_descriptor(entity)?;
+            offset += distance;
+            current = parent;
+        } else {
+            let (revision, report) =
+                evaluated.map_or((0, None), |(revision, report)| (revision, Some(report)));
+            let base = inspect_plane(document, current, revision, report)?;
+            let frame = Frame {
+                origin: std::array::from_fn(|i| base.origin[i] + base.n[i] * offset),
+                u: base.vector(u),
+                v: base.vector(cross([0., 0., 1.], u)),
+                n: base.n,
+            };
+            validate_frame(frame)?;
+            return Ok(frame);
+        }
+    }
+}
+/// Snapshots must come from the host's current trusted geometry evaluator, in
+/// canonical Feature coordinates. This checks owner, revision and provenance;
+/// it never infers a face from proximity or stores a final Part/occurrence link.
+pub fn prepare_new(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    name: &str,
+    plane: CreationPlane<'_>,
+    options: PlaneOptions,
+) -> Result<NewSketch, CommandError> {
+    if session.revision() != expected_revision {
+        return Err(command_error(
+            ErrorCode::StaleRevision,
+            "Sketch creation requires the current document revision",
+        ));
+    }
+    options
+        .validate()
+        .map_err(|e| command_error(ErrorCode::InvalidRequest, e.to_string()))?;
+    let mut edits = vec![];
+    let (plane_id, fallback_u, frame) = match plane {
+        CreationPlane::Datum(datum) => {
+            let frame = options.apply(datum.frame())?;
+            let parent = Entity::new(
+                format!("{name} datum"),
+                EntityData::Plane {
+                    origin_mm: datum.frame().origin,
+                    normal: datum.frame().n,
+                    anchor: None,
+                },
+            );
+            let parent_id = parent.id;
+            if options == PlaneOptions::default() {
+                edits.push(Mutation::Insert(parent));
+                (parent_id, frame.u, frame)
+            } else {
+                let offset = Entity::new(
+                    format!("{name} offset plane"),
+                    EntityData::Plane {
+                        origin_mm: [0., 0., options.normal_offset_mm],
+                        normal: [0., 0., 1.],
+                        anchor: Some(Link::new(parent_id, OFFSET_PLANE_ROLE)),
+                    },
+                );
+                let id = offset.id;
+                edits.extend([Mutation::Insert(parent), Mutation::Insert(offset)]);
+                let (s, c) = options.angle_rad.sin_cos();
+                (id, [c, s, 0.], frame)
+            }
+        }
+        CreationPlane::Existing { id, report } => {
+            let base = inspect_plane(session.document(), id, expected_revision, report)?;
+            let frame = options.apply(base)?;
+            if options == PlaneOptions::default() {
+                let EntityData::Plane { normal, .. } =
+                    session.document().get(id).expect("inspected").data
+                else {
+                    unreachable!("inspected Plane")
+                };
+                (id, plane_basis(normal)?, frame)
+            } else {
+                let offset = Entity::new(
+                    format!("{name} offset plane"),
+                    EntityData::Plane {
+                        origin_mm: [0., 0., options.normal_offset_mm],
+                        normal: [0., 0., 1.],
+                        anchor: Some(Link::new(id, OFFSET_PLANE_ROLE)),
+                    },
+                );
+                let id = offset.id;
+                edits.push(Mutation::Insert(offset));
+                let (s, c) = options.angle_rad.sin_cos();
+                (id, [c, s, 0.], frame)
+            }
+        }
+        CreationPlane::Face {
+            snapshot,
+            key,
+            anchor,
+        } => {
+            if snapshot.revision != expected_revision {
+                return Err(command_error(
+                    ErrorCode::StaleRevision,
+                    "Face snapshot is not current",
+                ));
+            }
+            if !session.document().get(snapshot.owner).is_some_and(|e| {
+                matches!(
+                    e.data,
+                    EntityData::Feature {
+                        suppressed: false,
+                        ..
+                    }
+                )
+            }) {
+                return Err(command_error(
+                    ErrorCode::InvalidRequest,
+                    "Face sketches require a canonical unsuppressed Feature producer, not a Part or Instance",
+                ));
+            }
+            if key.kind != TopologyKind::Face {
+                return Err(command_error(
+                    ErrorCode::InvalidRequest,
+                    "Choose a planar face",
+                ));
+            }
+            let mut intent = GeometryIntent::capture(snapshot, key)
+                .map_err(|e| command_error(ErrorCode::InvalidRequest, e))?;
+            let candidate = snapshot
+                .elements
+                .iter()
+                .find(|e| e.key == key)
+                .expect("captured");
+            let anchored = if let Some(anchor) = anchor {
+                candidate.frames.iter().find(|f| f.origin == *anchor)
+            } else if candidate.frames.len() == 1 {
+                candidate.frames.first()
+            } else {
+                None
+            }
+            .ok_or_else(|| {
+                command_error(
+                    ErrorCode::InvalidRequest,
+                    "Choose an available, unambiguous planar source frame",
+                )
+            })?;
+            intent.attachment = Some(Attachment {
+                anchor: anchored.origin.clone(),
+                offset_mm: [0., 0., options.normal_offset_mm],
+                angle_rad: options.angle_rad,
+            });
+            let Resolution::Resolved {
+                frame: Some(resolved),
+                ..
+            } = crate::references::resolve(&intent, snapshot, expected_revision)
+            else {
+                return Err(command_error(
+                    ErrorCode::InvalidRequest,
+                    "Face attachment could not be resolved",
+                ));
+            };
+            let frame = Frame {
+                origin: resolved.origin_mm,
+                u: resolved.u,
+                v: resolved.v,
+                n: resolved.normal(),
+            };
+            let mut link = Link::new(snapshot.owner, "face");
+            link.geometry = Some(intent);
+            let entity = Entity::new(
+                format!("{name} face plane"),
+                EntityData::Plane {
+                    origin_mm: frame.origin,
+                    normal: frame.n,
+                    anchor: Some(link),
+                },
+            );
+            let id = entity.id;
+            edits.push(Mutation::Insert(entity));
+            (id, frame.u, frame)
+        }
+    };
+    let source = crate::constraint_sketch::source::Source {
+        u: fallback_u,
+        sketch: Default::default(),
+    };
+    let sketch = Entity::new(
+        name,
+        EntityData::Sketch {
+            plane: plane_id,
+            definition: source.definition()?,
+            inputs: vec![],
+        },
+    );
+    let sketch_id = sketch.id;
+    edits.push(Mutation::Insert(sketch));
+    let prepared = session.prepare(Request {
+        expected_revision,
+        actor,
+        label: "New sketch".into(),
+        edits,
+    })?;
+    Ok(NewSketch {
+        prepared,
+        sketch: sketch_id,
+        plane: plane_id,
+        frame,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -402,15 +798,30 @@ pub fn translate(
         .entities()
         .any(|e| e.id != id && e.references().iter().any(|l| l.target == plane));
     let mut edits = vec![];
+    let mut owner = document
+        .get(id)
+        .ok_or_else(|| invalid("Sketch is missing"))?
+        .clone();
     if shared {
         moved.id = EntityId::new();
-        let mut owner = document
-            .get(id)
-            .ok_or_else(|| invalid("Sketch is missing"))?
-            .clone();
         if let EntityData::Sketch { plane, .. } = &mut owner.data {
             *plane = moved.id;
         }
+    }
+    // An offset source stores U in parent-local coordinates. Detaching onto an
+    // absolute plane must convert that descriptor to its evaluated world basis.
+    if let EntityData::Sketch { definition, .. } = &mut owner.data {
+        if definition.type_id == crate::constraint_sketch::source::TYPE {
+            let (mut source, _, _) = crate::constraint_sketch::source::Source::read(document, id)?;
+            source.u = frame.u;
+            *definition = source.definition()?;
+        } else {
+            let (mut source, _, _) = Sketch::read(document, id)?;
+            source.u = frame.u;
+            *definition = source.definition()?;
+        }
+    }
+    if document.get(id) != Some(&owner) {
         edits.push(Mutation::Replace(owner));
     }
     moved.data = EntityData::Plane {
@@ -428,6 +839,19 @@ pub fn translate(
 /// Built-in provider validation runs at the canonical document boundary.
 pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     for e in document.entities() {
+        if let EntityData::Plane {
+            anchor: Some(link), ..
+        } = &e.data
+            && link.role == OFFSET_PLANE_ROLE
+        {
+            let (parent, _) = offset_descriptor(e)?;
+            if document
+                .get(parent)
+                .is_some_and(|e| !matches!(e.data, EntityData::Plane { .. }))
+            {
+                return Err(invalid("Offset plane parent must be another Plane"));
+            }
+        }
         if let EntityData::Sketch {
             plane, definition, ..
         } = &e.data
