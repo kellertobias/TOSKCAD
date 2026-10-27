@@ -108,7 +108,7 @@ pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     paint_sized(
         ui,
         icon,
-        Pos2::new(rect.center().x, rect.top() + rect.height() / 3.0),
+        Pos2::new(rect.center().x, rect.top() + rect.height() / 3.0 + 4.0),
         color,
         24.0,
     );
@@ -118,7 +118,7 @@ pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     ui.painter().galley(
         Pos2::new(
             rect.center().x - galley.size().x * 0.5,
-            rect.top() + rect.height() * 5.0 / 6.0 - galley.size().y * 0.5,
+            rect.top() + rect.height() * 2.0 / 3.0,
         ),
         galley,
         color,
