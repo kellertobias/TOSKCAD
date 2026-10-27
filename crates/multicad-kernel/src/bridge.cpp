@@ -10,6 +10,8 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <GCPnts_QuasiUniformDeflection.hxx>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -142,8 +144,9 @@ Mesh tessellate(const Shape &s, double tolerance, double angle, uint32_t limit) 
       throw std::runtime_error("Tessellation failed");
     Mesh out;
     uint64_t triangles = 0;
-    for (TopExp_Explorer e(display, TopAbs_FACE); e.More(); e.Next()) {
-      auto face = TopoDS::Face(e.Current());
+    auto exactFaces = topology_map(s.value, 0);
+    for (int faceIndex = 1; faceIndex <= exactFaces.Extent(); ++faceIndex) {
+      auto face = TopoDS::Face(copy.ModifiedShape(exactFaces(faceIndex)));
       TopLoc_Location location;
       auto tri = BRep_Tool::Triangulation(face, location);
       if (tri.IsNull())
@@ -166,6 +169,7 @@ Mesh tessellate(const Shape &s, double tolerance, double angle, uint32_t limit) 
         out.indices.push_back(offset + a - 1);
         out.indices.push_back(offset + b - 1);
         out.indices.push_back(offset + c - 1);
+        out.face_indices.push_back(static_cast<uint32_t>(faceIndex - 1));
       }
     }
     return out;
@@ -405,5 +409,40 @@ rust::Vec<Seed> seeds(const Shape &s) {
   for (const auto &entry : s.seeds)
     result.push_back(Seed{entry.face, entry.source_index, entry.role});
   return result;
+}
+rust::Vec<EdgeInfo> display_edges(const Shape &s, double deflection) {
+  return guard([&] {
+    rust::Vec<EdgeInfo> result;
+    auto edges = topology_map(s.value, 1);
+    uint64_t points = 0;
+    for (int i = 1; i <= edges.Extent(); ++i) {
+      auto edge = TopoDS::Edge(edges(i));
+      if (BRep_Tool::Degenerated(edge)) continue;
+      BRepAdaptor_Curve curve(edge);
+      GCPnts_QuasiUniformDeflection sample(curve, deflection);
+      if (!sample.IsDone() || sample.NbPoints() < 2)
+        throw std::runtime_error("B-rep edge display sampling failed");
+      points += sample.NbPoints();
+      if (points > 1000000)
+        throw std::runtime_error("B-rep edge display budget exceeded");
+      EdgeInfo info{static_cast<uint32_t>(i - 1), {}};
+      for (int p = 1; p <= sample.NbPoints(); ++p) {
+        auto v = sample.Value(p);
+        info.points.push_back(v.X()); info.points.push_back(v.Y()); info.points.push_back(v.Z());
+      }
+      result.push_back(std::move(info));
+    }
+    return result;
+  });
+}
+rust::Vec<VertexInfo> vertices(const Shape &s) {
+  return guard([&] {
+    rust::Vec<VertexInfo> result;
+    auto vertices = topology_map(s.value, 2);
+    for (int i = 1; i <= vertices.Extent(); ++i)
+      result.push_back(VertexInfo{static_cast<uint32_t>(i - 1),
+          data(BRep_Tool::Pnt(TopoDS::Vertex(vertices(i))))});
+    return result;
+  });
 }
 } // namespace multicad::kernel

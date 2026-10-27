@@ -1,8 +1,8 @@
 //! Bounded background evaluator. Native handles never leave this worker;
 //! receipts contain owned display/query data and revision-bound opaque keys.
 use crate::{
-    BooleanOperation, Bounds, Face, GeometryError, GeometryErrorKind, GeometryPolicy, Mesh,
-    MeshOptions, PlaneFrame, Profile, RigidTransform, Solid,
+    BooleanOperation, Bounds, DisplayEdge, DisplayVertex, Face, GeometryError, GeometryErrorKind,
+    GeometryPolicy, Mesh, MeshOptions, PlaneFrame, Profile, RigidTransform, Solid,
 };
 use multicad_core::{
     document::EntityId,
@@ -159,6 +159,8 @@ pub struct SolidSnapshot {
     pub solid_count: u32,
     pub mesh: Mesh,
     pub topology: Vec<TopologyElement>,
+    pub edges: Vec<DisplayEdge>,
+    pub vertices: Vec<DisplayVertex>,
 }
 impl SolidSnapshot {
     /// The compiler supplies the canonical output entity; local ordinals never
@@ -576,6 +578,8 @@ fn compute(
                 solid_count: solid.solid_count()?,
                 mesh,
                 topology: solid.provenance.clone(),
+                edges: solid.display_edges(program.mesh.linear_deflection_mm)?,
+                vertices: solid.display_vertices()?,
             })
         } else {
             None

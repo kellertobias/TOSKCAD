@@ -9,6 +9,8 @@ mod ffi {
     pub struct Mesh {
         pub vertices: Vec<f64>,
         pub indices: Vec<u32>,
+        /// One evaluation-local B-rep face index per display triangle.
+        pub face_indices: Vec<u32>,
     }
     #[derive(Clone, Copy, Debug)]
     pub struct Point3 {
@@ -57,6 +59,14 @@ mod ffi {
         pub source_index: u32,
         pub role: u8,
     }
+    pub struct EdgeInfo {
+        pub index: u32,
+        pub points: Vec<f64>,
+    }
+    pub struct VertexInfo {
+        pub index: u32,
+        pub point: Point3,
+    }
     unsafe extern "C++" {
         include!("bridge.hpp");
         type Shape;
@@ -96,6 +106,8 @@ mod ffi {
         fn topology(shape: &Shape) -> Result<Vec<TopologyNode>>;
         fn ancestry(shape: &Shape) -> Result<Vec<Ancestry>>;
         fn seeds(shape: &Shape) -> Result<Vec<Seed>>;
+        fn display_edges(shape: &Shape, deflection: f64) -> Result<Vec<EdgeInfo>>;
+        fn vertices(shape: &Shape) -> Result<Vec<VertexInfo>>;
         fn solid_count(shape: &Shape) -> Result<u32>;
         fn tessellate(
             shape: &Shape,

@@ -14,6 +14,8 @@ struct FaceInfo;
 struct TopologyNode;
 struct Ancestry;
 struct Seed;
+struct EdgeInfo;
+struct VertexInfo;
 struct NativeAncestry {
   uint8_t kind, operand;
   uint32_t output, input;
@@ -46,4 +48,6 @@ Mesh tessellate(const Shape &,double deflection,double angle,uint32_t max_triang
 rust::Vec<TopologyNode> topology(const Shape &);
 rust::Vec<Ancestry> ancestry(const Shape &);
 rust::Vec<Seed> seeds(const Shape &);
+rust::Vec<EdgeInfo> display_edges(const Shape &, double deflection);
+rust::Vec<VertexInfo> vertices(const Shape &);
 } // namespace multicad::kernel

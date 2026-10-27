@@ -414,6 +414,17 @@ pub struct Face {
     pub center_mm: [f64; 3],
     pub area_mm2: f64,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayEdge {
+    /// Evaluation-local index into the B-rep edge map, not a mesh edge.
+    pub index: u32,
+    pub points_mm: Vec<[f64; 3]>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayVertex {
+    pub index: u32,
+    pub position_mm: [f64; 3],
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeshOptions {
     pub linear_deflection_mm: f64,
@@ -609,6 +620,7 @@ impl Solid {
         if mesh.vertices.is_empty()
             || !mesh.vertices.len().is_multiple_of(3)
             || !mesh.indices.len().is_multiple_of(3)
+            || mesh.face_indices.len() != mesh.indices.len() / 3
             || mesh.vertices.iter().any(|v| !v.is_finite())
             || mesh
                 .indices
@@ -622,6 +634,49 @@ impl Solid {
             ));
         }
         Ok(mesh)
+    }
+    pub fn display_edges(&self, deflection_mm: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
+        if !deflection_mm.is_finite()
+            || deflection_mm < 0.001
+            || deflection_mm > self.policy.maximum_coordinate_mm
+        {
+            return Err(input("Invalid edge display deflection"));
+        }
+        let edges = ffi::display_edges(&self.native.0, deflection_mm)
+            .map_err(|e| native("display edges", e))?;
+        edges
+            .into_iter()
+            .map(|edge| {
+                if edge.points.len() < 6
+                    || !edge.points.len().is_multiple_of(3)
+                    || edge.points.iter().any(|v| !v.is_finite())
+                {
+                    return Err(error(
+                        "display edges",
+                        GeometryErrorKind::InvalidResult,
+                        "Invalid native edge display data",
+                    ));
+                }
+                Ok(DisplayEdge {
+                    index: edge.index,
+                    points_mm: edge.points.as_chunks::<3>().0.to_vec(),
+                })
+            })
+            .collect()
+    }
+    pub fn display_vertices(&self) -> Result<Vec<DisplayVertex>, GeometryError> {
+        ffi::vertices(&self.native.0)
+            .map_err(|e| native("display vertices", e))?
+            .into_iter()
+            .map(|v| {
+                let position_mm = xyz(v.point);
+                self.policy.point(position_mm)?;
+                Ok(DisplayVertex {
+                    index: v.index,
+                    position_mm,
+                })
+            })
+            .collect()
     }
     pub fn write_step(&self, path: &Path) -> Result<(), GeometryError> {
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
