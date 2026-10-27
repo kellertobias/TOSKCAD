@@ -14,7 +14,6 @@ pub struct Viewport {
     grid: bool,
     spacing: f32,
     count: i32,
-    settings: bool,
     scene: Option<Scene>,
     texture: Option<egui::TextureHandle>,
     raster: Option<Raster>,
@@ -31,7 +30,6 @@ impl Default for Viewport {
             grid: true,
             spacing: 20.0,
             count: 20,
-            settings: false,
             scene: None,
             texture: None,
             raster: None,
@@ -71,7 +69,19 @@ impl Viewport {
             .fixed_pos(rect.right_bottom() - Vec2::splat(8.0))
             .movable(false)
             .show(ui.ctx(), |ui| {
-                crate::navigation::toolbar(ui, &mut self.camera, &mut self.style)
+                crate::navigation::toolbar(ui, &mut self.camera, &mut self.style, |ui| {
+                    ui.set_min_width(200.0);
+                    ui.strong("XY grid");
+                    ui.checkbox(&mut self.grid, "Show XY floor grid");
+                    ui.horizontal(|ui| {
+                        ui.label("Spacing (mm)");
+                        ui.add(egui::DragValue::new(&mut self.spacing).range(0.1..=1000.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Lines each side");
+                        ui.add(egui::DragValue::new(&mut self.count).range(2..=100));
+                    });
+                })
             });
         let over_control = ui.input(|i| {
             i.pointer.hover_pos().is_some_and(|p| {
@@ -97,9 +107,6 @@ impl Viewport {
         }
         if actions.fit {
             self.fit(rect);
-        }
-        if actions.grid {
-            self.settings = !self.settings;
         }
         // Resolution bounded for this software depth proof. Cached until a scene,
         // camera, selection, style, grid or viewport-size change occurs.
@@ -175,21 +182,6 @@ impl Viewport {
             });
             self.key.clear();
             ui.ctx().request_repaint();
-        }
-        if self.settings {
-            egui::Window::new("XY grid")
-                .open(&mut self.settings)
-                .show(ui.ctx(), |ui| {
-                    ui.checkbox(&mut self.grid, "Show XY floor grid");
-                    ui.horizontal(|ui| {
-                        ui.label("Spacing (mm)");
-                        ui.add(egui::DragValue::new(&mut self.spacing).range(0.1..=1000.0));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Lines each side");
-                        ui.add(egui::DragValue::new(&mut self.count).range(2..=100));
-                    });
-                });
         }
         self.last_ms = start.elapsed().as_secs_f64() * 1000.0;
         pick_plane

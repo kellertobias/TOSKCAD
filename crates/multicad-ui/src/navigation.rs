@@ -198,10 +198,14 @@ pub fn orientation(ui: &mut egui::Ui, camera: &mut Camera) -> egui::Response {
 pub struct CameraActions {
     pub home: bool,
     pub fit: bool,
-    pub grid: bool,
 }
 /// All controls have icon-only faces and explicit accessible names/tooltips.
-pub fn toolbar(ui: &mut egui::Ui, camera: &mut Camera, style: &mut DisplayStyle) -> CameraActions {
+pub fn toolbar(
+    ui: &mut egui::Ui,
+    camera: &mut Camera,
+    style: &mut DisplayStyle,
+    grid_controls: impl FnOnce(&mut egui::Ui),
+) -> CameraActions {
     let mut actions = CameraActions::default();
     egui::Frame::new()
         .fill(Color32::from_rgb(31, 38, 48))
@@ -260,7 +264,11 @@ pub fn toolbar(ui: &mut egui::Ui, camera: &mut Camera, style: &mut DisplayStyle)
                 });
                 response.on_hover_text(format!("Visual style: {}", style.label()));
                 ui.separator();
-                actions.grid = icons::compact_button(ui, Icon::Grid, "Configure XY grid").clicked();
+                let grid = icons::compact_button(ui, Icon::Grid, "Configure XY grid");
+                egui::Popup::menu(&grid)
+                    .align(egui::RectAlign::TOP_END)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(grid_controls);
             });
         });
     actions
