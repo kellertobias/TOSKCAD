@@ -4,6 +4,7 @@
 //! native pointers or tessellations are part of the document.
 
 pub mod document;
+pub mod parameters;
 
 /// Identity of the compiled application, independent of GUI or native adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
