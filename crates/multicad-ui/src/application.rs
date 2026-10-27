@@ -869,6 +869,7 @@ impl Application {
             viewport: self.mode != Mode::Parameters,
             text_input: ctx.text_edit_focused(),
             blocked: self.file_action.is_some()
+                || self.find_open
                 || self.close_confirm
                 || self.history_open
                 || self.shortcut_help
@@ -882,6 +883,11 @@ impl Application {
             .unwrap_or_else(|| label.into())
     }
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.find_open
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.find_open = false;
+        }
         if self.shortcut_help
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
@@ -1229,6 +1235,32 @@ mod tests {
             vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
         );
         assert_eq!(app.tab, before);
+    }
+    #[test]
+    fn finder_escape_closes_search_without_cancelling_the_sketch_tool() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        app.current_mut().sketch.set_tool(DrawTool::Line).unwrap();
+        shortcut_frame(&ctx, &mut app, vec![]);
+        app.focus_search = true;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        assert!(app.find_open);
+        let before = app.tab;
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.tab, before);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(!app.find_open);
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Line));
     }
     #[test]
     fn mode_shortcuts_use_existing_transactions_and_ignore_unavailable_tools() {
