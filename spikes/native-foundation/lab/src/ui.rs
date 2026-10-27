@@ -516,22 +516,49 @@ impl Lab {
             Mode::Export => &["Common", "Print"],
             Mode::Parameters => &[],
         };
-        ui.horizontal(|ui| {
-            for tab in tabs {
-                ui.selectable_value(&mut self.ribbon_tab, (*tab).into(), *tab);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                for (icon, label) in [
-                    (Icon::Link, "MCP history"),
-                    (Icon::Library, "Library"),
-                    (Icon::Measure, "Measure"),
-                ] {
-                    if crate::icons::button(ui, icon, label).clicked() {
-                        self.example_tool = Some(label.into());
+        let accent = match self.mode {
+            Mode::Parameters => Color32::from_rgb(108, 73, 160),
+            Mode::Sketch => Color32::from_rgb(28, 113, 119),
+            Mode::Model => Color32::from_rgb(34, 98, 171),
+            Mode::Drawings => Color32::from_rgb(172, 91, 18),
+            Mode::Render => Color32::from_rgb(146, 67, 108),
+            Mode::Export => Color32::from_rgb(53, 114, 65),
+        };
+        egui::Frame::new()
+            .fill(accent)
+            .inner_margin(egui::Margin::symmetric(8, 3))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    for tab in tabs {
+                        let selected = self.ribbon_tab == *tab;
+                        let response = ui.add(
+                            egui::Button::new(RichText::new(*tab).color(if selected {
+                                accent
+                            } else {
+                                Color32::WHITE
+                            }))
+                            .fill(if selected { Color32::WHITE } else { accent })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(4),
+                        );
+                        if response.clicked() {
+                            self.ribbon_tab = (*tab).into();
+                        }
                     }
-                }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        for (icon, label) in [
+                            (Icon::Link, "MCP history"),
+                            (Icon::Library, "Library"),
+                            (Icon::Measure, "Measure"),
+                        ] {
+                            if crate::icons::labeled_button(ui, icon, label).clicked() {
+                                self.example_tool = Some(label.into());
+                            }
+                        }
+                    });
+                });
             });
-        });
         ui.separator();
         let tools: Vec<(Icon, &str, &str)> = match (self.mode, self.ribbon_tab.as_str()) {
             (Mode::Sketch, _) if self.sketch == SketchState::Closed => vec![
@@ -779,7 +806,9 @@ impl Lab {
         if self.mode == Mode::Parameters {
             egui::CentralPanel::default().show(ui, |ui| self.parameters(ui));
         } else {
-            egui::Panel::top("ribbon").show(ui, |ui| self.ribbon(ui));
+            egui::Panel::top("ribbon")
+                .frame(egui::Frame::new())
+                .show(ui, |ui| self.ribbon(ui));
             let mut viewer = Viewer {
                 built: self.preview.as_ref().or(self.built.as_ref()),
                 viewport: &mut self.viewport,
