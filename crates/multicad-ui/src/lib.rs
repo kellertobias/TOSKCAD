@@ -21,6 +21,7 @@ pub fn launch_with_storage(storage: Box<dyn application::DocumentStorage>) -> Re
 /// Document/command modules never need to initialize a window or a GPU device.
 pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
     let options = eframe::NativeOptions {
+        depth_buffer: 32,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1360.0, 860.0])
             .with_min_inner_size([1100.0, 700.0])
@@ -37,6 +38,9 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         options,
         Box::new(move |cc| {
             theme::configure(&cc.egui_ctx);
+            if let Some(render_state) = &cc.wgpu_render_state {
+                viewport::install(render_state);
+            }
             application(cc)
         }),
     )

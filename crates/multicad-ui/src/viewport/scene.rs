@@ -103,6 +103,16 @@ impl Transform {
     pub fn vector(self, v: Point) -> Point {
         self.rotation.map(|row| dot(row, v))
     }
+    pub(crate) fn rows(self) -> [[f32; 4]; 3] {
+        std::array::from_fn(|i| {
+            [
+                self.rotation[i][0] as f32,
+                self.rotation[i][1] as f32,
+                self.rotation[i][2] as f32,
+                self.translation[i] as f32,
+            ]
+        })
+    }
     fn inverse_ray(self, ray: Ray) -> Ray {
         let transpose =
             |v: Point| std::array::from_fn(|i| (0..3).map(|j| self.rotation[j][i] * v[j]).sum());
@@ -343,6 +353,7 @@ pub struct Scene {
     stamp: SceneStamp,
     geometries: BTreeMap<EntityId, Arc<Geometry>>,
     instances: Vec<Instance>,
+    world_bounds: Option<[Point; 2]>,
 }
 pub struct Hit {
     pub instance: EntityId,
@@ -380,10 +391,25 @@ impl Scene {
         if map.values().map(|g| g.triangle_faces.len()).sum::<usize>() > 5_000_000 {
             return Err("Scene triangle budget exceeded".into());
         }
+        let mut world = Bounds::empty();
+        for instance in &instances {
+            let local = map[&instance.geometry].nodes[0].bounds;
+            for corner in 0..8 {
+                world.include(instance.transform.point(std::array::from_fn(|i| {
+                    if corner & (1 << i) == 0 {
+                        local.min[i]
+                    } else {
+                        local.max[i]
+                    }
+                })));
+            }
+        }
+        let world_bounds = (!instances.is_empty()).then_some([world.min, world.max]);
         Ok(Self {
             stamp,
             geometries: map,
             instances,
+            world_bounds,
         })
     }
     pub fn stamp(&self) -> SceneStamp {
@@ -394,6 +420,9 @@ impl Scene {
     }
     pub fn geometries(&self) -> &BTreeMap<EntityId, Arc<Geometry>> {
         &self.geometries
+    }
+    pub fn world_bounds(&self) -> Option<[Point; 2]> {
+        self.world_bounds
     }
     pub fn topology_snapshot(&self, instance: EntityId) -> Option<TopologySnapshot> {
         let instance = self.instances.iter().find(|i| i.id == instance)?;

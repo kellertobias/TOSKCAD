@@ -1835,6 +1835,7 @@ dependencies = [
  "multicad-core",
  "multicad-kernel",
  "multicad-solver",
+ "naga",
  "raw-window-handle",
  "serde_json",
 ]
