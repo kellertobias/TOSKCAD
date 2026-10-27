@@ -674,6 +674,7 @@ impl Lab {
             _ => vec![],
         };
         egui::ScrollArea::horizontal().show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.horizontal(|ui| {
                 let mut groups: Vec<(&str, Vec<(Icon, &str)>)> = Vec::new();
                 for (icon, label, section) in tools {
@@ -683,17 +684,22 @@ impl Lab {
                     groups.last_mut().unwrap().1.push((icon, label));
                 }
                 for (section, tools) in groups {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            for (icon, label) in tools {
-                                if tool(ui, icon, label).clicked() {
-                                    self.activate_tool(label);
+                    let group = ui
+                        .vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                for (icon, label) in tools {
+                                    if tool(ui, icon, label).clicked() {
+                                        self.activate_tool(label);
+                                    }
                                 }
-                            }
-                        });
-                        ui.small(RichText::new(section).color(Color32::GRAY));
-                    });
-                    ui.separator();
+                            });
+                            ui.small(RichText::new(section).color(Color32::GRAY));
+                        })
+                        .response;
+                    ui.painter().line_segment(
+                        [group.rect.right_top(), group.rect.right_bottom()],
+                        egui::Stroke::new(0.5, Color32::from_gray(50)),
+                    );
                 }
             });
         });

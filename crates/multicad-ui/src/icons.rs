@@ -87,14 +87,14 @@ pub fn labeled_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Respo
     response.on_hover_text(label)
 }
 pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(84.0, 78.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(76.0, 78.0), egui::Sense::click());
     if response.hovered() {
         ui.painter()
-            .rect_filled(rect.shrink(2.0), 5, Color32::from_rgb(42, 51, 65));
+            .rect_filled(rect, 3, Color32::from_rgb(42, 51, 65));
     }
     if response.has_focus() {
         ui.painter().rect_stroke(
-            rect.shrink(2.0),
+            rect.shrink(1.0),
             5,
             Stroke::new(1.0, Color32::LIGHT_BLUE),
             egui::StrokeKind::Inside,
@@ -114,7 +114,7 @@ pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     );
     let galley = ui
         .painter()
-        .layout(label.into(), egui::FontId::proportional(11.0), color, 72.0);
+        .layout(label.into(), egui::FontId::proportional(11.0), color, 64.0);
     ui.painter().galley(
         Pos2::new(
             rect.center().x - galley.size().x * 0.5,
