@@ -1,5 +1,8 @@
 use sketch_solver::{Along, Constraint, Pair, Sketch, Solution, Status};
 
+mod adapter;
+pub use adapter::*;
+
 /// Solve a perturbed rectangle. Solver handles stay private to this adapter.
 pub fn rectangle(width: f64, depth: f64) -> Result<[f64; 2], String> {
     let (solution, corner) = solve(width, depth, None)?;

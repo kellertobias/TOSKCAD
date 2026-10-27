@@ -1817,6 +1817,8 @@ dependencies = [
 name = "multicad-solver"
 version = "0.1.0-dev"
 dependencies = [
+ "multicad-core",
+ "serde_json",
  "sketch-solver",
 ]
 

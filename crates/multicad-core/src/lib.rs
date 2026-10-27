@@ -4,6 +4,7 @@
 //! native pointers or tessellations are part of the document.
 
 pub mod commands;
+pub mod constraint_sketch;
 pub mod document;
 pub mod parameters;
 pub mod sketch;
