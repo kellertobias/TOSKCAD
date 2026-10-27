@@ -106,6 +106,14 @@ fn instance_frames_are_in_world_coordinates_and_camera_rays_match_both_projectio
     })
     .unwrap();
     let scene = Scene::new(stamp(), vec![geometry], vec![part.clone()]).unwrap();
+    let [low, high] = scene.instance_bounds(part.id).unwrap();
+    for (actual, expected) in low
+        .into_iter()
+        .zip([-50., 20., 30.])
+        .chain(high.into_iter().zip([10., 120., 48.]))
+    {
+        assert!((actual - expected).abs() < 1e-10);
+    }
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.));
     for perspective in [false, true] {
         let camera = Camera {
@@ -404,4 +412,49 @@ fn perspective_edge_hit_reprojects_to_the_pointer_and_display_data_is_validated(
             )
             .is_err()
     );
+}
+#[test]
+fn floor_grid_follows_distant_views_is_bounded_and_keeps_snap_unit_multiples() {
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.));
+    for scale in [0.02, 0.2, 3., 100.] {
+        let camera = Camera {
+            target: [10000., 20000., 0.],
+            scale,
+            ..Default::default()
+        };
+        let lines = floor_grid(camera, rect, 10.);
+        assert!(!lines.is_empty());
+        assert!(lines.len() <= 402);
+        assert!(lines.iter().flatten().flatten().all(|v| v.is_finite()));
+        let low = lines
+            .iter()
+            .flatten()
+            .map(|p| p[0])
+            .fold(f64::INFINITY, f64::min);
+        let high = lines
+            .iter()
+            .flatten()
+            .map(|p| p[0])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(low < 10000. && high > 10000.);
+        for line in lines {
+            for p in line {
+                for value in p {
+                    assert!((value / 10. - (value / 10.).round()).abs() < 1e-8);
+                }
+            }
+        }
+    }
+    assert!(
+        floor_grid(
+            Camera {
+                pitch: 0.,
+                ..Default::default()
+            },
+            rect,
+            10.
+        )
+        .is_empty()
+    );
+    assert!(floor_grid(Camera::default(), rect, f64::NAN).is_empty());
 }

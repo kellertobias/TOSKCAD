@@ -10,3 +10,5 @@ mod feed;
 pub use feed::{BackendFactory, SceneBackend, SceneFeed, SceneReply};
 mod interaction;
 pub use interaction::Interaction;
+mod grid;
+pub use grid::floor_grid;

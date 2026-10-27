@@ -512,6 +512,21 @@ impl Scene {
     pub fn world_bounds(&self) -> Option<[Point; 2]> {
         self.world_bounds
     }
+    pub fn instance_bounds(&self, id: EntityId) -> Option<[Point; 2]> {
+        let instance = self.instances.iter().find(|i| i.id == id)?;
+        let local = self.geometries[&instance.geometry].nodes[0].bounds;
+        let mut world = Bounds::empty();
+        for corner in 0..8 {
+            world.include(instance.transform.point(std::array::from_fn(|i| {
+                if corner & (1 << i) == 0 {
+                    local.min[i]
+                } else {
+                    local.max[i]
+                }
+            })));
+        }
+        Some([world.min, world.max])
+    }
     pub fn topology_snapshot(&self, instance: EntityId) -> Option<TopologySnapshot> {
         let instance = self.instances.iter().find(|i| i.id == instance)?;
         let geometry = self.geometries.get(&instance.geometry)?;

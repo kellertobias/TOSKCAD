@@ -122,6 +122,15 @@ impl Application {
     pub fn current(&self) -> &Project {
         &self.projects[self.active]
     }
+    pub fn with_document(
+        storage: Box<dyn DocumentStorage>,
+        document: Document,
+    ) -> Result<Self, String> {
+        let mut app = Self::new(storage)?;
+        app.projects[0] = Project::new(document)?;
+        app.message = "Source snapshot loaded".into();
+        Ok(app)
+    }
     pub fn set_scene_backends(&mut self, factory: crate::viewport::BackendFactory) {
         for project in &mut self.projects {
             project.scene.set_backend(factory());

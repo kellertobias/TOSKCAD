@@ -60,6 +60,10 @@ screen tolerance and mesh display error govern picking visibility; neither alter
 manufacturing geometry or persisted reference resolution. Selected vertices have
 a screen overlay. Part rows are virtualized in the document tree.
 
+Fit uses the selected instance's transformed bounds when a solid is selected.
+The floor grid follows the camera and coarsens its displayed lines at distant
+zoom. Its configured sketch snap spacing stays unchanged.
+
 The production composition root still needs the canonical feature compiler to
 supply geometry programs. Registering a display backend does not implement solid
 creation commands. Section and tool-preview layers and the full physical

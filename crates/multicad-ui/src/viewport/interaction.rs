@@ -31,11 +31,12 @@ impl Interaction {
             .or_else(|| self.selected.as_ref().map(|h| h.instance))
     }
     pub fn tree(&mut self, ui: &mut egui::Ui, document: &Document, scene: &Scene) -> bool {
-        let rows: Vec<_> = scene
+        let mut rows: Vec<_> = scene
             .instances()
             .iter()
             .filter_map(|i| document.get(i.id))
             .collect();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
         if rows.is_empty() {
             return false;
         }

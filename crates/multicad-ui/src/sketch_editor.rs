@@ -60,6 +60,7 @@ pub struct SketchEditor {
     fit_requested: bool,
     constraints: crate::sketch_constraints::ConstraintEditor,
     solid: crate::viewport::Interaction,
+    pub viewport_rect: Option<Rect>,
 }
 impl Default for SketchEditor {
     fn default() -> Self {
@@ -89,6 +90,7 @@ impl Default for SketchEditor {
             fit_requested: false,
             constraints: Default::default(),
             solid: Default::default(),
+            viewport_rect: None,
         }
     }
 }
@@ -109,6 +111,9 @@ fn commit(
         .map_err(|e| e.to_string())
 }
 impl SketchEditor {
+    pub fn set_display_style(&mut self, style: DisplayStyle) {
+        self.style = style;
+    }
     pub fn request_fit(&mut self) {
         self.fit_requested = true;
     }
@@ -618,6 +623,7 @@ impl SketchEditor {
         current: bool,
     ) {
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+        self.viewport_rect = Some(rect);
         if response.dragged_by(egui::PointerButton::Secondary) {
             self.camera.orbit(ui.input(|i| i.pointer.delta()));
         }
@@ -633,16 +639,9 @@ impl SketchEditor {
             Pos2::new(p[0], p[1])
         };
         if self.grid {
-            let step = self.spacing.max(0.01);
-            for i in -50..=50 {
-                let value = i as f64 * step;
-                for (a, b) in [
-                    ([value, -50. * step, 0.], [value, 50. * step, 0.]),
-                    ([-50. * step, value, 0.], [50. * step, value, 0.]),
-                ] {
-                    if let Some(segment) = self.camera.segment(a, b, rect) {
-                        painter.line_segment(segment, Stroke::new(0.5, Color32::from_gray(47)));
-                    }
+            for [a, b] in crate::viewport::floor_grid(self.camera, rect, self.spacing) {
+                if let Some(segment) = self.camera.segment(a, b, rect) {
+                    painter.line_segment(segment, Stroke::new(0.5, Color32::from_gray(47)));
                 }
             }
         }
@@ -743,8 +742,13 @@ impl SketchEditor {
             .or_else(|| self.constraints.preview_document())
             .unwrap_or(session.document());
         let mut points = vec![];
-        if let Some(scene) = &scene
-            && let Some([low, high]) = scene.world_bounds()
+        if self.selected.is_none()
+            && let Some(scene) = &scene
+            && let Some([low, high]) = self
+                .solid
+                .selected_id()
+                .and_then(|id| scene.instance_bounds(id))
+                .or_else(|| scene.world_bounds())
         {
             for corner in 0..8 {
                 points.push(std::array::from_fn(|i| {
@@ -798,7 +802,11 @@ impl SketchEditor {
                     for [a, b] in g.segments() {
                         let a = frame.point(a);
                         let b = frame.point(b);
-                        points.extend([a.map(|v| v as f32), b.map(|v| v as f32)]);
+                        if self.solid.selected_id().is_none()
+                            && self.selected.is_none_or(|id| id == e.id)
+                        {
+                            points.extend([a.map(|v| v as f32), b.map(|v| v as f32)]);
+                        }
                         if let Some(segment) = self.camera.segment(a, b, rect) {
                             painter.line_segment(
                                 segment,
@@ -871,13 +879,15 @@ impl SketchEditor {
         if self.moving && self.selected.is_some() {
             self.gizmo(ui, session, rect);
         }
-        painter.text(
-            rect.left_top() + Vec2::new(16., 14.),
-            Align2::LEFT_TOP,
-            &self.message,
-            FontId::proportional(12.),
-            Color32::from_gray(175),
-        );
+        if sketch_mode || scene.is_none() {
+            painter.text(
+                rect.left_top() + Vec2::new(16., 14.),
+                Align2::LEFT_TOP,
+                &self.message,
+                FontId::proportional(12.),
+                Color32::from_gray(175),
+            );
+        }
         egui::Area::new(ui.id().with("orientation"))
             .movable(false)
             .pivot(Align2::RIGHT_TOP)
