@@ -7,7 +7,7 @@ use multicad_core::{
     document::{Document, EntityId},
     references::{
         self, Diagnostic, GeometryIntent, Origin, ReferenceAddress, RepairPreview, Resolution,
-        TopologyKey,
+        TopologyElement, TopologyKey,
     },
 };
 
@@ -44,6 +44,68 @@ fn status(resolution: &Resolution) -> String {
         Resolution::UnavailableFrame => "Planar attachment frame is unavailable".into(),
         Resolution::Invalid { message } => format!("Invalid reference · {message}"),
     }
+}
+fn friendly_role(role: &str) -> String {
+    let tail = role
+        .rsplit('/')
+        .find(|part| !part.is_empty() && EntityId::parse(part).is_err())
+        .unwrap_or("");
+    match tail.to_ascii_lowercase().as_str() {
+        "cap.start" => "Start face".into(),
+        "cap.end" => "End face".into(),
+        "x.min" => "X minimum".into(),
+        "x.max" => "X maximum".into(),
+        "y.min" => "Y minimum".into(),
+        "y.max" => "Y maximum".into(),
+        "z.min" => "Z minimum".into(),
+        "z.max" => "Z maximum".into(),
+        "side" => "Side face".into(),
+        _ => {
+            // Advanced provenance may contain UUIDs; the compact choice label
+            // uses a human description and leaves those identities in details.
+            if tail.is_empty()
+                || tail.as_bytes().windows(36).any(|window| {
+                    std::str::from_utf8(window).is_ok_and(|s| EntityId::parse(s).is_ok())
+                })
+            {
+                return "Geometry".into();
+            }
+            let words = tail.replace(['.', '_', '-'], " ");
+            let mut chars = words.chars();
+            chars.next().map_or_else(
+                || "Geometry".into(),
+                |first| first.to_uppercase().collect::<String>() + chars.as_str(),
+            )
+        }
+    }
+}
+fn candidate_priority(diagnostic: &Diagnostic, source: EntityId, element: &TopologyElement) -> u8 {
+    if source == diagnostic.source
+        && matches!(&diagnostic.resolution,Resolution::Ambiguous{candidates} if candidates.contains(&element.key))
+    {
+        0
+    } else if diagnostic.intent.origins.is_subset(&element.origins) {
+        1
+    } else {
+        2
+    }
+}
+fn candidate_label(element: &TopologyElement) -> String {
+    let roles = element
+        .origins
+        .iter()
+        .map(|o| friendly_role(&o.role))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" / ");
+    format!(
+        "{:?} {} · {}",
+        element.key.kind,
+        element.key.ordinal.saturating_add(1),
+        roles
+    )
 }
 impl RepairPanel {
     pub fn viewing_candidates(&self) -> bool {
@@ -194,7 +256,13 @@ impl RepairPanel {
         evaluation: &ReferenceEvaluation,
     ) {
         let current = self.synchronize(session, evaluation);
-        if evaluation.report.entries.is_empty() && self.message.is_none() {
+        let unresolved: Vec<_> = evaluation
+            .report
+            .entries
+            .iter()
+            .filter(|d| !matches!(d.resolution, Resolution::Resolved { .. }))
+            .collect();
+        if unresolved.is_empty() && !self.has_pending() {
             return;
         }
         ui.separator();
@@ -212,17 +280,7 @@ impl RepairPanel {
         if !current {
             return;
         }
-        let unresolved: Vec<_> = evaluation
-            .report
-            .entries
-            .iter()
-            .filter(|d| !matches!(d.resolution, Resolution::Resolved { .. }))
-            .collect();
         if unresolved.is_empty() {
-            ui.small(format!(
-                "{} references resolved",
-                evaluation.report.entries.len()
-            ));
             return;
         }
         ui.colored_label(
@@ -312,17 +370,17 @@ impl RepairPanel {
         let snapshot = self.source.and_then(|id| evaluation.snapshots.get(&id));
         if let Some(snapshot) = snapshot {
             ui.label("Replacement candidates");
-            ui.small("Numbers identify this evaluation only. Repair saves source provenance.");
-            let candidates: Vec<_> = snapshot
+            ui.small("Choose the geometry this reference should use.");
+            let mut candidates: Vec<_> = snapshot
                 .elements
                 .iter()
                 .filter(|e| e.key.kind == diagnostic.intent.kind && !e.origins.is_empty())
                 .collect();
+            candidates.sort_by_key(|e| (candidate_priority(diagnostic, snapshot.owner, e), e.key));
             egui::ScrollArea::vertical().id_salt("repair-candidates").max_height(200.).show_rows(ui,24.,candidates.len(),|ui,range| {
                 for index in range {
                     let element=candidates[index];
-                    let roles=element.origins.iter().map(|o|o.role.as_str()).take(3).collect::<Vec<_>>().join(" / ");
-                    let label=format!("{:?} {} · {}",element.key.kind,element.key.ordinal.saturating_add(1),roles);
+                    let label=candidate_label(element);
                     if ui.add(egui::Button::selectable(self.selected==Some(element.key),label).truncate())
                         .on_hover_text("Inspect this candidate; source stays unchanged until a prepared repair is accepted").clicked() {
                         self.choose_candidate(evaluation,element.key);
@@ -357,8 +415,8 @@ impl RepairPanel {
                 if diagnostic.intent.attachment.is_some() {
                     let mut anchor = self.anchor.clone();
                     egui::ComboBox::from_id_salt("repair-anchor")
-                        .selected_text(anchor.as_ref().map(|o|o.role.as_str()).unwrap_or("Choose planar frame…"))
-                        .show_ui(ui,|ui|{for frame in &candidate.frames {ui.selectable_value(&mut anchor,Some(frame.origin.clone()),format!("{} · {}",name(session.document(),frame.origin.source),frame.origin.role));}})
+                        .selected_text(anchor.as_ref().map(|o|friendly_role(&o.role)).unwrap_or_else(||"Choose planar frame…".into()))
+                        .show_ui(ui,|ui|{for frame in &candidate.frames {ui.selectable_value(&mut anchor,Some(frame.origin.clone()),format!("{} · {}",name(session.document(),frame.origin.source),friendly_role(&frame.origin.role)));}})
                         .response.on_hover_text("Choose the semantic planar frame; authored offsets and rotation are preserved");
                     if anchor != self.anchor {
                         self.anchor = anchor;
@@ -772,7 +830,7 @@ mod tests {
         let position = text_position(&output, "Hole plane · Ambiguous");
         output.drop_without_applying_deltas();
         let output = click(&ctx, &mut panel, &mut session, &evaluation, position);
-        let position = text_position(&output, "Face 2 · cap.end");
+        let position = text_position(&output, "Face 2 · End face");
         output.drop_without_applying_deltas();
         let output = click(&ctx, &mut panel, &mut session, &evaluation, position);
         assert!(panel.viewing_candidates());
@@ -793,5 +851,51 @@ mod tests {
             session.activity().next().unwrap().label,
             "Repair geometry reference"
         );
+    }
+    #[test]
+    fn resolved_references_leave_the_inspector_empty() {
+        let (mut session, evaluated, _) = fixture();
+        let mut snapshots = evaluated.snapshots.clone();
+        snapshots.values_mut().for_each(|s| s.elements.truncate(1));
+        let resolved = evaluation(&session, snapshots, 2);
+        assert!(resolved.report.all_resolved());
+        let mut panel = RepairPanel::default();
+        select(&mut panel, &session, &evaluated);
+        let ctx = egui::Context::default();
+        let output = ui_frame(&ctx, &mut panel, &mut session, &resolved, vec![]);
+        assert!(!panel.has_pending());
+        assert!(
+            output
+                .shapes
+                .iter()
+                .all(|s| !matches!(&s.shape, egui::Shape::Text(_))),
+            "Resolved references added Inspector content"
+        );
+        output.drop_without_applying_deltas();
+    }
+    #[test]
+    fn compact_candidates_use_friendly_roles_and_prioritize_original_intent() {
+        let (_, evaluation, cut) = fixture();
+        let diagnostic = &evaluation.report.entries[0];
+        let snapshot = &evaluation.snapshots[&diagnostic.source];
+        let ambiguous = snapshot.elements[1].clone();
+        let mut matching = ambiguous.clone();
+        matching.key.ordinal = 90;
+        let mut other = ambiguous.clone();
+        other.key.ordinal = 2;
+        other.origins = std::collections::BTreeSet::from([Origin {
+            source: cut,
+            role: format!("side/{cut}/x.min"),
+        }]);
+        let mut choices = [&other, &matching, &ambiguous];
+        choices.sort_by_key(|e| (candidate_priority(diagnostic, snapshot.owner, e), e.key));
+        assert_eq!(choices.map(|e| e.key.ordinal), [1, 90, 2]);
+        let label = candidate_label(&other);
+        assert_eq!(label, "Face 3 · X minimum");
+        assert!(!label.contains(&cut.to_string()));
+        assert_eq!(friendly_role("cap.start"), "Start face");
+        assert_eq!(friendly_role("cap.end"), "End face");
+        assert_eq!(friendly_role(&format!("side/{cut}")), "Side face");
+        assert_eq!(friendly_role(&format!("role.{cut}.face")), "Geometry");
     }
 }
