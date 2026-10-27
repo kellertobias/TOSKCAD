@@ -862,7 +862,7 @@ mod tests {
                 PendingFile::Restore {
                     expected: Some(expected)
                 },
-                FileResult::Loaded(Ok(loaded))
+                FileResult::Loaded(Ok(Box::new(loaded)))
             )
             .unwrap_err()
             .contains("Refresh")

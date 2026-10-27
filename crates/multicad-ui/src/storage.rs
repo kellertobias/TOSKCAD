@@ -148,7 +148,7 @@ pub enum FileRequest {
 }
 pub enum FileResult {
     Saved(Result<SavedProject, StorageError>),
-    Loaded(Result<LoadedProject, StorageError>),
+    Loaded(Result<Box<LoadedProject>, StorageError>),
     Snapshot(Result<RecoveryEntry, StorageError>),
     Discover(Result<RecoveryListing, StorageError>),
 }
@@ -175,9 +175,11 @@ impl FileWorker {
                             project,
                             mode,
                         } => FileResult::Saved(storage.save_project(&path, &project, mode)),
-                        FileRequest::Open(path) => FileResult::Loaded(storage.open_project(&path)),
+                        FileRequest::Open(path) => {
+                            FileResult::Loaded(storage.open_project(&path).map(Box::new))
+                        }
                         FileRequest::Import(path) => {
-                            FileResult::Loaded(storage.import_source(&path))
+                            FileResult::Loaded(storage.import_source(&path).map(Box::new))
                         }
                         FileRequest::Snapshot {
                             project,
@@ -195,7 +197,7 @@ impl FileWorker {
                         }),
                         FileRequest::Discover => FileResult::Discover(storage.recoveries()),
                         FileRequest::Restore(id) => {
-                            FileResult::Loaded(storage.restore_recovery(id))
+                            FileResult::Loaded(storage.restore_recovery(id).map(Box::new))
                         }
                     };
                     if reply.send(FileReply { id, result }).is_err() {
