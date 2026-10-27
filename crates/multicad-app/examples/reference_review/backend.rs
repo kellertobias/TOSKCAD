@@ -175,7 +175,11 @@ fn named_feature<'a>(document: &'a Document, type_id: &str) -> Result<&'a Entity
     }
     Ok(entity)
 }
-fn geometry(solid: &Solid, id: EntityId, revision: u64) -> Result<Arc<viewport::Geometry>, String> {
+pub(super) fn geometry(
+    solid: &Solid,
+    id: EntityId,
+    revision: u64,
+) -> Result<Arc<viewport::Geometry>, String> {
     let mesh = solid
         .mesh(MeshOptions::default())
         .map_err(|e| e.to_string())?;
@@ -221,6 +225,7 @@ pub struct Evaluation {
     /// Authoring geometry coordinates before instance placement. Placed world
     /// attachment frames are available through the Scene topology snapshot.
     pub hole_center_world: Option<[f64; 3]>,
+    pub fixture_evidence: Option<serde_json::Value>,
 }
 /// Native B-reps are created and dropped on the calling worker thread. Only
 /// immutable copied display geometry crosses back to the UI.
@@ -229,6 +234,9 @@ pub fn evaluate(
     stamp: SceneStamp,
     check: impl Fn() -> Result<(), String>,
 ) -> Result<Evaluation, String> {
+    if super::hierarchy::recognizes(document) {
+        return super::hierarchy::evaluate(document, stamp, check);
+    }
     if stamp.document != document.id() {
         return Err("Review stamp belongs to another document".into());
     }
@@ -418,6 +426,7 @@ pub fn evaluate(
         source_volume_mm3,
         display_volume_mm3,
         hole_center_world,
+        fixture_evidence: None,
     })
 }
 struct Job {
