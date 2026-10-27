@@ -7,7 +7,9 @@ use multicad_core::{
     project_file::ContentHash,
     references::ReferenceReport,
     sketch::Geometry,
-    sketch_regions::Extraction,
+    sketch_regions::{
+        AnalyticQueries, Extraction, PointLocation, Problem, RegionIntent, RegionQueries,
+    },
 };
 use multicad_solver::{Diagnostics, EvaluatedSketch, SketchStamp};
 use std::{
@@ -45,6 +47,28 @@ pub struct EvaluationStamp {
     pub revision: u64,
     pub source_hash: ContentHash,
     pub references: Option<ReferenceStamp>,
+    pub queries_generation: u64,
+}
+/// The factory runs on the bounded worker. Implementations must keep native
+/// handles local to query calls; the UI receives only immutable owned data.
+pub type RegionQueryFactory = Arc<dyn Fn() -> Result<Box<dyn RegionQueries>, String> + Send + Sync>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProfilePickStamp {
+    pub evaluation: EvaluationStamp,
+    pub sketch: EntityId,
+    pub generation: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileHit {
+    Inside(RegionIntent),
+    Boundary,
+    Outside,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfilePickReply {
+    pub stamp: ProfilePickStamp,
+    pub point_mm: [f64; 2],
+    pub result: Result<ProfileHit, String>,
 }
 impl EvaluationStamp {
     fn sketch_stamp(self) -> SketchStamp {
@@ -113,6 +137,21 @@ struct Job {
     stamp: EvaluationStamp,
     source: SourceSnapshot,
     report: Option<Arc<ReferenceReport>>,
+    queries: RegionQueryFactory,
+}
+struct PickJob {
+    stamp: ProfilePickStamp,
+    point_mm: [f64; 2],
+    regions: Arc<Extraction>,
+    queries: RegionQueryFactory,
+}
+enum Work {
+    Evaluate(Job),
+    Classify(PickJob),
+}
+enum WorkReply {
+    Evaluation(Reply),
+    Pick(ProfilePickReply),
 }
 struct Batch {
     stamp: SketchStamp,
@@ -123,28 +162,46 @@ struct Reply {
     result: Result<Batch, String>,
 }
 type Evaluator = Arc<dyn Fn(&Job, &dyn Fn() -> bool) -> Result<Batch, String> + Send + Sync>;
-type WorkerStart = Arc<dyn Fn(Evaluator, Arc<AtomicU64>) -> Result<Worker, String> + Send + Sync>;
+type WorkerStart =
+    Arc<dyn Fn(Evaluator, Arc<AtomicU64>, Arc<AtomicU64>) -> Result<Worker, String> + Send + Sync>;
 struct Worker {
-    requests: SyncSender<Job>,
-    replies: Receiver<Reply>,
+    requests: SyncSender<Work>,
+    replies: Receiver<WorkReply>,
 }
 impl Worker {
-    fn spawn(evaluate: Evaluator, desired: Arc<AtomicU64>) -> Result<Self, String> {
-        let (requests, jobs) = mpsc::sync_channel::<Job>(1);
+    fn spawn(
+        evaluate: Evaluator,
+        desired: Arc<AtomicU64>,
+        pick_desired: Arc<AtomicU64>,
+    ) -> Result<Self, String> {
+        let (requests, jobs) = mpsc::sync_channel::<Work>(1);
         let (finished, replies) = mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("multicad-sketch-evaluation".into())
             .spawn(move || {
                 while let Ok(job) = jobs.recv() {
-                    let cancelled = || desired.load(Ordering::Acquire) != job.stamp.generation;
-                    let result = evaluate(&job, &cancelled);
-                    if finished
-                        .send(Reply {
-                            stamp: job.stamp,
-                            result,
-                        })
-                        .is_err()
-                    {
+                    let reply = match job {
+                        Work::Evaluate(job) => {
+                            let cancelled =
+                                || desired.load(Ordering::Acquire) != job.stamp.generation;
+                            WorkReply::Evaluation(Reply {
+                                stamp: job.stamp,
+                                result: evaluate(&job, &cancelled),
+                            })
+                        }
+                        Work::Classify(job) => {
+                            let cancelled = || {
+                                desired.load(Ordering::Acquire) != job.stamp.evaluation.generation
+                                    || pick_desired.load(Ordering::Acquire) != job.stamp.generation
+                            };
+                            WorkReply::Pick(ProfilePickReply {
+                                stamp: job.stamp,
+                                point_mm: job.point_mm,
+                                result: classify(&job, &cancelled),
+                            })
+                        }
+                    };
+                    if finished.send(reply).is_err() {
                         break;
                     }
                 }
@@ -154,6 +211,10 @@ impl Worker {
     }
 }
 fn evaluate(job: &Job, cancelled: &dyn Fn() -> bool) -> Result<Batch, String> {
+    if cancelled() {
+        return Err("Sketch evaluation superseded".into());
+    }
+    let queries = (job.queries)()?;
     let batch = multicad_solver::evaluate_document_sketches(
         &job.source.document,
         job.source.revision,
@@ -195,11 +256,13 @@ fn evaluate(job: &Job, cancelled: &dyn Fn() -> bool) -> Result<Batch, String> {
                     message: e.to_string(),
                     diagnostics: Some(Arc::new(evaluated.evaluation.diagnostics.clone())),
                 })?;
-                let regions = evaluated.regions().map_err(|e| SketchFailure {
-                    source: e.source,
-                    message: e.to_string(),
-                    diagnostics: Some(Arc::new(evaluated.evaluation.diagnostics.clone())),
-                })?;
+                let regions = evaluated
+                    .regions_with_queries_and_interrupt(queries.as_ref(), Some(cancelled))
+                    .map_err(|e| SketchFailure {
+                        source: e.source,
+                        message: e.to_string(),
+                        diagnostics: Some(Arc::new(evaluated.evaluation.diagnostics.clone())),
+                    })?;
                 Ok(SketchPresentation {
                     stamp: job.stamp,
                     evaluated: Arc::new(evaluated),
@@ -214,11 +277,72 @@ fn evaluate(job: &Job, cancelled: &dyn Fn() -> bool) -> Result<Batch, String> {
         sketches,
     })
 }
+fn classify(job: &PickJob, cancelled: &dyn Fn() -> bool) -> Result<ProfileHit, String> {
+    let check = || {
+        if cancelled() {
+            Err("Profile classification superseded".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let queries = (job.queries)()?;
+    let mut inside = None;
+    let mut boundary = false;
+    for region in &job.regions.regions {
+        check()?;
+        let location = region
+            .classify_with_queries_and_interrupt(job.point_mm, queries.as_ref(), Some(cancelled))
+            .map_err(|e| e.to_string())?;
+        check()?;
+        match location {
+            PointLocation::Boundary => boundary = true,
+            PointLocation::Outside => {}
+            PointLocation::Inside => {
+                if inside.is_some() {
+                    return Err("More than one exact region contains this point".into());
+                }
+                inside = Some(region.intent());
+            }
+        }
+    }
+    check()?;
+    if inside.is_none()
+        && !boundary
+        && let Some(failure) = job
+            .regions
+            .diagnostics
+            .iter()
+            .find(|d| d.problem == Problem::QueryFailure)
+    {
+        return Err(format!(
+            "Exact profile classification is unavailable: {}",
+            failure.message
+        ));
+    }
+    Ok(if boundary {
+        ProfileHit::Boundary
+    } else if let Some(intent) = inside {
+        ProfileHit::Inside(intent)
+    } else {
+        ProfileHit::Outside
+    })
+}
 
 pub struct SketchEvaluationFeed {
     scope: EntityId,
     generation: u64,
     desired: Arc<AtomicU64>,
+    query_factory: RegionQueryFactory,
+    queries_generation: u64,
+    query_configured: bool,
+    refresh_queries: bool,
+    pick_generation: u64,
+    pick_desired: Arc<AtomicU64>,
+    pick_expected: Option<(ProfilePickStamp, [f64; 2])>,
+    pick_reply: Option<ProfilePickReply>,
+    active_pick: Option<ProfilePickStamp>,
+    queued_pick: Option<PickJob>,
     source: Option<SourceSnapshot>,
     report: Option<(ReferenceStamp, Arc<ReferenceReport>)>,
     expected: Option<EvaluationStamp>,
@@ -241,6 +365,7 @@ impl Default for SketchEvaluationFeed {
 impl Drop for SketchEvaluationFeed {
     fn drop(&mut self) {
         self.desired.store(u64::MAX, Ordering::Release);
+        self.pick_desired.store(u64::MAX, Ordering::Release);
     }
 }
 impl SketchEvaluationFeed {
@@ -249,6 +374,16 @@ impl SketchEvaluationFeed {
             scope: EntityId::new(),
             generation: 0,
             desired: Arc::new(AtomicU64::new(0)),
+            query_factory: Arc::new(|| Ok(Box::new(AnalyticQueries))),
+            queries_generation: 0,
+            query_configured: false,
+            refresh_queries: false,
+            pick_generation: 0,
+            pick_desired: Arc::new(AtomicU64::new(0)),
+            pick_expected: None,
+            pick_reply: None,
+            active_pick: None,
+            queued_pick: None,
             source: None,
             report: None,
             expected: None,
@@ -262,6 +397,26 @@ impl SketchEvaluationFeed {
             retained_document: None,
             failures: BTreeMap::new(),
             error: None,
+        }
+    }
+    pub fn has_query_factory(&self) -> bool {
+        self.query_configured
+    }
+    /// Configuring an exact service invalidates current regions/picks even when
+    /// the source revision is unchanged. The next sync reuses its cached hash.
+    pub fn set_query_factory(&mut self, factory: RegionQueryFactory) {
+        self.query_factory = factory;
+        self.query_configured = true;
+        self.refresh_queries = true;
+        self.current.clear();
+        self.expected = None;
+        self.queued = None;
+        self.failures.clear();
+        self.desired.store(u64::MAX, Ordering::Release);
+        self.cancel_profile_pick();
+        match self.queries_generation.checked_add(1) {
+            Some(next) => self.queries_generation = next,
+            None => self.error = Some("Region query configuration limit reached".into()),
         }
     }
     /// A document/revision pair identifies immutable Session source. Cloning
@@ -318,9 +473,11 @@ impl SketchEvaluationFeed {
                 .as_ref()
                 .zip(references.as_ref())
                 .is_some_and(|((_, old), (_, new))| old.as_ref() != new);
-        if !source_changed && !context_changed && !changed_report {
+        if !source_changed && !context_changed && !changed_report && !self.refresh_queries {
             return;
         }
+        self.refresh_queries = false;
+        self.cancel_profile_pick();
         self.current.clear();
         self.failures.clear();
         self.queued = None;
@@ -372,6 +529,7 @@ impl SketchEvaluationFeed {
             revision,
             source_hash: source.hash,
             references: self.report.as_ref().map(|(s, _)| *s),
+            queries_generation: self.queries_generation,
         };
         self.expected = Some(stamp);
         if source.constrained.is_empty() {
@@ -381,25 +539,43 @@ impl SketchEvaluationFeed {
             stamp,
             source,
             report: self.report.as_ref().map(|(_, r)| r.clone()),
+            queries: self.query_factory.clone(),
         });
         self.dispatch();
     }
     fn dispatch(&mut self) {
-        if self.active.is_some() || self.queued.is_none() || self.error.is_some() {
+        if self.active.is_some()
+            || self.active_pick.is_some()
+            || (self.queued.is_none() && self.queued_pick.is_none())
+            || self.error.is_some()
+        {
             return;
         }
         if self.worker.is_none() {
-            match (self.start)(self.evaluator.clone(), self.desired.clone()) {
+            match (self.start)(
+                self.evaluator.clone(),
+                self.desired.clone(),
+                self.pick_desired.clone(),
+            ) {
                 Ok(worker) => self.worker = Some(worker),
                 Err(error) => {
                     self.error = Some(error);
                     self.queued = None;
+                    self.cancel_profile_pick();
                     return;
                 }
             }
         }
-        let job = self.queued.take().expect("queued job");
-        let stamp = job.stamp;
+        // Model evaluation always precedes a queued hover/click query.
+        let job = if let Some(job) = self.queued.take() {
+            Work::Evaluate(job)
+        } else {
+            Work::Classify(self.queued_pick.take().expect("queued pick"))
+        };
+        let active = match &job {
+            Work::Evaluate(job) => (Some(job.stamp), None),
+            Work::Classify(job) => (None, Some(job.stamp)),
+        };
         match self
             .worker
             .as_ref()
@@ -407,11 +583,16 @@ impl SketchEvaluationFeed {
             .requests
             .try_send(job)
         {
-            Ok(()) => self.active = Some(stamp),
-            Err(TrySendError::Full(job)) => self.queued = Some(job),
+            Ok(()) => {
+                self.active = active.0;
+                self.active_pick = active.1;
+            }
+            Err(TrySendError::Full(Work::Evaluate(job))) => self.queued = Some(job),
+            Err(TrySendError::Full(Work::Classify(job))) => self.queued_pick = Some(job),
             Err(TrySendError::Disconnected(_)) => {
                 self.error = Some("Sketch evaluation worker disconnected".into());
                 self.worker = None;
+                self.cancel_profile_pick();
             }
         }
     }
@@ -420,18 +601,27 @@ impl SketchEvaluationFeed {
     pub fn poll(&mut self) -> bool {
         let reply = self.worker.as_ref().map(|w| w.replies.try_recv());
         let changed = match reply {
-            Some(Ok(reply)) => {
+            Some(Ok(WorkReply::Evaluation(reply))) => {
                 if self.active == Some(reply.stamp) {
                     self.active = None;
                 }
                 self.publish(reply);
                 true
             }
+            Some(Ok(WorkReply::Pick(reply))) => {
+                if self.active_pick == Some(reply.stamp) {
+                    self.active_pick = None;
+                }
+                self.publish_pick(reply);
+                true
+            }
             Some(Err(TryRecvError::Disconnected)) => {
                 self.worker = None;
                 self.active = None;
+                self.active_pick = None;
                 self.queued = None;
                 self.current.clear();
+                self.cancel_profile_pick();
                 self.error = Some("Sketch evaluation worker disconnected".into());
                 true
             }
@@ -509,12 +699,95 @@ impl SketchEvaluationFeed {
         self.error.as_deref()
     }
     pub fn pending(&self) -> bool {
+        self.geometry_pending() || self.pick_pending()
+    }
+    pub fn geometry_pending(&self) -> bool {
         self.active.is_some() || self.queued.is_some()
+    }
+    pub fn pick_pending(&self) -> bool {
+        self.active_pick.is_some() || self.queued_pick.is_some()
+    }
+    /// Points use the current sketch's local millimeter coordinates. A retained
+    /// last-valid presentation is never eligible for native profile picking.
+    pub fn request_profile_pick(
+        &mut self,
+        sketch: EntityId,
+        point_mm: [f64; 2],
+    ) -> Option<ProfilePickStamp> {
+        if point_mm.iter().any(|v| !v.is_finite() || v.abs() > 1e9) {
+            self.cancel_profile_pick();
+            return None;
+        }
+        let Some(presentation) = self.current.get(&sketch) else {
+            self.cancel_profile_pick();
+            return None;
+        };
+        if let Some((stamp, point)) = self.pick_expected
+            && stamp.evaluation == presentation.stamp
+            && stamp.sketch == sketch
+            && point == point_mm
+        {
+            return Some(stamp);
+        }
+        let Some(generation) = self
+            .pick_generation
+            .checked_add(1)
+            .filter(|g| *g != u64::MAX)
+        else {
+            self.cancel_profile_pick();
+            return None;
+        };
+        self.pick_generation = generation;
+        self.pick_desired.store(generation, Ordering::Release);
+        let stamp = ProfilePickStamp {
+            evaluation: presentation.stamp,
+            sketch,
+            generation,
+        };
+        let regions = presentation.regions.clone();
+        self.pick_expected = Some((stamp, point_mm));
+        self.pick_reply = None;
+        self.queued_pick = Some(PickJob {
+            stamp,
+            point_mm,
+            regions,
+            queries: self.query_factory.clone(),
+        });
+        self.dispatch();
+        Some(stamp)
+    }
+    fn publish_pick(&mut self, reply: ProfilePickReply) {
+        if self.pick_expected != Some((reply.stamp, reply.point_mm))
+            || self
+                .current
+                .get(&reply.stamp.sketch)
+                .is_none_or(|p| p.stamp != reply.stamp.evaluation)
+            || self.expected != Some(reply.stamp.evaluation)
+        {
+            return;
+        }
+        self.pick_reply = Some(reply);
+    }
+    pub fn profile_pick(&self) -> Option<&ProfilePickReply> {
+        self.pick_reply.as_ref().filter(|reply| {
+            self.pick_expected == Some((reply.stamp, reply.point_mm))
+                && self
+                    .current
+                    .get(&reply.stamp.sketch)
+                    .is_some_and(|p| p.stamp == reply.stamp.evaluation)
+                && self.expected == Some(reply.stamp.evaluation)
+        })
+    }
+    pub fn cancel_profile_pick(&mut self) {
+        self.pick_desired.store(u64::MAX, Ordering::Release);
+        self.queued_pick = None;
+        self.pick_expected = None;
+        self.pick_reply = None;
     }
     pub fn status(&self) -> EvaluationStatus {
         if self.error.is_some() {
             EvaluationStatus::Failed
-        } else if self.pending() {
+        } else if self.geometry_pending() {
             EvaluationStatus::Pending
         } else if self.expected.is_none() {
             EvaluationStatus::Idle
@@ -526,9 +799,10 @@ impl SketchEvaluationFeed {
     }
     pub fn retry(&mut self) {
         self.desired.store(u64::MAX, Ordering::Release);
+        self.cancel_profile_pick();
         // A cooperative cancellation can finish later. Keep that worker until
         // its reply is drained rather than starting a second concurrent solve.
-        if self.active.is_none() {
+        if self.active.is_none() && self.active_pick.is_none() {
             self.worker = None;
         }
         self.queued = None;
@@ -1126,7 +1400,7 @@ mod tests {
         assert_eq!(feed.status(), EvaluationStatus::Ready);
         assert!(feed.worker.is_none() && !feed.pending());
         let (session, id, _) = setup();
-        feed.start = Arc::new(|_, _| Err("Controlled startup failure".into()));
+        feed.start = Arc::new(|_, _, _| Err("Controlled startup failure".into()));
         sync(&mut feed, &session);
         assert!(!feed.pending());
         assert_eq!(feed.error(), Some("Controlled startup failure"));
@@ -1168,6 +1442,340 @@ mod tests {
         drain(&mut feed);
         assert!(feed.current(id).is_none() && feed.last_valid(id).is_none());
         assert!(feed.errors().is_empty());
+        assert_eq!(feed.status(), EvaluationStatus::Ready);
+    }
+
+    fn spline_fixture() -> (Session, EntityId) {
+        use multicad_core::constraint_sketch::{Curve, CurveKind, SplineBasis};
+        let (id, edits) = Source::create(Datum::Xy, "Quarter disc").unwrap();
+        let doc = Document::new("Exact queries")
+            .unwrap()
+            .edited(&edits)
+            .unwrap();
+        let (mut source, _, _) = Source::read(&doc, id).unwrap();
+        let poles = vec![
+            source.add_point([10., 0.]),
+            source.add_point([10., 10.]),
+            source.add_point([0., 10.]),
+        ];
+        let mut basis = SplineBasis::open_uniform(2, 3).unwrap();
+        basis.weights = Some(vec![1., std::f64::consts::FRAC_1_SQRT_2, 1.]);
+        let center = source.add_point([0., 0.]);
+        source.sketch.curves.push(Curve {
+            id: EntityId::new(),
+            construction: false,
+            kind: CurveKind::BSpline {
+                poles: poles.clone(),
+                basis,
+            },
+        });
+        source.add_line(poles[2], center);
+        source.add_line(center, poles[0]);
+        (
+            Session::new(doc.edited(&source.replace(&doc, id).unwrap()).unwrap()).unwrap(),
+            id,
+        )
+    }
+    #[test]
+    fn exact_factory_and_spline_profile_queries_run_on_worker_with_stamped_configuration() {
+        let (session, id) = spline_fixture();
+        let original = session.document().clone();
+        let main_thread = std::thread::current().id();
+        let threads = Arc::new(Mutex::new(vec![]));
+        let observed = threads.clone();
+        let mut feed = SketchEvaluationFeed::default();
+        assert!(!feed.has_query_factory());
+        sync(&mut feed, &session);
+        drain(&mut feed);
+        assert!(feed.current(id).unwrap().regions.regions.is_empty());
+        feed.request_profile_pick(id, [3., 3.]).unwrap();
+        drain(&mut feed);
+        assert!(
+            feed.profile_pick().unwrap().result.is_err(),
+            "Missing exact service must not claim outside or choose sampled geometry"
+        );
+        let previous = feed.current(id).unwrap().stamp;
+        let snapshot = feed.source.as_ref().unwrap().document.clone();
+        feed.set_query_factory(Arc::new(move || {
+            observed.lock().unwrap().push(std::thread::current().id());
+            Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
+        }));
+        assert!(feed.has_query_factory());
+        assert!(feed.current(id).is_none() && feed.profile_pick().is_none());
+        sync(&mut feed, &session);
+        drain(&mut feed);
+        assert!(Arc::ptr_eq(
+            &snapshot,
+            &feed.source.as_ref().unwrap().document
+        ));
+        let current = feed.current(id).unwrap();
+        assert_ne!(
+            previous.queries_generation,
+            current.stamp.queries_generation
+        );
+        assert_eq!(current.regions.regions.len(), 1);
+        near(
+            current.regions.regions[0].area_mm2,
+            25. * std::f64::consts::PI,
+        );
+        for (point, expected) in [([3., 3.], 0), ([9., 9.], 1), ([0., 5.], 2)] {
+            let stamp = feed.request_profile_pick(id, point).unwrap();
+            assert!(feed.profile_pick().is_none());
+            drain(&mut feed);
+            let reply = feed.profile_pick().unwrap();
+            assert_eq!(reply.stamp, stamp);
+            assert_eq!(reply.point_mm, point);
+            match expected {
+                0 => assert!(matches!(reply.result, Ok(ProfileHit::Inside(_)))),
+                1 => assert_eq!(reply.result, Ok(ProfileHit::Outside)),
+                _ => assert_eq!(reply.result, Ok(ProfileHit::Boundary)),
+            };
+        }
+        assert_eq!(session.document(), &original);
+        let threads = threads.lock().unwrap();
+        assert!(threads.len() >= 4);
+        assert!(
+            threads
+                .iter()
+                .all(|id| *id != main_thread && *id == threads[0])
+        );
+    }
+    struct QueryControl {
+        hold: std::sync::atomic::AtomicBool,
+        started: SyncSender<[f64; 2]>,
+        release: Mutex<Receiver<()>>,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+    }
+    struct ControlledQueries(Arc<QueryControl>);
+    impl RegionQueries for ControlledQueries {
+        fn intersections(
+            &self,
+            a: &multicad_core::sketch_regions::ExactCurve,
+            b: &multicad_core::sketch_regions::ExactCurve,
+            t: f64,
+        ) -> Result<
+            multicad_core::sketch_regions::CurveHits,
+            multicad_core::sketch_regions::QueryError,
+        > {
+            AnalyticQueries.intersections(a, b, t)
+        }
+        fn self_intersections(
+            &self,
+            c: &multicad_core::sketch_regions::ExactCurve,
+            t: f64,
+        ) -> Result<
+            multicad_core::sketch_regions::CurveHits,
+            multicad_core::sketch_regions::QueryError,
+        > {
+            AnalyticQueries.self_intersections(c, t)
+        }
+        fn signed_area(
+            &self,
+            e: &[multicad_core::sketch_regions::Edge],
+            t: f64,
+        ) -> Result<f64, multicad_core::sketch_regions::QueryError> {
+            AnalyticQueries.signed_area(e, t)
+        }
+        fn classify_boundary(
+            &self,
+            e: &[multicad_core::sketch_regions::Edge],
+            p: [f64; 2],
+            t: f64,
+        ) -> Result<PointLocation, multicad_core::sketch_regions::QueryError> {
+            if self.0.hold.load(Ordering::Acquire) {
+                let count = self.0.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.0.peak.fetch_max(count, Ordering::SeqCst);
+                self.0.started.send(p).unwrap();
+                self.0
+                    .release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|e| multicad_core::sketch_regions::QueryError {
+                        message: e.to_string(),
+                    })?;
+                self.0.active.fetch_sub(1, Ordering::SeqCst);
+            }
+            AnalyticQueries.classify_boundary(e, p, t)
+        }
+    }
+    #[test]
+    fn profile_jobs_coalesce_on_the_same_worker_and_new_source_never_publishes_old_pick() {
+        let (mut session, id, width) = setup();
+        let (started, observed) = mpsc::sync_channel(8);
+        let (release, held) = mpsc::sync_channel(1);
+        let control = Arc::new(QueryControl {
+            hold: std::sync::atomic::AtomicBool::new(false),
+            started,
+            release: Mutex::new(held),
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        });
+        let service = control.clone();
+        let mut feed = SketchEvaluationFeed::default();
+        feed.set_query_factory(Arc::new(move || {
+            Ok(Box::new(ControlledQueries(service.clone())))
+        }));
+        sync(&mut feed, &session);
+        drain(&mut feed);
+        control.hold.store(true, Ordering::Release);
+        let first = feed.request_profile_pick(id, [10., 10.]).unwrap();
+        assert_eq!(
+            observed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            [10., 10.]
+        );
+        feed.request_profile_pick(id, [1000., 1000.]).unwrap();
+        let latest = feed.request_profile_pick(id, [20., 10.]).unwrap();
+        assert_eq!(feed.active_pick, Some(first));
+        assert_eq!(feed.queued_pick.as_ref().unwrap().stamp, latest);
+        assert!(feed.profile_pick().is_none());
+        assert_eq!(observed.try_recv(), Err(TryRecvError::Empty));
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            feed.poll();
+            if let Ok(point) = observed.try_recv() {
+                assert_eq!(point, [20., 10.]);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(feed.profile_pick().is_none());
+        release.send(()).unwrap();
+        drain(&mut feed);
+        assert_eq!(feed.profile_pick().unwrap().stamp, latest);
+        assert!(matches!(
+            feed.profile_pick().unwrap().result,
+            Ok(ProfileHit::Inside(_))
+        ));
+        feed.request_profile_pick(id, [15., 10.]).unwrap();
+        assert_eq!(
+            observed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            [15., 10.]
+        );
+        change_width(&mut session, width, "120");
+        sync(&mut feed, &session);
+        assert!(feed.current(id).is_none() && feed.profile_pick().is_none());
+        assert!(feed.request_profile_pick(id, [10., 10.]).is_none());
+        release.send(()).unwrap();
+        control.hold.store(false, Ordering::Release);
+        drain(&mut feed);
+        near(feed.current(id).unwrap().regions.regions[0].area_mm2, 2400.);
+        assert!(feed.profile_pick().is_none());
+        let stamp = feed.request_profile_pick(id, [100., 10.]).unwrap();
+        drain(&mut feed);
+        assert_eq!(feed.profile_pick().unwrap().stamp, stamp);
+        assert!(matches!(
+            feed.profile_pick().unwrap().result,
+            Ok(ProfileHit::Inside(_))
+        ));
+        assert_eq!(control.peak.load(Ordering::SeqCst), 1);
+        assert_eq!(feed.status(), EvaluationStatus::Ready);
+    }
+    #[test]
+    fn profile_scope_pointer_hash_and_cancellation_guards_do_not_reuse_old_selection() {
+        let (session, id, _) = setup();
+        let mut feed = SketchEvaluationFeed::default();
+        sync(&mut feed, &session);
+        drain(&mut feed);
+        let stamp = feed.request_profile_pick(id, [10., 10.]).unwrap();
+        drain(&mut feed);
+        assert_eq!(feed.request_profile_pick(id, [10., 10.]), Some(stamp));
+        assert!(
+            !feed.pending(),
+            "Stable pointer paints reuse the stamped exact result"
+        );
+        assert!(matches!(
+            feed.profile_pick().unwrap().result,
+            Ok(ProfileHit::Inside(_))
+        ));
+        for bad in [
+            ProfilePickStamp {
+                generation: stamp.generation + 1,
+                ..stamp
+            },
+            ProfilePickStamp {
+                sketch: EntityId::new(),
+                ..stamp
+            },
+            ProfilePickStamp {
+                evaluation: EvaluationStamp {
+                    source_hash: ContentHash::of(b"foreign"),
+                    ..stamp.evaluation
+                },
+                ..stamp
+            },
+            ProfilePickStamp {
+                evaluation: EvaluationStamp {
+                    scope: EntityId::new(),
+                    ..stamp.evaluation
+                },
+                ..stamp
+            },
+            ProfilePickStamp {
+                evaluation: EvaluationStamp {
+                    queries_generation: stamp.evaluation.queries_generation + 1,
+                    ..stamp.evaluation
+                },
+                ..stamp
+            },
+            ProfilePickStamp {
+                evaluation: EvaluationStamp {
+                    revision: stamp.evaluation.revision + 1,
+                    ..stamp.evaluation
+                },
+                ..stamp
+            },
+        ] {
+            feed.publish_pick(ProfilePickReply {
+                stamp: bad,
+                point_mm: [10., 10.],
+                result: Ok(ProfileHit::Outside),
+            });
+            assert_eq!(feed.profile_pick().unwrap().stamp, stamp);
+        }
+        feed.publish_pick(ProfilePickReply {
+            stamp,
+            point_mm: [11., 10.],
+            result: Ok(ProfileHit::Outside),
+        });
+        assert_eq!(feed.profile_pick().unwrap().point_mm, [10., 10.]);
+        feed.cancel_profile_pick();
+        assert!(feed.profile_pick().is_none());
+        feed.publish_pick(ProfilePickReply {
+            stamp,
+            point_mm: [10., 10.],
+            result: Ok(ProfileHit::Outside),
+        });
+        assert!(feed.profile_pick().is_none());
+        assert!(feed.request_profile_pick(id, [f64::NAN, 0.]).is_none());
+        assert!(feed.current(id).is_some());
+    }
+    #[test]
+    fn classification_service_failure_is_explicit_and_does_not_discard_valid_geometry() {
+        let (session, id, _) = setup();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let mut feed = SketchEvaluationFeed::default();
+        feed.set_query_factory(Arc::new(move || {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(Box::new(AnalyticQueries))
+            } else {
+                Err("Controlled query service failure".into())
+            }
+        }));
+        sync(&mut feed, &session);
+        drain(&mut feed);
+        feed.request_profile_pick(id, [10., 10.]).unwrap();
+        drain(&mut feed);
+        assert_eq!(
+            feed.profile_pick().unwrap().result,
+            Err("Controlled query service failure".into())
+        );
+        assert!(feed.current(id).is_some());
+        assert!(feed.error().is_none());
         assert_eq!(feed.status(), EvaluationStatus::Ready);
     }
 }

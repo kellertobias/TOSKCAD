@@ -3,12 +3,13 @@ use crate::{icons::Icon, sketch_editor::DrawTool};
 use multicad_core::sketch_draw::{DrawInput, DrawRequest, PointInput};
 
 impl DrawTool {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Line,
         Self::Rectangle,
         Self::Circle,
         Self::Arc,
         Self::Polyline,
+        Self::Spline,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -17,6 +18,7 @@ impl DrawTool {
             Self::Circle => "circle",
             Self::Arc => "arc",
             Self::Polyline => "polyline",
+            Self::Spline => "spline",
         }
     }
     pub fn label(self) -> &'static str {
@@ -26,6 +28,7 @@ impl DrawTool {
             Self::Circle => "Circle",
             Self::Arc => "Arc",
             Self::Polyline => "Polyline",
+            Self::Spline => "Spline",
         }
     }
     pub fn icon(self) -> Icon {
@@ -35,6 +38,7 @@ impl DrawTool {
             Self::Circle => Icon::Circle,
             Self::Arc => Icon::Arc,
             Self::Polyline => Icon::Polyline,
+            Self::Spline => Icon::Spline,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -44,6 +48,7 @@ impl DrawTool {
             Self::Circle => &["circle"],
             Self::Arc => &["arc"],
             Self::Polyline => &["polyline"],
+            Self::Spline => &["spline", "bspline"],
         }
     }
     pub fn usage(self) -> &'static str {
@@ -53,6 +58,7 @@ impl DrawTool {
             Self::Circle => "circle <cx> <cy> <radius> (mm)",
             Self::Arc => "arc <cx> <cy> <sx> <sy> <ex> <ey> [cw] (mm)",
             Self::Polyline => "polyline <x1> <y1> <x2> <y2> ... [closed] (mm)",
+            Self::Spline => "spline <x1> <y1> ... <x4> <y4> ... [closed] (cubic control poles, mm)",
         }
     }
     /// Syntax and finite numeric input are checked here. The shared drawing
@@ -77,7 +83,7 @@ impl DrawTool {
                 7 if args[6].eq_ignore_ascii_case("cw") => (&args[..6], true),
                 _ => return Err(usage()),
             },
-            Self::Polyline => {
+            Self::Polyline | Self::Spline => {
                 let closed = args
                     .last()
                     .is_some_and(|s| s.eq_ignore_ascii_case("closed"));
@@ -87,7 +93,14 @@ impl DrawTool {
                     args
                 };
                 if coordinates.len() % 2 != 0
-                    || coordinates.len() < if closed { 6 } else { 4 }
+                    || coordinates.len()
+                        < if self == Self::Spline {
+                            8
+                        } else if closed {
+                            6
+                        } else {
+                            4
+                        }
                     || coordinates.len() > 1024
                 {
                     return Err(usage());
@@ -131,6 +144,15 @@ impl DrawTool {
                 vertices: (0..values.len()).step_by(2).map(point).collect(),
                 closed: flag,
             },
+            Self::Spline => DrawInput::BSpline {
+                poles: (0..values.len()).step_by(2).map(point).collect(),
+                basis: multicad_core::constraint_sketch::SplineBasis::open_uniform(
+                    3,
+                    values.len() / 2 + usize::from(flag),
+                )
+                .map_err(|e| e.to_string())?,
+                closed: flag,
+            },
         };
         Ok(DrawRequest {
             input,
@@ -147,6 +169,10 @@ mod tests {
             (DrawTool::Line, vec!["-1", "2", "3.5", "4"]),
             (DrawTool::Rectangle, vec!["0", "0", "40", "20"]),
             (DrawTool::Circle, vec!["10", "20", "5"]),
+            (
+                DrawTool::Spline,
+                vec!["0", "0", "0", "30", "40", "30", "40", "0"],
+            ),
             (DrawTool::Arc, vec!["0", "0", "10", "0", "0", "10", "CW"]),
             (
                 DrawTool::Polyline,
@@ -167,6 +193,15 @@ mod tests {
                 DrawInput::Polyline { vertices, closed } => {
                     assert!(closed);
                     assert_eq!(vertices.len(), 3);
+                }
+                DrawInput::BSpline {
+                    poles,
+                    basis,
+                    closed,
+                } => {
+                    assert_eq!(poles.len(), 4);
+                    assert_eq!(basis.degree, 3);
+                    assert!(!closed);
                 }
                 _ => {}
             }
@@ -195,6 +230,10 @@ mod tests {
             (DrawTool::Line, vec!["0", "0", "1"]),
             (DrawTool::Rectangle, vec!["0", "0", "1", "1", "extra"]),
             (DrawTool::Circle, vec!["0", "0", "NaN"]),
+            (
+                DrawTool::Spline,
+                vec!["0", "0", "0", "30", "40", "30", "closed"],
+            ),
             (DrawTool::Arc, vec!["0", "0", "10", "0", "0", "10", "typo"]),
             (DrawTool::Polyline, vec!["0", "0", "10", "0", "closed"]),
             (DrawTool::Polyline, vec!["0", "0", "10", "0", "20"]),

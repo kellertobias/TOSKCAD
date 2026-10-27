@@ -85,8 +85,8 @@ pub(crate) fn prepare_edit_seeded(
             message: e.to_string(),
         })
     })?;
-    let semantic = source.has_expressions()
-        || matches!(&target.data,multicad_core::document::EntityData::Sketch {definition,..} if definition.schema_version==2);
+    let semantic = source.minimum_schema_version() >= 2
+        || matches!(&target.data,multicad_core::document::EntityData::Sketch {definition,..} if (2..=3).contains(&definition.schema_version));
     if semantic {
         // One canonical source edit installs bindings and links. Solved RHS and
         // coordinates are returned independently, never serialized into source.

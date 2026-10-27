@@ -23,6 +23,12 @@ pub enum PointInput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DrawInput {
+    BSpline {
+        poles: Vec<PointInput>,
+        basis: crate::constraint_sketch::SplineBasis,
+        #[serde(default)]
+        closed: bool,
+    },
     Line {
         start: PointInput,
         end: PointInput,
@@ -162,6 +168,44 @@ pub fn draft(source: &Source, request: &DrawRequest) -> Result<DrawDraft, Docume
     let mut created = vec![];
     let construction = request.construction;
     match &request.input {
+        DrawInput::BSpline {
+            poles,
+            basis,
+            closed,
+        } => {
+            if poles.is_empty() {
+                return Err(invalid("Spline needs control poles"));
+            }
+            basis.validate(poles.len() + usize::from(*closed))?;
+            let mut positions: Vec<_> = poles
+                .iter()
+                .map(|p| point(&mut proposed, p))
+                .collect::<Result<_, _>>()?;
+            let first = positions[0].1;
+            if *closed && positions.first().map(|p| p.0) == positions.last().map(|p| p.0) {
+                return Err(invalid(
+                    "Closed spline input must omit the repeated final first pole",
+                ));
+            }
+            if positions
+                .iter()
+                .all(|(_, p)| distance(first, *p) < MIN_LENGTH_MM)
+            {
+                return Err(invalid("Spline control polygon is degenerate"));
+            }
+            if *closed {
+                positions.push(positions[0]);
+            }
+            append(
+                &mut proposed,
+                CurveKind::BSpline {
+                    poles: positions.iter().map(|(id, _)| *id).collect(),
+                    basis: basis.clone(),
+                },
+                construction,
+                &mut created,
+            );
+        }
         DrawInput::Line { start, end } => {
             let (start, a) = point(&mut proposed, start)?;
             let (end, b) = point(&mut proposed, end)?;

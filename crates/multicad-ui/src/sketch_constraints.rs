@@ -337,10 +337,15 @@ impl ConstraintEditor {
             .iter()
             .find(|c| c.id == element)
             .ok_or("Select a curve to dimension")?;
-        self.tool = match curve.kind {
-            model::CurveKind::Line { .. } => Tool::Length,
-            _ => Tool::Radius,
-        };
+        self.tool =
+            match curve.kind {
+                model::CurveKind::Line { .. } => Tool::Length,
+                model::CurveKind::BSpline { .. } => return Err(
+                    "Select spline control poles to add point distances or geometric constraints"
+                        .into(),
+                ),
+                _ => Tool::Radius,
+            };
         self.selection = vec![element];
         self.last_element = Some(element);
         Ok(())
@@ -616,6 +621,7 @@ impl ConstraintEditor {
                     model::CurveKind::Line { .. } => "Line",
                     model::CurveKind::Circle { .. } => "Circle",
                     model::CurveKind::Arc { .. } => "Arc",
+                    model::CurveKind::BSpline { .. } => "Spline",
                 };
                 if ui
                     .selectable_label(self.selected(c.id), format!("{name} {}", i + 1))

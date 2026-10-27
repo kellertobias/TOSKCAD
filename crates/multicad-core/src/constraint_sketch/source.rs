@@ -9,6 +9,10 @@ use crate::{
 use std::collections::BTreeSet;
 pub const TYPE: &str = "core.constrained_sketch";
 pub const V2_CAPABILITY: &str = "core.constrained_sketch.2";
+pub const V3_CAPABILITY: &str = "core.constrained_sketch.3";
+pub fn requires_v3(document: &Document) -> bool {
+    document.entities().any(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==TYPE&&definition.schema_version==3))
+}
 const DIMENSION_LINK_PREFIX: &str = "dimension/";
 pub fn requires_v2(document: &Document) -> bool {
     document.entities().any(|e|matches!(&e.data,EntityData::Sketch {definition,..} if definition.type_id==TYPE&&definition.schema_version==2))
@@ -34,6 +38,9 @@ impl Source {
         for g in legacy.geometry {
             let id = g.id();
             match g {
+                sketch::Geometry::BSpline { .. } => {
+                    return Err(invalid("Legacy sketches cannot contain schema-3 splines"));
+                }
                 sketch::Geometry::Line { a, b, .. } => {
                     let start = source.add_point(a);
                     let end = source.add_point(b);
@@ -116,9 +123,9 @@ impl Source {
     /// Render/query facade for both source providers. Never write this derived
     /// view back over a constrained sketch: edits use the solver transaction.
     pub fn display_geometry(&self) -> Result<Vec<sketch::Geometry>, DocumentError> {
-        if self.has_expressions() {
+        if self.has_expressions() || self.has_splines() {
             return Err(invalid(
-                "Parameter-driven sketch requires current evaluated geometry; authored point guesses are not a display or manufacturing result",
+                "Parameter-driven or spline sketch requires current evaluated geometry; authored point guesses are not a display or manufacturing result",
             ));
         }
         let p = |id| {
@@ -134,6 +141,11 @@ impl Source {
             .iter()
             .map(|c| {
                 Ok(match c.kind {
+                    CurveKind::BSpline { .. } => {
+                        return Err(invalid(
+                            "Spline display requires current evaluated pole geometry",
+                        ));
+                    }
                     CurveKind::Line { start, end } => sketch::Geometry::Line {
                         id: c.id,
                         a: p(start)?,
@@ -206,12 +218,15 @@ impl Source {
         Ok(lines[0])
     }
     pub fn from_definition(definition: &Definition) -> Result<Self, DocumentError> {
-        if definition.type_id != TYPE || !(1..=2).contains(&definition.schema_version) {
+        if definition.type_id != TYPE || !(1..=3).contains(&definition.schema_version) {
             return Err(invalid("Unsupported constrained sketch provider/version"));
         }
         let source: Self = serde_json::from_value(definition.data.clone())
             .map_err(|e| invalid(format!("Invalid constrained sketch source: {e}")))?;
         source.validate()?;
+        if source.has_splines() && definition.schema_version < 3 {
+            return Err(invalid("Spline curves require constrained sketch schema 3"));
+        }
         if definition.schema_version == 1 && source.has_expressions() {
             return Err(invalid(
                 "Parameter-driven dimensions require constrained sketch schema 2",
@@ -226,7 +241,7 @@ impl Source {
         self.validate()?;
         Ok(Definition {
             type_id: TYPE.into(),
-            schema_version: if self.has_expressions() { 2 } else { 1 },
+            schema_version: self.minimum_schema_version(),
             data: serde_json::to_value(self).map_err(|e| invalid(e.to_string()))?,
         })
     }
@@ -273,6 +288,13 @@ impl Source {
         }
         for curve in &self.sketch.curves {
             let refs = match curve.kind {
+                CurveKind::BSpline {
+                    ref poles,
+                    ref basis,
+                } => {
+                    basis.validate(poles.len())?;
+                    poles.clone()
+                }
                 CurveKind::Line { start, end } => vec![start, end],
                 CurveKind::Arc {
                     center, start, end, ..
@@ -383,9 +405,9 @@ impl Source {
             return Err(invalid("Select a sketch"));
         };
         let source = Self::from_definition(definition)?;
-        if definition.schema_version == 2 && !allow_semantic {
+        if definition.schema_version >= 2 && !allow_semantic {
             return Err(invalid(
-                "Constrained sketch schema 2 requires an EvaluatedSketch; raw authored geometry is unavailable",
+                "Constrained sketch schema 2 or 3 requires an EvaluatedSketch; raw authored geometry is unavailable",
             ));
         }
         let Some(EntityData::Plane { normal, .. }) = document.get(*plane).map(|e| &e.data) else {
@@ -414,8 +436,8 @@ impl Source {
         };
         let previous_version = definition.schema_version;
         *definition = self.definition()?;
-        if previous_version == 2 {
-            definition.schema_version = 2;
+        if definition.type_id == TYPE && (2..=3).contains(&previous_version) {
+            definition.schema_version = definition.schema_version.max(previous_version);
         }
         inputs.retain(|link| !link.role.starts_with(DIMENSION_LINK_PREFIX));
         inputs.extend(self.dimension_links());
@@ -426,6 +448,21 @@ impl Source {
             .constraints
             .iter()
             .any(|c| c.kind.dimension().is_some_and(|d| d.expression().is_some()))
+    }
+    pub fn has_splines(&self) -> bool {
+        self.sketch
+            .curves
+            .iter()
+            .any(|c| matches!(c.kind, CurveKind::BSpline { .. }))
+    }
+    pub fn minimum_schema_version(&self) -> u32 {
+        if self.has_splines() {
+            3
+        } else if self.has_expressions() {
+            2
+        } else {
+            1
+        }
     }
     pub fn dimension_links(&self) -> Vec<Link> {
         self.sketch

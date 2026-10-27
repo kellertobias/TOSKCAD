@@ -120,6 +120,7 @@ pub enum TrimErrorKind {
     InvalidContext,
     Unsolved,
     UnsupportedTarget,
+    UnsupportedBoundary,
     InvalidRequest,
     InvalidGeometry,
     InvalidPick,
@@ -162,6 +163,7 @@ pub fn canonical_hash(source: &Source) -> Result<ContentHash, TrimError> {
 }
 fn points(curve: &Curve) -> Vec<EntityId> {
     match curve.kind {
+        CurveKind::BSpline { ref poles, .. } => poles.clone(),
         CurveKind::Line { start, end } => vec![start, end],
         CurveKind::Circle { center, .. } => vec![center],
         CurveKind::Arc {
@@ -336,6 +338,13 @@ fn contacts(
         let mut candidates = vec![];
         validate_boundary(sketch, curve, tolerance)?;
         match curve.kind {
+            CurveKind::BSpline { .. } => {
+                return Err(fail(
+                    TrimErrorKind::UnsupportedBoundary,
+                    "Spline trim boundaries require a dedicated exact curve editing operation",
+                    [request.target(), *id],
+                ));
+            }
             CurveKind::Line { start, end } => {
                 let a = point(sketch, start);
                 let b = point(sketch, end);
@@ -457,6 +466,13 @@ fn contacts(
                 ));
             }
             let residual = match curve.kind {
+                CurveKind::BSpline { .. } => {
+                    return Err(fail(
+                        TrimErrorKind::UnsupportedBoundary,
+                        "Spline trim boundaries are not supported by the analytic line trim increment",
+                        [*id],
+                    ));
+                }
                 CurveKind::Line { start, end } => {
                     let a = point(sketch, start);
                     let d = sub(point(sketch, end), a);

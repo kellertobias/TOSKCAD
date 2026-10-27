@@ -18,6 +18,7 @@ pub enum Icon {
     Circle,
     Arc,
     Polyline,
+    Spline,
     Construction,
     Box,
     Cut,
@@ -304,6 +305,31 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             for point in points {
                 circle(point[0], point[1], 1.2);
             }
+        }
+        Icon::Spline => {
+            let points: Vec<_> = (0..=24)
+                .map(|i| {
+                    let t = i as f32 / 24.;
+                    let s = 1. - t;
+                    [
+                        3. * s * s * s
+                            + 3. * 8. * s * s * t
+                            + 3. * 15. * s * t * t
+                            + 21. * t * t * t,
+                        18. * s * s * s
+                            + 3. * 1. * s * s * t
+                            + 3. * 23. * s * t * t
+                            + 6. * t * t * t,
+                    ]
+                })
+                .collect();
+            path(&points);
+            circle(3., 18., 1.2);
+            circle(21., 6., 1.2);
+            line([3., 18.], [8., 1.]);
+            line([15., 23.], [21., 6.]);
+            circle(8., 1., 1.);
+            circle(15., 23., 1.);
         }
         Icon::Construction => {
             for x in [2., 8., 14., 20.] {

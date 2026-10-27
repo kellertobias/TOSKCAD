@@ -39,7 +39,7 @@ fn main() -> ExitCode {
     };
     let build = BuildInfo::current();
     let result = match action {
-        Action::Run => multicad_ui::launch_with_storage(Box::new(files::ProjectStore::default())),
+        Action::Run => run_application(),
         Action::Help => {
             println!(
                 "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nIncludes Parameters and initial datum Sketch tools. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Solid modeling and MCP server remain under development.",
@@ -72,4 +72,12 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+fn run_application() -> Result<(), String> {
+    let mut app =
+        multicad_ui::application::Application::new(Box::new(files::ProjectStore::default()))?;
+    app.set_sketch_queries(std::sync::Arc::new(|| {
+        Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
+    }));
+    multicad_ui::launch_with(Box::new(move |_| Ok(Box::new(app))))
 }

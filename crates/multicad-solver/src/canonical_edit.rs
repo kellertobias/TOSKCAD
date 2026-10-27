@@ -8,7 +8,8 @@ use multicad_core::{
     references::ReferenceReport,
 };
 
-/// Prepare one schema-2 source transaction and its independent solved preview.
+/// Prepare one semantic source transaction and its independent solved preview.
+/// Schema 2 is the minimum; spline schema 3 remains sticky after introduction.
 /// A failed solve has diagnostics but no commit-capable preview. Callers using
 /// derived geometry must first validate that input against the current source.
 pub fn prepare_canonical_edit(
@@ -82,11 +83,18 @@ pub(crate) fn prepare_with(
     let mut edits = source
         .replace(session.document(), sketch)
         .map_err(|e| invalid(e.to_string()))?;
+    let schema = source
+        .minimum_schema_version()
+        .max(match &target.data {
+            EntityData::Sketch { definition, .. } => definition.schema_version,
+            _ => 2,
+        })
+        .max(2);
     for edit in &mut edits {
         if let Mutation::Replace(entity) = edit
             && let EntityData::Sketch { definition, .. } = &mut entity.data
         {
-            definition.schema_version = 2;
+            definition.schema_version = schema;
         }
     }
     let prepared = session

@@ -59,59 +59,19 @@ pub struct BSpline2d {
 impl BSpline2d {
     pub fn validate(&self, policy: GeometryPolicy) -> Result<(), GeometryError> {
         policy.validate()?;
-        if !(1..=25).contains(&self.degree)
-            || self.poles.len() < self.degree as usize + 1
-            || self.poles.len() > MAX_SPLINE_POLES
-            || self.knots.len() < 2
-            || self.knots.len() > MAX_SPLINE_POLES + 1
-            || self.knots.len() != self.multiplicities.len()
-        {
-            return Err(input("Invalid clamped spline degree, pole or knot counts"));
+        multicad_core::constraint_sketch::SplineBasis {
+            degree: self.degree,
+            knots: self.knots.clone(),
+            multiplicities: self.multiplicities.clone(),
+            weights: self.weights.clone(),
         }
+        .validate(self.poles.len())
+        .map_err(|e| input(e.to_string()))?;
         for point in &self.poles {
             policy.point([point[0], point[1], 0.])?;
         }
-        if self.knots.iter().any(|v| !v.is_finite() || v.abs() > 1e9)
-            || self.knots.windows(2).any(|p| p[1] - p[0] < 1e-12)
-        {
-            return Err(input(
-                "Spline knots must be finite, bounded and strictly increasing with a nonzero parameter range",
-            ));
-        }
-        if self.multiplicities[0] != self.degree + 1
-            || *self.multiplicities.last().expect("knots") != self.degree + 1
-            || self.multiplicities[1..self.multiplicities.len() - 1]
-                .iter()
-                .any(|m| *m == 0 || *m > self.degree)
-            || self
-                .multiplicities
-                .iter()
-                .map(|m| *m as usize)
-                .sum::<usize>()
-                != self.poles.len() + self.degree as usize + 1
-        {
-            return Err(input(
-                "Spline multiplicities must describe a nonperiodic clamped basis",
-            ));
-        }
-        if let Some(weights) = &self.weights {
-            if weights.len() != self.poles.len()
-                || weights
-                    .iter()
-                    .any(|w| !w.is_finite() || *w < 1e-9 || *w > 1e9)
-            {
-                return Err(input(
-                    "Spline weights must match poles and be finite positive values within 1e-9..1e9",
-                ));
-            }
-            let min = weights.iter().copied().fold(f64::INFINITY, f64::min);
-            let max = weights.iter().copied().fold(0., f64::max);
-            if max / min > 1e9 {
-                return Err(input("Spline weight ratio exceeds the conditioning budget"));
-            }
-        }
-        if self.poles.iter().all(|v| {
-            (v[0] - self.poles[0][0]).hypot(v[1] - self.poles[0][1]) < policy.minimum_feature_mm
+        if self.poles.iter().all(|p| {
+            (p[0] - self.poles[0][0]).hypot(p[1] - self.poles[0][1]) < policy.minimum_feature_mm
         }) {
             return Err(input("Spline control polygon is degenerate"));
         }
@@ -350,6 +310,20 @@ struct Checked {
     offsets: Vec<u32>,
 }
 impl CurvedProfile {
+    pub(crate) fn signed_area_mm2(&self, policy: GeometryPolicy) -> Result<f64, GeometryError> {
+        let c = self.checked(policy)?;
+        let area = ffi::curved_profile_signed_area(
+            &c.frame,
+            &c.edges,
+            &c.offsets,
+            policy.linear_tolerance_mm,
+        )
+        .map_err(native)?;
+        if !area.is_finite() || area.abs() < policy.minimum_feature_mm.powi(2) {
+            return Err(input("Curved profile has no finite bounded area"));
+        }
+        Ok(area)
+    }
     fn checked(&self, policy: GeometryPolicy) -> Result<Checked, GeometryError> {
         policy.validate()?;
         let frame = self.frame.checked(policy)?;

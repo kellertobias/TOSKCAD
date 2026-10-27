@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod binding;
 pub mod source;
+mod spline;
+pub use spline::{MAX_SPLINE_POLES, SplineBasis};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +31,10 @@ pub struct Curve {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CurveKind {
+    BSpline {
+        poles: Vec<EntityId>,
+        basis: SplineBasis,
+    },
     Line {
         start: EntityId,
         end: EntityId,

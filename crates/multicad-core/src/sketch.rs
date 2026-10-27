@@ -470,6 +470,11 @@ pub fn prepare_new(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Geometry {
+    BSpline {
+        id: EntityId,
+        poles: Vec<[f64; 2]>,
+        basis: crate::constraint_sketch::SplineBasis,
+    },
     Line {
         id: EntityId,
         a: [f64; 2],
@@ -497,6 +502,7 @@ impl Geometry {
     pub fn id(&self) -> EntityId {
         match self {
             Self::Line { id, .. }
+            | Self::BSpline { id, .. }
             | Self::Rectangle { id, .. }
             | Self::Circle { id, .. }
             | Self::Arc { id, .. } => *id,
@@ -504,6 +510,11 @@ impl Geometry {
     }
     pub fn segments(&self) -> Vec<[[f64; 2]; 2]> {
         match *self {
+            Self::BSpline {
+                ref poles,
+                ref basis,
+                ..
+            } => basis.display_segments(poles).unwrap_or_default(),
             Self::Line { a, b, .. } => vec![[a, b]],
             Self::Rectangle { a, b, .. } => {
                 let c = [b[0], a[1]];
@@ -537,6 +548,20 @@ impl Geometry {
         }
     }
     fn validate(&self) -> Result<(), DocumentError> {
+        if let Self::BSpline { id, poles, basis } = self {
+            if id.is_nil() {
+                return Err(invalid("Spline identity is nil"));
+            }
+            basis.validate(poles.len())?;
+            if poles
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || v.abs() > 1e9)
+            {
+                return Err(invalid("Invalid spline poles"));
+            }
+            return Ok(());
+        }
         if let Self::Circle {
             id,
             center,
@@ -696,6 +721,11 @@ impl Sketch {
         }
         let mut ids = BTreeSet::new();
         for g in &source.geometry {
+            if matches!(g, Geometry::BSpline { .. }) {
+                return Err(invalid(
+                    "Legacy sketch schema 1 cannot contain a schema-3 spline",
+                ));
+            }
             g.validate()?;
             if !ids.insert(g.id()) {
                 return Err(invalid("Duplicate sketch geometry identity"));

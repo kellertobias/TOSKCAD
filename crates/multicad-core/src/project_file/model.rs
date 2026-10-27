@@ -162,7 +162,9 @@ impl CacheKey {
     ) -> Result<Self, String> {
         dependencies.insert(
             "multicad.core.semantics".into(),
-            ContentHash::of(b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2"),
+            ContentHash::of(
+                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3",
+            ),
         );
         Ok(Self {
             source: ContentHash::document(document)?,
@@ -313,6 +315,9 @@ impl ProjectFile {
         if crate::constraint_sketch::source::requires_v2(&self.document) {
             required.insert(crate::constraint_sketch::source::V2_CAPABILITY.into());
         }
+        if crate::constraint_sketch::source::requires_v3(&self.document) {
+            required.insert(crate::constraint_sketch::source::V3_CAPABILITY.into());
+        }
         required
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -368,5 +373,6 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         "core.plane.offset.1".into(),
         crate::hierarchy::CAPABILITY.into(),
         crate::constraint_sketch::source::V2_CAPABILITY.into(),
+        crate::constraint_sketch::source::V3_CAPABILITY.into(),
     ])
 }

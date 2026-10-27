@@ -30,6 +30,10 @@ pub enum ExactCurve {
         b: Point,
         clockwise: bool,
     },
+    BSpline {
+        poles: Vec<Point>,
+        basis: crate::constraint_sketch::SplineBasis,
+    },
     Circle {
         center: Point,
         radius_mm: f64,
@@ -64,37 +68,163 @@ pub enum PointLocation {
     Boundary,
     Inside,
 }
-impl Region {
-    pub fn classify(&self, point: Point) -> PointLocation {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryError {
+    pub message: String,
+}
+impl std::fmt::Display for QueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for QueryError {}
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CurveHits {
+    pub points: Vec<Point>,
+    pub overlap: bool,
+}
+/// Exact predicates are injected by the application. Native implementations run
+/// on an evaluation worker; this boundary never accepts tessellated geometry.
+pub trait RegionQueries: Send + Sync {
+    fn tolerance_mm(&self) -> f64 {
+        DEFAULT_TOLERANCE_MM
+    }
+    /// Bound all-pairs predicate work before invoking a service. Applications
+    /// may split work into separate sketches; extraction never drops curves.
+    fn maximum_curves(&self, _contains_splines: bool) -> usize {
+        512
+    }
+    fn intersections(
+        &self,
+        a: &ExactCurve,
+        b: &ExactCurve,
+        tolerance_mm: f64,
+    ) -> Result<CurveHits, QueryError>;
+    fn self_intersections(
+        &self,
+        curve: &ExactCurve,
+        tolerance_mm: f64,
+    ) -> Result<CurveHits, QueryError>;
+    fn signed_area(&self, edges: &[Edge], tolerance_mm: f64) -> Result<f64, QueryError>;
+    fn classify_boundary(
+        &self,
+        edges: &[Edge],
+        point: Point,
+        tolerance_mm: f64,
+    ) -> Result<PointLocation, QueryError>;
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AnalyticQueries;
+fn analytic(curves: impl IntoIterator<Item = bool>) -> Result<(), QueryError> {
+    if curves.into_iter().any(|s| s) {
+        Err(QueryError {
+            message: "Spline profiles require an exact native region query service".into(),
+        })
+    } else {
+        Ok(())
+    }
+}
+impl RegionQueries for AnalyticQueries {
+    fn intersections(
+        &self,
+        a: &ExactCurve,
+        b: &ExactCurve,
+        tolerance_mm: f64,
+    ) -> Result<CurveHits, QueryError> {
+        analytic([a.is_spline(), b.is_spline()])?;
+        let hits = intersections(a, b, tolerance_mm);
+        Ok(CurveHits {
+            points: hits.points,
+            overlap: hits.overlap,
+        })
+    }
+    fn self_intersections(
+        &self,
+        curve: &ExactCurve,
+        _tolerance_mm: f64,
+    ) -> Result<CurveHits, QueryError> {
+        analytic([curve.is_spline()])?;
+        Ok(CurveHits::default())
+    }
+    fn signed_area(&self, edges: &[Edge], _tolerance_mm: f64) -> Result<f64, QueryError> {
+        analytic(edges.iter().map(|e| e.curve.is_spline()))?;
+        let origin = edges
+            .first()
+            .ok_or_else(|| QueryError {
+                message: "Boundary has no edges".into(),
+            })?
+            .curve
+            .ends()
+            .0;
+        Ok(edges.iter().map(|e| e.curve.area(origin)).sum())
+    }
+    fn classify_boundary(
+        &self,
+        edges: &[Edge],
+        point: Point,
+        tolerance_mm: f64,
+    ) -> Result<PointLocation, QueryError> {
+        analytic(edges.iter().map(|e| e.curve.is_spline()))?;
         if point.iter().any(|v| !v.is_finite()) {
-            return PointLocation::Outside;
+            return Err(QueryError {
+                message: "Classification point is nonfinite".into(),
+            });
         }
-        if std::iter::once(&self.outer)
-            .chain(&self.holes)
-            .flat_map(|b| &b.edges)
-            .any(|e| e.curve.contains(point, DEFAULT_TOLERANCE_MM))
-        {
-            return PointLocation::Boundary;
-        }
-        if self
-            .outer
-            .edges
-            .iter()
-            .map(|e| e.curve.winding(point))
-            .sum::<i32>()
-            != 0
-            && self
-                .holes
-                .iter()
-                .all(|h| h.edges.iter().map(|e| e.curve.winding(point)).sum::<i32>() == 0)
-        {
-            PointLocation::Inside
+        if edges.iter().any(|e| e.curve.contains(point, tolerance_mm)) {
+            Ok(PointLocation::Boundary)
+        } else if edges.iter().map(|e| e.curve.winding(point)).sum::<i32>() != 0 {
+            Ok(PointLocation::Inside)
         } else {
-            PointLocation::Outside
+            Ok(PointLocation::Outside)
         }
     }
-    pub fn contains(&self, point: Point) -> bool {
-        self.classify(point) == PointLocation::Inside
+}
+impl Region {
+    pub fn classify(&self, point: Point) -> Result<PointLocation, QueryError> {
+        self.classify_with_queries(point, &AnalyticQueries)
+    }
+    pub fn classify_with_queries(
+        &self,
+        point: Point,
+        queries: &dyn RegionQueries,
+    ) -> Result<PointLocation, QueryError> {
+        self.classify_with_queries_and_interrupt(point, queries, None)
+    }
+    /// Check cancellation around each exact boundary predicate. A predicate
+    /// already inside native code finishes on its current owner thread.
+    pub fn classify_with_queries_and_interrupt(
+        &self,
+        point: Point,
+        queries: &dyn RegionQueries,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PointLocation, QueryError> {
+        check_interrupt(interrupt)?;
+        let outer = queries.classify_boundary(&self.outer.edges, point, queries.tolerance_mm())?;
+        check_interrupt(interrupt)?;
+        if outer != PointLocation::Inside {
+            return Ok(outer);
+        }
+        for hole in &self.holes {
+            check_interrupt(interrupt)?;
+            let location = queries.classify_boundary(&hole.edges, point, queries.tolerance_mm())?;
+            check_interrupt(interrupt)?;
+            match location {
+                PointLocation::Boundary => return Ok(PointLocation::Boundary),
+                PointLocation::Inside => return Ok(PointLocation::Outside),
+                PointLocation::Outside => {}
+            }
+        }
+        Ok(PointLocation::Inside)
+    }
+    pub fn contains(&self, point: Point) -> Result<bool, QueryError> {
+        Ok(self.classify(point)? == PointLocation::Inside)
+    }
+    pub fn contains_with_queries(
+        &self,
+        point: Point,
+        queries: &dyn RegionQueries,
+    ) -> Result<bool, QueryError> {
+        Ok(self.classify_with_queries(point, queries)? == PointLocation::Inside)
     }
 }
 
@@ -133,6 +263,7 @@ impl Extraction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
     InvalidSource,
+    QueryFailure,
     DegenerateCurve,
     OpenBoundary,
     AmbiguousJunction,
@@ -179,9 +310,20 @@ fn along(a: Point, delta: Point, t: f64) -> Point {
 }
 
 impl ExactCurve {
+    fn is_spline(&self) -> bool {
+        matches!(self, Self::BSpline { .. })
+    }
+    fn closed(&self, tolerance: f64) -> bool {
+        matches!(self, Self::Circle { .. })
+            || (self.is_spline() && {
+                let (a, b) = self.ends();
+                distance(a, b) <= tolerance
+            })
+    }
     fn ends(&self) -> (Point, Point) {
         match *self {
             Self::Line { a, b } | Self::Arc { a, b, .. } => (a, b),
+            Self::BSpline { ref poles, .. } => (poles[0], *poles.last().expect("validated poles")),
             Self::Circle { center, radius_mm } => {
                 let p = [center[0] + radius_mm, center[1]];
                 (p, p)
@@ -190,7 +332,7 @@ impl ExactCurve {
     }
     fn circle(&self) -> Option<(Point, f64)> {
         match *self {
-            Self::Line { .. } => None,
+            Self::Line { .. } | Self::BSpline { .. } => None,
             Self::Arc { center, a, .. } => Some((center, distance(center, a))),
             Self::Circle { center, radius_mm } => Some((center, radius_mm)),
         }
@@ -219,6 +361,13 @@ impl ExactCurve {
     }
     fn reversed(&self) -> Self {
         match *self {
+            Self::BSpline {
+                ref poles,
+                ref basis,
+            } => Self::BSpline {
+                poles: poles.iter().copied().rev().collect(),
+                basis: basis.reversed(),
+            },
             Self::Line { a, b } => Self::Line { a: b, b: a },
             Self::Arc {
                 center,
@@ -236,6 +385,7 @@ impl ExactCurve {
     }
     fn area(&self, origin: Point) -> f64 {
         match *self {
+            Self::BSpline { .. } => unreachable!("analytic query service rejects splines"),
             Self::Line { a, b } => cross(sub(a, origin), sub(b, origin)) * 0.5,
             Self::Circle { radius_mm, .. } => std::f64::consts::PI * radius_mm * radius_mm,
             Self::Arc { center, a, b, .. } => {
@@ -249,6 +399,7 @@ impl ExactCurve {
     }
     fn contains(&self, p: Point, tolerance: f64) -> bool {
         match *self {
+            Self::BSpline { .. } => unreachable!("analytic query service rejects splines"),
             Self::Line { a, b } => {
                 let d = sub(b, a);
                 let length = distance(a, b);
@@ -280,13 +431,14 @@ impl ExactCurve {
         }
     }
     fn endpoint(&self, p: Point, tolerance: f64) -> bool {
-        !matches!(self, Self::Circle { .. }) && {
+        !self.closed(tolerance) && {
             let (a, b) = self.ends();
             distance(a, p) <= tolerance || distance(b, p) <= tolerance
         }
     }
     fn winding(&self, p: Point) -> i32 {
         match *self {
+            Self::BSpline { .. } => unreachable!("analytic query service rejects splines"),
             Self::Line { a, b } => {
                 if (a[1] <= p[1] && p[1] < b[1]) || (b[1] <= p[1] && p[1] < a[1]) {
                     let x = a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
@@ -448,18 +600,75 @@ pub fn extract_geometry(
     points: &[crate::constraint_sketch::Point],
     curves: &[crate::constraint_sketch::Curve],
 ) -> Extraction {
-    extract(&Source {
-        u: [1., 0., 0.],
-        sketch: crate::constraint_sketch::Sketch {
-            points: points.to_vec(),
-            curves: curves.to_vec(),
-            constraints: vec![],
+    extract_geometry_with_queries(points, curves, &AnalyticQueries)
+}
+pub fn extract_geometry_with_queries(
+    points: &[crate::constraint_sketch::Point],
+    curves: &[crate::constraint_sketch::Curve],
+    queries: &dyn RegionQueries,
+) -> Extraction {
+    extract_geometry_with_queries_and_interrupt(points, curves, queries, None)
+        .unwrap_or_else(extraction_error)
+}
+/// Cancellation is checked between bounded predicates; an active native call
+/// completes on its owning thread before the next cancellation check.
+pub fn extract_geometry_with_queries_and_interrupt(
+    points: &[crate::constraint_sketch::Point],
+    curves: &[crate::constraint_sketch::Curve],
+    queries: &dyn RegionQueries,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Extraction, QueryError> {
+    check_interrupt(interrupt)?;
+    extract_impl(
+        &Source {
+            u: [1., 0., 0.],
+            sketch: crate::constraint_sketch::Sketch {
+                points: points.to_vec(),
+                curves: curves.to_vec(),
+                constraints: vec![],
+            },
         },
-    })
+        queries.tolerance_mm(),
+        queries,
+        true,
+        interrupt,
+    )
+}
+fn extraction_error(e: QueryError) -> Extraction {
+    Extraction {
+        regions: vec![],
+        diagnostics: vec![diagnostic(Problem::QueryFailure, vec![], None, e.message)],
+    }
+}
+fn check_interrupt(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), QueryError> {
+    if interrupt.is_some_and(|f| f()) {
+        Err(QueryError {
+            message: "Sketch region extraction was cancelled".into(),
+        })
+    } else {
+        Ok(())
+    }
 }
 pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction {
-    if source.has_expressions() {
-        return Extraction {
+    extract_with_queries(source, tolerance_mm, &AnalyticQueries)
+}
+pub fn extract_with_queries(
+    source: &Source,
+    tolerance_mm: f64,
+    queries: &dyn RegionQueries,
+) -> Extraction {
+    extract_impl(source, tolerance_mm, queries, false, None).unwrap_or_else(extraction_error)
+}
+fn extract_impl(
+    source: &Source,
+    tolerance_mm: f64,
+    queries: &dyn RegionQueries,
+    evaluated_geometry: bool,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Extraction, QueryError> {
+    check_interrupt(interrupt)?;
+    if source.has_expressions() || (source.has_splines() && !evaluated_geometry) {
+        return Ok(Extraction {
             regions: vec![],
             diagnostics: vec![diagnostic(
                 Problem::InvalidSource,
@@ -467,10 +676,10 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
                 None,
                 "Parameter-driven profiles require current evaluated geometry",
             )],
-        };
+        });
     }
     if !tolerance_mm.is_finite() || !(1e-10..=1e-3).contains(&tolerance_mm) {
-        return Extraction {
+        return Ok(Extraction {
             regions: vec![],
             diagnostics: vec![diagnostic(
                 Problem::InvalidSource,
@@ -478,10 +687,10 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
                 None,
                 "Region tolerance must be between 1e-10 and 1e-3 mm",
             )],
-        };
+        });
     }
     if let Err(e) = source.validate() {
-        return Extraction {
+        return Ok(Extraction {
             regions: vec![],
             diagnostics: vec![diagnostic(
                 Problem::InvalidSource,
@@ -489,7 +698,7 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
                 None,
                 e.to_string(),
             )],
-        };
+        });
     }
     let point = |id| {
         source
@@ -509,6 +718,13 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
             authored: c.id,
             reversed: false,
             curve: match c.kind {
+                CurveKind::BSpline {
+                    ref poles,
+                    ref basis,
+                } => ExactCurve::BSpline {
+                    poles: poles.iter().map(|id| point(*id)).collect(),
+                    basis: basis.clone(),
+                },
                 CurveKind::Line { start, end } => ExactCurve::Line {
                     a: point(start),
                     b: point(end),
@@ -531,13 +747,28 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
             },
         })
         .collect();
+    if edges.len() > queries.maximum_curves(edges.iter().any(|e| e.curve.is_spline())) {
+        return Ok(Extraction {
+            regions: vec![],
+            diagnostics: vec![diagnostic(
+                Problem::QueryFailure,
+                edges.iter().map(|e| e.authored).collect(),
+                None,
+                "Sketch exceeds the exact region query service curve budget; split it into smaller sketches",
+            )],
+        });
+    }
     edges.sort_by_key(|e| e.authored);
     let mut diagnostics = vec![];
     let mut invalid_edges = BTreeSet::new();
     let mut degenerate = BTreeSet::new();
     for (i, edge) in edges.iter().enumerate() {
+        check_interrupt(interrupt)?;
         let (a, b) = edge.curve.ends();
         let invalid = match edge.curve {
+            ExactCurve::BSpline { ref poles, .. } => {
+                poles.iter().all(|p| distance(*p, poles[0]) <= tolerance_mm)
+            }
             ExactCurve::Line { .. } => distance(a, b) <= tolerance_mm,
             ExactCurve::Circle { radius_mm, .. } => radius_mm <= tolerance_mm,
             ExactCurve::Arc { center, .. } => {
@@ -560,7 +791,8 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
     let mut nodes: Vec<(Point, Vec<(usize, bool)>)> = vec![];
     let mut endpoints = vec![None; edges.len()];
     for (i, edge) in edges.iter().enumerate() {
-        if matches!(edge.curve, ExactCurve::Circle { .. }) {
+        check_interrupt(interrupt)?;
+        if edge.curve.closed(tolerance_mm) {
             continue;
         }
         let mut pair = [0; 2];
@@ -614,12 +846,53 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
             ));
         }
     }
+    for (i, edge) in edges.iter().enumerate() {
+        check_interrupt(interrupt)?;
+        match queries.self_intersections(&edge.curve, tolerance_mm) {
+            Ok(hits) if hits.overlap || !hits.points.is_empty() => {
+                invalid_edges.insert(i);
+                diagnostics.push(diagnostic(
+                    if hits.overlap {
+                        Problem::Overlap
+                    } else {
+                        Problem::Intersection
+                    },
+                    vec![edge.authored],
+                    hits.points.first().copied(),
+                    "Self-intersecting or overlapping curve cannot bound a region",
+                ));
+            }
+            Err(e) => {
+                invalid_edges.insert(i);
+                diagnostics.push(diagnostic(
+                    Problem::QueryFailure,
+                    vec![edge.authored],
+                    None,
+                    e.message,
+                ));
+            }
+            _ => {}
+        }
+    }
     for i in 0..edges.len() {
         for j in i + 1..edges.len() {
+            check_interrupt(interrupt)?;
             if degenerate.contains(&i) || degenerate.contains(&j) {
                 continue;
             }
-            let hits = intersections(&edges[i].curve, &edges[j].curve, tolerance_mm);
+            let hits = match queries.intersections(&edges[i].curve, &edges[j].curve, tolerance_mm) {
+                Ok(hits) => hits,
+                Err(e) => {
+                    invalid_edges.extend([i, j]);
+                    diagnostics.push(diagnostic(
+                        Problem::QueryFailure,
+                        vec![edges[i].authored, edges[j].authored],
+                        None,
+                        e.message,
+                    ));
+                    continue;
+                }
+            };
             if hits.overlap {
                 invalid_edges.extend([i, j]);
                 diagnostics.push(diagnostic(
@@ -658,6 +931,7 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
     let mut visited = BTreeSet::new();
     let mut boundaries = vec![];
     for seed in 0..edges.len() {
+        check_interrupt(interrupt)?;
         if visited.contains(&seed) || invalid_edges.contains(&seed) {
             continue;
         }
@@ -686,8 +960,28 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
             current = next;
             reversed = at_end;
         }
-        let origin = wire[0].curve.ends().0;
-        let area = wire.iter().map(|e| e.curve.area(origin)).sum::<f64>();
+        check_interrupt(interrupt)?;
+        let area = match queries.signed_area(&wire, tolerance_mm) {
+            Ok(area) if area.is_finite() => area,
+            Ok(_) => {
+                diagnostics.push(diagnostic(
+                    Problem::QueryFailure,
+                    wire.iter().map(|e| e.authored).collect(),
+                    None,
+                    "Exact boundary area is nonfinite",
+                ));
+                continue;
+            }
+            Err(e) => {
+                diagnostics.push(diagnostic(
+                    Problem::QueryFailure,
+                    wire.iter().map(|e| e.authored).collect(),
+                    None,
+                    e.message,
+                ));
+                continue;
+            }
+        };
         if area.abs() <= tolerance_mm * tolerance_mm {
             diagnostics.push(diagnostic(
                 Problem::DegenerateBoundary,
@@ -705,28 +999,74 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
             signed_area_mm2: area,
         });
     }
-    let parents: Vec<_> = boundaries
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let p = b.edges[0].curve.ends().0;
-            boundaries
-                .iter()
-                .enumerate()
-                .filter(|(j, c)| {
-                    *j != i
-                        && c.signed_area_mm2.abs() > b.signed_area_mm2.abs()
-                        && c.edges.iter().map(|e| e.curve.winding(p)).sum::<i32>() != 0
-                })
-                .min_by(|(_, a), (_, b)| {
-                    a.signed_area_mm2.abs().total_cmp(&b.signed_area_mm2.abs())
-                })
-                .map(|(j, _)| j)
-        })
-        .collect();
+    let mut parents = vec![None; boundaries.len()];
+    let mut invalid_boundaries = BTreeSet::new();
+    for (i, b) in boundaries.iter().enumerate() {
+        let p = b.edges[0].curve.ends().0;
+        let mut candidates = vec![];
+        for (j, c) in boundaries.iter().enumerate() {
+            check_interrupt(interrupt)?;
+            if i == j || c.signed_area_mm2.abs() <= b.signed_area_mm2.abs() {
+                continue;
+            }
+            match queries.classify_boundary(&c.edges, p, tolerance_mm) {
+                Ok(PointLocation::Inside) => candidates.push(j),
+                Ok(PointLocation::Outside) => {}
+                Ok(PointLocation::Boundary) => {
+                    invalid_boundaries.extend([i, j]);
+                    diagnostics.push(diagnostic(
+                        Problem::Intersection,
+                        b.intent
+                            .curves
+                            .iter()
+                            .chain(&c.intent.curves)
+                            .copied()
+                            .collect(),
+                        Some(p),
+                        "Touching nested boundaries require explicit repair",
+                    ));
+                }
+                Err(e) => {
+                    invalid_boundaries.extend([i, j]);
+                    diagnostics.push(diagnostic(
+                        Problem::QueryFailure,
+                        b.intent
+                            .curves
+                            .iter()
+                            .chain(&c.intent.curves)
+                            .copied()
+                            .collect(),
+                        Some(p),
+                        e.message,
+                    ));
+                }
+            }
+        }
+        parents[i] = candidates.into_iter().min_by(|a, b| {
+            boundaries[*a]
+                .signed_area_mm2
+                .abs()
+                .total_cmp(&boundaries[*b].signed_area_mm2.abs())
+        });
+    }
+    // An unclassifiable child cannot silently disappear from an enclosing area.
+    loop {
+        let old = invalid_boundaries.len();
+        for (i, parent) in parents.iter().enumerate() {
+            if invalid_boundaries.contains(&i)
+                && let Some(parent) = parent
+            {
+                invalid_boundaries.insert(*parent);
+            }
+        }
+        if old == invalid_boundaries.len() {
+            break;
+        }
+    }
     let regions = boundaries
         .iter()
         .enumerate()
+        .filter(|(i, _)| !invalid_boundaries.contains(i))
         .map(|(i, outer)| {
             let holes: Vec<_> = boundaries
                 .iter()
@@ -742,8 +1082,9 @@ pub fn extract_with_tolerance(source: &Source, tolerance_mm: f64) -> Extraction 
             }
         })
         .collect();
-    Extraction {
+    check_interrupt(interrupt)?;
+    Ok(Extraction {
         regions,
         diagnostics,
-    }
+    })
 }

@@ -102,6 +102,7 @@ fn error(
 }
 fn points(curve: &Curve) -> Vec<EntityId> {
     match curve.kind {
+        CurveKind::BSpline { ref poles, .. } => poles.clone(),
         CurveKind::Line { start, end } => vec![start, end],
         CurveKind::Circle { center, .. } => vec![center],
         CurveKind::Arc {
@@ -479,6 +480,10 @@ pub fn draft(
         }
         for curve in placement.sketch.curves {
             let kind = match curve.kind {
+                CurveKind::BSpline { poles, basis } => CurveKind::BSpline {
+                    poles: poles.into_iter().map(|p| instance.points[&p]).collect(),
+                    basis,
+                },
                 CurveKind::Line { start, end } => CurveKind::Line {
                     start: instance.points[&start],
                     end: instance.points[&end],

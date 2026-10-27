@@ -270,9 +270,9 @@ fn classifier_distinguishes_nested_areas_and_shared_boundaries_without_sampling(
     let ring = r.regions.iter().find(|r| !r.holes.is_empty()).unwrap();
     let disk = r.regions.iter().find(|r| r.holes.is_empty()).unwrap();
     use multicad_core::sketch_regions::PointLocation;
-    assert_eq!(ring.classify([5., 5.]), PointLocation::Inside);
-    assert_eq!(ring.classify([20., 10.]), PointLocation::Outside);
-    assert_eq!(ring.classify([25., 10.]), PointLocation::Boundary);
-    assert!(disk.contains([20., 10.]));
-    assert!(!disk.contains([25., 10.]));
+    assert_eq!(ring.classify([5., 5.]).unwrap(), PointLocation::Inside);
+    assert_eq!(ring.classify([20., 10.]).unwrap(), PointLocation::Outside);
+    assert_eq!(ring.classify([25., 10.]).unwrap(), PointLocation::Boundary);
+    assert!(disk.contains([20., 10.]).unwrap());
+    assert!(!disk.contains([25., 10.]).unwrap());
 }

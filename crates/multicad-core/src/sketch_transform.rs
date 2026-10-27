@@ -96,6 +96,7 @@ fn error(
 }
 fn curve_points(curve: &Curve) -> Vec<EntityId> {
     match curve.kind {
+        CurveKind::BSpline { ref poles, .. } => poles.clone(),
         CurveKind::Line { start, end } => vec![start, end],
         CurveKind::Circle { center, .. } => vec![center],
         CurveKind::Arc {
@@ -373,6 +374,11 @@ fn validate_geometry(source: &Source) -> Result<(), TransformError> {
     };
     for curve in &source.sketch.curves {
         let invalid = match curve.kind {
+            CurveKind::BSpline { ref poles, .. } => !poles.windows(2).any(|p| {
+                let a = point(p[0]);
+                let b = point(p[1]);
+                (a[0] - b[0]).hypot(a[1] - b[1]) >= 1e-7
+            }),
             CurveKind::Line { start, end } => {
                 let a = point(start);
                 let b = point(end);

@@ -382,6 +382,16 @@ impl ShortcutMap {
             ),
             (Key::G, crate::registry::Command::Draw(DrawTool::Arc), "Arc"),
             (
+                Key::V,
+                crate::registry::Command::Draw(DrawTool::Spline),
+                "Spline",
+            ),
+            (
+                Key::Enter,
+                crate::registry::Command::FinishCurve,
+                "Finish curve",
+            ),
+            (
                 Key::T,
                 crate::registry::Command::Draw(DrawTool::Polyline),
                 "Polyline",

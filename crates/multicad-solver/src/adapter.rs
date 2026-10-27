@@ -223,7 +223,17 @@ fn evaluate_context(
         a.source_entities.push(p.id);
     }
     for c in &source.curves {
+        if let CurveKind::BSpline { poles, basis } = &c.kind {
+            basis
+                .validate(poles.len())
+                .map_err(|e| error(Some(c.id), e.to_string()))?;
+            for pole in poles {
+                a.entity(*pole)?;
+            }
+            continue;
+        }
         let result = match c.kind {
+            CurveKind::BSpline { .. } => unreachable!("spline poles handled separately"),
             CurveKind::Line { start, end } => a.solver.line(a.entity(start)?, a.entity(end)?),
             CurveKind::Arc {
                 center,
@@ -254,6 +264,19 @@ fn evaluate_context(
         a.source_entities.push(c.id);
     }
     for c in &source.constraints {
+        if let Some(spline) = c.kind.references().iter().find(|id| {
+            source
+                .curves
+                .iter()
+                .any(|curve| curve.id == **id && matches!(curve.kind, CurveKind::BSpline { .. }))
+        }) {
+            return Err(error(
+                Some(c.id),
+                format!(
+                    "Constraint on spline curve {spline} is unsupported; constrain its control poles instead"
+                ),
+            ));
+        }
         let constraint = a
             .constraint(&c.kind)
             .map_err(|e| error(Some(c.id), e.message))?;
@@ -337,6 +360,21 @@ fn evaluate_context(
         }
     }
     for c in &mut candidate.curves {
+        if let CurveKind::BSpline { poles, .. } = &c.kind {
+            let first = sol
+                .point(a.entity(poles[0])?)
+                .ok_or_else(|| error(Some(c.id), "Missing solved spline pole"))?;
+            if poles.iter().all(|id| {
+                sol.point(a.entity(*id).expect("mapped pole"))
+                    .is_some_and(|p| (p[0] - first[0]).hypot(p[1] - first[1]) < 1e-7)
+            }) {
+                return Err(error(
+                    Some(c.id),
+                    "Solved spline control polygon is degenerate",
+                ));
+            }
+            continue;
+        }
         if let Some(r) = sol.radius(a.entity(c.id)?) {
             if !r.is_finite() || r <= 1e-7 || r > COORDINATE_LIMIT_MM {
                 return Err(error(

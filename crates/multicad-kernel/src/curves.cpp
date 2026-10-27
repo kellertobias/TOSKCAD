@@ -128,6 +128,7 @@ CurveQueryData query(const Handle(Geom2d_Curve) & a,
 struct FaceBuild {
   TopoDS_Face face;
   std::vector<std::pair<TopoDS_Edge, uint32_t>> sources;
+  double outerSign = 1.;
 };
 FaceBuild build(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
                 rust::Slice<const uint32_t> offsets, double tolerance) {
@@ -227,8 +228,11 @@ FaceBuild build(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
     if (!probe.IsDone())
       throw std::runtime_error("Exact planar face construction failed");
     if (BRepTopAdaptor_FClass2d(probe.Face(), tolerance)
-            .PerformInfinitePoint() == TopAbs_IN)
+            .PerformInfinitePoint() == TopAbs_IN) {
       wire.Reverse();
+      if (w == 0)
+        result.outerSign = -1.;
+    }
     BRepBuilderAPI_MakeFace positive(plane(f), wire, true);
     if (!positive.IsDone() || !BRepCheck_Analyzer(positive.Face()).IsValid())
       throw std::runtime_error("Exact bounded face is invalid");
@@ -292,6 +296,17 @@ double curved_profile_area(const Frame3 &f,
     GProp_GProps area;
     BRepGProp::SurfaceProperties(result.face, area);
     return area.Mass();
+  });
+}
+double curved_profile_signed_area(const Frame3 &f,
+                                  rust::Slice<const CurvedEdgeData> edges,
+                                  rust::Slice<const uint32_t> offsets,
+                                  double tolerance) {
+  return guarded([&] {
+    auto result = build(f, edges, offsets, tolerance);
+    GProp_GProps area;
+    BRepGProp::SurfaceProperties(result.face, area);
+    return area.Mass() * result.outerSign;
   });
 }
 uint8_t curved_profile_classify(const Frame3 &f,

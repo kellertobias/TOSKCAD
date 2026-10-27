@@ -114,6 +114,7 @@ pub struct Application {
     focus_command: bool,
     text_input_was_focused: bool,
     scene_backends: Option<crate::viewport::BackendFactory>,
+    sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -151,6 +152,7 @@ impl Application {
             focus_command: false,
             text_input_was_focused: false,
             scene_backends: None,
+            sketch_queries: None,
         };
         app.discover_recoveries()?;
         Ok(app)
@@ -175,6 +177,12 @@ impl Application {
             project.scene.set_backend(factory());
         }
         self.scene_backends = Some(factory);
+    }
+    pub fn set_sketch_queries(&mut self, factory: crate::sketch_evaluation::RegionQueryFactory) {
+        for project in &mut self.projects {
+            project.sketch.set_query_factory(factory.clone());
+        }
+        self.sketch_queries = Some(factory);
     }
     pub fn current_mut(&mut self) -> &mut Project {
         &mut self.projects[self.active]
@@ -387,6 +395,15 @@ impl Application {
                 self.mode = Mode::Model;
                 self.tab = 0;
             }
+            Command::FinishCurve => {
+                if !self.enabled(command) {
+                    return Err("Place at least four spline control poles before finishing".into());
+                }
+                let project = self.current_mut();
+                project
+                    .sketch
+                    .finish_spline(&mut project.session, false, channel)?;
+            }
             Command::Delete => {
                 let p = self.current_mut();
                 p.sketch.delete(&mut p.session, channel)?;
@@ -426,6 +443,9 @@ impl Application {
             }
             Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
             Command::NewSketch => !pending(),
+            Command::FinishCurve => {
+                self.mode == Mode::Sketch && !pending() && self.current().sketch.can_finish_spline()
+            }
             Command::Draw(_)
             | Command::Construction
             | Command::Dimension
@@ -1083,6 +1103,13 @@ impl Application {
             for project in &mut self.projects {
                 if !project.scene.has_backend() {
                     project.scene.set_backend(factory());
+                }
+            }
+        }
+        if let Some(factory) = &self.sketch_queries {
+            for project in &mut self.projects {
+                if !project.sketch.has_query_factory() {
+                    project.sketch.set_query_factory(factory.clone());
                 }
             }
         }

@@ -45,6 +45,9 @@ fn edge(e: &ExactCurve) -> ProfileEdge {
             clockwise,
         },
         ExactCurve::Circle { center, radius_mm } => ProfileEdge::Circle { center, radius_mm },
+        ExactCurve::BSpline { .. } => panic!(
+            "This fixture tests the analytic profile adapter; spline_sketch covers exact spline profiles"
+        ),
     }
 }
 fn solid(region: &Region, sketch: EntityId) -> Solid {

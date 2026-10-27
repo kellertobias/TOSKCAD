@@ -204,6 +204,17 @@ impl EvaluatedSketch {
             .iter()
             .map(|c| {
                 Ok(match c.kind {
+                    CurveKind::BSpline {
+                        ref poles,
+                        ref basis,
+                    } => Geometry::BSpline {
+                        id: c.id,
+                        poles: poles
+                            .iter()
+                            .map(|id| point(*id))
+                            .collect::<Result<_, _>>()?,
+                        basis: basis.clone(),
+                    },
                     CurveKind::Line { start, end } => Geometry::Line {
                         id: c.id,
                         a: point(start)?,
@@ -231,13 +242,29 @@ impl EvaluatedSketch {
             .collect()
     }
     pub fn regions(&self) -> Result<Extraction, InputError> {
+        self.regions_with_queries(&sketch_regions::AnalyticQueries)
+    }
+    pub fn regions_with_queries(
+        &self,
+        queries: &dyn sketch_regions::RegionQueries,
+    ) -> Result<Extraction, InputError> {
+        self.regions_with_queries_and_interrupt(queries, None)
+    }
+    pub fn regions_with_queries_and_interrupt(
+        &self,
+        queries: &dyn sketch_regions::RegionQueries,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Extraction, InputError> {
         let solved = self
             .solved()
             .ok_or_else(|| error(self.sketch, "Sketch has no current valid solved profiles"))?;
-        Ok(sketch_regions::extract_geometry(
+        sketch_regions::extract_geometry_with_queries_and_interrupt(
             &solved.points,
             &solved.curves,
-        ))
+            queries,
+            interrupt,
+        )
+        .map_err(|e| error(self.sketch, e.message))
     }
 }
 pub fn evaluate_document_sketch(

@@ -62,16 +62,21 @@ pub fn occurrence(
     let instance = preferred
         .and_then(|id| {
             scene
-                .instances()
+                .reference_instances()
                 .iter()
                 .find(|i| i.id == id && matches(i.id, i.geometry))
         })
         .or_else(|| {
             scene
-                .instances()
+                .reference_instances()
                 .iter()
                 .find(|i| matches(i.id, i.geometry) && i.transform == Transform::default())
         })
-        .or_else(|| scene.instances().iter().find(|i| matches(i.id, i.geometry)))?;
+        .or_else(|| {
+            scene
+                .reference_instances()
+                .iter()
+                .find(|i| matches(i.id, i.geometry))
+        })?;
     Some((instance.id, instance.transform))
 }

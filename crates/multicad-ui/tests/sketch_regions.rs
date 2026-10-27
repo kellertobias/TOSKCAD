@@ -61,6 +61,7 @@ fn edges(boundary: &Boundary) -> Vec<ProfileEdge> {
                 clockwise,
             },
             ExactCurve::Circle { center, radius_mm } => ProfileEdge::Circle { center, radius_mm },
+            ExactCurve::BSpline {..}=>panic!("This fixture tests analytic profiles; spline_sketch covers the native spline adapter"),
         })
         .collect()
 }

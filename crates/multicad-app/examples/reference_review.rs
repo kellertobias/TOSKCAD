@@ -60,6 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .sketch
         .set_display_style(DisplayStyle::VisibleEdges);
     app.set_scene_backends(Arc::new(|| Box::new(backend::Backend::new())));
+    app.set_sketch_queries(Arc::new(|| {
+        Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
+    }));
     multicad_ui::launch_with(Box::new(move |_| {
         Ok(Box::new(Review { app, fitted: false }))
     }))?;

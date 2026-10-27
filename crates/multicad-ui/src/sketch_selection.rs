@@ -24,6 +24,27 @@ pub fn pick(
     points: &[Point],
     geometry: &[Geometry],
     profiles: &Extraction,
+) -> Result<Option<Hit>, String> {
+    if let Some(hit) = pick_geometry(pointer, camera, rect, frame, points, geometry) {
+        return Ok(Some(hit));
+    }
+    let Some(point) = camera.on_plane(pointer, rect, frame) else {
+        return Ok(None);
+    };
+    for region in &profiles.regions {
+        if region.contains(point).map_err(|error| error.to_string())? {
+            return Ok(Some(Hit::Region(region.intent())));
+        }
+    }
+    Ok(None)
+}
+pub fn pick_geometry(
+    pointer: Pos2,
+    camera: Camera,
+    rect: Rect,
+    frame: Frame,
+    points: &[Point],
+    geometry: &[Geometry],
 ) -> Option<Hit> {
     let project = |p| {
         let screen = camera.project(frame.point(p).map(|v| v as f32), rect);
@@ -59,12 +80,7 @@ pub fn pick(
     if let Some((_, id)) = nearest {
         return Some(Hit::Curve(id));
     }
-    let point = camera.on_plane(pointer, rect, frame)?;
-    profiles
-        .regions
-        .iter()
-        .find(|region| region.contains(point))
-        .map(|region| Hit::Region(region.intent()))
+    None
 }
 
 #[derive(Default)]
@@ -114,8 +130,8 @@ impl ProfileSelection {
                 || intent.holes.iter().any(|hole| hole.curves.contains(&curve))
         })
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, owner: EntityId, profiles: &Extraction) {
-        self.reconcile(owner, profiles);
+    pub fn show(&mut self, ui: &mut egui::Ui, owner: EntityId, profiles: &Extraction) -> bool {
+        let mut changed = self.reconcile(owner, profiles) > 0;
         ui.collapsing(
             format!("Profiles · {} closed areas", profiles.regions.len()),
             |ui| {
@@ -148,6 +164,7 @@ impl ProfileSelection {
                             intent,
                             ui.input(|i| i.modifiers.shift || i.modifiers.command),
                         );
+                        changed = true;
                     }
                 }
                 if profiles.regions.is_empty() {
@@ -159,9 +176,11 @@ impl ProfileSelection {
                 if !self.selected.is_empty() && ui.small_button("Clear profile selection").clicked()
                 {
                     self.clear();
+                    changed = true;
                 }
             },
         );
+        changed
     }
 }
 
@@ -214,6 +233,7 @@ mod tests {
                 &geometry,
                 &profiles,
             )
+            .unwrap()
         };
         assert_eq!(hit([0., 0.]), Some(Hit::Point(source.sketch.points[0].id)));
         assert_eq!(hit([40., 0.]), Some(Hit::Curve(source.sketch.curves[0].id)));

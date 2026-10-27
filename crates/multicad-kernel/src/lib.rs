@@ -153,6 +153,12 @@ mod ffi {
             offsets: &[u32],
             tolerance: f64,
         ) -> Result<f64>;
+        fn curved_profile_signed_area(
+            frame: &Frame3,
+            edges: &[CurvedEdgeData],
+            offsets: &[u32],
+            tolerance: f64,
+        ) -> Result<f64>;
         fn curved_profile_classify(
             frame: &Frame3,
             edges: &[CurvedEdgeData],
@@ -183,6 +189,8 @@ pub use geometry::*;
 mod worker;
 pub use worker::*;
 mod curves;
+mod sketch_queries;
+pub use sketch_queries::NativeRegionQueries;
 mod provenance;
 pub use curves::*;
 /// Content identity of the exact native source tree, including local patches.
