@@ -93,6 +93,9 @@ pub struct TreeRow {
     pub effective_visible: bool,
     pub active: bool,
     pub expandable: bool,
+    /// UI reference row; this is not a containment edge or ownership claim.
+    pub history_of: Option<EntityId>,
+    pub available: bool,
     key: egui::Id,
 }
 #[derive(Clone)]
@@ -130,6 +133,7 @@ impl TreeView {
         revision: u64,
         collapsed: &BTreeSet<EntityId>,
         salt: egui::Id,
+        show_sources: bool,
     ) -> Result<Self, String> {
         let index = Index::new(document).map_err(|error| error.to_string())?;
         let mut destinations = vec![Destination {
@@ -178,6 +182,9 @@ impl TreeView {
                 };
                 (entity.name.clone(), kind)
             };
+            if !show_sources && matches!(node_kind, NodeKind::Plane | NodeKind::Feature) {
+                continue;
+            }
             let children = if node_kind.container() {
                 index
                     .children(if root { None } else { Some(id) })
@@ -205,7 +212,11 @@ impl TreeView {
             } else {
                 document.hierarchy().active_component == Some(id)
             };
-            let expandable = !children.is_empty();
+            let history = match document.get(id).map(|entity| &entity.data) {
+                Some(EntityData::Part { features, .. }) => features.as_slice(),
+                _ => &[],
+            };
+            let expandable = !children.is_empty() || !history.is_empty();
             rows.push(TreeRow {
                 id,
                 depth,
@@ -216,9 +227,40 @@ impl TreeView {
                 effective_visible,
                 active,
                 expandable,
+                history_of: None,
+                available: true,
                 key,
             });
             if !collapsed.contains(&id) {
+                for (position, feature) in history.iter().copied().enumerate() {
+                    let entity = document.get(feature);
+                    let available = entity
+                        .is_some_and(|entity| matches!(entity.data, EntityData::Feature { .. }));
+                    let name = match entity {
+                        Some(entity) if available => entity.name.clone(),
+                        Some(entity) => format!("{} · invalid feature reference", entity.name),
+                        None => "Missing feature".into(),
+                    };
+                    let owner = index
+                        .owning_component(feature)
+                        .ok()
+                        .map(|owner| container_path(document, &index, owner))
+                        .unwrap_or_else(|| "Unavailable source ownership".into());
+                    rows.push(TreeRow {
+                        id: feature,
+                        depth: depth + 1,
+                        name,
+                        kind: NodeKind::Feature,
+                        owner,
+                        local_visible: true,
+                        effective_visible,
+                        active: false,
+                        expandable: false,
+                        history_of: Some(id),
+                        available,
+                        key: key.with(("feature-history", position, feature)),
+                    });
+                }
                 pending.extend(
                     children
                         .into_iter()
@@ -279,8 +321,12 @@ pub struct ModelTree {
     salt: egui::Id,
     collapsed: BTreeSet<EntityId>,
     view: Option<TreeView>,
-    anchor: Option<EntityId>,
+    anchor: Option<egui::Id>,
     tool: Option<Tool>,
+    show_sources: bool,
+    history_selection: Option<(EntityId, EntityId)>,
+    selected_references: BTreeSet<EntityId>,
+    scroll_to_source: Option<EntityId>,
 }
 impl Default for ModelTree {
     fn default() -> Self {
@@ -290,6 +336,10 @@ impl Default for ModelTree {
             view: None,
             anchor: None,
             tool: None,
+            show_sources: false,
+            history_selection: None,
+            selected_references: BTreeSet::new(),
+            scroll_to_source: None,
         }
     }
 }
@@ -338,6 +388,12 @@ impl ModelTree {
         if entries.is_empty() {
             return Err("Select model entries to move".into());
         }
+        if entries
+            .iter()
+            .any(|id| self.selected_references.contains(id))
+        {
+            return Err("History rows reference a feature. Select its source entry explicitly before changing membership".into());
+        }
         for id in &entries {
             if !session
                 .document()
@@ -364,6 +420,7 @@ impl ModelTree {
                 session.revision(),
                 &self.collapsed,
                 self.salt,
+                self.show_sources,
             )?);
         }
         Ok(())
@@ -371,6 +428,27 @@ impl ModelTree {
     pub fn rows(&mut self, session: &Session) -> Result<&[TreeRow], String> {
         self.ensure_view(session)?;
         Ok(&self.view.as_ref().unwrap().rows)
+    }
+    pub fn set_show_sources(&mut self, visible: bool) {
+        if self.show_sources != visible {
+            self.show_sources = visible;
+            self.view = None;
+        }
+    }
+    fn locate_source(&mut self, document: &Document, id: EntityId) {
+        self.set_show_sources(true);
+        self.history_selection = None;
+        self.selected_references.remove(&id);
+        self.scroll_to_source = Some(id);
+        self.collapsed.remove(&document.id());
+        if let Ok(index) = Index::new(document) {
+            let mut next = index.parent(id).ok().flatten();
+            while let Some(parent) = next {
+                self.collapsed.remove(&parent);
+                next = index.parent(parent).ok().flatten();
+            }
+        }
+        self.view = None;
     }
     pub fn set_expanded(&mut self, id: EntityId, expanded: bool) {
         if expanded {
@@ -438,13 +516,23 @@ impl ModelTree {
                     (ContainerKind::Component, "New component"),
                     (ContainerKind::Group, "New group"),
                 ] {
-                    if ui.button(label).clicked() {
+                    if ui
+                        .add_enabled(options.enabled, egui::Button::new(label))
+                        .clicked()
+                    {
                         create = Some((kind, session.document().hierarchy().active_component));
                         ui.close();
                     }
                 }
             });
         });
+        let mut show_sources = self.show_sources;
+        if ui.checkbox(&mut show_sources, "Show sources").on_hover_text("Show planes and feature sources in their actual owning containers; body history rows remain references").changed() {
+            self.set_show_sources(show_sources);
+            if let Err(error) = self.ensure_view(session) {
+                return TreeEvents { error: Some(error), ..Default::default() };
+            }
+        }
         let view = self.view.as_ref().unwrap();
         ui.small(format!("Active: {}", view.active));
         for warning in &view.diagnostics {
@@ -453,9 +541,16 @@ impl ModelTree {
             });
         }
         let rows = &view.rows;
-        egui::ScrollArea::vertical()
-            .id_salt(self.salt)
-            .show_rows(ui, 26., rows.len(), |ui, range| {
+        let mut scroll = egui::ScrollArea::vertical().id_salt(self.salt);
+        if let Some(target) = self.scroll_to_source.take()
+            && let Some(index) = rows
+                .iter()
+                .position(|row| row.id == target && row.history_of.is_none())
+        {
+            scroll =
+                scroll.vertical_scroll_offset(index as f32 * (26. + ui.spacing().item_spacing.y));
+        }
+        scroll.show_rows(ui, 26., rows.len(), |ui, range| {
                 for row_index in range {
                     let row = &rows[row_index];
                     ui.push_id(row.key, |ui| {
@@ -470,26 +565,39 @@ impl ModelTree {
                             } else {
                                 ui.add_space(16.);
                             }
-                            let icon = ui.add_enabled_ui(options.enabled, |ui| {
+                            let icon = ui.add_enabled_ui(options.enabled && row.available, |ui| {
                                 icons::mini_button(ui, row.kind.icon(), &format!("Select {} {}", row.kind.label(), row.name))
                             }).inner;
                             let width = (ui.available_width() - 28.).max(32.);
                             let label = if row.active { format!("{} · active", row.name) } else { row.name.clone() };
                             let color = if row.effective_visible { ui.visuals().text_color() } else { Color32::GRAY };
-                            let response = ui.add_enabled_ui(options.enabled, |ui| {
+                            let response = ui.add_enabled_ui(options.enabled && row.available, |ui| {
                                 ui.add_sized([width, 24.], egui::Button::new(egui::RichText::new(label).color(color))
                                     .selected(selected.contains(&row.id)).frame(false).truncate())
                             }).inner;
-                            response.clone().on_hover_text(format!("{}\nOwning component: {}\nCmd/Ctrl-click toggles; Shift-click selects a range", row.kind.label(), row.owner));
+                            let role = if row.history_of.is_some() { "Feature used by body (reference only)" } else { row.kind.label() };
+                            response.clone().on_hover_text(format!("{}\nOwning component: {}\nCmd/Ctrl-click toggles; Shift-click selects a range", role, row.owner));
                             if response.clicked() || icon.clicked() {
                                 let modifiers = ui.input(|input| input.modifiers);
                                 let mut next = if modifiers.command { selected.clone() } else { BTreeSet::new() };
-                                if modifiers.shift && let Some(start) = self.anchor.and_then(|id| rows.iter().position(|row| row.id == id)) {
-                                    next.extend(rows[start.min(row_index)..=start.max(row_index)].iter().map(|row| row.id));
+                                if modifiers.shift && let Some(start) = self.anchor.and_then(|id| rows.iter().position(|row| row.key == id)) {
+                                    next.extend(rows[start.min(row_index)..=start.max(row_index)].iter().filter(|row| row.available).map(|row| row.id));
                                 } else if !modifiers.command || !next.remove(&row.id) {
                                     next.insert(row.id);
                                 }
-                                self.anchor = Some(row.id);
+                                self.selected_references.retain(|id| next.contains(id));
+                                if !modifiers.command {
+                                    self.selected_references.clear();
+                                }
+                                if modifiers.shift && let Some(start) = self.anchor.and_then(|key| rows.iter().position(|row| row.key == key)) {
+                                    self.selected_references.extend(rows[start.min(row_index)..=start.max(row_index)].iter().filter(|row| row.available && row.history_of.is_some()).map(|row| row.id));
+                                } else if row.history_of.is_some() && next.contains(&row.id) {
+                                    self.selected_references.insert(row.id);
+                                } else {
+                                    self.selected_references.remove(&row.id);
+                                }
+                                self.anchor = Some(row.key);
+                                self.history_selection = row.history_of.map(|body| (row.id, body));
                                 events.selection = Some(next);
                             }
                             if response.double_clicked() && options.enabled {
@@ -499,6 +607,9 @@ impl ModelTree {
                                     action = Some(Action::SetActive { component: if row.kind == NodeKind::Root { None } else { Some(row.id) } });
                                 }
                             }
+                            if row.history_of.is_some() {
+                                ui.add_space(24.);
+                            } else {
                             let mut visible = row.local_visible;
                             let visibility = ui.add_enabled(options.enabled && !matches!(row.kind, NodeKind::Plane | NodeKind::Feature),
                                 egui::Checkbox::new(&mut visible, "").indeterminate(row.local_visible && !row.effective_visible));
@@ -512,8 +623,14 @@ impl ModelTree {
                             if visibility.on_hover_text(hint).changed() {
                                 action = Some(Action::SetVisible { id: row.id, visible });
                             }
+                            }
                             response.context_menu(|ui| {
-                                ui.add_enabled_ui(options.enabled, |ui| {
+                                if row.history_of.is_some() {
+                                    ui.label("Feature used by body");
+                                    ui.small("History is a reference, not container ownership. Inspect its source to edit membership.");
+                                    return;
+                                }
+                                ui.add_enabled_ui(options.enabled && row.available, |ui| {
                                     if matches!(row.kind, NodeKind::Root | NodeKind::Component)
                                         && ui.button("Activate modeling scope").clicked() {
                                         action = Some(Action::SetActive { component: if row.kind == NodeKind::Root { None } else { Some(row.id) } });
@@ -569,7 +686,11 @@ impl ModelTree {
             events.error = Some(error);
         }
         if let Some(action) = action {
-            return self.execute(session, session.revision(), action);
+            let mut result = self.execute(session, session.revision(), action);
+            if result.selection.is_none() {
+                result.selection = events.selection;
+            }
+            return result;
         }
         events
     }
@@ -695,6 +816,24 @@ impl ModelTree {
                 ));
             }
         }
+        let history_body = self
+            .history_selection
+            .filter(|(feature, _)| *feature == id)
+            .and_then(|(_, body)| session.document().get(body))
+            .map(|body| body.name.clone());
+        if let Some(body) = &history_body {
+            ui.label(format!("Feature used by body: {body}"));
+            ui.small(
+                "This history row references the source; it does not change its owning component.",
+            );
+            if ui
+                .button("Show source entry")
+                .on_hover_text("Reveal this feature under its actual owning container")
+                .clicked()
+            {
+                self.locate_source(session.document(), id);
+            }
+        }
         let mut action = None;
         let mut rename = false;
         let mut moving = false;
@@ -706,7 +845,7 @@ impl ModelTree {
             if matches!(node_kind, NodeKind::Component | NodeKind::Group) {
                 rename = ui.button("Rename…").on_hover_text("Rename this container without changing its identity").clicked();
             }
-            if !root {
+            if !root && history_body.is_none() && selected.iter().all(|id| !self.selected_references.contains(id)) {
                 moving = ui.button("Move to container…").on_hover_text("Choose an explicit parent and ordering position; this does not transform geometry").clicked();
             }
             if node_kind == NodeKind::Sketch && options.allow_open_sketch
@@ -1060,5 +1199,138 @@ mod tests {
         assert!(!selected.contains(&component));
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), 0);
+    }
+    #[test]
+    fn body_history_is_ordered_reference_paths_and_aux_sources_are_local_only() {
+        use multicad_core::document::Definition;
+        let (session, _, _, body) = fixture();
+        let first = Entity::new(
+            "Extrude",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.extrude".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let second = Entity::new(
+            "Fillet",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.fillet".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![multicad_core::document::Link::new(
+                    first.id,
+                    "previous-feature",
+                )],
+                suppressed: false,
+            },
+        );
+        let plane = Entity::new(
+            "Datum",
+            EntityData::Plane {
+                origin_mm: [0.; 3],
+                normal: [0., 0., 1.],
+                anchor: None,
+            },
+        );
+        let mut part = session.document().get(body).unwrap().clone();
+        let EntityData::Part { features, .. } = &mut part.data else {
+            unreachable!()
+        };
+        *features = vec![first.id, second.id];
+        let other = Entity::new("Top", part.data.clone());
+        let document = session
+            .document()
+            .edited(&[
+                Mutation::Insert(first.clone()),
+                Mutation::Insert(second.clone()),
+                Mutation::Insert(plane.clone()),
+                Mutation::Replace(part),
+                Mutation::Insert(other.clone()),
+            ])
+            .unwrap();
+        let session = Session::new(document).unwrap();
+        let before = session.document().clone();
+        let mut tree = ModelTree::default();
+        let rows = tree.rows(&session).unwrap();
+        assert!(!rows.iter().any(|row| row.kind == NodeKind::Plane));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.kind == NodeKind::Feature && row.history_of.is_none())
+        );
+        let history: Vec<_> = rows
+            .iter()
+            .filter(|row| row.history_of == Some(body))
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(history, vec![first.id, second.id]);
+        assert!(
+            rows.iter()
+                .filter(|row| row.history_of == Some(body))
+                .all(|row| row.owner == "Workshop")
+        );
+        let keys: Vec<_> = rows
+            .iter()
+            .filter(|row| row.id == first.id)
+            .map(|row| row.key)
+            .collect();
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0], keys[1]);
+        assert!(rows.iter().find(|row| row.id == body).unwrap().expandable);
+        tree.set_expanded(body, false);
+        assert!(
+            !tree
+                .rows(&session)
+                .unwrap()
+                .iter()
+                .any(|row| row.history_of == Some(body))
+        );
+        tree.set_show_sources(true);
+        let rows = tree.rows(&session).unwrap();
+        assert!(rows.iter().any(|row| row.id == plane.id));
+        assert!(
+            rows.iter()
+                .any(|row| row.id == first.id && row.history_of.is_none())
+        );
+        tree.selected_references.insert(first.id);
+        assert!(tree.begin_move(&session, vec![body, first.id]).is_err());
+        tree.locate_source(session.document(), first.id);
+        assert!(!tree.selected_references.contains(&first.id));
+        assert!(tree.begin_move(&session, vec![first.id]).is_ok());
+        tree.cancel_tool();
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), 0);
+    }
+    #[test]
+    fn missing_body_history_remains_a_disabled_diagnostic_reference() {
+        let (session, _, _, body) = fixture();
+        let missing = EntityId::new();
+        let mut part = session.document().get(body).unwrap().clone();
+        let EntityData::Part { features, .. } = &mut part.data else {
+            unreachable!()
+        };
+        features.push(missing);
+        let document = session
+            .document()
+            .edited(&[Mutation::Replace(part)])
+            .unwrap();
+        let session = Session::new(document).unwrap();
+        let mut tree = ModelTree::default();
+        let row = tree
+            .rows(&session)
+            .unwrap()
+            .iter()
+            .find(|row| row.id == missing)
+            .unwrap();
+        assert_eq!(row.history_of, Some(body));
+        assert!(!row.available);
+        assert_eq!(row.name, "Missing feature");
     }
 }
