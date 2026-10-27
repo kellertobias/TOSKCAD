@@ -87,12 +87,43 @@ pub fn labeled_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Respo
     response.on_hover_text(label)
 }
 pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
-    ui.vertical(|ui| {
-        let r = icon_button(ui, icon, label, 36.0);
-        let l = ui.label(egui::RichText::new(label).size(12.0));
-        r.union(l)
-    })
-    .inner
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(112.0, 64.0), egui::Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect.shrink(2.0), 5, Color32::from_rgb(42, 51, 65));
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(2.0),
+            5,
+            Stroke::new(1.0, Color32::LIGHT_BLUE),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let color = if ui.is_enabled() {
+        Color32::from_rgb(201, 214, 232)
+    } else {
+        Color32::from_gray(91)
+    };
+    paint_sized(
+        ui,
+        icon,
+        Pos2::new(rect.center().x, rect.top() + 18.0),
+        color,
+        24.0,
+    );
+    let galley = ui
+        .painter()
+        .layout(label.into(), egui::FontId::proportional(12.0), color, 100.0);
+    ui.painter().galley(
+        Pos2::new(rect.center().x - galley.size().x * 0.5, rect.top() + 35.0),
+        galley,
+        color,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.on_hover_text(label)
 }
 pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color32, size: f32) {
     let p = ui.painter();

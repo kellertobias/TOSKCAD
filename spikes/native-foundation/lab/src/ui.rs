@@ -367,6 +367,7 @@ impl Lab {
                     ui.add_space(74.0);
                 }
                 ui.heading("MultiCAD");
+                ui.add_space(12.0);
                 ui.menu_button("File", |ui| {
                     if ui.button("New document    ⌘N").clicked() {
                         self.new_document();
@@ -511,6 +512,7 @@ impl Lab {
         }
     }
     fn ribbon(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 0.0;
         use crate::icons::{Icon, tool};
         let tabs: &[&str] = match self.mode {
             Mode::Sketch => &["Common", "Room"],
@@ -571,7 +573,6 @@ impl Lab {
                     });
                 });
             });
-        ui.separator();
         let tools: Vec<(Icon, &str, &str)> = match (self.mode, self.ribbon_tab.as_str()) {
             (Mode::Sketch, _) if self.sketch == SketchState::Closed => vec![
                 (Icon::Sketch, "New sketch", "Sketch"),
