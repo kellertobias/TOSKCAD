@@ -284,6 +284,14 @@ enum Command {
         cancelled: Arc<AtomicBool>,
         reply: SyncSender<Result<(), GeometryError>>,
     },
+    Tessellate {
+        keys: Vec<SolidKey>,
+        generation: u64,
+        revision: u64,
+        options: MeshOptions,
+        cancelled: Arc<AtomicBool>,
+        reply: SyncSender<Result<GeometrySnapshot, GeometryError>>,
+    },
 }
 struct Cache {
     generation: u64,
@@ -405,6 +413,59 @@ impl GeometryWorker {
             consumed: false,
         })
     }
+    /// Rebuild display data from retained exact solids. This does not rerun
+    /// modeling operations, change the source generation or invalidate STEP keys.
+    pub fn retessellate(
+        &self,
+        keys: Vec<SolidKey>,
+        expected_revision: u64,
+        options: MeshOptions,
+    ) -> Result<GeometryJob<GeometrySnapshot>, GeometryError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| error(GeometryErrorKind::Native, "Publication state poisoned"))?;
+        let mut slots = BTreeSet::new();
+        if keys.len() > 1024 {
+            return Err(error(
+                GeometryErrorKind::Limit,
+                "Display output budget exceeded",
+            ));
+        }
+        if state.closed
+            || state.revision != expected_revision
+            || keys.iter().any(|key| {
+                key.worker != self.id
+                    || key.generation != state.generation
+                    || key.revision != expected_revision
+                    || !slots.insert(key.slot)
+            })
+        {
+            return Err(error(
+                GeometryErrorKind::Stale,
+                "Foreign, duplicate or stale display keys",
+            ));
+        }
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.send(Command::Tessellate {
+            keys,
+            generation: state.generation,
+            revision: expected_revision,
+            options,
+            cancelled: cancelled.clone(),
+            reply,
+        })?;
+        Ok(GeometryJob {
+            receiver,
+            guard: Guard {
+                state: self.state.clone(),
+                generation: state.generation,
+                cancelled,
+            },
+            consumed: false,
+        })
+    }
     fn send(&self, command: Command) -> Result<(), GeometryError> {
         self.sender
             .as_ref()
@@ -487,8 +548,76 @@ fn run(id: u64, receiver: Receiver<Command>, state: Arc<Mutex<Publication>>) {
                 });
                 let _ = reply.send(result);
             }
+            Command::Tessellate {
+                keys,
+                generation,
+                revision,
+                options,
+                cancelled,
+                reply,
+            } => {
+                let guard = Guard {
+                    state: state.clone(),
+                    generation,
+                    cancelled,
+                };
+                let result = (|| {
+                    guard.check()?;
+                    let cached = cache
+                        .as_ref()
+                        .filter(|c| c.generation == guard.generation && c.revision == revision)
+                        .ok_or_else(|| {
+                            error(GeometryErrorKind::Stale, "Exact geometry is unavailable")
+                        })?;
+                    let mut remaining = options.maximum_triangles;
+                    let mut solids = vec![];
+                    for key in keys {
+                        guard.check()?;
+                        let solid = cached
+                            .solids
+                            .get(key.slot)
+                            .and_then(Option::as_ref)
+                            .ok_or_else(|| {
+                                error(GeometryErrorKind::Input, "Display output has no solid")
+                            })?;
+                        solids.push(Some(display_snapshot(solid, key, options, &mut remaining)?));
+                    }
+                    guard.check()?;
+                    Ok(GeometrySnapshot { revision, solids })
+                })();
+                let _ = reply.send(result);
+            }
         }
     }
+}
+fn display_snapshot(
+    solid: &Solid,
+    key: SolidKey,
+    options: MeshOptions,
+    remaining: &mut u32,
+) -> Result<SolidSnapshot, GeometryError> {
+    if *remaining == 0 {
+        return Err(error(
+            GeometryErrorKind::Limit,
+            "Model display triangle budget exhausted",
+        ));
+    }
+    let mesh = solid.mesh(MeshOptions {
+        maximum_triangles: *remaining,
+        ..options
+    })?;
+    *remaining -= mesh.indices.len() as u32 / 3;
+    Ok(SolidSnapshot {
+        key,
+        bounds: solid.bounds()?,
+        faces: solid.faces()?,
+        volume_mm3: solid.volume_mm3()?,
+        solid_count: solid.solid_count()?,
+        mesh,
+        topology: solid.provenance.clone(),
+        edges: solid.display_edges(options.linear_deflection_mm)?,
+        vertices: solid.display_vertices()?,
+    })
 }
 fn compute(
     id: u64,
@@ -554,33 +683,17 @@ fn compute(
         guard.check()?;
         let solid = values[*index].take();
         let snapshot = if let Some(solid) = &solid {
-            if remaining_triangles == 0 {
-                return Err(error(
-                    GeometryErrorKind::Limit,
-                    "Model display triangle budget exhausted",
-                ));
-            }
-            let mesh = solid.mesh(MeshOptions {
-                maximum_triangles: remaining_triangles,
-                ..program.mesh
-            })?;
-            remaining_triangles -= mesh.indices.len() as u32 / 3;
-            Some(SolidSnapshot {
-                key: SolidKey {
+            Some(display_snapshot(
+                solid,
+                SolidKey {
                     worker: id,
                     generation: guard.generation,
                     revision: program.revision,
                     slot,
                 },
-                bounds: solid.bounds()?,
-                faces: solid.faces()?,
-                volume_mm3: solid.volume_mm3()?,
-                solid_count: solid.solid_count()?,
-                mesh,
-                topology: solid.provenance.clone(),
-                edges: solid.display_edges(program.mesh.linear_deflection_mm)?,
-                vertices: solid.display_vertices()?,
-            })
+                program.mesh,
+                &mut remaining_triangles,
+            )?)
         } else {
             None
         };

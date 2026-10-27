@@ -470,7 +470,9 @@ impl SketchEditor {
                     .id_salt("sketch-inspector-content")
                     .show(ui, |ui| {
                         if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
+                        else if feed.refining() {ui.small("Refining display…");}
                         else if feed.pending() {ui.small("Rebuilding model…");}
+                        if let Some(error)=feed.quality_error() {ui.colored_label(Color32::LIGHT_YELLOW,error);if ui.button("Retry display refinement").clicked(){feed.retry_quality();}}
                         self.solid.inspector(ui,session.document());
                         if let Some(id) = self.selected {
                             let view = self
@@ -611,8 +613,15 @@ impl SketchEditor {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
             .show(ui, |ui| {
-                self.canvas(ui, session, sketch_mode, scene, current)
+                self.canvas(ui, session, sketch_mode, scene.clone(), current)
             });
+        if let (Some(scene), Some(rect)) = (&scene, self.viewport_rect)
+            && let Some(bounds) = scene.world_bounds()
+            && let Some(quality) =
+                crate::viewport::DisplayQuality::for_view(self.camera, rect, bounds)
+        {
+            feed.note_quality(quality, ui.input(|i| i.time));
+        }
     }
     fn canvas(
         &mut self,

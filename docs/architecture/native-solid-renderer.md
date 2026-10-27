@@ -64,6 +64,25 @@ Fit uses the selected instance's transformed bounds when a solid is selected.
 The floor grid follows the camera and coarsens its displayed lines at distant
 zoom. Its configured sketch snap spacing stays unchanged.
 
+`DisplayQuality` selects bounded chord-error levels from 2 mm to 0.001 mm,
+targeting less than one logical pixel according to camera scale and perspective
+depth. These are display approximations, independent of modeling tolerances.
+`SceneFeed` requests finer detail after 150 ms of stable demand and coarser detail
+after 600 ms. It schedules a single deadline repaint and polls only while work is
+pending. A backend may report unchanged geometry or unsupported refinement.
+
+Refinement uses a new display generation at the same canonical revision. The
+previous valid scene stays selectable while it runs or fails; display failures
+have a separate warning and explicit retry. Source failures still invalidate
+model selection. Semantic selections resolve again after a display replacement.
+An older refinement cannot replace a newer source result.
+
+The native review backend exercises this protocol against retained OCCT solids,
+reusing unchanged planar assets and resampling curved ones on the worker. Tests
+check increased curve detail, unchanged topology and solid keys, shared planar
+assets, debounce, retry and obsolete-result rejection. This fixture backend does
+not implement production feature compilation.
+
 The production composition root still needs the canonical feature compiler to
 supply geometry programs. Registering a display backend does not implement solid
 creation commands. Section and tool-preview layers and the full physical

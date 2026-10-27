@@ -9,6 +9,8 @@ struct State {
     requests: Vec<(SceneStamp, String)>,
     replies: VecDeque<SceneReply>,
     reject: bool,
+    refinements: Vec<(SceneStamp, DisplayQuality)>,
+    refinement: Option<Refinement>,
 }
 struct Backend(Arc<Mutex<State>>);
 impl SceneBackend for Backend {
@@ -24,6 +26,89 @@ impl SceneBackend for Backend {
     fn poll(&mut self) -> Option<SceneReply> {
         self.0.lock().unwrap().replies.pop_front()
     }
+    fn refine(&mut self, stamp: SceneStamp, quality: DisplayQuality) -> Result<Refinement, String> {
+        let mut state = self.0.lock().unwrap();
+        state.refinements.push((stamp, quality));
+        Ok(state.refinement.unwrap_or(Refinement::Unsupported))
+    }
+}
+#[test]
+fn refinement_is_debounced_keeps_source_usable_and_rejects_obsolete_replies() {
+    let state = Arc::new(Mutex::new(State {
+        refinement: Some(Refinement::Started),
+        ..Default::default()
+    }));
+    let mut feed = SceneFeed::default();
+    feed.set_backend(Box::new(Backend(state.clone())));
+    let doc = Document::new("Model").unwrap();
+    feed.tick_at(&doc, 0, 1.);
+    let first = state.lock().unwrap().requests[0].0;
+    reply(&state, first);
+    feed.tick_at(&doc, 0, 1.);
+    let original = feed.visible().unwrap().clone();
+    feed.note_quality(DisplayQuality::Normal, 1.);
+    feed.note_quality(DisplayQuality::Fine, 1.1);
+    feed.tick_at(&doc, 0, 1.24);
+    assert!(state.lock().unwrap().refinements.is_empty());
+    assert!(feed.quality_wakeup(1.24).unwrap().as_secs_f64() < 0.011);
+    assert!(feed.quality_wakeup(f64::NAN).is_none());
+    feed.tick_at(&doc, 0, 1.26);
+    let refining = state.lock().unwrap().refinements[0].0;
+    assert!(feed.refining());
+    assert!(feed.is_current(doc.id(), 0));
+    assert!(Arc::ptr_eq(&original, feed.visible().unwrap()));
+    state.lock().unwrap().replies.push_back(SceneReply {
+        stamp: refining,
+        result: Err("Display budget exceeded".into()),
+    });
+    feed.tick_at(&doc, 0, 1.3);
+    assert_eq!(feed.quality_error(), Some("Display budget exceeded"));
+    assert!(feed.error().is_none());
+    assert!(feed.is_current(doc.id(), 0));
+    assert!(feed.quality_wakeup(2.).is_none()); // No error retry loop.
+    feed.retry_quality();
+    feed.tick_at(&doc, 0, 2.);
+    let retry = state.lock().unwrap().refinements[1].0;
+    assert!(retry.generation > refining.generation);
+    feed.tick_at(&doc, 1, 2.1);
+    let source = state.lock().unwrap().requests[1].0;
+    assert!(!feed.is_current(doc.id(), 1));
+    reply(&state, retry);
+    feed.tick_at(&doc, 1, 2.2);
+    assert!(feed.pending());
+    assert_eq!(feed.visible().unwrap().stamp(), original.stamp());
+    reply(&state, source);
+    feed.tick_at(&doc, 1, 2.3);
+    assert!(feed.is_current(doc.id(), 1));
+    feed.tick_at(&doc, 1, 2.4);
+    let refined = state.lock().unwrap().refinements[2].0;
+    reply(&state, refined);
+    feed.tick_at(&doc, 1, 2.5);
+    assert_eq!(feed.visible().unwrap().stamp(), refined);
+    feed.note_quality(DisplayQuality::Coarse, 3.);
+    feed.tick_at(&doc, 1, 3.59);
+    assert_eq!(state.lock().unwrap().refinements.len(), 3);
+    feed.tick_at(&doc, 1, 3.61);
+    assert_eq!(state.lock().unwrap().refinements.len(), 4);
+}
+#[test]
+fn unsupported_quality_provider_does_not_keep_idle_window_awake() {
+    let state = Arc::new(Mutex::new(State::default()));
+    let mut feed = SceneFeed::default();
+    feed.set_backend(Box::new(Backend(state.clone())));
+    let doc = Document::new("Model").unwrap();
+    feed.tick_at(&doc, 0, 1.);
+    let stamp = state.lock().unwrap().requests[0].0;
+    reply(&state, stamp);
+    feed.tick_at(&doc, 0, 1.);
+    feed.note_quality(DisplayQuality::Fine, 1.);
+    feed.tick_at(&doc, 0, 2.);
+    feed.note_quality(DisplayQuality::Precision, 2.);
+    feed.tick_at(&doc, 0, 3.);
+    assert_eq!(state.lock().unwrap().refinements.len(), 1);
+    assert!(feed.quality_wakeup(3.).is_none());
+    assert!(feed.is_current(doc.id(), 0));
+    assert!(!feed.pending());
 }
 fn reply(state: &Arc<Mutex<State>>, stamp: SceneStamp) {
     state.lock().unwrap().replies.push_back(SceneReply {

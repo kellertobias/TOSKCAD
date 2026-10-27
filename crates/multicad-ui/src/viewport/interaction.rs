@@ -120,7 +120,21 @@ impl Interaction {
         enabled: bool,
     ) {
         if self.last_stamp != Some(scene.stamp()) {
-            self.clear();
+            if self.last_stamp.is_some_and(|old| {
+                old.document == scene.stamp().document && old.revision == scene.stamp().revision
+            }) {
+                self.selected = self
+                    .selected
+                    .as_ref()
+                    .and_then(|hit| scene.refresh_hit(hit));
+                self.part = self
+                    .part
+                    .filter(|id| scene.instances().iter().any(|i| i.id == *id));
+                self.hovered = None;
+                self.last_query = None;
+            } else {
+                self.clear();
+            }
             self.last_stamp = Some(scene.stamp());
         }
         if enabled

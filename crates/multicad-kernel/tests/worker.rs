@@ -166,3 +166,139 @@ fn whole_model_triangle_budget_and_worker_shutdown_are_enforced() {
     drop(worker);
     assert_eq!(job.wait().unwrap_err().kind, GeometryErrorKind::Cancelled);
 }
+#[test]
+fn display_refinement_keeps_exact_geometry_identity_and_manufacturing_access() {
+    use multicad_core::{document::EntityId, references::Origin};
+    let feature = EntityId::new();
+    let worker = GeometryWorker::new().unwrap();
+    let mut p = program(10);
+    p.operations = vec![GeometryOperation::NamedExtrude {
+        profile: Profile {
+            frame: Default::default(),
+            outer: vec![ProfileEdge::Circle {
+                center: [0.; 2],
+                radius_mm: 30.,
+            }],
+            holes: vec![],
+        },
+        height_mm: 20.,
+        feature,
+        curve_origins: vec![Origin {
+            source: feature,
+            role: "circle".into(),
+        }],
+    }];
+    p.mesh = MeshOptions {
+        linear_deflection_mm: 1.,
+        angular_deflection_rad: 1.,
+        ..Default::default()
+    };
+    let original = worker
+        .submit(p)
+        .unwrap()
+        .wait()
+        .unwrap()
+        .solids
+        .remove(0)
+        .unwrap();
+    let fine = worker
+        .retessellate(
+            vec![original.key],
+            10,
+            MeshOptions {
+                linear_deflection_mm: 0.005,
+                angular_deflection_rad: 0.05,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .wait()
+        .unwrap()
+        .solids
+        .remove(0)
+        .unwrap();
+    assert!(fine.mesh.indices.len() > original.mesh.indices.len());
+    assert_eq!(fine.key, original.key);
+    assert_eq!(fine.volume_mm3, original.volume_mm3);
+    assert_eq!(fine.bounds, original.bounds);
+    assert_eq!(fine.faces, original.faces);
+    assert_eq!(fine.topology, original.topology);
+    assert!(
+        fine.edges.iter().map(|e| e.points_mm.len()).sum::<usize>()
+            > original
+                .edges
+                .iter()
+                .map(|e| e.points_mm.len())
+                .sum::<usize>()
+    );
+    let failed = worker
+        .retessellate(
+            vec![original.key],
+            10,
+            MeshOptions {
+                maximum_triangles: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(failed.wait().is_err());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("after-display-refinement.step");
+    worker
+        .write_step_to_staging(original.key, 10, path.clone())
+        .unwrap()
+        .wait()
+        .unwrap();
+    assert!(
+        (Solid::read_step(&path, Default::default())
+            .unwrap()
+            .volume_mm3()
+            .unwrap()
+            - original.volume_mm3)
+            .abs()
+            < 1e-6
+    );
+}
+#[test]
+fn display_requests_reject_foreign_stale_cancelled_and_duplicate_keys() {
+    let worker = GeometryWorker::new().unwrap();
+    let key = worker.submit(program(1)).unwrap().wait().unwrap().solids[0]
+        .as_ref()
+        .unwrap()
+        .key;
+    let other = GeometryWorker::new().unwrap();
+    assert!(
+        other
+            .retessellate(vec![key], 1, Default::default())
+            .is_err()
+    );
+    assert!(
+        worker
+            .retessellate(vec![key, key], 1, Default::default())
+            .is_err()
+    );
+    assert!(
+        worker
+            .retessellate(vec![key], 2, Default::default())
+            .is_err()
+    );
+    let cancelled = worker
+        .retessellate(vec![key], 1, Default::default())
+        .unwrap();
+    cancelled.cancel();
+    assert_eq!(
+        cancelled.wait().unwrap_err().kind,
+        GeometryErrorKind::Cancelled
+    );
+    let old = worker
+        .retessellate(vec![key], 1, Default::default())
+        .unwrap();
+    let new = worker.submit(program(2)).unwrap();
+    assert_eq!(old.wait().unwrap_err().kind, GeometryErrorKind::Stale);
+    new.wait().unwrap();
+    assert!(
+        worker
+            .retessellate(vec![key], 1, Default::default())
+            .is_err()
+    );
+}

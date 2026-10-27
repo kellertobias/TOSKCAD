@@ -46,6 +46,14 @@ Each `SolidKey` identifies one worker, generation, source revision and output sl
 revisions. The writer reads the retained B-rep, so modifying a returned display
 mesh cannot affect the STEP geometry.
 
+`retessellate` resamples selected retained solids without rerunning modeling
+operations. Keys must belong to the current worker generation and source revision;
+foreign, duplicate and stale keys fail. The output order follows the requested
+keys. The aggregate triangle budget and cooperative cancellation also apply to
+this query. A newer source build invalidates its receipt. Display refinement
+does not advance the native generation or invalidate existing STEP keys, including
+when refinement fails.
+
 A staging write is an intermediate operation. Cancellation or a newer revision
 can reject its receipt after the native writer has produced a file. The caller
 owns that temporary path, cleans up rejected output, checks its canonical source

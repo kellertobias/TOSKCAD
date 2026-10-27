@@ -1,6 +1,6 @@
 //! Per-document, nonblocking display publication. Source compilation is supplied
 //! by the native composition root; the UI never owns geometry kernel handles.
-use super::{Scene, SceneStamp, SceneStore};
+use super::{DisplayQuality, Refinement, Scene, SceneStamp, SceneStore};
 use multicad_core::document::{Document, EntityId};
 use std::sync::Arc;
 pub struct SceneReply {
@@ -12,6 +12,14 @@ pub trait SceneBackend {
     fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String>;
     /// Never waits. Replies retain their request stamp, including failures.
     fn poll(&mut self) -> Option<SceneReply>;
+    /// Optional display-only refinement of the current retained exact geometry.
+    fn refine(
+        &mut self,
+        _stamp: SceneStamp,
+        _quality: DisplayQuality,
+    ) -> Result<Refinement, String> {
+        Ok(Refinement::Unsupported)
+    }
 }
 pub type BackendFactory = Arc<dyn Fn() -> Box<dyn SceneBackend>>;
 #[derive(Default)]
@@ -23,6 +31,12 @@ pub struct SceneFeed {
     pending: bool,
     error: Option<String>,
     expected: Option<SceneStamp>,
+    source_valid: bool,
+    refining: bool,
+    quality_error: Option<String>,
+    quality_unsupported: bool,
+    demand: Option<(DisplayQuality, f64)>,
+    requested_quality: Option<DisplayQuality>,
 }
 impl SceneFeed {
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
@@ -30,6 +44,9 @@ impl SceneFeed {
         self.last_source = None;
         self.pending = false;
         self.error = None;
+        self.source_valid = false;
+        self.quality_unsupported = false;
+        self.requested_quality = None;
     }
     pub fn has_backend(&self) -> bool {
         self.backend.is_some()
@@ -43,10 +60,44 @@ impl SceneFeed {
     pub fn pending(&self) -> bool {
         self.pending
     }
+    pub fn refining(&self) -> bool {
+        self.pending && self.refining
+    }
+    pub fn quality_error(&self) -> Option<&str> {
+        self.quality_error.as_deref()
+    }
+    pub fn note_quality(&mut self, quality: DisplayQuality, now: f64) {
+        if !now.is_finite() {
+            return;
+        }
+        if self.demand.is_none_or(|(old, _)| old != quality) {
+            let delay = if self.requested_quality.is_some_and(|old| old > quality) {
+                0.6
+            } else {
+                0.15
+            };
+            self.demand = Some((quality, now + delay));
+        }
+    }
+    pub fn retry_quality(&mut self) {
+        self.requested_quality = None;
+        self.quality_error = None;
+    }
+    pub fn quality_wakeup(&self, now: f64) -> Option<std::time::Duration> {
+        if !now.is_finite() {
+            return None;
+        }
+        let (quality, due) = self.demand?;
+        (self.backend.is_some()
+            && self.source_valid
+            && !self.pending
+            && !self.quality_unsupported
+            && self.requested_quality != Some(quality))
+        .then(|| std::time::Duration::from_secs_f64((due - now).clamp(0., 0.6)))
+    }
     pub fn is_current(&self, document: EntityId, revision: u64) -> bool {
-        !self.pending
+        self.source_valid
             && self.error.is_none()
-            && self.store.is_current()
             && self
                 .visible()
                 .is_some_and(|s| s.stamp().document == document && s.stamp().revision == revision)
@@ -55,6 +106,9 @@ impl SceneFeed {
         self.last_source = None;
     }
     pub fn tick(&mut self, document: &Document, revision: u64) {
+        self.tick_at(document, revision, 0.);
+    }
+    pub fn tick_at(&mut self, document: &Document, revision: u64, now: f64) {
         let Some(backend) = self.backend.as_mut() else {
             return;
         };
@@ -73,6 +127,11 @@ impl SceneFeed {
             self.last_source = Some(source);
             self.expected = Some(stamp);
             self.error = None;
+            self.source_valid = false;
+            self.refining = false;
+            self.quality_error = None;
+            self.requested_quality = None;
+            self.quality_unsupported = false;
             if let Err(error) = self
                 .store
                 .begin(stamp)
@@ -83,6 +142,40 @@ impl SceneFeed {
                 return;
             }
             self.pending = true;
+        }
+        if !self.pending
+            && self.source_valid
+            && !self.quality_unsupported
+            && let Some((quality, due)) = self.demand
+            && now >= due
+            && self.requested_quality != Some(quality)
+        {
+            self.requested_quality = Some(quality);
+            let Some(generation) = self.generation.checked_add(1) else {
+                self.quality_error = Some("Display generation limit reached".into());
+                return;
+            };
+            self.generation = generation;
+            let stamp = SceneStamp {
+                document: document.id(),
+                revision,
+                generation,
+            };
+            match backend.refine(stamp, quality) {
+                Ok(Refinement::Started) => {
+                    if let Err(error) = self.store.begin(stamp) {
+                        self.quality_error = Some(error);
+                        return;
+                    }
+                    self.expected = Some(stamp);
+                    self.pending = true;
+                    self.refining = true;
+                    self.quality_error = None;
+                }
+                Ok(Refinement::Unchanged) => self.quality_error = None,
+                Ok(Refinement::Unsupported) => self.quality_unsupported = true,
+                Err(error) => self.quality_error = Some(error),
+            }
         }
         if !self.pending {
             return;
@@ -95,14 +188,32 @@ impl SceneFeed {
             match reply.result {
                 Ok(scene) if scene.stamp() == reply.stamp => {
                     if let Err(error) = self.store.publish(scene) {
-                        self.error = Some(error);
+                        if self.refining {
+                            self.quality_error = Some(error)
+                        } else {
+                            self.error = Some(error)
+                        }
+                    } else {
+                        self.source_valid = true;
                     }
                 }
                 Ok(_) => {
-                    self.error = Some("Display backend returned a mismatched scene stamp".into())
+                    let error = "Display backend returned a mismatched scene stamp".into();
+                    if self.refining {
+                        self.quality_error = Some(error)
+                    } else {
+                        self.error = Some(error)
+                    }
                 }
-                Err(error) => self.error = Some(error),
+                Err(error) => {
+                    if self.refining {
+                        self.quality_error = Some(error)
+                    } else {
+                        self.error = Some(error)
+                    }
+                }
             }
+            self.refining = false;
         }
     }
 }

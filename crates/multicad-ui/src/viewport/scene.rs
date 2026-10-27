@@ -593,6 +593,34 @@ impl Scene {
             stamp: self.stamp,
         })
     }
+    /// Refresh selection only within the same canonical source revision. Local
+    /// ordinals are resolved again through persistent intent after remeshing.
+    pub fn refresh_hit(&self, hit: &Hit) -> Option<Hit> {
+        if hit.stamp.document != self.stamp.document || hit.stamp.revision != self.stamp.revision {
+            return None;
+        }
+        let snapshot = self.topology_snapshot(hit.instance)?;
+        let Resolution::Resolved { key, .. } =
+            resolve(hit.intent.as_ref()?, &snapshot, self.stamp.revision)
+        else {
+            return None;
+        };
+        let instance = self.instances.iter().find(|i| i.id == hit.instance)?;
+        let mut updated = hit.clone();
+        updated.key = key;
+        updated.geometry = instance.geometry;
+        updated.stamp = self.stamp;
+        if key.kind == TopologyKind::Vertex {
+            updated.point_mm = instance.transform.point(
+                self.geometries[&instance.geometry]
+                    .points
+                    .iter()
+                    .find(|p| p.index == key.ordinal)?
+                    .position_mm,
+            );
+        }
+        Some(updated)
+    }
     pub fn storage_bytes(&self) -> usize {
         self.geometries
             .values()

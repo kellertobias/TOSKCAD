@@ -991,9 +991,11 @@ impl Application {
         }
         {
             let project = self.current_mut();
-            project
-                .scene
-                .tick(project.session.document(), project.session.revision());
+            project.scene.tick_at(
+                project.session.document(),
+                project.session.revision(),
+                ctx.input(|i| i.time),
+            );
             if project.scene.pending() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
@@ -1041,6 +1043,9 @@ impl Application {
                     let p = self.current_mut();
                     let before = p.session.revision();
                     p.sketch.show(ui, &mut p.session, sketch_mode, &mut p.scene);
+                    if let Some(delay) = p.scene.quality_wakeup(ctx.input(|i| i.time)) {
+                        ctx.request_repaint_after(delay);
+                    }
                     if p.session.revision() != before {
                         let label = p
                             .session

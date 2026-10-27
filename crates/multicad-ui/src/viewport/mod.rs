@@ -12,3 +12,5 @@ mod interaction;
 pub use interaction::Interaction;
 mod grid;
 pub use grid::floor_grid;
+mod quality;
+pub use quality::{DisplayQuality, Refinement};

@@ -2,9 +2,11 @@
 //! feature providers and solid-creation commands.
 use multicad_core::document::*;
 use multicad_kernel::*;
-use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
+use multicad_ui::viewport::{
+    self, DisplayQuality, Refinement, SceneBackend, SceneReply, SceneStamp,
+};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -74,6 +76,8 @@ struct Pending {
     job: GeometryJob<GeometrySnapshot>,
     ids: Vec<EntityId>,
     instances: Vec<viewport::Instance>,
+    deflection_mm: f64,
+    reuse: BTreeMap<EntityId, Arc<viewport::Geometry>>,
 }
 type SceneBuild = (SceneStamp, Receiver<Result<Arc<viewport::Scene>, String>>);
 pub struct Backend {
@@ -81,6 +85,9 @@ pub struct Backend {
     pending: Option<Pending>,
     build: Option<SceneBuild>,
     generation: Arc<AtomicU64>,
+    keys: BTreeMap<EntityId, SolidKey>,
+    curved: BTreeSet<EntityId>,
+    scene: Option<Arc<viewport::Scene>>,
 }
 impl Backend {
     pub fn new() -> Self {
@@ -89,6 +96,9 @@ impl Backend {
             pending: None,
             build: None,
             generation: Arc::new(AtomicU64::new(0)),
+            keys: BTreeMap::new(),
+            curved: BTreeSet::new(),
+            scene: None,
         }
     }
 }
@@ -101,6 +111,9 @@ impl SceneBackend for Backend {
     fn request(&mut self, doc: &Document, stamp: SceneStamp) -> Result<(), String> {
         self.pending = None;
         self.build = None;
+        self.keys.clear();
+        self.curved.clear();
+        self.scene = None;
         self.generation.store(stamp.generation, Ordering::Release);
         let mut ids = vec![];
         let mut operations = vec![];
@@ -233,13 +246,65 @@ impl SceneBackend for Backend {
             job,
             ids,
             instances,
+            deflection_mm: 0.2,
+            reuse: BTreeMap::new(),
         });
         Ok(())
+    }
+    fn refine(&mut self, stamp: SceneStamp, quality: DisplayQuality) -> Result<Refinement, String> {
+        let scene = self.scene.as_ref().ok_or("No retained source scene")?;
+        if (scene.stamp().document, scene.stamp().revision) != (stamp.document, stamp.revision) {
+            return Err("Refinement source is stale".into());
+        }
+        // Straight edges and planar triangles already describe the exact corpus
+        // boxes. Only curved assets need a different display approximation.
+        if self.curved.is_empty() {
+            return Ok(Refinement::Unchanged);
+        }
+        let ids: Vec<_> = self.curved.iter().copied().collect();
+        let keys = ids.iter().map(|id| self.keys[id]).collect();
+        let deflection_mm = quality.deflection_mm();
+        let job = self
+            .worker
+            .as_ref()
+            .map_err(Clone::clone)?
+            .retessellate(
+                keys,
+                stamp.revision,
+                MeshOptions {
+                    linear_deflection_mm: deflection_mm,
+                    angular_deflection_rad: if deflection_mm >= 0.5 {
+                        0.5
+                    } else if deflection_mm >= 0.1 {
+                        0.2
+                    } else {
+                        0.05
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        self.generation.store(stamp.generation, Ordering::Release);
+        self.build = None;
+        self.pending = Some(Pending {
+            stamp,
+            job,
+            ids,
+            instances: scene.instances().to_vec(),
+            deflection_mm,
+            reuse: scene.geometries().clone(),
+        });
+        Ok(Refinement::Started)
     }
     fn poll(&mut self) -> Option<SceneReply> {
         if let Some((stamp, receive)) = self.build.take() {
             match receive.try_recv() {
-                Ok(result) => return Some(SceneReply { stamp, result }),
+                Ok(result) => {
+                    if let Ok(scene) = &result {
+                        self.scene = Some(scene.clone());
+                    }
+                    return Some(SceneReply { stamp, result });
+                }
                 Err(TryRecvError::Empty) => {
                     self.build = Some((stamp, receive));
                     return None;
@@ -265,17 +330,36 @@ impl SceneBackend for Backend {
             }
         };
         let pending = self.pending.take().expect("ready request");
+        if pending.ids.len() != snapshot.solids.len() || snapshot.solids.iter().any(Option::is_none)
+        {
+            return Some(SceneReply {
+                stamp: pending.stamp,
+                result: Err("Missing corpus output".into()),
+            });
+        }
+        for (id, solid) in pending.ids.iter().zip(&snapshot.solids) {
+            let solid = solid.as_ref().expect("validated output");
+            self.keys.insert(*id, solid.key);
+            if solid.faces.iter().any(|face| face.plane.is_none()) {
+                self.curved.insert(*id);
+            }
+        }
         let stamp = pending.stamp;
         let current = self.generation.clone();
         let (send, receive) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let build = || {
-                let mut geometries = vec![];
+                let mut geometries = pending.reuse;
                 for (id, solid) in pending.ids.into_iter().zip(snapshot.solids) {
                     if current.load(Ordering::Acquire) != stamp.generation {
                         return Err("Scene build superseded".into());
                     }
                     let solid = solid.ok_or("Corpus output is empty")?;
+                    let error_mm = if solid.faces.iter().any(|f| f.plane.is_none()) {
+                        pending.deflection_mm
+                    } else {
+                        0.001
+                    };
                     let geometry = viewport::Geometry::new(
                         id,
                         solid.mesh.vertices.as_chunks::<3>().0.to_vec(),
@@ -300,13 +384,13 @@ impl SceneBackend for Backend {
                                 position_mm: v.position_mm,
                             })
                             .collect(),
-                        0.2,
+                        error_mm,
                     )?;
-                    geometries.push(Arc::new(geometry));
+                    geometries.insert(id, Arc::new(geometry));
                 }
                 Ok(Arc::new(viewport::Scene::new(
                     stamp,
-                    geometries,
+                    geometries.into_values().collect(),
                     pending.instances,
                 )?))
             };
@@ -357,6 +441,49 @@ mod tests {
                         .elements
                         .is_empty()
                 );
+            }
+            let next = SceneStamp {
+                generation: 2,
+                ..stamp
+            };
+            if !mixed {
+                assert_eq!(
+                    backend.refine(next, DisplayQuality::Precision).unwrap(),
+                    Refinement::Unchanged
+                );
+                continue;
+            }
+            let keys = backend.keys.clone();
+            assert_eq!(
+                backend.refine(next, DisplayQuality::Detail).unwrap(),
+                Refinement::Started
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let refined = loop {
+                if let Some(reply) = backend.poll() {
+                    break reply.result.unwrap();
+                }
+                assert!(std::time::Instant::now() < deadline, "Refinement timed out");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            assert_eq!(refined.stamp(), next);
+            assert_eq!(backend.keys, keys); // Manufacturing handles remain valid.
+            assert_eq!(refined.instances().len(), scene.instances().len());
+            for old in scene.instances() {
+                let new = refined.instances().iter().find(|i| i.id == old.id).unwrap();
+                assert_eq!(new.geometry, old.geometry);
+                assert_eq!(
+                    refined.topology_snapshot(old.id).unwrap().elements,
+                    scene.topology_snapshot(old.id).unwrap().elements
+                );
+            }
+            for (id, old) in scene.geometries() {
+                let new = &refined.geometries()[id];
+                if backend.curved.contains(id) {
+                    assert!(new.indices().len() > old.indices().len());
+                } else {
+                    assert!(Arc::ptr_eq(old, new));
+                }
             }
         }
     }

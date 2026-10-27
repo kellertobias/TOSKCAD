@@ -71,6 +71,70 @@ fn stamp() -> SceneStamp {
     }
 }
 #[test]
+fn display_detail_follows_projected_size_and_preserves_selection_intent() {
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.));
+    let bounds = [[0., 0., 0.], [100., 60., 18.]];
+    let mut camera = Camera {
+        scale: 0.1,
+        ..Default::default()
+    };
+    assert_eq!(
+        DisplayQuality::for_view(camera, rect, bounds),
+        Some(DisplayQuality::Distant)
+    );
+    camera.scale = 1.;
+    assert_eq!(
+        DisplayQuality::for_view(camera, rect, bounds),
+        Some(DisplayQuality::Coarse)
+    );
+    camera.scale = 20.;
+    assert_eq!(
+        DisplayQuality::for_view(camera, rect, bounds),
+        Some(DisplayQuality::Fine)
+    );
+    camera.scale = 100.;
+    assert_eq!(
+        DisplayQuality::for_view(camera, rect, bounds),
+        Some(DisplayQuality::Detail)
+    );
+    camera.perspective = true;
+    camera.target = [50., 30., 9.];
+    assert!(DisplayQuality::for_view(camera, rect, bounds).unwrap() >= DisplayQuality::Detail);
+    assert!(DisplayQuality::for_view(camera, Rect::NOTHING, bounds).is_none());
+    assert!(DisplayQuality::for_view(camera, rect, [[f64::NAN; 3]; 2]).is_none());
+
+    let geo = box_geometry();
+    let part = instance(&geo, [0.; 3]);
+    let first = Scene::new(stamp(), vec![geo.clone()], vec![part.clone()]).unwrap();
+    let hit = first
+        .pick_face(Ray::new([20., 25., 100.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    let second = Scene::new(
+        SceneStamp {
+            generation: 1,
+            ..first.stamp()
+        },
+        vec![geo.clone()],
+        vec![part.clone()],
+    )
+    .unwrap();
+    let refreshed = second.refresh_hit(&hit).unwrap();
+    assert_eq!(refreshed.stamp, second.stamp());
+    assert_eq!(refreshed.intent, hit.intent);
+    assert_eq!(refreshed.key, hit.key);
+    let changed = Scene::new(
+        SceneStamp {
+            revision: 1,
+            generation: 2,
+            ..first.stamp()
+        },
+        vec![geo],
+        vec![part],
+    )
+    .unwrap();
+    assert!(changed.refresh_hit(&hit).is_none());
+}
+#[test]
 fn closest_surface_wins_independently_of_instance_order_and_yields_semantic_intent() {
     let geometry = box_geometry();
     let far = instance(&geometry, [0.; 3]);
