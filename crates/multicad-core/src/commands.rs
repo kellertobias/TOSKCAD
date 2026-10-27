@@ -292,7 +292,9 @@ impl Session {
             evaluated,
         })
     }
-    pub fn commit(&mut self, preview: Prepared) -> Result<Change, CommandError> {
+    /// Check preview scope and freshness without committing or altering history.
+    /// A consumer can inspect/adopt the same owned preview before final Apply.
+    pub fn validate_preview(&self, preview: &Prepared) -> Result<(), CommandError> {
         if preview.session != self.id {
             return Err(CommandError::new(
                 ErrorCode::ForeignPreview,
@@ -300,6 +302,10 @@ impl Session {
             ));
         }
         self.check_revision(preview.base_revision)?;
+        Ok(())
+    }
+    pub fn commit(&mut self, preview: Prepared) -> Result<Change, CommandError> {
+        self.validate_preview(&preview)?;
         if preview.document() == self.document() {
             return difference(self.document(), self.document(), self.revision);
         }

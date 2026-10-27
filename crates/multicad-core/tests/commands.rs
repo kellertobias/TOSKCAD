@@ -39,6 +39,36 @@ fn one_payload_has_identical_results_across_ui_and_external_callers() {
     );
 }
 #[test]
+fn preview_validation_is_read_only_and_rejects_identical_document_foreign_sessions() {
+    let document = Document::new("Preview scope").unwrap();
+    let mut owner = Session::new(document.clone()).unwrap();
+    let foreign = Session::new(document.clone()).unwrap();
+    let preview = owner
+        .prepare(request(
+            0,
+            Channel::Mcp,
+            vec![Mutation::Insert(parameter("width", "80"))],
+        ))
+        .unwrap();
+    owner.validate_preview(&preview).unwrap();
+    assert_eq!(
+        foreign.validate_preview(&preview).unwrap_err().code,
+        ErrorCode::ForeignPreview
+    );
+    assert_eq!(owner.document(), &document);
+    assert_eq!(foreign.document(), &document);
+    assert!(!owner.can_undo() && !foreign.can_undo());
+    assert_eq!(owner.activity().count(), 0);
+    let retained = preview.clone();
+    owner.commit(preview).unwrap();
+    assert_eq!(
+        owner.validate_preview(&retained).unwrap_err().code,
+        ErrorCode::StaleRevision
+    );
+    assert_eq!(owner.revision(), 1);
+    assert_eq!(owner.activity().count(), 1);
+}
+#[test]
 fn preview_cancel_apply_undo_redo_dirty_and_stale_guards_preserve_source_identity() {
     let mut session = Session::new(Document::new("Cabinet").unwrap()).unwrap();
     session.mark_saved(0).unwrap();

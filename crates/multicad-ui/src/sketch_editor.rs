@@ -83,6 +83,8 @@ pub struct SketchEditor {
     constraints: crate::sketch_constraints::ConstraintEditor,
     sketch_evaluation: crate::sketch_evaluation::SketchEvaluationFeed,
     profiles: crate::sketch_selection::ProfileSelection,
+    operations: crate::sketch_operations::Panel,
+    operation_error: Option<String>,
     tree: crate::model_tree::ModelTree,
     tree_selection: std::collections::BTreeSet<EntityId>,
     visibility: crate::viewport::VisibilityFilter,
@@ -139,6 +141,8 @@ impl Default for SketchEditor {
             constraints: Default::default(),
             sketch_evaluation: Default::default(),
             profiles: Default::default(),
+            operations: Default::default(),
+            operation_error: None,
             tree: Default::default(),
             tree_selection: Default::default(),
             visibility: Default::default(),
@@ -352,6 +356,7 @@ impl SketchEditor {
             return;
         }
         self.moving = !self.moving;
+        self.operations.cancel();
         self.cancel_move();
         self.tool = None;
         self.clear_drawing_progress();
@@ -363,6 +368,7 @@ impl SketchEditor {
             || self.tree.tool_active()
     }
     pub fn cancel(&mut self) {
+        self.operations.cancel();
         self.tree.cancel_tool();
         self.repair.cancel();
         self.solid.clear();
@@ -758,6 +764,7 @@ impl SketchEditor {
             return Err("Create or open a sketch first".into());
         }
         self.cancel_move();
+        self.operations.cancel();
         self.moving = false;
         self.tool = Some(tool);
         self.clear_drawing_progress();
@@ -773,6 +780,98 @@ impl SketchEditor {
             _ => "Click the first point, then the second point · Esc cancels",
         }
         .into();
+        Ok(())
+    }
+    pub fn operation_ready(&self) -> bool {
+        self.editing && self.selected.is_some() && !self.picking && !self.has_pending_edits()
+    }
+    pub fn begin_operation(
+        &mut self,
+        tool: crate::sketch_operations::OperationTool,
+    ) -> Result<(), String> {
+        if !self.operation_ready() {
+            return Err(
+                "Open a sketch and apply or discard pending edits before choosing an edit tool"
+                    .into(),
+            );
+        }
+        self.tool = None;
+        self.moving = false;
+        self.cancel_move();
+        self.clear_drawing_progress();
+        self.operations.begin(tool);
+        self.operation_error = None;
+        self.message = format!(
+            "{} · select geometry and preview the edit in Inspector",
+            tool.label()
+        );
+        Ok(())
+    }
+    fn prepare_operation(
+        &mut self,
+        session: &Session,
+        request: crate::sketch_operations::OperationRequest,
+    ) -> Result<(), String> {
+        let id = self.selected.ok_or("Select an active sketch")?;
+        if !self.operation_ready() {
+            return Err("Apply or discard the current preview first".into());
+        }
+        let tool = self.operations.tool().ok_or("Choose a sketch edit tool")?;
+        let actor = Actor::local(Channel::Ui);
+        use crate::sketch_operations::OperationRequest;
+        let edit = match request {
+            OperationRequest::Transform(request) => multicad_solver::prepare_transform(
+                session,
+                session.revision(),
+                actor,
+                id,
+                self.evaluated.as_ref(),
+                &request,
+            )
+            .map(|result| result.edit)
+            .map_err(|e| e.to_string())?,
+            OperationRequest::Pattern(request) => multicad_solver::prepare_pattern(
+                session,
+                session.revision(),
+                actor,
+                id,
+                self.evaluated.as_ref(),
+                &request,
+            )
+            .map(|result| result.edit)
+            .map_err(|e| e.to_string())?,
+            OperationRequest::Trim(request, policy) => multicad_solver::prepare_trim(
+                session,
+                session.revision(),
+                actor,
+                id,
+                self.evaluated.as_ref(),
+                &request,
+                policy,
+            )
+            .map(|result| result.edit)
+            .map_err(|e| e.to_string())?,
+        };
+        let ready = edit.preview.is_some();
+        self.constraints.accept_edit(
+            session,
+            id,
+            edit,
+            &format!("Apply {}", tool.label().to_lowercase()),
+        )?;
+        self.clear_drawing_progress();
+        self.operation_error = None;
+        self.message = if ready {
+            format!(
+                "{} preview · Apply commits one undoable edit, Discard keeps the original",
+                tool.label()
+            )
+        } else {
+            format!(
+                "{} preview has unresolved constraints · inspect diagnostics or Discard",
+                tool.label()
+            )
+        };
         Ok(())
     }
     pub fn can_finish_spline(&self) -> bool {
@@ -1302,6 +1401,7 @@ impl SketchEditor {
                                 .unwrap_or(session.document());
                             match self.read_sketch(view, id,session.revision()) {
                                 Ok((source, frame, _)) => {
+                                    if self.element.is_some_and(|id|!source.geometry.iter().any(|geometry|geometry.id()==id)) {self.element=None;self.constraints.clear_geometry_selection();}
                                     ui.strong(&session.document().get(id).expect("read").name);
                                     ui.label(format!("{} elements · mm", source.geometry.len()));
                                     ui.small(format!(
@@ -1358,6 +1458,11 @@ impl SketchEditor {
                                         self.message = e;
                                     }
                                     if self.editing && !self.moving {
+                                        if self.operations.tool().is_some() && let Ok((canonical,_,_))=self.read_source(session.document(),id,session.revision()) {
+                                            let enabled=self.operation_ready() && self.sketch_evaluation.current(id).is_some();
+                                            if let Some(request)=self.operations.show(ui,&canonical,self.constraints.selection(),enabled) && let Err(error)=self.prepare_operation(session,request) {self.operation_error=Some(error.clone());self.message=error;}
+                                            if let Some(error)=&self.operation_error {ui.colored_label(Color32::LIGHT_RED,error);}
+                                        }
                                         let before = session.revision();
                                         let selection_before=self.constraints.selection().to_vec();
                                         ui.add_enabled_ui(!self.repair.has_pending(),|ui|self.constraints.show(ui, session, id, self.element));
@@ -3105,6 +3210,82 @@ mod tests {
                 .regions
                 .len(),
             1
+        );
+    }
+    #[test]
+    fn selected_geometry_operations_preview_apply_and_undo_through_the_same_inspector() {
+        use crate::sketch_operations::{OperationRequest, OperationTool};
+        use multicad_core::sketch_transform::{Transform, TransformOptions, TransformRequest};
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor
+            .draw(
+                &mut session,
+                &multicad_core::sketch_draw::DrawRequest {
+                    input: multicad_core::sketch_draw::DrawInput::Circle {
+                        center: multicad_core::sketch_draw::PointInput::Position([10., 10.]),
+                        radius_mm: 3.,
+                    },
+                    construction: false,
+                },
+                Channel::Ui,
+            )
+            .unwrap();
+        editor.tool = None;
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        click_sketch(&ctx, &mut editor, &mut session, [13., 10.]);
+        let selection = editor.constraints.selection().iter().copied().collect();
+        let id = editor.selected.unwrap();
+        let before = session.document().clone();
+        editor.begin_operation(OperationTool::Move).unwrap();
+        editor
+            .prepare_operation(
+                &session,
+                OperationRequest::Transform(TransformRequest {
+                    selection,
+                    transform: Transform::Translate {
+                        delta_mm: [20., 5.],
+                    },
+                    options: TransformOptions::default(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            session.document(),
+            &before,
+            "Operation preview changed source"
+        );
+        assert!(editor.has_pending_edits());
+        assert!(editor.set_tool(DrawTool::Line).is_err());
+        let preview = editor
+            .read_sketch(
+                editor.constraints.preview_document().unwrap(),
+                id,
+                session.revision(),
+            )
+            .unwrap()
+            .0;
+        assert!(
+            matches!(preview.geometry[0],Geometry::Circle{center,radius_mm,..} if (center[0]-30.).abs()<1e-6 && (center[1]-15.).abs()<1e-6 && (radius_mm-3.).abs()<1e-8)
+        );
+        editor.constraints.apply(&mut session).unwrap();
+        assert_eq!(session.revision(), 3);
+        let source = editor
+            .read_source(session.document(), id, session.revision())
+            .unwrap()
+            .0;
+        assert!(
+            matches!(source.sketch.curves[0].kind,multicad_core::constraint_sketch::CurveKind::Circle{radius_mm,..} if radius_mm==3.)
+        );
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(
+            session.document(),
+            &before,
+            "Apply required more than one undo"
         );
     }
     #[test]

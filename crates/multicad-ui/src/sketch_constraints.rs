@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32};
 use multicad_core::{
     commands::{Actor, Channel, Session},
     constraint_sketch::{self as model, ConstraintKind as Kind, Dimension, source::Source},
-    document::{Document, EntityId},
+    document::{Document, EntityData, EntityId, Mutation},
     references::ReferenceReport,
 };
 #[cfg(test)]
@@ -182,6 +182,33 @@ fn label(kind: &Kind) -> &'static str {
         Kind::Angle { .. } => "Angle",
     }
 }
+fn solution_matches_source(source: &Source, solved: &model::Sketch) -> bool {
+    source.sketch.points.len() == solved.points.len()
+        && source.sketch.curves.len() == solved.curves.len()
+        && source.sketch.constraints == solved.constraints
+        && source
+            .sketch
+            .points
+            .iter()
+            .zip(&solved.points)
+            .all(|(a, b)| a.id == b.id)
+        && source
+            .sketch
+            .curves
+            .iter()
+            .zip(&solved.curves)
+            .all(|(a, b)| {
+                a.id == b.id
+                    && a.construction == b.construction
+                    && match (&a.kind, &b.kind) {
+                        (
+                            model::CurveKind::Circle { center: a, .. },
+                            model::CurveKind::Circle { center: b, .. },
+                        ) => a == b,
+                        (a, b) => a == b,
+                    }
+            })
+}
 
 pub struct ConstraintEditor {
     owner: Option<EntityId>,
@@ -198,6 +225,13 @@ pub struct ConstraintEditor {
     current: Option<Arc<EvaluatedSketch>>,
     dimension_fields: BTreeMap<EntityId, DimensionFields>,
     preview_geometry: Option<Vec<multicad_core::sketch::Geometry>>,
+    apply_label: String,
+    canonical_draft: bool,
+    point_display: Option<PointDisplay>,
+}
+struct PointDisplay {
+    scope: (EntityId, u64, EntityId),
+    positions: Result<Arc<BTreeMap<EntityId, [f64; 2]>>, String>,
 }
 impl Default for ConstraintEditor {
     fn default() -> Self {
@@ -216,11 +250,22 @@ impl Default for ConstraintEditor {
             current: None,
             dimension_fields: BTreeMap::new(),
             preview_geometry: None,
+            apply_label: "Apply constraints".into(),
+            canonical_draft: false,
+            point_display: None,
         }
     }
 }
 impl ConstraintEditor {
     pub fn set_current(&mut self, current: Option<Arc<EvaluatedSketch>>) {
+        let unchanged = match (&self.current, &current) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            self.point_display = None;
+        }
         self.current = current;
     }
     pub fn set_evaluation(&mut self, evaluation: Option<ReferenceReport>) {
@@ -229,6 +274,7 @@ impl ConstraintEditor {
             self.error = None;
             self.current = None;
             self.preview_geometry = None;
+            self.point_display = None;
         }
         self.evaluation = evaluation;
     }
@@ -365,6 +411,9 @@ impl ConstraintEditor {
         self.selection.clear();
         self.last_element = None;
         self.dimension_fields.clear();
+        self.apply_label = "Apply constraints".into();
+        self.canonical_draft = false;
+        self.point_display = None;
     }
     pub fn preview_document(&self) -> Option<&Document> {
         if self.dirty() {
@@ -387,6 +436,12 @@ impl ConstraintEditor {
         self.preview_geometry.as_deref()
     }
     pub fn prepare(&mut self, session: &Session, id: EntityId, source: Source) {
+        self.prepare_source(session, id, source, false);
+    }
+    fn prepare_source(&mut self, session: &Session, id: EntityId, source: Source, canonical: bool) {
+        let canonical = canonical
+            || source.minimum_schema_version() >= 2
+            || (self.owner == Some(id) && self.dirty() && self.canonical_draft);
         if self.owner != Some(id) || !self.dirty() {
             self.revision = session.revision();
         }
@@ -394,20 +449,36 @@ impl ConstraintEditor {
         self.draft = Some(source.clone());
         self.error = None;
         self.preview_geometry = None;
+        self.apply_label = "Apply constraints".into();
+        self.canonical_draft = canonical;
+        self.point_display = None;
         if let Err(error) = self.validate_frame(session, id) {
             self.result = None;
             self.error = Some(error);
             return;
         }
-        match prepare_edit_with_report(
-            session,
-            self.revision,
-            Actor::local(Channel::Ui),
-            id,
-            source,
-            self.evaluation.as_ref(),
-        ) {
+        let prepared = if canonical {
+            multicad_solver::prepare_canonical_edit(
+                session,
+                self.revision,
+                Actor::local(Channel::Ui),
+                id,
+                source,
+                self.evaluation.as_ref(),
+            )
+        } else {
+            prepare_edit_with_report(
+                session,
+                self.revision,
+                Actor::local(Channel::Ui),
+                id,
+                source,
+                self.evaluation.as_ref(),
+            )
+        };
+        match prepared {
             Ok(result) => {
+                self.canonical_draft |= result.semantic.is_some();
                 self.preview_geometry = result.semantic.as_ref().and_then(|e| e.geometry().ok());
                 self.result = Some(result);
             }
@@ -417,12 +488,262 @@ impl ConstraintEditor {
             }
         }
     }
+    fn visible_solution(
+        &self,
+        session: &Session,
+        id: EntityId,
+        verify_hash: bool,
+    ) -> Result<&model::Sketch, String> {
+        let solved = if self.dirty() {
+            if self.owner != Some(id) || self.revision != session.revision() {
+                return Err("Discard the stale or other sketch draft before fixing a point".into());
+            }
+            let result = self
+                .result
+                .as_ref()
+                .ok_or("Resolve the current draft before fixing a point")?;
+            let preview = result
+                .preview
+                .as_ref()
+                .ok_or("Resolve the current draft before fixing a point")?;
+            session
+                .validate_preview(preview)
+                .map_err(|e| e.to_string())?;
+            if let Some(semantic) = &result.semantic
+                && (semantic.sketch != id
+                    || semantic.stamp.document != preview.document().id()
+                    || semantic.stamp.revision != session.revision()
+                    || (verify_hash
+                        && !semantic.is_current(preview.document(), session.revision()))
+                    || semantic.evaluation != result.evaluation)
+            {
+                return Err("The current draft solution is stale or mismatched".into());
+            }
+            result
+                .evaluation
+                .candidate
+                .as_ref()
+                .ok_or("Resolve the current draft before fixing a point")?
+        } else {
+            let current = self
+                .current
+                .as_ref()
+                .filter(|e| {
+                    e.sketch == id
+                        && e.stamp.document == session.document().id()
+                        && e.stamp.revision == session.revision()
+                        && (!verify_hash || e.is_current(session.document(), session.revision()))
+                })
+                .ok_or("Wait for the current sketch solution before fixing a point")?;
+            current
+                .solved()
+                .ok_or("The sketch has no current valid solution")?
+        };
+        Ok(solved)
+    }
+    fn visible_point(
+        &self,
+        session: &Session,
+        id: EntityId,
+        point: EntityId,
+    ) -> Result<[f64; 2], String> {
+        let solved = self.visible_solution(session, id, true)?;
+        let position = solved
+            .points
+            .iter()
+            .find(|p| p.id == point)
+            .ok_or("Fix requires a current sketch point")?
+            .position_mm;
+        if position.iter().any(|v| !v.is_finite() || v.abs() > 1e9) {
+            return Err("The current point position is invalid".into());
+        }
+        Ok(position)
+    }
+    fn display_positions(
+        &mut self,
+        session: &Session,
+        id: EntityId,
+    ) -> Option<Arc<BTreeMap<EntityId, [f64; 2]>>> {
+        let scope = (session.document().id(), session.revision(), id);
+        if self
+            .point_display
+            .as_ref()
+            .is_none_or(|cached| cached.scope != scope)
+        {
+            // Worker publications and Prepared previews are immutable. Paint
+            // checks their cheap scope/revision guards and reuses this map.
+            // Explicit Fix/adopt boundaries additionally verify source hashes.
+            let positions = self
+                .visible_solution(session, id, false)
+                .map(|s| Arc::new(s.points.iter().map(|p| (p.id, p.position_mm)).collect()));
+            self.point_display = Some(PointDisplay { scope, positions });
+        }
+        self.point_display
+            .as_ref()?
+            .positions
+            .as_ref()
+            .ok()
+            .cloned()
+    }
+    fn add_kind(
+        &self,
+        session: &Session,
+        id: EntityId,
+        source: &mut Source,
+        kind: Kind,
+    ) -> Result<(), String> {
+        if let Kind::Fix { point } = kind {
+            let position = self.visible_point(session, id, point)?;
+            source
+                .sketch
+                .points
+                .iter_mut()
+                .find(|p| p.id == point)
+                .ok_or("Fix requires a sketch point")?
+                .position_mm = position;
+        }
+        source.add_constraint(kind);
+        Ok(())
+    }
+    /// Adopt an already checked canonical operation without running the sketch
+    /// solver again. A diagnostic-only draft remains repairable without Apply.
+    pub(crate) fn accept_edit(
+        &mut self,
+        session: &Session,
+        id: EntityId,
+        edit: SketchEdit,
+        label: &str,
+    ) -> Result<(), String> {
+        if self.dirty() {
+            return Err(
+                "Apply or discard the current draft before previewing another operation".into(),
+            );
+        }
+        let label = label.trim();
+        if label.is_empty() || label.len() > 128 {
+            return Err("The operation needs a short Apply label".into());
+        }
+        let semantic = edit
+            .semantic
+            .as_ref()
+            .ok_or("Canonical operations require a semantic source preview")?;
+        if semantic.sketch != id
+            || semantic.stamp.document != session.document().id()
+            || semantic.stamp.revision != session.revision()
+        {
+            return Err("Operation preview belongs to a foreign or stale sketch".into());
+        }
+        if edit.evaluation != semantic.evaluation {
+            return Err("Operation solution and semantic preview disagree".into());
+        }
+        let source = semantic.canonical().clone();
+        let Some(EntityData::Sketch {
+            plane, definition, ..
+        }) = session.document().get(id).map(|e| &e.data)
+        else {
+            return Err("Select an existing sketch".into());
+        };
+        if definition.type_id != model::source::TYPE || *plane != semantic.plane {
+            return Err("Operation preview belongs to another sketch source or plane".into());
+        }
+        let schema = definition
+            .schema_version
+            .max(source.minimum_schema_version())
+            .max(2);
+        let mut edits = source
+            .replace(session.document(), id)
+            .map_err(|e| e.to_string())?;
+        for edit in &mut edits {
+            if let Mutation::Replace(entity) = edit
+                && let EntityData::Sketch { definition, .. } = &mut entity.data
+            {
+                definition.schema_version = schema;
+            }
+        }
+        let candidate = session
+            .document()
+            .edited(&edits)
+            .map_err(|e| e.to_string())?;
+        let candidate = multicad_core::parameters::evaluate(&candidate)
+            .map_err(|e| e.to_string())?
+            .document;
+        if !semantic.is_current(&candidate, session.revision()) {
+            return Err("Operation semantic source hash is foreign or stale".into());
+        }
+        let (_, frame, plane) = Source::read_for_evaluation(
+            &candidate,
+            id,
+            session.revision(),
+            self.evaluation.as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
+        if semantic.frame != frame || semantic.plane != plane {
+            return Err("Operation preview uses a different current sketch frame".into());
+        }
+        if let Some(preview) = &edit.preview {
+            session
+                .validate_preview(preview)
+                .map_err(|e| e.to_string())?;
+            if preview.document() != &candidate || semantic.solved().is_none() {
+                return Err("Operation preview and checked source candidate disagree".into());
+            }
+        } else if semantic.solved().is_some() {
+            return Err("A valid operation solution needs its owned source preview".into());
+        }
+        let geometry = if let Some(solved) = semantic.solved() {
+            let success = matches!(
+                semantic.evaluation.diagnostics.state,
+                SolveState::FullyConstrained | SolveState::Underconstrained
+            );
+            if !success || !solution_matches_source(&source, solved) {
+                return Err(
+                    "Operation solution does not match its canonical source geometry".into(),
+                );
+            }
+            Source {
+                u: source.u,
+                sketch: solved.clone(),
+            }
+            .validate()
+            .map_err(|e| e.to_string())?;
+            Some(semantic.geometry().map_err(|e| e.to_string())?)
+        } else {
+            if matches!(
+                semantic.evaluation.diagnostics.state,
+                SolveState::FullyConstrained | SolveState::Underconstrained
+            ) {
+                return Err("Operation has an inconsistent solution status".into());
+            }
+            None
+        };
+        self.owner = Some(id);
+        self.revision = session.revision();
+        self.draft = Some(source);
+        self.result = Some(edit);
+        self.preview_geometry = geometry;
+        self.error = None;
+        self.apply_label = label.into();
+        self.canonical_draft = true;
+        self.point_display = None;
+        self.dimension_fields.clear();
+        self.selection.clear();
+        self.last_element = None;
+        Ok(())
+    }
     pub fn apply(&mut self, session: &mut Session) -> Result<(), String> {
         self.validate_frame(
             session,
             self.owner
                 .ok_or("Choose a sketch before applying constraints")?,
         )?;
+        let preview = self
+            .result
+            .as_ref()
+            .and_then(|r| r.preview.as_ref())
+            .ok_or("Resolve the draft before applying")?;
+        session
+            .validate_preview(preview)
+            .map_err(|e| e.to_string())?;
         let preview = self
             .result
             .as_mut()
@@ -544,6 +865,7 @@ impl ConstraintEditor {
             self.result = None;
             self.error = None;
             self.dimension_fields.clear();
+            self.point_display = None;
         }
         let mut source = if let Some(draft) = &self.draft {
             draft.clone()
@@ -596,6 +918,7 @@ impl ConstraintEditor {
                 "Document changed. Discard this stale draft and retry.",
             );
         }
+        let point_positions = self.display_positions(session, id);
         ui.collapsing("Select geometry (in order)", |ui| {
             if ui.small_button("Clear selection").clicked() {
                 self.selection.clear();
@@ -604,12 +927,13 @@ impl ConstraintEditor {
                 if ui
                     .selectable_label(
                         self.selected(p.id),
-                        format!(
-                            "P{} · {:.2}, {:.2}",
-                            i + 1,
-                            p.position_mm[0],
-                            p.position_mm[1]
-                        ),
+                        point_positions
+                            .as_ref()
+                            .and_then(|points| points.get(&p.id))
+                            .map(|p| format!("P{} · {:.2}, {:.2}", i + 1, p[0], p[1]))
+                            .unwrap_or_else(|| {
+                                format!("P{} · waiting for current solution", i + 1)
+                            }),
                     )
                     .clicked()
                 {
@@ -632,6 +956,7 @@ impl ConstraintEditor {
             }
         });
         let mut changed = false;
+        let mut canonical_intent = false;
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("constraint-tool")
                 .selected_text(self.tool.label())
@@ -653,8 +978,14 @@ impl ConstraintEditor {
             {
                 match self.tool.kind(&self.selection, self.value, &self.unit) {
                     Ok(kind) => {
-                        source.add_constraint(kind);
-                        changed = true;
+                        let fix = matches!(kind, Kind::Fix { .. });
+                        match self.add_kind(session, id, &mut source, kind) {
+                            Ok(()) => {
+                                changed = true;
+                                canonical_intent |= fix;
+                            }
+                            Err(error) => self.error = Some(error),
+                        }
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -743,14 +1074,14 @@ impl ConstraintEditor {
             }
         }
         if changed {
-            self.prepare(session, id, source);
+            self.prepare_source(session, id, source, canonical_intent);
         }
         if self.dirty() {
             ui.horizontal(|ui| {
                 let ready = self.revision == session.revision()
                     && self.result.as_ref().is_some_and(|r| r.preview.is_some());
                 if ui
-                    .add_enabled(ready, egui::Button::new("Apply constraints"))
+                    .add_enabled(ready, egui::Button::new(&self.apply_label))
                     .clicked()
                     && let Err(e) = self.apply(session)
                 {
@@ -1145,5 +1476,570 @@ mod tests {
             .undo(session.revision(), Actor::local(Channel::Ui))
             .unwrap();
         assert_eq!(session.document(), &before);
+    }
+
+    fn bound_rectangle() -> (Session, EntityId, EntityId, EntityId) {
+        use multicad_core::{
+            document::{Entity, EntityData, Mutation},
+            parameters::BoundExpression,
+        };
+        let (mut session, id, mut source, line) = setup();
+        let width = Entity::new(
+            "width",
+            EntityData::Parameter {
+                expression: "80".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Add parameter".into(),
+                edits: vec![Mutation::Insert(width.clone())],
+            })
+            .unwrap();
+        source.add_constraint(Kind::Fix {
+            point: source.sketch.points[0].id,
+        });
+        source.add_constraint(Kind::Length {
+            line,
+            dimension: Dimension::Expression {
+                expression: BoundExpression::bind(session.document(), "=$width", "mm", None)
+                    .unwrap(),
+            },
+        });
+        source.add_constraint(Kind::Length {
+            line: source.sketch.curves[1].id,
+            dimension: Dimension::Literal {
+                value: 60.,
+                unit: "mm".into(),
+            },
+        });
+        let point = source.sketch.points[2].id;
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Bind rectangle".into(),
+                edits: source.replace(session.document(), id).unwrap(),
+            })
+            .unwrap();
+        set_width(&mut session, width.id, "160");
+        (session, id, point, width.id)
+    }
+    fn set_width(session: &mut Session, id: EntityId, value: &str) {
+        let mut entity = session.document().get(id).unwrap().clone();
+        let EntityData::Parameter { expression, .. } = &mut entity.data else {
+            panic!("parameter")
+        };
+        *expression = value.into();
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Set width".into(),
+                edits: vec![Mutation::Replace(entity)],
+            })
+            .unwrap();
+    }
+    fn current(session: &Session, id: EntityId) -> Arc<EvaluatedSketch> {
+        Arc::new(
+            multicad_solver::evaluate_document_sketch(
+                session.document(),
+                session.revision(),
+                id,
+                None,
+            )
+            .unwrap(),
+        )
+    }
+    fn source(session: &Session, id: EntityId) -> Source {
+        Source::read_for_evaluation(session.document(), id, session.revision(), None)
+            .unwrap()
+            .0
+    }
+    fn show_constraints(
+        ctx: &egui::Context,
+        editor: &mut ConstraintEditor,
+        session: &mut Session,
+        id: EntityId,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600., 1400.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| editor.show(ui, session, id, None),
+        );
+        output.textures_delta.clear();
+        output
+    }
+    fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing UI text {label}"))
+    }
+    #[test]
+    fn add_fix_click_captures_visible_parameter_point_without_baking_other_source_and_undo_restores_it()
+     {
+        let (mut session, id, point, _) = bound_rectangle();
+        let before = session.document().clone();
+        let authored = source(&session, id);
+        assert_eq!(authored.sketch.points[2].position_mm, [80., 60.]);
+        let mut editor = ConstraintEditor::default();
+        editor.set_current(Some(current(&session, id)));
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(|style| style.animation_time = 0.);
+        let output = show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        let header = text_position(&output, "Select geometry (in order)");
+        show_constraints(
+            &ctx,
+            &mut editor,
+            &mut session,
+            id,
+            vec![
+                egui::Event::PointerMoved(header),
+                egui::Event::PointerButton {
+                    pos: header,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: header,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let output = show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        text_position(&output, "P3 · 160.00, 60.00");
+        assert_eq!(
+            source(&session, id).sketch.points[2].position_mm,
+            [80., 60.]
+        );
+        let cached = editor.display_positions(&session, id).unwrap();
+        show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        assert!(Arc::ptr_eq(
+            &cached,
+            &editor.display_positions(&session, id).unwrap()
+        ));
+        editor.tool = Tool::Fix;
+        editor.selection = vec![point];
+        let output = show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        let p = text_position(&output, "Add");
+        show_constraints(
+            &ctx,
+            &mut editor,
+            &mut session,
+            id,
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert!(editor.preview_document().is_some(), "{:?}", editor.error);
+        assert_eq!(session.document(), &before);
+        let captured = editor.semantic_preview().unwrap().canonical();
+        assert_eq!(captured.sketch.points[2].position_mm, [160., 60.]);
+        for (old, new) in authored.sketch.points.iter().zip(&captured.sketch.points) {
+            if old.id != point {
+                assert_eq!(old, new);
+            }
+        }
+        assert_eq!(captured.sketch.curves, authored.sketch.curves);
+        assert_eq!(
+            captured.sketch.constraints[..authored.sketch.constraints.len()],
+            authored.sketch.constraints
+        );
+        assert!(
+            matches!(captured.sketch.constraints.last().unwrap().kind,Kind::Fix {point:p} if p==point)
+        );
+        let revision = session.revision();
+        editor.apply(&mut session).unwrap();
+        assert_eq!(session.revision(), revision + 1);
+        let evaluated = current(&session, id);
+        assert_eq!(
+            evaluated
+                .solved()
+                .unwrap()
+                .points
+                .iter()
+                .find(|p| p.id == point)
+                .unwrap()
+                .position_mm,
+            [160., 60.]
+        );
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn fix_uses_visible_draft_candidate_and_rejects_missing_stale_or_conflicting_solutions() {
+        use model::binding::{DimensionInput, draft_dimension};
+        let (mut session, id, point, width) = bound_rectangle();
+        let original = source(&session, id);
+        let mut editor = ConstraintEditor::default();
+        let mut missing = original.clone();
+        assert!(
+            editor
+                .add_kind(&session, id, &mut missing, Kind::Fix { point })
+                .is_err()
+        );
+        assert_eq!(missing, original);
+        editor.set_current(Some(current(&session, id)));
+        set_width(&mut session, width, "180");
+        let mut stale = source(&session, id);
+        let before = stale.clone();
+        assert!(
+            editor
+                .add_kind(&session, id, &mut stale, Kind::Fix { point })
+                .is_err()
+        );
+        assert_eq!(stale, before);
+        editor.set_current(Some(current(&session, id)));
+        let mut draft = source(&session, id);
+        let constraint = draft
+            .sketch
+            .constraints
+            .iter()
+            .find(|c| {
+                matches!(c.kind, Kind::Length { .. })
+                    && c.kind.dimension().is_some_and(|d| d.expression().is_some())
+            })
+            .unwrap()
+            .id;
+        draft = draft_dimension(
+            session.document(),
+            &draft,
+            constraint,
+            &DimensionInput::Expression {
+                text: "=$width + 20 mm".into(),
+                unit: "mm".into(),
+            },
+            false,
+        )
+        .unwrap();
+        editor.prepare(&session, id, draft.clone());
+        let visible = editor
+            .semantic_preview()
+            .unwrap()
+            .solved()
+            .unwrap()
+            .points
+            .iter()
+            .find(|p| p.id == point)
+            .unwrap()
+            .position_mm;
+        assert!((visible[0] - 200.).abs() < 1e-8 && (visible[1] - 60.).abs() < 1e-8);
+        editor
+            .add_kind(&session, id, &mut draft, Kind::Fix { point })
+            .unwrap();
+        assert_eq!(draft.sketch.points[2].position_mm, visible);
+        editor.prepare_source(&session, id, draft.clone(), true);
+        assert!(editor.preview_document().is_some());
+        draft.add_constraint(Kind::Length {
+            line: draft.sketch.curves[0].id,
+            dimension: Dimension::Literal {
+                value: 999.,
+                unit: "mm".into(),
+            },
+        });
+        editor.prepare(&session, id, draft.clone());
+        assert!(editor.preview_document().is_none());
+        let before = draft.clone();
+        assert!(
+            editor
+                .add_kind(&session, id, &mut draft, Kind::Fix { point })
+                .is_err()
+        );
+        assert_eq!(draft, before);
+    }
+    fn operation(session: &Session, id: EntityId) -> SketchEdit {
+        use multicad_core::sketch_pattern::{Pattern, PatternOptions, PatternRequest};
+        let request = PatternRequest {
+            selection: source(session, id)
+                .sketch
+                .curves
+                .iter()
+                .map(|c| c.id)
+                .collect(),
+            pattern: Pattern::Linear {
+                step_mm: [300., 0.],
+                count: 2,
+            },
+            options: PatternOptions::default(),
+        };
+        multicad_solver::prepare_pattern(
+            session,
+            session.revision(),
+            Actor {
+                id: "operation-client".into(),
+                channel: Channel::Mcp,
+            },
+            id,
+            None,
+            &request,
+        )
+        .unwrap()
+        .edit
+    }
+    #[test]
+    fn checked_operation_adoption_keeps_original_preview_apply_label_and_one_undo_without_second_solve()
+     {
+        let (session, id, _, _) = bound_rectangle();
+        let mut session = Session::new(session.document().clone()).unwrap();
+        let before = session.document().clone();
+        let edit = operation(&session, id);
+        let points = edit.evaluation.candidate.as_ref().unwrap().points.as_ptr();
+        let expected_source = edit.semantic.as_ref().unwrap().canonical().clone();
+        let mut editor = ConstraintEditor::default();
+        editor
+            .accept_edit(&session, id, edit, "Apply pattern")
+            .unwrap();
+        assert_eq!(session.document(), &before);
+        assert_eq!(
+            editor
+                .result
+                .as_ref()
+                .unwrap()
+                .evaluation
+                .candidate
+                .as_ref()
+                .unwrap()
+                .points
+                .as_ptr(),
+            points,
+            "Adoption must retain the already checked solution"
+        );
+        assert_eq!(editor.draft.as_ref(), Some(&expected_source));
+        assert!(editor.semantic_preview_geometry().is_some());
+        let ctx = egui::Context::default();
+        let output = show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        text_position(&output, "Apply pattern");
+        assert_eq!(editor.apply_label, "Apply pattern");
+        editor.apply(&mut session).unwrap();
+        assert_eq!(session.revision(), 1);
+        assert_eq!(session.activity().count(), 1);
+        assert_eq!(
+            session.activity().last().unwrap().actor.id,
+            "operation-client"
+        );
+        assert_eq!(source(&session, id), expected_source);
+        assert_eq!(editor.apply_label, "Apply constraints");
+        session.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn adoption_rejects_foreign_sessions_and_mismatched_metadata_without_overwriting_existing_drafts()
+     {
+        let (session, id, _, _) = bound_rectangle();
+        let session = Session::new(session.document().clone()).unwrap();
+        let foreign = Session::new(session.document().clone()).unwrap();
+        let mut editor = ConstraintEditor::default();
+        assert!(
+            editor
+                .accept_edit(&session, id, operation(&foreign, id), "Apply pattern")
+                .unwrap_err()
+                .contains("different session")
+        );
+        assert!(!editor.dirty());
+        let mut edit = operation(&session, id);
+        edit.semantic.as_mut().unwrap().stamp.source_hash =
+            multicad_core::project_file::ContentHash::of(b"forged");
+        assert!(
+            editor
+                .accept_edit(&session, id, edit, "Apply pattern")
+                .is_err()
+        );
+        assert!(!editor.dirty());
+        let mut edit = operation(&session, id);
+        edit.semantic.as_mut().unwrap().sketch = EntityId::new();
+        assert!(
+            editor
+                .accept_edit(&session, id, edit, "Apply pattern")
+                .is_err()
+        );
+        assert!(!editor.dirty());
+        let mut edit = operation(&session, id);
+        edit.semantic.as_mut().unwrap().frame.origin[2] = 1.;
+        assert!(
+            editor
+                .accept_edit(&session, id, edit, "Apply pattern")
+                .is_err()
+        );
+        assert!(!editor.dirty());
+        let mut edit = operation(&session, id);
+        edit.evaluation.candidate.as_mut().unwrap().points[0].position_mm = [999., 999.];
+        assert!(
+            editor
+                .accept_edit(&session, id, edit, "Apply pattern")
+                .is_err()
+        );
+        assert!(!editor.dirty());
+        editor
+            .accept_edit(&session, id, operation(&session, id), "Apply pattern")
+            .unwrap();
+        let retained = editor.draft.clone();
+        assert!(
+            editor
+                .accept_edit(&session, id, operation(&session, id), "Apply pattern")
+                .is_err()
+        );
+        assert_eq!(editor.draft, retained);
+        editor.discard();
+        assert_eq!(editor.apply_label, "Apply constraints");
+        let (plain, plain_id, plain_source, _) = setup();
+        let edit = prepare_edit(
+            &plain,
+            plain.revision(),
+            Actor::local(Channel::Ui),
+            plain_id,
+            plain_source,
+        )
+        .unwrap();
+        assert!(edit.semantic.is_none());
+        assert!(
+            editor
+                .accept_edit(&plain, plain_id, edit, "Apply move")
+                .is_err()
+        );
+        assert!(!editor.dirty());
+    }
+    #[test]
+    fn diagnostic_operation_drafts_are_repairable_and_stale_apply_never_commits() {
+        let (session, id, _, width) = bound_rectangle();
+        let mut session = Session::new(session.document().clone()).unwrap();
+        let before = session.document().clone();
+        let mut invalid = source(&session, id);
+        invalid.add_constraint(Kind::Length {
+            line: invalid.sketch.curves[0].id,
+            dimension: Dimension::Literal {
+                value: 999.,
+                unit: "mm".into(),
+            },
+        });
+        let edit = multicad_solver::prepare_canonical_edit(
+            &session,
+            0,
+            Actor::local(Channel::Ui),
+            id,
+            invalid.clone(),
+            None,
+        )
+        .unwrap();
+        assert!(edit.preview.is_none());
+        let mut editor = ConstraintEditor::default();
+        editor
+            .accept_edit(&session, id, edit, "Apply move")
+            .unwrap();
+        assert!(editor.dirty());
+        assert_eq!(editor.draft, Some(invalid));
+        assert!(editor.preview_document().is_none());
+        assert!(editor.apply(&mut session).is_err());
+        assert_eq!(session.document(), &before);
+        editor.discard();
+        let edit = operation(&session, id);
+        editor
+            .accept_edit(&session, id, edit, "Apply pattern")
+            .unwrap();
+        set_width(&mut session, width, "180");
+        let changed = session.document().clone();
+        assert!(editor.apply(&mut session).is_err());
+        assert_eq!(session.document(), &changed);
+        assert!(editor.dirty());
+        assert!(editor.result.as_ref().unwrap().preview.is_some());
+        editor.discard();
+        let stale = operation(&session, id);
+        set_width(&mut session, width, "200");
+        assert!(
+            editor
+                .accept_edit(&session, id, stale, "Apply pattern")
+                .is_err()
+        );
+        assert!(!editor.dirty());
+    }
+    #[test]
+    fn literal_fix_draft_keeps_canonical_mode_through_later_constraint_repairs() {
+        let (mut session, id, mut source, edge) = setup();
+        let corner = source.sketch.points[2].id;
+        let a = source.add_point([200., 0.]);
+        let b = source.add_point([219., 1.]);
+        let unrelated = source.add_line(a, b);
+        source.add_constraint(Kind::Length {
+            line: unrelated,
+            dimension: Dimension::Literal {
+                value: 30.,
+                unit: "mm".into(),
+            },
+        });
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Rough unrelated line".into(),
+                edits: source.replace(session.document(), id).unwrap(),
+            })
+            .unwrap();
+        let before = session.document().clone();
+        let mut editor = ConstraintEditor::default();
+        editor.set_current(Some(current(&session, id)));
+        editor
+            .add_kind(&session, id, &mut source, Kind::Fix { point: corner })
+            .unwrap();
+        editor.prepare_source(&session, id, source.clone(), true);
+        assert!(editor.semantic_preview().is_some());
+        assert!(editor.canonical_draft);
+        editor.set_evaluation(Some(ReferenceReport {
+            revision: session.revision(),
+            entries: vec![],
+        }));
+        let mut updated = editor.draft.clone().unwrap();
+        updated.add_constraint(Kind::Length {
+            line: edge,
+            dimension: Dimension::Literal {
+                value: 999.,
+                unit: "mm".into(),
+            },
+        });
+        updated.sketch.constraints.last_mut().unwrap().reference = true;
+        editor.prepare(&session, id, updated.clone());
+        assert_eq!(editor.semantic_preview().unwrap().canonical(), &updated);
+        assert_eq!(
+            editor.semantic_preview().unwrap().canonical().sketch.points[4..],
+            source.sketch.points[4..]
+        );
+        assert_eq!(session.document(), &before);
+        assert_eq!(editor.apply_label, "Apply constraints");
+        editor.discard();
+        assert!(!editor.canonical_draft);
     }
 }
