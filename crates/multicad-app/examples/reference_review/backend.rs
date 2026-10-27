@@ -218,6 +218,8 @@ pub struct Evaluation {
     pub report: ReferenceReport,
     pub source_volume_mm3: f64,
     pub display_volume_mm3: f64,
+    /// Authoring geometry coordinates before instance placement. Placed world
+    /// attachment frames are available through the Scene topology snapshot.
     pub hole_center_world: Option<[f64; 3]>,
 }
 /// Native B-reps are created and dropped on the calling worker thread. Only
@@ -351,13 +353,16 @@ pub fn evaluate(
         .entities()
         .find(|e| matches!(e.data, EntityData::Instance { .. }))
         .ok_or("Missing review instance")?;
+    let EntityData::Instance { placement, .. } = instance.data else {
+        unreachable!("filtered instance")
+    };
     let scene = Arc::new(viewport::Scene::new(
         stamp,
         geometries,
         vec![viewport::Instance {
             id: instance.id,
             geometry: display_id,
-            transform: Default::default(),
+            transform: viewport::Transform::from_placement(placement)?,
             color: [137, 174, 199, 255],
         }],
     )?);

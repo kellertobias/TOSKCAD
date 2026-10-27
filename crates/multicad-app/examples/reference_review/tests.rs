@@ -48,6 +48,105 @@ fn evaluated(session: &Session) -> Evaluation {
     evaluate(session.document(), stamp(session), || Ok(())).unwrap()
 }
 #[test]
+fn placed_instance_keeps_raw_producer_frames_and_exposes_true_world_attachment_and_hole() {
+    let mut session = Session::new(document().unwrap()).unwrap();
+    let mut instance = session
+        .document()
+        .entities()
+        .find(|e| matches!(e.data, EntityData::Instance { .. }))
+        .unwrap()
+        .clone();
+    let EntityData::Instance { placement, .. } = &mut instance.data else {
+        unreachable!()
+    };
+    *placement = Placement {
+        translation_mm: [10., 20., 30.],
+        rotation_xyzw: [
+            0.,
+            0.,
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+        ],
+    };
+    let instance_id = instance.id;
+    session
+        .apply(Request {
+            expected_revision: 0,
+            actor: Actor::local(Channel::Ui),
+            label: "Place review instance".into(),
+            edits: vec![Mutation::Replace(instance)],
+        })
+        .unwrap();
+    let result = evaluated(&session);
+    assert!(result.report.all_resolved());
+    let diagnostic = &result.report.entries[0];
+    let snapshots = result.scene.reference_snapshots();
+    let source = &snapshots[&diagnostic.source];
+    let world = &snapshots[&instance_id];
+    let top = |snapshot: &TopologySnapshot| {
+        snapshot
+            .elements
+            .iter()
+            .find(|e| {
+                e.key.kind == TopologyKind::Face
+                    && e.origins.contains(&Origin {
+                        source: diagnostic.source,
+                        role: "cap.end".into(),
+                    })
+            })
+            .unwrap()
+            .key
+    };
+    let mut intent = GeometryIntent::capture(source, top(source)).unwrap();
+    intent.attachment = Some(Attachment {
+        anchor: Origin {
+            source: diagnostic.source,
+            role: "cap.end".into(),
+        },
+        offset_mm: [20., 25., 0.],
+        angle_rad: 0.,
+    });
+    let Resolution::Resolved {
+        frame: Some(raw), ..
+    } = resolve(&intent, source, session.revision())
+    else {
+        panic!("source frame")
+    };
+    assert_eq!(raw.origin_mm, [20., 25., 18.]);
+    let Resolution::Resolved {
+        frame: Some(placed),
+        ..
+    } = resolve(&intent, world, session.revision())
+    else {
+        panic!("placed frame")
+    };
+    for (actual, expected) in placed.origin_mm.into_iter().zip([-15., 40., 48.]) {
+        near(actual, expected);
+    }
+    for (actual, expected) in placed.u.into_iter().zip([0., 1., 0.]) {
+        near(actual, expected);
+    }
+    // The genuine drilled void moves with the same rigid instance transform.
+    assert!(
+        result
+            .scene
+            .pick_face(Ray::new([-15., 40., 100.], [0., 0., -1.]).unwrap())
+            .is_none()
+    );
+    let cap = result
+        .scene
+        .pick_face(Ray::new([0., 30., 100.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    for (actual, expected) in cap.point_mm.into_iter().zip([0., 30., 48.]) {
+        near(actual, expected);
+    }
+    let isolated = result.scene.isolated_source(instance_id).unwrap();
+    let hit = isolated
+        .pick_face(Ray::new([0., 30., 100.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    near(hit.point_mm[2], 48.);
+}
+#[test]
 fn face_drill_follows_dimensions_split_repair_is_explicit_and_save_load_preserves_it() {
     let mut session = Session::new(document().unwrap()).unwrap();
     let initial = evaluated(&session);
