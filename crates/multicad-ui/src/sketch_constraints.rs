@@ -1192,11 +1192,11 @@ impl ConstraintEditor {
             self.error = Some(error);
         }
         if self.dirty() {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let ready = self.revision == session.revision()
                     && self.result.as_ref().is_some_and(|r| r.preview.is_some());
                 if ui
-                    .add_enabled(ready, egui::Button::new(&self.apply_label))
+                    .add_enabled(ready, egui::Button::new(&self.apply_label).wrap())
                     .clicked()
                     && let Err(e) = self.apply(session)
                 {
@@ -1908,6 +1908,69 @@ mod tests {
         assert!(editor.error.as_ref().unwrap().contains("finite numbers"));
         assert!(!editor.dirty());
         assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn resizable_inspector_footer_stays_narrow_across_frames_and_long_apply_labels() {
+        let (session, id, point) = spline_point_session();
+        let document = session.document().clone();
+        for scale in [1., 2.] {
+            for width in [190., 220.] {
+                for label in [
+                    "Apply constraints",
+                    "Apply point position",
+                    "Apply rectangular pattern with copied constraints",
+                ] {
+                    let ctx = egui::Context::default();
+                    ctx.set_pixels_per_point(scale);
+                    let mut session = Session::new(document.clone()).unwrap();
+                    let mut editor = ConstraintEditor {
+                        selection: vec![point],
+                        ..Default::default()
+                    };
+                    editor.set_current(Some(current(&session, id)));
+                    editor
+                        .preview_point_position(&session, id, point, [7., 12.])
+                        .unwrap();
+                    editor.apply_label = label.into();
+                    for _ in 0..120 {
+                        let mut panel_width = 0.;
+                        let mut viewport_width = 0.;
+                        ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(1000., 900.),
+                                )),
+                                focused: true,
+                                ..Default::default()
+                            },
+                            |ui| {
+                                let panel = egui::Panel::right("narrow-constraint-inspector")
+                                    .default_size(width)
+                                    .resizable(true)
+                                    .show(ui, |ui| editor.show(ui, &mut session, id, None));
+                                panel_width = panel.response.rect.width();
+                                egui::CentralPanel::default().show(ui, |ui| {
+                                    viewport_width = ui.available_width();
+                                });
+                            },
+                        )
+                        .drop_without_applying_deltas();
+                        assert!(
+                            panel_width <= width + 1.,
+                            "Inspector grew to {panel_width} from {width} at scale {scale} for {label}"
+                        );
+                        assert!(
+                            viewport_width >= 1000. - width - 20.,
+                            "Inspector reduced viewport to {viewport_width}"
+                        );
+                    }
+                    assert_eq!(session.document(), &document);
+                    assert_eq!(session.revision(), 0);
+                    assert!(editor.preview_document().is_some());
+                }
+            }
+        }
     }
     #[test]
     fn point_position_shows_current_coordinates_and_driving_conflicts_have_no_apply() {
