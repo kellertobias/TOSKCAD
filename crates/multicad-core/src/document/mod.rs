@@ -182,3 +182,47 @@ fn valid_name(name: &str) -> Result<(), DocumentError> {
         Ok(())
     }
 }
+
+/// Ordered source edits committed only after the complete candidate validates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "operation",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum Mutation {
+    Insert(Entity),
+    Replace(Entity),
+    Remove(EntityId),
+    RenameDocument(String),
+}
+impl Document {
+    pub fn edited(&self, edits: &[Mutation]) -> Result<Self, DocumentError> {
+        let mut candidate = self.clone();
+        for edit in edits {
+            match edit {
+                Mutation::Insert(entity) => {
+                    if candidate.entities.contains_key(&entity.id) {
+                        return Err(DocumentError::Duplicate(entity.id));
+                    }
+                    candidate.entities.insert(entity.id, entity.clone());
+                }
+                Mutation::Replace(entity) => {
+                    if !candidate.entities.contains_key(&entity.id) {
+                        return Err(DocumentError::Missing(entity.id));
+                    }
+                    candidate.entities.insert(entity.id, entity.clone());
+                }
+                Mutation::Remove(id) => {
+                    if candidate.entities.remove(id).is_none() {
+                        return Err(DocumentError::Missing(*id));
+                    }
+                }
+                Mutation::RenameDocument(name) => candidate.name = name.clone(),
+            }
+        }
+        candidate.validate()?;
+        Ok(candidate)
+    }
+}

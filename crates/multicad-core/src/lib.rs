@@ -3,6 +3,7 @@
 //! Canonical source definitions and dependency identities. No GUI, solver IDs,
 //! native pointers or tessellations are part of the document.
 
+pub mod commands;
 pub mod document;
 pub mod parameters;
 
