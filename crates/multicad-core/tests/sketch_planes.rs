@@ -12,6 +12,99 @@ fn actor() -> Actor {
 fn session() -> Session {
     Session::new(Document::new("Sketch planes").unwrap()).unwrap()
 }
+#[test]
+fn new_sketch_and_datum_join_active_component_atomically_and_reused_plane_stays_owned() {
+    use multicad_core::hierarchy::{self, Action, ContainerKind, Index};
+    let mut session = session();
+    let component = hierarchy::prepare(
+        &session,
+        0,
+        actor(),
+        Action::Create {
+            kind: ContainerKind::Component,
+            name: "Cabinet".into(),
+            parent: None,
+        },
+    )
+    .unwrap();
+    let owner = component.created.unwrap();
+    session.commit(component.prepared).unwrap();
+    let active = hierarchy::prepare(
+        &session,
+        session.revision(),
+        actor(),
+        Action::SetActive {
+            component: Some(owner),
+        },
+    )
+    .unwrap();
+    session.commit(active.prepared).unwrap();
+    let before = session.document().clone();
+    let created = sketch::prepare_new(
+        &session,
+        session.revision(),
+        actor(),
+        "Front",
+        CreationPlane::Datum(Datum::Xy),
+        PlaneOptions::default(),
+    )
+    .unwrap();
+    let (sketch, plane) = (created.sketch, created.plane);
+    assert_eq!(session.document(), &before, "Preparation changed ownership");
+    let index = Index::new(created.prepared.document()).unwrap();
+    assert_eq!(index.parent(sketch).unwrap(), Some(owner));
+    assert_eq!(index.parent(plane).unwrap(), Some(owner));
+    session.commit(created.prepared).unwrap();
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(
+        session.document(),
+        &before,
+        "Creation needs more than one undo"
+    );
+    session.redo(session.revision(), actor()).unwrap();
+    let sibling = hierarchy::prepare(
+        &session,
+        session.revision(),
+        actor(),
+        Action::Create {
+            kind: ContainerKind::Component,
+            name: "Sibling".into(),
+            parent: None,
+        },
+    )
+    .unwrap();
+    let sibling_id = sibling.created.unwrap();
+    session.commit(sibling.prepared).unwrap();
+    let active = hierarchy::prepare(
+        &session,
+        session.revision(),
+        actor(),
+        Action::SetActive {
+            component: Some(sibling_id),
+        },
+    )
+    .unwrap();
+    session.commit(active.prepared).unwrap();
+    let next = sketch::prepare_new(
+        &session,
+        session.revision(),
+        actor(),
+        "Reference front",
+        CreationPlane::Existing {
+            id: plane,
+            report: None,
+        },
+        PlaneOptions::default(),
+    )
+    .unwrap();
+    let index = Index::new(next.prepared.document()).unwrap();
+    assert_eq!(index.parent(next.sketch).unwrap(), Some(sibling_id));
+    assert_eq!(
+        index.parent(plane).unwrap(),
+        Some(owner),
+        "Reusing a datum moved its ownership"
+    );
+}
 fn near(a: [f64; 3], b: [f64; 3]) {
     for (actual, expected) in a.into_iter().zip(b) {
         assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");

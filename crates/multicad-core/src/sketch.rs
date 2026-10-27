@@ -453,7 +453,7 @@ pub fn prepare_new(
     );
     let sketch_id = sketch.id;
     edits.push(Mutation::Insert(sketch));
-    let prepared = session.prepare(Request {
+    let prepared = session.prepare_scoped(Request {
         expected_revision,
         actor,
         label: "New sketch".into(),
