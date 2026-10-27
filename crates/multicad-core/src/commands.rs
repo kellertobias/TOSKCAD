@@ -220,6 +220,19 @@ impl Session {
         self.saved = Some(self.document().clone());
         Ok(())
     }
+    /// Acknowledge the exact immutable snapshot written by a completed file job.
+    /// Later source edits and history remain untouched; dirty compares against disk.
+    pub fn acknowledge_saved(&mut self, snapshot: &Document) -> Result<(), CommandError> {
+        if snapshot.id() != self.document().id() {
+            return Err(CommandError::new(
+                ErrorCode::InvalidRequest,
+                "Saved snapshot belongs to another document",
+            ));
+        }
+        let evaluated = parameters::evaluate(snapshot)?;
+        self.saved = Some(evaluated.document);
+        Ok(())
+    }
     fn validate_actor(actor: &Actor) -> Result<(), CommandError> {
         if actor.id.trim().is_empty() || actor.id.len() > 256 {
             Err(CommandError::new(

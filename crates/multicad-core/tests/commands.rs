@@ -240,3 +240,33 @@ fn atomic_final_validation_allows_dependency_rewrites_without_transient_cycles()
         .unwrap();
     assert!(updated.validate().is_ok());
 }
+
+#[test]
+fn delayed_save_acknowledges_disk_snapshot_without_rewinding_live_source_or_history() {
+    let mut session = Session::new(Document::new("Async save").unwrap()).unwrap();
+    session.mark_saved(0).unwrap();
+    session
+        .apply(request(
+            0,
+            Channel::Ui,
+            vec![Mutation::Insert(parameter("width", "600"))],
+        ))
+        .unwrap();
+    let written = session.document().clone();
+    session.undo(1, Actor::local(Channel::Ui)).unwrap();
+    let before = session.document().clone();
+    let history = session.activity().count();
+    session.acknowledge_saved(&written).unwrap();
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), 2);
+    assert_eq!(session.activity().count(), history);
+    assert!(session.dirty());
+    session.redo(2, Actor::local(Channel::Ui)).unwrap();
+    assert!(!session.dirty());
+    assert!(
+        session
+            .acknowledge_saved(&Document::new("Other").unwrap())
+            .is_err()
+    );
+    assert!(!session.dirty());
+}

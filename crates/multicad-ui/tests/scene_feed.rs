@@ -201,3 +201,44 @@ fn failed_or_malformed_replies_keep_visible_geometry_and_retry_changes_generatio
     assert!(!feed.pending());
     assert_eq!(feed.visible().unwrap().stamp(), fourth);
 }
+
+#[test]
+fn source_compilation_receives_preserved_immutable_project_resources() {
+    use multicad_core::project_file::{Payload, ProjectResources};
+    struct ResourceBackend(Arc<Mutex<Option<Arc<[u8]>>>>);
+    impl SceneBackend for ResourceBackend {
+        fn request(&mut self, _: &Document, _: SceneStamp) -> Result<(), String> {
+            panic!("resource-aware request must be used")
+        }
+        fn request_project(
+            &mut self,
+            _: &Document,
+            resources: &ProjectResources,
+            _: SceneStamp,
+        ) -> Result<(), String> {
+            *self.0.lock().unwrap() =
+                Some(resources.payloads.values().next().unwrap().bytes.clone());
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<SceneReply> {
+            None
+        }
+    }
+    let bytes: Arc<[u8]> = Arc::from([0, 1, 2, 255]);
+    let payload = Payload::new(
+        "kernel.opaque",
+        "application/octet-stream",
+        None,
+        bytes.clone(),
+    );
+    let mut resources = ProjectResources::default();
+    resources.payloads.insert(payload.descriptor.id, payload);
+    let captured = Arc::new(Mutex::new(None));
+    let mut feed = SceneFeed::default();
+    feed.set_backend(Box::new(ResourceBackend(captured.clone())));
+    feed.tick_project(&Document::new("Payload owner").unwrap(), &resources, 0, 0.);
+    assert!(Arc::ptr_eq(
+        captured.lock().unwrap().as_ref().unwrap(),
+        &bytes
+    ));
+}

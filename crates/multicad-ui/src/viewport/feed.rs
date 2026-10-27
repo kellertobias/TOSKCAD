@@ -3,6 +3,7 @@
 use super::{DisplayQuality, Refinement, Scene, SceneStamp, SceneStore};
 use multicad_core::{
     document::{Document, EntityId},
+    project_file::ProjectResources,
     references::{ReferenceGate, ReferenceReport, TopologySnapshot, inspect},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -19,6 +20,16 @@ pub struct SceneReply {
 pub trait SceneBackend {
     /// Accept a source snapshot for evaluation outside the UI event loop.
     fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String>;
+    /// Resource-aware providers receive immutable critical payloads and cache guards.
+    /// Legacy source-only providers retain their explicit implementation.
+    fn request_project(
+        &mut self,
+        document: &Document,
+        _resources: &ProjectResources,
+        stamp: SceneStamp,
+    ) -> Result<(), String> {
+        self.request(document, stamp)
+    }
     /// Never waits. Replies retain their request stamp, including failures.
     fn poll(&mut self) -> Option<SceneReply>;
     /// Optional display-only refinement of the current retained exact geometry.
@@ -127,6 +138,15 @@ impl SceneFeed {
         self.tick_at(document, revision, 0.);
     }
     pub fn tick_at(&mut self, document: &Document, revision: u64, now: f64) {
+        self.tick_project(document, &ProjectResources::default(), revision, now);
+    }
+    pub fn tick_project(
+        &mut self,
+        document: &Document,
+        resources: &ProjectResources,
+        revision: u64,
+        now: f64,
+    ) {
         let Some(backend) = self.backend.as_mut() else {
             return;
         };
@@ -153,7 +173,7 @@ impl SceneFeed {
             if let Err(error) = self
                 .store
                 .begin(stamp)
-                .and_then(|()| backend.request(document, stamp))
+                .and_then(|()| backend.request_project(document, resources, stamp))
             {
                 self.error = Some(error);
                 self.pending = false;
