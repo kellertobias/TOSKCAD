@@ -189,7 +189,7 @@ pub fn toolbar(ui: &mut egui::Ui, camera: &mut Camera, style: &mut DisplayStyle)
             ui.spacing_mut().button_padding = Vec2::new(3.0, 2.0);
             ui.horizontal(|ui| {
                 actions.home = icons::compact_button(ui, Icon::Home, "Home view").clicked();
-                actions.fit = icons::button(
+                actions.fit = icons::compact_button(
                     ui,
                     Icon::Fit,
                     "Fit selection, or all parts when nothing is selected",
@@ -206,48 +206,37 @@ pub fn toolbar(ui: &mut egui::Ui, camera: &mut Camera, style: &mut DisplayStyle)
                 } else {
                     "Orthographic · switch to perspective"
                 };
-                if icons::button(ui, icon, label).clicked() {
+                if icons::compact_button(ui, icon, label).clicked() {
                     camera.perspective = !camera.perspective;
                 }
-                let response = ui
-                    .menu_button("       ", |ui| {
-                        for choice in DisplayStyle::ALL {
-                            ui.horizontal(|ui| {
-                                let r = icons::button(ui, choice.icon(), choice.label());
-                                if ui
-                                    .selectable_label(*style == choice, choice.label())
-                                    .clicked()
-                                    || r.clicked()
-                                {
-                                    *style = choice;
-                                    ui.close();
-                                }
-                            });
-                        }
-                    })
-                    .response;
-                icons::paint_sized(
-                    ui,
-                    style.icon(),
-                    response.rect.center() - Vec2::new(3.0, 0.0),
-                    Color32::from_rgb(192, 207, 226),
-                    16.0,
-                );
-                let c = response.rect.right_center() - Vec2::new(4.0, 0.0);
-                ui.painter().line_segment(
-                    [c - Vec2::new(2.0, 1.0), c + Vec2::new(0.0, 1.0)],
-                    Stroke::new(1.2, Color32::LIGHT_GRAY),
-                );
-                ui.painter().line_segment(
-                    [c + Vec2::new(0.0, 1.0), c + Vec2::new(2.0, -1.0)],
-                    Stroke::new(1.2, Color32::LIGHT_GRAY),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Visual style")
+                let response = icons::compact_button(ui, style.icon(), "Visual style");
+                let c = response.rect.right_bottom() - Vec2::new(3.0, 4.0);
+                ui.painter().add(egui::Shape::line(
+                    vec![
+                        c - Vec2::new(2.0, 1.0),
+                        c + Vec2::new(0.0, 1.0),
+                        c + Vec2::new(2.0, -1.0),
+                    ],
+                    Stroke::new(1.0, Color32::LIGHT_GRAY),
+                ));
+                egui::Popup::menu(&response).show(|ui| {
+                    for choice in DisplayStyle::ALL {
+                        ui.horizontal(|ui| {
+                            let r = icons::compact_button(ui, choice.icon(), choice.label());
+                            if ui
+                                .selectable_label(*style == choice, choice.label())
+                                .clicked()
+                                || r.clicked()
+                            {
+                                *style = choice;
+                                ui.close();
+                            }
+                        });
+                    }
                 });
                 response.on_hover_text(format!("Visual style: {}", style.label()));
                 ui.separator();
-                actions.grid = icons::button(ui, Icon::Grid, "Configure XY grid").clicked();
+                actions.grid = icons::compact_button(ui, Icon::Grid, "Configure XY grid").clicked();
             });
         });
     actions

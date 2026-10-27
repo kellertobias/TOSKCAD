@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod controls;
 pub mod icons;
 pub mod navigation;
 // Native host and reusable interaction controls. Domain and kernel ownership
