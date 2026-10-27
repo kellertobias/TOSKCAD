@@ -1,0 +1,279 @@
+use super::backend::*;
+use multicad_core::{commands::*, document::*, references::*};
+use multicad_ui::{
+    application::DocumentStorage,
+    viewport::{Ray, SceneFeed, SceneStamp},
+};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+fn stamp(session: &Session) -> SceneStamp {
+    SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: session.revision() + 1,
+    }
+}
+fn change(session: &mut Session, values: &[(&str, &str)]) {
+    let edits = values
+        .iter()
+        .map(|(name, value)| {
+            let mut entity = session
+                .document()
+                .entities()
+                .find(|e| e.name == *name)
+                .expect("parameter")
+                .clone();
+            let EntityData::Parameter { expression, .. } = &mut entity.data else {
+                panic!("parameter")
+            };
+            *expression = (*value).into();
+            Mutation::Replace(entity)
+        })
+        .collect();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: Actor::local(Channel::Ui),
+            label: "Edit review parameters".into(),
+            edits,
+        })
+        .unwrap();
+}
+fn near(actual: f64, expected: f64) {
+    assert!((actual - expected).abs() < 1e-5, "{actual} != {expected}");
+}
+fn evaluated(session: &Session) -> Evaluation {
+    evaluate(session.document(), stamp(session), || Ok(())).unwrap()
+}
+#[test]
+fn face_drill_follows_dimensions_split_repair_is_explicit_and_save_load_preserves_it() {
+    let mut session = Session::new(document().unwrap()).unwrap();
+    let initial = evaluated(&session);
+    assert!(initial.report.all_resolved());
+    near(initial.source_volume_mm3, 100. * 60. * 18.);
+    near(
+        initial.display_volume_mm3,
+        100. * 60. * 18. - 9. * std::f64::consts::PI * 18.,
+    );
+    assert_eq!(initial.hole_center_world, Some([20., 25., 18.]));
+    let diagnostic = initial.report.entries.first().unwrap();
+    let address = diagnostic.address;
+    let panel = diagnostic.source;
+    let original_reference = diagnostic.intent.id;
+    let mut gate = ReferenceGate::default();
+    gate.consider(0, initial.scene.clone(), initial.report)
+        .unwrap();
+
+    change(
+        &mut session,
+        &[("panel_width", "120"), ("panel_height", "24")],
+    );
+    let resized = evaluated(&session);
+    assert!(resized.report.all_resolved());
+    assert_eq!(resized.hole_center_world, Some([20., 25., 24.]));
+    near(
+        resized.display_volume_mm3,
+        120. * 60. * 24. - 9. * std::f64::consts::PI * 24.,
+    );
+    gate.consider(session.revision(), resized.scene.clone(), resized.report)
+        .unwrap();
+    let last_valid = gate.visible().unwrap().clone();
+
+    change(&mut session, &[("topology_mode", "1")]);
+    let broken = evaluated(&session);
+    let Resolution::Ambiguous { candidates } = &broken.report.get(address).unwrap().resolution
+    else {
+        panic!("Cut must split the source top")
+    };
+    assert_eq!(candidates.len(), 2);
+    assert!(broken.hole_center_world.is_none());
+    assert_eq!(broken.display_volume_mm3, broken.source_volume_mm3);
+    assert!(
+        !gate
+            .consider(
+                session.revision(),
+                broken.scene.clone(),
+                broken.report.clone()
+            )
+            .unwrap()
+    );
+    assert!(Arc::ptr_eq(gate.visible().unwrap(), &last_valid));
+    let snapshot = broken.scene.reference_snapshots().remove(&panel).unwrap();
+    let candidate = broken
+        .scene
+        .isolated_source(panel)
+        .unwrap()
+        .pick_face(Ray::new([20., 25., 100.], [0., 0., -1.]).unwrap())
+        .unwrap()
+        .key;
+    assert!(candidates.contains(&candidate));
+    let before = session.document().clone();
+    let preview = prepare_repair(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        address,
+        &snapshot,
+        candidate,
+        None,
+    )
+    .unwrap();
+    assert_eq!(session.document(), &before);
+    assert!(preview.affected.iter().any(|id| {
+        session
+            .document()
+            .get(*id)
+            .is_some_and(|e| e.name == "Dependent through drilling")
+    }));
+    drop(preview);
+    assert_eq!(session.document(), &before);
+    let preview = prepare_repair(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        address,
+        &snapshot,
+        candidate,
+        None,
+    )
+    .unwrap();
+    session.commit(preview.prepared).unwrap();
+    let after = session.document().clone();
+    let repaired = evaluated(&session);
+    assert!(repaired.report.all_resolved());
+    assert_eq!(
+        repaired.report.get(address).unwrap().intent.id,
+        original_reference
+    );
+    assert_eq!(repaired.hole_center_world, Some([20., 25., 24.]));
+    near(
+        repaired.display_volume_mm3,
+        110. * 60. * 24. - 9. * std::f64::consts::PI * 24.,
+    );
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(session.document(), &before);
+    assert!(!evaluated(&session).report.all_resolved());
+    session
+        .redo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(session.document(), &after);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("repaired.multicad.json");
+    let mut storage = crate::files::SnapshotStore;
+    storage.save(&path, session.document()).unwrap();
+    let reopened = Session::new(storage.load(&path).unwrap()).unwrap();
+    let restored = evaluated(&reopened);
+    assert!(restored.report.all_resolved());
+    assert_eq!(
+        restored.report.get(address).unwrap().intent,
+        repaired.report.get(address).unwrap().intent
+    );
+    near(restored.display_volume_mm3, repaired.display_volume_mm3);
+}
+#[test]
+fn removed_top_is_unresolved_after_reload_and_never_uses_saved_plane_fallback() {
+    let mut session = Session::new(document().unwrap()).unwrap();
+    let initial = evaluated(&session);
+    let address = initial.report.entries[0].address;
+    change(&mut session, &[("topology_mode", "2")]);
+    let result = evaluated(&session);
+    assert_eq!(
+        result.report.get(address).unwrap().resolution,
+        Resolution::Missing
+    );
+    assert!(result.hole_center_world.is_none());
+    near(result.source_volume_mm3, 100. * 60. * 9.);
+    let bytes = serde_json::to_vec(session.document()).unwrap();
+    let reloaded: Document = serde_json::from_slice(&bytes).unwrap();
+    let result = evaluate(
+        &reloaded,
+        SceneStamp {
+            document: reloaded.id(),
+            revision: 1,
+            generation: 2,
+        },
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(
+        result.report.get(address).unwrap().resolution,
+        Resolution::Missing
+    );
+    let sketch = reloaded
+        .entities()
+        .find(|e| matches!(e.data, EntityData::Sketch { .. }))
+        .unwrap();
+    assert!(
+        multicad_core::constraint_sketch::source::Source::read_evaluated(
+            &reloaded,
+            sketch.id,
+            1,
+            &result.report
+        )
+        .is_err()
+    );
+}
+fn settle(feed: &mut SceneFeed, session: &Session) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        feed.tick(session.document(), session.revision());
+        if !feed.pending() {
+            assert!(
+                feed.error().is_none()
+                    || feed.references().is_some_and(
+                        |e| e.stamp.revision == session.revision() && !e.report.all_resolved()
+                    ),
+                "{:?}",
+                feed.error()
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Native reference fixture timed out"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+#[test]
+fn async_native_backend_publishes_through_live_reference_gate_and_recovers_after_repair() {
+    let mut session = Session::new(document().unwrap()).unwrap();
+    let mut feed = SceneFeed::default();
+    feed.set_backend(Box::new(Backend::new()));
+    settle(&mut feed, &session);
+    assert!(feed.is_current(session.document().id(), session.revision()));
+    let original = feed.visible().unwrap().clone();
+    change(&mut session, &[("topology_mode", "1")]);
+    settle(&mut feed, &session);
+    assert!(!feed.is_current(session.document().id(), session.revision()));
+    assert!(Arc::ptr_eq(feed.visible().unwrap(), &original));
+    let evaluation = feed.references().unwrap();
+    let diagnostic = &evaluation.report.entries[0];
+    let snapshot = &evaluation.snapshots[&diagnostic.source];
+    let candidate = evaluation
+        .candidate
+        .isolated_source(diagnostic.source)
+        .unwrap()
+        .pick_face(Ray::new([20., 25., 100.], [0., 0., -1.]).unwrap())
+        .unwrap()
+        .key;
+    let preview = prepare_repair(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Mcp),
+        diagnostic.address,
+        snapshot,
+        candidate,
+        None,
+    )
+    .unwrap();
+    session.commit(preview.prepared).unwrap();
+    settle(&mut feed, &session);
+    assert!(feed.is_current(session.document().id(), session.revision()));
+    assert!(!Arc::ptr_eq(feed.visible().unwrap(), &original));
+    assert!(feed.references().unwrap().report.all_resolved());
+}
