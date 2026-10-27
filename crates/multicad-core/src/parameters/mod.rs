@@ -228,11 +228,14 @@ pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterErr
         bound
             .replace(normalized)
             .map_err(|e| ParameterError::from(e).at(entity.id))?;
-        expressions.insert(entity.id, (expr, unit));
+        expressions.insert(
+            entity.id,
+            (expr, unit, expression.trim_start().starts_with('=')),
+        );
     }
     let mut values: BTreeMap<EntityId, ParameterValue> = BTreeMap::new();
     for id in bound.topological_order()? {
-        let Some((expression, unit)) = expressions.get(&id) else {
+        let Some((expression, unit, explicit)) = expressions.get(&id) else {
             continue;
         };
         let EntityData::Parameter {
@@ -242,7 +245,7 @@ pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterErr
             unreachable!()
         };
         let (mut quantity, implicit) = expression
-            .evaluate(&|name| {
+            .evaluate(*unit, *explicit, &|name| {
                 let link = inputs.iter().find(|r| r.role == name).ok_or_else(|| {
                     ParameterError::new(
                         ParameterErrorCode::MissingReference,
@@ -308,4 +311,56 @@ pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterErr
         document: bound,
         values,
     })
+}
+
+pub use expression::{display_input, validate_input};
+/// Replace an exposed parameter's default formula with an explicit supplied value.
+/// Callers commit the returned source mutation through Session, preserving undo.
+pub fn override_exposed(
+    document: &Document,
+    id: EntityId,
+    value: f64,
+    supplied_unit: Unit,
+) -> Result<crate::document::Mutation, ParameterError> {
+    let mut entity = document
+        .get(id)
+        .ok_or_else(|| {
+            ParameterError::new(ParameterErrorCode::MissingReference, "Parameter is missing").at(id)
+        })?
+        .clone();
+    let EntityData::Parameter {
+        unit,
+        exposed,
+        expression,
+        inputs,
+    } = &mut entity.data
+    else {
+        return Err(ParameterError::new(
+            ParameterErrorCode::MissingReference,
+            "Select a parameter",
+        )
+        .at(id));
+    };
+    if !*exposed {
+        return Err(ParameterError::new(
+            ParameterErrorCode::Syntax,
+            "Only exposed parameters accept external overrides",
+        )
+        .at(id));
+    }
+    let declared = Unit::parse(unit).ok_or_else(|| {
+        ParameterError::new(ParameterErrorCode::Unit, "Invalid declared unit").at(id)
+    })?;
+    if !value.is_finite() || declared.dimension() != supplied_unit.dimension() {
+        return Err(ParameterError::new(
+            ParameterErrorCode::Dimension,
+            "Override needs a finite value in compatible units",
+        )
+        .at(id));
+    }
+    *expression = format!("{} {}", value, supplied_unit.symbol());
+    inputs.clear();
+    let edit = crate::document::Mutation::Replace(entity);
+    evaluate(&document.edited(std::slice::from_ref(&edit))?)?;
+    Ok(edit)
 }

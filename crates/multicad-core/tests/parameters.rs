@@ -194,3 +194,62 @@ fn cycles_and_complexity_are_bounded_and_dependency_edits_are_atomic_candidates(
     add(&mut d, &parameter("deep", &source, "mm"));
     assert_eq!(evaluate(&d).unwrap_err().code, ParameterErrorCode::Syntax);
 }
+#[test]
+fn explicit_formulas_dollar_bindings_comparisons_and_exposed_overrides() {
+    let mut doc = Document::new("Formula syntax").unwrap();
+    let height = parameter("height", "120", "mm");
+    let width = parameter("width", "=600 - $height", "mm");
+    let check = parameter("fits", "=$width >= 400 mm", "ratio");
+    for e in [&height, &width, &check] {
+        add(&mut doc, e);
+    }
+    let result = evaluate(&doc).unwrap();
+    assert!((result.value(width.id, Unit::Millimeter).unwrap() - 480.).abs() < 1e-9);
+    assert_eq!(result.value(check.id, Unit::Ratio).unwrap(), 1.);
+    let mut renamed = result.document.get(height.id).unwrap().clone();
+    renamed.name = "height_new".into();
+    let renamed = result
+        .document
+        .edited(&[Mutation::Replace(renamed)])
+        .unwrap();
+    assert!(evaluate(&renamed).is_ok());
+    let edit = override_exposed(&result.document, width.id, 30., Unit::Centimeter).unwrap();
+    let overridden = evaluate(&result.document.edited(&[edit]).unwrap()).unwrap();
+    assert_eq!(overridden.value(width.id, Unit::Millimeter).unwrap(), 300.);
+    assert!(overridden.values[&width.id].exposed);
+    assert!(
+        overridden
+            .document
+            .get(width.id)
+            .unwrap()
+            .references()
+            .is_empty()
+    );
+    assert_eq!(overridden.value(check.id, Unit::Ratio).unwrap(), 0.);
+    assert!(override_exposed(&result.document, width.id, f64::NAN, Unit::Millimeter).is_err());
+    assert!(override_exposed(&result.document, width.id, 30., Unit::Degree).is_err());
+    assert!(validate_input("600 - height").is_err());
+    assert!(validate_input("=600 - height").is_err());
+    assert!(validate_input("=600 - $height").is_ok());
+    assert!(validate_input("-2.5 mm").is_ok());
+    assert_eq!(
+        display_input("width - 2 * height"),
+        "=($width - (2 * $height))"
+    );
+    for (formula, expected) in [
+        ("=$height < 100 mm", 0.),
+        ("=$height != 120 mm", 0.),
+        ("=$height <= 120 mm", 1.),
+        ("=$height == 120 mm", 1.),
+    ] {
+        let mut e = check.clone();
+        if let EntityData::Parameter { expression, .. } = &mut e.data {
+            *expression = formula.into();
+        }
+        let d = result.document.edited(&[Mutation::Replace(e)]).unwrap();
+        assert_eq!(
+            evaluate(&d).unwrap().value(check.id, Unit::Ratio).unwrap(),
+            expected
+        );
+    }
+}

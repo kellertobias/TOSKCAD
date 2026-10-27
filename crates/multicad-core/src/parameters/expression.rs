@@ -6,6 +6,7 @@ pub(crate) enum Expr {
     Name(String),
     Neg(Box<Self>),
     Binary(char, Box<Self>, Box<Self>),
+    Compare(String, Box<Self>, Box<Self>),
 }
 impl Expr {
     pub fn names(&self, out: &mut BTreeSet<String>) {
@@ -14,7 +15,7 @@ impl Expr {
                 out.insert(n.clone());
             }
             Self::Neg(e) => e.names(out),
-            Self::Binary(_, a, b) => {
+            Self::Binary(_, a, b) | Self::Compare(_, a, b) => {
                 a.names(out);
                 b.names(out);
             }
@@ -23,6 +24,8 @@ impl Expr {
     }
     pub fn evaluate(
         &self,
+        unit: Unit,
+        explicit: bool,
         resolve: &impl Fn(&str) -> Result<Quantity, ParameterError>,
     ) -> Result<(Quantity, bool), ParameterError> {
         let (q, implicit) = match self {
@@ -38,13 +41,47 @@ impl Expr {
             }
             Self::Name(name) => (resolve(name)?, false),
             Self::Neg(expr) => {
-                let (mut q, i) = expr.evaluate(resolve)?;
+                let (mut q, i) = expr.evaluate(unit, explicit, resolve)?;
                 q.canonical = -q.canonical;
                 (q, i)
             }
+            Self::Compare(op, a, b) => {
+                let (a, _) = a.evaluate(unit, explicit, resolve)?;
+                let (b, _) = b.evaluate(unit, explicit, resolve)?;
+                if a.dimension != b.dimension {
+                    return Err(ParameterError::new(
+                        ParameterErrorCode::Dimension,
+                        "Comparison requires matching units; give numeric limits explicit units",
+                    ));
+                }
+                let result = match op.as_str() {
+                    ">" => a.canonical > b.canonical,
+                    "<" => a.canonical < b.canonical,
+                    ">=" => a.canonical >= b.canonical,
+                    "<=" => a.canonical <= b.canonical,
+                    "==" => a.canonical == b.canonical,
+                    "!=" => a.canonical != b.canonical,
+                    _ => unreachable!(),
+                };
+                (
+                    Quantity {
+                        canonical: if result { 1. } else { 0. },
+                        dimension: super::Dimension::RATIO,
+                    },
+                    false,
+                )
+            }
             Self::Binary(op, a, b) => {
-                let (a, ai) = a.evaluate(resolve)?;
-                let (b, bi) = b.evaluate(resolve)?;
+                let (mut a, ai) = a.evaluate(unit, explicit, resolve)?;
+                let (mut b, bi) = b.evaluate(unit, explicit, resolve)?;
+                if explicit && matches!(op, '+' | '-') {
+                    if ai && a.dimension != b.dimension {
+                        a = contextual(a, unit);
+                    }
+                    if bi && a.dimension != b.dimension {
+                        b = contextual(b, unit);
+                    }
+                }
                 let dim = match op {
                     '+' | '-' if a.dimension != b.dimension => {
                         return Err(ParameterError::new(
@@ -98,10 +135,18 @@ impl Expr {
         Ok((q, implicit))
     }
 }
+fn contextual(mut q: Quantity, unit: Unit) -> Quantity {
+    if q.dimension == super::Dimension::RATIO {
+        q.canonical *= unit.scale();
+        q.dimension = unit.dimension();
+    }
+    q
+}
 struct Parser<'a> {
     source: &'a str,
     offset: usize,
     nodes: usize,
+    explicit: bool,
 }
 impl Parser<'_> {
     fn error(&self, message: &str) -> ParameterError {
@@ -214,11 +259,27 @@ impl Parser<'_> {
                 };
                 Expr::Number(value, unit)
             }
-            c if c.is_ascii_alphabetic() || c == b'_' => Expr::Name(self.name().unwrap()),
+            b'$' => {
+                self.offset += 1;
+                if !self
+                    .peek()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+                {
+                    return Err(self.error("Expected a parameter name after '$'"));
+                }
+                Expr::Name(self.name().unwrap())
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                if self.explicit {
+                    return Err(self.error("Reference parameters with '$', for example $height"));
+                }
+                Expr::Name(self.name().unwrap())
+            }
             _ => return Err(self.error("Expected a number, parameter name or parentheses")),
         };
         while let Some(op) = self.peek() {
             let precedence = match op {
+                b'<' | b'>' | b'=' | b'!' => 0,
                 b'+' | b'-' => 1,
                 b'*' | b'/' => 2,
                 _ => break,
@@ -226,9 +287,25 @@ impl Parser<'_> {
             if precedence < min {
                 break;
             }
+            let start = self.offset;
             self.offset += 1;
+            if precedence == 0 {
+                if matches!(left, Expr::Compare(..)) {
+                    return Err(self.error("Use one comparison per expression"));
+                }
+                if self.peek() == Some(b'=') {
+                    self.offset += 1;
+                } else if op == b'=' || op == b'!' {
+                    return Err(self.error("Use == or != for equality comparisons"));
+                }
+            }
+            let operator = self.source[start..self.offset].trim().to_string();
             let right = self.expression(precedence + 1, depth + 1)?;
-            left = Expr::Binary(op as char, Box::new(left), Box::new(right));
+            left = if precedence == 0 {
+                Expr::Compare(operator, Box::new(left), Box::new(right))
+            } else {
+                Expr::Binary(op as char, Box::new(left), Box::new(right))
+            };
         }
         Ok(left)
     }
@@ -240,11 +317,14 @@ pub(crate) fn parse(source: &str) -> Result<Expr, ParameterError> {
             "Expression exceeds 4096 bytes",
         ));
     }
+    let source = source.trim();
+    let explicit = source.starts_with('=');
     let source = source.strip_prefix('=').unwrap_or(source);
     let mut parser = Parser {
         source,
         offset: 0,
         nodes: 0,
+        explicit,
     };
     let expression = parser.expression(0, 0)?;
     if parser.peek().is_some() {
@@ -253,4 +333,42 @@ pub(crate) fn parse(source: &str) -> Result<Expr, ParameterError> {
         );
     }
     Ok(expression)
+}
+
+impl Expr {
+    fn input(&self) -> String {
+        match self {
+            Self::Number(n, unit) => format!(
+                "{}{}",
+                n,
+                unit.map(|u| format!(" {}", u.symbol())).unwrap_or_default()
+            ),
+            Self::Name(name) => format!("${name}"),
+            Self::Neg(e) => format!("-({})", e.input()),
+            Self::Binary(op, a, b) => format!("({} {} {})", a.input(), op, b.input()),
+            Self::Compare(op, a, b) => format!("({} {} {})", a.input(), op, b.input()),
+        }
+    }
+    fn literal(&self) -> bool {
+        matches!(self, Self::Number(..))
+            || matches!(self,Self::Neg(e) if matches!(**e,Self::Number(..)))
+    }
+}
+/// Present legacy formulas using the explicit input notation without changing identity bindings.
+pub fn display_input(source: &str) -> String {
+    match parse(source) {
+        Ok(e) if !source.trim_start().starts_with('=') && !e.literal() => format!("={}", e.input()),
+        _ => source.into(),
+    }
+}
+/// New UI input distinguishes literals from formulas; persisted legacy sources remain readable.
+pub fn validate_input(source: &str) -> Result<(), ParameterError> {
+    let e = parse(source)?;
+    if !source.trim_start().starts_with('=') && !e.literal() {
+        return Err(ParameterError::new(
+            ParameterErrorCode::Syntax,
+            "Start expressions with '=' and references with '$'",
+        ));
+    }
+    Ok(())
 }
