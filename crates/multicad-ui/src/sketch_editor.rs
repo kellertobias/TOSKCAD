@@ -928,6 +928,9 @@ impl SketchEditor {
                     },
                     |ui| {
                         self.solid.filter_control(ui);
+                        self.solid
+                            .section
+                            .control(ui, scene.as_ref().and_then(|s| s.world_bounds()));
                         let transform = icons::compact_button(
                             ui,
                             Icon::Transform,

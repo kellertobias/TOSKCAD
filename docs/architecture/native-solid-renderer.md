@@ -7,7 +7,7 @@ The callback uses the window's color format, single-sample rendering and
 
 The renderer caches each geometry asset by its identity and immutable `Arc`.
 Placements sharing an asset use one instance buffer and one draw call. Camera
-motion updates a 96-byte uniform without uploading meshes or placements again.
+motion updates a 112-byte camera/section uniform without uploading meshes or placements again.
 Scene or selection changes rebuild instance groups; unchanged mesh buffers remain
 cached. Assets absent from the new scene are released.
 
@@ -49,8 +49,9 @@ root registers its backend factory through `Application::set_scene_backends`.
 Each backend accepts a source snapshot and request stamp, then polls without
 blocking. Source revisions and retries receive new generations. Obsolete success
 and failure replies cannot replace a newer result. Failed requests retain the
-previous visible scene and expose an explicit Retry action. Only pending work
-requests periodic repaint; an idle scene does not run an animation loop.
+previous visible scene and expose an explicit Retry action. Pending work requests
+periodic repaint; quality debounce schedules a deadline repaint. An idle scene
+does not run an animation loop.
 
 The canvas provides filled, wireframe, filled with all edges, and filled with
 visible edges. Its Auto selection filter prefers vertices, then B-rep edges,
@@ -83,8 +84,20 @@ check increased curve detail, unchanged topology and solid keys, shared planar
 assets, debounce, retry and obsolete-result rejection. This fixture backend does
 not implement production feature compilation.
 
+The section control retains either side of a world X, Y or Z plane with an
+editable position and a center-in-model action. A cyan guide and label mark the
+active display cut. One extra uniform clips both filled surfaces and B-rep lines
+without uploading geometry again. Picking uses the same half-space: triangle
+traversal continues past removed front surfaces, and edge segments and vertices
+are clipped before screen picking. This is an uncapped display view. It creates
+no source faces, changes no document revision and is not a manufacturing section.
+Headless tests cover removed-front traversal, parallel rays and clipped selection;
+Metal pixel readback checks both half-space removal and revealing a solid behind
+another, including line clipping in all four styles.
+
 The production composition root still needs the canonical feature compiler to
 supply geometry programs. Registering a display backend does not implement solid
-creation commands. Section and tool-preview layers and the full physical
-performance scenes remain CAD-57 work. Visible reference repair remains unfinished
-under CAD-55.
+creation commands. Sketch/datum and transform drafts already draw after the solid
+callback; solid-feature previews require the upcoming modeling commands. Fuller
+physical input-feedback measurements remain CAD-57 work. Visible reference repair
+remains unfinished under CAD-55.

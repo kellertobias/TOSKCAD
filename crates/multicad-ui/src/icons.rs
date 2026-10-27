@@ -31,6 +31,7 @@ pub enum Icon {
     AllEdges,
     VisibleEdges,
     Filled,
+    Section,
 }
 pub fn button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     icon_button(ui, icon, label, 30.0)
@@ -161,6 +162,20 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
         p.circle_stroke(v(x, y), r * scale, stroke);
     };
     match icon {
+        Icon::Section => {
+            path(&[
+                [4., 6.],
+                [16., 6.],
+                [20., 10.],
+                [20., 19.],
+                [8., 19.],
+                [4., 15.],
+                [4., 6.],
+            ]);
+            line([2., 15.], [22., 9.]);
+            line([8., 13.], [11., 17.]);
+            line([13., 11.], [16., 15.]);
+        }
         Icon::Hammer => {
             path(&[[3., 19.], [12., 8.], [16., 11.], [7., 22.], [3., 19.]]);
             path(&[

@@ -1,4 +1,7 @@
-use super::{Hit, PickFilter, Scene, SceneStamp, Selection, paint_scene};
+use super::{
+    Hit, PickFilter, PickOptions, Scene, SceneStamp, SectionPlane, SectionView, Selection,
+    paint_scene_section,
+};
 use crate::{
     camera::Camera,
     icons::{self, Icon},
@@ -16,8 +19,16 @@ pub struct Interaction {
     hovered: Option<Hit>,
     part: Option<EntityId>,
     pub filter: PickFilter,
+    pub section: SectionView,
     last_stamp: Option<SceneStamp>,
-    last_query: Option<(Pos2, Rect, Camera, DisplayStyle, PickFilter)>,
+    last_query: Option<(
+        Pos2,
+        Rect,
+        Camera,
+        DisplayStyle,
+        PickFilter,
+        Option<SectionPlane>,
+    )>,
 }
 impl Interaction {
     pub fn clear(&mut self) {
@@ -141,14 +152,27 @@ impl Interaction {
             && response.hovered()
             && let Some(pointer) = response.hover_pos()
         {
-            let query = (pointer, response.rect, camera, style, self.filter);
+            let query = (
+                pointer,
+                response.rect,
+                camera,
+                style,
+                self.filter,
+                self.section.plane(),
+            );
             if self.last_query != Some(query) {
-                self.hovered = scene.pick_screen(
+                self.hovered = scene.pick_screen_with(
                     camera,
                     response.rect,
                     pointer,
-                    self.filter,
-                    matches!(style, DisplayStyle::Wire | DisplayStyle::AllEdges),
+                    PickOptions {
+                        filter: self.filter,
+                        include_hidden: matches!(
+                            style,
+                            DisplayStyle::Wire | DisplayStyle::AllEdges
+                        ),
+                        section: self.section.plane(),
+                    },
                 );
                 self.last_query = Some(query);
             }
@@ -183,9 +207,24 @@ impl Interaction {
                 },
             })
             .or(self.part.map(Selection::Part));
-        paint_scene(ui.painter(), response.rect, scene, camera, selection, style);
+        let bounds = scene.world_bounds();
+        paint_scene_section(
+            ui.painter(),
+            response.rect,
+            scene,
+            camera,
+            selection,
+            style,
+            self.section.plane(),
+        );
+        self.section
+            .overlay(ui.painter(), camera, response.rect, bounds);
         if let Some(hit) = hit
             && hit.key.kind == TopologyKind::Vertex
+            && self
+                .section
+                .plane()
+                .is_none_or(|s| s.contains(hit.point_mm))
         {
             let p = camera.project(hit.point_mm.map(|v| v as f32), response.rect);
             ui.painter().circle_stroke(

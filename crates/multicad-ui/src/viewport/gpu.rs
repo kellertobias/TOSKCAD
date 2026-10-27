@@ -1,5 +1,5 @@
 //! Cached instanced solid rendering in eframe's depth-enabled WGPU pass.
-use super::{Geometry, Scene};
+use super::{Geometry, Scene, SectionPlane};
 use crate::{camera::Camera, navigation::DisplayStyle};
 use eframe::{
     egui,
@@ -54,7 +54,7 @@ impl Renderer {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("CAD camera"),
-            size: 96,
+            size: 112,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -139,6 +139,7 @@ impl Renderer {
             size,
             selection,
             style,
+            section,
         } = view;
         if !self.scene.as_ref().is_some_and(|s| Arc::ptr_eq(s, scene))
             || self.selection != selection
@@ -268,7 +269,7 @@ impl Renderer {
                 );
             }
         }
-        let mut bytes = Vec::with_capacity(96);
+        let mut bytes = Vec::with_capacity(112);
         floats(&mut bytes, camera.target.into_iter().chain([0.]));
         floats(&mut bytes, [c, -s, 0., 0.]);
         floats(&mut bytes, [-sp * s, -sp * c, cp, 0.]);
@@ -286,6 +287,7 @@ impl Renderer {
                 f32::from(style == DisplayStyle::Wire),
             ],
         );
+        floats(&mut bytes, section.map_or([0.; 4], SectionPlane::uniform));
         queue.write_buffer(&self.uniform, 0, &bytes);
     }
     fn paint(&self, pass: &mut wgpu::RenderPass<'_>, style: DisplayStyle) {
@@ -331,6 +333,7 @@ struct View {
     size: egui::Vec2,
     selection: Option<Selection>,
     style: DisplayStyle,
+    section: Option<SectionPlane>,
 }
 struct Callback {
     scene: Arc<Scene>,
@@ -371,6 +374,17 @@ pub fn paint_scene(
     selection: Option<Selection>,
     style: DisplayStyle,
 ) {
+    paint_scene_section(painter, rect, scene, camera, selection, style, None);
+}
+pub fn paint_scene_section(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    scene: Arc<Scene>,
+    camera: Camera,
+    selection: Option<Selection>,
+    style: DisplayStyle,
+    section: Option<SectionPlane>,
+) {
     if !rect.is_finite()
         || rect.width() <= 0.
         || rect.height() <= 0.
@@ -393,6 +407,7 @@ pub fn paint_scene(
                 size: rect.size(),
                 selection,
                 style,
+                section,
             },
         },
     ));

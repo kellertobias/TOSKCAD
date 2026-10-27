@@ -156,6 +156,98 @@ fn closest_surface_wins_independently_of_instance_order_and_yields_semantic_inte
     }
 }
 #[test]
+fn section_picking_skips_removed_surfaces_and_clips_edges_without_new_source_faces() {
+    assert!(SectionPlane::new([0.; 3], 0.).is_err());
+    assert!(SectionPlane::new([1., 0., 0.], f64::NAN).is_err());
+    let below = SectionPlane::new([0., 0., -2.], -9.).unwrap();
+    assert_eq!(
+        below.clip_segment([0., 0., 0.], [0., 0., 18.]),
+        Some([[0., 0., 0.], [0., 0., 9.]])
+    );
+    assert_eq!(
+        below.clip_segment([0., 0., 18.], [0., 0., 0.]),
+        Some([[0., 0., 9.], [0., 0., 0.]])
+    );
+    assert!(below.clip_segment([0., 0., 10.], [0., 0., 20.]).is_none());
+    let geometry = box_geometry();
+    let part = instance(&geometry, [0.; 3]);
+    let scene = Scene::new(stamp(), vec![geometry], vec![part.clone()]).unwrap();
+    let ray = Ray::new([20., 25., 100.], [0., 0., -1.]).unwrap();
+    assert_eq!(scene.pick_face(ray).unwrap().point_mm[2], 18.);
+    let bottom = scene.pick_face_section(ray, Some(below)).unwrap();
+    assert_eq!(bottom.point_mm, [20., 25., 0.]); // Continue past removed front triangles.
+    assert!(
+        bottom
+            .intent
+            .unwrap()
+            .origins
+            .iter()
+            .any(|o| o.role == "cap.start")
+    );
+    assert_eq!(scene.stamp().revision, 0);
+    assert!(
+        scene
+            .pick_face_section(ray, Some(SectionPlane::new([1., 0., 0.], 50.).unwrap()))
+            .is_none()
+    );
+    assert!(
+        scene
+            .pick_face_section(
+                Ray::new([20., 25., 4.], [1., 0., 0.]).unwrap(),
+                Some(SectionPlane::new([0., 0., 1.], 9.).unwrap())
+            )
+            .is_none()
+    );
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.));
+    let camera = Camera {
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        target: [50., 30., 18.],
+        scale: 3.,
+        perspective: false,
+    };
+    let right = SectionPlane::new([1., 0., 0.], 50.).unwrap();
+    for filter in [
+        PickFilter::Auto,
+        PickFilter::Parts,
+        PickFilter::Faces,
+        PickFilter::Edges,
+        PickFilter::Vertices,
+    ] {
+        let p = camera.project([0., 0., 18.], rect);
+        assert!(
+            scene
+                .pick_screen_with(
+                    camera,
+                    rect,
+                    Pos2::new(p[0], p[1]),
+                    PickOptions {
+                        filter,
+                        include_hidden: true,
+                        section: Some(right)
+                    }
+                )
+                .is_none()
+        );
+    }
+    let p = camera.project([70., 0., 18.], rect);
+    let edge = scene
+        .pick_screen_with(
+            camera,
+            rect,
+            Pos2::new(p[0], p[1]),
+            PickOptions {
+                filter: PickFilter::Edges,
+                include_hidden: false,
+                section: Some(right),
+            },
+        )
+        .unwrap();
+    assert_eq!(edge.key.kind, TopologyKind::Edge);
+    assert!((edge.point_mm[0] - 70.).abs() < 1e-4);
+    assert_eq!(edge.instance, part.id);
+}
+#[test]
 fn instance_frames_are_in_world_coordinates_and_camera_rays_match_both_projections() {
     let geometry = box_geometry();
     let mut part = instance(&geometry, [10., 20., 30.]);

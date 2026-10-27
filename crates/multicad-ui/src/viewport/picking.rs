@@ -1,4 +1,4 @@
-use super::{Hit, Scene};
+use super::{Hit, Scene, SectionPlane};
 use crate::camera::Camera;
 use eframe::egui::{Pos2, Rect};
 use multicad_core::{
@@ -41,6 +41,12 @@ struct Candidate {
     depth: f32,
     error_mm: f64,
 }
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PickOptions {
+    pub filter: PickFilter,
+    pub include_hidden: bool,
+    pub section: Option<SectionPlane>,
+}
 impl Scene {
     /// Screen-space tolerance is independent of manufacturing precision. Auto
     /// prefers vertices, then B-rep edges, then the nearest face.
@@ -52,9 +58,32 @@ impl Scene {
         filter: PickFilter,
         include_hidden: bool,
     ) -> Option<Hit> {
+        self.pick_screen_with(
+            camera,
+            rect,
+            pointer,
+            PickOptions {
+                filter,
+                include_hidden,
+                section: None,
+            },
+        )
+    }
+    pub fn pick_screen_with(
+        &self,
+        camera: Camera,
+        rect: Rect,
+        pointer: Pos2,
+        options: PickOptions,
+    ) -> Option<Hit> {
+        let PickOptions {
+            filter,
+            include_hidden,
+            section,
+        } = options;
         let ray = camera.ray(pointer, rect)?;
         if matches!(filter, PickFilter::Faces | PickFilter::Parts) {
-            return self.pick_face(ray);
+            return self.pick_face_section(ray, section);
         }
         let radius = 7.;
         let distance = rect.height().max(1.) / camera.scale * 2.;
@@ -87,7 +116,10 @@ impl Scene {
             let mut add = |kind, ordinal, point, screen: Pos2| {
                 let projected = project(point);
                 let pixels = screen.distance(pointer);
-                if projected[2] >= 0.1 && pixels <= radius {
+                if projected[2] >= 0.1
+                    && pixels <= radius
+                    && section.is_none_or(|s| s.contains(point))
+                {
                     candidates.push(Candidate {
                         instance: instance.id,
                         key: TopologyKey { kind, ordinal },
@@ -116,6 +148,10 @@ impl Scene {
                     for segment in edge.points_mm.windows(2) {
                         let a = instance.transform.point(segment[0]);
                         let b = instance.transform.point(segment[1]);
+                        let Some([a, b]) = section.map_or(Some([a, b]), |s| s.clip_segment(a, b))
+                        else {
+                            continue;
+                        };
                         let Some([a, b]) = camera.clip_segment(a, b, rect) else {
                             continue;
                         };
@@ -159,7 +195,7 @@ impl Scene {
             let distance = (0..3)
                 .map(|i| (candidate.point[i] - origin[i]) * direction[i])
                 .sum::<f64>();
-            if !include_hidden && let Some(surface) = self.pick_face(hit_ray) {
+            if !include_hidden && let Some(surface) = self.pick_face_section(hit_ray, section) {
                 let error = self.geometries()[&surface.geometry].display_error_mm()
                     + candidate.error_mm
                     + 1e-5;
@@ -170,7 +206,7 @@ impl Scene {
             return self.make_hit(candidate.instance, candidate.key, candidate.point, distance);
         }
         if filter == PickFilter::Auto {
-            self.pick_face(ray)
+            self.pick_face_section(ray, section)
         } else {
             None
         }

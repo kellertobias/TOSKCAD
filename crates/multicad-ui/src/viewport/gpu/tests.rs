@@ -150,7 +150,7 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
         .key
         .ordinal;
     let mut images = vec![];
-    for (perspective, reverse, selection, oblique, style) in [
+    for ((perspective, reverse, selection, oblique, style), section) in [
         (false, false, None, false, DisplayStyle::Filled),
         (true, true, None, false, DisplayStyle::Filled),
         (
@@ -174,7 +174,19 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
         (true, false, None, true, DisplayStyle::AllEdges),
         (true, false, None, true, DisplayStyle::VisibleEdges),
         (true, false, None, true, DisplayStyle::Wire),
-    ] {
+    ]
+    .into_iter()
+    .map(|case| (case, None))
+    .chain([(
+        (false, false, None, false, DisplayStyle::Filled),
+        Some(SectionPlane::new([0., 0., -1.], -20.).unwrap()),
+    )])
+    .chain(DisplayStyle::ALL.into_iter().map(|style| {
+        (
+            (false, false, None, false, style),
+            Some(SectionPlane::new([1., 0., 0.], 60.).unwrap()),
+        )
+    })) {
         let parts = if reverse {
             vec![near.clone(), far.clone()]
         } else {
@@ -201,6 +213,7 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
                 size: egui::vec2(256., 256.),
                 selection,
                 style,
+                section,
             },
         );
         assert_eq!(renderer.meshes.len(), 1);
@@ -277,9 +290,31 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             .as_chunks::<4>()
             .0
             .iter()
-            .filter(|p| p[0] > 40)
+            .filter(|p| p[..3].iter().any(|v| *v > 40))
             .count();
-        if style == DisplayStyle::Wire {
+        if section.is_some_and(|s| !s.contains([0.; 3])) {
+            assert_eq!(
+                &center[..3],
+                &[0, 0, 0],
+                "Section failed to remove the center"
+            );
+            for row in pixels.as_chunks::<1024>().0 {
+                assert!(
+                    row[..140 * 4]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|p| p[..3] == [0, 0, 0]),
+                    "Clipped lines or faces remained visible"
+                );
+            }
+            assert!(coverage > 50, "Section removed both sides");
+        } else if section.is_some() {
+            assert!(
+                u16::from(center[2]) > u16::from(center[0]) * 2,
+                "Section did not reveal the blue solid behind the red one: {center:?}"
+            );
+        } else if style == DisplayStyle::Wire {
             assert!(
                 (200..5000).contains(&coverage),
                 "Wireframe coverage is invalid: {coverage}"

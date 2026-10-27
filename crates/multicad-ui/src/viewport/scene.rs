@@ -361,7 +361,7 @@ impl Geometry {
         }
         index
     }
-    fn hit(&self, ray: Ray, limit: f64) -> Option<(f64, u32)> {
+    fn hit(&self, ray: Ray, minimum: f64, limit: f64) -> Option<(f64, u32)> {
         let mut best = None;
         let mut limit = limit;
         let mut stack = vec![0];
@@ -397,7 +397,7 @@ impl Geometry {
                             continue;
                         }
                         let distance = dot(ac, q) / determinant;
-                        if distance >= 0. && distance < limit {
+                        if distance >= minimum && distance <= limit {
                             limit = distance;
                             best = Some((distance, self.triangle_faces[*triangle]));
                         }
@@ -545,11 +545,19 @@ impl Scene {
         })
     }
     pub fn pick_face(&self, ray: Ray) -> Option<Hit> {
+        self.pick_face_section(ray, None)
+    }
+    pub fn pick_face_section(&self, ray: Ray, section: Option<super::SectionPlane>) -> Option<Hit> {
         let mut best = None;
-        let mut limit = f64::INFINITY;
+        let (minimum, mut limit) = if let Some(section) = section {
+            section.ray_interval(ray)?
+        } else {
+            (0., f64::INFINITY)
+        };
         for instance in &self.instances {
             let geometry = &self.geometries[&instance.geometry];
-            if let Some((distance, face)) = geometry.hit(instance.transform.inverse_ray(ray), limit)
+            if let Some((distance, face)) =
+                geometry.hit(instance.transform.inverse_ray(ray), minimum, limit)
             {
                 limit = distance;
                 best = Some((instance, distance, face));

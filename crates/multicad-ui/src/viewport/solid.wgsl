@@ -1,6 +1,6 @@
 struct Camera {
     focus: vec4<f32>, right: vec4<f32>, up: vec4<f32>, forward: vec4<f32>,
-    viewport: vec4<f32>, clip: vec4<f32>,
+    viewport: vec4<f32>, clip: vec4<f32>, section: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> camera: Camera;
 struct Vertex {
@@ -36,12 +36,14 @@ struct Fragment {
     return out;
 }
 @fragment fn line_fragment(v:Fragment)->@location(0) vec4<f32> {
+    if dot(camera.section.xyz, v.world) < camera.section.w { discard; }
     if v.emphasis==1u {return vec4(0.95,0.65,0.18,1.0);}
     if camera.clip.w>0.5 {return vec4(0.53,0.66,0.79,1.0);}
     return vec4(0.07,0.1,0.15,1.0);
 }
 @fragment fn fragment(v: Fragment) -> @location(0) vec4<f32> {
     let normal = normalize(cross(dpdx(v.world),dpdy(v.world)));
+    if dot(camera.section.xyz, v.world) < camera.section.w { discard; }
     let light = 0.28 + 0.72 * abs(dot(normal,normalize(vec3(0.4,0.6,1.0))));
     return vec4(v.color.rgb * light,1.0);
 }
