@@ -46,6 +46,8 @@ pub struct PlaneContext<'a> {
     pub revision: u64,
     pub scene: Option<&'a Scene>,
     pub report: Option<&'a ReferenceReport>,
+    /// Preferred displayed occurrence. This is never a canonical sketch parent.
+    pub occurrence: Option<EntityId>,
 }
 #[derive(Default)]
 pub struct PlanePicker {
@@ -92,7 +94,33 @@ fn preview(
             let frame =
                 sketch::inspect_plane(context.document, *id, context.revision, context.report)
                     .map_err(|e| e.to_string())?;
-            (frame, frame)
+            if context.scene.is_some_and(|scene| {
+                scene.stamp().document != context.document.id()
+                    || scene.stamp().revision != context.revision
+            }) {
+                return Err(
+                    "Wait for the current model before previewing the construction plane".into(),
+                );
+            }
+            let pose = context
+                .scene
+                .and_then(|scene| {
+                    crate::sketch_context::occurrence(
+                        context.document,
+                        *id,
+                        scene,
+                        context.occurrence,
+                    )
+                })
+                .map(|(_, pose)| pose);
+            let world = pose.map_or(frame, |pose| {
+                from_reference(pose.frame(ReferenceFrame {
+                    origin_mm: frame.origin,
+                    u: frame.u,
+                    v: frame.v,
+                }))
+            });
+            (frame, world)
         }
         PlaneChoice::Face(face) => {
             let scene = context
@@ -237,14 +265,13 @@ fn planes(context: PlaneContext<'_>) -> Vec<(PlaneChoice, Frame)> {
         .collect();
     for entity in context.document.entities() {
         if matches!(entity.data, EntityData::Plane { .. })
-            && let Ok(frame) = sketch::inspect_plane(
-                context.document,
-                entity.id,
-                context.revision,
-                context.report,
+            && let Ok(preview) = preview(
+                &PlaneChoice::Existing(entity.id),
+                PlaneOptions::default(),
+                context,
             )
         {
-            result.push((PlaneChoice::Existing(entity.id), frame));
+            result.push((PlaneChoice::Existing(entity.id), preview.world_frame));
         }
     }
     result
@@ -655,6 +682,7 @@ mod tests {
             revision: 0,
             scene: Some(&scene),
             report: None,
+            occurrence: None,
         };
         let mut camera = Camera {
             target: [-15., 40., 48.],
@@ -703,6 +731,7 @@ mod tests {
             revision: 0,
             scene: Some(&scene),
             report: None,
+            occurrence: None,
         };
         let mut camera = Camera {
             target: [20., 25., 18.],
@@ -783,6 +812,7 @@ mod tests {
                 revision: 0,
                 scene: Some(&scene),
                 report: None,
+                occurrence: None,
             };
             let mut camera = Camera {
                 target: if named { [20., 0., 9.] } else { [20., 10., 9.] },
@@ -820,6 +850,7 @@ mod tests {
                 revision: 0,
                 scene: None,
                 report: None,
+                occurrence: None,
             };
             let mut picker = PlanePicker::default();
             picker.update_hover(Some(rect().center()), camera, rect(), context);
@@ -841,6 +872,7 @@ mod tests {
             revision: 0,
             scene: None,
             report: None,
+            occurrence: None,
         };
         let mut camera = Camera {
             target: [20., 15., 42.],
@@ -901,6 +933,7 @@ mod tests {
             revision: 0,
             scene: None,
             report: Some(&report),
+            occurrence: None,
         };
         let mut picker = PlanePicker::default();
         picker.choose(PlaneChoice::Existing(plane.id));
@@ -919,6 +952,141 @@ mod tests {
                 .is_err()
         );
         assert_eq!(picker.options(), PlaneOptions::default());
+        assert_eq!(document, before);
+    }
+    #[test]
+    fn existing_face_plane_preview_uses_preferred_occurrence_without_moving_world_datums() {
+        use multicad_core::{
+            document::Link,
+            references::{Attachment, inspect},
+        };
+        let (mut document, base, producer, identity) = fixture(
+            |id| Solid::box_named([100., 60., 18.], id, Default::default()).unwrap(),
+            Placement::default(),
+        );
+        let EntityData::Instance { component, .. } = document.get(identity).unwrap().data else {
+            panic!("Instance missing")
+        };
+        let placement = Placement {
+            translation_mm: [10., 20., 30.],
+            rotation_xyzw: [
+                0.,
+                0.,
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ],
+        };
+        let placed = Entity::new(
+            "Rotated panel",
+            EntityData::Instance {
+                component,
+                placement,
+            },
+        );
+        document.insert(placed.clone()).unwrap();
+        let snapshot = base.geometry_snapshot(producer).unwrap();
+        let cap = snapshot
+            .elements
+            .iter()
+            .find(|e| e.origins.iter().any(|o| o.role == "cap.end") && !e.frames.is_empty())
+            .unwrap();
+        let mut intent = GeometryIntent::capture(&snapshot, cap.key).unwrap();
+        intent.attachment = Some(Attachment {
+            anchor: cap.frames[0].origin.clone(),
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        let mut anchor = Link::new(producer, "plane");
+        anchor.geometry = Some(intent);
+        let attached = Entity::new(
+            "Panel face plane",
+            EntityData::Plane {
+                origin_mm: [0., 0., 18.],
+                normal: [0., 0., 1.],
+                anchor: Some(anchor),
+            },
+        );
+        document.insert(attached.clone()).unwrap();
+        let world = Entity::new(
+            "World level",
+            EntityData::Plane {
+                origin_mm: [0., 0., 100.],
+                normal: [0., 0., 1.],
+                anchor: None,
+            },
+        );
+        document.insert(world.clone()).unwrap();
+        let before = document.clone();
+        let mut instances = base.instances().to_vec();
+        instances.push(Instance {
+            id: placed.id,
+            geometry: producer,
+            transform: Transform::from_placement(placement).unwrap(),
+            color: [150, 165, 180, 255],
+        });
+        let scene = Scene::new(
+            SceneStamp {
+                generation: 2,
+                ..base.stamp()
+            },
+            base.geometries().values().cloned().collect(),
+            instances,
+        )
+        .unwrap();
+        let report = inspect(&document, 0, &scene.reference_snapshots());
+        let context = PlaneContext {
+            document: &document,
+            revision: 0,
+            scene: Some(&scene),
+            report: Some(&report),
+            occurrence: Some(placed.id),
+        };
+        let mut picker = PlanePicker::default();
+        picker.choose(PlaneChoice::Existing(attached.id));
+        picker
+            .set_options(PlaneOptions {
+                normal_offset_mm: 5.,
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+        let preview = picker.current_preview(context).unwrap().unwrap();
+        close(preview.local_frame.origin, [0., 0., 23.]);
+        close(preview.world_frame.origin, [10., 20., 53.]);
+        close(preview.world_frame.u, [-1., 0., 0.]);
+        let target = planes(context)
+            .into_iter()
+            .find(|(p, _)| matches!(p,PlaneChoice::Existing(id) if *id==attached.id))
+            .unwrap()
+            .1;
+        close(target.origin, [10., 20., 48.]);
+        let identity_preview = picker
+            .current_preview(PlaneContext {
+                occurrence: Some(identity),
+                ..context
+            })
+            .unwrap()
+            .unwrap();
+        close(identity_preview.world_frame.origin, [0., 0., 23.]);
+        picker.set_options(PlaneOptions::default()).unwrap();
+        picker.choose(PlaneChoice::Existing(world.id));
+        close(
+            picker
+                .current_preview(context)
+                .unwrap()
+                .unwrap()
+                .world_frame
+                .origin,
+            [0., 0., 100.],
+        );
+        picker.choose(PlaneChoice::Datum(Datum::Xy));
+        assert_eq!(
+            picker
+                .current_preview(context)
+                .unwrap()
+                .unwrap()
+                .world_frame,
+            Datum::Xy.frame()
+        );
         assert_eq!(document, before);
     }
     #[test]
@@ -949,6 +1117,7 @@ mod tests {
             revision: 0,
             scene: Some(&final_part_scene),
             report: None,
+            occurrence: None,
         };
         let mut camera = Camera {
             target: [20., 25., 18.],
@@ -1040,6 +1209,7 @@ mod tests {
             revision: 0,
             scene: None,
             report: None,
+            occurrence: None,
         };
         let ctx = egui::Context::default();
         let mut picker = PlanePicker::default();
