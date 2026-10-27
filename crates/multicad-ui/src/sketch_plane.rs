@@ -83,6 +83,27 @@ fn label(choice: &PlaneChoice, document: &Document) -> String {
         ),
     }
 }
+fn geometry_attached(document: &Document, plane: EntityId) -> bool {
+    let mut current = plane;
+    let mut visited = std::collections::BTreeSet::new();
+    while visited.insert(current) {
+        let Some(EntityData::Plane {
+            anchor: Some(anchor),
+            ..
+        }) = document.get(current).map(|e| &e.data)
+        else {
+            return false;
+        };
+        if anchor.geometry.is_some() {
+            return true;
+        }
+        if anchor.role != sketch::OFFSET_PLANE_ROLE {
+            return false;
+        }
+        current = anchor.target;
+    }
+    false
+}
 fn preview(
     choice: &PlaneChoice,
     options: PlaneOptions,
@@ -94,6 +115,12 @@ fn preview(
             let frame =
                 sketch::inspect_plane(context.document, *id, context.revision, context.report)
                     .map_err(|e| e.to_string())?;
+            if context.scene.is_none() && geometry_attached(context.document, *id) {
+                return Err(
+                    "Wait for the current model before previewing the attached construction plane"
+                        .into(),
+                );
+            }
             if context.scene.is_some_and(|scene| {
                 scene.stamp().document != context.document.id()
                     || scene.stamp().revision != context.revision
@@ -1133,6 +1160,132 @@ mod tests {
                 .unwrap_err()
                 .contains("modeling feature")
         );
+    }
+    #[test]
+    fn attached_existing_planes_require_current_display_even_with_a_resolved_report() {
+        use multicad_core::{
+            document::Link,
+            references::{Attachment, inspect},
+        };
+        let placement = Placement {
+            translation_mm: [10., 20., 30.],
+            rotation_xyzw: [
+                0.,
+                0.,
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ],
+        };
+        let (mut document, scene, producer, occurrence) = fixture(
+            |id| Solid::box_named([100., 60., 18.], id, Default::default()).unwrap(),
+            placement,
+        );
+        let snapshot = scene.geometry_snapshot(producer).unwrap();
+        let cap = snapshot
+            .elements
+            .iter()
+            .find(|e| e.origins.iter().any(|o| o.role == "cap.end") && !e.frames.is_empty())
+            .unwrap();
+        let mut intent = GeometryIntent::capture(&snapshot, cap.key).unwrap();
+        intent.attachment = Some(Attachment {
+            anchor: cap.frames[0].origin.clone(),
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        let mut anchor = Link::new(producer, "plane");
+        anchor.geometry = Some(intent);
+        let attached = Entity::new(
+            "Face plane",
+            EntityData::Plane {
+                origin_mm: [0., 0., 18.],
+                normal: [0., 0., 1.],
+                anchor: Some(anchor),
+            },
+        );
+        let offset = Entity::new(
+            "Offset plane",
+            EntityData::Plane {
+                origin_mm: [0., 0., 2.],
+                normal: [0., 0., 1.],
+                anchor: Some(Link::new(attached.id, sketch::OFFSET_PLANE_ROLE)),
+            },
+        );
+        let world = Entity::new(
+            "World datum",
+            EntityData::Plane {
+                origin_mm: [0., 0., 100.],
+                normal: [0., 0., 1.],
+                anchor: None,
+            },
+        );
+        for entity in [attached.clone(), offset.clone(), world.clone()] {
+            document.insert(entity).unwrap();
+        }
+        let before = document.clone();
+        let report = inspect(&document, 0, &scene.reference_snapshots());
+        assert!(report.all_resolved());
+        let context = PlaneContext {
+            document: &document,
+            revision: 0,
+            scene: Some(&scene),
+            report: Some(&report),
+            occurrence: Some(occurrence),
+        };
+        let stale = Scene::new(
+            SceneStamp {
+                revision: 1,
+                generation: 2,
+                ..scene.stamp()
+            },
+            scene.geometries().values().cloned().collect(),
+            scene.instances().to_vec(),
+        )
+        .unwrap();
+        let mut picker = PlanePicker::default();
+        for (id, height) in [(attached.id, 48.), (offset.id, 50.)] {
+            picker.choose(PlaneChoice::Existing(id));
+            close(
+                picker
+                    .current_preview(context)
+                    .unwrap()
+                    .unwrap()
+                    .world_frame
+                    .origin,
+                [10., 20., height],
+            );
+            assert!(
+                picker
+                    .current_preview(PlaneContext {
+                        scene: None,
+                        ..context
+                    })
+                    .unwrap_err()
+                    .contains("current model")
+            );
+            assert!(
+                picker
+                    .current_preview(PlaneContext {
+                        scene: Some(&stale),
+                        ..context
+                    })
+                    .unwrap_err()
+                    .contains("current model")
+            );
+        }
+        picker.choose(PlaneChoice::Existing(world.id));
+        close(
+            picker
+                .current_preview(PlaneContext {
+                    scene: None,
+                    ..context
+                })
+                .unwrap()
+                .unwrap()
+                .world_frame
+                .origin,
+            [0., 0., 100.],
+        );
+        assert_eq!(document, before);
     }
     fn inspector_frame(
         ctx: &egui::Context,
