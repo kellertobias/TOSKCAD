@@ -59,6 +59,40 @@ pub fn tab(ui: &mut egui::Ui, label: &str, selected: bool, colors: TabColors) ->
     });
     response.on_hover_text(label)
 }
+/// An unframed disclosure glyph sharing the command row's black surface.
+pub fn history_prompt(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(24., 28.), egui::Sense::click());
+    let center = rect.center();
+    let points = if expanded {
+        vec![
+            center + Vec2::new(-4., 2.),
+            center + Vec2::new(0., -2.),
+            center + Vec2::new(4., 2.),
+        ]
+    } else {
+        vec![
+            center + Vec2::new(-2., -4.),
+            center + Vec2::new(2., 0.),
+            center + Vec2::new(-2., 4.),
+        ]
+    };
+    let color = if response.hovered() || response.has_focus() {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(170)
+    };
+    ui.painter()
+        .add(egui::Shape::line(points, Stroke::new(1.5, color)));
+    let label = if expanded {
+        "Collapse command history"
+    } else {
+        "Expand command history"
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.on_hover_text(label)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

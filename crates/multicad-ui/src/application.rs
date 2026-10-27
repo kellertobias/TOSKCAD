@@ -7,7 +7,7 @@ use crate::{
     shortcuts::{self, Action as ShortcutAction, ShortcutMap},
     sketch_editor::{DrawTool, SketchEditor},
 };
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32};
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     document::{Document, Entity, EntityData, Mutation},
@@ -778,25 +778,7 @@ impl Application {
             ui.separator();
         }
         ui.horizontal(|ui| {
-            if ui
-                .add_sized(
-                    [24., 28.],
-                    egui::Button::new(
-                        RichText::new(if self.command_history_open {
-                            "⌃"
-                        } else {
-                            ">"
-                        })
-                        .monospace(),
-                    ),
-                )
-                .on_hover_text(if self.command_history_open {
-                    "Collapse command history"
-                } else {
-                    "Expand command history"
-                })
-                .clicked()
-            {
+            if controls::history_prompt(ui, self.command_history_open).clicked() {
                 self.command_history_open = !self.command_history_open;
             }
             let width = ui.available_width();
@@ -805,6 +787,7 @@ impl Application {
                 [width, 28.],
                 egui::TextEdit::singleline(&mut self.command)
                     .hint_text("Command…")
+                    .vertical_align(egui::Align::Center)
                     .background_color(Color32::BLACK)
                     .frame(egui::Frame::new().fill(Color32::BLACK).inner_margin(4))
                     .font(egui::TextStyle::Monospace),

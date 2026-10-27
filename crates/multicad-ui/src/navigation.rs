@@ -80,9 +80,9 @@ impl AxisView {
     }
     fn color(self) -> Color32 {
         match self {
-            Self::PositiveX | Self::NegativeX => Color32::from_rgb(233, 91, 102),
-            Self::PositiveY | Self::NegativeY => Color32::from_rgb(92, 199, 132),
-            Self::PositiveZ | Self::NegativeZ => Color32::from_rgb(96, 157, 245),
+            Self::PositiveX | Self::NegativeX => Color32::from_rgb(170, 47, 63),
+            Self::PositiveY | Self::NegativeY => Color32::from_rgb(32, 117, 71),
+            Self::PositiveZ | Self::NegativeZ => Color32::from_rgb(45, 93, 166),
         }
     }
 }
