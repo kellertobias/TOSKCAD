@@ -357,139 +357,150 @@ impl Lab {
         }
     }
     fn header(&mut self, ui: &mut egui::Ui) {
-        use crate::icons::{Icon, button};
-        ui.horizontal(|ui| {
-            if cfg!(target_os = "macos") {
-                ui.add_space(74.0);
-            }
-            ui.heading("MultiCAD");
-            ui.menu_button("File", |ui| {
-                if ui.button("New document    ⌘N").clicked() {
-                    self.new_document();
-                    ui.close();
+        use crate::icons::{Icon, compact_button as button};
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 36.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().interact_size.y = 28.0;
+                if cfg!(target_os = "macos") {
+                    ui.add_space(74.0);
                 }
-                if ui.button("New window    ⌘⇧N").clicked() {
-                    self.new_window();
-                    ui.close();
-                }
-                if ui.button("Insert shared-sketch example").clicked() {
-                    let mut next = self.draft.clone();
-                    next.sample_geometry = true;
-                    self.request(next, Operation::Apply);
-                    ui.close();
-                }
-                if ui.button("Open proof file…").clicked() {
-                    self.file_dialog = true;
-                    ui.close();
-                }
-                if ui.button("Save / Save as…").clicked() {
-                    self.file_dialog = true;
-                    ui.close();
-                }
-            });
-            let filename = ui
-                .menu_button(format!("{}    ", self.session.current.name), |ui| {
-                    for index in 0..self.documents.len() {
-                        let name = if index == self.active_document {
-                            self.session.current.name.clone()
-                        } else {
-                            self.documents[index].session.current.name.clone()
-                        };
-                        if ui
-                            .selectable_label(index == self.active_document, name)
-                            .clicked()
-                        {
-                            self.switch_document(index);
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    if ui.button("New document").clicked() {
+                ui.heading("MultiCAD");
+                ui.menu_button("File", |ui| {
+                    if ui.button("New document    ⌘N").clicked() {
                         self.new_document();
+                        ui.close();
+                    }
+                    if ui.button("New window    ⌘⇧N").clicked() {
+                        self.new_window();
+                        ui.close();
+                    }
+                    if ui.button("Insert shared-sketch example").clicked() {
+                        let mut next = self.draft.clone();
+                        next.sample_geometry = true;
+                        self.request(next, Operation::Apply);
                         ui.close();
                     }
                     if ui.button("Open proof file…").clicked() {
                         self.file_dialog = true;
                         ui.close();
                     }
-                })
-                .response
-                .on_hover_text("Switch open document");
-            let c = filename.rect.right_center() - egui::vec2(7.0, 0.0);
-            ui.painter().add(egui::Shape::line(
-                vec![
-                    c - egui::vec2(3.0, 1.5),
-                    c + egui::vec2(0.0, 1.5),
-                    c + egui::vec2(3.0, -1.5),
-                ],
-                egui::Stroke::new(1.3, Color32::LIGHT_GRAY),
-            ));
-            if self.session.dirty() || self.draft != self.session.current {
-                ui.colored_label(Color32::from_rgb(230, 180, 90), "•");
-            }
-            if button(ui, Icon::Save, "Save document (⌘S)").clicked() {
-                if self.path.is_empty() {
-                    self.file_dialog = true;
-                } else {
-                    self.save();
+                    if ui.button("Save / Save as…").clicked() {
+                        self.file_dialog = true;
+                        ui.close();
+                    }
+                });
+                let filename = ui
+                    .menu_button(format!("{}    ", self.session.current.name), |ui| {
+                        for index in 0..self.documents.len() {
+                            let name = if index == self.active_document {
+                                self.session.current.name.clone()
+                            } else {
+                                self.documents[index].session.current.name.clone()
+                            };
+                            if ui
+                                .selectable_label(index == self.active_document, name)
+                                .clicked()
+                            {
+                                self.switch_document(index);
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("New document").clicked() {
+                            self.new_document();
+                            ui.close();
+                        }
+                        if ui.button("Open proof file…").clicked() {
+                            self.file_dialog = true;
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text("Switch open document");
+                let c = filename.rect.right_center() - egui::vec2(7.0, 0.0);
+                ui.painter().add(egui::Shape::line(
+                    vec![
+                        c - egui::vec2(3.0, 1.5),
+                        c + egui::vec2(0.0, 1.5),
+                        c + egui::vec2(3.0, -1.5),
+                    ],
+                    egui::Stroke::new(1.3, Color32::LIGHT_GRAY),
+                ));
+                if self.session.dirty() || self.draft != self.session.current {
+                    ui.colored_label(Color32::from_rgb(230, 180, 90), "•");
                 }
-            }
-            let undo = ui
-                .add_enabled_ui(
-                    !self.pending && self.session.undo_target().is_some(),
-                    |ui| button(ui, Icon::Undo, "Undo"),
-                )
-                .inner;
-            if undo.clicked() {
-                self.request(self.session.undo_target().unwrap(), Operation::Undo);
-            }
-            let redo = ui
-                .add_enabled_ui(
-                    !self.pending && self.session.redo_target().is_some(),
-                    |ui| button(ui, Icon::Redo, "Redo"),
-                )
-                .inner;
-            if redo.clicked() {
-                self.request(self.session.redo_target().unwrap(), Operation::Redo);
-            }
-            if ui.small_button("Find tool…").clicked() {
-                self.search_open = true;
-            }
-            // Allocate remaining width to the right-aligned mode selectors; never wrap into a second header row.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !cfg!(target_os = "macos") {
-                    if ui.small_button("×").on_hover_text("Close window").clicked() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    if ui
-                        .small_button("□")
-                        .on_hover_text("Maximize / restore")
-                        .clicked()
-                    {
-                        let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
-                    }
-                    if ui.small_button("−").on_hover_text("Minimize").clicked() {
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                if button(ui, Icon::Save, "Save document (⌘S)").clicked() {
+                    if self.path.is_empty() {
+                        self.file_dialog = true;
+                    } else {
+                        self.save();
                     }
                 }
-                for module in self.modules.iter().rev() {
-                    if ui
-                        .selectable_label(
+                let undo = ui
+                    .add_enabled_ui(
+                        !self.pending && self.session.undo_target().is_some(),
+                        |ui| button(ui, Icon::Undo, "Undo"),
+                    )
+                    .inner;
+                if undo.clicked() {
+                    self.request(self.session.undo_target().unwrap(), Operation::Undo);
+                }
+                let redo = ui
+                    .add_enabled_ui(
+                        !self.pending && self.session.redo_target().is_some(),
+                        |ui| button(ui, Icon::Redo, "Redo"),
+                    )
+                    .inner;
+                if redo.clicked() {
+                    self.request(self.session.redo_target().unwrap(), Operation::Redo);
+                }
+                if ui.small_button("Find tool…").clicked() {
+                    self.search_open = true;
+                }
+                // Allocate remaining width to the right-aligned mode selectors; never wrap into a second header row.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !cfg!(target_os = "macos") {
+                        if ui.small_button("×").on_hover_text("Close window").clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if ui
+                            .small_button("□")
+                            .on_hover_text("Maximize / restore")
+                            .clicked()
+                        {
+                            let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+                        }
+                        if ui.small_button("−").on_hover_text("Minimize").clicked() {
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                    }
+                    for module in self.modules.iter().rev() {
+                        if multicad_ui::controls::tab(
+                            ui,
+                            module.title(),
                             self.mode == module.mode(),
-                            RichText::new(module.title()).color(module.color()),
+                            multicad_ui::controls::TabColors {
+                                text: module.color(),
+                                background: Color32::TRANSPARENT,
+                                active_text: module.color(),
+                                active_background: Color32::from_rgb(37, 45, 56),
+                            },
                         )
                         .clicked()
-                    {
-                        self.mode = module.mode();
-                        self.ribbon_tab = "Common".into();
-                        self.example_tool = None;
+                        {
+                            self.mode = module.mode();
+                            self.ribbon_tab = "Common".into();
+                            self.example_tool = None;
+                        }
                     }
-                }
-            });
-        });
+                });
+            },
+        );
         let drag = ui.interact(
             ui.max_rect().shrink2(egui::vec2(0.0, 12.0)),
             ui.id().with("title-drag"),
@@ -532,15 +543,16 @@ impl Lab {
                 ui.horizontal(|ui| {
                     for tab in tabs {
                         let selected = self.ribbon_tab == *tab;
-                        let response = ui.add(
-                            egui::Button::new(RichText::new(*tab).color(if selected {
-                                accent
-                            } else {
-                                Color32::WHITE
-                            }))
-                            .fill(if selected { Color32::WHITE } else { accent })
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(4),
+                        let response = multicad_ui::controls::tab(
+                            ui,
+                            tab,
+                            selected,
+                            multicad_ui::controls::TabColors {
+                                text: Color32::WHITE,
+                                background: accent,
+                                active_text: accent,
+                                active_background: Color32::WHITE,
+                            },
                         );
                         if response.clicked() {
                             self.ribbon_tab = (*tab).into();
