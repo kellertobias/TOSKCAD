@@ -7,6 +7,10 @@ mod transaction;
 pub use transaction::*;
 mod evaluated;
 pub use evaluated::*;
+mod trim;
+pub use trim::*;
+mod canonical_edit;
+pub use canonical_edit::*;
 
 /// Solve a perturbed rectangle. Solver handles stay private to this adapter.
 pub fn rectangle(width: f64, depth: f64) -> Result<[f64; 2], String> {
