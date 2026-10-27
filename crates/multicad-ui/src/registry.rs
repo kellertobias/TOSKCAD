@@ -345,6 +345,20 @@ impl Registry {
             .iter()
             .find(|t| t.aliases.iter().any(|a| a.eq_ignore_ascii_case(name)))
     }
+    pub fn search(&self, query: &str) -> Vec<&Tool> {
+        let query = query.trim().to_lowercase();
+        self.tools
+            .iter()
+            .filter(|tool| {
+                query.is_empty()
+                    || tool.label.to_lowercase().contains(&query)
+                    || tool
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
     pub fn workspace(&self, mode: Mode) -> &Workspace {
         self.workspaces
             .iter()
@@ -364,6 +378,28 @@ impl Registry {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    #[test]
+    fn finder_matches_labels_and_aliases_independently_of_case_and_surrounding_space() {
+        let registry = Registry::default();
+        assert_eq!(
+            registry
+                .search("  RECT ")
+                .iter()
+                .map(|t| t.action)
+                .collect::<Vec<_>>(),
+            vec![Command::Rectangle]
+        );
+        assert_eq!(
+            registry
+                .search("params")
+                .iter()
+                .map(|t| t.action)
+                .collect::<Vec<_>>(),
+            vec![Command::Mode(Mode::Parameters)]
+        );
+        assert_eq!(registry.search("  ").len(), registry.tools.len());
+        assert!(registry.search("no-such-tool").is_empty());
+    }
     #[test]
     fn definitions_have_unique_ids_aliases_and_resolvable_ribbon_references() {
         let r = Registry::default();

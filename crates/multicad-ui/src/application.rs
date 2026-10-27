@@ -77,6 +77,7 @@ pub struct Application {
     file_document: Option<multicad_core::document::EntityId>,
     find_open: bool,
     find: String,
+    find_index: usize,
     history_open: bool,
     close_confirm: bool,
     close_allowed: bool,
@@ -109,6 +110,7 @@ impl Application {
             file_document: None,
             find_open: false,
             find: String::new(),
+            find_index: 0,
             history_open: false,
             close_confirm: false,
             close_allowed: false,
@@ -162,6 +164,12 @@ impl Application {
         match command {
             Command::KeyboardShortcuts => self.shortcut_help = true,
             Command::Parameter => {
+                if args.is_empty() && channel == Channel::Ui {
+                    self.mode = Mode::Parameters;
+                    self.tab = 0;
+                    self.message = "Enter or edit a parameter in the table".into();
+                    return Ok(());
+                }
                 if args.len() < 3 {
                     return Err("Usage: param <name> <unit> <expression>".into());
                 }
@@ -587,9 +595,20 @@ impl Application {
                 if left_drag.drag_started() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
+                let search_id = ui.id().with("tool-finder-input");
+                let mut find_step = 0;
+                let mut find_submit = false;
+                if self.find_open && ui.memory(|memory| memory.has_focus(search_id)) {
+                    ui.input_mut(|input| {
+                        if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {find_step = 1;}
+                        if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {find_step = -1;}
+                        find_submit = input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                    });
+                }
                 let search = ui.add_sized(
                     [search_width, 28.],
                     egui::TextEdit::singleline(&mut self.find)
+                        .id(search_id)
                         .hint_text("Find a tool…")
                         .horizontal_align(egui::Align::Center)
                         .vertical_align(egui::Align::Center)
@@ -610,9 +629,18 @@ impl Application {
                 if search.changed() || search.gained_focus() || search.clicked() {
                     self.find_open = true;
                 }
+                if search.changed() {self.find_index = 0;}
+                let results: Vec<_> = self.registry.search(&self.find).into_iter().copied().collect();
+                let available: Vec<_> = results.iter().filter(|tool|self.enabled(tool.action)).collect();
+                self.find_index = self.find_index.min(available.len().saturating_sub(1));
+                if !available.is_empty() {
+                    if find_step > 0 {self.find_index=(self.find_index+1)%available.len();}
+                    else if find_step < 0 {self.find_index=(self.find_index+available.len()-1)%available.len();}
+                    if find_submit {action=Some(available[self.find_index].action);}
+                }
                 search
                     .clone()
-                    .on_hover_text("Find tools by name or command alias · Cmd/Ctrl+F");
+                    .on_hover_text("Find tools by name or command alias · Cmd/Ctrl+F · Up/Down to choose · Enter to run · Escape to close");
                 let mut open = self.find_open;
                 egui::Popup::from_response(&search)
                     .open_bool(&mut open)
@@ -623,30 +651,27 @@ impl Application {
                         egui::ScrollArea::vertical()
                             .max_height(300.)
                             .show(ui, |ui| {
-                                let query = self.find.to_lowercase();
-                                let mut found = false;
-                                for tool in &self.registry.tools {
-                                    if !query.is_empty()
-                                        && !tool.label.to_lowercase().contains(&query)
-                                        && !tool.aliases.iter().any(|a| a.contains(&query))
-                                    {
-                                        continue;
-                                    }
-                                    found = true;
-                                    if ui
+                                let mut index = 0;
+                                for tool in results {
+                                    let enabled = self.enabled(tool.action);
+                                    let selected = enabled && self.find_index == index;
+                                    if enabled {index+=1;}
+                                    let response = ui
                                         .add_enabled(
-                                            self.enabled(tool.action),
-                                            egui::Button::new(tool.label),
+                                            enabled,
+                                            egui::Button::new(tool.label).selected(selected),
                                         )
                                         .on_disabled_hover_text("Unavailable in this context")
-                                        .on_hover_text(format!("Command: {}", tool.id))
-                                        .clicked()
-                                    {
+                                        .on_hover_text(self.command_help(tool.action,tool.label,ui.ctx()));
+                                    if selected && find_step != 0 {response.scroll_to_me(Some(egui::Align::Center));}
+                                    if response.clicked() {
                                         action = Some(tool.action);
                                     }
                                 }
-                                if !found {
+                                if index == 0 {
+                                    if self.registry.search(&self.find).is_empty() {
                                     ui.label("No matching tools");
+                                    } else {ui.label("Matching tools are unavailable in this context");}
                                 }
                             });
                     });
@@ -1559,6 +1584,99 @@ mod tests {
         assert_eq!(app.find, "model");
         assert!(app.find_open);
         assert_eq!(app.mode, Mode::Parameters);
+    }
+    #[test]
+    fn finder_keyboard_runs_enabled_results_and_restores_viewport_focus() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let original = app.current().session.document().id();
+        shortcut_frame(&ctx, &mut app, vec![]);
+        app.focus_search = true;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(&ctx, &mut app, vec![egui::Event::Text("  MODEL  ".into())]);
+        assert!(app.find_open);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.mode, Mode::Model);
+        assert!(!app.find_open);
+        assert!(!ctx.text_edit_focused());
+        assert_eq!(app.current().session.document().id(), original);
+
+        app.find.clear();
+        app.focus_search = true;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(&ctx, &mut app, vec![egui::Event::Text("new".into())]);
+        assert_eq!(app.find_index, 0);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::ArrowDown, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.find_index, 1);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::ArrowUp, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.find_index, 0);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::ArrowUp, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.find_index, 2); // Wrap to New Sketch, never spawn a process.
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.mode, Mode::Sketch);
+        assert!(app.current().sketch.picking);
+        assert!(!app.find_open);
+        assert_eq!(app.current().session.revision(), 0);
+    }
+    #[test]
+    fn finder_keeps_unavailable_tools_disabled_for_enter_and_handles_no_matches() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        shortcut_frame(&ctx, &mut app, vec![]);
+        app.focus_search = true;
+        app.find = "extrude".into();
+        shortcut_frame(&ctx, &mut app, vec![]);
+        for key in [egui::Key::ArrowDown, egui::Key::Enter] {
+            shortcut_frame(&ctx, &mut app, vec![key_event(key, egui::Modifiers::NONE)]);
+        }
+        assert!(app.find_open);
+        assert!(!app.message_error);
+        assert_eq!(app.mode, Mode::Parameters);
+        assert_eq!(app.current().session.revision(), 0);
+        app.find = "no-such-tool".into();
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert!(app.find_open);
+        assert_eq!(app.find_index, 0);
+        assert_eq!(app.current().session.revision(), 0);
+    }
+    #[test]
+    fn parameter_finder_action_opens_the_table_without_committing_or_discarding_a_draft() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.mode = Mode::Model;
+        app.current_mut().editor.rows[0].name = "width".into();
+        app.execute(Command::Parameter, &[], Channel::Ui);
+        assert_eq!(app.mode, Mode::Parameters);
+        assert!(!app.message_error);
+        assert_eq!(app.current().editor.rows[0].name, "width");
+        assert_eq!(app.current().session.revision(), 0);
+        assert!(
+            app.invoke(Command::Parameter, &[], Channel::CommandLine)
+                .is_err()
+        );
     }
     #[test]
     fn right_end_of_command_bar_still_accepts_text_under_status_overlay() {
