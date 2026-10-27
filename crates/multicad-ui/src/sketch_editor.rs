@@ -226,6 +226,7 @@ impl SketchEditor {
             scene: scene.as_deref(),
             report: self.evaluated.as_ref(),
             occurrence: self.occurrence,
+            section: self.solid.section.plane(),
         };
         // Revalidate even Inspector acceptance against the current scene, not a
         // pointer hit retained from a previous revision or placement.
@@ -697,7 +698,7 @@ impl SketchEditor {
                         }
                         if self.picking && sketch_mode {
                             let scene = self.display_scene.clone();
-                            let context = PlaneContext { document: session.document(), revision: session.revision(), scene: scene.as_deref().filter(|s| s.stamp().revision == session.revision()), report: self.evaluated.as_ref(), occurrence: self.occurrence };
+                            let context = PlaneContext { document: session.document(), revision: session.revision(), scene: scene.as_deref().filter(|s| s.stamp().revision == session.revision()), report: self.evaluated.as_ref(), occurrence: self.occurrence, section: self.solid.section.plane() };
                             let chosen = self.plane_picker.show_inspector(ui,context);
                             if self.plane_picker.take_cancel_requested() { self.cancel(); }
                             if let Some(preview) = chosen && let Err(error) = self.create_on_plane(session,preview,Channel::Ui) {self.message=error;}
@@ -982,6 +983,7 @@ impl SketchEditor {
                 scene: scene.as_deref().filter(|_| current),
                 report: self.evaluated.as_ref(),
                 occurrence: self.occurrence,
+                section: self.solid.section.plane(),
             };
             self.plane_picker
                 .update_hover(response.hover_pos(), self.camera, rect, context);
@@ -1477,6 +1479,7 @@ mod tests {
                     scene: editor.display_scene.as_deref(),
                     report: None,
                     occurrence: None,
+                    section: None,
                 })
                 .unwrap()
                 .unwrap()
