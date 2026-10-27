@@ -315,3 +315,111 @@ fn shared_payload_ownership_does_not_copy_bytes_for_a_save_snapshot() {
         ));
     }
 }
+
+#[test]
+fn external_replacement_during_serialization_is_preserved_and_cannot_be_acknowledged_as_our_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("external-race.multicad");
+    let mut store = ProjectStore::new(dir.path().join("recovery"));
+    let mut ours = project(dir.path());
+    let original = store.save_project(&path, &ours, SaveMode::Create).unwrap();
+    ours.document.rename("Our pending edit").unwrap();
+    let mut external = ours.clone();
+    external.document.rename("External writer source").unwrap();
+    let mut bytes = vec![];
+    project_file::write(&external, &mut bytes, FileLimits::default()).unwrap();
+    let result = atomic_save_with(&path, &ours, SaveMode::Replace(original.stamp), || {
+        std::fs::write(&path, &bytes)?;
+        Ok(())
+    });
+    assert!(matches!(result, Err(StorageError::Changed)));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        store.open_project(&path).unwrap().file.document,
+        external.document
+    );
+}
+
+#[test]
+fn automatic_recovery_reuses_only_its_session_tab_slot_after_more_than_512_updates() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = ProjectStore::new(dir.path().join("recovery"));
+    let mut file = ProjectFile::new(Document::new("Automatic recovery").unwrap()).unwrap();
+    let manual = store.write_recovery(&file, 0, None).unwrap();
+    let manual_path = store.recovery_path(manual.info.id);
+    let manual_bytes = std::fs::read(&manual_path).unwrap();
+    let other_session = store
+        .write_recovery_slot(&file, 1, None, EntityId::new())
+        .unwrap();
+    let other_path = store.recovery_path(other_session.info.id);
+    let other_bytes = std::fs::read(&other_path).unwrap();
+    let slot = EntityId::new();
+    for revision in 0..=513 {
+        file.document
+            .rename(format!("Latest revision {revision}"))
+            .unwrap();
+        let entry = store
+            .write_recovery_slot(&file, revision, None, slot)
+            .unwrap();
+        assert_eq!(entry.info.id, slot);
+        assert_eq!(entry.info.slot, Some(slot));
+    }
+    let entries = store.recoveries().unwrap().entries;
+    assert_eq!(entries.len(), 3);
+    let latest = entries.iter().find(|e| e.info.id == slot).unwrap();
+    assert_eq!(latest.info.source_revision, 513);
+    assert_eq!(
+        store.restore_recovery(slot).unwrap().file.document.name(),
+        "Latest revision 513"
+    );
+    assert_eq!(std::fs::read(&manual_path).unwrap(), manual_bytes);
+    assert_eq!(std::fs::read(&other_path).unwrap(), other_bytes);
+    // Even a wrongly reused slot cannot overwrite another document or a manual checkpoint.
+    let before = std::fs::read(store.recovery_path(slot)).unwrap();
+    let foreign = ProjectFile::new(Document::new("Another project").unwrap()).unwrap();
+    assert!(store.write_recovery_slot(&foreign, 1, None, slot).is_err());
+    assert!(
+        store
+            .write_recovery_slot(&file, 514, None, manual.info.id)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(store.recovery_path(slot)).unwrap(), before);
+    assert_eq!(std::fs::read(&manual_path).unwrap(), manual_bytes);
+}
+#[test]
+fn discovery_retains_the_newest_512_checked_summaries_independently_of_directory_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = ProjectStore::new(dir.path().join("recovery"));
+    std::fs::create_dir_all(&store.recovery_directory).unwrap();
+    let mut file = ProjectFile::new(Document::new("Recovery discovery").unwrap()).unwrap();
+    let mut latest = EntityId::new();
+    // Deliberately reversed insertion order. More than 512 independent manual snapshots remain on disk.
+    for timestamp in (0..=520).rev() {
+        let id = EntityId::new();
+        if timestamp == 520 {
+            latest = id;
+        }
+        file.recovery = Some(RecoveryInfo {
+            id,
+            slot: None,
+            created_unix_ms: timestamp,
+            source_revision: timestamp,
+            original_path: None,
+        });
+        let mut bytes = vec![];
+        project_file::write(&file, &mut bytes, FileLimits::default()).unwrap();
+        std::fs::write(store.recovery_path(id), bytes).unwrap();
+    }
+    let listed = store.recoveries().unwrap();
+    assert_eq!(listed.entries.len(), 512);
+    assert_eq!(listed.entries[0].info.id, latest);
+    assert_eq!(listed.entries.last().unwrap().info.source_revision, 9);
+    assert!(listed.diagnostics.iter().any(|d| d.contains("521")));
+    assert_eq!(
+        std::fs::read_dir(&store.recovery_directory)
+            .unwrap()
+            .count(),
+        521
+    );
+    assert!(store.restore_recovery(latest).is_ok());
+}

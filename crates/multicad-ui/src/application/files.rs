@@ -15,7 +15,9 @@ pub(super) enum PendingFile {
         path: PathBuf,
         imported: bool,
     },
-    Restore,
+    Restore {
+        expected: Option<RecoveryInfo>,
+    },
     Discover,
     Snapshot {
         local: EntityId,
@@ -234,8 +236,16 @@ impl Application {
                     },
                 );
             }
-            (PendingFile::Restore, FileResult::Loaded(result)) => {
+            (PendingFile::Restore { expected }, FileResult::Loaded(result)) => {
                 let loaded = result.map_err(|e| e.to_string())?;
+                if expected
+                    .as_ref()
+                    .is_some_and(|info| loaded.file.recovery.as_ref() != Some(info))
+                {
+                    return Err(
+                        "That recovery slot changed. Refresh snapshots before restoring.".into(),
+                    );
+                }
                 let mut p = Project::new(loaded.file.document)?;
                 p.resources = loaded.file.resources;
                 // A recovered tab deliberately has no destination and is dirty.
@@ -268,6 +278,9 @@ impl Application {
                 if let Some(p) = self.projects.iter_mut().find(|p| p.local_id == local) {
                     p.recovery_revision = Some(revision);
                 }
+                self.recoveries
+                    .entries
+                    .retain(|old| old.info.id != entry.info.id);
                 self.recoveries.entries.insert(0, entry);
                 self.message = format!(
                     "Recovery snapshot saved{} · revision {revision}",
@@ -312,6 +325,7 @@ impl Application {
             project: p.snapshot()?,
             revision,
             original: p.file_stamp.and(p.path.clone()),
+            slot: automatic.then_some(local),
         })?;
         self.pending_files.insert(
             id,
@@ -448,16 +462,21 @@ impl Application {
                         let RecoveryInfo {source_revision,created_unix_ms,original_path,..}=&entry.info;
                         ui.horizontal(|ui| {
                             ui.label(format!("{} · r{} · {} ms since Unix epoch",entry.name,source_revision,created_unix_ms)).on_hover_text(original_path.as_deref().unwrap_or("Unsaved project"));
-                            if ui.add_enabled(!self.file_busy(),egui::Button::new("Restore copy")).clicked(){restore=Some(entry.info.id);}
+                            if ui.add_enabled(!self.file_busy(),egui::Button::new("Restore copy")).clicked(){restore=Some(entry.info.clone());}
                         });
                     }
                 });
             });
             self.recovery_open = open;
             if let Some(recovery) = restore {
-                match self.storage.submit(FileRequest::Restore(recovery)) {
+                match self.storage.submit(FileRequest::Restore(recovery.id)) {
                     Ok(id) => {
-                        self.pending_files.insert(id, PendingFile::Restore);
+                        self.pending_files.insert(
+                            id,
+                            PendingFile::Restore {
+                                expected: Some(recovery),
+                            },
+                        );
                     }
                     Err(error) => {
                         self.message = error;
@@ -574,6 +593,7 @@ mod tests {
     struct State {
         saved: Vec<ProjectFile>,
         snapshots: Vec<ProjectFile>,
+        slots: Vec<EntityId>,
     }
     struct Store {
         project: ProjectFile,
@@ -615,6 +635,7 @@ mod tests {
             Ok(RecoveryEntry {
                 info: RecoveryInfo {
                     id: EntityId::new(),
+                    slot: None,
                     created_unix_ms: 1,
                     source_revision: revision,
                     original_path: None,
@@ -622,6 +643,19 @@ mod tests {
                 document: p.document.id(),
                 name: p.document.name().into(),
             })
+        }
+        fn write_recovery_slot(
+            &mut self,
+            p: &ProjectFile,
+            revision: u64,
+            original: Option<&Path>,
+            slot: EntityId,
+        ) -> Result<RecoveryEntry, StorageError> {
+            self.state.lock().unwrap().slots.push(slot);
+            let mut entry = self.write_recovery(p, revision, original)?;
+            entry.info.id = slot;
+            entry.info.slot = Some(slot);
+            Ok(entry)
         }
         fn recoveries(&mut self) -> Result<RecoveryListing, StorageError> {
             Ok(Default::default())
@@ -689,7 +723,8 @@ mod tests {
             .storage
             .submit(FileRequest::Restore(EntityId::new()))
             .unwrap();
-        app.pending_files.insert(id, PendingFile::Restore);
+        app.pending_files
+            .insert(id, PendingFile::Restore { expected: None });
         drain(&mut app);
         assert!(app.current().dirty());
         assert!(app.current().path.is_none());
@@ -749,5 +784,58 @@ mod tests {
         frame(&mut app, 90.);
         drain(&mut app);
         assert_eq!(state.lock().unwrap().snapshots.len(), 1);
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        app.invoke(Command::Parameter, &["width", "mm", "601"], Channel::Ui)
+            .unwrap();
+        frame(&mut app, 91.);
+        frame(&mut app, 111.);
+        drain(&mut app);
+        let captured = state.lock().unwrap();
+        assert_eq!(captured.snapshots.len(), 2);
+        assert_eq!(captured.slots[0], captured.slots[1]);
+        drop(captured);
+        assert_eq!(app.recoveries.entries.len(), 1);
+        app.invoke(Command::RecoverySnapshot, &[], Channel::Ui)
+            .unwrap();
+        drain(&mut app);
+        assert_eq!(app.recoveries.entries.len(), 2);
+        assert!(
+            app.recoveries
+                .entries
+                .iter()
+                .any(|entry| entry.info.slot.is_none())
+        );
+    }
+    #[test]
+    fn changed_recovery_slot_requires_refresh_instead_of_restoring_unseen_source() {
+        let (store, _) = fixture();
+        let loaded = LoadedProject {
+            file: store.project.clone(),
+            stamp: None,
+            diagnostics: vec![],
+        };
+        let mut app = Application::new(Box::new(store)).unwrap();
+        drain(&mut app);
+        let source = app.current().session.document().clone();
+        let count = app.projects.len();
+        let expected = RecoveryInfo {
+            id: EntityId::new(),
+            slot: None,
+            created_unix_ms: 1,
+            source_revision: 1,
+            original_path: None,
+        };
+        assert!(
+            app.accept_file_reply(
+                PendingFile::Restore {
+                    expected: Some(expected)
+                },
+                FileResult::Loaded(Ok(loaded))
+            )
+            .unwrap_err()
+            .contains("Refresh")
+        );
+        assert_eq!(app.projects.len(), count);
+        assert_eq!(app.current().session.document(), &source);
     }
 }

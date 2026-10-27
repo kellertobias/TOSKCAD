@@ -7,6 +7,7 @@ use multicad_ui::storage::{
     SavedProject, StorageError,
 };
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -59,12 +60,66 @@ impl ProjectStore {
             project_file::ProjectDiagnostic::CacheCorrupt{..}=>"A corrupt optional cache was discarded; source is intact and requires rebuilding.".into(),
         }).collect()})
     }
+    fn write_snapshot(
+        &self,
+        project: &ProjectFile,
+        revision: u64,
+        original: Option<&Path>,
+        slot: Option<EntityId>,
+    ) -> Result<RecoveryEntry, StorageError> {
+        std::fs::create_dir_all(&self.recovery_directory)?;
+        let created_unix_ms = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| StorageError::Message(e.to_string()))?
+                .as_millis(),
+        )
+        .map_err(|e| StorageError::Message(e.to_string()))?;
+        let info = RecoveryInfo {
+            id: slot.unwrap_or_default(),
+            slot,
+            created_unix_ms,
+            source_revision: revision,
+            original_path: original.map(|p| p.to_string_lossy().into_owned()),
+        };
+        let mut snapshot = project.clone();
+        snapshot.recovery = Some(info.clone());
+        let path = self.recovery_path(info.id);
+        let mode = match (slot, existing_stamp(&path)?) {
+            (Some(_), Some(stamp)) => {
+                let mut previous = File::open(&path)?;
+                let summary = project_file::summary(
+                    &mut previous,
+                    FileLimits::default(),
+                    &project_file::supported_capabilities(),
+                )
+                .map_err(StorageError::Message)?;
+                if summary.document != project.document.id()
+                    || summary
+                        .recovery
+                        .as_ref()
+                        .is_none_or(|r| r.id != info.id || r.slot != slot)
+                {
+                    return Err(StorageError::Message("The automatic recovery slot belongs to another document. It was left unchanged.".into()));
+                }
+                SaveMode::Replace(stamp)
+            }
+            _ => SaveMode::Create,
+        };
+        atomic_save(&path, &snapshot, mode)?;
+        Ok(RecoveryEntry {
+            info,
+            document: project.document.id(),
+            name: project.document.name().into(),
+        })
+    }
     fn recovery_path(&self, id: EntityId) -> PathBuf {
         self.recovery_directory
             .join(format!("{id}.recovery.multicad"))
     }
 }
 fn stamp(file: &mut File) -> Result<FileStamp, StorageError> {
+    file.seek(SeekFrom::Start(0))?;
     let mut header = [0u8; 52];
     file.read_exact(&mut header)?;
     if &header[..8] != b"MCADPRJ\0" {
@@ -116,20 +171,17 @@ fn atomic_save_with(
     lock.try_lock().map_err(|e| {
         StorageError::Message(format!("Another process is saving this project: {e}"))
     })?;
-    let existing = existing_stamp(path)?;
-    match (mode, existing) {
-        (SaveMode::Create, Some(stamp)) => return Err(StorageError::AlreadyExists(stamp)),
-        (SaveMode::Replace(expected), Some(current)) if expected == current => {}
-        (SaveMode::Replace(_), _) => return Err(StorageError::Changed),
-        (SaveMode::Create, None) => {}
-    }
+    check_destination(path, mode)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     project_file::write(project, &mut temporary, FileLimits::default())
         .map_err(StorageError::Message)?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
     before_publish()?;
-    match mode {
+    // Serialization can be long. Detect a noncooperating writer again before
+    // publication; the advisory lock serializes cooperating MultiCAD writers.
+    check_destination(path, mode)?;
+    let mut published = match mode {
         SaveMode::Create => temporary
             .persist_noclobber(path)
             .map_err(|e| StorageError::Message(e.to_string()))?,
@@ -138,10 +190,19 @@ fn atomic_save_with(
             .map_err(|e| StorageError::Message(e.to_string()))?,
     };
     let warnings = directory_sync_warnings(parent);
-    let stamp = existing_stamp(path)?
-        .ok_or_else(|| StorageError::Message("Saved project is missing".into()))?;
+    // Read our published inode, not a new open that could observe another
+    // writer's replacement and incorrectly acknowledge its stamp as our save.
+    let stamp = stamp(&mut published)?;
     drop(lock);
     Ok(SavedProject { stamp, warnings })
+}
+fn check_destination(path: &Path, mode: SaveMode) -> Result<(), StorageError> {
+    match (mode, existing_stamp(path)?) {
+        (SaveMode::Create, Some(stamp)) => Err(StorageError::AlreadyExists(stamp)),
+        (SaveMode::Replace(expected), Some(current)) if expected == current => Ok(()),
+        (SaveMode::Replace(_), _) => Err(StorageError::Changed),
+        (SaveMode::Create, None) => Ok(()),
+    }
 }
 fn directory_sync_warnings(parent: &Path) -> Vec<String> {
     #[cfg(unix)]
@@ -189,28 +250,16 @@ impl DocumentStorage for ProjectStore {
         revision: u64,
         original: Option<&Path>,
     ) -> Result<RecoveryEntry, StorageError> {
-        std::fs::create_dir_all(&self.recovery_directory)?;
-        let created_unix_ms = u64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| StorageError::Message(e.to_string()))?
-                .as_millis(),
-        )
-        .map_err(|e| StorageError::Message(e.to_string()))?;
-        let info = RecoveryInfo {
-            id: EntityId::new(),
-            created_unix_ms,
-            source_revision: revision,
-            original_path: original.map(|p| p.to_string_lossy().into_owned()),
-        };
-        let mut snapshot = project.clone();
-        snapshot.recovery = Some(info.clone());
-        atomic_save(&self.recovery_path(info.id), &snapshot, SaveMode::Create)?;
-        Ok(RecoveryEntry {
-            info,
-            document: project.document.id(),
-            name: project.document.name().into(),
-        })
+        self.write_snapshot(project, revision, original, None)
+    }
+    fn write_recovery_slot(
+        &mut self,
+        project: &ProjectFile,
+        revision: u64,
+        original: Option<&Path>,
+        slot: EntityId,
+    ) -> Result<RecoveryEntry, StorageError> {
+        self.write_snapshot(project, revision, original, Some(slot))
     }
     fn recoveries(&mut self) -> Result<RecoveryListing, StorageError> {
         let entries = match std::fs::read_dir(&self.recovery_directory) {
@@ -221,7 +270,9 @@ impl DocumentStorage for ProjectStore {
             Err(error) => return Err(error.into()),
         };
         let mut listing = RecoveryListing::default();
-        let mut examined = 0;
+        let mut retained = BTreeMap::new();
+        let mut valid_count = 0usize;
+        let mut invalid_count = 0usize;
         for entry in entries {
             let entry = entry?;
             if !entry.file_type()?.is_file()
@@ -231,14 +282,6 @@ impl DocumentStorage for ProjectStore {
                     .ends_with(".recovery.multicad")
             {
                 continue;
-            }
-            examined += 1;
-            if examined > 512 {
-                listing.diagnostics.push(
-                    "Recovery listing is limited to 512 files; older snapshots remain on disk."
-                        .into(),
-                );
-                break;
             }
             let result = (|| {
                 let mut file = File::open(entry.path())?;
@@ -265,15 +308,30 @@ impl DocumentStorage for ProjectStore {
                 })
             })();
             match result {
-                Ok(entry) => listing.entries.push(entry),
-                Err(error) => listing
-                    .diagnostics
-                    .push(format!("A recovery snapshot could not be listed: {error}")),
+                Ok(entry) => {
+                    valid_count += 1;
+                    retained.insert((entry.info.created_unix_ms, entry.info.id), entry);
+                    if retained.len() > 512 {
+                        retained.pop_first();
+                    }
+                }
+                Err(error) => {
+                    invalid_count += 1;
+                    if listing.diagnostics.len() < 32 {
+                        listing
+                            .diagnostics
+                            .push(format!("A recovery snapshot could not be listed: {error}"));
+                    }
+                }
             }
         }
-        listing
-            .entries
-            .sort_by_key(|e| std::cmp::Reverse(e.info.created_unix_ms));
+        listing.entries = retained.into_values().rev().collect();
+        if valid_count > 512 {
+            listing.diagnostics.push(format!("Showing the 512 newest of {valid_count} recovery snapshots. Other snapshots remain on disk."));
+        }
+        if invalid_count > 32 {
+            listing.diagnostics.push(format!("{invalid_count} recovery files could not be listed; showing the first 32 diagnostics."));
+        }
         Ok(listing)
     }
     fn restore_recovery(&mut self, id: EntityId) -> Result<LoadedProject, StorageError> {

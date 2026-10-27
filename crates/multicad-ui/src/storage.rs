@@ -107,6 +107,19 @@ pub trait DocumentStorage: Send {
             "Recovery snapshots are unavailable in this storage adapter".into(),
         ))
     }
+    /// Update only the caller's random session/tab slot; manual checkpoints use
+    /// write_recovery and retain their separate immutable identities.
+    fn write_recovery_slot(
+        &mut self,
+        _project: &ProjectFile,
+        _revision: u64,
+        _original: Option<&Path>,
+        _slot: EntityId,
+    ) -> Result<RecoveryEntry, StorageError> {
+        Err(StorageError::Message(
+            "Automatic recovery slots are unavailable in this storage adapter".into(),
+        ))
+    }
     fn recoveries(&mut self) -> Result<RecoveryListing, StorageError> {
         Ok(RecoveryListing::default())
     }
@@ -128,6 +141,7 @@ pub enum FileRequest {
         project: ProjectFile,
         revision: u64,
         original: Option<PathBuf>,
+        slot: Option<EntityId>,
     },
     Discover,
     Restore(EntityId),
@@ -169,11 +183,16 @@ impl FileWorker {
                             project,
                             revision,
                             original,
-                        } => FileResult::Snapshot(storage.write_recovery(
-                            &project,
-                            revision,
-                            original.as_deref(),
-                        )),
+                            slot,
+                        } => FileResult::Snapshot(match slot {
+                            Some(slot) => storage.write_recovery_slot(
+                                &project,
+                                revision,
+                                original.as_deref(),
+                                slot,
+                            ),
+                            None => storage.write_recovery(&project, revision, original.as_deref()),
+                        }),
                         FileRequest::Discover => FileResult::Discover(storage.recoveries()),
                         FileRequest::Restore(id) => {
                             FileResult::Loaded(storage.restore_recovery(id))

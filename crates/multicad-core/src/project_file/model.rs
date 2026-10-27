@@ -248,6 +248,8 @@ impl DerivedCache {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryInfo {
     pub id: EntityId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<EntityId>,
     pub created_unix_ms: u64,
     pub source_revision: u64,
     pub original_path: Option<String>,
@@ -344,7 +346,11 @@ impl ProjectFile {
         {
             return Err("Invalid required core capability list".into());
         }
-        if self.recovery.as_ref().is_some_and(|r| r.id.is_nil()) {
+        if self
+            .recovery
+            .as_ref()
+            .is_some_and(|r| r.id.is_nil() || r.slot.is_some_and(|slot| slot != r.id))
+        {
             return Err("Invalid recovery identity".into());
         }
         Ok(())

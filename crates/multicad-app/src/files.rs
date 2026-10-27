@@ -70,6 +70,15 @@ impl multicad_ui::application::DocumentStorage for SnapshotStore {
     ) -> Result<multicad_ui::storage::RecoveryEntry, multicad_ui::storage::StorageError> {
         ProjectStore::default().write_recovery(project, revision, original)
     }
+    fn write_recovery_slot(
+        &mut self,
+        project: &multicad_core::project_file::ProjectFile,
+        revision: u64,
+        original: Option<&Path>,
+        slot: multicad_core::document::EntityId,
+    ) -> Result<multicad_ui::storage::RecoveryEntry, multicad_ui::storage::StorageError> {
+        ProjectStore::default().write_recovery_slot(project, revision, original, slot)
+    }
     fn recoveries(
         &mut self,
     ) -> Result<multicad_ui::storage::RecoveryListing, multicad_ui::storage::StorageError> {
