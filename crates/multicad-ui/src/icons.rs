@@ -13,6 +13,12 @@ pub enum Icon {
     Undo,
     Redo,
     Sketch,
+    Line,
+    Rectangle,
+    Circle,
+    Arc,
+    Polyline,
+    Construction,
     Box,
     Cut,
     Edge,
@@ -262,6 +268,50 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
                 })
                 .collect();
             p.add(egui::Shape::line(points, stroke));
+        }
+        Icon::Line => {
+            line([4., 20.], [20., 4.]);
+            circle(4., 20., 1.5);
+            circle(20., 4., 1.5);
+        }
+        Icon::Rectangle => {
+            rect(3., 6., 18., 12.);
+            circle(3., 6., 1.2);
+            circle(21., 18., 1.2);
+        }
+        Icon::Circle => {
+            circle(12., 12., 8.);
+            line([10., 12.], [14., 12.]);
+            line([12., 10.], [12., 14.]);
+        }
+        Icon::Arc => {
+            let points: Vec<_> = (0..=24)
+                .map(|i| {
+                    let angle = std::f32::consts::PI * (0.15 + i as f32 / 24. * 1.4);
+                    [12. + 8. * angle.cos(), 12. - 8. * angle.sin()]
+                })
+                .collect();
+            path(&points);
+            for point in [points[0], points[24]] {
+                circle(point[0], point[1], 1.3);
+            }
+            line([10., 12.], [14., 12.]);
+            line([12., 10.], [12., 14.]);
+        }
+        Icon::Polyline => {
+            let points = [[3., 18.], [8., 5.], [15., 15.], [21., 7.]];
+            path(&points);
+            for point in points {
+                circle(point[0], point[1], 1.2);
+            }
+        }
+        Icon::Construction => {
+            for x in [2., 8., 14., 20.] {
+                line([x, 12.], [x + 2., 12.]);
+            }
+            for y in [2., 8., 14., 20.] {
+                line([12., y], [12., y + 2.]);
+            }
         }
         Icon::Sketch => {
             path(&[

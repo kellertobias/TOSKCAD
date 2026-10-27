@@ -202,14 +202,14 @@ impl Default for Registry {
             Tool {
                 id: "rectangle",
                 label: "Rectangle",
-                icon: Icon::Box,
+                icon: Icon::Rectangle,
                 action: Command::Rectangle,
                 aliases: &["rect", "rectangle"],
             },
             Tool {
                 id: "line",
                 label: "Line",
-                icon: Icon::Sketch,
+                icon: Icon::Line,
                 action: Command::Line,
                 aliases: &["line"],
             },
