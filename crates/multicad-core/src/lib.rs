@@ -12,6 +12,7 @@ pub mod project_file;
 pub mod references;
 pub mod sketch;
 pub mod sketch_draw;
+pub mod sketch_pattern;
 pub mod sketch_regions;
 pub mod sketch_transform;
 
