@@ -484,7 +484,7 @@ impl Application {
                     .sum::<f32>()
                     + ui.spacing().item_spacing.x * 5.0;
                 let search_width = (ui.available_width() - width - 30.).clamp(100., 220.);
-                let ideal = ui.max_rect().center().x - search_width * 0.5;
+                let ideal = ui.ctx().content_rect().center().x - search_width * 0.5;
                 let left_gap = (ideal - ui.cursor().left())
                     .max(0.)
                     .min((ui.available_width() - width - search_width - 16.).max(0.));
@@ -509,31 +509,36 @@ impl Application {
                     .align(egui::RectAlign::BOTTOM_START)
                     .width(search_width.max(260.))
                     .show(|ui| {
-                        let query = self.find.to_lowercase();
-                        let mut found = false;
-                        for tool in &self.registry.tools {
-                            if !query.is_empty()
-                                && !tool.label.to_lowercase().contains(&query)
-                                && !tool.aliases.iter().any(|a| a.contains(&query))
-                            {
-                                continue;
-                            }
-                            found = true;
-                            if ui
-                                .add_enabled(
-                                    self.enabled(tool.action),
-                                    egui::Button::new(tool.label),
-                                )
-                                .on_disabled_hover_text("Unavailable in this context")
-                                .on_hover_text(format!("Command: {}", tool.id))
-                                .clicked()
-                            {
-                                action = Some(tool.action);
-                            }
-                        }
-                        if !found {
-                            ui.label("No matching tools");
-                        }
+                        ui.set_min_width(search_width.max(260.) - 16.);
+                        egui::ScrollArea::vertical()
+                            .max_height(300.)
+                            .show(ui, |ui| {
+                                let query = self.find.to_lowercase();
+                                let mut found = false;
+                                for tool in &self.registry.tools {
+                                    if !query.is_empty()
+                                        && !tool.label.to_lowercase().contains(&query)
+                                        && !tool.aliases.iter().any(|a| a.contains(&query))
+                                    {
+                                        continue;
+                                    }
+                                    found = true;
+                                    if ui
+                                        .add_enabled(
+                                            self.enabled(tool.action),
+                                            egui::Button::new(tool.label),
+                                        )
+                                        .on_disabled_hover_text("Unavailable in this context")
+                                        .on_hover_text(format!("Command: {}", tool.id))
+                                        .clicked()
+                                    {
+                                        action = Some(tool.action);
+                                    }
+                                }
+                                if !found {
+                                    ui.label("No matching tools");
+                                }
+                            });
                     });
                 if action.is_some() {
                     open = false;
@@ -646,9 +651,10 @@ impl Application {
             });
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         egui::Frame::new()
-            .fill(crate::theme::PANEL)
+            .fill(Color32::BLACK)
             .inner_margin(egui::Margin::symmetric(crate::theme::GUTTER, 0))
             .show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.horizontal(|ui| {
                         for id in &workspace.tabs[self.tab].tools {
@@ -751,27 +757,53 @@ impl Application {
             let width = ui.available_width();
             let status_width = (width * 0.43).min(560.);
             let response = ui.add_sized(
-                [(width - status_width - 8.).max(100.), 28.],
+                [width, 28.],
                 egui::TextEdit::singleline(&mut self.command)
                     .hint_text("Command…")
+                    .background_color(Color32::BLACK)
+                    .frame(egui::Frame::new().fill(Color32::BLACK).inner_margin(4))
                     .font(egui::TextStyle::Monospace),
             );
-            response
-                .clone()
-                .on_hover_text("Enter a command: params, param, start, rect, apply, undo, save");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let text = format!("{} · r{}", self.message, self.current().session.revision());
-                ui.add_sized(
-                    [status_width, 28.],
-                    egui::Label::new(RichText::new(&text).small().color(if self.message_error {
+            response.clone().on_hover_text(format!(
+                "Enter a command: params, param, start, rect, apply, undo, save\n{}",
+                self.message
+            ));
+            let status = format!("{} · r{}", self.message, self.current().session.revision());
+            let font = egui::TextStyle::Monospace.resolve(ui.style());
+            let typed_width = ui
+                .painter()
+                .layout_no_wrap(self.command.clone(), font, Color32::WHITE)
+                .size()
+                .x;
+            // Status is paint over one continuous input, never a second column.
+            // Long focused commands can use the whole input without obstruction.
+            if !response.has_focus() || typed_width < width - status_width - 20. {
+                let galley = ui.painter().layout_no_wrap(
+                    status.clone(),
+                    egui::FontId::proportional(11.),
+                    if self.message_error {
                         Color32::LIGHT_RED
                     } else {
                         Color32::GRAY
-                    }))
-                    .truncate(),
-                )
-                .on_hover_text(text);
-            });
+                    },
+                );
+                let clip = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.right() - status_width, response.rect.top()),
+                    response.rect.right_bottom(),
+                );
+                ui.interact(clip, ui.id().with("command-status"), egui::Sense::hover())
+                    .widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &status)
+                    });
+                ui.painter().with_clip_rect(clip).galley(
+                    egui::pos2(
+                        response.rect.right() - galley.size().x - 4.,
+                        response.rect.center().y - galley.size().y / 2.,
+                    ),
+                    galley,
+                    Color32::WHITE,
+                );
+            }
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let line = std::mem::take(&mut self.command);
                 self.submit_line(line);
@@ -804,16 +836,22 @@ impl Application {
         egui::Panel::top("ribbon")
             .frame(egui::Frame::new())
             .show(ui, |ui| self.ribbon(ui));
-        egui::Panel::bottom("command-entry").show(ui, |ui| self.command_line(ui));
+        egui::Panel::bottom("command-entry")
+            .frame(
+                egui::Frame::new()
+                    .fill(Color32::BLACK)
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
+            )
+            .show(ui, |ui| self.command_line(ui));
         egui::CentralPanel::default()
-            .frame(egui::Frame::new())
+            .frame(egui::Frame::new().fill(crate::theme::PANEL))
             .show(ui, |ui| {
                 if self.mode == Mode::Parameters {
                     let p = self.current_mut();
                     egui::Frame::new()
                         .inner_margin(egui::Margin {
-                            left: 8,
-                            right: 8,
+                            left: 16,
+                            right: 16,
                             top: 12,
                             bottom: 8,
                         })
@@ -1001,6 +1039,41 @@ mod tests {
         assert_eq!(app.find, "model");
         assert!(app.find_open);
         assert_eq!(app.mode, Mode::Parameters);
+    }
+    #[test]
+    fn right_end_of_command_bar_still_accepts_text_under_status_overlay() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let mut frame = |events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1360., 860.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            )
+            .drop_without_applying_deltas();
+        };
+        frame(vec![]);
+        frame(vec![]);
+        let p = egui::pos2(1290., 842.);
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        frame(vec![egui::Event::Text("rect".into())]);
+        assert_eq!(app.command, "rect");
     }
     #[test]
     fn command_history_keeps_manual_inputs_results_and_error_severity() {
