@@ -356,7 +356,8 @@ impl Lab {
             Err(e)=>self.error=Some(format!("Cannot open a new window: {e}")),
         }
     }
-    fn header(&mut self, ui: &mut egui::Ui) {
+    fn header(&mut self, ui: &mut egui::Ui) -> [egui::Rect; 6] {
+        let mut mode_rects = [egui::Rect::NOTHING; 6];
         use crate::icons::{Icon, compact_button as button};
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 36.0),
@@ -366,7 +367,10 @@ impl Lab {
                 if cfg!(target_os = "macos") {
                     ui.add_space(74.0);
                 }
-                ui.heading("MultiCAD");
+                let title = ui.heading("MultiCAD").interact(egui::Sense::drag());
+                if title.drag_started() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
                 ui.add_space(12.0);
                 ui.menu_button("File", |ui| {
                     if ui.button("New document    ⌘N").clicked() {
@@ -461,6 +465,30 @@ impl Lab {
                     self.search_open = true;
                 }
                 // Allocate remaining width to the right-aligned mode selectors; never wrap into a second header row.
+                let tab_width = self
+                    .modules
+                    .iter()
+                    .map(|module| {
+                        ui.painter()
+                            .layout_no_wrap(
+                                module.title().into(),
+                                egui::FontId::proportional(12.0),
+                                Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                            .ceil()
+                            + 24.0
+                    })
+                    .sum::<f32>();
+                let gaps = ui.spacing().item_spacing.x * self.modules.len() as f32;
+                let window_buttons = if cfg!(target_os = "macos") { 0.0 } else { 84.0 };
+                let width = (ui.available_width() - tab_width - gaps - window_buttons).max(0.0);
+                let (_, drag) =
+                    ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::drag());
+                if drag.drag_started() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !cfg!(target_os = "macos") {
                         if ui.small_button("×").on_hover_text("Close window").clicked() {
@@ -480,8 +508,8 @@ impl Lab {
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     }
-                    for module in self.modules.iter().rev() {
-                        if multicad_ui::controls::tab(
+                    for (index, module) in self.modules.iter().enumerate().rev() {
+                        let mode_response = multicad_ui::controls::tab(
                             ui,
                             module.title(),
                             self.mode == module.mode(),
@@ -491,9 +519,9 @@ impl Lab {
                                 active_text: module.color(),
                                 active_background: Color32::from_rgb(37, 45, 56),
                             },
-                        )
-                        .clicked()
-                        {
+                        );
+                        mode_rects[index] = mode_response.rect;
+                        if mode_response.clicked() {
                             self.mode = module.mode();
                             self.ribbon_tab = "Common".into();
                             self.example_tool = None;
@@ -502,14 +530,7 @@ impl Lab {
                 });
             },
         );
-        let drag = ui.interact(
-            ui.max_rect().shrink2(egui::vec2(0.0, 12.0)),
-            ui.id().with("title-drag"),
-            egui::Sense::drag(),
-        );
-        if drag.drag_started() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
+        mode_rects
     }
     fn ribbon(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -1155,6 +1176,59 @@ mod tests {
         finish_worker(&mut lab);
         assert_eq!(lab.draft.definition.width, 145.0);
         assert_eq!(lab.session.current.definition.width, 120.0);
+    }
+    #[test]
+    fn every_mode_tab_accepts_clicks_across_its_whole_rectangle() {
+        let ctx = egui::Context::default();
+        let mut lab = Lab::new(&ctx);
+        let mut rects = [egui::Rect::NOTHING; 6];
+        let input = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1360.0, 120.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input(vec![]), |ui| {
+            egui::Panel::top("header").show(ui, |ui| rects = lab.header(ui));
+        })
+        .drop_without_applying_deltas();
+        for (index, rect) in rects.into_iter().enumerate() {
+            let target = lab.modules[index].mode();
+            for x in [rect.left() + 3.0, rect.center().x, rect.right() - 3.0] {
+                for y in [rect.top() + 3.0, rect.center().y, rect.bottom() - 3.0] {
+                    lab.mode = if target == Mode::Parameters {
+                        Mode::Model
+                    } else {
+                        Mode::Parameters
+                    };
+                    let pos = egui::pos2(x, y);
+                    for pressed in [true, false] {
+                        let events = vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ];
+                        ctx.run_ui(input(events), |ui| {
+                            egui::Panel::top("header").show(ui, |ui| {
+                                lab.header(ui);
+                            });
+                        })
+                        .drop_without_applying_deltas();
+                    }
+                    assert!(
+                        lab.mode == target,
+                        "Mode {} missed click at {pos:?} inside {rect:?}",
+                        lab.modules[index].title()
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn registered_modes_are_unique_and_parameters_do_not_render_the_viewport() {
