@@ -445,7 +445,8 @@ pub struct SceneStamp {
 pub struct Scene {
     stamp: SceneStamp,
     geometries: BTreeMap<EntityId, Arc<Geometry>>,
-    instances: Vec<Instance>,
+    instances: Arc<[Instance]>,
+    reference_instances: Arc<[Instance]>,
     world_bounds: Option<[Point; 2]>,
 }
 #[derive(Clone)]
@@ -500,9 +501,11 @@ impl Scene {
             }
         }
         let world_bounds = (!instances.is_empty()).then_some([world.min, world.max]);
+        let instances: Arc<[Instance]> = instances.into();
         Ok(Self {
             stamp,
             geometries: map,
+            reference_instances: instances.clone(),
             instances,
             world_bounds,
         })
@@ -512,6 +515,34 @@ impl Scene {
     }
     pub fn instances(&self) -> &[Instance] {
         &self.instances
+    }
+    /// All evaluated occurrences remain available for semantic references even
+    /// when a source visibility view omits them from drawing and picking.
+    pub fn reference_instances(&self) -> &[Instance] {
+        &self.reference_instances
+    }
+    pub fn visible_subset(&self, visible: &BTreeSet<EntityId>) -> Result<Arc<Self>, String> {
+        let existing: BTreeSet<_> = self
+            .reference_instances
+            .iter()
+            .map(|instance| instance.id)
+            .collect();
+        if !visible.is_subset(&existing) {
+            return Err("Visibility view contains an unknown display instance".into());
+        }
+        let instances = self
+            .reference_instances
+            .iter()
+            .filter(|instance| visible.contains(&instance.id))
+            .cloned()
+            .collect();
+        let mut view = Self::new(
+            self.stamp,
+            self.geometries.values().cloned().collect(),
+            instances,
+        )?;
+        view.reference_instances = self.reference_instances.clone();
+        Ok(Arc::new(view))
     }
     pub fn geometries(&self) -> &BTreeMap<EntityId, Arc<Geometry>> {
         &self.geometries
@@ -542,7 +573,7 @@ impl Scene {
                 )
             })
             .collect();
-        for instance in &self.instances {
+        for instance in self.reference_instances.iter() {
             if let Some(snapshot) = self.topology_snapshot(instance.id) {
                 snapshots.insert(instance.id, snapshot);
             }
@@ -552,19 +583,20 @@ impl Scene {
     /// Explicit repair inspection view. The previous valid model is retained by
     /// the host; this temporary view exposes one current source without editing it.
     pub fn isolated_source(&self, source: EntityId) -> Result<Arc<Self>, String> {
-        let instance = if let Some(instance) = self.instances.iter().find(|i| i.id == source) {
-            instance.clone()
-        } else {
-            if !self.geometries.contains_key(&source) {
-                return Err("Repair source has no current display geometry".into());
-            }
-            Instance {
-                id: source,
-                geometry: source,
-                transform: Transform::default(),
-                color: [145, 173, 195, 255],
-            }
-        };
+        let instance =
+            if let Some(instance) = self.reference_instances.iter().find(|i| i.id == source) {
+                instance.clone()
+            } else {
+                if !self.geometries.contains_key(&source) {
+                    return Err("Repair source has no current display geometry".into());
+                }
+                Instance {
+                    id: source,
+                    geometry: source,
+                    transform: Transform::default(),
+                    color: [145, 173, 195, 255],
+                }
+            };
         let geometry = self
             .geometries
             .get(&instance.geometry)
@@ -591,7 +623,7 @@ impl Scene {
         Some([world.min, world.max])
     }
     pub fn topology_snapshot(&self, instance: EntityId) -> Option<TopologySnapshot> {
-        let instance = self.instances.iter().find(|i| i.id == instance)?;
+        let instance = self.reference_instances.iter().find(|i| i.id == instance)?;
         let geometry = self.geometries.get(&instance.geometry)?;
         let mut elements = geometry.topology.clone();
         for element in &mut elements {
@@ -617,7 +649,7 @@ impl Scene {
         } else {
             (0., f64::INFINITY)
         };
-        for instance in &self.instances {
+        for instance in self.instances.iter() {
             let geometry = &self.geometries[&instance.geometry];
             if let Some((distance, face)) =
                 geometry.hit(instance.transform.inverse_ray(ray), minimum, limit)
@@ -697,7 +729,13 @@ impl Scene {
             .values()
             .map(|g| g.storage_bytes())
             .sum::<usize>()
-            + self.instances.len() * std::mem::size_of::<Instance>()
+            + (self.instances.len()
+                + if Arc::ptr_eq(&self.instances, &self.reference_instances) {
+                    0
+                } else {
+                    self.reference_instances.len()
+                })
+                * std::mem::size_of::<Instance>()
     }
 }
 /// A rejected or outdated computation cannot replace the last visible scene.

@@ -16,3 +16,7 @@ mod quality;
 pub use quality::{DisplayQuality, Refinement};
 mod section;
 pub use section::{SectionPlane, SectionView};
+
+mod visibility;
+pub use visibility::VisibilityFilter;
+pub(crate) use visibility::source_visible;

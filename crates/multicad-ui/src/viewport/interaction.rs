@@ -59,6 +59,34 @@ impl Interaction {
         }
         ids
     }
+    /// Synchronize canonical tree selection with visible placed occurrences.
+    /// The host retains non-rendered source/container selection separately.
+    pub fn select_source_entities(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        scene: &Scene,
+        source: &BTreeSet<EntityId>,
+    ) -> Result<(), String> {
+        if scene.stamp().document != document.id() || scene.stamp().revision != revision {
+            return Err("Wait for a current scene before selecting model occurrences".into());
+        }
+        if source
+            .iter()
+            .any(|id| *id != document.id() && document.get(*id).is_none())
+        {
+            return Err("The selected model entry no longer exists".into());
+        }
+        let selected = scene.instances().iter().filter(|instance| {
+            source.contains(&instance.id) || document.get(instance.id).is_some_and(|entity| {
+                matches!(entity.data, EntityData::Instance { component, .. } if source.contains(&component))
+            })
+        }).map(|instance| instance.id).collect();
+        self.clear();
+        self.parts = Arc::new(selected);
+        self.last_stamp = Some(scene.stamp());
+        Ok(())
+    }
     pub fn selected_bounds(&self, scene: &Scene) -> Option<[[f64; 3]; 2]> {
         let mut result: Option<[[f64; 3]; 2]> = None;
         for id in self.selected_ids() {

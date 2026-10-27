@@ -306,3 +306,55 @@ fn linked_duplication_is_one_undoable_transaction_and_rejects_stale_selection() 
             .is_some()
     );
 }
+
+#[test]
+fn canonical_tree_selection_maps_definition_occurrences_without_mutating_source() {
+    let (session, scene, ids) = fixture();
+    let part = session
+        .document()
+        .entities()
+        .find(|entity| matches!(entity.data, EntityData::Part { .. }))
+        .unwrap()
+        .id;
+    let before = session.document().clone();
+    let mut interaction = Interaction::default();
+    interaction
+        .select_source_entities(session.document(), 0, &scene, &BTreeSet::from([part]))
+        .unwrap();
+    assert_eq!(interaction.selected_ids(), ids.iter().copied().collect());
+    interaction
+        .select_source_entities(session.document(), 0, &scene, &BTreeSet::from([ids[1]]))
+        .unwrap();
+    assert_eq!(interaction.selected_ids(), BTreeSet::from([ids[1]]));
+    let visible = scene.visible_subset(&BTreeSet::from([ids[0]])).unwrap();
+    interaction
+        .select_source_entities(session.document(), 0, &visible, &BTreeSet::from([ids[1]]))
+        .unwrap();
+    assert!(interaction.selected_ids().is_empty());
+    interaction
+        .select_source_entities(
+            session.document(),
+            0,
+            &visible,
+            &BTreeSet::from([session.document().id()]),
+        )
+        .unwrap();
+    assert!(interaction.selected_ids().is_empty());
+    assert!(
+        interaction
+            .select_source_entities(session.document(), 1, &scene, &BTreeSet::from([part]))
+            .is_err()
+    );
+    assert!(
+        interaction
+            .select_source_entities(
+                session.document(),
+                0,
+                &scene,
+                &BTreeSet::from([EntityId::new()])
+            )
+            .is_err()
+    );
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), 0);
+}
