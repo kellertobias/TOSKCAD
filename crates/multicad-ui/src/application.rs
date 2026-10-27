@@ -375,18 +375,18 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
-        let pending = self.current().editor.dirty() || self.current().sketch.has_pending_edits();
+        let pending = || self.current().editor.dirty() || self.current().sketch.has_pending_edits();
         match command {
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
-            Command::Undo => self.current().session.can_undo() && !pending,
-            Command::Redo => self.current().session.can_redo() && !pending,
-            Command::Save | Command::NewSketch => !pending,
+            Command::Undo => self.current().session.can_undo() && !pending(),
+            Command::Redo => self.current().session.can_redo() && !pending(),
+            Command::Save | Command::NewSketch => !pending(),
             Command::Rectangle
             | Command::Line
             | Command::Dimension
             | Command::FinishSketch
             | Command::Delete => {
-                self.mode == Mode::Sketch && self.current().sketch.editing && !pending
+                self.mode == Mode::Sketch && self.current().sketch.editing && !pending()
             }
             Command::Extension(_) => false,
             _ => true,
@@ -634,7 +634,8 @@ impl Application {
                     self.find_open = true;
                 }
                 if search.changed() {self.find_index = 0;}
-                let results: Vec<_> = self.registry.search(&self.find).into_iter().copied().collect();
+                let results: Vec<_> = if self.find_open {self.registry.search(&self.find).into_iter().copied().collect()}else{Vec::new()};
+                let no_matches=results.is_empty();
                 let available: Vec<_> = results.iter().filter(|tool|self.enabled(tool.action)).collect();
                 self.find_index = self.find_index.min(available.len().saturating_sub(1));
                 if !available.is_empty() {
@@ -673,7 +674,7 @@ impl Application {
                                     }
                                 }
                                 if index == 0 {
-                                    if self.registry.search(&self.find).is_empty() {
+                                    if no_matches {
                                     ui.label("No matching tools");
                                     } else {ui.label("Matching tools are unavailable in this context");}
                                 }
