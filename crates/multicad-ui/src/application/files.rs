@@ -30,6 +30,29 @@ pub(super) struct Replacement {
     path: PathBuf,
     stamp: FileStamp,
 }
+fn recovery_age(created_ms: u64, now_ms: Option<u64>) -> String {
+    let Some(now_ms) = now_ms else {
+        return "time unavailable".into();
+    };
+    let Some(elapsed) = now_ms.checked_sub(created_ms) else {
+        return "clock ahead".into();
+    };
+    let minutes = elapsed / 60_000;
+    if minutes == 0 {
+        "just now".into()
+    } else if minutes < 60 {
+        format!("{minutes} min ago")
+    } else if minutes < 24 * 60 {
+        format!("{} hr ago", minutes / 60)
+    } else {
+        let days = minutes / (24 * 60);
+        format!("{days} day{} ago", if days == 1 { "" } else { "s" })
+    }
+}
+fn recovery_filename(path: Option<&str>) -> &str {
+    path.and_then(|path| path.rsplit(['/', '\\']).find(|part| !part.is_empty()))
+        .unwrap_or("Unsaved project")
+}
 impl Application {
     pub(super) fn file_busy(&self) -> bool {
         self.pending_files
@@ -450,6 +473,10 @@ impl Application {
             }
         }
         if self.recovery_open {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok());
             let mut open = true;
             let mut restore = None;
             egui::Window::new("Recover projects").open(&mut open).show(ctx,|ui| {
@@ -461,7 +488,12 @@ impl Application {
                     for entry in &self.recoveries.entries {
                         let RecoveryInfo {source_revision,created_unix_ms,original_path,..}=&entry.info;
                         ui.horizontal(|ui| {
-                            ui.label(format!("{} · r{} · {} ms since Unix epoch",entry.name,source_revision,created_unix_ms)).on_hover_text(original_path.as_deref().unwrap_or("Unsaved project"));
+                            ui.vertical(|ui| {
+                                let kind=if entry.info.slot.is_some() {"Automatic"} else {"Manual"};
+                                ui.label(format!("{} · {kind} · r{source_revision}",entry.name));
+                                let filename=recovery_filename(original_path.as_deref());
+                                ui.weak(format!("{filename} · {}",recovery_age(*created_unix_ms,now_ms))).on_hover_text(format!("{}\nSaved timestamp: {created_unix_ms} ms since Unix epoch",original_path.as_deref().unwrap_or("Unsaved project")));
+                            });
                             if ui.add_enabled(!self.file_busy(),egui::Button::new("Restore copy")).clicked(){restore=Some(entry.info.clone());}
                         });
                     }
@@ -912,5 +944,34 @@ mod tests {
         escape(&mut app);
         assert!(!app.recovery_open);
         assert_eq!(app.current().sketch.tool, Some(DrawTool::Rectangle));
+    }
+    #[test]
+    fn recovery_age_labels_cover_unit_boundaries_missing_and_future_clocks() {
+        for (elapsed, label) in [
+            (0, "just now"),
+            (59_999, "just now"),
+            (60_000, "1 min ago"),
+            (119_999, "1 min ago"),
+            (3_599_999, "59 min ago"),
+            (3_600_000, "1 hr ago"),
+            (86_399_999, "23 hr ago"),
+            (86_400_000, "1 day ago"),
+            (172_800_000, "2 days ago"),
+        ] {
+            assert_eq!(recovery_age(0, Some(elapsed)), label);
+        }
+        assert_eq!(recovery_age(1, Some(0)), "clock ahead");
+        assert_eq!(recovery_age(u64::MAX, Some(0)), "clock ahead");
+        assert_eq!(recovery_age(0, None), "time unavailable");
+        assert_eq!(recovery_age(0, Some(u64::MAX)), "213503982334 days ago");
+        assert_eq!(
+            recovery_filename(Some("/Users/person/projects/Cabinet.multicad")),
+            "Cabinet.multicad"
+        );
+        assert_eq!(
+            recovery_filename(Some(r"C:\Projects\Cabinet.multicad")),
+            "Cabinet.multicad"
+        );
+        assert_eq!(recovery_filename(None), "Unsaved project");
     }
 }
