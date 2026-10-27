@@ -69,4 +69,10 @@ thickness, splitting and top removal, with an attached circle and an actual
 Boolean drilling. Its tests exercise the application scene gate, explicit
 repair, undo/redo and source save/reopen. This is an acceptance fixture; the
 general canonical feature compiler remains separate production modeling work.
-Interactive verification of the new repair Inspector is still required.
+The repair Inspector was checked in the native Mac application, including
+preparing/cancelling, accepting, undo/redo and reopening the repaired source.
+Attached-sketch opening and constraint drafts require current resolved evaluation;
+missing, stale and unresolved reports cannot authorize an edit. The native check
+also changed the attached circle radius without changing its saved anchor.
+Evidence and boundaries are recorded in the
+[reference verification report](../verification/reference-repair-2026-10-27.md).
