@@ -601,10 +601,11 @@ fn component_consumers_invalidate_from_member_changes_without_adding_containment
             Mutation::Insert(occurrence.clone()),
         ])
         .unwrap();
-    let affected = doc.affected([f.grouped]).unwrap();
+    let affected = doc.invalidated([f.grouped]).unwrap();
     for id in [f.grouped, f.visible_group, f.a, drawing.id, occurrence.id] {
         assert!(affected.contains(&id));
     }
+    assert!(!doc.affected([f.grouped]).unwrap().contains(&f.a));
     assert!(!affected.contains(&f.sibling));
     assert!(!affected.contains(&f.b));
     assert!(doc.topological_order().is_ok());
@@ -710,7 +711,8 @@ fn root_groups_keep_root_cut_scope_and_global_metadata_out_of_model_membership()
         },
     )
     .unwrap();
-    session.commit(hide.prepared).unwrap();
+    let change = session.commit(hide.prepared).unwrap();
+    assert!(change.changed.contains(&part.id));
     let index = Index::new(session.document()).unwrap();
     assert!(!index.effective_visibility(root).unwrap());
     assert!(index.active_cut_bodies().unwrap().is_empty());

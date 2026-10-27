@@ -155,8 +155,8 @@ fn difference(before: &Document, after: &Document, revision: u64) -> Result<Chan
         .filter(|id| before.get(*id) != after.get(*id) || hierarchy_changed.contains(id))
         .collect();
     let mut invalidated: BTreeSet<_> = changed.iter().copied().collect();
-    invalidated.extend(before.affected(changed.iter().copied())?);
-    let rebuild_order = after.affected(changed.iter().copied())?;
+    invalidated.extend(before.invalidated(changed.iter().copied())?);
+    let rebuild_order = after.invalidated(changed.iter().copied())?;
     invalidated.extend(rebuild_order.iter().copied());
     Ok(Change {
         revision,

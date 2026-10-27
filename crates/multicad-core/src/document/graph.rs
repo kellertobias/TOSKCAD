@@ -120,15 +120,32 @@ impl Document {
         &self,
         sources: impl IntoIterator<Item = EntityId>,
     ) -> Result<Vec<EntityId>, DocumentError> {
+        self.reachable_dependents(sources, false)
+    }
+    /// Invalidation also reaches organizational ancestors and their consumers;
+    /// semantic producer/consumer queries retain affected()'s narrower meaning.
+    pub fn invalidated(
+        &self,
+        sources: impl IntoIterator<Item = EntityId>,
+    ) -> Result<Vec<EntityId>, DocumentError> {
+        self.reachable_dependents(sources, true)
+    }
+    fn reachable_dependents(
+        &self,
+        sources: impl IntoIterator<Item = EntityId>,
+        containment: bool,
+    ) -> Result<Vec<EntityId>, DocumentError> {
         let mut reverse: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
         for e in self.entities() {
             for link in e.references() {
                 reverse.entry(link.target).or_default().insert(e.id);
             }
         }
-        for (container, members) in crate::hierarchy::invalidation_edges(self) {
-            for member in members {
-                reverse.entry(member).or_default().insert(container);
+        if containment {
+            for (container, members) in crate::hierarchy::invalidation_edges(self) {
+                for member in members {
+                    reverse.entry(member).or_default().insert(container);
+                }
             }
         }
         let mut affected: BTreeSet<_> = sources.into_iter().collect();

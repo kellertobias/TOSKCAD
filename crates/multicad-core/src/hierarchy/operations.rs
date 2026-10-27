@@ -309,6 +309,15 @@ pub(crate) fn changed_entries(before: &Document, after: &Document) -> BTreeSet<E
         }
     }
     seeds.extend(old.hidden.symmetric_difference(&new.hidden));
+    if old.hidden.contains(&before.id()) != new.hidden.contains(&after.id()) {
+        seeds.extend(
+            before
+                .entities()
+                .chain(after.entities())
+                .filter(|entity| is_model_entry(&entity.data))
+                .map(|entity| entity.id),
+        );
+    }
     if old.active_component != new.active_component {
         seeds.extend(old.active_component);
         seeds.extend(new.active_component);
