@@ -2,7 +2,8 @@
 use crate::{
     camera::Camera,
     icons::{self, Icon},
-    navigation::{self, AxisView, DisplayStyle},
+    navigation::{self, DisplayStyle},
+    sketch_plane::{PlaneChoice, PlaneContext, PlanePicker, PlanePreview},
 };
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use multicad_core::{
@@ -62,7 +63,13 @@ pub struct SketchEditor {
     solid: crate::viewport::Interaction,
     repair: crate::reference_repair::RepairPanel,
     evaluated: Option<multicad_core::references::ReferenceReport>,
+    creation_evaluation: Option<(EntityId, multicad_core::references::ReferenceReport)>,
     pub viewport_rect: Option<Rect>,
+    plane_picker: PlanePicker,
+    occurrence: Option<EntityId>,
+    display_scene: Option<std::sync::Arc<crate::viewport::Scene>>,
+    context_key: Option<(crate::viewport::SceneStamp, u64, Option<EntityId>)>,
+    contexts: std::collections::BTreeMap<EntityId, crate::viewport::Transform>,
 }
 impl Default for SketchEditor {
     fn default() -> Self {
@@ -94,7 +101,13 @@ impl Default for SketchEditor {
             solid: Default::default(),
             repair: Default::default(),
             evaluated: None,
+            creation_evaluation: None,
             viewport_rect: None,
+            plane_picker: Default::default(),
+            occurrence: None,
+            display_scene: None,
+            context_key: None,
+            contexts: Default::default(),
         }
     }
 }
@@ -153,6 +166,7 @@ impl SketchEditor {
         self.solid.clear();
         self.moving = false;
         self.picking = false;
+        self.plane_picker.cancel();
         self.tool = None;
         self.first = None;
         self.cancel_move();
@@ -168,10 +182,12 @@ impl SketchEditor {
                 "Apply or discard pending edits before choosing a new sketch plane".into();
             return;
         }
+        self.occurrence = self.solid.selected_id().or(self.occurrence);
         self.cancel();
+        self.selected = None;
         self.editing = false;
         self.picking = true;
-        self.message = "Select a datum plane in the viewer · Esc cancels".into();
+        self.message = "Select a datum, construction plane or planar face · Esc cancels".into();
     }
     pub fn create(
         &mut self,
@@ -182,33 +198,159 @@ impl SketchEditor {
         if self.has_pending_edits() {
             return Err("Apply or discard pending edits before creating a sketch".into());
         }
+        let frame = datum.frame();
+        self.create_on_plane(
+            session,
+            PlanePreview {
+                choice: PlaneChoice::Datum(datum),
+                local_frame: frame,
+                world_frame: frame,
+                options: Default::default(),
+            },
+            channel,
+        )
+    }
+    fn create_on_plane(
+        &mut self,
+        session: &mut Session,
+        preview: PlanePreview,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before creating a sketch".into());
+        }
+        let scene = self.display_scene.clone();
+        let context = PlaneContext {
+            document: session.document(),
+            revision: session.revision(),
+            scene: scene.as_deref(),
+            report: self.evaluated.as_ref(),
+            occurrence: self.occurrence,
+        };
+        // Revalidate even Inspector acceptance against the current scene, not a
+        // pointer hit retained from a previous revision or placement.
+        let mut validator = PlanePicker::default();
+        validator.choose(preview.choice.clone());
+        validator.set_options(preview.options)?;
+        let preview = validator
+            .current_preview(context)?
+            .ok_or("Select a sketch plane")?;
+        let plane = match &preview.choice {
+            PlaneChoice::Datum(d) => sketch::CreationPlane::Datum(*d),
+            PlaneChoice::Existing(id) => sketch::CreationPlane::Existing {
+                id: *id,
+                report: self.evaluated.as_ref(),
+            },
+            PlaneChoice::Face(face) => sketch::CreationPlane::Face {
+                snapshot: &face.snapshot,
+                key: face.key,
+                anchor: Some(&face.anchor),
+            },
+        };
         let count = session
             .document()
             .entities()
             .filter(|e| matches!(e.data, EntityData::Sketch { .. }))
             .count();
-        let (id, edits) =
-            Source::create(datum, &format!("Sketch {}", count + 1)).map_err(|e| e.to_string())?;
-        commit(session, "New datum sketch", edits, channel)?;
-        self.open(session.document(), id)?;
-        self.camera.orient(match datum {
-            Datum::Xy => AxisView::PositiveZ,
-            Datum::Xz => AxisView::NegativeY,
-            Datum::Yz => AxisView::PositiveX,
-        });
-        self.camera.target = [0.; 3];
+        let prepared = sketch::prepare_new(
+            session,
+            session.revision(),
+            Actor::local(channel),
+            &format!("Sketch {}", count + 1),
+            plane,
+            preview.options,
+        )
+        .map_err(|e| e.to_string())?;
+        let id = prepared.sketch;
+        // Only prepare_new's insertion of a Plane + empty Sketch is eligible:
+        // native producer geometry and placements are unchanged by this command.
+        // Never reuse these snapshots after another source edit.
+        let initial_report = scene
+            .as_deref()
+            .filter(|s| {
+                s.stamp().document == session.document().id()
+                    && s.stamp().revision == session.revision()
+            })
+            .map(|scene| {
+                let revision = session.revision() + 1;
+                let mut snapshots = scene.reference_snapshots();
+                for snapshot in snapshots.values_mut() {
+                    snapshot.revision = revision;
+                }
+                multicad_core::references::inspect(
+                    prepared.prepared.document(),
+                    revision,
+                    &snapshots,
+                )
+            });
+        let occurrence = match &preview.choice {
+            PlaneChoice::Face(face) => Some(face.occurrence),
+            PlaneChoice::Existing(plane) => scene
+                .as_deref()
+                .and_then(|scene| {
+                    crate::sketch_context::occurrence(
+                        session.document(),
+                        *plane,
+                        scene,
+                        self.occurrence,
+                    )
+                })
+                .map(|(id, _)| id),
+            PlaneChoice::Datum(_) => None,
+        };
+        session
+            .commit(prepared.prepared)
+            .map_err(|e| e.to_string())?;
+        self.activate_sketch(id)?;
+        self.creation_evaluation = initial_report.map(|report| (session.document().id(), report));
+        if let Some((_, report)) = &self.creation_evaluation {
+            self.evaluated = Some(report.clone());
+        }
+        self.occurrence = occurrence;
+        self.refresh_contexts(session.document(), session.revision());
+        self.orient_to(preview.world_frame);
         self.message =
             "Sketch ready. Choose Line or Rectangle; coordinates are millimeters.".into();
         Ok(())
+    }
+    fn orient_to(&mut self, frame: Frame) {
+        self.camera.yaw = frame.n[0].atan2(frame.n[1]) as f32;
+        self.camera.pitch = frame.n[2].clamp(-1., 1.).asin() as f32;
+        self.camera.target = frame.origin.map(|v| v as f32);
+    }
+    fn refresh_contexts(&mut self, doc: &Document, revision: u64) {
+        let Some(scene) = self.display_scene.as_deref() else {
+            self.contexts.clear();
+            self.context_key = None;
+            return;
+        };
+        let key = (scene.stamp(), revision, self.occurrence);
+        if self.context_key == Some(key) {
+            return;
+        }
+        self.contexts = doc
+            .entities()
+            .filter(|e| matches!(e.data, EntityData::Sketch { .. }))
+            .filter_map(|e| {
+                crate::sketch_context::occurrence(doc, e.id, scene, self.occurrence)
+                    .map(|(_, pose)| (e.id, pose))
+            })
+            .collect();
+        self.context_key = Some(key);
     }
     pub fn open(&mut self, doc: &Document, id: EntityId) -> Result<(), String> {
         Sketch::read(doc, id).map_err(|e| e.to_string())?;
         self.activate_sketch(id)
     }
     pub fn open_at(&mut self, doc: &Document, id: EntityId, revision: u64) -> Result<(), String> {
-        self.read_sketch(doc, id, revision)
+        self.occurrence = self.solid.selected_id().or(self.occurrence);
+        self.refresh_contexts(doc, revision);
+        let (_, frame, _) = self
+            .read_sketch(doc, id, revision)
             .map_err(|e| e.to_string())?;
-        self.activate_sketch(id)
+        self.activate_sketch(id)?;
+        self.orient_to(frame);
+        Ok(())
     }
     fn activate_sketch(&mut self, id: EntityId) -> Result<(), String> {
         if self.has_pending_edits() {
@@ -232,8 +374,8 @@ impl SketchEditor {
         Ok(())
     }
     pub fn set_tool(&mut self, tool: DrawTool) -> Result<(), String> {
-        if self.constraints.dirty() {
-            return Err("Apply or discard constraint edits before drawing".into());
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before drawing".into());
         }
         if !self.editing {
             return Err("Create or open a sketch first".into());
@@ -256,8 +398,8 @@ impl SketchEditor {
         if !self.editing {
             return Err("Create or open a sketch first".into());
         }
-        if self.constraints.dirty() {
-            return Err("Apply or discard constraint edits before drawing".into());
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before drawing".into());
         }
         let id = self.selected.ok_or("Select a sketch")?;
         let gid = if let Ok((mut source, _, _)) =
@@ -309,8 +451,8 @@ impl SketchEditor {
         Ok(())
     }
     pub fn delete(&mut self, session: &mut Session, channel: Channel) -> Result<(), String> {
-        if self.constraints.dirty() {
-            return Err("Apply or discard constraint edits before deleting geometry".into());
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before deleting geometry".into());
         }
         let id = self.selected.ok_or("Select a sketch")?;
         let element = self
@@ -394,14 +536,14 @@ impl SketchEditor {
         }
         Ok(())
     }
-    fn basis(&self, doc: &Document) -> Result<Frame, String> {
+    fn basis(&self, doc: &Document, revision: u64) -> Result<Frame, String> {
         match self.coordinates {
             Coordinates::World => Ok(Datum::Xy.frame()),
             Coordinates::Object => self
                 .selected
                 .ok_or_else(|| "Select a sketch".to_string())
                 .and_then(|id| {
-                    Sketch::read(doc, id)
+                    self.read_sketch(doc, id, revision)
                         .map(|(_, f, _)| f)
                         .map_err(|e| e.to_string())
                 }),
@@ -417,7 +559,16 @@ impl SketchEditor {
     }
     fn prepare_move(&mut self, session: &Session) -> Result<(), String> {
         let id = self.selected.ok_or("Select a sketch to move")?;
-        let delta = self.basis(session.document())?.vector(self.delta);
+        let world_delta = self
+            .basis(session.document(), session.revision())?
+            .vector(self.delta);
+        let delta = self.contexts.get(&id).map_or(world_delta, |pose| {
+            std::array::from_fn(|axis| {
+                let mut basis = [0.; 3];
+                basis[axis] = 1.;
+                sketch::dot(pose.vector(basis), world_delta)
+            })
+        });
         let edits = sketch::translate(session.document(), id, delta).map_err(|e| e.to_string())?;
         self.preview = Some(
             session
@@ -445,13 +596,27 @@ impl SketchEditor {
         sketch_mode: bool,
         feed: &mut crate::viewport::SceneFeed,
     ) {
+        if self
+            .creation_evaluation
+            .as_ref()
+            .is_some_and(|(doc, report)| {
+                *doc != session.document().id() || report.revision != session.revision()
+            })
+        {
+            self.creation_evaluation = None;
+        }
         self.evaluated = feed
             .references()
             .filter(|e| {
                 e.stamp.document == session.document().id()
                     && e.stamp.revision == session.revision()
             })
-            .map(|e| e.report.clone());
+            .map(|e| e.report.clone())
+            .or_else(|| {
+                self.creation_evaluation
+                    .as_ref()
+                    .map(|(_, report)| report.clone())
+            });
         if self.evaluated.is_none() {
             self.repair.cancel();
         }
@@ -460,6 +625,8 @@ impl SketchEditor {
             .visible()
             .filter(|s| s.stamp().document == session.document().id())
             .cloned();
+        self.display_scene = scene.clone();
+        self.refresh_contexts(session.document(), session.revision());
         if self.revision != session.revision() {
             self.cancel_move();
             self.first = None;
@@ -517,9 +684,17 @@ impl SketchEditor {
                         if let Some(evaluation)=feed.references() {
                             self.repair.show(ui,session,evaluation);
                         }
+                        if self.repair.has_pending() {self.tool=None;self.first=None;}
                         self.solid.inspector(ui,session.document());
                         if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() && self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision())) {
                             self.fit_requested=true;
+                        }
+                        if self.picking && sketch_mode {
+                            let scene = self.display_scene.clone();
+                            let context = PlaneContext { document: session.document(), revision: session.revision(), scene: scene.as_deref().filter(|s| s.stamp().revision == session.revision()), report: self.evaluated.as_ref(), occurrence: self.occurrence };
+                            let chosen = self.plane_picker.show_inspector(ui,context);
+                            if self.plane_picker.take_cancel_requested() { self.cancel(); }
+                            if let Some(preview) = chosen && let Err(error) = self.create_on_plane(session,preview,Channel::Ui) {self.message=error;}
                         }
                         if let Some(id) = self.selected {
                             let view = self
@@ -580,7 +755,7 @@ impl SketchEditor {
                                     }
                                     if self.editing && !self.moving {
                                         let before = session.revision();
-                                        self.constraints.show(ui, session, id, self.element);
+                                        ui.add_enabled_ui(!self.repair.has_pending(),|ui|self.constraints.show(ui, session, id, self.element));
                                         if session.revision() != before {
                                             self.message =
                                                 "Constraints applied · one undoable source edit"
@@ -714,11 +889,20 @@ impl SketchEditor {
         id: EntityId,
         revision: u64,
     ) -> Result<(Sketch, sketch::Frame, EntityId), multicad_core::document::DocumentError> {
-        if let Some(report) = &self.evaluated {
+        let (source, mut frame, plane) = if let Some(report) = &self.evaluated {
             Sketch::read_evaluated(doc, id, revision, report)
         } else {
             Sketch::read(doc, id)
+        }?;
+        if let Some(pose) = self.contexts.get(&id) {
+            frame = Frame {
+                origin: pose.point(frame.origin),
+                u: pose.vector(frame.u),
+                v: pose.vector(frame.v),
+                n: pose.vector(frame.n),
+            };
         }
+        Ok((source, frame, plane))
     }
     fn read_source(
         &self,
@@ -786,71 +970,26 @@ impl SketchEditor {
             }
         }
         if self.picking && sketch_mode {
-            let hovered = response.hover_pos().and_then(|pointer| {
-                Datum::ALL
-                    .into_iter()
-                    .filter_map(|datum| {
-                        let frame = datum.frame();
-                        let point = self.camera.on_plane(pointer, rect, frame)?;
-                        if point.iter().any(|v| !(10.0..=80.0).contains(v)) {
-                            return None;
-                        }
-                        let depth = self
-                            .camera
-                            .project(frame.point(point).map(|v| v as f32), rect)[2];
-                        Some((datum, depth))
-                    })
-                    .min_by(|a, b| a.1.total_cmp(&b.1))
-                    .map(|(datum, _)| datum)
-            });
-            let mut chosen = None;
-            for (datum, color) in [
-                (Datum::Xy, Color32::from_rgb(90, 150, 220)),
-                (Datum::Xz, Color32::from_rgb(90, 190, 125)),
-                (Datum::Yz, Color32::from_rgb(220, 100, 100)),
-            ] {
-                let frame = datum.frame();
-                let corners = [[10., 10.], [80., 10.], [80., 80.], [10., 80.]]
-                    .map(|p| project(frame.point(p), &self.camera));
-                let center = corners.iter().fold(Vec2::ZERO, |a, p| a + p.to_vec2()) / 4.;
-                let label = Pos2::new(center.x, center.y);
-                let r = ui.interact(
-                    Rect::from_center_size(label, Vec2::new(54., 28.)),
-                    ui.id().with(datum.label()),
-                    Sense::click(),
-                );
-                painter.add(egui::Shape::convex_polygon(
-                    corners.to_vec(),
-                    color.gamma_multiply(if r.hovered() || hovered == Some(datum) {
-                        0.45
-                    } else {
-                        0.2
-                    }),
-                    Stroke::new(1.5, color),
-                ));
-                painter.rect_filled(r.rect, 4, color.gamma_multiply(0.7));
-                painter.text(
-                    label,
-                    Align2::CENTER_CENTER,
-                    datum.label(),
-                    FontId::proportional(13.),
-                    Color32::WHITE,
-                );
-                r.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
-                        true,
-                        format!("Choose {} sketch plane", datum.label()),
-                    )
-                });
-                if r.clicked() {
-                    chosen = Some(datum);
+            let context = PlaneContext {
+                document: session.document(),
+                revision: session.revision(),
+                scene: scene.as_deref().filter(|_| current),
+                report: self.evaluated.as_ref(),
+                occurrence: self.occurrence,
+            };
+            self.plane_picker
+                .update_hover(response.hover_pos(), self.camera, rect, context);
+            self.plane_picker
+                .paint_preview(&painter, self.camera, rect, context);
+            if response.clicked() {
+                let chosen = self.plane_picker.click_hovered(context);
+                match chosen {
+                    Ok(_) => {
+                        self.message =
+                            "Plane selected · adjust offset or angle, then Use plane".into()
+                    }
+                    Err(error) => self.message = error,
                 }
-            }
-            if let Some(datum) = chosen.or_else(|| if response.clicked() { hovered } else { None })
-                && let Err(e) = self.create(session, datum, Channel::Ui)
-            {
-                self.message = e;
             }
         }
         let doc = self
@@ -878,7 +1017,7 @@ impl SketchEditor {
             }
         }
         let affected = self.constraints.affected();
-        for e in doc.entities() {
+        for e in doc.entities().filter(|_| !self.repair.viewing_candidates()) {
             if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
                 let constrained = if let Some(report) = &self.evaluated {
                     Source::read_evaluated(doc, e.id, session.revision(), report).ok()
@@ -956,6 +1095,7 @@ impl SketchEditor {
         }
         if sketch_mode
             && self.editing
+            && !self.has_pending_edits()
             && !self.moving
             && let (Some(id), Some(tool)) = (self.selected, self.tool)
             && let Ok((_, frame, _)) = self.read_sketch(session.document(), id, session.revision())
@@ -1098,10 +1238,10 @@ impl SketchEditor {
         let Some(id) = self.selected else {
             return;
         };
-        let Ok((_, frame, _)) = Sketch::read(session.document(), id) else {
+        let Ok((_, frame, _)) = self.read_sketch(session.document(), id, session.revision()) else {
             return;
         };
-        let Ok(basis) = self.basis(session.document()) else {
+        let Ok(basis) = self.basis(session.document(), session.revision()) else {
             return;
         };
         let camera = self.camera;
@@ -1192,6 +1332,275 @@ mod tests {
             events,
             ..Default::default()
         }
+    }
+    #[test]
+    fn face_selection_cancel_commit_and_reentry_keep_local_source_and_placed_frame() {
+        use crate::{sketch_plane::*, viewport::*};
+        use multicad_core::{document::*, references::*};
+        use multicad_kernel::{MeshOptions, Solid};
+        use std::{collections::BTreeMap, sync::Arc};
+        let producer = Entity::new(
+            "Panel source",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.box".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let part = Entity::new(
+            "Panel",
+            EntityData::Part {
+                features: vec![producer.id],
+                material: None,
+                tags: Default::default(),
+            },
+        );
+        let placement = Placement {
+            translation_mm: [140., 25., 40.],
+            rotation_xyzw: [
+                0.,
+                0.,
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ],
+        };
+        let instance = Entity::new(
+            "Placed panel",
+            EntityData::Instance {
+                component: part.id,
+                placement,
+            },
+        );
+        let mut document = Document::new("Plane entry integration").unwrap();
+        for entity in [producer.clone(), part, instance.clone()] {
+            document.insert(entity).unwrap();
+        }
+        let mut session = Session::new(document).unwrap();
+        let before = session.document().clone();
+        let native = Solid::box_named([100., 60., 18.], producer.id, Default::default()).unwrap();
+        let mesh = native.mesh(MeshOptions::default()).unwrap();
+        let geometry = Arc::new(
+            crate::viewport::Geometry::new(
+                producer.id,
+                mesh.vertices.as_chunks::<3>().0.to_vec(),
+                mesh.indices,
+                mesh.face_indices,
+                native.topology_snapshot(producer.id, 0).unwrap().elements,
+            )
+            .unwrap(),
+        );
+        let pose = Transform::from_placement(placement).unwrap();
+        let scene = |revision, generation| {
+            Arc::new(
+                Scene::new(
+                    SceneStamp {
+                        document: before.id(),
+                        revision,
+                        generation,
+                    },
+                    vec![geometry.clone()],
+                    vec![Instance {
+                        id: instance.id,
+                        geometry: producer.id,
+                        transform: pose,
+                        color: [140, 165, 190, 255],
+                    }],
+                )
+                .unwrap(),
+            )
+        };
+        let mut editor = SketchEditor {
+            display_scene: Some(scene(0, 1)),
+            ..Default::default()
+        };
+        editor.begin();
+        assert!(editor.picking && !editor.editing && editor.tool.is_none());
+        editor.cancel();
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), 0);
+        editor.begin();
+        editor.camera.target = [110., 75., 58.];
+        editor.camera.pitch = std::f32::consts::FRAC_PI_2;
+        editor.camera.yaw = 0.;
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000., 700.));
+        let point = editor
+            .camera
+            .project(pose.point([30., 20., 18.]).map(|v| v as f32), rect);
+        let point = Pos2::new(point[0], point[1]);
+        let ctx = egui::Context::default();
+        for events in [
+            vec![],
+            vec![],
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            vec![egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            ctx.run_ui(input(events), |ui| {
+                editor.canvas(ui, &mut session, true, Some(scene(0, 1)), true)
+            })
+            .drop_without_applying_deltas();
+        }
+        assert!(editor.picking && !editor.editing && editor.tool.is_none());
+        assert_eq!(
+            session.document(),
+            &before,
+            "A face click only selects a source-neutral preview"
+        );
+        let get_preview = |editor: &SketchEditor| {
+            editor
+                .plane_picker
+                .current_preview(PlaneContext {
+                    document: &before,
+                    revision: 0,
+                    scene: editor.display_scene.as_deref(),
+                    report: None,
+                    occurrence: None,
+                })
+                .unwrap()
+                .unwrap()
+        };
+        let selected = get_preview(&editor);
+        assert!(matches!(selected.choice, PlaneChoice::Face(_)));
+        editor.display_scene = Some(scene(0, 2));
+        assert!(
+            editor
+                .create_on_plane(&mut session, selected.clone(), Channel::Ui)
+                .is_err()
+        );
+        assert_eq!(session.document(), &before);
+        editor.display_scene = Some(scene(0, 1));
+        editor
+            .plane_picker
+            .set_options(sketch::PlaneOptions {
+                normal_offset_mm: 3.,
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+        let selected = get_preview(&editor);
+        editor
+            .create_on_plane(&mut session, selected, Channel::Ui)
+            .unwrap();
+        assert_eq!(session.revision(), 1);
+        assert!(editor.editing && !editor.picking);
+        let id = editor.selected.unwrap();
+        // Empty-sketch creation leaves producer geometry unchanged; its trusted
+        // creation-only report permits drawing without waiting for a worker.
+        assert_eq!(editor.evaluated.as_ref().unwrap().revision, 1);
+        let (_, local, plane) = editor.read_source(session.document(), id, 1).unwrap();
+        let (_, world, _) = editor.read_sketch(session.document(), id, 1).unwrap();
+        for (a, b) in world.origin.into_iter().zip(pose.point(local.origin)) {
+            assert!((a - b).abs() < 1e-8);
+        }
+        assert_eq!(local.origin, [0., 0., 21.]);
+        let EntityData::Plane {
+            anchor: Some(anchor),
+            ..
+        } = &session.document().get(plane).unwrap().data
+        else {
+            panic!("face attachment missing")
+        };
+        assert_eq!(anchor.target, producer.id);
+        editor
+            .add(
+                &mut session,
+                DrawTool::Rectangle,
+                [10., 15.],
+                [30., 25.],
+                Channel::Ui,
+            )
+            .unwrap();
+        let report = inspect(
+            session.document(),
+            2,
+            &BTreeMap::from([(
+                producer.id,
+                native.topology_snapshot(producer.id, 2).unwrap(),
+            )]),
+        );
+        let (source, _, _) = Source::read_evaluated(session.document(), id, 2, &report).unwrap();
+        assert_eq!(source.sketch.points[0].position_mm, [10., 15.]);
+        editor.finish().unwrap();
+        assert!(!editor.editing);
+        editor.evaluated = Some(report);
+        editor.display_scene = Some(scene(2, 4));
+        editor.open_at(session.document(), id, 2).unwrap();
+        assert_eq!(
+            editor.read_sketch(session.document(), id, 2).unwrap().1,
+            world
+        );
+        session.undo(2, Actor::local(Channel::Ui)).unwrap();
+        session.undo(3, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(
+            session.document(),
+            &before,
+            "Creation and drawing each have one undo step"
+        );
+    }
+    #[test]
+    fn moving_a_placed_datum_sketch_in_world_axes_writes_the_inverse_local_delta() {
+        use multicad_core::document::Placement;
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        let id = editor.selected.unwrap();
+        let pose = crate::viewport::Transform::from_placement(Placement {
+            translation_mm: [140., 25., 40.],
+            rotation_xyzw: [
+                0.,
+                0.,
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ],
+        })
+        .unwrap();
+        editor.contexts.insert(id, pose);
+        editor.coordinates = Coordinates::World;
+        editor.delta = [10., 20., 3.];
+        let before = session.document().clone();
+        editor.prepare_move(&session).unwrap();
+        assert_eq!(session.document(), &before);
+        editor.apply_move(&mut session).unwrap();
+        let (_, local, _) = Source::read(session.document(), id).unwrap();
+        let (_, world, _) = editor
+            .read_sketch(session.document(), id, session.revision())
+            .unwrap();
+        for (actual, expected) in local.origin.into_iter().zip([20., -10., 3.]) {
+            assert!((actual - expected).abs() < 1e-8);
+        }
+        for (actual, expected) in world.origin.into_iter().zip([150., 45., 43.]) {
+            assert!((actual - expected).abs() < 1e-8);
+        }
+        let basis = editor
+            .basis(session.document(), session.revision())
+            .unwrap();
+        assert_eq!(basis, Datum::Xy.frame());
+        editor.coordinates = Coordinates::Object;
+        let basis = editor
+            .basis(session.document(), session.revision())
+            .unwrap();
+        for (actual, expected) in basis.u.into_iter().zip(pose.vector(local.u)) {
+            assert!((actual - expected).abs() < 1e-8);
+        }
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &before);
     }
     #[test]
     fn unavailable_transform_does_not_trap_model_picking() {
