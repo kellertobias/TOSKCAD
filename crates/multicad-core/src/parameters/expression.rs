@@ -311,6 +311,9 @@ impl Parser<'_> {
     }
 }
 pub(crate) fn parse(source: &str) -> Result<Expr, ParameterError> {
+    parse_input(source, false)
+}
+fn parse_input(source: &str, strict: bool) -> Result<Expr, ParameterError> {
     if source.len() > 4096 {
         return Err(ParameterError::new(
             ParameterErrorCode::Syntax,
@@ -318,7 +321,7 @@ pub(crate) fn parse(source: &str) -> Result<Expr, ParameterError> {
         ));
     }
     let source = source.trim();
-    let explicit = source.starts_with('=');
+    let explicit = strict && source.starts_with('=');
     let source = source.strip_prefix('=').unwrap_or(source);
     let mut parser = Parser {
         source,
@@ -357,13 +360,13 @@ impl Expr {
 /// Present legacy formulas using the explicit input notation without changing identity bindings.
 pub fn display_input(source: &str) -> String {
     match parse(source) {
-        Ok(e) if !source.trim_start().starts_with('=') && !e.literal() => format!("={}", e.input()),
+        Ok(e) if !e.literal() && validate_input(source).is_err() => format!("={}", e.input()),
         _ => source.into(),
     }
 }
 /// New UI input distinguishes literals from formulas; persisted legacy sources remain readable.
 pub fn validate_input(source: &str) -> Result<(), ParameterError> {
-    let e = parse(source)?;
+    let e = parse_input(source, true)?;
     if !source.trim_start().starts_with('=') && !e.literal() {
         return Err(ParameterError::new(
             ParameterErrorCode::Syntax,

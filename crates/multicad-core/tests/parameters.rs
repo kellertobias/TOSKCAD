@@ -253,3 +253,23 @@ fn explicit_formulas_dollar_bindings_comparisons_and_exposed_overrides() {
         );
     }
 }
+#[test]
+fn legacy_equal_formulas_load_but_new_input_requires_dollar_references() {
+    let mut doc = Document::new("Legacy notation").unwrap();
+    let height = parameter("height", "120", "mm");
+    let width = parameter("width", "=600 mm - height", "mm");
+    for e in [&height, &width] {
+        add(&mut doc, e);
+    }
+    assert!(
+        (evaluate(&doc)
+            .unwrap()
+            .value(width.id, Unit::Millimeter)
+            .unwrap()
+            - 480.)
+            .abs()
+            < 1e-9
+    );
+    assert!(validate_input("=600 mm - height").is_err());
+    assert_eq!(display_input("=600 mm - height"), "=(600 mm - $height)");
+}
