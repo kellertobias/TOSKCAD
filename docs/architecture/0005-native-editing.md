@@ -86,3 +86,32 @@ macOS window/render review is separate from these automated results. Windows and
 Linux runtime behavior and low-power hardware performance require their own checks.
 The proof laboratory in `spikes/native-foundation` remains a separate reference;
 its private sessions and meshes never become production document authority.
+
+## Shell refinement, 2026-10-27
+
+The product owner retains black ribbon tools and a full-width black command input,
+with status overlaid at the right. Information is gray; errors are red. Long focused
+commands use the whole input without status covering their text. The prompt opens
+an upward drawer containing manual commands, their results and document transactions.
+History is bounded to the current application session; source snapshots do not store it.
+
+The shared blue theme applies to panels and dialogs while mode bands keep their
+individual colors. Parameter content has wider side gutters and a top inset.
+Outlined fields identify editable inputs. Row controls use stacked arrows and a
+trash icon. The centered tool input opens a bounded, scrollable results popup.
+A compact transform icon opens coordinate choices on right-click.
+[`theme`](../../crates/multicad-ui/src/theme.rs) owns the surfaces and tooltip delay.
+
+New parameter input distinguishes literal values from formulas beginning with `=`.
+References use `$name`, for example `=600 - $height`. Unsuffixed additive constants
+in explicit formulas use the parameter's declared unit. Comparison limits require
+compatible units, and comparison results use `ratio`: `1` for true, `0` for false.
+These comparisons evaluate values; they do not solve geometric inequalities.
+Legacy stored formulas remain readable and display with the explicit notation.
+The typed `override_exposed` operation replaces an exposed default formula with
+a supplied literal, preserving its ID and exposure while clearing old dependencies.
+
+The audited [native window adapter](../../crates/multicad-ui/src/native_window.rs)
+borrows the live frame's AppKit handle and positions the standard macOS buttons.
+Its Objective-C++ implementation stays on the main thread and retains no window
+pointer. Other platforms do not compile or invoke that adapter.
