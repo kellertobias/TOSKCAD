@@ -13,6 +13,7 @@ pub mod references;
 pub mod sketch;
 pub mod sketch_draw;
 pub mod sketch_pattern;
+pub mod sketch_point;
 pub mod sketch_regions;
 pub mod sketch_transform;
 pub mod sketch_trim;

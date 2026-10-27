@@ -13,6 +13,8 @@ mod canonical_edit;
 pub use canonical_edit::*;
 mod sketch_operations;
 pub use sketch_operations::*;
+mod point_edit;
+pub use point_edit::prepare_point_position;
 
 /// Solve a perturbed rectangle. Solver handles stay private to this adapter.
 pub fn rectangle(width: f64, depth: f64) -> Result<[f64; 2], String> {
