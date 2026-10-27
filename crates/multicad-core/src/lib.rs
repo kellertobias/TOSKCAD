@@ -10,6 +10,7 @@ pub mod parameters;
 pub mod project_file;
 pub mod references;
 pub mod sketch;
+pub mod sketch_draw;
 pub mod sketch_regions;
 
 /// Identity of the compiled application, independent of GUI or native adapters.
