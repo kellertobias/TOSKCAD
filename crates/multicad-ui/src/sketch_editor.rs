@@ -149,8 +149,8 @@ impl SketchEditor {
             self.message = "Select a sketch to transform.".into();
             return;
         }
-        if self.constraints.dirty() {
-            self.message = "Apply or discard constraint edits before transforming".into();
+        if self.constraints.dirty() || self.repair.has_pending() {
+            self.message = "Apply or discard pending edits before transforming".into();
             return;
         }
         self.moving = !self.moving;
@@ -558,6 +558,9 @@ impl SketchEditor {
         }
     }
     fn prepare_move(&mut self, session: &Session) -> Result<(), String> {
+        if self.repair.has_pending() || self.constraints.dirty() {
+            return Err("Apply or discard pending edits before transforming".into());
+        }
         let id = self.selected.ok_or("Select a sketch to move")?;
         let world_delta = self
             .basis(session.document(), session.revision())?
@@ -583,6 +586,9 @@ impl SketchEditor {
         Ok(())
     }
     fn apply_move(&mut self, session: &mut Session) -> Result<(), String> {
+        if self.repair.has_pending() || self.constraints.dirty() {
+            return Err("Apply or discard pending edits before transforming".into());
+        }
         let preview = self.preview.take().ok_or("Preview a move first")?;
         session.commit(preview).map_err(|e| e.to_string())?;
         self.delta = [0.; 3];
@@ -684,7 +690,7 @@ impl SketchEditor {
                         if let Some(evaluation)=feed.references() {
                             self.repair.show(ui,session,evaluation);
                         }
-                        if self.repair.has_pending() {self.tool=None;self.first=None;}
+                        if self.repair.has_pending() {self.tool=None;self.first=None;self.moving=false;self.cancel_move();}
                         self.solid.inspector(ui,session.document());
                         if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() && self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision())) {
                             self.fit_requested=true;
