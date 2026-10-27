@@ -4,6 +4,7 @@ use crate::{
     icons::{self, Icon},
     parameter_editor::ParameterEditor,
     registry::{Command, Mode, Registry},
+    sketch_editor::{DrawTool, SketchEditor},
 };
 use eframe::egui::{self, Color32, RichText};
 use multicad_core::{
@@ -21,6 +22,7 @@ pub trait DocumentStorage {
 pub struct Project {
     pub session: Session,
     pub editor: ParameterEditor,
+    pub sketch: SketchEditor,
     pub path: Option<PathBuf>,
 }
 impl Project {
@@ -30,6 +32,7 @@ impl Project {
         Ok(Self {
             session,
             editor,
+            sketch: SketchEditor::default(),
             path: None,
         })
     }
@@ -97,7 +100,16 @@ impl Application {
         &mut self.projects[self.active]
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
-        if !args.is_empty() && command != Command::Parameter {
+        if !self.current().editor.dirty() {
+            let project = self.current_mut();
+            project.editor.reload(&project.session);
+        }
+        if !args.is_empty()
+            && !matches!(
+                command,
+                Command::Parameter | Command::NewSketch | Command::Rectangle | Command::Line
+            )
+        {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
@@ -199,12 +211,64 @@ impl Application {
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
-            Command::NewSketch
-            | Command::Rectangle
-            | Command::Line
-            | Command::FinishSketch
-            | Command::Delete => {
-                return Err("Sketch tools are being integrated after Parameters".into());
+            Command::NewSketch => {
+                if self.current().editor.dirty() {
+                    return Err(
+                        "Apply or discard the parameter draft before creating a sketch".into(),
+                    );
+                }
+                if args.is_empty() {
+                    self.current_mut().sketch.begin();
+                } else {
+                    if args.len() != 1 {
+                        return Err("Usage: start [xy|xz|yz]".into());
+                    }
+                    let datum = multicad_core::sketch::Datum::parse(args[0])
+                        .ok_or("Choose xy, xz or yz")?;
+                    let p = self.current_mut();
+                    p.sketch.create(&mut p.session, datum, channel)?;
+                }
+                self.mode = Mode::Sketch;
+                self.tab = 0;
+            }
+            Command::Rectangle | Command::Line => {
+                let tool = if command == Command::Rectangle {
+                    DrawTool::Rectangle
+                } else {
+                    DrawTool::Line
+                };
+                if args.is_empty() {
+                    self.current_mut().sketch.set_tool(tool)?;
+                } else {
+                    if args.len() != 4 {
+                        return Err("Usage: rect <x1> <y1> <x2> <y2> (mm)".into());
+                    }
+                    let values: Vec<f64> = args
+                        .iter()
+                        .map(|s| {
+                            s.parse::<f64>().map_err(|_| {
+                                "Coordinates must be numbers in millimeters".to_string()
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let p = self.current_mut();
+                    p.sketch.add(
+                        &mut p.session,
+                        tool,
+                        [values[0], values[1]],
+                        [values[2], values[3]],
+                        channel,
+                    )?;
+                }
+            }
+            Command::FinishSketch => {
+                self.current_mut().sketch.finish();
+                self.mode = Mode::Model;
+                self.tab = 0;
+            }
+            Command::Delete => {
+                let p = self.current_mut();
+                p.sketch.delete(&mut p.session, channel)?;
             }
         }
         Ok(())
@@ -223,12 +287,11 @@ impl Application {
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
             Command::Undo => self.current().session.can_undo() && !self.current().editor.dirty(),
             Command::Redo => self.current().session.can_redo() && !self.current().editor.dirty(),
-            Command::Extension(_)
-            | Command::NewSketch
-            | Command::Rectangle
-            | Command::Line
-            | Command::FinishSketch
-            | Command::Delete => false,
+            Command::NewSketch => !self.current().editor.dirty(),
+            Command::Rectangle | Command::Line | Command::FinishSketch | Command::Delete => {
+                self.mode == Mode::Sketch && self.current().sketch.editing
+            }
+            Command::Extension(_) => false,
             _ => true,
         }
     }
@@ -499,6 +562,12 @@ impl Application {
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal(|ui| {
                 for id in &workspace.tabs[self.tab].tools {
+                    if self.mode == Mode::Sketch
+                        && !self.current().sketch.editing
+                        && *id != "new-sketch"
+                    {
+                        continue;
+                    }
                     let tool = *self.registry.tool(id).expect("registered tool");
                     let enabled = self.enabled(tool.action);
                     if ui
@@ -569,7 +638,18 @@ impl Application {
                 });
             });
         });
-        egui::CentralPanel::default().show(ui,|ui|{if self.mode==Mode::Parameters{let p=self.current_mut();p.editor.show(ui,&p.session);}else{ui.centered_and_justified(|ui|{ui.label("No modeling component is active. Parameters is available; Sketch is the next component.");});}});
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new())
+            .show(ui, |ui| {
+                if self.mode == Mode::Parameters {
+                    let p = self.current_mut();
+                    p.editor.show(ui, &p.session);
+                } else {
+                    let sketch_mode = self.mode == Mode::Sketch;
+                    let p = self.current_mut();
+                    p.sketch.show(ui, &mut p.session, sketch_mode);
+                }
+            });
         if let Some(action) = self.file_action {
             let mut open = true;
             egui::Window::new(match action{FileAction::Open=>"Open document source snapshot",FileAction::Save=>"Save document source snapshot"}).open(&mut open).show(&ctx,|ui|{
@@ -689,6 +769,52 @@ mod tests {
         app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
         assert_eq!(app.current().editor.rows.len(), 1);
+    }
+    #[test]
+    fn sketch_command_line_uses_same_source_and_blocks_invalid_geometry() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::NewSketch, &["xy"], Channel::CommandLine)
+            .unwrap();
+        app.invoke(
+            Command::Rectangle,
+            &["0", "0", "80", "60"],
+            Channel::CommandLine,
+        )
+        .unwrap();
+        let id = app.current().sketch.selected.unwrap();
+        assert_eq!(
+            multicad_core::sketch::Sketch::read(app.current().session.document(), id)
+                .unwrap()
+                .0
+                .geometry
+                .len(),
+            1
+        );
+        let before = app.current().session.document().clone();
+        assert!(
+            app.invoke(Command::Line, &["1", "1", "1", "1"], Channel::CommandLine)
+                .is_err()
+        );
+        assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::FinishSketch, &[], Channel::CommandLine)
+            .unwrap();
+        assert!(!app.enabled(Command::Rectangle));
+        app.invoke(Command::Undo, &[], Channel::CommandLine)
+            .unwrap();
+        assert!(
+            multicad_core::sketch::Sketch::read(app.current().session.document(), id)
+                .unwrap()
+                .0
+                .geometry
+                .is_empty()
+        );
+        // A subsequent parameter command refreshes its clean editor baseline.
+        app.invoke(
+            Command::Parameter,
+            &["width", "mm", "600"],
+            Channel::CommandLine,
+        )
+        .unwrap();
     }
     #[test]
     fn native_parameter_editor_and_ribbon_render_without_modeling_sidebars() {

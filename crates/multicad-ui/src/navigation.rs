@@ -206,6 +206,16 @@ pub fn toolbar(
     style: &mut DisplayStyle,
     grid_controls: impl FnOnce(&mut egui::Ui),
 ) -> CameraActions {
+    toolbar_with_tools(ui, camera, style, grid_controls, |_| {})
+}
+/// An extension slot for selection transforms; camera controls keep one implementation.
+pub fn toolbar_with_tools(
+    ui: &mut egui::Ui,
+    camera: &mut Camera,
+    style: &mut DisplayStyle,
+    grid_controls: impl FnOnce(&mut egui::Ui),
+    extra: impl FnOnce(&mut egui::Ui),
+) -> CameraActions {
     let mut actions = CameraActions::default();
     egui::Frame::new()
         .fill(Color32::from_rgb(31, 38, 48))
@@ -263,6 +273,7 @@ pub fn toolbar(
                     }
                 });
                 response.on_hover_text(format!("Visual style: {}", style.label()));
+                extra(ui);
                 ui.separator();
                 let grid = icons::compact_button(ui, Icon::Grid, "Configure XY grid");
                 egui::Popup::menu(&grid)

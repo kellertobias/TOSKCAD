@@ -42,3 +42,5 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())
 }
+
+pub mod sketch_editor;

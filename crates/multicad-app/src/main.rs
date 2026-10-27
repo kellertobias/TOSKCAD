@@ -42,7 +42,7 @@ fn main() -> ExitCode {
         Action::Run => multicad_ui::launch_with_storage(Box::new(files::SnapshotStore)),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nCAD workspaces, native project files and MCP remain under development.",
+                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nIncludes Parameters and initial datum Sketch tools. Solid modeling, native project containers and MCP server remain under development.",
                 build.product, build.version
             );
             Ok(())
@@ -53,7 +53,7 @@ fn main() -> ExitCode {
         }
         Action::Diagnostics => {
             println!(
-                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: not implemented\nNative project format: not implemented\nMCP server: not implemented\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
+                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters and datum Sketch starter\nNative project format: source JSON snapshot only; container/recovery pending\nMCP server: not implemented\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
                 build.product,
                 build.version,
                 build.target_os,

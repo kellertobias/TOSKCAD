@@ -53,6 +53,78 @@ impl Camera {
         let p = rect.center() + Vec2::new(right, -up) * self.scale * factor;
         [p.x, p.y, z]
     }
+    /// Inverse projection against a datum; edge-on planes have no unique hit.
+    pub fn on_plane(
+        &self,
+        point: eframe::egui::Pos2,
+        rect: Rect,
+        frame: multicad_core::sketch::Frame,
+    ) -> Option<[f64; 2]> {
+        let (s, c) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        let right = [c as f64, -s as f64, 0.];
+        let up = [(-sp * s) as f64, (-sp * c) as f64, cp as f64];
+        let forward = [(cp * s) as f64, (cp * c) as f64, sp as f64];
+        let x = ((point.x - rect.center().x) / self.scale) as f64;
+        let y = ((rect.center().y - point.y) / self.scale) as f64;
+        let d = (rect.height().max(1.) / self.scale * 2.) as f64;
+        let offset: [f64; 3] = std::array::from_fn(|i| right[i] * x + up[i] * y);
+        let origin: [f64; 3] = std::array::from_fn(|i| {
+            self.target[i] as f64 + forward[i] * d + if self.perspective { 0. } else { offset[i] }
+        });
+        let direction = std::array::from_fn(|i| {
+            if self.perspective {
+                offset[i] - forward[i] * d
+            } else {
+                -forward[i]
+            }
+        });
+        let dot = multicad_core::sketch::dot;
+        let denominator = dot(direction, frame.n);
+        if denominator.abs() < 1e-8 {
+            return None;
+        }
+        let t = dot(
+            std::array::from_fn(|i| frame.origin[i] - origin[i]),
+            frame.n,
+        ) / denominator;
+        if t < 0. || !t.is_finite() {
+            return None;
+        }
+        let hit = std::array::from_fn(|i| origin[i] + direction[i] * t);
+        Some(frame.coordinates(hit))
+    }
+    /// Clip source segments before perspective division so geometry behind the
+    /// eye never folds across the viewport.
+    pub fn segment(
+        &self,
+        mut a: [f64; 3],
+        mut b: [f64; 3],
+        rect: Rect,
+    ) -> Option<[eframe::egui::Pos2; 2]> {
+        let depth = |p: [f64; 3]| self.project(p.map(|v| v as f32), rect)[2];
+        let za = depth(a);
+        let zb = depth(b);
+        let near = 0.1;
+        if self.perspective {
+            if za < near && zb < near {
+                return None;
+            }
+            if za < near || zb < near {
+                let t = ((near - za) / (zb - za)) as f64;
+                let clipped = std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
+                if za < near {
+                    a = clipped;
+                } else {
+                    b = clipped;
+                }
+            }
+        }
+        Some([a, b].map(|p| {
+            let p = self.project(p.map(|v| v as f32), rect);
+            eframe::egui::Pos2::new(p[0], p[1])
+        }))
+    }
     pub fn fit(&mut self, points: &[[f32; 3]], rect: Rect) {
         if points.is_empty() {
             return;
@@ -123,5 +195,42 @@ mod tests {
                 assert!(rect().contains(Pos2::new(q[0], q[1])));
             }
         }
+    }
+}
+#[cfg(test)]
+mod plane_tests {
+    use super::*;
+    use multicad_core::sketch::Datum;
+    #[test]
+    fn ray_inverse_matches_projection_in_both_modes_and_rejects_edge_on_planes() {
+        let rect = Rect::from_min_size(eframe::egui::Pos2::ZERO, Vec2::new(1000., 700.));
+        for perspective in [false, true] {
+            for datum in Datum::ALL {
+                let camera = Camera {
+                    target: [0.; 3],
+                    perspective,
+                    ..Default::default()
+                };
+                let frame = datum.frame();
+                let expected = [20., 30.];
+                let p = camera.project(frame.point(expected).map(|v| v as f32), rect);
+                let actual = camera
+                    .on_plane(eframe::egui::Pos2::new(p[0], p[1]), rect, frame)
+                    .unwrap();
+                assert!((actual[0] - expected[0]).abs() < 0.001);
+                assert!((actual[1] - expected[1]).abs() < 0.001);
+            }
+        }
+        let camera = Camera {
+            pitch: 0.,
+            yaw: 0.,
+            target: [0.; 3],
+            ..Default::default()
+        };
+        assert!(
+            camera
+                .on_plane(rect.center(), rect, Datum::Xy.frame())
+                .is_none()
+        );
     }
 }
