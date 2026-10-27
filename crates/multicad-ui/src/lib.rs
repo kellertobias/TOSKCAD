@@ -54,6 +54,7 @@ mod sketch_constraints;
 pub mod sketch_context;
 pub mod sketch_editor;
 pub mod sketch_evaluation;
+pub mod sketch_operations;
 pub mod sketch_plane;
 pub mod sketch_selection;
 pub mod sketch_tools;

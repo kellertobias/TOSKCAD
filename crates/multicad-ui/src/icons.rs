@@ -6,6 +6,12 @@ pub enum Icon {
     Hammer,
     Keyboard,
     Transform,
+    Rotate,
+    Mirror,
+    LinearPattern,
+    CircularPattern,
+    Trim,
+    Extend,
     ArrowUp,
     ArrowDown,
     Trash,
@@ -227,6 +233,60 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             path(&[[1., 7.], [5., 3.], [9., 7.]]);
             line([5., 19.], [16., 8.]);
             path(&[[10., 8.], [16., 8.], [16., 14.]]);
+        }
+        Icon::Rotate => {
+            path(&[
+                [6., 7.],
+                [11., 3.],
+                [18., 5.],
+                [21., 11.],
+                [19., 18.],
+                [13., 21.],
+                [6., 18.],
+            ]);
+            path(&[[6., 2.], [6., 7.], [11., 7.]]);
+            circle(12., 12., 1.);
+        }
+        Icon::Mirror => {
+            for y in [2., 7., 12., 17.] {
+                line([12., y], [12., y + 3.]);
+            }
+            path(&[[3., 18.], [3., 6.], [8., 18.], [3., 18.]]);
+            path(&[[21., 18.], [21., 6.], [16., 18.], [21., 18.]]);
+        }
+        Icon::LinearPattern => {
+            for x in [2., 10., 18.] {
+                rect(x, 8., 4., 8.);
+            }
+            line([4., 20.], [20., 20.]);
+            path(&[[17., 18.], [20., 20.], [17., 22.]]);
+        }
+        Icon::CircularPattern => {
+            circle(12., 12., 1.);
+            for angle in [
+                0.,
+                std::f32::consts::FRAC_PI_2,
+                std::f32::consts::PI,
+                3. * std::f32::consts::FRAC_PI_2,
+            ] {
+                circle(12. + 8. * f32::cos(angle), 12. + 8. * f32::sin(angle), 2.);
+            }
+        }
+        Icon::Trim => {
+            line([3., 8.], [21., 8.]);
+            line([3., 16.], [21., 16.]);
+            line([8., 3.], [8., 8.]);
+            line([16., 16.], [16., 21.]);
+            path(&[[10., 10.], [14., 14.]]);
+            path(&[[10., 14.], [14., 10.]]);
+        }
+        Icon::Extend => {
+            line([3., 17.], [11., 17.]);
+            for x in [12., 16.] {
+                line([x, 17.], [x + 2., 17.]);
+            }
+            line([21., 3.], [21., 21.]);
+            path(&[[17., 14.], [21., 17.], [17., 20.]]);
         }
         Icon::ArrowUp => path(&[[5., 15.], [12., 8.], [19., 15.]]),
         Icon::ArrowDown => path(&[[5., 9.], [12., 16.], [19., 9.]]),
