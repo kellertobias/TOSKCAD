@@ -58,6 +58,16 @@ impl AxisView {
             Self::NegativeZ => "−Z",
         }
     }
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::PositiveX => Self::NegativeX,
+            Self::NegativeX => Self::PositiveX,
+            Self::PositiveY => Self::NegativeY,
+            Self::NegativeY => Self::PositiveY,
+            Self::PositiveZ => Self::NegativeZ,
+            Self::NegativeZ => Self::PositiveZ,
+        }
+    }
     pub fn vector(self) -> [f32; 3] {
         match self {
             Self::PositiveX => [1.0, 0.0, 0.0],
@@ -96,20 +106,17 @@ fn axis_points(camera: &Camera, rect: Rect) -> Vec<(AxisView, [f32; 3])> {
     let mut points: Vec<_> = AxisView::ALL
         .into_iter()
         .map(|axis| {
-            let mut point = view.project(axis.vector(), rect);
-            // Smoothly separate a foreshortened pair. A hard radius threshold
-            // causes a visible jump when an endpoint crosses that threshold.
-            let radius = (Pos2::new(point[0], point[1]) - rect.center()).length();
-            let blend = (1.0 - radius / 18.0).clamp(0.0, 1.0).powi(2);
-            let sign = axis.vector().iter().sum::<f32>();
-            point[0] += sign * 12.0 * blend;
-            point[1] -= sign * 12.0 * blend;
+            let point = view.project(axis.vector(), rect);
             (axis, point)
         })
         .collect();
     // Far endpoints first so coincident cardinal axes prefer the visible end.
     points.sort_by(|a, b| b.1[2].total_cmp(&a.1[2]));
     points
+}
+fn endpoint_radius(depth: f32, rect: Rect) -> f32 {
+    let center_depth = rect.height() / 29.0 * 2.0;
+    6.5 + 1.5 * (center_depth - depth).clamp(-1.0, 1.0)
 }
 /// A real projected axis cross. Six independently accessible hit targets follow
 /// the camera orientation. Pointer drag rotates the same camera as the scene.
@@ -137,7 +144,8 @@ pub fn orientation(ui: &mut egui::Ui, camera: &mut Camera) -> egui::Response {
     let mut chosen = None;
     for (axis, point) in points {
         let center = Pos2::new(point[0], point[1]);
-        let hit = Rect::from_center_size(center, Vec2::splat(18.0));
+        let radius = endpoint_radius(point[2], rect);
+        let hit = Rect::from_center_size(center, Vec2::splat((radius + 2.0) * 2.0));
         let r = ui.interact(hit, ui.id().with(axis.label()), Sense::click());
         r.widget_info(|| {
             egui::WidgetInfo::labeled(
@@ -147,23 +155,39 @@ pub fn orientation(ui: &mut egui::Ui, camera: &mut Camera) -> egui::Response {
             )
         });
         let color = axis.color();
-        ui.painter().circle_filled(center, 8.0, color);
+        ui.painter().circle_filled(center, radius, color);
         ui.painter().circle_stroke(
             center,
-            8.0,
+            radius,
             Stroke::new(1.0, if r.hovered() { Color32::WHITE } else { color }),
         );
         ui.painter().text(
             center,
             Align2::CENTER_CENTER,
             axis.label(),
-            FontId::proportional(9.0),
+            FontId::proportional(radius + 1.0),
             Color32::WHITE,
         );
         if r.clicked() {
-            chosen = Some(axis);
+            chosen = Some(if ui.input(|i| i.modifiers.shift) {
+                axis.opposite()
+            } else {
+                axis
+            });
         }
-        r.on_hover_text(format!("View from {} · drag to orbit", axis.label()));
+        r.context_menu(|ui| {
+            if ui
+                .button(format!("View from {}", axis.opposite().label()))
+                .clicked()
+            {
+                chosen = Some(axis.opposite());
+                ui.close();
+            }
+        });
+        r.on_hover_text(format!(
+            "View from {} · drag to orbit · Shift-click for opposite view",
+            axis.label()
+        ));
     }
     if let Some(axis) = chosen {
         camera.orient(axis);
@@ -245,6 +269,52 @@ pub fn toolbar(ui: &mut egui::Ui, camera: &mut Camera, style: &mut DisplayStyle)
 mod tests {
     use super::*;
     #[test]
+    fn dragging_the_floating_cross_rotates_the_camera() {
+        let ctx = egui::Context::default();
+        let mut camera = Camera::default();
+        let before = camera;
+        let mut rect = Rect::NOTHING;
+        let input = |events| egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+            events,
+            ..Default::default()
+        };
+        let mut frame = |events| {
+            ctx.run_ui(input(events), |ui| {
+                egui::Area::new(ui.id().with("cross"))
+                    .pivot(Align2::RIGHT_TOP)
+                    .fixed_pos(Pos2::new(500.0, 10.0))
+                    .movable(false)
+                    .show(ui.ctx(), |ui| {
+                        rect = orientation(ui, &mut camera).rect;
+                    });
+            })
+            .drop_without_applying_deltas();
+            rect
+        };
+        frame(vec![]);
+        let start = frame(vec![]).center();
+        let end = start + Vec2::new(18.0, 14.0);
+        frame(vec![
+            egui::Event::PointerMoved(start),
+            egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        frame(vec![egui::Event::PointerMoved(end)]);
+        frame(vec![egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert_ne!(camera.yaw, before.yaw);
+        assert_ne!(camera.pitch, before.pitch);
+    }
+    #[test]
     fn clicking_axis_endpoints_reorients_the_actual_camera() {
         for axis in AxisView::ALL {
             let ctx = egui::Context::default();
@@ -317,15 +387,23 @@ mod tests {
         }
     }
     #[test]
-    fn cardinal_view_retains_distinct_opposite_axis_targets() {
+    fn cross_stays_rigid_and_rear_endpoints_are_smaller() {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(104.0));
-        for axis in AxisView::ALL {
-            let mut camera = Camera::default();
-            camera.orient(axis);
-            let points = axis_points(&camera, rect);
-            for (i, (_, a)) in points.iter().enumerate() {
-                for (_, b) in points.iter().skip(i + 1) {
-                    assert!((Pos2::new(a[0], a[1]) - Pos2::new(b[0], b[1])).length() > 20.0);
+        for pitch in [-1.57, -0.6, 0.0, 0.6, 1.57] {
+            for yaw in [0.0, 0.3, 1.0, 2.0, 3.0] {
+                let camera = Camera {
+                    yaw,
+                    pitch,
+                    ..Default::default()
+                };
+                let points = axis_points(&camera, rect);
+                for (axis, p) in &points {
+                    let opposite = points.iter().find(|p| p.0 == axis.opposite()).unwrap().1;
+                    assert!((p[0] + opposite[0] - rect.center().x * 2.0).abs() < 0.001);
+                    assert!((p[1] + opposite[1] - rect.center().y * 2.0).abs() < 0.001);
+                    if p[2] > opposite[2] + 0.001 {
+                        assert!(endpoint_radius(p[2], rect) < endpoint_radius(opposite[2], rect));
+                    }
                 }
             }
         }
