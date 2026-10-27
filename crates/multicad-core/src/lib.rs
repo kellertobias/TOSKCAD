@@ -7,6 +7,7 @@ pub mod commands;
 pub mod constraint_sketch;
 pub mod document;
 pub mod parameters;
+pub mod references;
 pub mod sketch;
 
 /// Identity of the compiled application, independent of GUI or native adapters.

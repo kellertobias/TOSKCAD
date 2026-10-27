@@ -35,12 +35,15 @@ impl std::fmt::Display for EntityId {
 pub struct Link {
     pub target: EntityId,
     pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<crate::references::GeometryIntent>,
 }
 impl Link {
     pub fn new(target: EntityId, role: impl Into<String>) -> Self {
         Self {
             target,
             role: role.into(),
+            geometry: None,
         }
     }
 }
@@ -281,6 +284,18 @@ impl EntityData {
             .any(|(link, _)| link.role.trim().is_empty())
         {
             return Err("Reference role cannot be empty".into());
+        }
+        let mut reference_ids = BTreeSet::new();
+        for (link, _) in self.sites() {
+            if let Some(intent) = &link.geometry {
+                intent.validate()?;
+                if !reference_ids.insert(intent.id) {
+                    return Err("Duplicate geometry reference identity on an entity".into());
+                }
+                if matches!(self, Self::Parameter { .. }) {
+                    return Err("A parameter cannot use a topology selector".into());
+                }
+            }
         }
         Ok(())
     }
