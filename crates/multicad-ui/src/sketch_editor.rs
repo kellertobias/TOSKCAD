@@ -510,6 +510,9 @@ impl SketchEditor {
                             self.repair.show(ui,session,evaluation);
                         }
                         self.solid.inspector(ui,session.document());
+                        if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() && self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision())) {
+                            self.fit_requested=true;
+                        }
                         if let Some(id) = self.selected {
                             let view = self
                                 .preview
@@ -853,8 +856,7 @@ impl SketchEditor {
             && let Some(scene) = &scene
             && let Some([low, high]) = self
                 .solid
-                .selected_id()
-                .and_then(|id| scene.instance_bounds(id))
+                .selected_bounds(scene)
                 .or_else(|| scene.world_bounds())
         {
             for corner in 0..8 {
