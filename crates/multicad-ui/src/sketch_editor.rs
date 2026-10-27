@@ -314,6 +314,51 @@ impl SketchEditor {
         self.element = None;
         Ok(())
     }
+    pub fn dimension(
+        &mut self,
+        session: &mut Session,
+        value: Option<f64>,
+        unit: &str,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.editing {
+            return Err("Create or open a sketch first".into());
+        }
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before adding a dimension".into());
+        }
+        let id = self.selected.ok_or("Select a sketch")?;
+        let element = self
+            .element
+            .ok_or("Select a curve in the Inspector first")?;
+        self.constraints.begin_dimension(session, id, element)?;
+        self.tool = None;
+        self.first = None;
+        self.moving = false;
+        if let Some(value) = value {
+            let (mut source, _, _) =
+                Source::read(session.document(), id).map_err(|e| e.to_string())?;
+            source.add_constraint(self.constraints.dimension_kind(value, unit)?);
+            let edit = multicad_solver::prepare_edit(
+                session,
+                session.revision(),
+                Actor::local(channel),
+                id,
+                source,
+            )
+            .map_err(|e| e.to_string())?;
+            session
+                .commit(
+                    edit.preview
+                        .ok_or("The dimension conflicts with existing constraints")?,
+                )
+                .map_err(|e| e.to_string())?;
+            self.message = "Dimension committed · Undo restores the previous source".into();
+        } else {
+            self.message = "Dimension · choose the size in Inspector, then Add and Apply".into();
+        }
+        Ok(())
+    }
     fn basis(&self, doc: &Document) -> Result<Frame, String> {
         match self.coordinates {
             Coordinates::World => Ok(Datum::Xy.frame()),
@@ -405,7 +450,13 @@ impl SketchEditor {
                     .id_salt("sketch-inspector-content")
                     .show(ui, |ui| {
                         if let Some(id) = self.selected {
-                            match Sketch::read(session.document(), id) {
+                            let view = self
+                                .preview
+                                .as_ref()
+                                .map(|p| p.document())
+                                .or_else(|| self.constraints.preview_document())
+                                .unwrap_or(session.document());
+                            match Sketch::read(view, id) {
                                 Ok((source, frame, _)) => {
                                     ui.strong(&session.document().get(id).expect("read").name);
                                     ui.label(format!("{} elements · mm", source.geometry.len()));

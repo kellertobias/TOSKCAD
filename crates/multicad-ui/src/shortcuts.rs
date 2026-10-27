@@ -359,6 +359,7 @@ impl ShortcutMap {
         for (key, command, label) in [
             (Key::E, crate::registry::Command::Line, "Line"),
             (Key::R, crate::registry::Command::Rectangle, "Rectangle"),
+            (Key::C, crate::registry::Command::Dimension, "Dimension"),
             (
                 Key::Q,
                 crate::registry::Command::FinishSketch,

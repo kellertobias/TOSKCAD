@@ -52,6 +52,7 @@ pub enum Command {
     NewSketch,
     Rectangle,
     Line,
+    Dimension,
     FinishSketch,
     Delete,
     Mode(Mode),
@@ -194,6 +195,13 @@ impl Default for Registry {
                 action: Command::Delete,
                 aliases: &["delete"],
             },
+            Tool {
+                id: "dimension",
+                label: "Dimension",
+                icon: Icon::Measure,
+                action: Command::Dimension,
+                aliases: &["dim"],
+            },
         ];
         let mut registry = Self {
             tools,
@@ -246,7 +254,6 @@ impl Default for Registry {
             ("sheet-page", "Add page", Icon::New),
             ("page-setup", "Page setup", Icon::Settings),
             ("projection", "Projection / section", Icon::Page),
-            ("dimension", "Dimension", Icon::Measure),
             ("text", "Text / leader", Icon::Sketch),
             ("export-set", "Tag export set", Icon::Library),
             ("export-3d", "STEP / OBJ", Icon::Export),

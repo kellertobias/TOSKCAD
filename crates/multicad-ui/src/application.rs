@@ -129,7 +129,11 @@ impl Application {
         if !args.is_empty()
             && !matches!(
                 command,
-                Command::Parameter | Command::NewSketch | Command::Rectangle | Command::Line
+                Command::Parameter
+                    | Command::NewSketch
+                    | Command::Rectangle
+                    | Command::Line
+                    | Command::Dimension
             )
         {
             return Err("This command does not accept arguments yet".into());
@@ -161,6 +165,9 @@ impl Application {
                 self.message = "Parameter committed through shared command API".into();
             }
             Command::Mode(mode) => {
+                if self.mode == Mode::Sketch && mode != Mode::Sketch {
+                    self.current_mut().sketch.finish()?;
+                }
                 self.mode = mode;
                 self.tab = 0;
             }
@@ -283,6 +290,28 @@ impl Application {
                     )?;
                 }
             }
+            Command::Dimension => {
+                if self.mode != Mode::Sketch {
+                    return Err("Open a sketch before dimensioning".into());
+                }
+                if args.len() > 2 {
+                    return Err("Usage: dim [value [unit]]".into());
+                }
+                let value = args
+                    .first()
+                    .map(|v| {
+                        v.parse::<f64>()
+                            .map_err(|_| "Dimension must be a number".to_string())
+                    })
+                    .transpose()?;
+                let p = self.current_mut();
+                p.sketch.dimension(
+                    &mut p.session,
+                    value,
+                    args.get(1).copied().unwrap_or("mm"),
+                    channel,
+                )?;
+            }
             Command::FinishSketch => {
                 self.current_mut().sketch.finish()?;
                 self.mode = Mode::Model;
@@ -322,9 +351,11 @@ impl Application {
             Command::Undo => self.current().session.can_undo() && !self.current().editor.dirty(),
             Command::Redo => self.current().session.can_redo() && !self.current().editor.dirty(),
             Command::NewSketch => !self.current().editor.dirty(),
-            Command::Rectangle | Command::Line | Command::FinishSketch | Command::Delete => {
-                self.mode == Mode::Sketch && self.current().sketch.editing
-            }
+            Command::Rectangle
+            | Command::Line
+            | Command::Dimension
+            | Command::FinishSketch
+            | Command::Delete => self.mode == Mode::Sketch && self.current().sketch.editing,
             Command::Extension(_) => false,
             _ => true,
         }
@@ -1075,6 +1106,52 @@ mod tests {
         app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
         assert_eq!(app.current().editor.rows.len(), 1);
+    }
+    #[test]
+    fn dimension_command_uses_solver_transactions_and_rejects_conflicts() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::NewSketch, &["xy"], Channel::CommandLine)
+            .unwrap();
+        app.invoke(
+            Command::Rectangle,
+            &["0", "0", "80", "60"],
+            Channel::CommandLine,
+        )
+        .unwrap();
+        app.invoke(Command::Dimension, &[], Channel::Ui).unwrap();
+        app.invoke(Command::Dimension, &["10", "cm"], Channel::CommandLine)
+            .unwrap();
+        let id = app.current().sketch.selected.unwrap();
+        let (source, _, _) = multicad_core::constraint_sketch::source::Source::read(
+            app.current().session.document(),
+            id,
+        )
+        .unwrap();
+        assert_eq!(source.sketch.constraints.len(), 5);
+        let before = app.current().session.document().clone();
+        assert!(
+            app.invoke(Command::Dimension, &["110", "mm"], Channel::CommandLine)
+                .is_err()
+        );
+        assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::Undo, &[], Channel::CommandLine)
+            .unwrap();
+        assert_eq!(
+            multicad_core::constraint_sketch::source::Source::read(
+                app.current().session.document(),
+                id
+            )
+            .unwrap()
+            .0
+            .sketch
+            .constraints
+            .len(),
+            4
+        );
+        app.invoke(Command::Mode(Mode::Model), &[], Channel::Ui)
+            .unwrap();
+        assert!(!app.current().sketch.editing);
+        assert!(!app.enabled(Command::Dimension));
     }
     #[test]
     fn sketch_command_line_uses_same_source_and_blocks_invalid_geometry() {

@@ -169,6 +169,51 @@ impl Default for ConstraintEditor {
     }
 }
 impl ConstraintEditor {
+    pub fn begin_dimension(
+        &mut self,
+        session: &Session,
+        id: EntityId,
+        element: EntityId,
+    ) -> Result<(), String> {
+        if self.dirty() {
+            return Err("Apply or discard the current constraint draft first".into());
+        }
+        let (source, _, _) = Source::read(session.document(), id)
+            .map_err(|_| "Enable constraints on this older sketch first")?;
+        let curve = source
+            .sketch
+            .curves
+            .iter()
+            .find(|c| c.id == element)
+            .ok_or("Select a curve to dimension")?;
+        self.tool = match curve.kind {
+            model::CurveKind::Line { .. } => Tool::Length,
+            _ => Tool::Radius,
+        };
+        self.value = source
+            .display_geometry()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .find(|g| g.id() == element)
+            .map(|g| match g {
+                multicad_core::sketch::Geometry::Line { a, b, .. } => {
+                    (b[0] - a[0]).hypot(b[1] - a[1])
+                }
+                multicad_core::sketch::Geometry::Circle { radius_mm, .. } => *radius_mm,
+                multicad_core::sketch::Geometry::Arc { center, a, .. } => {
+                    (a[0] - center[0]).hypot(a[1] - center[1])
+                }
+                _ => 0.,
+            })
+            .ok_or("Selected curve is unavailable")?;
+        self.unit = "mm".into();
+        self.selection = vec![element];
+        self.last_element = Some(element);
+        Ok(())
+    }
+    pub fn dimension_kind(&self, value: f64, unit: &str) -> Result<Kind, String> {
+        self.tool.kind(&self.selection, value, unit)
+    }
     pub fn dirty(&self) -> bool {
         self.draft.is_some()
     }
