@@ -966,6 +966,8 @@ impl Application {
             viewport: self.mode != Mode::Parameters,
             text_input: ctx.text_edit_focused(),
             blocked: self.file_action.is_some()
+                || self.recovery_open
+                || self.replacement.is_some()
                 || self.find_open
                 || self.close_confirm
                 || self.history_open
@@ -982,6 +984,8 @@ impl Application {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let shell_interaction = self.find_open
             || self.file_action.is_some()
+            || self.recovery_open
+            || self.replacement.is_some()
             || self.shortcut_help
             || self.history_open
             || self.close_confirm;
@@ -990,9 +994,19 @@ impl Application {
         if (shell_interaction || ctx.text_edit_focused() || self.text_input_was_focused)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
-            if self.file_action.is_some() {
-                self.file_action = None;
-                self.file_document = None;
+            if self.replacement.is_some() {
+                if !self.file_busy() {
+                    self.replacement = None;
+                }
+            } else if self.file_action.is_some() {
+                if !self.file_busy() {
+                    self.file_action = None;
+                    self.file_document = None;
+                }
+            } else if self.recovery_open {
+                if !self.file_busy() {
+                    self.recovery_open = false;
+                }
             } else if self.find_open {
                 self.find_open = false;
             } else if self.shortcut_help {

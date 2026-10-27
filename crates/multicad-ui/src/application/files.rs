@@ -467,7 +467,7 @@ impl Application {
                     }
                 });
             });
-            self.recovery_open = open;
+            self.recovery_open = open || self.file_busy();
             if let Some(recovery) = restore {
                 match self.storage.submit(FileRequest::Restore(recovery.id)) {
                     Ok(id) => {
@@ -837,5 +837,80 @@ mod tests {
         );
         assert_eq!(app.projects.len(), count);
         assert_eq!(app.current().session.document(), &source);
+    }
+    #[test]
+    fn recovery_and_replace_dialogs_own_shortcuts_and_escape_never_abandons_pending_io() {
+        let (store, _) = fixture();
+        let mut app = Application::new(Box::new(store)).unwrap();
+        drain(&mut app);
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        app.invoke(Command::Rectangle, &[], Channel::Ui).unwrap();
+        let ctx = egui::Context::default();
+        let escape = |app: &mut Application| {
+            ctx.run_ui(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::Key {
+                            key: egui::Key::Escape,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                        egui::Event::Key {
+                            key: egui::Key::Escape,
+                            physical_key: None,
+                            pressed: false,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| app.handle_shortcuts(ui.ctx()),
+            )
+            .drop_without_applying_deltas();
+        };
+        app.recovery_open = true;
+        assert!(app.shortcut_context(&ctx).blocked);
+        escape(&mut app);
+        assert!(!app.recovery_open);
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Rectangle));
+        app.file_action = Some(FileAction::Open);
+        app.pending_files.insert(
+            42,
+            PendingFile::Open {
+                path: PathBuf::from("pending.multicad"),
+                imported: false,
+            },
+        );
+        escape(&mut app);
+        assert!(app.file_action.is_some());
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Rectangle));
+        app.pending_files.clear();
+        escape(&mut app);
+        assert!(app.file_action.is_none());
+        app.file_action = Some(FileAction::Save);
+        app.file_document = Some(app.current().local_id);
+        app.replacement = Some(Replacement {
+            local: app.current().local_id,
+            path: PathBuf::from("existing.multicad"),
+            stamp: stamp(),
+        });
+        assert!(app.shortcut_context(&ctx).blocked);
+        escape(&mut app);
+        assert!(app.replacement.is_none());
+        assert!(matches!(app.file_action, Some(FileAction::Save)));
+        app.file_action = None;
+        app.recovery_open = true;
+        app.pending_files
+            .insert(43, PendingFile::Restore { expected: None });
+        escape(&mut app);
+        assert!(app.recovery_open);
+        app.pending_files.clear();
+        escape(&mut app);
+        assert!(!app.recovery_open);
+        assert_eq!(app.current().sketch.tool, Some(DrawTool::Rectangle));
     }
 }
