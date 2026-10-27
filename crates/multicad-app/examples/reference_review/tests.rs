@@ -48,6 +48,142 @@ fn evaluated(session: &Session) -> Evaluation {
     evaluate(session.document(), stamp(session), || Ok(())).unwrap()
 }
 #[test]
+fn sketch_on_final_drilled_feature_does_not_block_its_producer_rebuild() {
+    use multicad_core::sketch::{self, CreationPlane, PlaneOptions};
+    let mut session = Session::new(document().unwrap()).unwrap();
+    let initial = evaluated(&session);
+    let original = initial.report.entries[0].clone();
+    let hole = initial.scene.instances()[0].geometry;
+    let mut feed = SceneFeed::default();
+    feed.set_backend(Box::new(Backend::new()));
+    settle(&mut feed, &session);
+    let snapshot = feed.visible().unwrap().geometry_snapshot(hole).unwrap();
+    let key = snapshot
+        .elements
+        .iter()
+        .find(|e| {
+            e.key.kind == TopologyKind::Face
+                && e.origins.contains(&Origin {
+                    source: original.source,
+                    role: "cap.end".into(),
+                })
+        })
+        .unwrap()
+        .key;
+    let new = sketch::prepare_new(
+        &session,
+        0,
+        Actor::local(Channel::Ui),
+        "Unconsumed final-face sketch",
+        CreationPlane::Face {
+            snapshot: &snapshot,
+            key,
+            anchor: None,
+        },
+        PlaneOptions {
+            normal_offset_mm: 2.,
+            angle_rad: 0.1,
+        },
+    )
+    .unwrap();
+    let sketch_id = new.sketch;
+    let plane_id = new.plane;
+    session.commit(new.prepared).unwrap();
+    settle(&mut feed, &session);
+    assert!(feed.is_current(session.document().id(), session.revision()));
+    let rebuilt = evaluated(&session);
+    assert!(rebuilt.report.all_resolved());
+    assert_eq!(rebuilt.report.entries.len(), 2);
+    assert_eq!(rebuilt.scene.instances()[0].geometry, hole);
+    near(rebuilt.display_volume_mm3, initial.display_volume_mm3);
+    assert!(
+        !session
+            .document()
+            .affected([sketch_id])
+            .unwrap()
+            .contains(&hole)
+    );
+    change(
+        &mut session,
+        &[("panel_height", "24"), ("panel_width", "120")],
+    );
+    settle(&mut feed, &session);
+    assert!(feed.is_current(session.document().id(), session.revision()));
+    let resized = evaluated(&session);
+    assert!(resized.report.all_resolved());
+    let (mut source, frame, _) = multicad_core::constraint_sketch::source::Source::read_evaluated(
+        session.document(),
+        sketch_id,
+        session.revision(),
+        &resized.report,
+    )
+    .unwrap();
+    near(frame.origin[2], 26.);
+    source.add_rectangle([10., 10.], [30., 30.]).unwrap();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: Actor::local(Channel::Ui),
+            label: "Edit unconsumed final-face sketch".into(),
+            edits: source.replace(session.document(), sketch_id).unwrap(),
+        })
+        .unwrap();
+    settle(&mut feed, &session);
+    assert!(feed.is_current(session.document().id(), session.revision()));
+    let changed = evaluated(&session);
+    assert!(changed.report.all_resolved());
+    near(changed.display_volume_mm3, resized.display_volume_mm3);
+    assert_eq!(changed.scene.instances()[0].geometry, hole);
+    let visible = feed.visible().unwrap().clone();
+    change(&mut session, &[("topology_mode", "1")]);
+    settle(&mut feed, &session);
+    assert!(!feed.is_current(session.document().id(), session.revision()));
+    assert!(Arc::ptr_eq(feed.visible().unwrap(), &visible));
+    let references = feed.references().unwrap();
+    assert!(matches!(
+        references.report.get(original.address).unwrap().resolution,
+        Resolution::Ambiguous { .. }
+    ));
+    assert!(
+        references
+            .report
+            .entries
+            .iter()
+            .any(|d| d.address.owner == plane_id && d.resolution == Resolution::MissingSource)
+    );
+    assert!(!references.candidate.geometries().contains_key(&hole));
+    assert_eq!(
+        references.candidate.instances()[0].geometry,
+        original.source
+    );
+}
+#[test]
+fn malformed_drilling_source_is_an_error_instead_of_a_published_raw_panel() {
+    let mut document = document().unwrap();
+    let mut sketch = document
+        .entities()
+        .find(|e| e.name == "Face-mounted drill circle")
+        .unwrap()
+        .clone();
+    let EntityData::Sketch { definition, .. } = &mut sketch.data else {
+        unreachable!()
+    };
+    definition.type_id = "test.unsupported_sketch_provider".into();
+    document.replace(sketch).unwrap();
+    assert!(
+        evaluate(
+            &document,
+            SceneStamp {
+                document: document.id(),
+                revision: 0,
+                generation: 1
+            },
+            || Ok(())
+        )
+        .is_err()
+    );
+}
+#[test]
 fn duplicate_instance_transaction_shares_native_assets_and_renders_all_placements() {
     let mut session = Session::new(document().unwrap()).unwrap();
     let before = session.document().clone();

@@ -287,7 +287,7 @@ pub fn evaluate(
     let snapshot = source
         .topology_snapshot(panel.id, stamp.revision)
         .map_err(|e| e.to_string())?;
-    let report = inspect(
+    let upstream_report = inspect(
         document,
         stamp.revision,
         &BTreeMap::from([(panel.id, snapshot)]),
@@ -296,15 +296,33 @@ pub fn evaluate(
     let source_volume_mm3 = source.volume_mm3().map_err(|e| e.to_string())?;
     let mut display_volume_mm3 = source_volume_mm3;
     let mut hole_center_world = None;
-    let display_id = if report.all_resolved() {
-        let profile_link = hole
-            .references()
-            .into_iter()
-            .find(|l| l.role == "profile")
-            .ok_or("Hole has no sketch profile")?;
-        let (sketch, frame, _) =
-            Source::read_evaluated(document, profile_link.target, stamp.revision, &report)
-                .map_err(|e| e.to_string())?;
+    let profile_link = hole
+        .references()
+        .into_iter()
+        .find(|l| l.role == "profile")
+        .ok_or("Hole has no sketch profile")?;
+    // Eligibility follows the drilling's own dependencies. A new unrelated
+    // sketch may reference the final Hole asset, which does not exist until
+    // this stage runs; that must not prevent its producer from being evaluated.
+    let profile = match Source::read_evaluated(
+        document,
+        profile_link.target,
+        stamp.revision,
+        &upstream_report,
+    ) {
+        Ok(profile) => Some(profile),
+        Err(_)
+            if upstream_report.entries.iter().any(|d| {
+                !matches!(d.resolution, Resolution::Resolved { .. })
+                    && (d.address.owner == profile_link.target
+                        || d.affected.contains(&profile_link.target))
+            }) =>
+        {
+            None
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let display_id = if let Some((sketch, frame, _)) = profile {
         let curves = sketch.display_geometry().map_err(|e| e.to_string())?;
         let [
             multicad_core::sketch::Geometry::Circle {
@@ -392,6 +410,7 @@ pub fn evaluate(
         }
     }
     let scene = Arc::new(viewport::Scene::new(stamp, geometries, instances)?);
+    let report = inspect(document, stamp.revision, &scene.reference_snapshots());
     Ok(Evaluation {
         scene,
         report,
