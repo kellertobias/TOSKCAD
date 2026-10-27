@@ -6,6 +6,7 @@
 pub mod commands;
 pub mod document;
 pub mod parameters;
+pub mod sketch;
 
 /// Identity of the compiled application, independent of GUI or native adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

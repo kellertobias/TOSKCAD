@@ -170,6 +170,7 @@ impl Document {
                 .map_err(|message| DocumentError::Invalid(format!("Entity {id}: {message}")))?;
         }
         self.topological_order()?;
+        crate::sketch::validate(self)?;
         Ok(())
     }
 }
