@@ -67,8 +67,36 @@ mod ffi {
         pub index: u32,
         pub point: Point3,
     }
+    pub struct SplineData {
+        pub degree: u32,
+        pub poles: Vec<f64>,
+        pub knots: Vec<f64>,
+        pub multiplicities: Vec<u32>,
+        pub weights: Vec<f64>,
+    }
+    pub struct CurvedEdgeData {
+        pub kind: u8,
+        pub a: Point3,
+        pub b: Point3,
+        pub spline: SplineData,
+        pub source_index: u32,
+    }
+    pub struct CurveSampleData {
+        pub point: Point3,
+        pub derivative: Point3,
+    }
+    pub struct CurveIntersectionData {
+        pub point: Point3,
+        pub first: f64,
+        pub second: f64,
+    }
+    pub struct CurveQueryData {
+        pub points: Vec<CurveIntersectionData>,
+        pub overlaps: u32,
+    }
     unsafe extern "C++" {
         include!("bridge.hpp");
+        include!("curves.hpp");
         type Shape;
         fn extrude(width: f64, depth: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn cut(
@@ -109,6 +137,33 @@ mod ffi {
         fn display_edges(shape: &Shape, deflection: f64) -> Result<Vec<EdgeInfo>>;
         fn vertices(shape: &Shape) -> Result<Vec<VertexInfo>>;
         fn solid_count(shape: &Shape) -> Result<u32>;
+        fn curve_evaluate(curve: &CurvedEdgeData, parameter: f64) -> Result<CurveSampleData>;
+        fn curve_intersections(
+            first: &CurvedEdgeData,
+            second: &CurvedEdgeData,
+            tolerance: f64,
+            self_query: bool,
+        ) -> Result<CurveQueryData>;
+        fn curved_profile_area(
+            frame: &Frame3,
+            edges: &[CurvedEdgeData],
+            offsets: &[u32],
+            tolerance: f64,
+        ) -> Result<f64>;
+        fn curved_profile_classify(
+            frame: &Frame3,
+            edges: &[CurvedEdgeData],
+            offsets: &[u32],
+            tolerance: f64,
+            point: &Point3,
+        ) -> Result<u8>;
+        fn curved_profile_extrude(
+            frame: &Frame3,
+            edges: &[CurvedEdgeData],
+            offsets: &[u32],
+            tolerance: f64,
+            height: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn tessellate(
             shape: &Shape,
             deflection: f64,
@@ -124,7 +179,9 @@ mod geometry;
 pub use geometry::*;
 mod worker;
 pub use worker::*;
+mod curves;
 mod provenance;
+pub use curves::*;
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")

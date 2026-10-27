@@ -113,6 +113,47 @@ impl Solid {
             probe.validate().map_err(failure)?;
         }
         let mut result = Self::extrude_profile(profile, height_mm, policy)?;
+        let side_frames: Vec<_> = edges
+            .iter()
+            .map(|edge| side_frame(profile, edge, height_mm))
+            .collect();
+        result.name_profile_prism(profile.frame, height_mm, feature, curves, &side_frames)?;
+        Ok(result)
+    }
+    pub(crate) fn name_profile_prism(
+        &mut self,
+        frame: PlaneFrame,
+        height_mm: f64,
+        feature: EntityId,
+        curves: &[Origin],
+        side_frames: &[Option<ReferenceFrame>],
+    ) -> Result<(), GeometryError> {
+        if feature.is_nil()
+            || curves.len() != side_frames.len()
+            || curves.iter().collect::<BTreeSet<_>>().len() != curves.len()
+        {
+            return Err(failure(
+                "Every exact profile edge needs a distinct authored origin",
+            ));
+        }
+        for curve in curves {
+            GeometryIntent {
+                id: EntityId::new(),
+                kind: TopologyKind::Face,
+                origins: BTreeSet::from([
+                    curve.clone(),
+                    Origin {
+                        source: feature,
+                        role: format!("side/{}/{}", curve.source, curve.role),
+                    },
+                ]),
+                boundary: None,
+                attachment: None,
+            }
+            .validate()
+            .map_err(failure)?;
+        }
+        let result = self;
         let nodes = ffi::topology(&result.native.0).map_err(failure)?;
         let mut elements: BTreeMap<_, _> = nodes
             .iter()
@@ -125,10 +166,10 @@ impl Solid {
                 .ok_or_else(|| failure("Native seed refers to absent face"))?;
             let (origin, frame, curve) = match seed.role {
                 0 | 1 => {
-                    let mut frame = reference_frame(profile.frame);
+                    let mut cap_frame = reference_frame(frame);
                     if seed.role == 1 {
-                        frame.origin_mm = std::array::from_fn(|i| {
-                            frame.origin_mm[i] + profile.frame.normal()[i] * height_mm
+                        cap_frame.origin_mm = std::array::from_fn(|i| {
+                            cap_frame.origin_mm[i] + frame.normal()[i] * height_mm
                         });
                     }
                     (
@@ -141,7 +182,7 @@ impl Solid {
                             }
                             .into(),
                         },
-                        Some(frame),
+                        Some(cap_frame),
                         None,
                     )
                 }
@@ -155,7 +196,9 @@ impl Solid {
                             source: feature,
                             role: format!("side/{}/{}", curve.source, curve.role),
                         },
-                        side_frame(profile, edges[index], height_mm),
+                        *side_frames
+                            .get(index)
+                            .ok_or_else(|| failure("Native profile source index is absent"))?,
                         Some(curve.clone()),
                     )
                 }
@@ -181,7 +224,7 @@ impl Solid {
             ));
         }
         result.finish_provenance(elements, &nodes)?;
-        Ok(result)
+        Ok(())
     }
     pub fn box_named(
         size_mm: [f64; 3],

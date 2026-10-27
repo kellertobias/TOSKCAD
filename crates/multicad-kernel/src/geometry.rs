@@ -83,7 +83,7 @@ impl GeometryPolicy {
         }
         Ok(())
     }
-    fn point(self, p: [f64; 3]) -> Result<(), GeometryError> {
+    pub(crate) fn point(self, p: [f64; 3]) -> Result<(), GeometryError> {
         if p.iter()
             .any(|v| !v.is_finite() || v.abs() > self.maximum_coordinate_mm)
         {
@@ -92,7 +92,7 @@ impl GeometryPolicy {
             Ok(())
         }
     }
-    fn length(self, v: f64) -> Result<(), GeometryError> {
+    pub(crate) fn length(self, v: f64) -> Result<(), GeometryError> {
         if !v.is_finite() || v < self.minimum_feature_mm || v > self.maximum_coordinate_mm {
             Err(input(
                 "Length is below minimum feature size or outside model bounds",
@@ -144,7 +144,7 @@ impl PlaneFrame {
     pub fn point(self, p: [f64; 2]) -> [f64; 3] {
         std::array::from_fn(|i| self.origin[i] + self.u[i] * p[0] + self.v[i] * p[1])
     }
-    fn checked(self, policy: GeometryPolicy) -> Result<ffi::Frame3, GeometryError> {
+    pub(crate) fn checked(self, policy: GeometryPolicy) -> Result<ffi::Frame3, GeometryError> {
         policy.point(self.origin)?;
         if self.u.iter().chain(&self.v).any(|v| !v.is_finite())
             || (dot(self.u, self.u) - 1.).abs() > 1e-10
@@ -456,7 +456,7 @@ pub struct Solid {
     pub(crate) provenance: Vec<multicad_core::references::TopologyElement>,
 }
 impl Solid {
-    fn adopt(
+    pub(crate) fn adopt(
         handle: cxx::UniquePtr<ffi::Shape>,
         policy: GeometryPolicy,
         operation: &'static str,
