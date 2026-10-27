@@ -71,6 +71,7 @@ pub struct SketchEditor {
     revision: u64,
     fit_requested: bool,
     constraints: crate::sketch_constraints::ConstraintEditor,
+    sketch_evaluation: crate::sketch_evaluation::SketchEvaluationFeed,
     solid: crate::viewport::Interaction,
     repair: crate::reference_repair::RepairPanel,
     evaluated: Option<multicad_core::references::ReferenceReport>,
@@ -117,6 +118,7 @@ impl Default for SketchEditor {
             revision: 0,
             fit_requested: false,
             constraints: Default::default(),
+            sketch_evaluation: Default::default(),
             solid: Default::default(),
             repair: Default::default(),
             evaluated: None,
@@ -186,12 +188,13 @@ impl SketchEditor {
             .find(|curve| Some(curve.id) == self.element)
             .ok_or("Select a curve")?;
         curve.construction = !curve.construction;
-        let edit = multicad_solver::prepare_edit(
+        let edit = multicad_solver::prepare_edit_with_report(
             session,
             session.revision(),
             Actor::local(channel),
             id,
             source,
+            self.evaluated.as_ref(),
         )
         .map_err(|e| e.to_string())?;
         session
@@ -479,8 +482,13 @@ impl SketchEditor {
     pub fn open_at(&mut self, doc: &Document, id: EntityId, revision: u64) -> Result<(), String> {
         self.occurrence = self.solid.selected_id().or(self.occurrence);
         self.refresh_contexts(doc, revision);
-        let (_, frame, _) = self
+        let frame = self
             .read_sketch(doc, id, revision)
+            .map(|(_, frame, _)| frame)
+            .or_else(|_| {
+                self.read_source(doc, id, revision)
+                    .map(|(_, frame, _)| self.display_frame(id, frame))
+            })
             .map_err(|e| e.to_string())?;
         self.activate_sketch(id)?;
         self.orient_to(frame);
@@ -587,12 +595,13 @@ impl SketchEditor {
                 .sketch
                 .constraints
                 .retain(|c| !c.kind.references().contains(&element));
-            let edit = multicad_solver::prepare_edit(
+            let edit = multicad_solver::prepare_edit_with_report(
                 session,
                 session.revision(),
                 Actor::local(channel),
                 id,
                 source,
+                self.evaluated.as_ref(),
             )
             .map_err(|e| e.to_string())?;
             session
@@ -626,7 +635,12 @@ impl SketchEditor {
         let element = self
             .element
             .ok_or("Select a curve in the Inspector first")?;
-        self.constraints.begin_dimension(session, id, element)?;
+        if let Some(value) = value {
+            self.constraints
+                .begin_dimension_exact(session, id, element, value, unit)?;
+        } else {
+            self.constraints.begin_dimension(session, id, element)?;
+        }
         self.tool = None;
         self.clear_drawing_progress();
         self.moving = false;
@@ -635,12 +649,13 @@ impl SketchEditor {
                 .read_source(session.document(), id, session.revision())
                 .map_err(|e| e.to_string())?;
             source.add_constraint(self.constraints.dimension_kind(value, unit)?);
-            let edit = multicad_solver::prepare_edit(
+            let edit = multicad_solver::prepare_edit_with_report(
                 session,
                 session.revision(),
                 Actor::local(channel),
                 id,
                 source,
+                self.evaluated.as_ref(),
             )
             .map_err(|e| e.to_string())?;
             session
@@ -662,8 +677,8 @@ impl SketchEditor {
                 .selected
                 .ok_or_else(|| "Select a sketch".to_string())
                 .and_then(|id| {
-                    self.read_sketch(doc, id, revision)
-                        .map(|(_, f, _)| f)
+                    self.read_source(doc, id, revision)
+                        .map(|(_, f, _)| self.display_frame(id, f))
                         .map_err(|e| e.to_string())
                 }),
             Coordinates::Custom(d) => {
@@ -746,6 +761,35 @@ impl SketchEditor {
             self.repair.cancel();
         }
         self.constraints.set_evaluation(self.evaluated.clone());
+        let reference_context = feed
+            .references()
+            .filter(|e| {
+                e.stamp.document == session.document().id()
+                    && e.stamp.revision == session.revision()
+            })
+            .map(|e| (e.stamp, e.report.clone()));
+        if reference_context.is_none()
+            && let Some((_, report)) = &self.creation_evaluation
+        {
+            self.sketch_evaluation.sync_creation_report(
+                session.document(),
+                session.revision(),
+                report.clone(),
+            );
+        } else {
+            self.sketch_evaluation
+                .sync(session.document(), session.revision(), reference_context);
+        }
+        self.sketch_evaluation.poll();
+        if self.sketch_evaluation.pending() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        self.constraints.set_current(
+            self.selected
+                .and_then(|id| self.sketch_evaluation.current(id))
+                .map(|p| p.evaluated.clone()),
+        );
         let mut scene = feed
             .visible()
             .filter(|s| s.stamp().document == session.document().id())
@@ -805,6 +849,9 @@ impl SketchEditor {
                         if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
                         else if feed.refining() {ui.small("Refining display…");}
                         else if feed.pending() {ui.small("Rebuilding model…");}
+                        if self.sketch_evaluation.pending() {ui.small("Solving sketches…");}
+                        if let Some(error)=self.sketch_evaluation.error() {ui.colored_label(Color32::LIGHT_RED,error);}
+                        if let Some(failure)=self.selected.and_then(|id|self.sketch_evaluation.errors().get(&id)) {ui.colored_label(Color32::LIGHT_RED,&failure.message);}
                         if let Some(error)=feed.quality_error() {ui.colored_label(Color32::LIGHT_YELLOW,error);if ui.button("Retry display refinement").clicked(){feed.retry_quality();}}
                         if let Some(evaluation)=feed.references() {
                             self.repair.show(ui,session,evaluation);
@@ -959,6 +1006,9 @@ impl SketchEditor {
                                 }
                                 Err(e) => {
                                     ui.colored_label(Color32::LIGHT_RED, e.to_string());
+                                    if self.editing && !self.moving {
+                                        self.constraints.show(ui,session,id,self.element);
+                                    }
                                 }
                             }
                         }
@@ -1021,20 +1071,121 @@ impl SketchEditor {
         id: EntityId,
         revision: u64,
     ) -> Result<(Sketch, sketch::Frame, EntityId), multicad_core::document::DocumentError> {
-        let (source, mut frame, plane) = if let Some(report) = &self.evaluated {
+        if self.contexts.contains_key(&id)
+            && self.display_scene.as_ref().is_some_and(|scene| {
+                scene.stamp().document != doc.id() || scene.stamp().revision != revision
+            })
+            && !self
+                .creation_evaluation
+                .as_ref()
+                .is_some_and(|(owner, report)| *owner == doc.id() && report.revision == revision)
+        {
+            return Err(multicad_core::document::DocumentError::Invalid(
+                "Waiting for the current placed sketch frame".into(),
+            ));
+        }
+        if let Some(evaluated) = self.semantic_geometry(doc, id, revision) {
+            let geometry = if self
+                .constraints
+                .preview_document()
+                .is_some_and(|preview| std::ptr::eq(preview, doc))
+            {
+                self.constraints.semantic_preview_geometry()
+            } else {
+                self.sketch_evaluation
+                    .current(id)
+                    .map(|p| p.geometry.as_ref())
+            }
+            .ok_or_else(|| {
+                multicad_core::document::DocumentError::Invalid(
+                    "Sketch has no current valid geometry".into(),
+                )
+            })?
+            .to_vec();
+            return Ok((
+                Sketch {
+                    u: evaluated.canonical().u,
+                    geometry,
+                },
+                self.display_frame(id, evaluated.frame),
+                evaluated.plane,
+            ));
+        }
+        if doc.get(id).is_some_and(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==multicad_core::constraint_sketch::source::TYPE)) {
+            return Err(multicad_core::document::DocumentError::Invalid("Waiting for a current valid sketch solution".into()));
+        }
+        let (source, frame, plane) = if let Some(report) = &self.evaluated {
             Sketch::read_evaluated(doc, id, revision, report)
         } else {
             Sketch::read(doc, id)
         }?;
+        Ok((source, self.display_frame(id, frame), plane))
+    }
+    fn display_frame(&self, id: EntityId, frame: Frame) -> Frame {
         if let Some(pose) = self.contexts.get(&id) {
-            frame = Frame {
+            Frame {
                 origin: pose.point(frame.origin),
                 u: pose.vector(frame.u),
                 v: pose.vector(frame.v),
                 n: pose.vector(frame.n),
-            };
+            }
+        } else {
+            frame
         }
-        Ok((source, frame, plane))
+    }
+    fn semantic_geometry(
+        &self,
+        doc: &Document,
+        id: EntityId,
+        revision: u64,
+    ) -> Option<&multicad_solver::EvaluatedSketch> {
+        if self
+            .constraints
+            .preview_document()
+            .is_some_and(|preview| std::ptr::eq(preview, doc))
+        {
+            return self
+                .constraints
+                .semantic_preview()
+                .filter(|e| e.sketch == id);
+        }
+        self.sketch_evaluation
+            .current(id)
+            .filter(|p| p.stamp.document == doc.id() && p.stamp.revision == revision)
+            .map(|p| p.evaluated.as_ref())
+    }
+    /// Transient solved points are used only for display and snaps. Source edits
+    /// always start from `read_source`, which retains authored guesses/formulas.
+    fn read_solved_source(
+        &self,
+        doc: &Document,
+        id: EntityId,
+        revision: u64,
+    ) -> Result<(Source, Frame, EntityId), multicad_core::document::DocumentError> {
+        if let Some(e) = self.semantic_geometry(doc, id, revision) {
+            return e
+                .solved()
+                .cloned()
+                .map(|sketch| {
+                    (
+                        Source {
+                            u: e.canonical().u,
+                            sketch,
+                        },
+                        e.frame,
+                        e.plane,
+                    )
+                })
+                .ok_or_else(|| {
+                    multicad_core::document::DocumentError::Invalid(
+                        "Sketch has no current solution".into(),
+                    )
+                });
+        }
+        if doc.get(id).is_some_and(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==multicad_core::constraint_sketch::source::TYPE)) {
+            return Err(multicad_core::document::DocumentError::Invalid("Waiting for a current valid sketch solution".into()));
+        }
+        self.read_source(doc, id, revision)
     }
     fn read_source(
         &self,
@@ -1042,11 +1193,7 @@ impl SketchEditor {
         id: EntityId,
         revision: u64,
     ) -> Result<(Source, Frame, EntityId), multicad_core::document::DocumentError> {
-        if let Some(report) = &self.evaluated {
-            Source::read_evaluated(doc, id, revision, report)
-        } else {
-            Source::read(doc, id)
-        }
+        Source::read_for_evaluation(doc, id, revision, self.evaluated.as_ref())
     }
     fn canvas(
         &mut self,
@@ -1152,11 +1299,7 @@ impl SketchEditor {
         let affected = self.constraints.affected();
         for e in doc.entities().filter(|_| !self.repair.viewing_candidates()) {
             if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
-                let constrained = if let Some(report) = &self.evaluated {
-                    Source::read_evaluated(doc, e.id, session.revision(), report).ok()
-                } else {
-                    Source::read(doc, e.id).ok()
-                };
+                let constrained = self.read_solved_source(doc, e.id, session.revision()).ok();
                 let conflicted_curves: std::collections::BTreeSet<_> = constrained
                     .as_ref()
                     .into_iter()
@@ -1241,6 +1384,19 @@ impl SketchEditor {
                         painter.circle_filled(p, 2.5, color);
                     }
                 }
+            } else if let Some(retained) = self.sketch_evaluation.last_valid(e.id) {
+                // Retained geometry is a visual aid only. All interaction paths
+                // use read_sketch/current and therefore reject this stale view.
+                let frame = self.display_frame(e.id, retained.evaluated.frame);
+                for geometry in retained.geometry.iter() {
+                    for [a, b] in geometry.segments() {
+                        if let Some(segment) =
+                            self.camera.segment(frame.point(a), frame.point(b), rect)
+                        {
+                            painter.line_segment(segment, Stroke::new(1., Color32::from_gray(90)));
+                        }
+                    }
+                }
             }
         }
         if sketch_mode
@@ -1256,7 +1412,7 @@ impl SketchEditor {
             let mut anchor = None;
             if self.snap {
                 if let Ok((source, _, _)) =
-                    self.read_source(session.document(), id, session.revision())
+                    self.read_solved_source(session.document(), id, session.revision())
                 {
                     let nearest = source
                         .sketch
@@ -1283,7 +1439,7 @@ impl SketchEditor {
                 && let Some((stored, start_id)) = self.polyline_start
             {
                 let current = self
-                    .read_source(session.document(), id, session.revision())
+                    .read_solved_source(session.document(), id, session.revision())
                     .ok()
                     .and_then(|(source, _, _)| {
                         source
@@ -1620,8 +1776,169 @@ impl SketchEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn settle(editor: &mut SketchEditor, session: &Session) {
+        if let Some(report) = editor
+            .evaluated
+            .clone()
+            .filter(|r| r.revision == session.revision())
+        {
+            editor.sketch_evaluation.sync_creation_report(
+                session.document(),
+                session.revision(),
+                report,
+            );
+        } else {
+            editor
+                .sketch_evaluation
+                .sync(session.document(), session.revision(), None);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while editor.sketch_evaluation.pending() {
+            editor.sketch_evaluation.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Sketch worker timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
     fn session() -> Session {
         Session::new(Document::new("Sketch tests").unwrap()).unwrap()
+    }
+    #[test]
+    fn bound_sketch_display_tracks_parameters_and_rejects_retained_geometry_for_edits() {
+        use multicad_core::{
+            constraint_sketch::{ConstraintKind, Dimension, binding::DimensionInput},
+            document::Entity,
+        };
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        let id = editor.selected.unwrap();
+        editor
+            .draw(
+                &mut session,
+                &multicad_core::sketch_draw::DrawRequest {
+                    input: multicad_core::sketch_draw::DrawInput::Circle {
+                        center: multicad_core::sketch_draw::PointInput::Position([10., 10.]),
+                        radius_mm: 3.,
+                    },
+                    construction: false,
+                },
+                Channel::Ui,
+            )
+            .unwrap();
+        let radius = Entity::new(
+            "radius",
+            EntityData::Parameter {
+                expression: "8".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        let parameter = radius.id;
+        commit(
+            &mut session,
+            "Radius parameter",
+            vec![Mutation::Insert(radius)],
+            Channel::Ui,
+        )
+        .unwrap();
+        let mut source = editor
+            .read_source(session.document(), id, session.revision())
+            .unwrap()
+            .0;
+        let constraint = source.add_constraint(ConstraintKind::Radius {
+            curve: source.sketch.curves[0].id,
+            dimension: Dimension::Literal {
+                value: 3.,
+                unit: "mm".into(),
+            },
+        });
+        source = multicad_core::constraint_sketch::binding::draft_dimension(
+            session.document(),
+            &source,
+            constraint,
+            &DimensionInput::Expression {
+                text: "=$radius".into(),
+                unit: "mm".into(),
+            },
+            false,
+        )
+        .unwrap();
+        let prepared = multicad_solver::prepare_edit(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            id,
+            source,
+        )
+        .unwrap()
+        .preview
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let canonical = session.document().get(id).unwrap().clone();
+        let refresh = |editor: &mut SketchEditor, session: &Session| {
+            editor
+                .sketch_evaluation
+                .sync(session.document(), session.revision(), None);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while editor.sketch_evaluation.pending() {
+                editor.sketch_evaluation.poll();
+                assert!(std::time::Instant::now() < until, "Sketch worker timed out");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        refresh(&mut editor, &session);
+        let sketch = editor
+            .read_sketch(session.document(), id, session.revision())
+            .unwrap()
+            .0;
+        assert!(
+            matches!(sketch.geometry[0],Geometry::Circle{radius_mm,..} if (radius_mm-8.).abs()<1e-8)
+        );
+        let mut changed = session.document().get(parameter).unwrap().clone();
+        let EntityData::Parameter { expression, .. } = &mut changed.data else {
+            panic!("parameter")
+        };
+        *expression = "-5".into();
+        commit(
+            &mut session,
+            "Invalid radius",
+            vec![Mutation::Replace(changed)],
+            Channel::Ui,
+        )
+        .unwrap();
+        assert!(
+            editor
+                .read_sketch(session.document(), id, session.revision())
+                .is_err(),
+            "Old revision remained selectable before worker dispatch"
+        );
+        refresh(&mut editor, &session);
+        assert!(editor.sketch_evaluation.current(id).is_none());
+        assert!(editor.sketch_evaluation.last_valid(id).is_some());
+        assert!(
+            editor
+                .read_sketch(session.document(), id, session.revision())
+                .is_err()
+        );
+        assert!(
+            editor
+                .read_solved_source(session.document(), id, session.revision())
+                .is_err()
+        );
+        editor
+            .open_at(session.document(), id, session.revision())
+            .unwrap();
+        assert!(
+            editor
+                .read_source(session.document(), id, session.revision())
+                .is_ok(),
+            "Failed solve prevented source repair"
+        );
+        assert_eq!(session.document().get(id).unwrap(), &canonical);
     }
     fn input(events: Vec<egui::Event>) -> egui::RawInput {
         egui::RawInput {
@@ -1801,6 +2118,7 @@ mod tests {
         // creation-only report permits drawing without waiting for a worker.
         assert_eq!(editor.evaluated.as_ref().unwrap().revision, 1);
         let (_, local, plane) = editor.read_source(session.document(), id, 1).unwrap();
+        settle(&mut editor, &session);
         let (_, world, _) = editor.read_sketch(session.document(), id, 1).unwrap();
         for (a, b) in world.origin.into_iter().zip(pose.point(local.origin)) {
             assert!((a - b).abs() < 1e-8);
@@ -1838,6 +2156,7 @@ mod tests {
         editor.evaluated = Some(report);
         editor.display_scene = Some(scene(2, 4));
         editor.open_at(session.document(), id, 2).unwrap();
+        settle(&mut editor, &session);
         assert_eq!(
             editor.read_sketch(session.document(), id, 2).unwrap().1,
             world
@@ -1875,6 +2194,7 @@ mod tests {
         assert_eq!(session.document(), &before);
         editor.apply_move(&mut session).unwrap();
         let (_, local, _) = Source::read(session.document(), id).unwrap();
+        settle(&mut editor, &session);
         let (_, world, _) = editor
             .read_sketch(session.document(), id, session.revision())
             .unwrap();
@@ -1906,6 +2226,7 @@ mod tests {
         session: &mut Session,
         events: Vec<egui::Event>,
     ) {
+        settle(editor, session);
         ctx.run_ui(input(events), |ui| {
             editor.canvas(ui, session, true, None, false)
         })
@@ -1917,6 +2238,7 @@ mod tests {
         session: &mut Session,
         point: [f64; 2],
     ) {
+        settle(editor, session);
         let (_, frame, _) = editor
             .read_sketch(
                 session.document(),
@@ -2209,6 +2531,7 @@ mod tests {
         let point = editor.camera.project([50., 30., 18.], rect);
         let point = Pos2::new(point[0], point[1]);
         let mut frame = |events| {
+            settle(&mut editor, &session);
             ctx.run_ui(input(events), |ui| {
                 editor.canvas(ui, &mut session, false, Some(scene.clone()), true)
             })
@@ -2302,6 +2625,7 @@ mod tests {
             &BTreeMap::from([(snapshot.owner, snapshot)]),
         ));
         editor.open_at(session.document(), sketch.id, 0).unwrap();
+        settle(&mut editor, &session);
         assert_eq!(
             editor
                 .read_sketch(session.document(), sketch.id, 0)
@@ -2449,6 +2773,7 @@ mod tests {
         let a = editor.camera.project([20., 20., 0.], rect);
         let b = editor.camera.project([80., 60., 0.], rect);
         let mut frame = |events| {
+            settle(&mut editor, &s);
             ctx.run_ui(input(events), |ui| {
                 editor.canvas(ui, &mut s, true, None, false)
             })
@@ -2490,6 +2815,7 @@ mod tests {
         let start = Pos2::new(end[0], end[1]);
         let finish = start + Vec2::new(30., 0.);
         let mut frame = |events| {
+            settle(&mut editor, &session);
             ctx.run_ui(input(events), |ui| {
                 editor.canvas(ui, &mut session, true, None, false)
             })
@@ -2566,6 +2892,7 @@ mod tests {
         let a = editor.camera.project([20., 20., 0.], rect);
         let b = editor.camera.project([80., 60., 0.], rect);
         let mut frame = |events| {
+            settle(&mut editor, &session);
             ctx.run_ui(input(events), |ui| {
                 editor.canvas(ui, &mut session, true, Some(scene.clone()), true)
             })
@@ -2606,6 +2933,7 @@ mod tests {
         let p = before.target;
         let initial = before.project(p, rect);
         let mut frame = |events| {
+            settle(&mut editor, &session);
             ctx.run_ui(input(events), |ui| {
                 editor.canvas(ui, &mut session, true, None, false)
             })

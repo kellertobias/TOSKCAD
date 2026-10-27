@@ -304,11 +304,11 @@ pub fn evaluate(
     // Eligibility follows the drilling's own dependencies. A new unrelated
     // sketch may reference the final Hole asset, which does not exist until
     // this stage runs; that must not prevent its producer from being evaluated.
-    let profile = match Source::read_evaluated(
+    let profile = match multicad_solver::evaluate_document_sketch(
         document,
-        profile_link.target,
         stamp.revision,
-        &upstream_report,
+        profile_link.target,
+        Some(&upstream_report),
     ) {
         Ok(profile) => Some(profile),
         Err(_)
@@ -322,8 +322,9 @@ pub fn evaluate(
         }
         Err(error) => return Err(error.to_string()),
     };
-    let display_id = if let Some((sketch, frame, _)) = profile {
-        let curves = sketch.display_geometry().map_err(|e| e.to_string())?;
+    let display_id = if let Some(sketch) = profile {
+        let frame = sketch.frame;
+        let curves = sketch.geometry().map_err(|e| e.to_string())?;
         let [
             multicad_core::sketch::Geometry::Circle {
                 id,

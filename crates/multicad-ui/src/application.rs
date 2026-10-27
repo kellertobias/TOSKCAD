@@ -1286,7 +1286,26 @@ mod tests {
             Channel::CommandLine,
         )
         .unwrap();
-        app.invoke(Command::Dimension, &[], Channel::Ui).unwrap();
+        assert!(
+            app.invoke(Command::Dimension, &[], Channel::Ui)
+                .unwrap_err()
+                .contains("current sketch solution")
+        );
+        let context = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            context
+                .run_ui(egui::RawInput::default(), |ui| app.show(ui))
+                .drop_without_applying_deltas();
+            if app.invoke(Command::Dimension, &[], Channel::Ui).is_ok() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Current sketch solve never became available"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         app.invoke(Command::Dimension, &["10", "cm"], Channel::CommandLine)
             .unwrap();
         let id = app.current().sketch.selected.unwrap();

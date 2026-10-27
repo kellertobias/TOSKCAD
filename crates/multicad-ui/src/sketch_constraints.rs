@@ -7,8 +7,50 @@ use multicad_core::{
     document::{Document, EntityId},
     references::ReferenceReport,
 };
-use multicad_solver::{SketchEdit, SolveState, prepare_edit};
-use std::collections::BTreeSet;
+#[cfg(test)]
+use multicad_solver::prepare_edit;
+use multicad_solver::{EvaluatedSketch, SketchEdit, SolveState, prepare_edit_with_report};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+#[derive(Clone)]
+struct DimensionFields {
+    text: String,
+    unit: String,
+}
+impl DimensionFields {
+    fn from_dimension(dimension: &Dimension) -> Self {
+        Self {
+            text: match dimension {
+                Dimension::Literal { value, .. } => value.to_string(),
+                Dimension::Expression { expression } => expression.text.clone(),
+            },
+            unit: dimension.unit().into(),
+        }
+    }
+    fn input(&self) -> Result<model::binding::DimensionInput, String> {
+        let text = self.text.trim();
+        if text.starts_with('=') {
+            Ok(model::binding::DimensionInput::Expression {
+                text: text.into(),
+                unit: self.unit.clone(),
+            })
+        } else {
+            let value: f64 = text
+                .parse()
+                .map_err(|_| "Enter a number or an expression beginning with =")?;
+            if !value.is_finite() {
+                return Err("Dimension must be finite".into());
+            }
+            Ok(model::binding::DimensionInput::Literal {
+                value,
+                unit: self.unit.clone(),
+            })
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -153,6 +195,9 @@ pub struct ConstraintEditor {
     value: f64,
     unit: String,
     evaluation: Option<ReferenceReport>,
+    current: Option<Arc<EvaluatedSketch>>,
+    dimension_fields: BTreeMap<EntityId, DimensionFields>,
+    preview_geometry: Option<Vec<multicad_core::sketch::Geometry>>,
 }
 impl Default for ConstraintEditor {
     fn default() -> Self {
@@ -168,10 +213,16 @@ impl Default for ConstraintEditor {
             value: 10.,
             unit: "mm".into(),
             evaluation: None,
+            current: None,
+            dimension_fields: BTreeMap::new(),
+            preview_geometry: None,
         }
     }
 }
 impl ConstraintEditor {
+    pub fn set_current(&mut self, current: Option<Arc<EvaluatedSketch>>) {
+        self.current = current;
+    }
     pub fn set_evaluation(&mut self, evaluation: Option<ReferenceReport>) {
         if self.evaluation != evaluation {
             self.result = None;
@@ -187,15 +238,19 @@ impl ConstraintEditor {
         (Source, multicad_core::sketch::Frame, EntityId),
         multicad_core::document::DocumentError,
     > {
-        if let Some(report) = &self.evaluation {
-            Source::read_evaluated(session.document(), id, session.revision(), report)
-        } else {
-            Source::read(session.document(), id)
-        }
+        Source::read_for_evaluation(
+            session.document(),
+            id,
+            session.revision(),
+            self.evaluation.as_ref(),
+        )
     }
     fn validate_frame(&self, session: &Session, id: EntityId) -> Result<(), String> {
         // The display facade also accepts a genuine legacy source during its
         // explicit upgrade. It never supplies a saved-datum attachment fallback.
+        if session.document().get(id).is_some_and(|e|matches!(&e.data,multicad_core::document::EntityData::Sketch{definition,..} if definition.type_id==model::source::TYPE)) {
+            return self.read_source(session,id).map(|_|()).map_err(|e|e.to_string());
+        }
         if let Some(report) = &self.evaluation {
             multicad_core::sketch::Sketch::read_evaluated(
                 session.document(),
@@ -215,22 +270,17 @@ impl ConstraintEditor {
         id: EntityId,
         element: EntityId,
     ) -> Result<(), String> {
-        if self.dirty() {
-            return Err("Apply or discard the current constraint draft first".into());
-        }
-        let (source, _, _) = self.read_source(session, id).map_err(|e| e.to_string())?;
-        let curve = source
-            .sketch
-            .curves
-            .iter()
-            .find(|c| c.id == element)
-            .ok_or("Select a curve to dimension")?;
-        self.tool = match curve.kind {
-            model::CurveKind::Line { .. } => Tool::Length,
-            _ => Tool::Radius,
-        };
-        self.value = source
-            .display_geometry()
+        self.choose_dimension(session, id, element)?;
+        self.value = self
+            .current
+            .as_ref()
+            .filter(|e| {
+                e.sketch == id
+                    && e.stamp.document == session.document().id()
+                    && e.stamp.revision == session.revision()
+            })
+            .ok_or("Wait for the current sketch solution before dimensioning")?
+            .geometry()
             .map_err(|e| e.to_string())?
             .iter()
             .find(|g| g.id() == element)
@@ -246,6 +296,42 @@ impl ConstraintEditor {
             })
             .ok_or("Selected curve is unavailable")?;
         self.unit = "mm".into();
+        Ok(())
+    }
+    /// Exact command entry supplies its own value and needs no measured guess.
+    pub fn begin_dimension_exact(
+        &mut self,
+        session: &Session,
+        id: EntityId,
+        element: EntityId,
+        value: f64,
+        unit: &str,
+    ) -> Result<(), String> {
+        self.choose_dimension(session, id, element)?;
+        self.value = value;
+        self.unit = unit.into();
+        Ok(())
+    }
+    fn choose_dimension(
+        &mut self,
+        session: &Session,
+        id: EntityId,
+        element: EntityId,
+    ) -> Result<(), String> {
+        if self.dirty() {
+            return Err("Apply or discard the current constraint draft first".into());
+        }
+        let (source, _, _) = self.read_source(session, id).map_err(|e| e.to_string())?;
+        let curve = source
+            .sketch
+            .curves
+            .iter()
+            .find(|c| c.id == element)
+            .ok_or("Select a curve to dimension")?;
+        self.tool = match curve.kind {
+            model::CurveKind::Line { .. } => Tool::Length,
+            _ => Tool::Radius,
+        };
         self.selection = vec![element];
         self.last_element = Some(element);
         Ok(())
@@ -259,10 +345,12 @@ impl ConstraintEditor {
     pub fn discard(&mut self) {
         self.draft = None;
         self.result = None;
+        self.preview_geometry = None;
         self.error = None;
         self.owner = None;
         self.selection.clear();
         self.last_element = None;
+        self.dimension_fields.clear();
     }
     pub fn preview_document(&self) -> Option<&Document> {
         if self.dirty() {
@@ -271,6 +359,16 @@ impl ConstraintEditor {
             None
         }
     }
+    pub fn semantic_preview(&self) -> Option<&EvaluatedSketch> {
+        self.result
+            .as_ref()
+            .filter(|_| self.dirty())?
+            .semantic
+            .as_ref()
+    }
+    pub fn semantic_preview_geometry(&self) -> Option<&[multicad_core::sketch::Geometry]> {
+        self.preview_geometry.as_deref()
+    }
     pub fn prepare(&mut self, session: &Session, id: EntityId, source: Source) {
         if self.owner != Some(id) || !self.dirty() {
             self.revision = session.revision();
@@ -278,19 +376,24 @@ impl ConstraintEditor {
         self.owner = Some(id);
         self.draft = Some(source.clone());
         self.error = None;
+        self.preview_geometry = None;
         if let Err(error) = self.validate_frame(session, id) {
             self.result = None;
             self.error = Some(error);
             return;
         }
-        match prepare_edit(
+        match prepare_edit_with_report(
             session,
             self.revision,
             Actor::local(Channel::Ui),
             id,
             source,
+            self.evaluation.as_ref(),
         ) {
-            Ok(result) => self.result = Some(result),
+            Ok(result) => {
+                self.preview_geometry = result.semantic.as_ref().and_then(|e| e.geometry().ok());
+                self.result = Some(result);
+            }
             Err(e) => {
                 self.result = None;
                 self.error = Some(e.to_string());
@@ -336,7 +439,9 @@ impl ConstraintEditor {
     pub fn free(&self, id: EntityId) -> bool {
         self.result
             .as_ref()
-            .is_some_and(|r| r.evaluation.diagnostics.free_entities.contains(&id))
+            .map(|r| &r.evaluation)
+            .or_else(|| self.current.as_ref().map(|r| &r.evaluation))
+            .is_some_and(|e| e.diagnostics.free_entities.contains(&id))
     }
     fn toggle(&mut self, id: EntityId) {
         if let Some(i) = self.selection.iter().position(|s| *s == id) {
@@ -396,6 +501,7 @@ impl ConstraintEditor {
             self.error = None;
             self.selection.clear();
             self.last_element = None;
+            self.dimension_fields.clear();
         }
         let mut source = if let Some(draft) = &self.draft {
             draft.clone()
@@ -409,20 +515,14 @@ impl ConstraintEditor {
             self.last_element = element;
             self.selection = element.into_iter().collect();
         }
-        if self.result.is_none() && self.error.is_none() {
-            match prepare_edit(
-                session,
-                session.revision(),
-                Actor::local(Channel::Ui),
-                id,
-                source.clone(),
-            ) {
-                Ok(r) => self.result = Some(r),
-                Err(e) => self.error = Some(e.to_string()),
-            }
-        }
-        if let Some(result) = &self.result {
-            let d = &result.evaluation.diagnostics;
+        let evaluation = self.result.as_ref().map(|r| &r.evaluation).or_else(|| {
+            self.current
+                .as_ref()
+                .filter(|r| r.sketch == id && r.stamp.revision == session.revision())
+                .map(|r| &r.evaluation)
+        });
+        if let Some(evaluation) = evaluation {
+            let d = &evaluation.diagnostics;
             let text = match d.state {
                 SolveState::FullyConstrained => "Fully constrained".into(),
                 SolveState::Underconstrained => {
@@ -433,7 +533,7 @@ impl ConstraintEditor {
                 SolveState::NotConverged => "Solver did not converge".into(),
             };
             ui.colored_label(
-                if result.evaluation.candidate.is_some() {
+                if evaluation.candidate.is_some() {
                     Color32::from_rgb(115, 205, 190)
                 } else {
                     Color32::LIGHT_RED
@@ -522,6 +622,7 @@ impl ConstraintEditor {
             );
         });
         let mut remove = None;
+        let mut dimension_edit = None;
         for (i, c) in source.sketch.constraints.iter_mut().enumerate() {
             let conflict = self
                 .result
@@ -548,16 +649,14 @@ impl ConstraintEditor {
                     }
                 });
                 if let Some(d) = c.kind.dimension_mut() {
+                    let fields = self.dimension_fields.entry(c.id).or_insert_with(||DimensionFields::from_dimension(d));
                     ui.horizontal(|ui| {
-                        match d {
-                            Dimension::Literal {value,unit} => {
-                                changed |= ui.add(egui::DragValue::new(value).speed(0.1)).changed();
-                                changed |= ui.add(egui::TextEdit::singleline(unit).desired_width(35.)).changed();
-                            }
-                            Dimension::Expression {expression} => {
-                                ui.label(&expression.text).on_hover_text("Parameter expression; editing requires a current evaluated sketch");
-                                ui.small(&expression.unit);
-                            }
+                        ui.add(egui::TextEdit::singleline(&mut fields.text).desired_width(125.).hint_text("80 or =$width / 2")).on_hover_text("A literal value or a formula beginning with =. Reference parameters with $name.");
+                        ui.add(egui::TextEdit::singleline(&mut fields.unit).desired_width(35.)).on_hover_text("Dimension unit, such as mm or deg");
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Preview value").on_hover_text("Validate this value or formula without changing the document").clicked() {
+                            dimension_edit=Some((c.id, fields.input()));
                         }
                         changed |= ui.checkbox(&mut c.reference, "Reference").changed();
                     });
@@ -577,6 +676,24 @@ impl ConstraintEditor {
         if let Some(id) = remove {
             source.sketch.constraints.retain(|c| c.id != id);
             changed = true;
+        }
+        if let Some((constraint, input)) = dimension_edit {
+            match input.and_then(|input| {
+                model::binding::draft_dimension(
+                    session.document(),
+                    &source,
+                    constraint,
+                    &input,
+                    false,
+                )
+                .map_err(|e| e.to_string())
+            }) {
+                Ok(updated) => {
+                    source = updated;
+                    changed = true;
+                }
+                Err(error) => self.error = Some(error),
+            }
         }
         if changed {
             self.prepare(session, id, source);
@@ -604,6 +721,83 @@ impl ConstraintEditor {
 mod tests {
     use super::*;
     use multicad_core::{commands::Request, document::Document, sketch::Datum};
+    #[test]
+    fn expression_draft_previews_without_mutation_and_survives_apply_undo() {
+        use multicad_core::document::{Entity, EntityData, Mutation};
+        let (mut session, id, _, line) = setup();
+        let width = Entity::new(
+            "width",
+            EntityData::Parameter {
+                expression: "160".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Parameter".into(),
+                edits: vec![Mutation::Insert(width)],
+            })
+            .unwrap();
+        let before = session.document().clone();
+        let mut source = Source::read(session.document(), id).unwrap().0;
+        let constraint = source.add_constraint(Kind::Length {
+            line,
+            dimension: Dimension::Literal {
+                value: 80.,
+                unit: "mm".into(),
+            },
+        });
+        let input = DimensionFields {
+            text: "=$width / 2".into(),
+            unit: "mm".into(),
+        }
+        .input()
+        .unwrap();
+        let source =
+            model::binding::draft_dimension(session.document(), &source, constraint, &input, false)
+                .unwrap();
+        let mut editor = ConstraintEditor::default();
+        editor.prepare(&session, id, source.clone());
+        assert_eq!(
+            session.document(),
+            &before,
+            "Preview changed canonical source"
+        );
+        let semantic = editor
+            .semantic_preview()
+            .expect("Expression preview missing");
+        assert!((semantic.resolved_rhs[&constraint].value - 80.).abs() < 1e-9);
+        assert!(editor.semantic_preview_geometry().is_some());
+        editor.apply(&mut session).unwrap();
+        let saved = Source::read_for_evaluation(session.document(), id, session.revision(), None)
+            .unwrap()
+            .0;
+        assert_eq!(saved, source, "Apply serialized evaluated geometry");
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &before);
+        assert!(
+            DimensionFields {
+                text: "$width / 2".into(),
+                unit: "mm".into()
+            }
+            .input()
+            .is_err()
+        );
+        assert!(
+            DimensionFields {
+                text: "NaN".into(),
+                unit: "mm".into()
+            }
+            .input()
+            .is_err()
+        );
+    }
     fn setup() -> (Session, EntityId, Source, EntityId) {
         let mut session = Session::new(Document::new("Draft tests").unwrap()).unwrap();
         let (id, edits) = Source::create(Datum::Xy, "Sketch").unwrap();
@@ -717,6 +911,15 @@ mod tests {
         assert!(Source::read(session.document(), id).is_err());
         let mut editor = ConstraintEditor::default();
         editor.set_evaluation(Some(report.clone()));
+        editor.set_current(Some(Arc::new(
+            multicad_solver::evaluate_document_sketch(
+                session.document(),
+                session.revision(),
+                id,
+                Some(&report),
+            )
+            .unwrap(),
+        )));
         editor.begin_dimension(&session, id, curve).unwrap();
         let kind = editor.dimension_kind(5., "mm").unwrap();
         assert!(matches!(kind,Kind::Radius {curve:c,..} if c==curve));
