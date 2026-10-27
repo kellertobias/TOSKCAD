@@ -38,7 +38,7 @@ impl Project {
         })
     }
     fn dirty(&self) -> bool {
-        self.session.dirty() || self.editor.dirty() || self.sketch.has_move_preview()
+        self.session.dirty() || self.editor.dirty() || self.sketch.has_pending_edits()
     }
     fn title(&self) -> String {
         self.path
@@ -188,7 +188,7 @@ impl Application {
                 self.message = "Validated parameter preview; committed document unchanged".into();
             }
             Command::Undo | Command::Redo => {
-                if self.current().editor.dirty() || self.current().sketch.has_move_preview() {
+                if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
                     return Err("Apply or cancel pending edits before Undo/Redo".into());
                 }
                 let p = self.current_mut();
@@ -217,7 +217,7 @@ impl Application {
                     .map_err(|e| e.to_string())?;
             }
             Command::Save => {
-                if self.current().editor.dirty() || self.current().sketch.has_move_preview() {
+                if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
                     return Err("Apply or cancel pending edits before saving".into());
                 }
                 if let Some(path) = self.current().path.clone() {
@@ -236,10 +236,8 @@ impl Application {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
             Command::NewSketch => {
-                if self.current().editor.dirty() {
-                    return Err(
-                        "Apply or discard the parameter draft before creating a sketch".into(),
-                    );
+                if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
+                    return Err("Apply or discard pending edits before creating a sketch".into());
                 }
                 if args.is_empty() {
                     self.current_mut().sketch.begin();
@@ -286,7 +284,7 @@ impl Application {
                 }
             }
             Command::FinishSketch => {
-                self.current_mut().sketch.finish();
+                self.current_mut().sketch.finish()?;
                 self.mode = Mode::Model;
                 self.tab = 0;
             }
@@ -332,7 +330,7 @@ impl Application {
         }
     }
     fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
-        if self.current().editor.dirty() || self.current().sketch.has_move_preview() {
+        if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
             return Err("Apply or cancel pending edits before saving".into());
         }
         if self.file_action.is_some()
@@ -1096,7 +1094,7 @@ mod tests {
                 .0
                 .geometry
                 .len(),
-            1
+            4
         );
         let before = app.current().session.document().clone();
         assert!(

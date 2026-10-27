@@ -43,6 +43,7 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+mod sketch_constraints;
 pub mod sketch_editor;
 
 pub mod theme;

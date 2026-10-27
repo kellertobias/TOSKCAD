@@ -18,6 +18,77 @@ fn invalid(message: impl Into<String>) -> DocumentError {
     DocumentError::Invalid(message.into())
 }
 impl Source {
+    /// Explicit source upgrade for older source snapshots; undo restores the
+    /// original provider. A rectangle becomes four shared-corner lines.
+    pub fn from_legacy(document: &Document, id: EntityId) -> Result<Self, DocumentError> {
+        let (legacy, _, _) = sketch::Sketch::read(document, id)?;
+        let mut source = Self {
+            u: legacy.u,
+            sketch: Sketch::default(),
+        };
+        for g in legacy.geometry {
+            let id = g.id();
+            match g {
+                sketch::Geometry::Line { a, b, .. } => {
+                    let start = source.add_point(a);
+                    let end = source.add_point(b);
+                    source.sketch.curves.push(Curve {
+                        id,
+                        construction: false,
+                        kind: CurveKind::Line { start, end },
+                    });
+                }
+                sketch::Geometry::Rectangle { a, b, .. } => {
+                    let first = source.add_rectangle(a, b)?;
+                    for curve in &mut source.sketch.curves {
+                        if curve.id == first {
+                            curve.id = id;
+                        }
+                    }
+                    for constraint in &mut source.sketch.constraints {
+                        if let ConstraintKind::Horizontal { line } = &mut constraint.kind
+                            && *line == first
+                        {
+                            *line = id;
+                        }
+                    }
+                }
+                sketch::Geometry::Circle {
+                    center, radius_mm, ..
+                } => {
+                    let center = source.add_point(center);
+                    source.sketch.curves.push(Curve {
+                        id,
+                        construction: false,
+                        kind: CurveKind::Circle { center, radius_mm },
+                    });
+                }
+                sketch::Geometry::Arc {
+                    center,
+                    a,
+                    b,
+                    clockwise,
+                    ..
+                } => {
+                    let center = source.add_point(center);
+                    let start = source.add_point(a);
+                    let end = source.add_point(b);
+                    source.sketch.curves.push(Curve {
+                        id,
+                        construction: false,
+                        kind: CurveKind::Arc {
+                            center,
+                            start,
+                            end,
+                            clockwise,
+                        },
+                    });
+                }
+            }
+        }
+        source.validate()?;
+        Ok(source)
+    }
     pub fn create(
         datum: sketch::Datum,
         name: &str,

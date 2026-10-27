@@ -124,3 +124,32 @@ pub enum ConstraintKind {
         dimension: Dimension,
     },
 }
+impl ConstraintKind {
+    pub fn references(&self) -> Vec<EntityId> {
+        match self {
+            Self::Fix { point } => vec![*point],
+            Self::Horizontal { line } | Self::Vertical { line } | Self::Length { line, .. } => {
+                vec![*line]
+            }
+            Self::Radius { curve, .. } | Self::Diameter { curve, .. } => vec![*curve],
+            Self::Coincident { a, b }
+            | Self::Parallel { a, b }
+            | Self::Perpendicular { a, b }
+            | Self::Tangent { a, b }
+            | Self::Equal { a, b }
+            | Self::Distance { a, b, .. } => vec![*a, *b],
+            Self::Symmetric { a, b, about } => vec![*a, *b, *about],
+            Self::Angle { from, to, .. } => vec![*from, *to],
+        }
+    }
+    pub fn dimension_mut(&mut self) -> Option<&mut Dimension> {
+        match self {
+            Self::Distance { dimension, .. }
+            | Self::Length { dimension, .. }
+            | Self::Radius { dimension, .. }
+            | Self::Diameter { dimension, .. }
+            | Self::Angle { dimension, .. } => Some(dimension),
+            _ => None,
+        }
+    }
+}

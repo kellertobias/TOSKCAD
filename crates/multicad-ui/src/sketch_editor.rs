@@ -7,6 +7,7 @@ use crate::{
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
+    constraint_sketch::source::Source,
     document::{Document, EntityData, EntityId, Mutation},
     sketch::{self, Datum, Frame, Geometry, Sketch},
 };
@@ -57,6 +58,7 @@ pub struct SketchEditor {
     message: String,
     revision: u64,
     fit_requested: bool,
+    constraints: crate::sketch_constraints::ConstraintEditor,
 }
 impl Default for SketchEditor {
     fn default() -> Self {
@@ -84,6 +86,7 @@ impl Default for SketchEditor {
             message: "Choose New Sketch, or open a sketch from the document.".into(),
             revision: 0,
             fit_requested: false,
+            constraints: Default::default(),
         }
     }
 }
@@ -114,13 +117,17 @@ impl SketchEditor {
         };
     }
     pub fn toggle_transform(&mut self) {
+        if self.constraints.dirty() {
+            self.message = "Apply or discard constraint edits before transforming".into();
+            return;
+        }
         self.moving = !self.moving;
         self.cancel_move();
         self.tool = None;
         self.first = None;
     }
-    pub fn has_move_preview(&self) -> bool {
-        self.preview.is_some()
+    pub fn has_pending_edits(&self) -> bool {
+        self.preview.is_some() || self.constraints.dirty()
     }
     pub fn cancel(&mut self) {
         self.picking = false;
@@ -134,6 +141,11 @@ impl SketchEditor {
         self.drag = None;
     }
     pub fn begin(&mut self) {
+        if self.has_pending_edits() {
+            self.message =
+                "Apply or discard pending edits before choosing a new sketch plane".into();
+            return;
+        }
         self.cancel();
         self.editing = false;
         self.picking = true;
@@ -145,13 +157,16 @@ impl SketchEditor {
         datum: Datum,
         channel: Channel,
     ) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before creating a sketch".into());
+        }
         let count = session
             .document()
             .entities()
             .filter(|e| matches!(e.data, EntityData::Sketch { .. }))
             .count();
         let (id, edits) =
-            sketch::create(datum, &format!("Sketch {}", count + 1)).map_err(|e| e.to_string())?;
+            Source::create(datum, &format!("Sketch {}", count + 1)).map_err(|e| e.to_string())?;
         commit(session, "New datum sketch", edits, channel)?;
         self.open(session.document(), id)?;
         self.camera.orient(match datum {
@@ -165,6 +180,9 @@ impl SketchEditor {
         Ok(())
     }
     pub fn open(&mut self, doc: &Document, id: EntityId) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before opening a sketch".into());
+        }
         Sketch::read(doc, id).map_err(|e| e.to_string())?;
         self.cancel();
         self.selected = Some(id);
@@ -172,13 +190,20 @@ impl SketchEditor {
         self.element = None;
         Ok(())
     }
-    pub fn finish(&mut self) {
+    pub fn finish(&mut self) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending sketch edits before finishing".into());
+        }
         self.cancel();
         self.editing = false;
         self.moving = false;
         self.message = "Sketch saved in the document. Select it to inspect or reopen.".into();
+        Ok(())
     }
     pub fn set_tool(&mut self, tool: DrawTool) -> Result<(), String> {
+        if self.constraints.dirty() {
+            return Err("Apply or discard constraint edits before drawing".into());
+        }
         if !self.editing {
             return Err("Create or open a sketch first".into());
         }
@@ -200,35 +225,92 @@ impl SketchEditor {
         if !self.editing {
             return Err("Create or open a sketch first".into());
         }
+        if self.constraints.dirty() {
+            return Err("Apply or discard constraint edits before drawing".into());
+        }
         let id = self.selected.ok_or("Select a sketch")?;
-        let gid = EntityId::new();
-        let geometry = match tool {
-            DrawTool::Line => Geometry::Line { id: gid, a, b },
-            DrawTool::Rectangle => Geometry::Rectangle { id: gid, a, b },
+        let gid = if let Ok((mut source, _, _)) = Source::read(session.document(), id) {
+            let gid = match tool {
+                DrawTool::Line => {
+                    let start = source.add_point(a);
+                    let end = source.add_point(b);
+                    source.add_line(start, end)
+                }
+                DrawTool::Rectangle => source.add_rectangle(a, b).map_err(|e| e.to_string())?,
+            };
+            let edit = multicad_solver::prepare_edit(
+                session,
+                session.revision(),
+                Actor::local(channel),
+                id,
+                source,
+            )
+            .map_err(|e| e.to_string())?;
+            let preview = edit.preview.ok_or_else(|| {
+                format!("Sketch rejected: {:?}", edit.evaluation.diagnostics.state)
+            })?;
+            session.commit(preview).map_err(|e| e.to_string())?;
+            gid
+        } else {
+            let gid = EntityId::new();
+            let geometry = match tool {
+                DrawTool::Line => Geometry::Line { id: gid, a, b },
+                DrawTool::Rectangle => Geometry::Rectangle { id: gid, a, b },
+            };
+            let edits =
+                sketch::append(session.document(), id, geometry).map_err(|e| e.to_string())?;
+            commit(
+                session,
+                match tool {
+                    DrawTool::Line => "Draw line",
+                    DrawTool::Rectangle => "Draw rectangle",
+                },
+                edits,
+                channel,
+            )?;
+            gid
         };
-        let edits = sketch::append(session.document(), id, geometry).map_err(|e| e.to_string())?;
-        commit(
-            session,
-            match tool {
-                DrawTool::Line => "Draw line",
-                DrawTool::Rectangle => "Draw rectangle",
-            },
-            edits,
-            channel,
-        )?;
         self.first = None;
         self.element = Some(gid);
         self.message = "Geometry committed · Undo restores the previous sketch".into();
         Ok(())
     }
     pub fn delete(&mut self, session: &mut Session, channel: Channel) -> Result<(), String> {
+        if self.constraints.dirty() {
+            return Err("Apply or discard constraint edits before deleting geometry".into());
+        }
         let id = self.selected.ok_or("Select a sketch")?;
         let element = self
             .element
             .ok_or("Select a line or rectangle in the Inspector")?;
-        let edits =
-            sketch::remove_geometry(session.document(), id, element).map_err(|e| e.to_string())?;
-        commit(session, "Delete sketch geometry", edits, channel)?;
+        if let Ok((mut source, _, _)) = Source::read(session.document(), id) {
+            if !source.sketch.curves.iter().any(|c| c.id == element) {
+                return Err("Select a curve to delete".into());
+            }
+            source.sketch.curves.retain(|c| c.id != element);
+            source
+                .sketch
+                .constraints
+                .retain(|c| !c.kind.references().contains(&element));
+            let edit = multicad_solver::prepare_edit(
+                session,
+                session.revision(),
+                Actor::local(channel),
+                id,
+                source,
+            )
+            .map_err(|e| e.to_string())?;
+            session
+                .commit(
+                    edit.preview
+                        .ok_or("Deleting this curve did not produce a valid sketch")?,
+                )
+                .map_err(|e| e.to_string())?;
+        } else {
+            let edits = sketch::remove_geometry(session.document(), id, element)
+                .map_err(|e| e.to_string())?;
+            commit(session, "Delete sketch geometry", edits, channel)?;
+        }
         self.element = None;
         Ok(())
     }
@@ -298,6 +380,7 @@ impl SketchEditor {
                 if matches!(&e.data, EntityData::Sketch { definition, .. } if definition.type_id == sketch::TYPE || definition.type_id == multicad_core::constraint_sketch::source::TYPE) {
                     let response = ui.selectable_label(self.selected == Some(e.id), &e.name);
                     if response.clicked() {
+                        if self.selected!=Some(e.id) && self.has_pending_edits(){self.message="Apply or discard pending edits before switching sketches".into();continue;}
                         if self.selected != Some(e.id) { self.editing = false; self.tool = None; self.first = None; }
                         self.selected = Some(e.id);
                         self.element = None;
@@ -318,112 +401,132 @@ impl SketchEditor {
             .show(ui, |ui| {
                 ui.heading("Inspector");
                 ui.separator();
-                if let Some(id) = self.selected {
-                    match Sketch::read(session.document(), id) {
-                        Ok((source, frame, _)) => {
-                            ui.strong(&session.document().get(id).expect("read").name);
-                            ui.label(format!("{} elements · mm", source.geometry.len()));
-                            ui.small(format!(
-                                "Origin {:.2}, {:.2}, {:.2}",
-                                frame.origin[0], frame.origin[1], frame.origin[2]
-                            ));
-                            ui.separator();
-                            for g in &source.geometry {
-                                let label = match g {
-                                    Geometry::Line { a, b, .. } => {
-                                        format!("Line · {:.2} mm", (b[0] - a[0]).hypot(b[1] - a[1]))
-                                    }
-                                    Geometry::Rectangle { a, b, .. } => format!(
-                                        "Rectangle · {:.2} × {:.2}",
-                                        (b[0] - a[0]).abs(),
-                                        (b[1] - a[1]).abs()
-                                    ),
-                                    Geometry::Circle { radius_mm, .. } => {
-                                        format!("Circle · R {radius_mm:.2} mm")
-                                    }
-                                    Geometry::Arc { center, a, .. } => format!(
-                                        "Arc · R {:.2} mm",
-                                        (a[0] - center[0]).hypot(a[1] - center[1])
-                                    ),
-                                };
-                                if ui
-                                    .selectable_label(self.element == Some(g.id()), label)
-                                    .clicked()
-                                {
-                                    self.element = Some(g.id());
-                                    self.tool = None;
-                                    self.first = None;
-                                }
-                            }
-                            if self.editing
-                                && ui
-                                    .add_enabled(
-                                        self.element.is_some(),
-                                        egui::Button::new("Delete selected element"),
-                                    )
-                                    .clicked()
-                                && let Err(e) = self.delete(session, Channel::Ui)
-                            {
-                                self.message = e;
-                            }
-                            if self.moving {
-                                ui.separator();
-                                ui.strong("Move sketch");
-                                if matches!(self.coordinates, Coordinates::Custom(_)) {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Custom axis angle");
+                egui::ScrollArea::vertical()
+                    .id_salt("sketch-inspector-content")
+                    .show(ui, |ui| {
+                        if let Some(id) = self.selected {
+                            match Sketch::read(session.document(), id) {
+                                Ok((source, frame, _)) => {
+                                    ui.strong(&session.document().get(id).expect("read").name);
+                                    ui.label(format!("{} elements · mm", source.geometry.len()));
+                                    ui.small(format!(
+                                        "Origin {:.2}, {:.2}, {:.2}",
+                                        frame.origin[0], frame.origin[1], frame.origin[2]
+                                    ));
+                                    ui.separator();
+                                    for g in &source.geometry {
+                                        let label = match g {
+                                            Geometry::Line { a, b, .. } => {
+                                                format!(
+                                                    "Line · {:.2} mm",
+                                                    (b[0] - a[0]).hypot(b[1] - a[1])
+                                                )
+                                            }
+                                            Geometry::Rectangle { a, b, .. } => format!(
+                                                "Rectangle · {:.2} × {:.2}",
+                                                (b[0] - a[0]).abs(),
+                                                (b[1] - a[1]).abs()
+                                            ),
+                                            Geometry::Circle { radius_mm, .. } => {
+                                                format!("Circle · R {radius_mm:.2} mm")
+                                            }
+                                            Geometry::Arc { center, a, .. } => format!(
+                                                "Arc · R {:.2} mm",
+                                                (a[0] - center[0]).hypot(a[1] - center[1])
+                                            ),
+                                        };
                                         if ui
-                                            .add(
-                                                egui::DragValue::new(&mut self.custom_angle_deg)
-                                                    .suffix("°")
-                                                    .range(-360.0..=360.0),
-                                            )
-                                            .changed()
+                                            .selectable_label(self.element == Some(g.id()), label)
+                                            .clicked()
                                         {
-                                            self.cancel_move();
+                                            self.element = Some(g.id());
+                                            self.tool = None;
+                                            self.first = None;
                                         }
-                                    });
-                                }
-                                ui.label(format!("{} coordinates · mm", self.coordinates.label()));
-                                let mut changed = false;
-                                for (i, label) in
-                                    ["X / U", "Y / V", "Z / N"].into_iter().enumerate()
-                                {
-                                    ui.horizontal(|ui| {
-                                        ui.label(label);
-                                        changed |= ui
-                                            .add(
-                                                egui::DragValue::new(&mut self.delta[i]).speed(0.5),
+                                    }
+                                    if self.editing
+                                        && ui
+                                            .add_enabled(
+                                                self.element.is_some(),
+                                                egui::Button::new("Delete selected element"),
                                             )
-                                            .changed();
-                                    });
-                                }
-                                if changed && let Err(e) = self.prepare_move(session) {
-                                    self.preview = None;
-                                    self.message = e;
-                                }
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            self.preview.is_some(),
-                                            egui::Button::new("Apply move"),
-                                        )
-                                        .clicked()
-                                        && let Err(e) = self.apply_move(session)
+                                            .clicked()
+                                        && let Err(e) = self.delete(session, Channel::Ui)
                                     {
                                         self.message = e;
                                     }
-                                    if ui.button("Cancel move").clicked() {
-                                        self.cancel_move();
+                                    if self.editing && !self.moving {
+                                        self.constraints.show(ui, session, id, self.element);
+                                        if self.constraints.dirty() {
+                                            self.tool = None;
+                                            self.first = None;
+                                        }
                                     }
-                                });
+                                    if self.moving {
+                                        ui.separator();
+                                        ui.strong("Move sketch");
+                                        if matches!(self.coordinates, Coordinates::Custom(_)) {
+                                            ui.horizontal(|ui| {
+                                                ui.label("Custom axis angle");
+                                                if ui
+                                                    .add(
+                                                        egui::DragValue::new(
+                                                            &mut self.custom_angle_deg,
+                                                        )
+                                                        .suffix("°")
+                                                        .range(-360.0..=360.0),
+                                                    )
+                                                    .changed()
+                                                {
+                                                    self.cancel_move();
+                                                }
+                                            });
+                                        }
+                                        ui.label(format!(
+                                            "{} coordinates · mm",
+                                            self.coordinates.label()
+                                        ));
+                                        let mut changed = false;
+                                        for (i, label) in
+                                            ["X / U", "Y / V", "Z / N"].into_iter().enumerate()
+                                        {
+                                            ui.horizontal(|ui| {
+                                                ui.label(label);
+                                                changed |= ui
+                                                    .add(
+                                                        egui::DragValue::new(&mut self.delta[i])
+                                                            .speed(0.5),
+                                                    )
+                                                    .changed();
+                                            });
+                                        }
+                                        if changed && let Err(e) = self.prepare_move(session) {
+                                            self.preview = None;
+                                            self.message = e;
+                                        }
+                                        ui.horizontal(|ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    self.preview.is_some(),
+                                                    egui::Button::new("Apply move"),
+                                                )
+                                                .clicked()
+                                                && let Err(e) = self.apply_move(session)
+                                            {
+                                                self.message = e;
+                                            }
+                                            if ui.button("Cancel move").clicked() {
+                                                self.cancel_move();
+                                            }
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    ui.colored_label(Color32::LIGHT_RED, e.to_string());
+                                }
                             }
                         }
-                        Err(e) => {
-                            ui.colored_label(Color32::LIGHT_RED, e.to_string());
-                        }
-                    }
-                }
+                    });
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
@@ -540,13 +643,42 @@ impl SketchEditor {
             .preview
             .as_ref()
             .map(|p| p.document())
+            .or_else(|| self.constraints.preview_document())
             .unwrap_or(session.document());
         let mut points = vec![];
+        let affected = self.constraints.affected();
         for e in doc.entities() {
             if let Ok((source, frame, _)) = Sketch::read(doc, e.id) {
+                let constrained = Source::read(doc, e.id).ok();
+                let conflicted_curves: std::collections::BTreeSet<_> = constrained
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|(source, _, _)| source.sketch.curves.iter())
+                    .filter(|c| match c.kind {
+                        multicad_core::constraint_sketch::CurveKind::Line { start, end } => {
+                            affected.contains(&start) || affected.contains(&end)
+                        }
+                        multicad_core::constraint_sketch::CurveKind::Circle { center, .. } => {
+                            affected.contains(&center)
+                        }
+                        multicad_core::constraint_sketch::CurveKind::Arc {
+                            center,
+                            start,
+                            end,
+                            ..
+                        } => [center, start, end].iter().any(|id| affected.contains(id)),
+                    })
+                    .map(|c| c.id)
+                    .collect();
                 for g in &source.geometry {
                     let selected = self.selected == Some(e.id);
-                    let color = if selected && self.element == Some(g.id()) {
+                    let conflicted =
+                        affected.contains(&g.id()) || conflicted_curves.contains(&g.id());
+                    let color = if selected && conflicted {
+                        Color32::LIGHT_RED
+                    } else if selected
+                        && (self.element == Some(g.id()) || self.constraints.selected(g.id()))
+                    {
                         Color32::from_rgb(255, 195, 80)
                     } else if selected {
                         Color32::from_rgb(100, 225, 220)
@@ -563,6 +695,20 @@ impl SketchEditor {
                                 Stroke::new(if selected { 2. } else { 1. }, color),
                             );
                         }
+                    }
+                }
+                if self.selected == Some(e.id)
+                    && self.editing
+                    && let Some((source, _, _)) = constrained.as_ref()
+                {
+                    for point in &source.sketch.points {
+                        let p = project(frame.point(point.position_mm), &self.camera);
+                        let color = if self.constraints.selected(point.id) {
+                            Color32::YELLOW
+                        } else {
+                            Color32::from_rgb(95, 175, 200)
+                        };
+                        painter.circle_filled(p, 2.5, color);
                     }
                 }
             }
@@ -686,6 +832,10 @@ impl SketchEditor {
                     self.camera.fit(&points, rect);
                 }
             });
+        if self.constraints.dirty() && moving {
+            moving = false;
+            self.message = "Apply or discard constraint edits before transforming".into();
+        }
         if self.coordinates != coordinates || self.moving != moving {
             self.cancel_move();
             self.tool = None;
@@ -797,6 +947,54 @@ mod tests {
         }
     }
     #[test]
+    fn pending_constraint_draft_blocks_drawing_switching_finishing_and_transform() {
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        let id = editor.selected.unwrap();
+        editor
+            .add(
+                &mut session,
+                DrawTool::Rectangle,
+                [0., 0.],
+                [80., 60.],
+                Channel::Ui,
+            )
+            .unwrap();
+        let (mut source, _, _) = Source::read(session.document(), id).unwrap();
+        let edge = source.sketch.curves[0].id;
+        source.add_constraint(multicad_core::constraint_sketch::ConstraintKind::Length {
+            line: edge,
+            dimension: multicad_core::constraint_sketch::Dimension {
+                value: 90.,
+                unit: "mm".into(),
+            },
+        });
+        editor.constraints.prepare(&session, id, source);
+        let before = session.document().clone();
+        assert!(editor.has_pending_edits());
+        assert!(
+            editor
+                .add(
+                    &mut session,
+                    DrawTool::Line,
+                    [0., 0.],
+                    [10., 0.],
+                    Channel::Ui
+                )
+                .is_err()
+        );
+        assert!(editor.finish().is_err());
+        assert!(editor.create(&mut session, Datum::Xy, Channel::Ui).is_err());
+        assert!(editor.open(session.document(), id).is_err());
+        editor.toggle_transform();
+        assert!(!editor.moving);
+        assert_eq!(session.document(), &before);
+        editor.constraints.discard();
+        editor.finish().unwrap();
+        assert!(!editor.editing);
+    }
+    #[test]
     fn cancel_is_source_neutral_and_move_preview_is_one_undoable_transaction() {
         let mut s = session();
         let mut editor = SketchEditor::default();
@@ -879,7 +1077,10 @@ mod tests {
             }
         }
         let (source, _, _) = Sketch::read(s.document(), id).unwrap();
-        assert_eq!(source.geometry.len(), 1);
+        assert_eq!(source.geometry.len(), 4);
+        let (constrained, _, _) = Source::read(s.document(), id).unwrap();
+        assert_eq!(constrained.sketch.points.len(), 4);
+        assert_eq!(constrained.sketch.constraints.len(), 4);
         assert_eq!(source.geometry[0].segments()[0], [[20., 20.], [80., 20.]]);
         assert_eq!(s.revision(), 2);
     }
