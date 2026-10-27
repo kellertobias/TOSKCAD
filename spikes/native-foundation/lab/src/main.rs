@@ -1,4 +1,6 @@
+pub use multicad_ui::{camera, icons, navigation};
 mod geometry;
+mod raster;
 mod session;
 mod solver;
 mod ui;

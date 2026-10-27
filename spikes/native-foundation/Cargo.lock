@@ -1753,12 +1753,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "multicad-core"
+version = "0.1.0-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "multicad-foundation-lab"
 version = "0.1.0"
 dependencies = [
  "eframe",
  "egui_dock",
  "multicad-kernel-proof",
+ "multicad-ui",
  "serde",
  "serde_json",
  "sketch-solver",
@@ -1772,6 +1782,14 @@ dependencies = [
  "cmake",
  "cxx",
  "cxx-build",
+]
+
+[[package]]
+name = "multicad-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "eframe",
+ "multicad-core",
 ]
 
 [[package]]
@@ -3122,6 +3140,7 @@ version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

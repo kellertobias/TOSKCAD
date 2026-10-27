@@ -13,6 +13,11 @@ pub struct Document {
     pub version: u32,
     pub name: String,
     pub definition: Definition,
+    #[serde(default = "sample_enabled")]
+    pub sample_geometry: bool,
+}
+fn sample_enabled() -> bool {
+    true
 }
 impl Default for Document {
     fn default() -> Self {
@@ -21,6 +26,7 @@ impl Default for Document {
             version: 1,
             name: "Shared sketch proof".into(),
             definition: Definition::default(),
+            sample_geometry: true,
         }
     }
 }
