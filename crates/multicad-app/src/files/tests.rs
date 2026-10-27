@@ -137,10 +137,11 @@ fn failed_and_conflicting_saves_preserve_the_last_valid_project() {
         .is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    assert!(matches!(
-        store.save_project(&path, &project, SaveMode::Create),
-        Err(StorageError::AlreadyExists(_))
-    ));
+    let conflict = store.save_project(&path, &project, SaveMode::Create);
+    assert!(
+        matches!(conflict, Err(StorageError::AlreadyExists(_))),
+        "Unexpected create conflict result: {conflict:?}"
+    );
     let latest = store
         .save_project(&path, &project, SaveMode::Replace(original.stamp))
         .unwrap();

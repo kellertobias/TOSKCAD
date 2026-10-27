@@ -38,6 +38,7 @@
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <array>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 
@@ -175,8 +176,13 @@ Mesh tessellate(const Shape &s, double tolerance, double angle, uint32_t limit) 
     return out;
   });
 }
+// STEP reader/writer initialization and shape-fix parameters use shared OCCT
+// translator state. Acquire before constructing either translator and retain
+// through destruction; unrelated geometry and owned handles remain independent.
+static std::mutex step_exchange_mutex;
 void write_step(const Shape &s, rust::Str path) {
   guard([&] {
+    const std::lock_guard<std::mutex> exchange_lock(step_exchange_mutex);
     STEPControl_Writer writer;
     writer.Model()->SetLocalLengthUnit(1.0);
     writer.Model()->SetWriteLengthUnit(1.0);
@@ -187,6 +193,7 @@ void write_step(const Shape &s, rust::Str path) {
 }
 std::unique_ptr<Shape> read_step(rust::Str path) {
   return guard([&] {
+    const std::lock_guard<std::mutex> exchange_lock(step_exchange_mutex);
     STEPControl_Reader reader;
     if (reader.ReadFile(std::string(path).c_str()) != IFSelect_RetDone)
       throw std::runtime_error("STEP read failed");
