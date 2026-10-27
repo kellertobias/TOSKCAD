@@ -24,6 +24,9 @@ struct Review {
     intervals: Vec<f64>,
     cpu: Vec<f64>,
     picks: Vec<f64>,
+    input_feedback: Vec<f64>,
+    click_feedback: Vec<f64>,
+    feedback_deadline: Option<f64>,
 }
 fn p95(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
@@ -36,6 +39,34 @@ fn p95(values: &[f64]) -> Option<f64> {
 impl NativeApplication for Review {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut NativeFrame) {
         let start = Instant::now();
+        let (pointer_input, click_input) = ui.input(|i| {
+            let inside = self
+                .app
+                .current()
+                .sketch
+                .viewport_rect
+                .is_some_and(|r| i.pointer.latest_pos().is_some_and(|p| r.contains(p)));
+            (
+                inside
+                    && i.events.iter().any(|e| {
+                        matches!(
+                            e,
+                            egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }
+                        )
+                    }),
+                inside
+                    && i.events.iter().any(|e| {
+                        matches!(
+                            e,
+                            egui::Event::PointerButton {
+                                button: egui::PointerButton::Primary,
+                                pressed: true,
+                                ..
+                            }
+                        )
+                    }),
+            )
+        });
         let ready = {
             let p = self.app.current();
             p.scene
@@ -59,6 +90,53 @@ impl NativeApplication for Review {
             ui.ctx().request_repaint();
         }
         self.app.ui(ui, frame);
+        // This measures the real received-event path through picking and queued
+        // UI painting. It intentionally excludes the OS queue, GPU and compositor.
+        if ready && self.frames >= 240 && pointer_input && self.input_feedback.len() < 4096 {
+            let elapsed = start.elapsed().as_secs_f64() * 1000.;
+            self.input_feedback.push(elapsed);
+            if click_input {
+                self.click_feedback.push(elapsed);
+            }
+            self.feedback_deadline = Some(ui.input(|i| i.time) + 0.3);
+        }
+        if let Some(deadline) = self.feedback_deadline {
+            let now = ui.input(|i| i.time);
+            if now >= deadline {
+                let p = self.app.current();
+                let scene = p.scene.visible();
+                let path = self.report.with_file_name(if self.mixed {
+                    "mixed-100-input-feedback.json"
+                } else {
+                    "instances-1000-input-feedback.json"
+                });
+                let report = serde_json::json!({
+                    "pid":std::process::id(),
+                    "pointer_event_frames":self.input_feedback.len(),
+                    "primary_press_frames":self.click_feedback.len(),
+                    "p95_received_pointer_to_ui_paint_queue_ms":p95(&self.input_feedback),
+                    "p95_received_primary_press_to_ui_paint_queue_ms":p95(&self.click_feedback),
+                    "source_revision":p.session.revision(),
+                    "display_generation":scene.map(|s|s.stamp().generation),
+                    "display_triangles":scene.map(|s|s.geometries().values().map(|g|g.indices().len()/3).sum::<usize>()),
+                    "selected_solid":p.sketch.selected_solid(),
+                    "refining_display":p.scene.refining(),
+                    "scope":"Actual received egui pointer event through application UI and queued highlight painting. Excludes OS input transport, GPU execution and compositor. Reports are written after 300 ms without a new measured event, outside the timed path.",
+                });
+                if let Err(error) = std::fs::write(
+                    path,
+                    serde_json::to_vec_pretty(&report).expect("feedback JSON"),
+                ) {
+                    eprintln!("Input feedback report: {error}");
+                }
+                self.feedback_deadline = None;
+            } else {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(
+                        (deadline - now).clamp(0., 0.3),
+                    ));
+            }
+        }
         if ready && self.frames < 240 {
             self.cpu.push(start.elapsed().as_secs_f64() * 1000.);
             let p = self.app.current();
@@ -121,6 +199,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             intervals: vec![],
             cpu: vec![],
             picks: vec![],
+            input_feedback: vec![],
+            click_feedback: vec![],
+            feedback_deadline: None,
         }))
     }))?;
     Ok(())

@@ -111,6 +111,9 @@ fn commit(
         .map_err(|e| e.to_string())
 }
 impl SketchEditor {
+    pub fn selected_solid(&self) -> Option<EntityId> {
+        self.solid.selected_id()
+    }
     pub fn set_display_style(&mut self, style: DisplayStyle) {
         self.style = style;
     }
@@ -1261,6 +1264,85 @@ mod tests {
         assert_eq!(session.revision(), 2);
         let origin = Sketch::read(session.document(), id).unwrap().1.origin;
         assert_eq!(origin, [10., 0., 0.]);
+    }
+    #[test]
+    fn sketch_draft_is_queued_above_real_solid_rendering_without_source_edits() {
+        use crate::viewport::{self, Instance, Scene, SceneStamp, Transform};
+        use multicad_kernel::{MeshOptions, Solid};
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.set_tool(DrawTool::Rectangle).unwrap();
+        editor.snap = false;
+        let id = EntityId::new();
+        let solid = Solid::box_named([100., 60., 18.], id, Default::default()).unwrap();
+        let mesh = solid.mesh(MeshOptions::default()).unwrap();
+        let geometry = Arc::new(
+            viewport::Geometry::new(
+                id,
+                mesh.vertices.as_chunks::<3>().0.to_vec(),
+                mesh.indices,
+                mesh.face_indices,
+                solid
+                    .topology_snapshot(id, session.revision())
+                    .unwrap()
+                    .elements,
+            )
+            .unwrap(),
+        );
+        let scene = Arc::new(
+            Scene::new(
+                SceneStamp {
+                    document: session.document().id(),
+                    revision: session.revision(),
+                    generation: 1,
+                },
+                vec![geometry],
+                vec![Instance {
+                    id: EntityId::new(),
+                    geometry: id,
+                    transform: Transform::default(),
+                    color: [140, 160, 180, 255],
+                }],
+            )
+            .unwrap(),
+        );
+        let before = session.document().clone();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000., 700.));
+        let a = editor.camera.project([20., 20., 0.], rect);
+        let b = editor.camera.project([80., 60., 0.], rect);
+        let mut frame = |events| {
+            ctx.run_ui(input(events), |ui| {
+                editor.canvas(ui, &mut session, true, Some(scene.clone()), true)
+            })
+        };
+        frame(vec![]).drop_without_applying_deltas();
+        let p = Pos2::new(a[0], a[1]);
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ])
+            .drop_without_applying_deltas();
+        }
+        let output = frame(vec![egui::Event::PointerMoved(Pos2::new(b[0], b[1]))]);
+        let callback = output
+            .shapes
+            .iter()
+            .position(|s| matches!(s.shape, egui::Shape::Callback(_)))
+            .expect("Solid render callback missing");
+        let preview=output.shapes.iter().position(|s|matches!(s.shape,egui::Shape::LineSegment{stroke,..} if stroke.color==Color32::LIGHT_YELLOW)).expect("Sketch draft missing");
+        assert!(preview > callback, "Draft was painted below the model");
+        output.drop_without_applying_deltas();
+        assert_eq!(session.document(), &before);
+        assert!(editor.first.is_some());
     }
     #[test]
     fn middle_mouse_drag_still_pans_the_view_without_editing_source() {
