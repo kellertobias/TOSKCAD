@@ -786,10 +786,32 @@ pub fn translate(
     id: EntityId,
     world_delta: [f64; 3],
 ) -> Result<Vec<Mutation>, DocumentError> {
+    translate_with_report(document, id, 0, None, world_delta)
+}
+pub fn translate_with_report(
+    document: &Document,
+    id: EntityId,
+    revision: u64,
+    report: Option<&ReferenceReport>,
+    world_delta: [f64; 3],
+) -> Result<Vec<Mutation>, DocumentError> {
     if world_delta.iter().any(|v| !v.is_finite() || v.abs() > 1e9) {
         return Err(invalid("Translation must be finite and within ±1,000 km"));
     }
-    let (_, frame, plane) = Sketch::read(document, id)?;
+    let constrained=document.get(id).is_some_and(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==crate::constraint_sketch::source::TYPE));
+    let (frame, plane) = if constrained {
+        let (_, frame, plane) = crate::constraint_sketch::source::Source::read_for_evaluation(
+            document, id, revision, report,
+        )?;
+        (frame, plane)
+    } else {
+        let (_, frame, plane) = if let Some(report) = report {
+            Sketch::read_evaluated(document, id, revision, report)
+        } else {
+            Sketch::read(document, id)
+        }?;
+        (frame, plane)
+    };
     let mut moved = document
         .get(plane)
         .ok_or_else(|| invalid("Plane is missing"))?
@@ -812,9 +834,13 @@ pub fn translate(
     // absolute plane must convert that descriptor to its evaluated world basis.
     if let EntityData::Sketch { definition, .. } = &mut owner.data {
         if definition.type_id == crate::constraint_sketch::source::TYPE {
-            let (mut source, _, _) = crate::constraint_sketch::source::Source::read(document, id)?;
+            let (mut source, _, _) = crate::constraint_sketch::source::Source::read_for_evaluation(
+                document, id, revision, report,
+            )?;
             source.u = frame.u;
+            let version = definition.schema_version;
             *definition = source.definition()?;
+            definition.schema_version = definition.schema_version.max(version);
         } else {
             let (mut source, _, _) = Sketch::read(document, id)?;
             source.u = frame.u;

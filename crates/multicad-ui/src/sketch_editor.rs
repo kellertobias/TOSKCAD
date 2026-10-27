@@ -706,7 +706,14 @@ impl SketchEditor {
                 sketch::dot(pose.vector(basis), world_delta)
             })
         });
-        let edits = sketch::translate(session.document(), id, delta).map_err(|e| e.to_string())?;
+        let edits = sketch::translate_with_report(
+            session.document(),
+            id,
+            session.revision(),
+            self.evaluated.as_ref(),
+            delta,
+        )
+        .map_err(|e| e.to_string())?;
         self.preview = Some(
             session
                 .prepare(Request {
@@ -1102,16 +1109,25 @@ impl SketchEditor {
                 )
             })?
             .to_vec();
+            let frame = if self
+                .preview
+                .as_ref()
+                .is_some_and(|preview| std::ptr::eq(preview.document(), doc))
+            {
+                self.read_source(doc, id, revision)?.1
+            } else {
+                evaluated.frame
+            };
             return Ok((
                 Sketch {
                     u: evaluated.canonical().u,
                     geometry,
                 },
-                self.display_frame(id, evaluated.frame),
+                self.display_frame(id, frame),
                 evaluated.plane,
             ));
         }
-        if doc.get(id).is_some_and(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==multicad_core::constraint_sketch::source::TYPE)) {
+        if doc.get(id).is_some_and(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==multicad_core::constraint_sketch::source::TYPE)) && !self.checked_literal_preview(doc,id) {
             return Err(multicad_core::document::DocumentError::Invalid("Waiting for a current valid sketch solution".into()));
         }
         let (source, frame, plane) = if let Some(report) = &self.evaluated {
@@ -1132,6 +1148,14 @@ impl SketchEditor {
         } else {
             frame
         }
+    }
+    fn checked_literal_preview(&self, doc: &Document, id: EntityId) -> bool {
+        self.constraints.preview_sketch() == Some(id)
+            && self.constraints.semantic_preview().is_none()
+            && self
+                .constraints
+                .preview_document()
+                .is_some_and(|preview| std::ptr::eq(preview, doc))
     }
     fn semantic_geometry(
         &self,
@@ -1182,7 +1206,7 @@ impl SketchEditor {
                     )
                 });
         }
-        if doc.get(id).is_some_and(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==multicad_core::constraint_sketch::source::TYPE)) {
+        if doc.get(id).is_some_and(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==multicad_core::constraint_sketch::source::TYPE)) && !self.checked_literal_preview(doc,id) {
             return Err(multicad_core::document::DocumentError::Invalid("Waiting for a current valid sketch solution".into()));
         }
         self.read_source(doc, id, revision)
@@ -1898,6 +1922,22 @@ mod tests {
         assert!(
             matches!(sketch.geometry[0],Geometry::Circle{radius_mm,..} if (radius_mm-8.).abs()<1e-8)
         );
+        editor.delta = [5., 6., 7.];
+        editor.prepare_move(&session).unwrap();
+        let (_, frame, _) = editor
+            .read_sketch(
+                editor.preview.as_ref().unwrap().document(),
+                id,
+                session.revision(),
+            )
+            .unwrap();
+        assert_eq!(
+            frame.origin,
+            [5., 6., 7.],
+            "Move preview retained the canonical plane pose"
+        );
+        assert_eq!(session.document().get(id).unwrap(), &canonical);
+        editor.cancel_move();
         let mut changed = session.document().get(parameter).unwrap().clone();
         let EntityData::Parameter { expression, .. } = &mut changed.data else {
             panic!("parameter")
@@ -2685,6 +2725,25 @@ mod tests {
             },
         });
         editor.constraints.prepare(&session, id, source);
+        assert!(
+            editor
+                .read_sketch(
+                    editor.constraints.preview_document().unwrap(),
+                    id,
+                    session.revision()
+                )
+                .is_ok(),
+            "A checked literal preview disappeared while its canonical revision remained unchanged"
+        );
+        assert!(
+            editor
+                .read_solved_source(
+                    editor.constraints.preview_document().unwrap(),
+                    id,
+                    session.revision()
+                )
+                .is_ok()
+        );
         let before = session.document().clone();
         assert!(editor.has_pending_edits());
         assert!(

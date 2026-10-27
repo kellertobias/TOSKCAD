@@ -227,6 +227,8 @@ impl ConstraintEditor {
         if self.evaluation != evaluation {
             self.result = None;
             self.error = None;
+            self.current = None;
+            self.preview_geometry = None;
         }
         self.evaluation = evaluation;
     }
@@ -238,6 +240,13 @@ impl ConstraintEditor {
         (Source, multicad_core::sketch::Frame, EntityId),
         multicad_core::document::DocumentError,
     > {
+        if let Some(current) = self.current.as_ref().filter(|current| {
+            current.sketch == id
+                && current.stamp.document == session.document().id()
+                && current.stamp.revision == session.revision()
+        }) {
+            return Ok((current.canonical().clone(), current.frame, current.plane));
+        }
         Source::read_for_evaluation(
             session.document(),
             id,
@@ -358,6 +367,9 @@ impl ConstraintEditor {
         } else {
             None
         }
+    }
+    pub fn preview_sketch(&self) -> Option<EntityId> {
+        self.preview_document().and(self.owner)
     }
     pub fn semantic_preview(&self) -> Option<&EvaluatedSketch> {
         self.result
