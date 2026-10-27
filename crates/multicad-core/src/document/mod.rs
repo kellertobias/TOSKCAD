@@ -2,6 +2,7 @@
 //! project container (migrations/recovery/kernel payloads belong to CAD-56).
 mod graph;
 mod model;
+use crate::hierarchy::Hierarchy;
 pub use graph::*;
 pub use model::*;
 use serde::{Deserialize, Serialize, de};
@@ -15,6 +16,8 @@ pub struct Document {
     id: EntityId,
     name: String,
     entities: BTreeMap<EntityId, Entity>,
+    #[serde(default, skip_serializing_if = "Hierarchy::is_empty")]
+    hierarchy: Hierarchy,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +27,8 @@ struct WireDocument {
     name: String,
     #[serde(deserialize_with = "unique_entities")]
     entities: BTreeMap<EntityId, Entity>,
+    #[serde(default)]
+    hierarchy: Hierarchy,
 }
 fn unique_entities<'de, D: de::Deserializer<'de>>(
     deserializer: D,
@@ -54,6 +59,7 @@ impl<'de> Deserialize<'de> for Document {
             id: wire.id,
             name: wire.name,
             entities: wire.entities,
+            hierarchy: wire.hierarchy,
         };
         value.validate().map_err(de::Error::custom)?;
         Ok(value)
@@ -91,6 +97,7 @@ impl Document {
             id: EntityId::new(),
             name: name.into(),
             entities: BTreeMap::new(),
+            hierarchy: Hierarchy::default(),
         };
         doc.validate()?;
         Ok(doc)
@@ -103,6 +110,9 @@ impl Document {
     }
     pub fn get(&self, id: EntityId) -> Option<&Entity> {
         self.entities.get(&id)
+    }
+    pub fn hierarchy(&self) -> &Hierarchy {
+        &self.hierarchy
     }
     pub fn entities(&self) -> impl Iterator<Item = &Entity> {
         self.entities.values()
@@ -170,6 +180,8 @@ impl Document {
                 .map_err(|message| DocumentError::Invalid(format!("Entity {id}: {message}")))?;
         }
         self.topological_order()?;
+        crate::hierarchy::validate(self)
+            .map_err(|error| DocumentError::Invalid(error.to_string()))?;
         crate::sketch::validate(self)?;
         crate::constraint_sketch::source::validate(self)?;
         Ok(())
@@ -198,6 +210,7 @@ pub enum Mutation {
     Replace(Entity),
     Remove(EntityId),
     RenameDocument(String),
+    SetHierarchy(Hierarchy),
 }
 impl Document {
     pub fn edited(&self, edits: &[Mutation]) -> Result<Self, DocumentError> {
@@ -222,6 +235,7 @@ impl Document {
                     }
                 }
                 Mutation::RenameDocument(name) => candidate.name = name.clone(),
+                Mutation::SetHierarchy(hierarchy) => candidate.hierarchy = hierarchy.clone(),
             }
         }
         candidate.validate()?;

@@ -105,6 +105,7 @@ pub enum EntityKind {
     Feature,
     Part,
     Assembly,
+    Group,
     Instance,
     Material,
     Drawing,
@@ -144,6 +145,7 @@ pub enum EntityData {
     Assembly {
         instances: Vec<EntityId>,
     },
+    Group {},
     Instance {
         component: EntityId,
         placement: Placement,
@@ -175,6 +177,7 @@ impl EntityData {
             Self::Feature { .. } => EntityKind::Feature,
             Self::Part { .. } => EntityKind::Part,
             Self::Assembly { .. } => EntityKind::Assembly,
+            Self::Group {} => EntityKind::Group,
             Self::Instance { .. } => EntityKind::Instance,
             Self::Material { .. } => EntityKind::Material,
             Self::Drawing { .. } => EntityKind::Drawing,
@@ -226,7 +229,7 @@ impl EntityData {
                 Link::new(*component, "component"),
                 vec![EntityKind::Part, EntityKind::Assembly],
             )],
-            Self::Material { .. } => Vec::new(),
+            Self::Material { .. } | Self::Group {} => Vec::new(),
         }
     }
     fn validate(&self) -> Result<(), String> {
@@ -260,6 +263,7 @@ impl EntityData {
                     return Err("Duplicate part features or empty tag".into());
                 }
             }
+            Self::Group {} => {}
             Self::Assembly { instances } => {
                 if instances.iter().collect::<BTreeSet<_>>().len() != instances.len() {
                     return Err("Duplicate assembly instance identity".into());

@@ -149,9 +149,10 @@ fn difference(before: &Document, after: &Document, revision: u64) -> Result<Chan
         .chain(after.entities())
         .map(|e| e.id)
         .collect();
+    let hierarchy_changed = crate::hierarchy::changed_entries(before, after);
     let changed: Vec<_> = ids
         .into_iter()
-        .filter(|id| before.get(*id) != after.get(*id))
+        .filter(|id| before.get(*id) != after.get(*id) || hierarchy_changed.contains(id))
         .collect();
     let mut invalidated: BTreeSet<_> = changed.iter().copied().collect();
     invalidated.extend(before.affected(changed.iter().copied())?);
@@ -243,6 +244,12 @@ impl Session {
             Ok(())
         }
     }
+    pub fn prepare_scoped(&self, mut request: Request) -> Result<Prepared, CommandError> {
+        self.check_revision(request.expected_revision)?;
+        crate::hierarchy::scope_insertions(self.document(), &mut request.edits)
+            .map_err(|error| CommandError::new(ErrorCode::InvalidRequest, error.to_string()))?;
+        self.prepare(request)
+    }
     pub fn prepare(&self, request: Request) -> Result<Prepared, CommandError> {
         self.check_revision(request.expected_revision)?;
         if request.actor.id.trim().is_empty()
@@ -262,7 +269,7 @@ impl Session {
             .filter_map(|m| match m {
                 Mutation::Insert(e) | Mutation::Replace(e) => Some(e.id),
                 Mutation::Remove(id) => Some(*id),
-                Mutation::RenameDocument(_) => None,
+                Mutation::RenameDocument(_) | Mutation::SetHierarchy(_) => None,
             })
             .collect();
         let candidate = self.document().edited(&request.edits).map_err(|error| {

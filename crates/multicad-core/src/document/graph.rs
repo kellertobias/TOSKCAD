@@ -126,6 +126,11 @@ impl Document {
                 reverse.entry(link.target).or_default().insert(e.id);
             }
         }
+        for (container, members) in crate::hierarchy::invalidation_edges(self) {
+            for member in members {
+                reverse.entry(member).or_default().insert(container);
+            }
+        }
         let mut affected: BTreeSet<_> = sources.into_iter().collect();
         let mut pending = affected.clone();
         while let Some(id) = pending.pop_first() {
