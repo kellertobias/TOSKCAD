@@ -7,6 +7,7 @@ pub mod commands;
 pub mod constraint_sketch;
 pub mod document;
 pub mod parameters;
+pub mod project_file;
 pub mod references;
 pub mod sketch;
 
