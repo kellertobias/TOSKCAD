@@ -1,5 +1,6 @@
 //! Native application composition over canonical sessions and declarative tools.
 pub use crate::storage::DocumentStorage;
+mod closing;
 mod files;
 use crate::storage::{FileStamp, FileWorker};
 use crate::{
@@ -1157,20 +1158,7 @@ impl Application {
                 egui::ScrollArea::vertical().max_height(460.).show(ui,|ui|{egui::Grid::new("shortcut-list").striped(true).show(ui,|ui|{ui.strong("Key");ui.strong("Context");ui.strong("Action");ui.end_row();for binding in self.shortcuts.bindings(){ui.monospace(binding.chord.label());ui.label(binding.scope.label());ui.label(binding.label);ui.end_row();}});});
             });
         }
-        if self.close_confirm {
-            egui::Window::new("Unsaved documents")
-                .collapsible(false)
-                .show(&ctx, |ui| {
-                    ui.label(if self.pending_files.is_empty() {"Save or apply/discard pending edits before closing."} else {"A file operation is still running. Keep this window open until it completes."});
-                    if ui.button("Cancel").clicked() {
-                        self.close_confirm = false;
-                    }
-                    if ui.button("Save current document").clicked() {
-                        self.close_confirm = false;
-                        self.execute(Command::Save, &[], Channel::Ui);
-                    }
-                });
-        }
+        self.show_close_dialog(&ctx);
         self.text_input_was_focused = ctx.text_edit_focused();
     }
 }
