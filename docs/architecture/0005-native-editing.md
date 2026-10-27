@@ -115,3 +115,41 @@ The audited [native window adapter](../../crates/multicad-ui/src/native_window.r
 borrows the live frame's AppKit handle and positions the standard macOS buttons.
 Its Objective-C++ implementation stays on the main thread and retains no window
 pointer. Other platforms do not compile or invoke that adapter.
+
+## Scoped keyboard interaction
+
+[`shortcuts`](../../crates/multicad-ui/src/shortcuts.rs) owns declarative bindings,
+collision validation and input dispatch. Workspace bindings override sketch-editing,
+mode, viewport and global bindings, in that order. Equal-scope collisions are rejected.
+Command shortcuts use the same enabled-state checks and transactions as ribbon tools;
+unavailable modeling modules remain disabled. Tooltips reflect active bindings.
+
+| Keys | Context | Action |
+| --- | --- | --- |
+| W, A, S, D | Viewport, outside text entry | Pan up, left, down, right |
+| Tab / Shift+Tab | Outside text entry and dialogs | Next / previous ribbon workspace, wrapping |
+| E / Q / R | Parameters, outside text entry | Apply and rebuild / discard / preview |
+| Cmd/Ctrl+Enter | Parameters, including text entry | Apply and rebuild |
+| Q | Sketch entry / editing | New sketch / finish sketch |
+| E / R | Sketch editing | Line / rectangle |
+| Delete | Sketch editing | Delete selected geometry |
+| E / R | Model | Extrude / revolve when their modules are available |
+| F / Shift+F | Viewport | Fit / home view |
+| V / X / Escape | Viewport | Projection / transform gizmo / cancel interaction |
+| Cmd/Ctrl+F | Application | Focus tool finder |
+| Backtick | Outside text entry | Focus command input |
+| Cmd/Ctrl+S / N / O | Application | Save / new document / open |
+| Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z | Outside text entry | Document undo / redo |
+| F1 | Outside text entry | Shortcut list |
+
+Text fields retain plain typing, local Undo and Tab navigation. Dialogs and menus
+block application tool dispatch. WASD movement starts from an eligible unmodified
+press, stops on text entry or loss of focus, and never starts from a Save shortcut.
+Held navigation uses elapsed frame time, normalizes diagonals and caps long-frame
+movement. Discrete tool actions ignore key repeats. Middle-mouse pan remains active.
+
+The shortcut list is available from File and the command input. Modules can register
+scoped bindings through the map API; a preferences editor and persistent custom
+bindings remain future work. Ribbon tiles retain their fixed width, provide room
+for two-line labels and have a separate bottom inset. The finder centers its text
+and includes an original vector hammer icon.
