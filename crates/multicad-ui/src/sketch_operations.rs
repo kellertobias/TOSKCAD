@@ -8,7 +8,7 @@ use multicad_core::{
     document::EntityId,
     sketch_pattern::{MAX_PATTERN_INSTANCES, Pattern, PatternOptions, PatternRequest},
     sketch_transform::{Transform, TransformOptions, TransformRequest},
-    sketch_trim::{Endpoint, ExtendLine, TrimLine, TrimPolicy, TrimRequest},
+    sketch_trim::{Endpoint, ExtendLine, TrimCurve, TrimPolicy, TrimRequest},
 };
 use std::collections::BTreeSet;
 
@@ -83,7 +83,7 @@ impl OperationTool {
             self.label()
         )
     }
-    fn line_operation(self) -> bool {
+    fn curve_operation(self) -> bool {
         matches!(self, Self::Trim | Self::Extend)
     }
 }
@@ -151,22 +151,21 @@ impl Panel {
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
-    fn seed_line_selection(&mut self, source: &Source, selected: &[EntityId]) {
+    fn seed_target_selection(&mut self, source: &Source, selected: &[EntityId]) {
         if self.selection_seeded {
             return;
         }
         self.selection_seeded = true;
-        let lines: Vec<_> = source
+        let tool = self.tool.unwrap_or(OperationTool::Trim);
+        let targets: Vec<_> = source
             .sketch
             .curves
             .iter()
-            .filter(|curve| {
-                selected.contains(&curve.id) && matches!(curve.kind, CurveKind::Line { .. })
-            })
+            .filter(|curve| selected.contains(&curve.id) && target_supported(tool, &curve.kind))
             .map(|curve| curve.id)
             .collect();
-        if lines.len() == 1 {
-            self.target = Some(lines[0]);
+        if targets.len() == 1 {
+            self.target = Some(targets[0]);
         }
         self.boundaries.extend(
             source
@@ -183,8 +182,8 @@ impl Panel {
         selected: &[EntityId],
     ) -> Result<OperationRequest, String> {
         let tool = self.tool.ok_or("Choose a sketch edit tool")?;
-        if tool.line_operation() {
-            return self.line_request(source, tool);
+        if tool.curve_operation() {
+            return self.curve_request(source, tool);
         }
         let selection: BTreeSet<_> = selected.iter().copied().collect();
         if selection.is_empty() {
@@ -261,26 +260,29 @@ impl Panel {
             },
         }))
     }
-    fn line_request(
+    fn curve_request(
         &self,
         source: &Source,
         tool: OperationTool,
     ) -> Result<OperationRequest, String> {
-        let target = self.target.ok_or("Choose the line to trim or extend")?;
+        let target = self.target.ok_or("Choose the curve to trim or extend")?;
         let curve = source
             .sketch
             .curves
             .iter()
             .find(|curve| curve.id == target)
-            .ok_or("The target line no longer exists")?;
-        if !matches!(curve.kind, CurveKind::Line { .. }) {
-            return Err("Trim and extend currently target lines; spline, arc and circle targets are unavailable".into());
+            .ok_or("The target curve no longer exists")?;
+        if matches!(curve.kind, CurveKind::BSpline { .. }) {
+            return Err("Spline targets are not supported by trim or extend yet".into());
+        }
+        if tool == OperationTool::Extend && matches!(curve.kind, CurveKind::Circle { .. }) {
+            return Err("A closed circle has no endpoint to extend; choose a line or arc".into());
         }
         if self.boundaries.is_empty() {
             return Err("Choose at least one boundary curve".into());
         }
         if self.boundaries.contains(&target) {
-            return Err("A line cannot be its own trim or extension boundary".into());
+            return Err("A curve cannot be its own trim or extension boundary".into());
         }
         for id in &self.boundaries {
             let curve = source
@@ -290,7 +292,7 @@ impl Panel {
                 .find(|curve| curve.id == *id)
                 .ok_or("A boundary no longer exists")?;
             if matches!(curve.kind, CurveKind::BSpline { .. }) {
-                return Err("Spline boundaries are not supported by line trim/extend yet; choose a line, arc or circle".into());
+                return Err("Spline boundaries are not supported by trim/extend yet; choose a line, arc or circle".into());
             }
         }
         let request = match tool {
@@ -298,17 +300,24 @@ impl Panel {
                 if self.pick_mm.iter().any(|value| !value.is_finite()) {
                     return Err("Pick coordinates must be finite".into());
                 }
-                TrimRequest::Trim(TrimLine {
+                TrimRequest::TrimCurve(TrimCurve {
                     target,
                     pick_mm: self.pick_mm,
                     boundaries: self.boundaries.clone(),
                 })
             }
-            OperationTool::Extend => TrimRequest::Extend(ExtendLine {
-                target,
-                endpoint: self.endpoint,
-                boundaries: self.boundaries.clone(),
-            }),
+            OperationTool::Extend => {
+                let request = ExtendLine {
+                    target,
+                    endpoint: self.endpoint,
+                    boundaries: self.boundaries.clone(),
+                };
+                if matches!(curve.kind, CurveKind::Arc { .. }) {
+                    TrimRequest::ExtendArc(request)
+                } else {
+                    TrimRequest::Extend(request)
+                }
+            }
             _ => return Err("Choose Trim or Extend".into()),
         };
         Ok(OperationRequest::Trim(request, TrimPolicy::default()))
@@ -325,9 +334,9 @@ impl Panel {
         ui.small("All distances use sketch-plane millimeters. Preview validates constraints before Apply changes the document.");
         let mut preview = false;
         ui.add_enabled_ui(enabled, |ui| {
-            if tool.line_operation() {
-                self.seed_line_selection(source, selected);
-                self.line_controls(ui, source, tool);
+            if tool.curve_operation() {
+                self.seed_target_selection(source, selected);
+                self.curve_controls(ui, source, tool);
             } else {
                 ui.label(format!("{} selected sketch entities", selected.len()));
                 self.transform_controls(ui, tool);
@@ -422,28 +431,26 @@ impl Panel {
             OperationTool::Trim | OperationTool::Extend => {}
         }
     }
-    fn line_controls(&mut self, ui: &mut egui::Ui, source: &Source, tool: OperationTool) {
+    fn curve_controls(&mut self, ui: &mut egui::Ui, source: &Source, tool: OperationTool) {
         let prior = self.target;
-        egui::ComboBox::from_id_salt("line-target")
+        egui::ComboBox::from_id_salt("curve-target")
             .selected_text(
                 self.target
                     .map(|id| curve_label(source, id))
-                    .unwrap_or_else(|| "Choose target line".into()),
+                    .unwrap_or_else(|| "Choose target curve".into()),
             )
             .show_ui(ui, |ui| {
                 for (index, curve) in source.sketch.curves.iter().enumerate() {
-                    if matches!(curve.kind, CurveKind::Line { .. }) {
-                        ui.selectable_value(
-                            &mut self.target,
-                            Some(curve.id),
-                            curve_label_at(index, &curve.kind),
-                        );
-                    }
+                    let supported = target_supported(tool, &curve.kind);
+                    ui.add_enabled_ui(supported, |ui| {
+                        ui.selectable_value(&mut self.target, Some(curve.id), curve_label_at(index, &curve.kind))
+                            .on_disabled_hover_text(if matches!(curve.kind, CurveKind::Circle { .. }) { "A closed circle has no endpoint to extend" } else { "Spline targets are unavailable for trim/extend" });
+                    });
                 }
             })
             .response
             .on_hover_text(
-                "Only line targets are currently supported; curve identities remain canonical",
+                "Trim supports lines, arcs and circles. Extend supports lines and arcs. Curve identities remain canonical",
             );
         if prior != self.target
             && let Some(target) = self.target
@@ -452,7 +459,14 @@ impl Panel {
         }
         if tool == OperationTool::Trim {
             vector_input(ui, "Point in span to remove", &mut self.pick_mm);
-            ui.small("Enter a point on the current solved line in the span to remove.");
+            ui.small("Enter a point on the current solved curve in the span to remove.");
+            if self
+                .target
+                .and_then(|id| source.sketch.curves.iter().find(|curve| curve.id == id))
+                .is_some_and(|curve| matches!(curve.kind, CurveKind::Circle { .. }))
+            {
+                ui.small("A circle needs two distinct intersection contacts. Preview reports missing or ambiguous contacts.");
+            }
         } else {
             egui::ComboBox::from_id_salt("extend-endpoint")
                 .selected_text(match self.endpoint {
@@ -497,7 +511,7 @@ impl Panel {
                         .on_hover_text(if supported {
                             "Use this exact line, arc or circle as a boundary"
                         } else {
-                            "Spline boundaries are unavailable for line trim/extend; uncheck to exclude this boundary"
+                            "Spline boundaries are unavailable for trim/extend; uncheck to exclude this boundary"
                         })
                         .changed()
                     {
@@ -509,7 +523,14 @@ impl Panel {
                     }
                 }
             });
-        ui.small("Line targets with line, arc or circle boundaries only. Spline trimming is unavailable.");
+        ui.small(if tool == OperationTool::Trim { "Trim lines, arcs or circles against exact line, arc or circle boundaries. Spline edits are unavailable." } else { "Extend a line or arc endpoint to an exact line, arc or circle boundary. Closed circles and splines cannot be extended." });
+    }
+}
+fn target_supported(tool: OperationTool, kind: &CurveKind) -> bool {
+    match tool {
+        OperationTool::Trim => !matches!(kind, CurveKind::BSpline { .. }),
+        OperationTool::Extend => matches!(kind, CurveKind::Line { .. } | CurveKind::Arc { .. }),
+        _ => false,
     }
 }
 fn curve_label(source: &Source, id: EntityId) -> String {
@@ -662,7 +683,7 @@ mod tests {
         panel.target = Some(line);
         panel.boundaries.insert(boundary);
         panel.pick_mm = [2., 0.];
-        let OperationRequest::Trim(TrimRequest::Trim(request), policy) =
+        let OperationRequest::Trim(TrimRequest::TrimCurve(request), policy) =
             panel.request(&source, &[line]).unwrap()
         else {
             panic!("trim")
@@ -701,7 +722,7 @@ mod tests {
         });
         let mut panel = Panel::default();
         panel.begin(OperationTool::Trim);
-        panel.seed_line_selection(&source, &[line, spline]);
+        panel.seed_target_selection(&source, &[line, spline]);
         assert_eq!(panel.target, Some(line));
         assert!(panel.boundaries.contains(&spline));
         assert!(
@@ -715,7 +736,7 @@ mod tests {
             panel
                 .request(&source, &[])
                 .unwrap_err()
-                .contains("target lines")
+                .contains("Spline targets")
         );
     }
     #[test]
@@ -732,5 +753,78 @@ mod tests {
             .drop_without_applying_deltas();
             assert_eq!(source, before);
         }
+    }
+    #[test]
+    fn analytic_curve_controls_build_generic_trim_and_arc_extension_without_changing_source() {
+        let (mut source, _, boundary) = source();
+        let center = source.add_point([0., 0.]);
+        let start = source.add_point([10., 0.]);
+        let end = source.add_point([0., 10.]);
+        let arc = EntityId::new();
+        let circle = EntityId::new();
+        source.sketch.curves.extend([
+            Curve {
+                id: arc,
+                construction: false,
+                kind: CurveKind::Arc {
+                    center,
+                    start,
+                    end,
+                    clockwise: false,
+                },
+            },
+            Curve {
+                id: circle,
+                construction: false,
+                kind: CurveKind::Circle {
+                    center,
+                    radius_mm: 10.,
+                },
+            },
+        ]);
+        let before = source.clone();
+        let mut panel = Panel::default();
+        panel.begin(OperationTool::Trim);
+        panel.boundaries.insert(boundary);
+        panel.pick_mm = [std::f64::consts::FRAC_1_SQRT_2 * 10.; 2];
+        for target in [arc, circle] {
+            panel.target = Some(target);
+            let OperationRequest::Trim(TrimRequest::TrimCurve(request), _) =
+                panel.request(&source, &[]).unwrap()
+            else {
+                panic!("generic curve trim")
+            };
+            assert_eq!(request.target, target);
+            assert_eq!(request.boundaries, BTreeSet::from([boundary]));
+        }
+        panel.begin(OperationTool::Extend);
+        panel.target = Some(arc);
+        panel.boundaries.insert(boundary);
+        panel.endpoint = Endpoint::End;
+        let OperationRequest::Trim(TrimRequest::ExtendArc(request), _) =
+            panel.request(&source, &[]).unwrap()
+        else {
+            panic!("arc extension")
+        };
+        assert_eq!(request.target, arc);
+        assert_eq!(request.endpoint, Endpoint::End);
+        panel.target = Some(circle);
+        assert!(
+            panel
+                .request(&source, &[])
+                .unwrap_err()
+                .contains("closed circle")
+        );
+        assert!(!target_supported(
+            OperationTool::Extend,
+            &source
+                .sketch
+                .curves
+                .iter()
+                .find(|curve| curve.id == circle)
+                .unwrap()
+                .kind
+        ));
+        assert_eq!(source, before);
     }
 }
