@@ -1821,4 +1821,94 @@ mod tests {
         app.example().unwrap();
         assert_eq!(app.current().session.parameters().values.len(), 4);
     }
+    #[test]
+    fn accessible_mode_targets_keep_their_full_hit_area_at_standard_and_retina_density() {
+        fn frame(
+            ctx: &egui::Context,
+            app: &mut Application,
+            density: f32,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut input = egui::RawInput {
+                focused: true,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1360., 860.),
+                )),
+                events,
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(density);
+            ctx.run_ui(input, |ui| app.show(ui))
+        }
+        for density in [1., 2.] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            crate::theme::configure(&ctx);
+            let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+            let source = app.current().session.document().clone();
+            frame(&ctx, &mut app, density, vec![]).drop_without_applying_deltas();
+            let output = frame(&ctx, &mut app, density, vec![]);
+            assert_eq!(output.pixels_per_point, density);
+            let tree = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .expect("Accessible shell tree missing");
+            let targets: Vec<_> = Mode::ALL
+                .into_iter()
+                .map(|mode| {
+                    let bounds = tree
+                        .nodes
+                        .iter()
+                        .find(|(_, node)| node.label() == Some(mode.title()))
+                        .and_then(|(_, node)| node.bounds())
+                        .expect("Mode needs an accessible name and bounds");
+                    assert!(bounds.y1 - bounds.y0 >= 30.);
+                    (
+                        mode,
+                        egui::Rect::from_min_max(
+                            egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        ),
+                    )
+                })
+                .collect();
+            output.drop_without_applying_deltas();
+            for (mode, rect) in targets {
+                for p in [
+                    rect.center(),
+                    rect.left_top() + egui::vec2(2., 2.),
+                    rect.right_bottom() - egui::vec2(2., 2.),
+                ] {
+                    for pressed in [true, false] {
+                        frame(
+                            &ctx,
+                            &mut app,
+                            density,
+                            vec![
+                                egui::Event::PointerMoved(p),
+                                egui::Event::PointerButton {
+                                    pos: p,
+                                    button: egui::PointerButton::Primary,
+                                    pressed,
+                                    modifiers: egui::Modifiers::NONE,
+                                },
+                            ],
+                        )
+                        .drop_without_applying_deltas();
+                    }
+                    assert_eq!(
+                        app.mode, mode,
+                        "Mode target was not fully clickable at {density}x: {mode:?}"
+                    );
+                }
+            }
+            assert_eq!(app.current().session.document(), &source);
+        }
+    }
 }
