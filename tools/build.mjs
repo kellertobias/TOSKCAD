@@ -1,7 +1,7 @@
 // Developer/CI orchestration only. The shipped application contains no Node.js.
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assembleRuntime } from './native-package.mjs';
 
@@ -32,26 +32,6 @@ function releaseDependencies(){
   if(!existsSync(join(root,'node_modules/semver/package.json')))run(process.platform==='win32'?'npm.cmd':'npm',['ci','--ignore-scripts','--no-audit','--no-fund']);
 }
 function executable(bundle){return process.platform==='darwin'?join(bundle,'MultiCAD.app/Contents/MacOS/multicad'):join(bundle,process.platform==='win32'?'multicad.exe':'multicad');}
-
-function stopPrevious(){
-  const record=join(root,'artifacts/runtime/instance.json');
-  if(!existsSync(record))return;
-  const {pid,path}=JSON.parse(readFileSync(record,'utf8'));
-  const within=relative(join(root,'artifacts'),path);
-  if(!Number.isSafeInteger(pid)||pid<=1||isAbsolute(within)||within.startsWith('..'))throw new Error('Invalid local launch record; close the old MultiCAD instance manually');
-  let actual;
-  try{
-    if(process.platform==='win32'){
-      actual=capture('powershell.exe',['-NoProfile','-Command',`(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').ExecutablePath`]);
-    }else if(process.platform==='linux'){actual=realpathSync(`/proc/${pid}/exe`);}
-    else{actual=capture('ps',['-p',String(pid),'-o','comm=']);}
-  }catch{return;}
-  if(actual&&resolve(actual)===resolve(path)){
-    // CAD-50 host owns no documents yet. Replace this with the host's graceful
-    // close protocol before editable document sessions are integrated.
-    process.kill(pid,'SIGTERM');
-  }
-}
 
 async function main(){
   const args=process.argv.slice(2);
@@ -92,7 +72,7 @@ async function main(){
   writeFileSync(join(parent,'latest.json'),JSON.stringify({bundle,executable:executable(bundle)}));
   console.log(`Native application: ${executable(bundle)}`);
   if(args[0]==='open'){
-    stopPrevious();
+    // Editable windows own their close prompts. Opening a new window preserves them.
     const path=executable(bundle);
     const child=spawn(path,[],{cwd:bundle,stdio:'ignore',detached:true});
     child.on('error',error=>{console.error(`Could not start MultiCAD: ${error.message}`);process.exitCode=1;});
