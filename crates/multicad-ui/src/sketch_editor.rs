@@ -102,6 +102,9 @@ fn commit(
         .map_err(|e| e.to_string())
 }
 impl SketchEditor {
+    pub fn has_move_preview(&self) -> bool {
+        self.preview.is_some()
+    }
     pub fn cancel(&mut self) {
         self.picking = false;
         self.tool = None;
@@ -810,6 +813,15 @@ mod tests {
                 .origin,
             [3., 1., 2.]
         );
+        editor.custom_angle_deg = 90.;
+        editor.prepare_move(&s).unwrap();
+        let rotated = Sketch::read(editor.preview.as_ref().unwrap().document(), id)
+            .unwrap()
+            .1
+            .origin;
+        for (actual, expected) in rotated.into_iter().zip([3., -2., 1.]) {
+            assert!((actual - expected).abs() < 1e-9);
+        }
         s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
         assert!(editor.apply_move(&mut s).is_err());
         assert!(s.document().entities().next().is_none());

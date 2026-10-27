@@ -37,7 +37,7 @@ impl Project {
         })
     }
     fn dirty(&self) -> bool {
-        self.session.dirty() || self.editor.dirty()
+        self.session.dirty() || self.editor.dirty() || self.sketch.has_move_preview()
     }
     fn title(&self) -> String {
         self.path
@@ -64,6 +64,7 @@ pub struct Application {
     command_log: VecDeque<String>,
     file_action: Option<FileAction>,
     file_path: String,
+    file_document: Option<multicad_core::document::EntityId>,
     find_open: bool,
     find: String,
     history_open: bool,
@@ -86,6 +87,7 @@ impl Application {
             command_log: VecDeque::new(),
             file_action: None,
             file_path: String::new(),
+            file_document: None,
             find_open: false,
             find: String::new(),
             history_open: false,
@@ -165,8 +167,8 @@ impl Application {
                 self.message = "Validated parameter preview; committed document unchanged".into();
             }
             Command::Undo | Command::Redo => {
-                if self.current().editor.dirty() {
-                    return Err("Apply or discard the parameter draft before Undo/Redo".into());
+                if self.current().editor.dirty() || self.current().sketch.has_move_preview() {
+                    return Err("Apply or cancel pending edits before Undo/Redo".into());
                 }
                 let p = self.current_mut();
                 let rev = p.session.revision();
@@ -194,13 +196,14 @@ impl Application {
                     .map_err(|e| e.to_string())?;
             }
             Command::Save => {
-                if self.current().editor.dirty() {
-                    return Err("Apply or discard the parameter draft before saving".into());
+                if self.current().editor.dirty() || self.current().sketch.has_move_preview() {
+                    return Err("Apply or cancel pending edits before saving".into());
                 }
                 if let Some(path) = self.current().path.clone() {
                     self.save_to(path)?;
                 } else {
                     self.file_path = "Untitled.multicad.json".into();
+                    self.file_document = Some(self.current().session.document().id());
                     self.file_action = Some(FileAction::Save);
                 }
             }
@@ -276,7 +279,10 @@ impl Application {
     fn execute(&mut self, command: Command, args: &[&str], channel: Channel) {
         if let Err(error) = self.invoke(command, args, channel) {
             self.message = error.clone();
-            if matches!(command, Command::Apply | Command::Preview) {
+            if matches!(
+                command,
+                Command::Apply | Command::Preview | Command::Parameter
+            ) {
                 let p = self.current_mut();
                 p.editor.refresh_preview(&p.session);
             }
@@ -296,6 +302,14 @@ impl Application {
         }
     }
     fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
+        if self.current().editor.dirty() || self.current().sketch.has_move_preview() {
+            return Err("Apply or cancel pending edits before saving".into());
+        }
+        if self.file_action.is_some()
+            && self.file_document != Some(self.current().session.document().id())
+        {
+            return Err("Return to the document that opened this Save window, or cancel it".into());
+        }
         let doc = self.current().session.document().clone();
         let rev = self.current().session.revision();
         self.storage.save(&path, &doc)?;
@@ -815,6 +829,18 @@ mod tests {
             Channel::CommandLine,
         )
         .unwrap();
+    }
+    #[test]
+    fn save_dialog_stays_bound_to_document_and_rejects_unapplied_drafts() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::Save, &[], Channel::Ui).unwrap();
+        app.invoke(Command::New, &[], Channel::Ui).unwrap();
+        assert!(app.save_to(PathBuf::from("wrong-document.json")).is_err());
+        assert!(app.current().path.is_none());
+        app.active = 0;
+        app.current_mut().editor.rows[0].name = "unfinished".into();
+        assert!(app.save_to(PathBuf::from("draft.json")).is_err());
+        assert!(app.current().path.is_none());
     }
     #[test]
     fn native_parameter_editor_and_ribbon_render_without_modeling_sidebars() {
