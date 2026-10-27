@@ -170,6 +170,15 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             false,
             DisplayStyle::Filled,
         ),
+        (
+            false,
+            false,
+            Some(Selection::Parts(Arc::new(BTreeSet::from([
+                near.id, far.id,
+            ])))),
+            false,
+            DisplayStyle::Filled,
+        ),
         (true, false, None, true, DisplayStyle::Filled),
         (true, false, None, true, DisplayStyle::AllEdges),
         (true, false, None, true, DisplayStyle::VisibleEdges),
@@ -179,6 +188,18 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
     .map(|case| (case, None))
     .chain([(
         (false, false, None, false, DisplayStyle::Filled),
+        Some(SectionPlane::new([0., 0., -1.], -20.).unwrap()),
+    )])
+    .chain([(
+        (
+            false,
+            false,
+            Some(Selection::Parts(Arc::new(BTreeSet::from([
+                near.id, far.id,
+            ])))),
+            false,
+            DisplayStyle::Filled,
+        ),
         Some(SectionPlane::new([0., 0., -1.], -20.).unwrap()),
     )])
     .chain(DisplayStyle::ALL.into_iter().map(|style| {
@@ -211,7 +232,7 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             View {
                 camera,
                 size: egui::vec2(256., 256.),
-                selection,
+                selection: selection.clone(),
                 style,
                 section,
             },
@@ -310,10 +331,17 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             }
             assert!(coverage > 50, "Section removed both sides");
         } else if section.is_some() {
-            assert!(
-                u16::from(center[2]) > u16::from(center[0]) * 2,
-                "Section did not reveal the blue solid behind the red one: {center:?}"
-            );
+            if selection.is_some() {
+                assert!(
+                    center[1] > 80,
+                    "Rear selected instance lost its multi-selection highlight: {center:?}"
+                );
+            } else {
+                assert!(
+                    u16::from(center[2]) > u16::from(center[0]) * 2,
+                    "Section did not reveal the blue solid behind the red one: {center:?}"
+                );
+            }
         } else if style == DisplayStyle::Wire {
             assert!(
                 (200..5000).contains(&coverage),

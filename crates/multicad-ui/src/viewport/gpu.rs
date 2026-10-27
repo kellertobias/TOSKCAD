@@ -7,10 +7,14 @@ use eframe::{
     wgpu::{self, util::DeviceExt},
 };
 use multicad_core::document::EntityId;
-use std::{collections::BTreeMap, sync::Arc};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
     Part(EntityId),
+    Parts(Arc<BTreeSet<EntityId>>),
     Face { instance: EntityId, ordinal: u32 },
     Edge { instance: EntityId, ordinal: u32 },
     Vertex { instance: EntityId, ordinal: u32 },
@@ -215,20 +219,21 @@ impl Renderer {
                         floats(&mut bytes, row);
                     }
                     floats(&mut bytes, instance.color.map(|v| v as f32 / 255.));
-                    let (face, part) = match selection {
-                        Some(Selection::Part(id)) if id == instance.id => (u32::MAX, 1),
+                    let (face, part) = match &selection {
+                        Some(Selection::Part(id)) if *id == instance.id => (u32::MAX, 1),
+                        Some(Selection::Parts(ids)) if ids.contains(&instance.id) => (u32::MAX, 1),
                         Some(Selection::Face {
                             instance: id,
                             ordinal,
-                        }) if id == instance.id => (ordinal, 0),
+                        }) if *id == instance.id => (*ordinal, 0),
                         Some(Selection::Edge {
                             instance: id,
                             ordinal,
-                        }) if id == instance.id => (0x1000_0000 + ordinal, 0),
+                        }) if *id == instance.id => (0x1000_0000 + ordinal, 0),
                         Some(Selection::Vertex {
                             instance: id,
                             ordinal,
-                        }) if id == instance.id => (0x2000_0000 + ordinal, 0),
+                        }) if *id == instance.id => (0x2000_0000 + ordinal, 0),
                         _ => (u32::MAX, 0),
                     };
                     words(&mut bytes, [face, part, 0, 0]);
@@ -327,7 +332,7 @@ pub(crate) fn install(state: &egui_wgpu::RenderState) {
         .callback_resources
         .insert(Renderer::new(&state.device, state.target_format));
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct View {
     camera: Camera,
     size: egui::Vec2,
@@ -349,7 +354,7 @@ impl CallbackTrait for Callback {
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(renderer) = resources.get_mut::<Renderer>() {
-            renderer.prepare(device, queue, &self.scene, self.view);
+            renderer.prepare(device, queue, &self.scene, self.view.clone());
         }
         vec![]
     }
