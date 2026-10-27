@@ -20,6 +20,11 @@ struct DimensionFields {
     text: String,
     unit: String,
 }
+
+struct PointPositionFields {
+    scope: (EntityId, u64, EntityId, EntityId),
+    coordinates: [String; 2],
+}
 impl DimensionFields {
     fn from_dimension(dimension: &Dimension) -> Self {
         Self {
@@ -228,6 +233,7 @@ pub struct ConstraintEditor {
     apply_label: String,
     canonical_draft: bool,
     point_display: Option<PointDisplay>,
+    point_position: Option<PointPositionFields>,
 }
 struct PointDisplay {
     scope: (EntityId, u64, EntityId),
@@ -253,6 +259,7 @@ impl Default for ConstraintEditor {
             apply_label: "Apply constraints".into(),
             canonical_draft: false,
             point_display: None,
+            point_position: None,
         }
     }
 }
@@ -265,6 +272,7 @@ impl ConstraintEditor {
         };
         if !unchanged {
             self.point_display = None;
+            self.point_position = None;
         }
         self.current = current;
     }
@@ -275,6 +283,7 @@ impl ConstraintEditor {
             self.current = None;
             self.preview_geometry = None;
             self.point_display = None;
+            self.point_position = None;
         }
         self.evaluation = evaluation;
     }
@@ -414,6 +423,7 @@ impl ConstraintEditor {
         self.apply_label = "Apply constraints".into();
         self.canonical_draft = false;
         self.point_display = None;
+        self.point_position = None;
     }
     pub fn preview_document(&self) -> Option<&Document> {
         if self.dirty() {
@@ -496,16 +506,18 @@ impl ConstraintEditor {
     ) -> Result<&model::Sketch, String> {
         let solved = if self.dirty() {
             if self.owner != Some(id) || self.revision != session.revision() {
-                return Err("Discard the stale or other sketch draft before fixing a point".into());
+                return Err(
+                    "Discard the stale or other sketch draft before editing a point".into(),
+                );
             }
             let result = self
                 .result
                 .as_ref()
-                .ok_or("Resolve the current draft before fixing a point")?;
+                .ok_or("Resolve the current draft before editing a point")?;
             let preview = result
                 .preview
                 .as_ref()
-                .ok_or("Resolve the current draft before fixing a point")?;
+                .ok_or("Resolve the current draft before editing a point")?;
             session
                 .validate_preview(preview)
                 .map_err(|e| e.to_string())?;
@@ -523,7 +535,7 @@ impl ConstraintEditor {
                 .evaluation
                 .candidate
                 .as_ref()
-                .ok_or("Resolve the current draft before fixing a point")?
+                .ok_or("Resolve the current draft before editing a point")?
         } else {
             let current = self
                 .current
@@ -534,7 +546,7 @@ impl ConstraintEditor {
                         && e.stamp.revision == session.revision()
                         && (!verify_hash || e.is_current(session.document(), session.revision()))
                 })
-                .ok_or("Wait for the current sketch solution before fixing a point")?;
+                .ok_or("Wait for the current sketch solution before editing a point")?;
             current
                 .solved()
                 .ok_or("The sketch has no current valid solution")?
@@ -552,7 +564,7 @@ impl ConstraintEditor {
             .points
             .iter()
             .find(|p| p.id == point)
-            .ok_or("Fix requires a current sketch point")?
+            .ok_or("Select a current sketch point or spline pole")?
             .position_mm;
         if position.iter().any(|v| !v.is_finite() || v.abs() > 1e9) {
             return Err("The current point position is invalid".into());
@@ -604,6 +616,103 @@ impl ConstraintEditor {
         }
         source.add_constraint(kind);
         Ok(())
+    }
+    fn point_position_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &Session,
+        id: EntityId,
+        source: &Source,
+    ) -> Option<(EntityId, [f64; 2])> {
+        let [point] = self.selection.as_slice() else {
+            self.point_position = None;
+            return None;
+        };
+        let point = *point;
+        let index = source.sketch.points.iter().position(|p| p.id == point)?;
+        ui.separator();
+        ui.strong(format!("Point P{} position", index + 1));
+        if self.dirty() {
+            ui.small("Apply or discard the current draft before editing point coordinates.");
+            return None;
+        }
+        let Some(position) = self
+            .display_positions(session, id)
+            .and_then(|points| points.get(&point).copied())
+        else {
+            self.point_position = None;
+            ui.small("Wait for the current sketch solution before editing this point.");
+            return None;
+        };
+        let scope = (session.document().id(), session.revision(), id, point);
+        if self
+            .point_position
+            .as_ref()
+            .is_none_or(|f| f.scope != scope)
+        {
+            self.point_position = Some(PointPositionFields {
+                scope,
+                coordinates: position.map(|v| v.to_string()),
+            });
+        }
+        let fields = self.point_position.as_mut()?;
+        ui.horizontal(|ui| {
+            for (axis, value) in ["X", "Y"].into_iter().zip(&mut fields.coordinates) {
+                ui.label(axis);
+                ui.add(egui::TextEdit::singleline(value).desired_width(85.))
+                    .on_hover_text(format!("{axis} coordinate in sketch-local millimetres"));
+            }
+            ui.label("mm");
+        });
+        if !ui
+            .button("Preview position")
+            .on_hover_text("Preview this point or spline pole at the requested coordinates. Existing constraints stay in place; conflicting positions are rejected.")
+            .clicked()
+        {
+            return None;
+        }
+        let parsed = fields.coordinates.each_ref().map(|text| {
+            text.trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite())
+        });
+        match parsed {
+            [Some(x), Some(y)] => Some((point, [x, y])),
+            _ => {
+                self.error = Some("Point coordinates must be finite numbers in millimetres".into());
+                None
+            }
+        }
+    }
+    fn preview_point_position(
+        &mut self,
+        session: &Session,
+        id: EntityId,
+        point: EntityId,
+        position_mm: [f64; 2],
+    ) -> Result<(), String> {
+        if self.dirty() {
+            return Err(
+                "Apply or discard the current draft before editing point coordinates".into(),
+            );
+        }
+        if self.selection.as_slice() != [point] {
+            return Err("Select exactly one sketch point or spline pole".into());
+        }
+        // Explicit action boundary: check current solved identity and canonical
+        // hash before asking the shared transaction to solve the requested edit.
+        self.visible_point(session, id, point)?;
+        let edit = multicad_solver::prepare_point_position(
+            session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            id,
+            self.evaluation.as_ref(),
+            &multicad_core::sketch_point::PointPositionRequest { point, position_mm },
+        )
+        .map_err(|e| e.to_string())?;
+        self.accept_edit(session, id, edit, "Apply point position")
     }
     /// Adopt an already checked canonical operation without running the sketch
     /// solver again. A diagnostic-only draft remains repairable without Apply.
@@ -955,6 +1064,7 @@ impl ConstraintEditor {
                 }
             }
         });
+        let point_position = self.point_position_controls(ui, session, id, &source);
         let mut changed = false;
         let mut canonical_intent = false;
         ui.horizontal(|ui| {
@@ -1075,6 +1185,11 @@ impl ConstraintEditor {
         }
         if changed {
             self.prepare_source(session, id, source, canonical_intent);
+        }
+        if let Some((point, position)) = point_position
+            && let Err(error) = self.preview_point_position(session, id, point, position)
+        {
+            self.error = Some(error);
         }
         if self.dirty() {
             ui.horizontal(|ui| {
@@ -1593,6 +1708,236 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("Missing UI text {label}"))
+    }
+    fn click_constraint_label(
+        ctx: &egui::Context,
+        editor: &mut ConstraintEditor,
+        session: &mut Session,
+        id: EntityId,
+        label: &str,
+    ) {
+        let output = show_constraints(ctx, editor, session, id, vec![]);
+        let pos = text_position(&output, label);
+        show_constraints(
+            ctx,
+            editor,
+            session,
+            id,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    fn spline_point_session() -> (Session, EntityId, EntityId) {
+        let (id, edits) = Source::create(Datum::Xy, "Editable poles").unwrap();
+        let mut doc = Document::new("Point positions")
+            .unwrap()
+            .edited(&edits)
+            .unwrap();
+        let mut source = Source::read(&doc, id).unwrap().0;
+        let poles: Vec<_> = [[0., 0.], [5., 10.], [10., 0.]]
+            .map(|p| source.add_point(p))
+            .into();
+        source.sketch.curves.push(model::Curve {
+            id: EntityId::new(),
+            construction: true,
+            kind: model::CurveKind::BSpline {
+                poles: poles.clone(),
+                basis: model::SplineBasis::open_uniform(2, 3).unwrap(),
+            },
+        });
+        doc = doc.edited(&source.replace(&doc, id).unwrap()).unwrap();
+        (Session::new(doc).unwrap(), id, poles[1])
+    }
+    #[test]
+    fn numeric_spline_pole_preview_is_source_neutral_and_apply_is_one_undo() {
+        let (mut session, id, point) = spline_point_session();
+        let before = session.document().clone();
+        let original = source(&session, id);
+        let mut editor = ConstraintEditor::default();
+        editor.set_current(Some(current(&session, id)));
+        let ctx = egui::Context::default();
+        show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        editor.selection = vec![point];
+        let output = show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        text_position(&output, "Point P2 position");
+        assert_eq!(
+            editor.point_position.as_ref().unwrap().coordinates,
+            ["5", "10"]
+        );
+        editor.point_position.as_mut().unwrap().coordinates = ["7.5".into(), "22".into()];
+        click_constraint_label(&ctx, &mut editor, &mut session, id, "Preview position");
+        assert_eq!(session.document(), &before);
+        assert!(editor.dirty());
+        assert_eq!(editor.apply_label, "Apply point position");
+        let preview = editor.semantic_preview().unwrap();
+        let point_position = preview
+            .solved()
+            .unwrap()
+            .points
+            .iter()
+            .find(|p| p.id == point)
+            .unwrap()
+            .position_mm;
+        assert!((point_position[0] - 7.5).abs() < 1e-7);
+        assert!((point_position[1] - 22.).abs() < 1e-7);
+        assert_eq!(
+            preview.canonical().sketch.constraints,
+            original.sketch.constraints
+        );
+        assert_eq!(preview.canonical().sketch.curves, original.sketch.curves);
+        click_constraint_label(&ctx, &mut editor, &mut session, id, "Apply point position");
+        assert_eq!(session.revision(), 1);
+        assert_eq!(session.activity().count(), 1);
+        let committed = source(&session, id);
+        assert_eq!(committed.sketch.constraints, original.sketch.constraints);
+        assert_eq!(committed.sketch.curves, original.sketch.curves);
+        let regenerated = current(&session, id);
+        let actual = regenerated
+            .solved()
+            .unwrap()
+            .points
+            .iter()
+            .find(|p| p.id == point)
+            .unwrap();
+        assert!((actual.position_mm[0] - 7.5).abs() < 1e-7);
+        assert!((actual.position_mm[1] - 22.).abs() < 1e-7);
+        let EntityData::Sketch { definition, .. } = &session.document().get(id).unwrap().data
+        else {
+            panic!("sketch")
+        };
+        assert_eq!(definition.schema_version, 3);
+        session.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn point_position_requires_current_single_point_and_discards_without_source_edits() {
+        let (mut session, id, point) = spline_point_session();
+        let before = session.document().clone();
+        let mut editor = ConstraintEditor {
+            selection: vec![point],
+            ..Default::default()
+        };
+        assert!(
+            editor
+                .preview_point_position(&session, id, point, [2., 3.])
+                .is_err()
+        );
+        assert!(!editor.dirty());
+        editor.set_current(Some(current(&session, id)));
+        editor.selection.clear();
+        assert!(
+            editor
+                .preview_point_position(&session, id, point, [2., 3.])
+                .is_err()
+        );
+        editor.selection = vec![point];
+        editor
+            .preview_point_position(&session, id, point, [2., 3.])
+            .unwrap();
+        assert_eq!(session.document(), &before);
+        let draft = editor.draft.clone();
+        editor.selection = vec![point];
+        assert!(
+            editor
+                .preview_point_position(&session, id, point, [4., 5.])
+                .unwrap_err()
+                .contains("Apply or discard")
+        );
+        assert_eq!(editor.draft, draft);
+        editor.discard();
+        assert_eq!(session.document(), &before);
+        assert!(editor.point_position.is_none());
+        editor.selection = vec![point];
+        editor
+            .preview_point_position(&session, id, point, [4., 5.])
+            .unwrap();
+        session
+            .apply(Request {
+                expected_revision: 0,
+                actor: Actor::local(Channel::Ui),
+                label: "Change document".into(),
+                edits: vec![Mutation::Insert(multicad_core::document::Entity::new(
+                    "new_parameter",
+                    EntityData::Parameter {
+                        expression: "1".into(),
+                        unit: "mm".into(),
+                        exposed: false,
+                        inputs: vec![],
+                    },
+                ))],
+            })
+            .unwrap();
+        let changed = session.document().clone();
+        assert!(editor.apply(&mut session).is_err());
+        assert_eq!(session.document(), &changed);
+        editor.discard();
+        editor.selection = vec![point];
+        assert!(
+            editor
+                .preview_point_position(&session, id, point, [4., 5.])
+                .is_err()
+        );
+        assert!(!editor.dirty());
+        assert_eq!(session.document(), &changed);
+    }
+    #[test]
+    fn point_position_inputs_reject_nonfinite_text_without_an_apply_preview() {
+        let (mut session, id, point) = spline_point_session();
+        let before = session.document().clone();
+        let mut editor = ConstraintEditor::default();
+        editor.set_current(Some(current(&session, id)));
+        let ctx = egui::Context::default();
+        show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        editor.selection = vec![point];
+        show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        editor.point_position.as_mut().unwrap().coordinates = ["NaN".into(), "2".into()];
+        click_constraint_label(&ctx, &mut editor, &mut session, id, "Preview position");
+        assert!(editor.error.as_ref().unwrap().contains("finite numbers"));
+        assert!(!editor.dirty());
+        assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn point_position_shows_current_coordinates_and_driving_conflicts_have_no_apply() {
+        let (mut session, id, point, _) = bound_rectangle();
+        let before = session.document().clone();
+        let mut editor = ConstraintEditor::default();
+        let ctx = egui::Context::default();
+        show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        editor.selection = vec![point];
+        let output = show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        text_position(
+            &output,
+            "Wait for the current sketch solution before editing this point.",
+        );
+        assert!(editor.point_position.is_none());
+        editor.set_current(Some(current(&session, id)));
+        show_constraints(&ctx, &mut editor, &mut session, id, vec![]);
+        let coordinates = &editor.point_position.as_ref().unwrap().coordinates;
+        assert!((coordinates[0].parse::<f64>().unwrap() - 160.).abs() < 1e-7);
+        assert!((coordinates[1].parse::<f64>().unwrap() - 60.).abs() < 1e-7);
+        assert_eq!(
+            source(&session, id).sketch.points[2].position_mm,
+            [80., 60.]
+        );
+        editor.point_position.as_mut().unwrap().coordinates = ["200".into(), "60".into()];
+        click_constraint_label(&ctx, &mut editor, &mut session, id, "Preview position");
+        assert!(editor.error.is_some());
+        assert!(!editor.dirty());
+        assert!(editor.preview_document().is_none());
+        assert_eq!(session.document(), &before);
     }
     #[test]
     fn add_fix_click_captures_visible_parameter_point_without_baking_other_source_and_undo_restores_it()
