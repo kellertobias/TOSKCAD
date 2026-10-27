@@ -90,6 +90,8 @@ pub struct Shape(cxx::UniquePtr<ffi::Shape>);
 pub type Error = Box<dyn std::error::Error>;
 mod geometry;
 pub use geometry::*;
+mod worker;
+pub use worker::*;
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")

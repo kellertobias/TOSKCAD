@@ -9,6 +9,9 @@ pub enum GeometryErrorKind {
     Native,
     InvalidResult,
     Limit,
+    Cancelled,
+    Stale,
+    Busy,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeometryError {
