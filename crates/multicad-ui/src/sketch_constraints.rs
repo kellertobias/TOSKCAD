@@ -5,6 +5,7 @@ use multicad_core::{
     commands::{Actor, Channel, Session},
     constraint_sketch::{self as model, ConstraintKind as Kind, Dimension, source::Source},
     document::{Document, EntityId},
+    references::ReferenceReport,
 };
 use multicad_solver::{SketchEdit, SolveState, prepare_edit};
 use std::collections::BTreeSet;
@@ -151,6 +152,7 @@ pub struct ConstraintEditor {
     tool: Tool,
     value: f64,
     unit: String,
+    evaluation: Option<ReferenceReport>,
 }
 impl Default for ConstraintEditor {
     fn default() -> Self {
@@ -165,10 +167,48 @@ impl Default for ConstraintEditor {
             tool: Tool::Length,
             value: 10.,
             unit: "mm".into(),
+            evaluation: None,
         }
     }
 }
 impl ConstraintEditor {
+    pub fn set_evaluation(&mut self, evaluation: Option<ReferenceReport>) {
+        if self.evaluation != evaluation {
+            self.result = None;
+            self.error = None;
+        }
+        self.evaluation = evaluation;
+    }
+    fn read_source(
+        &self,
+        session: &Session,
+        id: EntityId,
+    ) -> Result<
+        (Source, multicad_core::sketch::Frame, EntityId),
+        multicad_core::document::DocumentError,
+    > {
+        if let Some(report) = &self.evaluation {
+            Source::read_evaluated(session.document(), id, session.revision(), report)
+        } else {
+            Source::read(session.document(), id)
+        }
+    }
+    fn validate_frame(&self, session: &Session, id: EntityId) -> Result<(), String> {
+        // The display facade also accepts a genuine legacy source during its
+        // explicit upgrade. It never supplies a saved-datum attachment fallback.
+        if let Some(report) = &self.evaluation {
+            multicad_core::sketch::Sketch::read_evaluated(
+                session.document(),
+                id,
+                session.revision(),
+                report,
+            )
+        } else {
+            multicad_core::sketch::Sketch::read(session.document(), id)
+        }
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
     pub fn begin_dimension(
         &mut self,
         session: &Session,
@@ -178,8 +218,7 @@ impl ConstraintEditor {
         if self.dirty() {
             return Err("Apply or discard the current constraint draft first".into());
         }
-        let (source, _, _) = Source::read(session.document(), id)
-            .map_err(|_| "Enable constraints on this older sketch first")?;
+        let (source, _, _) = self.read_source(session, id).map_err(|e| e.to_string())?;
         let curve = source
             .sketch
             .curves
@@ -239,6 +278,11 @@ impl ConstraintEditor {
         self.owner = Some(id);
         self.draft = Some(source.clone());
         self.error = None;
+        if let Err(error) = self.validate_frame(session, id) {
+            self.result = None;
+            self.error = Some(error);
+            return;
+        }
         match prepare_edit(
             session,
             self.revision,
@@ -254,6 +298,11 @@ impl ConstraintEditor {
         }
     }
     pub fn apply(&mut self, session: &mut Session) -> Result<(), String> {
+        self.validate_frame(
+            session,
+            self.owner
+                .ok_or("Choose a sketch before applying constraints")?,
+        )?;
         let preview = self
             .result
             .as_mut()
@@ -315,14 +364,28 @@ impl ConstraintEditor {
             }
             return;
         }
-        let read = Source::read(session.document(), id);
+        let read = self.read_source(session, id);
         if read.is_err() && !self.dirty() {
+            let legacy=session.document().get(id).is_some_and(|e|matches!(&e.data,multicad_core::document::EntityData::Sketch {definition,..} if definition.type_id==multicad_core::sketch::TYPE&&definition.schema_version==1));
+            if !legacy {
+                if let Err(error) = &read {
+                    ui.colored_label(Color32::LIGHT_RED, error.to_string());
+                }
+                return;
+            }
             ui.small("This snapshot uses the earlier sketch source.");
             if ui.button("Enable constraints").on_hover_text("Convert rectangles to four constrained lines. Apply is undoable; Discard keeps the original source.").clicked() {
                 match Source::from_legacy(session.document(),id) {Ok(source)=>self.prepare(session,id,source),Err(e)=>self.error=Some(e.to_string())}
             }
             if let Some(e) = &self.error {
                 ui.colored_label(Color32::LIGHT_RED, e);
+            }
+            return;
+        }
+        if let Err(error) = &read {
+            ui.colored_label(Color32::LIGHT_RED, error.to_string());
+            if ui.button("Discard constraint draft").clicked() {
+                self.discard();
             }
             return;
         }
@@ -560,6 +623,169 @@ mod tests {
         .unwrap();
         session.commit(edit.preview.unwrap()).unwrap();
         (session, id, source, edge)
+    }
+    fn attached_circle() -> (Session, EntityId, EntityId, EntityId, ReferenceReport) {
+        use multicad_core::{document::*, references::*};
+        let panel = Entity::new(
+            "Panel",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.panel".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let solid =
+            multicad_kernel::Solid::box_named([100., 60., 18.], panel.id, Default::default())
+                .unwrap();
+        let snapshot = solid.topology_snapshot(panel.id, 0).unwrap();
+        let origin = Origin {
+            source: panel.id,
+            role: "cap.end".into(),
+        };
+        let face = snapshot
+            .elements
+            .iter()
+            .find(|e| e.key.kind == TopologyKind::Face && e.origins.contains(&origin))
+            .unwrap();
+        let mut intent = GeometryIntent::capture(&snapshot, face.key).unwrap();
+        intent.attachment = Some(Attachment {
+            anchor: origin,
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        let mut link = Link::new(panel.id, "face");
+        link.geometry = Some(intent);
+        let plane = Entity::new(
+            "Top",
+            EntityData::Plane {
+                origin_mm: [0.; 3],
+                normal: [0., 0., 1.],
+                anchor: Some(link),
+            },
+        );
+        let mut source = Source {
+            u: [1., 0., 0.],
+            sketch: Default::default(),
+        };
+        let center = source.add_point([20., 25.]);
+        let curve = EntityId::new();
+        source.sketch.curves.push(model::Curve {
+            id: curve,
+            construction: false,
+            kind: model::CurveKind::Circle {
+                center,
+                radius_mm: 3.,
+            },
+        });
+        let sketch = Entity::new(
+            "Attached circle",
+            EntityData::Sketch {
+                plane: plane.id,
+                definition: source.definition().unwrap(),
+                inputs: vec![],
+            },
+        );
+        let mut document = Document::new("Attached dimension").unwrap();
+        for entity in [panel, plane.clone(), sketch.clone()] {
+            document.insert(entity).unwrap();
+        }
+        let report = inspect(
+            &document,
+            0,
+            &std::collections::BTreeMap::from([(snapshot.owner, snapshot)]),
+        );
+        (
+            Session::new(document).unwrap(),
+            sketch.id,
+            plane.id,
+            curve,
+            report,
+        )
+    }
+    #[test]
+    fn attached_circle_dimension_previews_and_commits_without_changing_its_anchor() {
+        let (mut session, id, plane, curve, report) = attached_circle();
+        let before = session.document().clone();
+        assert!(Source::read(session.document(), id).is_err());
+        let mut editor = ConstraintEditor::default();
+        editor.set_evaluation(Some(report.clone()));
+        editor.begin_dimension(&session, id, curve).unwrap();
+        let kind = editor.dimension_kind(5., "mm").unwrap();
+        assert!(matches!(kind,Kind::Radius {curve:c,..} if c==curve));
+        let (mut source, frame, _) =
+            Source::read_evaluated(session.document(), id, 0, &report).unwrap();
+        assert_eq!(frame.origin, [0., 0., 18.]);
+        source.add_constraint(kind);
+        editor.prepare(&session, id, source);
+        assert!(editor.preview_document().is_some(), "{:?}", editor.error);
+        assert_eq!(session.document(), &before);
+        assert_eq!(
+            editor.preview_document().unwrap().get(plane),
+            before.get(plane)
+        );
+        editor.apply(&mut session).unwrap();
+        assert_eq!(session.revision(), 1);
+        assert_eq!(session.document().get(plane), before.get(plane));
+        let panel = report.entries[0].source;
+        let snapshot =
+            multicad_kernel::Solid::box_named([100., 60., 18.], panel, Default::default())
+                .unwrap()
+                .topology_snapshot(panel, 1)
+                .unwrap();
+        let current = multicad_core::references::inspect(
+            session.document(),
+            1,
+            &std::collections::BTreeMap::from([(panel, snapshot)]),
+        );
+        let (source, frame, _) =
+            Source::read_evaluated(session.document(), id, 1, &current).unwrap();
+        assert_eq!(frame.origin, [0., 0., 18.]);
+        let model::CurveKind::Circle { radius_mm, .. } = source.sketch.curves[0].kind else {
+            panic!("circle")
+        };
+        assert!((radius_mm - 5.).abs() < 1e-6);
+        session.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn absent_stale_or_unresolved_attachment_blocks_dimension_prepare_and_apply() {
+        let (mut session, id, _, curve, valid) = attached_circle();
+        let before = session.document().clone();
+        let (mut source, _, _) = Source::read_evaluated(session.document(), id, 0, &valid).unwrap();
+        source.add_constraint(Kind::Radius {
+            curve,
+            dimension: Dimension {
+                value: 5.,
+                unit: "mm".into(),
+            },
+        });
+        let mut stale = valid.clone();
+        stale.revision = 1;
+        let unresolved =
+            multicad_core::references::inspect(session.document(), 0, &Default::default());
+        for evaluation in [None, Some(stale), Some(unresolved.clone())] {
+            let mut editor = ConstraintEditor::default();
+            editor.set_evaluation(evaluation);
+            assert!(editor.begin_dimension(&session, id, curve).is_err());
+            editor.prepare(&session, id, source.clone());
+            assert!(editor.preview_document().is_none());
+            assert!(editor.apply(&mut session).is_err());
+            assert_eq!(session.document(), &before);
+        }
+        let mut editor = ConstraintEditor::default();
+        editor.set_evaluation(Some(valid));
+        editor.prepare(&session, id, source);
+        assert!(editor.preview_document().is_some());
+        editor.set_evaluation(Some(unresolved));
+        assert!(editor.preview_document().is_none());
+        assert!(editor.apply(&mut session).is_err());
+        assert!(editor.dirty());
+        assert_eq!(session.document(), &before);
+        assert!(!session.can_undo());
     }
     #[test]
     fn conflict_draft_highlights_geometry_and_reference_toggle_recovers_atomically() {
