@@ -143,12 +143,10 @@ impl Interaction {
             .show_rows(ui, 22., rows.len(), |ui, range| {
                 for i in range {
                     let e = rows[i];
-                    if ui
-                        .selectable_label(self.parts.contains(&e.id)||self.selected.as_ref().is_some_and(|h|h.instance==e.id), &e.name)
-                        .on_hover_text("Select this part · Cmd/Ctrl-click toggles · Shift-click selects a range")
-                        .clicked()
-                    {
-                        let modifiers=ui.input(|i|i.modifiers);
+                    let response = ui.selectable_label(self.parts.contains(&e.id)||self.selected.as_ref().is_some_and(|h|h.instance==e.id), &e.name)
+                        .on_hover_text("Select this part · Cmd/Ctrl-click toggles · Shift-click selects a range");
+                    if response.clicked() {
+                        let modifiers=crate::selection_input::click_modifiers(ui, &response);
                         if modifiers.shift && let Some(start)=self.range_anchor.and_then(|id|rows.iter().position(|row|row.id==id)) {
                             self.selected=None;
                             let parts=Arc::make_mut(&mut self.parts);
@@ -430,7 +428,7 @@ impl Interaction {
                 self.last_query = Some(query);
             }
             if response.clicked() {
-                let modifiers = ui.input(|i| i.modifiers);
+                let modifiers = crate::selection_input::click_modifiers(ui, response);
                 if let Some(hit) = self.hovered.clone()
                     && (modifiers.command || modifiers.shift || self.filter == PickFilter::Parts)
                 {

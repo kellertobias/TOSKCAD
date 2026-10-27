@@ -315,10 +315,17 @@ impl SketchEditor {
         revision: u64,
     ) -> Result<(EntityId, Vec<multicad_core::sketch_regions::RegionIntent>), String> {
         let id = self.selected.ok_or("Select a sketch profile")?;
+        if self.pending_profile_pick.is_some_and(|(stamp, _)| {
+            stamp.sketch == id
+                && stamp.evaluation.document == document.id()
+                && stamp.evaluation.revision == revision
+        }) {
+            return Err("Wait for the current profile selection query".into());
+        }
         let presentation = self
             .sketch_evaluation
             .current(id)
-            .filter(|p| p.stamp.document == document.id() && p.stamp.revision == revision)
+            .filter(|p| p.evaluated.is_current(document, revision))
             .ok_or("Wait for current valid sketch profiles")?;
         if self.profiles.selected().is_empty() {
             return Err("Select one or more closed profile areas".into());
@@ -1431,12 +1438,11 @@ impl SketchEditor {
                                                 (a[0] - center[0]).hypot(a[1] - center[1])
                                             ),
                                         };
-                                        if ui
-                                            .selectable_label(self.element == Some(g.id()) || self.constraints.selected(g.id()), label)
-                                            .clicked()
-                                        {
+                                        let response = ui.selectable_label(self.element == Some(g.id()) || self.constraints.selected(g.id()), label);
+                                        if response.clicked() {
                                             self.element = Some(g.id());
-                                            if !self.constraints.select_geometry(g.id(),Some(g.id()),ui.input(|i|i.modifiers.shift || i.modifiers.command)) {self.element=None;}
+                                            let modifiers = crate::selection_input::click_modifiers(ui, &response);
+                                            if !self.constraints.select_geometry(g.id(),Some(g.id()),modifiers.shift || modifiers.command) {self.element=None;}
                                             self.profiles.clear();
                                             self.tool = None;
                                             self.clear_drawing_progress();
@@ -1469,7 +1475,7 @@ impl SketchEditor {
                                         if self.constraints.selection()!=selection_before {self.profiles.clear();self.pending_profile_pick=None;self.sketch_evaluation.cancel_profile_pick();}
                                         if session.revision() != before {
                                             self.message =
-                                                "Constraints applied · one undoable source edit"
+                                                "Sketch edit applied · one undoable source edit"
                                                     .into();
                                         }
                                         if self.constraints.dirty() {
@@ -2220,7 +2226,8 @@ impl SketchEditor {
                     &presentation.geometry,
                 )
             });
-            let extend = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+            let modifiers = crate::selection_input::click_modifiers(ui, &response);
+            let extend = modifiers.shift || modifiers.command;
             self.pending_profile_pick = None;
             self.sketch_evaluation.cancel_profile_pick();
             match hit {
@@ -2956,7 +2963,7 @@ mod tests {
         );
         let screen = Pos2::new(screen[0], screen[1]);
         for pressed in [true, false] {
-            let raw = input(vec![
+            let mut events = vec![
                 egui::Event::ModifiersChanged(modifiers),
                 egui::Event::PointerMoved(screen),
                 egui::Event::PointerButton {
@@ -2965,12 +2972,76 @@ mod tests {
                     pressed,
                     modifiers,
                 },
-            ]);
+            ];
+            if !pressed {
+                // Native input can deliver modifier key-up after mouse-up in
+                // the same frame; selection belongs to the click event.
+                events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            }
+            let raw = input(events);
             settle(editor, session);
             ctx.run_ui(raw, |ui| editor.canvas(ui, session, true, None, false))
                 .drop_without_applying_deltas();
         }
         settle(editor, session);
+    }
+    #[test]
+    fn pending_profile_click_cannot_supply_the_previous_manufacturing_selection() {
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        for (a, b) in [([0., 0.], [30., 30.]), ([50., 0.], [80., 30.])] {
+            editor
+                .add(&mut session, DrawTool::Rectangle, a, b, Channel::Ui)
+                .unwrap();
+        }
+        editor.tool = None;
+        settle(&mut editor, &session);
+        let id = editor.selected.unwrap();
+        let current = editor.sketch_evaluation.current(id).unwrap();
+        editor.profiles.reconcile(id, &current.regions);
+        let previous = current
+            .regions
+            .regions
+            .iter()
+            .find(|region| region.contains([15., 15.]).unwrap())
+            .unwrap()
+            .intent();
+        editor.profiles.choose(previous.clone(), false);
+        assert!(
+            editor
+                .selected_profiles(session.document(), session.revision())
+                .is_ok()
+        );
+        let before = session.document().clone();
+        let stamp = editor
+            .sketch_evaluation
+            .request_profile_pick(id, [65., 15.])
+            .unwrap();
+        editor.pending_profile_pick = Some((stamp, false));
+        assert_eq!(editor.profiles.selected(), std::slice::from_ref(&previous));
+        assert_eq!(
+            editor.selected_profiles(session.document(), session.revision()),
+            Err("Wait for the current profile selection query".into())
+        );
+        settle(&mut editor, &session);
+        let (_, chosen) = editor
+            .selected_profiles(session.document(), session.revision())
+            .unwrap();
+        assert_eq!(chosen.len(), 1);
+        assert_ne!(chosen[0], previous);
+        let mut altered = before.clone();
+        let mut entity = altered.get(id).unwrap().clone();
+        entity.name = "Changed source without a new revision".into();
+        altered.replace(entity).unwrap();
+        assert_eq!(altered.id(), session.document().id());
+        assert!(
+            editor
+                .selected_profiles(&altered, session.revision())
+                .is_err(),
+            "A same-ID/revision document clone bypassed canonical source validation"
+        );
+        assert_eq!(session.document(), &before);
     }
     #[test]
     fn pointer_selection_is_additive_and_profile_intents_never_silently_acquire_new_holes() {

@@ -587,7 +587,7 @@ impl ModelTree {
                             let role = if row.history_of.is_some() { "Feature used by body (reference only)" } else { row.kind.label() };
                             response.clone().on_hover_text(format!("{}\nOwning component: {}\nCmd/Ctrl-click toggles; Shift-click selects a range", role, row.owner));
                             if response.clicked() || icon.clicked() {
-                                let modifiers = ui.input(|input| input.modifiers);
+                                let modifiers = crate::selection_input::click_modifiers(ui, if response.clicked() { &response } else { &icon });
                                 let mut next = if modifiers.command { selected.clone() } else { BTreeSet::new() };
                                 if modifiers.shift && let Some(start) = self.anchor.and_then(|id| rows.iter().position(|row| row.key == id)) {
                                     next.extend(rows[start.min(row_index)..=start.max(row_index)].iter().filter(|row| row.available).map(|row| row.id));
@@ -1257,6 +1257,7 @@ mod tests {
                         pressed,
                         modifiers,
                     },
+                    egui::Event::ModifiersChanged(egui::Modifiers::NONE),
                 ])
                 .drop_without_applying_deltas();
             }

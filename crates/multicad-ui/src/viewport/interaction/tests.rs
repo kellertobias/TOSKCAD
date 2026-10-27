@@ -144,6 +144,7 @@ fn tree_modifier_selection_toggles_and_ranges_without_editing_source() {
                         pressed,
                         modifiers,
                     },
+                    egui::Event::ModifiersChanged(egui::Modifiers::NONE),
                 ],
             )
             .drop_without_applying_deltas();
@@ -202,7 +203,8 @@ fn viewport_modifier_click_adds_parts_and_scene_refresh_retains_only_existing_id
                 );
                 if response.clicked() {
                     assert!(interaction.hovered_instance().is_some());
-                    if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
+                    let click_modifiers = crate::selection_input::click_modifiers(ui, &response);
+                    if click_modifiers.command || click_modifiers.shift {
                         assert_eq!(interaction.hovered_instance(), interaction.range_anchor);
                         assert!(!interaction.has_topology_selection());
                     } else {
@@ -232,6 +234,7 @@ fn viewport_modifier_click_adds_parts_and_scene_refresh_retains_only_existing_id
                         pressed,
                         modifiers,
                     },
+                    egui::Event::ModifiersChanged(egui::Modifiers::NONE),
                 ],
             );
             if !pressed {

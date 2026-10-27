@@ -7,6 +7,7 @@ pub mod navigation;
 pub mod parameter_editor;
 pub mod reference_repair;
 pub mod registry;
+mod selection_input;
 pub mod storage;
 // Native host and reusable interaction controls. Domain and kernel ownership
 // remain outside the UI.
