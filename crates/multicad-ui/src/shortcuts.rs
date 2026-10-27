@@ -2,6 +2,7 @@
 //! Keyboard navigation never edits source documents directly.
 use crate::registry::{Command, Mode};
 use crate::sketch_editor::DrawTool;
+use crate::sketch_operations::OperationTool;
 use eframe::egui::{self, Key, Modifiers, Vec2};
 use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,6 +417,23 @@ impl ShortcutMap {
                 false,
             );
         }
+        for (key, tool) in [
+            (Key::E, OperationTool::Move),
+            (Key::R, OperationTool::Rotate),
+            (Key::F, OperationTool::Mirror),
+            (Key::G, OperationTool::LinearPattern),
+            (Key::V, OperationTool::CircularPattern),
+            (Key::T, OperationTool::Trim),
+            (Key::X, OperationTool::Extend),
+        ] {
+            add(
+                Scope::SketchEditing,
+                Chord::shifted(key),
+                Command(crate::registry::Command::SketchOperation(tool)),
+                tool.label(),
+                false,
+            );
+        }
         add(
             Scope::Mode(Mode::Model),
             Chord::plain(Key::E),
@@ -759,5 +777,41 @@ mod tests {
             .actions
             .is_empty()
         );
+    }
+    #[test]
+    fn sketch_edit_shortcuts_are_scoped_and_preserve_navigation_and_text_input() {
+        let map = ShortcutMap::standard();
+        let mut c = context(Mode::Sketch);
+        c.sketch_editing = true;
+        for (key, tool) in [
+            (Key::E, OperationTool::Move),
+            (Key::R, OperationTool::Rotate),
+            (Key::F, OperationTool::Mirror),
+            (Key::G, OperationTool::LinearPattern),
+            (Key::V, OperationTool::CircularPattern),
+            (Key::T, OperationTool::Trim),
+            (Key::X, OperationTool::Extend),
+        ] {
+            assert_eq!(
+                map.resolve(key, Modifiers::SHIFT, &c).unwrap().action,
+                Action::Command(Command::SketchOperation(tool))
+            );
+        }
+        assert_eq!(
+            map.resolve(Key::W, Modifiers::NONE, &c).unwrap().action,
+            Action::Pan(Pan::Up)
+        );
+        assert_eq!(
+            map.resolve(Key::Tab, Modifiers::NONE, &c).unwrap().action,
+            Action::NextWorkspace
+        );
+        c.sketch_editing = false;
+        assert_eq!(
+            map.resolve(Key::F, Modifiers::SHIFT, &c).unwrap().action,
+            Action::Home
+        );
+        c.sketch_editing = true;
+        c.text_input = true;
+        assert!(map.resolve(Key::E, Modifiers::SHIFT, &c).is_none());
     }
 }

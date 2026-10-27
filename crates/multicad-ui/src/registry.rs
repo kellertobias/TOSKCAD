@@ -1,5 +1,5 @@
 //! Declarative workspace/ribbon catalog shared by buttons and command entry.
-use crate::{icons::Icon, sketch_editor::DrawTool};
+use crate::{icons::Icon, sketch_editor::DrawTool, sketch_operations::OperationTool};
 use eframe::egui::Color32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
@@ -55,6 +55,7 @@ pub enum Command {
     NewWindow,
     NewSketch,
     Draw(DrawTool),
+    SketchOperation(OperationTool),
     Construction,
     Dimension,
     FinishSketch,
@@ -75,6 +76,7 @@ pub struct Tool {
 pub struct RibbonTab {
     pub title: &'static str,
     pub tools: Vec<&'static str>,
+    pub requires_active_sketch: bool,
 }
 #[derive(Clone)]
 pub struct Workspace {
@@ -249,6 +251,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for tool in OperationTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::SketchOperation(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for mode in Mode::ALL {
             registry.tools.push(Tool {
                 id: mode.title(),
@@ -315,6 +326,7 @@ impl Default for Registry {
         let tab = |title, tools: &[&'static str]| RibbonTab {
             title,
             tools: tools.to_vec(),
+            requires_active_sketch: false,
         };
         registry.workspaces = vec![
             Workspace {
@@ -343,6 +355,14 @@ impl Default for Registry {
                             "finish-sketch",
                         ],
                     ),
+                    RibbonTab {
+                        title: "Edit",
+                        tools: OperationTool::ALL
+                            .into_iter()
+                            .map(OperationTool::id)
+                            .collect(),
+                        requires_active_sketch: true,
+                    },
                     tab("Room", &["wall", "door", "window-tool", "stairs"]),
                 ],
             },
@@ -388,9 +408,10 @@ impl Registry {
         self.tools.iter().find(|t| t.id == id)
     }
     pub fn resolve(&self, name: &str) -> Option<&Tool> {
-        self.tools
-            .iter()
-            .find(|t| t.aliases.iter().any(|a| a.eq_ignore_ascii_case(name)))
+        self.tools.iter().find(|t| {
+            t.id.eq_ignore_ascii_case(name)
+                || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+        })
     }
     pub fn search(&self, query: &str) -> Vec<&Tool> {
         let query = query.trim().to_lowercase();
@@ -398,6 +419,7 @@ impl Registry {
             .iter()
             .filter(|tool| {
                 query.is_empty()
+                    || tool.id.to_lowercase().contains(&query)
                     || tool.label.to_lowercase().contains(&query)
                     || tool
                         .aliases
@@ -502,6 +524,39 @@ mod tests {
         assert_eq!(
             registry.parse_line("rect 0 0 1 1").unwrap().0,
             Command::Draw(DrawTool::Rectangle)
+        );
+    }
+    #[test]
+    fn sketch_operation_catalog_drives_edit_ribbon_and_unambiguous_aliases() {
+        let registry = Registry::default();
+        let edit = registry
+            .workspace(Mode::Sketch)
+            .tabs
+            .iter()
+            .find(|tab| tab.title == "Edit")
+            .unwrap();
+        assert!(edit.requires_active_sketch);
+        assert_eq!(
+            edit.tools,
+            OperationTool::ALL
+                .into_iter()
+                .map(OperationTool::id)
+                .collect::<Vec<_>>()
+        );
+        for operation in OperationTool::ALL {
+            let tool = registry.tool(operation.id()).unwrap();
+            assert_eq!(tool.action, Command::SketchOperation(operation));
+            assert_eq!(tool.label, operation.label());
+            for alias in operation.aliases() {
+                assert_eq!(
+                    registry.resolve(alias).unwrap().action,
+                    Command::SketchOperation(operation)
+                );
+            }
+        }
+        assert_eq!(
+            registry.resolve("move").unwrap().action,
+            Command::Extension("move")
         );
     }
 }

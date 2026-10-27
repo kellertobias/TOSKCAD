@@ -192,6 +192,11 @@ impl Application {
             let project = self.current_mut();
             project.editor.reload(&project.session);
         }
+        if let Command::SketchOperation(tool) = command
+            && !args.is_empty()
+        {
+            return Err(tool.usage());
+        }
         if !args.is_empty()
             && !matches!(
                 command,
@@ -404,6 +409,25 @@ impl Application {
                     .sketch
                     .finish_spline(&mut project.session, false, channel)?;
             }
+            Command::SketchOperation(tool) => {
+                if !self.enabled(command) {
+                    return Err("Open a sketch with current valid geometry and apply or cancel pending edits first".into());
+                }
+                self.current_mut().sketch.begin_operation(tool)?;
+                if let Some(index) = self
+                    .registry
+                    .workspace(Mode::Sketch)
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.tools.contains(&tool.id()))
+                {
+                    self.tab = index;
+                }
+                self.message = format!(
+                    "{} · enter sketch-plane values in the Inspector, then Preview",
+                    tool.label()
+                );
+            }
             Command::Delete => {
                 let p = self.current_mut();
                 p.sketch.delete(&mut p.session, channel)?;
@@ -445,6 +469,9 @@ impl Application {
             Command::NewSketch => !pending(),
             Command::FinishCurve => {
                 self.mode == Mode::Sketch && !pending() && self.current().sketch.can_finish_spline()
+            }
+            Command::SketchOperation(_) => {
+                self.mode == Mode::Sketch && !pending() && self.current().sketch.operation_ready()
             }
             Command::Draw(_)
             | Command::Construction
@@ -771,6 +798,9 @@ impl Application {
     fn ribbon(&mut self, ui: &mut egui::Ui) {
         let workspace = self.registry.workspace(self.mode).clone();
         self.tab = self.tab.min(workspace.tabs.len() - 1);
+        if workspace.tabs[self.tab].requires_active_sketch && !self.current().sketch.editing {
+            self.tab = 0;
+        }
         let accent = self.mode.color();
         let mut action = None;
         egui::Frame::new()
@@ -780,6 +810,9 @@ impl Application {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     for (index, tab) in workspace.tabs.iter().enumerate() {
+                        if tab.requires_active_sketch && !self.current().sketch.editing {
+                            continue;
+                        }
                         if controls::tab(
                             ui,
                             tab.title,
@@ -1054,11 +1087,18 @@ impl Application {
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
                     let count = self.registry.workspace(self.mode).tabs.len();
-                    self.tab = if action == ShortcutAction::NextWorkspace {
-                        (self.tab + 1) % count
-                    } else {
-                        (self.tab + count - 1) % count
-                    };
+                    for _ in 0..count {
+                        self.tab = if action == ShortcutAction::NextWorkspace {
+                            (self.tab + 1) % count
+                        } else {
+                            (self.tab + count - 1) % count
+                        };
+                        if !self.registry.workspace(self.mode).tabs[self.tab].requires_active_sketch
+                            || self.current().sketch.editing
+                        {
+                            break;
+                        }
+                    }
                     ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
                     self.message = format!(
                         "{} workspace",
@@ -2207,5 +2247,62 @@ mod tests {
             }
             assert_eq!(app.current().session.document(), &source);
         }
+    }
+    #[test]
+    fn sketch_edit_workspace_is_hidden_until_open_and_tab_navigation_skips_it() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.mode = Mode::Sketch;
+        app.tab = 1;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| app.ribbon(ui));
+        let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+        assert!(
+            !tree
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Edit"))
+        );
+        output.drop_without_applying_deltas();
+        assert_eq!(app.tab, 0);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
+        );
+        assert_eq!(
+            app.registry.workspace(Mode::Sketch).tabs[app.tab].title,
+            "Room"
+        );
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        app.tab = 0;
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
+        );
+        assert_eq!(
+            app.registry.workspace(Mode::Sketch).tabs[app.tab].title,
+            "Edit"
+        );
+    }
+    #[test]
+    fn operation_commands_reject_unavailable_context_and_unsupported_cli_arguments() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let before = app.current().session.document().clone();
+        for operation in crate::sketch_operations::OperationTool::ALL {
+            let command = Command::SketchOperation(operation);
+            assert!(!app.enabled(command));
+            assert!(app.invoke(command, &[], Channel::Ui).is_err());
+            assert!(
+                app.invoke(command, &["10", "20"], Channel::CommandLine)
+                    .unwrap_err()
+                    .starts_with("Usage:")
+            );
+        }
+        assert_eq!(app.current().session.document(), &before);
+        assert_eq!(app.current().session.revision(), 0);
     }
 }
