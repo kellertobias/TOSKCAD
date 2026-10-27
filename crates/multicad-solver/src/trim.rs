@@ -129,6 +129,8 @@ pub fn prepare_trim(
             label: match request {
                 TrimRequest::Trim(_) => "Trim line",
                 TrimRequest::Extend(_) => "Extend line",
+                TrimRequest::TrimCurve(_) => "Trim curve",
+                TrimRequest::ExtendArc(_) => "Extend arc",
             },
         },
     )?;

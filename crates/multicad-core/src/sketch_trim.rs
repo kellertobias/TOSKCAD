@@ -1,4 +1,4 @@
-//! Source-neutral line trim/extend drafts using analytic line/arc/circle
+//! Source-neutral analytic trim/extend drafts using line/arc/circle
 //! boundaries. Numerical currentness is established by the solver wrapper;
 //! structural checks here never constitute proof of a successful solve.
 use crate::{
@@ -11,6 +11,7 @@ use std::{
     f64::consts::TAU,
 };
 type Position = [f64; 2];
+mod circular;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeometryStamp {
     pub document: EntityId,
@@ -43,22 +44,27 @@ pub struct ExtendLine {
     pub endpoint: Endpoint,
     pub boundaries: BTreeSet<EntityId>,
 }
+pub type TrimCurve = TrimLine;
+pub type ExtendArc = ExtendLine;
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrimRequest {
     Trim(TrimLine),
     Extend(ExtendLine),
+    /// Trim a supported line, circular arc or circle by its picked span.
+    TrimCurve(TrimCurve),
+    ExtendArc(ExtendArc),
 }
 impl TrimRequest {
     fn target(&self) -> EntityId {
         match self {
-            Self::Trim(r) => r.target,
-            Self::Extend(r) => r.target,
+            Self::Trim(r) | Self::TrimCurve(r) => r.target,
+            Self::Extend(r) | Self::ExtendArc(r) => r.target,
         }
     }
     fn boundaries(&self) -> &BTreeSet<EntityId> {
         match self {
-            Self::Trim(r) => &r.boundaries,
-            Self::Extend(r) => &r.boundaries,
+            Self::Trim(r) | Self::TrimCurve(r) => &r.boundaries,
+            Self::Extend(r) | Self::ExtendArc(r) => &r.boundaries,
         }
     }
 }
@@ -74,6 +80,8 @@ impl Default for TrimPolicy {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Contact {
     pub point_mm: Position,
+    /// Directed angle in radians for circular targets, normalized line fraction
+    /// otherwise. Arc-start extension contacts have negative angles.
     pub parameter: f64,
     pub boundaries: BTreeSet<EntityId>,
 }
@@ -87,6 +95,31 @@ pub enum Action {
         from_mm: Position,
         to_mm: Position,
     },
+    TrimArc {
+        removed_mm: [Position; 2],
+        center_mm: Position,
+        radius_mm: f64,
+        clockwise: bool,
+        removed_sweep_rad: f64,
+    },
+    ExtendArc {
+        endpoint: Endpoint,
+        from_mm: Position,
+        to_mm: Position,
+        center_mm: Position,
+        radius_mm: f64,
+        clockwise: bool,
+        added_sweep_rad: f64,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Parameterization {
+    LineFraction,
+    ArcRadians,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveTypeChange {
+    CircleToArc,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrimReport {
@@ -95,8 +128,10 @@ pub struct TrimReport {
     pub target: EntityId,
     pub boundaries: BTreeSet<EntityId>,
     pub action: Action,
+    pub parameterization: Parameterization,
+    pub type_changes: BTreeMap<EntityId, CurveTypeChange>,
     /// An interior split removes the old curve and creates both fragments.
-    /// A single surviving line keeps the old identity.
+    /// A single surviving curve keeps the old identity. Type changes are explicit.
     pub replacements: BTreeMap<EntityId, Vec<EntityId>>,
     pub created_points: BTreeSet<EntityId>,
     pub created_curves: BTreeSet<EntityId>,
@@ -233,8 +268,8 @@ impl Axis {
 }
 fn relevant(request: &TrimRequest, t: f64) -> bool {
     match request {
-        TrimRequest::Trim(_) => (0. ..=1.).contains(&t),
-        TrimRequest::Extend(r) => match r.endpoint {
+        TrimRequest::Trim(_) | TrimRequest::TrimCurve(_) => (0. ..=1.).contains(&t),
+        TrimRequest::Extend(r) | TrimRequest::ExtendArc(r) => match r.endpoint {
             Endpoint::Start => t < 0.,
             Endpoint::End => t > 1.,
         },
@@ -365,11 +400,15 @@ fn contacts(
                         let t1 = dot(sub(b, axis.a), axis.d) / (axis.length * axis.length);
                         let (low, high) = (t0.min(t1), t0.max(t1));
                         let overlaps = match request {
-                            TrimRequest::Trim(_) => high >= 0. && low <= 1.,
-                            TrimRequest::Extend(r) => match r.endpoint {
-                                Endpoint::Start => low < 0.,
-                                Endpoint::End => high > 1.,
-                            },
+                            TrimRequest::Trim(_) | TrimRequest::TrimCurve(_) => {
+                                high >= 0. && low <= 1.
+                            }
+                            TrimRequest::Extend(r) | TrimRequest::ExtendArc(r) => {
+                                match r.endpoint {
+                                    Endpoint::Start => low < 0.,
+                                    Endpoint::End => high > 1.,
+                                }
+                            }
                         };
                         if overlaps {
                             return Err(fail(
@@ -527,9 +566,9 @@ fn contacts(
     }
     Ok(unique)
 }
-/// This operation supports line targets only. Arc/circle targets, tangential
-/// contacts and ambiguous near-endpoint cuts are explicit failures, never a
-/// polyline approximation. The solver adapter must first validate currentness.
+/// The line-specific requests retain their original target restriction. Generic
+/// trim and arc extension use exact circular geometry; spline targets, tangencies
+/// and ambiguous near-endpoint cuts remain explicit failures.
 pub fn draft(
     source: &Source,
     expected: GeometryStamp,
@@ -596,6 +635,29 @@ pub fn draft(
                 [request.target()],
             )
         })?;
+    if matches!(target.kind, CurveKind::BSpline { .. }) {
+        return Err(fail(
+            TrimErrorKind::UnsupportedTarget,
+            "Spline targets require a dedicated exact curve trim operation",
+            [target.id],
+        ));
+    }
+    if matches!(
+        request,
+        TrimRequest::TrimCurve(_) | TrimRequest::ExtendArc(_)
+    ) && matches!(
+        target.kind,
+        CurveKind::Arc { .. } | CurveKind::Circle { .. }
+    ) {
+        return circular::draft(source, solved, expected, hash, target, request, tolerance);
+    }
+    if matches!(request, TrimRequest::ExtendArc(_)) {
+        return Err(fail(
+            TrimErrorKind::UnsupportedTarget,
+            "Arc extension requires an actual circular arc",
+            [target.id],
+        ));
+    }
     let CurveKind::Line { start, end } = target.kind else {
         return Err(fail(
             TrimErrorKind::UnsupportedTarget,
@@ -617,7 +679,7 @@ pub fn draft(
     let axis = Axis { a, d, length: size };
     let contacts = contacts(solved, &axis, request, tolerance)?;
     let (spans, action): (Vec<[f64; 2]>, Action) = match request {
-        TrimRequest::Trim(r) => {
+        TrimRequest::Trim(r) | TrimRequest::TrimCurve(r) => {
             if r.pick_mm.iter().any(|v| !v.is_finite() || v.abs() > 1e9) {
                 return Err(fail(
                     TrimErrorKind::InvalidPick,
@@ -674,7 +736,7 @@ pub fn draft(
                 },
             )
         }
-        TrimRequest::Extend(r) => {
+        TrimRequest::Extend(r) | TrimRequest::ExtendArc(r) => {
             let contact = match r.endpoint {
                 Endpoint::Start => contacts.last(),
                 Endpoint::End => contacts.first(),
@@ -805,6 +867,8 @@ pub fn draft(
             target: target.id,
             boundaries: request.boundaries().clone(),
             action,
+            parameterization: Parameterization::LineFraction,
+            type_changes: BTreeMap::new(),
             replacements: BTreeMap::from([(target.id, replacement)]),
             created_points,
             created_curves,
