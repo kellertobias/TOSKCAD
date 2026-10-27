@@ -103,6 +103,13 @@ impl Transform {
     pub fn vector(self, v: Point) -> Point {
         self.rotation.map(|row| dot(row, v))
     }
+    pub fn frame(self, frame: ReferenceFrame) -> ReferenceFrame {
+        ReferenceFrame {
+            origin_mm: self.point(frame.origin_mm),
+            u: self.vector(frame.u),
+            v: self.vector(frame.v),
+        }
+    }
     pub(crate) fn rows(self) -> [[f32; 4]; 3] {
         std::array::from_fn(|i| {
             [
@@ -508,6 +515,15 @@ impl Scene {
     }
     pub fn geometries(&self) -> &BTreeMap<EntityId, Arc<Geometry>> {
         &self.geometries
+    }
+    /// Local source topology for one canonical geometry producer. Placed
+    /// occurrence frames are supplied separately by its instance transform.
+    pub fn geometry_snapshot(&self, producer: EntityId) -> Option<TopologySnapshot> {
+        Some(TopologySnapshot {
+            owner: producer,
+            revision: self.stamp.revision,
+            elements: self.geometries.get(&producer)?.topology.clone(),
+        })
     }
     /// Evaluation-local provenance for canonical geometry producers and placed
     /// instances. Hidden upstream assets remain available for reference intent.
