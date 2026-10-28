@@ -40,6 +40,9 @@ pub struct ModelSnapshot {
     pub shapes: BTreeMap<EntityId, Arc<ShapeSnapshot>>,
     /// Canonical Part identity to its final unsuppressed producing feature.
     pub bodies: BTreeMap<EntityId, EntityId>,
+    /// Canonical tool Parts retained as source/history but consumed by an
+    /// unsuppressed Boolean rather than emitted as independent final bodies.
+    pub consumed_bodies: BTreeSet<EntityId>,
     pub references: ReferenceReport,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,8 +177,21 @@ impl Compiler {
         };
         let mut bodies = BTreeMap::new();
         for entity in document.entities() {
-            if let EntityData::Part { features, .. } = &entity.data
-                && let Some(producer) = features.iter().rev().find(|id| {
+            if let EntityData::Part { features, .. } = &entity.data {
+                for feature in features {
+                    if !matches!(
+                        document.get(*feature).map(|e| &e.data),
+                        Some(EntityData::Feature { .. })
+                    ) {
+                        return Err(error(
+                            Some(entity.id),
+                            format!(
+                                "Body history producer {feature} is missing or invalid; repair its source before rebuilding"
+                            ),
+                        ));
+                    }
+                }
+                if let Some(producer) = features.iter().rev().find(|id| {
                     matches!(
                         document.get(**id).map(|e| &e.data),
                         Some(EntityData::Feature {
@@ -183,9 +199,9 @@ impl Compiler {
                             ..
                         })
                     )
-                })
-            {
-                bodies.insert(entity.id, *producer);
+                }) {
+                    bodies.insert(entity.id, *producer);
+                }
             }
         }
         // Only model roots and their dependencies are executable. Unconsumed
@@ -205,7 +221,8 @@ impl Compiler {
             queries: NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?,
             cache: BTreeMap::new(),
         };
-        let mut solids = BTreeMap::new();
+        let mut solids: BTreeMap<EntityId, Solid> = BTreeMap::new();
+        let mut consumed_versions = BTreeSet::new();
         let mut shapes = BTreeMap::new();
         let mut topologies = BTreeMap::new();
         let mut triangles = 0usize;
@@ -370,6 +387,51 @@ impl Compiler {
                     )
                     .map_err(|e| error(Some(id), e))?
                 }
+                (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA) => {
+                    let source =
+                        model::read_boolean(document, id).map_err(|e| error(Some(id), e))?;
+                    source
+                        .target
+                        .resolve_producer(document)
+                        .map_err(|e| error(Some(id), e))?;
+                    let target = solids.get(&source.target.producer).ok_or_else(|| {
+                        error(Some(id), "Boolean target has no current exact solid")
+                    })?;
+                    let operation = match source.operation {
+                        Operation::Join => multicad_kernel::BooleanOperation::Union,
+                        Operation::Cut => multicad_kernel::BooleanOperation::Subtract,
+                        Operation::Intersect => multicad_kernel::BooleanOperation::Intersect,
+                        _ => {
+                            return Err(error(
+                                Some(id),
+                                "Unsupported standalone Boolean operation",
+                            ));
+                        }
+                    };
+                    let mut result: Option<Solid> = None;
+                    for input in &source.tools {
+                        checkpoint(interrupt)?;
+                        input
+                            .resolve_producer(document)
+                            .map_err(|e| error(Some(id), e))?;
+                        let tool = solids.get(&input.producer).ok_or_else(|| {
+                            error(Some(id), "Boolean tool has no current exact solid")
+                        })?;
+                        result=Some(result.as_ref().unwrap_or(target).boolean(tool,operation,self.policy).map_err(|e|error(Some(id),e))?.ok_or_else(||error(Some(id),"Boolean removed all material; no output body can be committed"))?);
+                    }
+                    let solid = result.ok_or_else(|| error(Some(id), "Boolean requires a tool"))?;
+                    if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
+                        return Err(error(
+                            Some(id),
+                            "Boolean produced disconnected fragments; independent Split outputs are not supported yet",
+                        ));
+                    }
+                    if !source.keep_tools {
+                        consumed_versions
+                            .extend(source.tools.iter().map(|tool| (tool.body, tool.producer)));
+                    }
+                    solid
+                }
                 (kind, version) => {
                     return Err(error(
                         Some(id),
@@ -406,12 +468,22 @@ impl Compiler {
         }
         checkpoint(interrupt)?;
         let references = references::inspect(document, revision, &topologies);
+        let consumed_bodies = bodies
+            .iter()
+            .filter_map(|(body, producer)| {
+                consumed_versions
+                    .contains(&(*body, *producer))
+                    .then_some(*body)
+            })
+            .collect::<BTreeSet<_>>();
+        bodies.retain(|body, _| !consumed_bodies.contains(body));
         Ok(Model {
             solids,
             snapshot: ModelSnapshot {
                 stamp,
                 shapes,
                 bodies,
+                consumed_bodies,
                 references,
             },
         })
