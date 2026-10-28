@@ -16,6 +16,7 @@ mod occurrences;
 mod runtime;
 mod scale;
 mod split;
+mod symbols;
 mod targets;
 mod transfer;
 mod transform;

@@ -276,6 +276,9 @@ impl Compiler {
         checkpoint(interrupt)?;
         document.validate().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
+        if roots.is_none() {
+            crate::symbols::validate_definitions(self, document, revision, interrupt)?;
+        }
         let context =
             SketchEvaluationContext::new(document, revision).map_err(|e| error(e.source, e))?;
         let stamp = ModelStamp {
