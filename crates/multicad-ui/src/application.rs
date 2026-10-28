@@ -3490,3 +3490,7 @@ mod ribbon_layout_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "application/inspector_tests.rs"]
+mod inspector_tests;

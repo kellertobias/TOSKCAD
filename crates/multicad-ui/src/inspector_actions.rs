@@ -15,12 +15,15 @@ pub(crate) enum Owner {
     Drawing,
     Properties,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Footer {
     owner: Owner,
     rect: Rect,
     clip: Rect,
     accent: Color32,
+    root_id: egui::Id,
+    root: egui::UiBuilder,
+    opacity: f32,
 }
 fn key() -> egui::Id {
     egui::Id::new("active-inspector-footer")
@@ -55,6 +58,22 @@ pub(crate) fn scope<R>(
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let available = ui.available_rect_before_wrap();
+    // Capture the non-scrolling parent's UI context. Action rows must never
+    // inherit a scroll body's culling, opacity, interaction ancestry or IDs.
+    let mut root = egui::UiBuilder::new()
+        .layer_id(ui.layer_id())
+        .style(ui.style().clone())
+        .accessibility_parent(ui.id())
+        .layout(egui::Layout::top_down(egui::Align::Min));
+    if !ui.is_enabled() {
+        root = root.disabled();
+    }
+    if !ui.is_visible() {
+        root = root.invisible();
+    }
+    if ui.is_sizing_pass() {
+        root = root.sizing_pass();
+    }
     let fixed = owner.map(|owner| Footer {
         owner,
         rect: Rect::from_min_max(
@@ -66,8 +85,11 @@ pub(crate) fn scope<R>(
         ),
         clip: ui.clip_rect(),
         accent,
+        root_id: ui.id().with("inspector-fixed-actions"),
+        root,
+        opacity: ui.opacity(),
     });
-    if let Some(footer) = fixed {
+    if let Some(footer) = &fixed {
         ui.painter()
             .rect_filled(footer.rect, 0., Color32::from_rgb(25, 33, 44));
         ui.painter().hline(
@@ -78,8 +100,8 @@ pub(crate) fn scope<R>(
     }
     let previous = ui.ctx().data_mut(|data| {
         let old = data.get_temp::<Footer>(key());
-        if let Some(footer) = fixed {
-            data.insert_temp(key(), footer);
+        if let Some(footer) = &fixed {
+            data.insert_temp(key(), footer.clone());
         } else {
             data.remove::<Footer>(key())
         }
@@ -90,6 +112,7 @@ pub(crate) fn scope<R>(
         egui::pos2(
             available.right(),
             fixed
+                .as_ref()
                 .map_or(available.bottom(), |footer| footer.rect.top() - 4.)
                 .max(available.top()),
         ),
@@ -126,18 +149,18 @@ pub(crate) fn row(
     cancel: Button<'_>,
 ) -> Clicks {
     let footer = ui.ctx().data(|data| data.get_temp::<Footer>(key()));
-    if footer.is_some_and(|f| f.owner != owner) {
+    if footer.as_ref().is_some_and(|f| f.owner != owner) {
         return Clicks::default();
     }
     let mut clicks = Clicks::default();
     if let Some(footer) = footer {
         let rect = footer.rect.shrink2(Vec2::new(8., 6.));
-        let mut actions = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt(("fixed-actions", owner as u8))
-                .max_rect(rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
+        let mut actions = egui::Ui::new(
+            ui.ctx().clone(),
+            footer.root_id.with(owner as u8),
+            footer.root.clone().max_rect(rect),
         );
+        actions.set_opacity(footer.opacity);
         actions.set_clip_rect(footer.clip.intersect(footer.rect));
         let mut slot = |id: &str, rect: Rect, spec: Button<'_>, fill, label| {
             let mut child = actions.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect));

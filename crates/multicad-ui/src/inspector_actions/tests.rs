@@ -231,3 +231,96 @@ fn normalized_labels_keep_tool_specific_accessibility_context() {
     );
     output.drop_without_applying_deltas();
 }
+
+#[test]
+fn culled_scrolling_body_cannot_hide_or_disable_the_fixed_footer() {
+    let ctx = Context::default();
+    ctx.enable_accesskit();
+    let mut cancelled = false;
+    let mut draw = |events| {
+        ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(250., 300.))),
+                events,
+                focused: true,
+                ..Default::default()
+            },
+            |ui| {
+                scope(ui, Some(Owner::Model), Color32::BLUE, |ui| {
+                    // Body culling and local opacity belong to the scroll viewport;
+                    // neither can change its independently reserved action region.
+                    ui.set_invisible();
+                    cancelled |= row(
+                        ui,
+                        Owner::Model,
+                        Some(Button::new("Preview", true, "Validate")),
+                        Button::new("Apply", false, "Needs native preview"),
+                        Button::new("Cancel", true, "Discard local draft"),
+                    )
+                    .cancel;
+                });
+            },
+        )
+    };
+    draw(vec![]).drop_without_applying_deltas();
+    let out = draw(vec![]);
+    let cancel = bounds(&out, "Cancel");
+    let visible=out.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="Cancel"&&s.clip_rect.contains_rect(Rect::from_min_size(t.pos,t.galley.size()))));
+    out.drop_without_applying_deltas();
+    assert!(visible, "Culled body hid the independently reserved footer");
+    for pressed in [true, false] {
+        draw(vec![
+            Event::PointerMoved(cancel.center()),
+            Event::PointerButton {
+                pos: cancel.center(),
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            },
+        ])
+        .drop_without_applying_deltas();
+    }
+    assert!(cancelled);
+}
+
+#[test]
+fn independent_footer_respects_the_non_scroll_parents_disabled_state() {
+    let ctx = Context::default();
+    ctx.enable_accesskit();
+    let out = ctx.run_ui(RawInput::default(), |ui| {
+        ui.disable();
+        scope(ui, Some(Owner::Model), Color32::BLUE, |ui| {
+            row(
+                ui,
+                Owner::Model,
+                None,
+                Button::new("Apply", true, "Valid local candidate"),
+                Button::new("Cancel", true, "Local cancel"),
+            );
+        });
+    });
+    let disabled = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|(_, n)| matches!(n.label(), Some("Apply" | "Cancel")))
+        .all(|(_, n)| n.is_disabled());
+    let actions = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|(_, n)| matches!(n.label(), Some("Apply" | "Cancel")))
+        .count();
+    out.drop_without_applying_deltas();
+    assert_eq!(actions, 2);
+    assert!(
+        disabled,
+        "Detached actions bypassed a disabled/modal parent"
+    );
+}
