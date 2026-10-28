@@ -68,7 +68,7 @@ impl AssemblyTool {
         match self {
             Self::Place => &["component", "reuse-component"],
             Self::CreateAssembly => &["assembly", "subassembly"],
-            Self::Relationship => &["joint", "slider", "hinge"],
+            Self::Relationship => &["assembly-joint", "slider", "hinge"],
             Self::Motion => &["motion", "joint-value"],
             Self::NamedPose => &["pose", "save-pose"],
             Self::Interference => &["clearance", "collision"],

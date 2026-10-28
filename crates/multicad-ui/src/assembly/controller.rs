@@ -693,3 +693,7 @@ impl AssemblyController {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod native_tests;
