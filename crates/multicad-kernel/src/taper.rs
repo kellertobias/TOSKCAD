@@ -25,7 +25,7 @@ fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
 fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
-fn offset(
+pub(crate) fn offset(
     wire: &[CurvedEdge2d],
     delta: f64,
     p: GeometryPolicy,

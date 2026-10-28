@@ -28,6 +28,7 @@ static Point3 local(const gp_Pnt &a,const Frame3 &frame) {
 rust::Vec<PlanarWireData> planar_face_contours(const Shape &shape,uint32_t index,const Frame3 &frame,double tolerance) {
   try {
     TopTools_IndexedMapOfShape faces;TopExp::MapShapes(shape.value,TopAbs_FACE,faces);
+    TopTools_IndexedMapOfShape sourceEdges;TopExp::MapShapes(shape.value,TopAbs_EDGE,sourceEdges);
     if(index>=static_cast<uint32_t>(faces.Extent()))throw std::runtime_error("Selected planar face no longer exists");
     const auto face=TopoDS::Face(faces(index+1));
     BRepAdaptor_Surface surface(face);
@@ -55,7 +56,9 @@ rust::Vec<PlanarWireData> planar_face_contours(const Shape &shape,uint32_t index
         double first=curve.FirstParameter(),last=curve.LastParameter();
         if(!std::isfinite(first)||!std::isfinite(last)||last<=first)throw std::runtime_error("Planar boundary has no finite trim range");
         if(edge.Orientation()==TopAbs_REVERSED)std::swap(first,last);
-        PlanarSegmentData data{};data.a=local(curve.Value(first),frame);data.b=local(curve.Value(last),frame);
+        const int sourceIndex=sourceEdges.FindIndex(edge);
+        if(sourceIndex<1)throw std::runtime_error("Planar boundary edge has no current native topology identity");
+        PlanarSegmentData data{};data.edge_index=static_cast<uint32_t>(sourceIndex-1);data.a=local(curve.Value(first),frame);data.b=local(curve.Value(last),frame);
         if(curve.GetType()==GeomAbs_Line) {data.kind=0;}
         else if(curve.GetType()==GeomAbs_Circle) {
           data.kind=1;const auto circle=curve.Circle();

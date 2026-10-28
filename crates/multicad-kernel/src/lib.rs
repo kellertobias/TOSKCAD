@@ -133,6 +133,7 @@ mod ffi {
         pub preview: Vec<f64>,
     }
     pub struct PlanarSegmentData {
+        pub edge_index: u32,
         pub kind: u8,
         pub a: Point3,
         pub b: Point3,
@@ -443,3 +444,5 @@ impl Shape {
 }
 
 mod planar_contours;
+pub use planar_contours::SourcedPlanarContours;
+mod transferred_cuts;
