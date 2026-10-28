@@ -1,0 +1,544 @@
+//! Actual native application transport: source-local B-reps, placed instances,
+//! exact result catalogues and Session-owned preparations. The included module
+//! is the production app backend, not a test geometry/query implementation.
+#[path = "../src/external_queries.rs"]
+mod external_queries;
+use multicad_core::{
+    commands::{Actor, Channel, ErrorCode, Session},
+    constraint_sketch::source::Source,
+    document::{Document, EntityId},
+    model::{
+        self, BodyInput, InstanceCopyRequest, InstanceCopySource, NumericTransform, OccurrencePath,
+        PrimitiveParameters, PrimitiveRequest, angle, length,
+    },
+    project_file::{ContentHash, ProjectResources},
+    references::{AnalyticGeometry, GeometryIntent},
+    sketch::Datum,
+    sketch_external::{
+        self, Behavior, ExternalCatalog, ExternalGeometry, ExternalQuery, OccurrenceCaptureRequest,
+        OccurrenceSource, QueryMethod,
+    },
+};
+use multicad_model::Compiler;
+use multicad_ui::external_references::{
+    ExternalPrepared, ExternalQueryBackend, ExternalQueryReply,
+};
+use std::time::{Duration, Instant};
+fn actor() -> Actor {
+    Actor::local(Channel::Mcp)
+}
+fn near(a: f64, b: f64) {
+    assert!((a - b).abs() < 1e-7, "{a} != {b}");
+}
+fn poll(backend: &mut external_queries::Backend) -> ExternalQueryReply {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(reply) = backend.poll() {
+            return reply;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Native reference backend did not settle"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+struct Fixture {
+    session: Session,
+    part: PrimitiveRequest,
+    sketch: EntityId,
+    copies: Vec<InstanceCopyRequest>,
+}
+fn fixture(cylinder: bool) -> Fixture {
+    let (sketch, edits) = Source::create(Datum::Xy, "Native occurrence consumer").unwrap();
+    let mut session = Session::new(
+        Document::new("Native backend references")
+            .unwrap()
+            .edited(&edits)
+            .unwrap(),
+    )
+    .unwrap();
+    let part = PrimitiveRequest::new(
+        "Native hardware",
+        if cylinder {
+            PrimitiveParameters::Cylinder {
+                radius: length(5.),
+                height: length(3.),
+                frame: Default::default(),
+            }
+        } else {
+            PrimitiveParameters::Box {
+                size: [length(30.), length(20.), length(4.)],
+                frame: Default::default(),
+            }
+        },
+    );
+    let prepared = model::prepare_primitive(&session, session.revision(), actor(), &part).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let copies = (0..if cylinder { 1 } else { 2 })
+        .map(|index| {
+            InstanceCopyRequest::new(
+                InstanceCopySource::Part {
+                    source: BodyInput {
+                        body: part.body,
+                        producer: part.feature,
+                    },
+                },
+                NumericTransform {
+                    axis: if cylinder { [0., 1., 0.] } else { [0., 0., 1.] },
+                    angle: angle(90.),
+                    translation: if cylinder {
+                        [length(0.), length(0.), length(0.)]
+                    } else {
+                        [
+                            length(100. + 50. * f64::from(index)),
+                            length(200.),
+                            length(0.),
+                        ]
+                    },
+                    ..Default::default()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let prepared =
+        model::prepare_instance_copies(&session, session.revision(), actor(), &copies).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    Fixture {
+        session,
+        part,
+        sketch,
+        copies,
+    }
+}
+fn native_query(f: &Fixture, copy: usize, method: QueryMethod) -> ExternalQuery {
+    let native = Compiler::default()
+        .compile(f.session.document(), f.session.revision())
+        .unwrap();
+    let topology = native
+        .solid(f.part.body)
+        .unwrap()
+        .topology_snapshot(f.part.body, f.session.revision())
+        .unwrap();
+    let selected = topology
+        .elements
+        .iter()
+        .find(|e| match e.geometry {
+            Some(AnalyticGeometry::Line { a_mm: a, b_mm: b }) => {
+                a[1].abs() < 1e-8
+                    && b[1].abs() < 1e-8
+                    && a[2].abs() < 1e-8
+                    && b[2].abs() < 1e-8
+                    && (a[0] - b[0]).abs() > 29.
+            }
+            Some(AnalyticGeometry::CircularArc { frame, .. }) => frame.origin_mm[2].abs() < 1e-8,
+            _ => false,
+        })
+        .expect("genuine native source edge");
+    ExternalQuery {
+        reference: EntityId::new(),
+        sketch: f.sketch,
+        source: OccurrenceSource {
+            component: f.part.body,
+            source: f.part.body,
+            path: OccurrencePath {
+                root: f.copies[copy].instance,
+                members: vec![],
+            },
+        },
+        sketch_context: None,
+        intent: GeometryIntent::capture(&topology, selected.key).unwrap(),
+        method,
+    }
+}
+fn catalog(
+    backend: &mut external_queries::Backend,
+    session: &Session,
+    query: &ExternalQuery,
+) -> ExternalCatalog {
+    let request = backend
+        .request_catalog(
+            session.preparation_snapshot(),
+            ProjectResources::default(),
+            query.clone(),
+        )
+        .unwrap();
+    let ExternalQueryReply::Catalog {
+        request: received,
+        query: echo,
+        result,
+    } = poll(backend)
+    else {
+        panic!("catalogue reply")
+    };
+    assert_eq!(received, request);
+    assert_eq!(&echo, query);
+    let result = *result.unwrap();
+    result.validate().unwrap();
+    assert_eq!(result.document, session.document().id());
+    assert_eq!(result.revision, session.revision());
+    assert_eq!(
+        result.source_hash,
+        ContentHash::document(session.document()).unwrap()
+    );
+    assert_eq!(result.query_hash, query.hash().unwrap());
+    result
+}
+fn prepare(
+    backend: &mut external_queries::Backend,
+    session: &Session,
+    input: &OccurrenceCaptureRequest,
+    repair: bool,
+) -> Result<Box<ExternalPrepared>, String> {
+    let request = backend
+        .request_prepare(
+            session.preparation_snapshot(),
+            ProjectResources::default(),
+            actor(),
+            input.clone(),
+            repair,
+        )
+        .unwrap();
+    let ExternalQueryReply::Prepared {
+        request: received,
+        source_hash,
+        input: echo,
+        repair: mode,
+        result,
+    } = poll(backend)
+    else {
+        panic!("prepared reply")
+    };
+    assert_eq!(received, request);
+    assert_eq!(
+        source_hash,
+        ContentHash::document(session.document()).unwrap()
+    );
+    assert_eq!(&echo, input);
+    assert_eq!(mode, repair);
+    result
+}
+fn line_x(catalog: &ExternalCatalog, x: f64) {
+    assert_eq!(catalog.results.len(), 1);
+    let ExternalGeometry::Line { a_mm: a, b_mm: b } = catalog.results[0].geometry else {
+        panic!("exact finite line")
+    };
+    near(a[0], x);
+    near(b[0], x);
+    near(a[1].min(b[1]), 200.);
+    near(a[1].max(b[1]), 230.);
+}
+#[test]
+fn actual_worker_capture_repair_remove_preserve_source_and_original_session_ownership() {
+    let mut f = fixture(false);
+    let source = f.session.document().clone();
+    let revision = f.session.revision();
+    let mut backend = external_queries::Backend::new();
+    let first = native_query(&f, 0, QueryMethod::Coplanar);
+    let discovered = catalog(&mut backend, &f.session, &first);
+    line_x(&discovered, 100.);
+    let input = OccurrenceCaptureRequest::new(
+        &discovered,
+        &discovered.results[0].selector,
+        Behavior::Derived,
+    )
+    .unwrap();
+    let prepared = prepare(&mut backend, &f.session, &input, false).unwrap();
+    assert_eq!(prepared.reference, input.query.reference);
+    let preview = prepared.edit.preview.as_ref().unwrap();
+    f.session.validate_preview(preview).unwrap();
+    assert!(
+        prepared
+            .report
+            .external_results
+            .contains_key(&input.query.reference)
+    );
+    let foreign = Session::new(source.clone()).unwrap();
+    assert_eq!(
+        foreign.validate_preview(preview).unwrap_err().code,
+        ErrorCode::ForeignPreview
+    );
+    assert_eq!(f.session.document(), &source);
+    assert_eq!(f.session.revision(), revision);
+    let stale = preview.clone();
+    f.session.commit(prepared.edit.preview.unwrap()).unwrap();
+    assert_eq!(
+        f.session.validate_preview(&stale).unwrap_err().code,
+        ErrorCode::StaleRevision
+    );
+    let stored =
+        sketch_external::read_occurrence(f.session.document(), input.query.reference).unwrap();
+    assert_eq!(stored.query.source.path, input.query.source.path);
+    assert_eq!(stored.output, input.output);
+    let native = Compiler::default()
+        .compile(f.session.document(), f.session.revision())
+        .unwrap();
+    near(native.snapshot().shapes[&f.part.feature].volume_mm3, 2400.);
+    assert!(native.snapshot().references.external_errors.is_empty());
+    let mut replacement = native_query(&f, 1, QueryMethod::Coplanar);
+    replacement.reference = input.query.reference;
+    let discovered = catalog(&mut backend, &f.session, &replacement);
+    line_x(&discovered, 150.);
+    let mut repaired = OccurrenceCaptureRequest::new(
+        &discovered,
+        &discovered.results[0].selector,
+        Behavior::Derived,
+    )
+    .unwrap();
+    repaired.output = input.output.clone();
+    let before = f.session.document().clone();
+    let checked = prepare(&mut backend, &f.session, &repaired, true).unwrap();
+    assert_eq!(f.session.document(), &before);
+    f.session.commit(checked.edit.preview.unwrap()).unwrap();
+    assert_eq!(
+        sketch_external::read_occurrence(f.session.document(), input.query.reference).unwrap(),
+        repaired
+    );
+    let before = f.session.document().clone();
+    let request = backend
+        .request_remove(
+            f.session.preparation_snapshot(),
+            ProjectResources::default(),
+            actor(),
+            f.sketch,
+            input.query.reference,
+        )
+        .unwrap();
+    let ExternalQueryReply::Removed {
+        request: received,
+        source_hash,
+        sketch,
+        reference,
+        result,
+    } = poll(&mut backend)
+    else {
+        panic!("removed reply")
+    };
+    assert_eq!(request, received);
+    assert_eq!(sketch, f.sketch);
+    assert_eq!(reference, input.query.reference);
+    assert_eq!(source_hash, ContentHash::document(&before).unwrap());
+    assert_eq!(f.session.document(), &before);
+    let checked = result.unwrap();
+    f.session
+        .validate_preview(checked.edit.preview.as_ref().unwrap())
+        .unwrap();
+    f.session.commit(checked.edit.preview.unwrap()).unwrap();
+    assert!(
+        sketch_external::occurrence_bindings(f.session.document(), f.sketch)
+            .unwrap()
+            .is_empty()
+    );
+    f.session.undo(f.session.revision(), actor()).unwrap();
+    assert_eq!(f.session.document(), &before);
+    f.session.redo(f.session.revision(), actor()).unwrap();
+    near(
+        Compiler::default()
+            .compile(f.session.document(), f.session.revision())
+            .unwrap()
+            .snapshot()
+            .shapes[&f.part.feature]
+            .volume_mm3,
+        2400.,
+    );
+}
+#[test]
+fn actual_worker_empty_tangent_singular_and_changed_branch_fail_without_source_mutation() {
+    let mut f = fixture(true);
+    let mut backend = external_queries::Backend::new();
+    let query = native_query(&f, 0, QueryMethod::Intersect);
+    let discovered = catalog(&mut backend, &f.session, &query);
+    assert_eq!(discovered.results.len(), 2);
+    assert!(discovered.results.iter().all(|r| !r.tangent));
+    let mut contacts = discovered
+        .results
+        .iter()
+        .map(|r| match r.geometry {
+            ExternalGeometry::Point { position_mm } => position_mm,
+            _ => panic!("Exact finite circle/plane contacts must be points"),
+        })
+        .collect::<Vec<_>>();
+    contacts.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    near(contacts[0][0], 0.);
+    near(contacts[1][0], 0.);
+    near(contacts[0][1], -5.);
+    near(contacts[1][1], 5.);
+    let capture = OccurrenceCaptureRequest::new(
+        &discovered,
+        &discovered.results[0].selector,
+        Behavior::ReferenceOnly,
+    )
+    .unwrap();
+    let mut singular = query.clone();
+    singular.method = QueryMethod::Project;
+    backend
+        .request_catalog(
+            f.session.preparation_snapshot(),
+            Default::default(),
+            singular,
+        )
+        .unwrap();
+    let ExternalQueryReply::Catalog { result, .. } = poll(&mut backend) else {
+        panic!()
+    };
+    assert!(result.unwrap_err().contains("singular"));
+    let mut damaged = capture.clone();
+    damaged.selector.expected_count = 1;
+    let before = f.session.document().clone();
+    assert!(
+        prepare(&mut backend, &f.session, &damaged, false)
+            .err()
+            .expect("Changed native count must fail")
+            .contains("count changed")
+    );
+    assert_eq!(f.session.document(), &before);
+    let mut placement = f.copies[0].parameters.clone();
+    placement.translation[2] = length(5.);
+    let edit = model::prepare_instance_placement_edit(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        f.copies[0].driver,
+        &placement,
+    )
+    .unwrap();
+    f.session.commit(edit.prepared).unwrap();
+    let tangent = catalog(&mut backend, &f.session, &query);
+    assert_eq!(tangent.results.len(), 1);
+    assert!(tangent.results[0].tangent);
+    assert!(
+        OccurrenceCaptureRequest::new(&tangent, &tangent.results[0].selector, Behavior::Derived)
+            .is_err()
+    );
+    let before = f.session.document().clone();
+    assert!(
+        prepare(&mut backend, &f.session, &capture, false)
+            .err()
+            .expect("Obsolete native branch must fail")
+            .contains("count changed")
+    );
+    assert_eq!(f.session.document(), &before);
+    placement.translation[2] = length(6.);
+    let edit = model::prepare_instance_placement_edit(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        f.copies[0].driver,
+        &placement,
+    )
+    .unwrap();
+    f.session.commit(edit.prepared).unwrap();
+    let empty = catalog(&mut backend, &f.session, &query);
+    assert!(empty.results.is_empty());
+    assert!(!empty.diagnostics.is_empty());
+    let before = f.session.document().clone();
+    let revision = f.session.revision();
+    assert!(
+        prepare(&mut backend, &f.session, &capture, false)
+            .err()
+            .expect("Obsolete native branch must fail")
+            .contains("count changed")
+    );
+    assert_eq!(f.session.document(), &before);
+    assert_eq!(f.session.revision(), revision);
+}
+
+#[test]
+fn actual_worker_rejects_native_preparation_with_an_unconsumed_broken_reference_and_allows_its_removal()
+ {
+    use multicad_core::commands::Request;
+    let mut f = fixture(true);
+    let mut backend = external_queries::Backend::new();
+    let original = native_query(&f, 0, QueryMethod::Intersect);
+    let discovered = catalog(&mut backend, &f.session, &original);
+    let captured = OccurrenceCaptureRequest::new(
+        &discovered,
+        &discovered.results[0].selector,
+        Behavior::ReferenceOnly,
+    )
+    .unwrap();
+    let prepared = prepare(&mut backend, &f.session, &captured, false).unwrap();
+    f.session.commit(prepared.edit.preview.unwrap()).unwrap();
+    let mut placement = f.copies[0].parameters.clone();
+    placement.translation[2] = length(6.);
+    let edit = model::prepare_instance_placement_edit(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        f.copies[0].driver,
+        &placement,
+    )
+    .unwrap();
+    f.session.commit(edit.prepared).unwrap();
+    assert_eq!(
+        sketch_external::read_occurrence(f.session.document(), captured.query.reference).unwrap(),
+        captured,
+        "Broken source remains canonical and explicitly repairable"
+    );
+    let (second, edits) = Source::create(Datum::Yz, "Independent valid consumer").unwrap();
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Create separate consumer".into(),
+            edits,
+        })
+        .unwrap();
+    let mut valid = original;
+    valid.reference = EntityId::new();
+    valid.sketch = second;
+    valid.method = QueryMethod::Coplanar;
+    let discovered = catalog(&mut backend, &f.session, &valid);
+    assert_eq!(discovered.results.len(), 1);
+    assert!(matches!(
+        discovered.results[0].geometry,
+        ExternalGeometry::Circle { .. }
+    ));
+    let candidate = OccurrenceCaptureRequest::new(
+        &discovered,
+        &discovered.results[0].selector,
+        Behavior::ReferenceOnly,
+    )
+    .unwrap();
+    let source = f.session.document().clone();
+    let revision = f.session.revision();
+    let error = prepare(&mut backend, &f.session, &candidate, false)
+        .err()
+        .expect(
+            "A full-scope native snapshot with unresolved references cannot authorize preparation",
+        );
+    assert!(error.to_lowercase().contains("reference"));
+    assert_eq!(f.session.document(), &source);
+    assert_eq!(f.session.revision(), revision);
+    backend
+        .request_remove(
+            f.session.preparation_snapshot(),
+            Default::default(),
+            actor(),
+            f.sketch,
+            captured.query.reference,
+        )
+        .unwrap();
+    let ExternalQueryReply::Removed { result, .. } = poll(&mut backend) else {
+        panic!("native removal reply")
+    };
+    let recovered = result.unwrap();
+    assert_eq!(f.session.document(), &source);
+    f.session
+        .validate_preview(recovered.edit.preview.as_ref().unwrap())
+        .unwrap();
+    f.session.commit(recovered.edit.preview.unwrap()).unwrap();
+    assert!(
+        sketch_external::occurrence_bindings(f.session.document(), f.sketch)
+            .unwrap()
+            .is_empty()
+    );
+    let native = Compiler::default()
+        .compile(f.session.document(), f.session.revision())
+        .unwrap();
+    assert!(native.snapshot().references.external_errors.is_empty());
+    near(
+        native.snapshot().shapes[&f.part.feature].volume_mm3,
+        75. * std::f64::consts::PI,
+    );
+}
