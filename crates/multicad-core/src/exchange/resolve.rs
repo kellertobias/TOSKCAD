@@ -240,6 +240,8 @@ pub fn resolve_parts(document: &Document, scope: &Scope) -> Result<Vec<ResolvedP
     };
     match &scope.root {
         ScopeRoot::Project => {
+            let definition_parts = crate::model::assembly_definition_parts(document)?;
+            let definitions = crate::model::reusable_assemblies(document)?;
             let mut members = BTreeSet::new();
             let mut components = BTreeSet::new();
             for entity in document.entities() {
@@ -254,14 +256,18 @@ pub fn resolve_parts(document: &Document, scope: &Scope) -> Result<Vec<ResolvedP
             for entity in document.entities() {
                 match &entity.data {
                     EntityData::Part { .. }
-                        if crate::model::scale_component_owner(document, entity.id)?.is_none() =>
+                        if crate::model::scale_component_owner(document, entity.id)?.is_none()
+                            && !definition_parts.contains(&entity.id) =>
                     {
                         walker.visit(entity.id, &mut vec![], None)?
                     }
                     EntityData::Instance { .. } if !members.contains(&entity.id) => {
                         walker.visit(entity.id, &mut vec![], None)?
                     }
-                    EntityData::Assembly { .. } if !components.contains(&entity.id) => {
+                    EntityData::Assembly { .. }
+                        if !components.contains(&entity.id)
+                            && !definitions.contains(&entity.id) =>
+                    {
                         walker.visit(entity.id, &mut vec![], Some(entity.id))?
                     }
                     _ => {}

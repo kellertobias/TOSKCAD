@@ -215,12 +215,26 @@ fn reusable_assembly_preserves_member_ids_and_explicit_definition_ownership() {
             .contains(&part.body)
     );
     let placed = ComponentPlacementRequest::new(request.assembly, Default::default());
+    assert!(
+        multicad_core::exchange::resolve_parts(s.document(), &Default::default())
+            .unwrap()
+            .is_empty()
+    );
     s.commit(
         prepare_place_component(&s, s.revision(), actor(), &placed)
             .unwrap()
             .prepared,
     )
     .unwrap();
+    let exported =
+        multicad_core::exchange::resolve_parts(s.document(), &Default::default()).unwrap();
+    assert_eq!(exported.len(), 2);
+    assert!(
+        exported
+            .iter()
+            .all(|p| p.reference.occurrence_path.len() == 2
+                && p.reference.occurrence_path[0] == placed.instance)
+    );
     assert_eq!(
         s.document()
             .entities()

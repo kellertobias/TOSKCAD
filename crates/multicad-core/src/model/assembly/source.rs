@@ -166,6 +166,22 @@ pub fn read_joint(
             _ => Err(invalid("Joint parent must be an existing Instance")),
         })
         .transpose()?;
+    if let Some(parent) = source.parameters.parent {
+        let containing = |id| {
+            document.entities().find_map(|e| {
+                if let EntityData::Assembly { instances } = &e.data {
+                    instances.contains(&id).then_some(e.id)
+                } else {
+                    None
+                }
+            })
+        };
+        if containing(parent) != containing(source.owner) {
+            return Err(invalid(
+                "Joint parent and moving Instance must share one assembly definition context",
+            ));
+        }
+    }
     for (anchor, expected) in [
         (&source.parameters.moving, Some(source.component)),
         (&source.parameters.target, parent_component),
@@ -230,7 +246,55 @@ pub fn read_assembly(
             return Err(invalid("Assembly definition source must be a Part"));
         }
     }
+    let reachable = assembly_component_parts(document, source.assembly)?;
+    if source
+        .definition_parts
+        .iter()
+        .any(|id| !reachable.contains(id))
+    {
+        return Err(invalid(
+            "Definition-only Parts must actually occur in this reusable Assembly",
+        ));
+    }
     Ok(source)
+}
+pub fn assembly_component_parts(
+    document: &Document,
+    component: EntityId,
+) -> Result<BTreeSet<EntityId>, DocumentError> {
+    let mut pending = vec![component];
+    let mut visited = BTreeSet::new();
+    let mut parts = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if visited.len() > 8192 {
+            return Err(invalid(
+                "Assembly component traversal exceeds its source budget",
+            ));
+        }
+        match document.get(id).map(|e| &e.data) {
+            Some(EntityData::Part { .. }) => {
+                parts.insert(id);
+            }
+            Some(EntityData::Assembly { instances }) => {
+                for member in instances {
+                    let Some(EntityData::Instance { component, .. }) =
+                        document.get(*member).map(|e| &e.data)
+                    else {
+                        return Err(invalid("Assembly member must be an existing Instance"));
+                    };
+                    pending.push(*component);
+                }
+            }
+            _ => return Err(invalid("Choose an existing Part or Assembly component")),
+        }
+    }
+    Ok(parts)
+}
+pub fn reusable_assemblies(document: &Document) -> Result<BTreeSet<EntityId>, DocumentError> {
+    document.entities().filter(|e|matches!(&e.data,EntityData::Extension{definition,..}if definition.type_id==ASSEMBLY_TYPE)).map(|e|read_assembly(document,e.id).map(|s|s.assembly)).collect()
 }
 impl NamedPoseDefinition {
     pub fn definition(&self) -> Result<Definition, DocumentError> {
@@ -323,6 +387,22 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), DocumentError
                     read_named_pose(document, entity.id)?;
                 }
                 _ => {}
+            }
+        }
+    }
+    if document.entities().any(
+        |e| matches!(&e.data,EntityData::Extension{definition,..}if definition.type_id==JOINT_TYPE),
+    ) {
+        for entity in document.entities() {
+            if let EntityData::Instance {
+                placement_source, ..
+            } = &entity.data
+                && let Some(joint) = joint_driver(document, entity.id)?
+                && *placement_source != Some(joint)
+            {
+                return Err(invalid(
+                    "A joint must remain the active incoming placement driver; edit joint values instead of appending a free transform",
+                ));
             }
         }
     }

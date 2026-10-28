@@ -420,6 +420,12 @@ pub fn prepare_place_component(
     ) {
         return Err(error("Choose an existing Part or reusable Assembly"));
     }
+    if matches!(doc.get(request.component).map(|e|&e.data),Some(EntityData::Assembly{instances})if instances.is_empty())
+    {
+        return Err(error(
+            "A reusable Assembly needs explicit member Instances before it can be placed",
+        ));
+    }
     request.parameters.resolve(session.parameters())?;
     let source = InstancePlacementDefinition {
         owner: request.instance,
