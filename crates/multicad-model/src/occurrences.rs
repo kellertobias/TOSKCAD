@@ -2,7 +2,7 @@
 use crate::{ModelError, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
-    model::{RigidPose, resolve_instance_pose},
+    model::{RigidPose, resolve_instance_pose_with_snapshots},
     parameters::EvaluatedParameters,
     references::{AnalyticGeometry, ReferenceFrame, TopologySnapshot},
 };
@@ -134,8 +134,9 @@ pub(crate) fn build(
             "Occurrence source geometry is unavailable before its placement",
         )
     })?;
-    let pose = resolve_instance_pose(document, instance, parameters)
-        .map_err(|e| error(Some(instance), e))?;
+    let pose =
+        resolve_instance_pose_with_snapshots(document, instance, parameters, revision, topologies)
+            .map_err(|e| error(Some(instance), e))?;
     let solid = source
         .transformed(RigidTransform {
             rotation: pose.rotation,

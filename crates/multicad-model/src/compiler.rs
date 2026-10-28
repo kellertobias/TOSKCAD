@@ -413,6 +413,22 @@ impl Compiler {
                     )
                     .map_err(|e| error(Some(id), e))?
                 }
+                (model::ALIGN_TYPE, model::ALIGN_SCHEMA) => {
+                    let (source, references) =
+                        model::read_alignment(document, id).map_err(|e| error(Some(id), e))?;
+                    crate::alignment::build(
+                        crate::alignment::Inputs {
+                            document,
+                            revision,
+                            parameters: context.parameters(),
+                            solids: &solids,
+                            topologies: &topologies,
+                        },
+                        id,
+                        &source,
+                        &references,
+                    )?
+                }
                 (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA) => {
                     let source =
                         model::read_transform(document, id).map_err(|e| error(Some(id), e))?;

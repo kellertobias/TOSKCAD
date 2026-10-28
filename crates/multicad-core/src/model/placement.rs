@@ -107,23 +107,127 @@ pub fn read_instance_placement(
     }
     if let PlacementBase::Previous { driver: previous } = source.base
         && let Some(entity) = document.get(previous)
+        && header(&entity.data)?.0 != source.owner
     {
-        let EntityData::Extension { definition, .. } = &entity.data else {
-            return Err(invalid("Previous pose must be a placement driver"));
-        };
-        let previous = InstancePlacementDefinition::from_definition(definition)?;
-        if previous.owner != source.owner {
-            return Err(invalid(
-                "A placement-driver chain cannot be shared by different owning instances",
-            ));
-        }
+        return Err(invalid(
+            "A placement-driver chain cannot be shared by different owning instances",
+        ));
     }
     Ok(source)
+}
+pub(super) fn header(data: &EntityData) -> Result<(EntityId, PlacementBase), DocumentError> {
+    let EntityData::Extension { definition, .. } = data else {
+        return Err(invalid(
+            "Previous pose must be an instance placement/alignment driver",
+        ));
+    };
+    match definition.type_id.as_str() {
+        INSTANCE_PLACEMENT_TYPE => {
+            let s = InstancePlacementDefinition::from_definition(definition)?;
+            Ok((s.owner, s.base))
+        }
+        super::INSTANCE_ALIGNMENT_TYPE => {
+            let s = super::InstanceAlignmentDefinition::from_definition(definition)?;
+            Ok((s.owner, s.base))
+        }
+        _ => Err(invalid("Unsupported instance placement driver")),
+    }
+}
+#[derive(Clone)]
+pub(super) enum Driver {
+    Numeric(InstancePlacementDefinition),
+    Alignment(
+        super::InstanceAlignmentDefinition,
+        Vec<super::AlignmentInput>,
+    ),
+}
+impl Driver {
+    pub(super) fn read(document: &Document, id: EntityId) -> Result<Self, DocumentError> {
+        let entity = document
+            .get(id)
+            .ok_or_else(|| invalid("Instance driver is missing"))?;
+        let EntityData::Extension { definition, .. } = &entity.data else {
+            return Err(invalid("Instance driver has the wrong entity kind"));
+        };
+        match definition.type_id.as_str() {
+            INSTANCE_PLACEMENT_TYPE => Ok(Self::Numeric(read_instance_placement(document, id)?)),
+            super::INSTANCE_ALIGNMENT_TYPE => {
+                let (s, r) = super::read_instance_alignment(document, id)?;
+                Ok(Self::Alignment(s, r))
+            }
+            _ => Err(invalid("Unsupported instance driver")),
+        }
+    }
+    pub(super) fn owner(&self) -> EntityId {
+        match self {
+            Self::Numeric(s) => s.owner,
+            Self::Alignment(s, _) => s.owner,
+        }
+    }
+    pub(super) fn base(&self) -> PlacementBase {
+        match self {
+            Self::Numeric(s) => s.base.clone(),
+            Self::Alignment(s, _) => s.base.clone(),
+        }
+    }
+    pub(super) fn set_base(&mut self, base: PlacementBase) {
+        match self {
+            Self::Numeric(s) => s.base = base,
+            Self::Alignment(s, _) => s.base = base,
+        }
+    }
+    pub(super) fn copy_owner(&mut self, owner: EntityId) {
+        match self {
+            Self::Numeric(s) => s.owner = owner,
+            Self::Alignment(s, refs) => {
+                s.owner = owner;
+                for input in refs {
+                    let old = input.intent.id;
+                    let new = EntityId::new();
+                    input.intent.id = new;
+                    for anchor in [&mut s.parameters.source, &mut s.parameters.target] {
+                        if let super::AlignmentAnchor::Geometry { reference } = anchor
+                            && *reference == old
+                        {
+                            *reference = new;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pub(super) fn entity(&self, id: EntityId) -> Result<crate::document::Entity, DocumentError> {
+        let (definition, inputs) = match self {
+            Self::Numeric(s) => (s.definition()?, s.inputs()?),
+            Self::Alignment(s, r) => (s.definition()?, s.inputs(r)?),
+        };
+        let mut e = crate::document::Entity::new(
+            "Copied instance placement",
+            EntityData::Extension { definition, inputs },
+        );
+        e.id = id;
+        Ok(e)
+    }
 }
 pub fn resolve_instance_pose(
     document: &Document,
     instance: EntityId,
     parameters: &EvaluatedParameters,
+) -> Result<RigidPose, DocumentError> {
+    resolve_instance_pose_with_snapshots(
+        document,
+        instance,
+        parameters,
+        0,
+        &std::collections::BTreeMap::new(),
+    )
+}
+pub fn resolve_instance_pose_with_snapshots(
+    document: &Document,
+    instance: EntityId,
+    parameters: &EvaluatedParameters,
+    revision: u64,
+    snapshots: &std::collections::BTreeMap<EntityId, crate::references::TopologySnapshot>,
 ) -> Result<RigidPose, DocumentError> {
     let Some(EntityData::Instance {
         placement,
@@ -144,18 +248,31 @@ pub fn resolve_instance_pose(
                 "Instance placement chain exceeds 128 steps or contains a cycle",
             ));
         }
-        let source = read_instance_placement(document, driver)?;
-        if source.owner != instance {
+        let source = Driver::read(document, driver)?;
+        if source.owner() != instance {
             return Err(invalid("Placement driver belongs to a different instance"));
         }
-        controls.push(source.parameters);
-        match source.base {
+        let base = source.base();
+        controls.push(source);
+        match base {
             PlacementBase::Literal { pose } => break pose,
             PlacementBase::Previous { driver: previous } => driver = previous,
         }
     };
     controls.into_iter().rev().try_fold(base, |pose, control| {
-        pose.then(control.resolve(parameters)?)
+        let delta = match control {
+            Driver::Numeric(s) => s.parameters.resolve(parameters)?,
+            Driver::Alignment(s, r) => super::resolve_alignment(
+                document,
+                revision,
+                parameters,
+                &s.parameters,
+                &r,
+                snapshots,
+                pose,
+            )?,
+        };
+        pose.then(delta)
     })
 }
 pub(super) fn check_next_driver(
@@ -170,30 +287,30 @@ pub(super) fn check_next_driver(
                 "Adding this placement exceeds the 128-step chain budget or creates a cycle; edit an existing placement instead",
             ));
         }
-        let source = read_instance_placement(document, driver)?;
-        if source.owner != owner {
+        let source = Driver::read(document, driver)?;
+        if source.owner() != owner {
             return Err(invalid("Placement driver belongs to another instance"));
         }
-        match source.base {
+        match source.base() {
             PlacementBase::Literal { .. } => return Ok(()),
             PlacementBase::Previous { driver: previous } => driver = previous,
         }
     }
 }
-
 pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError> {
     for entity in document.entities() {
         match &entity.data {
             EntityData::Extension { definition, .. }
-                if definition.type_id == INSTANCE_PLACEMENT_TYPE =>
+                if [INSTANCE_PLACEMENT_TYPE, super::INSTANCE_ALIGNMENT_TYPE]
+                    .contains(&definition.type_id.as_str()) =>
             {
-                read_instance_placement(document, entity.id)?;
+                Driver::read(document, entity.id)?;
             }
             EntityData::Instance {
                 placement_source: Some(driver),
                 ..
             } if document.get(*driver).is_some()
-                && read_instance_placement(document, *driver)?.owner != entity.id =>
+                && Driver::read(document, *driver)?.owner() != entity.id =>
             {
                 return Err(invalid(
                     "Instance placement source belongs to a different owner",

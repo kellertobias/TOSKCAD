@@ -655,6 +655,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::SPLIT_TYPE => {
                     super::read_split(document, entity.id)?;
                 }
+                super::ALIGN_TYPE => {
+                    super::read_alignment(document, entity.id)?;
+                }
                 super::TRANSFORM_TYPE => {
                     super::read_transform(document, entity.id)?;
                 }
@@ -679,6 +682,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::BOOLEAN_TYPE,
                     super::SPLIT_TYPE,
                     super::TRANSFORM_TYPE,
+                    super::ALIGN_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {
@@ -688,8 +692,12 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                 ))
             }
             EntityData::Extension { definition, .. }
-                if [super::EXTRUDE_GROUP_TYPE, super::INSTANCE_PLACEMENT_TYPE]
-                    .contains(&definition.type_id.as_str()) =>
+                if [
+                    super::EXTRUDE_GROUP_TYPE,
+                    super::INSTANCE_PLACEMENT_TYPE,
+                    super::INSTANCE_ALIGNMENT_TYPE,
+                ]
+                .contains(&definition.type_id.as_str()) =>
             {
                 Some(format!(
                     "{}.{}",

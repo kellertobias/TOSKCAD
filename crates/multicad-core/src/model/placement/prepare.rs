@@ -127,11 +127,11 @@ fn copy_base(
                 "Instance placement chain exceeds its copy budget or contains a cycle",
             ));
         }
-        let source = read_instance_placement(document, driver)?;
-        if source.owner != instance {
+        let source = Driver::read(document, driver)?;
+        if source.owner() != instance {
             return Err(error("Copied placement driver belongs to another instance"));
         }
-        let next = match source.base {
+        let next = match source.base() {
             PlacementBase::Previous { driver } => Some(driver),
             _ => None,
         };
@@ -148,13 +148,13 @@ fn copy_base(
         remap.insert(*id, copied);
     }
     for (id, mut source) in sources {
-        source.owner = owner;
-        if let PlacementBase::Previous { driver } = source.base {
-            source.base = PlacementBase::Previous {
+        source.copy_owner(owner);
+        if let PlacementBase::Previous { driver } = source.base() {
+            source.set_base(PlacementBase::Previous {
                 driver: remap[&driver],
-            };
+            });
         }
-        edits.push(Mutation::Insert(driver_entity(remap[&id], &source)?));
+        edits.push(Mutation::Insert(source.entity(remap[&id])?));
     }
     Ok((
         *component,

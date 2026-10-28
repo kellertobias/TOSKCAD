@@ -1,6 +1,7 @@
 //! Canonical model feature source and source-only transactional preparations.
 //! A native evaluator must additionally validate solved profiles and solids
 //! before presenting an Apply-capable modeling preview.
+mod alignment;
 mod boolean;
 mod common;
 mod evaluation;
@@ -14,6 +15,7 @@ mod source;
 mod split;
 mod transform;
 mod transform_math;
+pub use alignment::*;
 pub use boolean::*;
 pub use evaluation::*;
 pub use extrude_boolean::*;
