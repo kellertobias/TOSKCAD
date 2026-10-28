@@ -58,7 +58,8 @@ impl NodeKind {
     fn icon(self) -> Icon {
         match self {
             Self::Root => Icon::Home,
-            Self::Component | Self::Body => Icon::Box,
+            Self::Component => Icon::Assembly,
+            Self::Body => Icon::Box,
             Self::Group => Icon::Library,
             Self::Sketch => Icon::Sketch,
             Self::Instance => Icon::Link,
