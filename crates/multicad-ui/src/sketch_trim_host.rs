@@ -352,9 +352,25 @@ impl SketchEditor {
         if self.trim_worker.pending() {
             ui.small("Checking exact curve geometry…");
         }
-        if let Some(report) = &self.operation_report {
+        if let Some(report) = self
+            .operation_report
+            .as_ref()
+            .filter(|_| self.constraints.dirty())
+        {
+            use multicad_core::sketch_trim::Action;
+            let (verb, from, to) = match &report.action {
+                Action::Trim { removed_mm } | Action::TrimArc { removed_mm, .. } => {
+                    ("Remove span", removed_mm[0], removed_mm[1])
+                }
+                Action::Extend { from_mm, to_mm, .. }
+                | Action::ExtendArc { from_mm, to_mm, .. } => ("Extend", *from_mm, *to_mm),
+            };
             ui.small(format!(
-                "Checked curve edit: {} removed, {} created; {} constraints preserved.",
+                "{verb}: ({:.3}, {:.3}) → ({:.3}, {:.3}) mm.",
+                from[0], from[1], to[0], to[1]
+            ));
+            ui.small(format!(
+                "Curve identities: {} removed, {} created; {} constraints preserved.",
                 report.removed_curves.len(),
                 report.created_curves.len(),
                 report.preserved_constraints.len()
