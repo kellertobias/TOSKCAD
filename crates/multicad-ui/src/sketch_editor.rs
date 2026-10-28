@@ -13,6 +13,9 @@ use multicad_core::{
     sketch::{self, Datum, Frame, Geometry, Sketch},
 };
 use std::collections::VecDeque;
+#[cfg(test)]
+#[path = "sketch_advanced_context_tests.rs"]
+mod advanced_context_tests;
 #[path = "sketch_advanced_host.rs"]
 mod advanced_host;
 #[path = "sketch_edge_host.rs"]
