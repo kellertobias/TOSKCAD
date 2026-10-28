@@ -154,6 +154,44 @@ fn errors_are_entity_specific_and_original_document_is_preserved() {
     add(&mut d, &parameter("two words", "1", "mm"));
     assert_eq!(evaluate(&d).unwrap_err().code, ParameterErrorCode::Name);
 }
+
+#[test]
+fn separated_comparison_operator_characters_are_rejected_without_panicking() {
+    for expression in ["=1 < = 2", "=1 >\t= 2", "=1 = = 1", "=1 !\n= 2"] {
+        let mut document = Document::new("Invalid comparison draft").unwrap();
+        let parameter = parameter("comparison", expression, "ratio");
+        add(&mut document, &parameter);
+        let before = document.clone();
+        let error = evaluate(&document).unwrap_err();
+        assert_eq!(error.code, ParameterErrorCode::Syntax, "{expression}");
+        assert_eq!(error.entity, Some(parameter.id));
+        assert_eq!(document, before);
+        assert!(validate_input(expression).is_err());
+    }
+}
+
+#[test]
+fn contiguous_comparisons_accept_whitespace_around_the_operator() {
+    for (expression, expected) in [
+        ("=1 <= 2", 1.),
+        ("=2 >= 2", 1.),
+        ("=1 == 2", 0.),
+        ("=1 != 2", 1.),
+        ("=1 < 2", 1.),
+        ("=2 > 1", 1.),
+    ] {
+        let mut document = Document::new("Comparison").unwrap();
+        let parameter = parameter("comparison", expression, "ratio");
+        add(&mut document, &parameter);
+        assert_eq!(
+            evaluate(&document)
+                .unwrap()
+                .value(parameter.id, Unit::Ratio)
+                .unwrap(),
+            expected
+        );
+    }
+}
 #[test]
 fn cycles_and_complexity_are_bounded_and_dependency_edits_are_atomic_candidates() {
     let mut d = Document::new("Cycles").unwrap();

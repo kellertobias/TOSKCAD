@@ -294,6 +294,11 @@ impl Parser<'_> {
                     return Err(self.error("Use one comparison per expression"));
                 }
                 if self.peek() == Some(b'=') {
+                    if self.offset != start + 1 {
+                        return Err(self.error(
+                            "Keep comparison operator characters together: <=, >=, == or !=",
+                        ));
+                    }
                     self.offset += 1;
                 } else if op == b'=' || op == b'!' {
                     return Err(self.error("Use == or != for equality comparisons"));
