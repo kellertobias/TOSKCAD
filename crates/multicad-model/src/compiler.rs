@@ -61,7 +61,17 @@ pub struct ModelSnapshot {
     pub consumed_bodies: BTreeSet<EntityId>,
     /// Optional derived query receipts for this exact evaluation request.
     pub cut_targets: Vec<CutTargetProbeResult>,
+    /// Actual native transfer profile count by evaluated receiving feature.
+    pub transfer_counts: BTreeMap<EntityId, usize>,
     pub references: ReferenceReport,
+}
+impl ModelSnapshot {
+    pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
+        model::TransferEvaluationInfo {
+            source_hash: self.stamp.source_hash,
+            counts: self.transfer_counts.clone(),
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelError {
@@ -327,7 +337,11 @@ impl Compiler {
                         pending.push(*head);
                     }
                 } else {
-                    pending.extend(entity.references().into_iter().map(|link| link.target));
+                    pending.extend(
+                        document
+                            .evaluation_dependencies(id)
+                            .map_err(|e| error(Some(id), e))?,
+                    );
                 }
             }
         }
@@ -847,6 +861,7 @@ impl Compiler {
                 leaf_occurrences,
                 consumed_bodies,
                 cut_targets: vec![],
+                transfer_counts: BTreeMap::new(),
                 references,
             },
         })
