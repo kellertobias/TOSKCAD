@@ -283,3 +283,88 @@ fn explicit_upgrade_preserves_maps_values_and_undo_and_reports_conflicts() {
         90.
     );
 }
+
+#[test]
+fn packaging_preserves_uuid_looking_user_text_and_inline_hatches_without_rekeying_tags() {
+    let (mut library, def, width, _) = author_fixture(SymbolKind::Dynamic);
+    let mut part = library.document().get(def.root).unwrap().clone();
+    let unrelated = EntityId::new();
+    let tags = std::collections::BTreeSet::from([
+        width.to_string(),
+        format!("custom/{width}/tag"),
+        unrelated.to_string(),
+    ]);
+    part.name = width.to_string();
+    part.description = format!("Literal user annotation /{width}/ unchanged");
+    let hatch = multicad_core::document::Definition {
+        type_id: "materials.hatch.inline".into(),
+        schema_version: 1,
+        data: serde_json::to_value(multicad_core::materials::HatchStyle::default()).unwrap(),
+    };
+    let material = Entity::new(
+        "Wood",
+        EntityData::Material {
+            density_kg_m3: Some(600.),
+            color_rgba: [80, 90, 100, 255],
+            section_hatch: Some(hatch),
+        },
+    );
+    if let EntityData::Part {
+        tags: current,
+        material: assigned,
+        ..
+    } = &mut part.data
+    {
+        *current = tags.clone();
+        *assigned = Some(material.id);
+    }
+    let original = part.clone();
+    apply(
+        &mut library,
+        vec![Mutation::Insert(material.clone()), Mutation::Replace(part)],
+    );
+    let author = SymbolAuthorRequest::new(
+        "Tagged door",
+        def.root,
+        SymbolKind::Dynamic,
+        vec![width],
+        None,
+    );
+    let preview = prepare_author(&library, library.revision(), actor(), &author).unwrap();
+    library.commit(preview.prepared).unwrap();
+    let def = read_definition(library.document(), author.definition).unwrap();
+    let (mut host, id) = host(&def);
+    let place = SymbolPlaceRequest::new(
+        host.document(),
+        id,
+        "Tagged instance",
+        value(width, 101.),
+        Placement::default(),
+    )
+    .unwrap();
+    assert!(!place.ids.contains_key(&unrelated));
+    host.commit(
+        prepare_place(&host, host.revision(), actor(), &place)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let mapped = host.document().get(place.ids[&def.root]).unwrap();
+    assert_eq!(mapped.name, original.name);
+    assert_eq!(mapped.description, original.description);
+    if let EntityData::Part {
+        tags: actual,
+        material: assigned,
+        ..
+    } = &mapped.data
+    {
+        assert_eq!(actual, &tags);
+        assert_eq!(*assigned, Some(place.ids[&material.id]));
+    } else {
+        panic!("Expected materialized Part");
+    }
+    assert_eq!(
+        host.document().get(place.ids[&material.id]).unwrap().data,
+        material.data
+    );
+}

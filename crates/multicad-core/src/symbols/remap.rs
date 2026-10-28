@@ -56,10 +56,19 @@ pub(super) fn validate_entity(e: &Entity) -> Result<(), DocumentError> {
         | EntityData::Part { .. }
         | EntityData::Assembly { .. }
         | EntityData::Instance { .. } => {}
-        EntityData::Material {
-            section_hatch: None,
-            ..
-        } => {}
+        EntityData::Material { section_hatch, .. } => {
+            if let Some(hatch) = section_hatch {
+                if hatch.type_id != "materials.hatch.inline" || hatch.schema_version != 1 {
+                    return Err(invalid(
+                        "Symbol material requires a supported inline hatch schema",
+                    ));
+                }
+                let style: crate::materials::HatchStyle =
+                    serde_json::from_value(hatch.data.clone())
+                        .map_err(|e| invalid(e.to_string()))?;
+                crate::materials::LibraryDefinition::Hatch(style).validate()?;
+            }
+        }
         EntityData::Sketch { definition, .. }
         | EntityData::Feature { definition, .. }
         | EntityData::Extension { definition, .. } => provider(definition)?,
@@ -103,10 +112,19 @@ pub(super) fn identities(def: &SymbolDefinition) -> Result<BTreeSet<EntityId>, D
         validate_entity(entity)?;
         out.insert(entity.id);
         // Exclude author labels/descriptions: UUID-looking prose is never identity.
-        collect(
-            &serde_json::to_value(&entity.data).map_err(|e| invalid(e.to_string()))?,
-            &mut out,
-        );
+        match &entity.data {
+            EntityData::Part {
+                features, material, ..
+            } => {
+                out.extend(features.iter().copied());
+                out.extend(material);
+            }
+            EntityData::Material { .. } => {}
+            _ => collect(
+                &serde_json::to_value(&entity.data).map_err(|e| invalid(e.to_string()))?,
+                &mut out,
+            ),
+        }
     }
     if out.len() > MAX_SYMBOL_ENTITIES * 8 || out.iter().any(EntityId::is_nil) {
         return Err(invalid(
@@ -157,15 +175,43 @@ pub(super) fn remap(
     map: &BTreeMap<EntityId, EntityId>,
 ) -> Result<Entity, DocumentError> {
     validate_entity(e)?;
-    let mut data = serde_json::to_value(&e.data).map_err(|e| invalid(e.to_string()))?;
-    rewrite(&mut data, map);
+    let data = match &e.data {
+        EntityData::Part {
+            features,
+            material,
+            tags,
+        } => EntityData::Part {
+            features: features
+                .iter()
+                .map(|id| {
+                    map.get(id)
+                        .copied()
+                        .ok_or_else(|| invalid("Missing mapped Part feature"))
+                })
+                .collect::<Result<_, _>>()?,
+            material: material
+                .map(|id| {
+                    map.get(&id)
+                        .copied()
+                        .ok_or_else(|| invalid("Missing mapped Part material"))
+                })
+                .transpose()?,
+            tags: tags.clone(),
+        },
+        EntityData::Material { .. } => e.data.clone(),
+        _ => {
+            let mut data = serde_json::to_value(&e.data).map_err(|e| invalid(e.to_string()))?;
+            rewrite(&mut data, map);
+            serde_json::from_value(data).map_err(|e| invalid(e.to_string()))?
+        }
+    };
     let mut result = e.clone();
     result.id = *map
         .get(&e.id)
         .ok_or_else(|| invalid("Incomplete symbol identity map"))?;
-    result.data = serde_json::from_value(data).map_err(|e| invalid(e.to_string()))?;
+    result.data = data;
     if matches!(result.data, EntityData::Parameter { .. }) {
-        result.name = format!("s{}_{}", result.id.to_string().replace('-', ""), e.name);
+        result.name = format!("s{}", result.id.to_string().replace('-', ""));
     }
     validate_entity(&result)?;
     Ok(result)
