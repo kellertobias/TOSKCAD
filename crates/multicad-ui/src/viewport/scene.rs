@@ -466,6 +466,7 @@ pub struct Scene {
     world_bounds: Option<[Point; 2]>,
     model_evaluation: Option<Arc<multicad_core::model::ModelEvaluationInfo>>,
     assembly_evaluation: Option<Arc<multicad_core::model::AssemblyEvaluationInfo>>,
+    transfer_evaluation: Option<Arc<multicad_core::model::TransferEvaluationInfo>>,
     native_bounds: Option<Arc<NativeBounds>>,
 }
 struct NativeBounds {
@@ -535,6 +536,7 @@ impl Scene {
             world_bounds,
             model_evaluation: None,
             assembly_evaluation: None,
+            transfer_evaluation: None,
             native_bounds: None,
         })
     }
@@ -588,6 +590,37 @@ impl Scene {
         &self,
     ) -> Option<&Arc<multicad_core::model::AssemblyEvaluationInfo>> {
         self.assembly_evaluation.as_ref().filter(|info| {
+            self.is_full_model()
+                && self
+                    .model_evaluation
+                    .as_ref()
+                    .is_some_and(|model| model.source_hash == info.source_hash)
+        })
+    }
+    /// Exact cut counts from the native full-model evaluator. Counts are not
+    /// inferred from display edges and incomplete inspection cannot expose them.
+    pub fn with_transfer_evaluation(
+        mut self,
+        info: Arc<multicad_core::model::TransferEvaluationInfo>,
+    ) -> Result<Self, String> {
+        info.validate().map_err(|e| e.to_string())?;
+        if !self.is_full_model()
+            || self
+                .model_evaluation
+                .as_ref()
+                .is_none_or(|model| model.source_hash != info.source_hash)
+            || info
+                .counts
+                .keys()
+                .any(|feature| !self.geometries.contains_key(feature))
+        {
+            return Err("Transfer counts require matching complete native source geometry".into());
+        }
+        self.transfer_evaluation = Some(info);
+        Ok(self)
+    }
+    pub fn transfer_evaluation(&self) -> Option<&multicad_core::model::TransferEvaluationInfo> {
+        self.transfer_evaluation.as_deref().filter(|info| {
             self.is_full_model()
                 && self
                     .model_evaluation
@@ -851,6 +884,7 @@ impl Scene {
         view.reference_aliases = self.reference_aliases.clone();
         view.model_evaluation = self.model_evaluation.clone();
         view.assembly_evaluation = self.assembly_evaluation.clone();
+        view.transfer_evaluation = self.transfer_evaluation.clone();
         view.native_bounds = self.native_bounds.clone();
         view.scope = self.scope.clone();
         Ok(Arc::new(view))

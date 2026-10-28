@@ -71,6 +71,58 @@ fn stamp() -> SceneStamp {
     }
 }
 #[test]
+fn transfer_counts_require_matching_complete_receipts_and_never_escape_source_inspection() {
+    use multicad_core::{
+        model::{ModelEvaluationInfo, TransferEvaluationInfo},
+        project_file::ContentHash,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let geometry = box_geometry();
+    let placed = instance(&geometry, [0.; 3]);
+    let source = ContentHash::of(b"counted native candidate");
+    let make = || {
+        Scene::new(stamp(), vec![geometry.clone()], vec![placed.clone()])
+            .unwrap()
+            .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                source_hash: source,
+                consumed_bodies: BTreeSet::new(),
+                cut_targets: vec![],
+            }))
+            .unwrap()
+    };
+    let info = TransferEvaluationInfo {
+        source_hash: source,
+        counts: BTreeMap::from([(geometry.id(), 0)]),
+    };
+    let scene = make()
+        .with_transfer_evaluation(Arc::new(info.clone()))
+        .unwrap();
+    assert_eq!(
+        scene.transfer_evaluation().unwrap().counts[&geometry.id()],
+        0
+    );
+    let hidden = scene.visible_subset(&BTreeSet::new()).unwrap();
+    assert_eq!(hidden.transfer_evaluation().unwrap().counts, info.counts);
+    let inspected = scene.isolated_source(geometry.id()).unwrap();
+    assert!(inspected.transfer_evaluation().is_none());
+    let mut bad = info.clone();
+    bad.source_hash = ContentHash::of(b"other source");
+    assert!(make().with_transfer_evaluation(Arc::new(bad)).is_err());
+    let mut bad = info.clone();
+    bad.counts = BTreeMap::from([(EntityId::new(), 1)]);
+    assert!(make().with_transfer_evaluation(Arc::new(bad)).is_err());
+    let mut bad = info.clone();
+    bad.counts.insert(geometry.id(), 257);
+    assert!(make().with_transfer_evaluation(Arc::new(bad)).is_err());
+    assert!(
+        make()
+            .with_source_scope(vec![geometry.id()])
+            .unwrap()
+            .with_transfer_evaluation(Arc::new(info))
+            .is_err()
+    );
+}
+#[test]
 fn assembly_receipts_require_current_complete_known_leaf_sources() {
     use multicad_core::{
         model::{AssemblyEvaluationInfo, AssemblyLeafReceipt, OccurrencePath},
