@@ -374,3 +374,64 @@ fn a_spline_can_be_a_boundary_for_an_analytic_target_and_a_target_for_trim() {
     assert_eq!(request.target, left);
     assert_eq!(request.boundaries, BTreeSet::from([spline]));
 }
+
+#[test]
+fn only_recorded_viewport_span_picks_can_request_projection_and_numeric_edits_revoke_it() {
+    let (source, target, left, _) = fixture();
+    let mut panel = Panel::default();
+    panel.begin(OperationTool::Trim);
+    panel
+        .set_viewport_curve_pick(&source, target, [8., 0.05], false)
+        .unwrap();
+    assert_eq!(panel.viewport_span_pick(), Some((target, [8., 0.05])));
+    panel
+        .set_viewport_curve_pick(&source, left, [5., 0.], false)
+        .unwrap();
+    assert_eq!(panel.viewport_span_pick(), Some((target, [8., 0.05])));
+    panel.pick_lane = CurvePickLane::Span;
+    panel
+        .set_curve_pick(&source, target, [8., 0.05], false)
+        .unwrap();
+    assert_eq!(panel.viewport_span_pick(), None);
+    panel.pick_lane = CurvePickLane::Span;
+    panel
+        .set_viewport_curve_pick(&source, target, [9., 0.02], false)
+        .unwrap();
+    panel.clear_viewport_pick();
+    assert_eq!(panel.viewport_span_pick(), None);
+    panel.pick_lane = CurvePickLane::Target;
+    panel
+        .set_viewport_curve_pick(&source, target, [7., 0.01], false)
+        .unwrap();
+    panel.pick_mm = [6., 0.01];
+    assert_eq!(panel.viewport_span_pick(), None);
+    panel.pick_lane = CurvePickLane::Target;
+    panel
+        .set_viewport_curve_pick(&source, left, [5., 0.], false)
+        .unwrap();
+    assert_eq!(panel.viewport_span_pick(), Some((left, [5., 0.])));
+    panel.cancel();
+    assert_eq!(panel.viewport_span_pick(), None);
+    panel.begin(OperationTool::Extend);
+    panel
+        .set_viewport_curve_pick(&source, target, [8., 0.05], false)
+        .unwrap();
+    assert_eq!(panel.viewport_span_pick(), None);
+}
+
+#[test]
+fn typing_numeric_span_coordinates_revokes_the_viewport_projection_marker() {
+    let (source, target, _, _) = fixture();
+    let mut panel = Panel::default();
+    panel.begin(OperationTool::Trim);
+    panel
+        .set_viewport_curve_pick(&source, target, [8., 0.05], false)
+        .unwrap();
+    let ctx = egui::Context::default();
+    let output = frame(&ctx, &mut panel, &source, vec![]);
+    click(&ctx, &mut panel, &source, text_center(&output, "8.0"));
+    frame(&ctx, &mut panel, &source, vec![Event::Text("9".into())]).drop_without_applying_deltas();
+    assert_eq!(panel.pick_mm[0], 9.);
+    assert_eq!(panel.viewport_span_pick(), None);
+    assert!(panel.viewport_pick.is_none());
+}

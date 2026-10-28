@@ -123,6 +123,7 @@ pub struct Panel {
     pick_lane: CurvePickLane,
     boundaries: BTreeSet<EntityId>,
     pick_mm: [f64; 2],
+    viewport_pick: Option<(EntityId, [f64; 2])>,
     endpoint: Endpoint,
     max_length_mm: f64,
     extension_contacts: Option<(ExtendSpline, Vec<Contact>)>,
@@ -144,6 +145,7 @@ impl Default for Panel {
             pick_lane: CurvePickLane::Target,
             boundaries: BTreeSet::new(),
             pick_mm: [0.; 2],
+            viewport_pick: None,
             endpoint: Endpoint::End,
             max_length_mm: 100.,
             extension_contacts: None,
@@ -182,6 +184,33 @@ impl Panel {
     }
     pub fn curve_selection(&self) -> BTreeSet<EntityId> {
         self.boundaries.iter().copied().chain(self.target).collect()
+    }
+    pub fn clear_viewport_pick(&mut self) {
+        self.viewport_pick = None;
+    }
+    pub fn viewport_span_pick(&self) -> Option<(EntityId, [f64; 2])> {
+        self.viewport_pick.filter(|(target, point)| {
+            self.tool == Some(OperationTool::Trim)
+                && self.target == Some(*target)
+                && self.pick_mm == *point
+        })
+    }
+    /// Record a raw viewer span pick separately from strict numeric coordinates.
+    /// Only the worker may project this point onto the current exact curve.
+    pub fn set_viewport_curve_pick(
+        &mut self,
+        source: &Source,
+        curve: EntityId,
+        raw_point_mm: [f64; 2],
+        toggle: bool,
+    ) -> Result<(), String> {
+        let span = self.tool == Some(OperationTool::Trim)
+            && matches!(self.pick_lane, CurvePickLane::Target | CurvePickLane::Span);
+        self.set_curve_pick(source, curve, raw_point_mm, toggle)?;
+        if span {
+            self.viewport_pick = Some((curve, raw_point_mm));
+        }
+        Ok(())
     }
     pub fn clear_extension_contacts(&mut self) {
         self.extension_contacts = None;
@@ -254,6 +283,7 @@ impl Panel {
                 if !target_supported(tool, kind) {
                     return Err("Choose a supported open target curve for this operation".into());
                 }
+                self.clear_viewport_pick();
                 self.target = Some(curve);
                 self.boundaries.remove(&curve);
                 self.pick_mm = point_mm;
@@ -263,6 +293,7 @@ impl Panel {
                 if tool != OperationTool::Trim || self.target != Some(curve) {
                     return Err("Pick the span on the selected Trim target".into());
                 }
+                self.clear_viewport_pick();
                 self.pick_mm = point_mm;
                 self.pick_lane = CurvePickLane::Boundaries;
             }
@@ -667,10 +698,15 @@ impl Panel {
         {
             self.boundaries.remove(&target);
             self.pick_lane = CurvePickLane::Boundaries;
+            self.clear_viewport_pick();
         }
         if tool == OperationTool::Trim {
+            let prior_pick = self.pick_mm;
             vector_input(ui, "Point in span to remove", &mut self.pick_mm);
-            ui.small("Enter a point on the current solved curve in the span to remove.");
+            if prior_pick != self.pick_mm {
+                self.clear_viewport_pick();
+            }
+            ui.small("Enter a point on the solved curve, or pick its span in the viewer. Preview checks the exact projection of a viewer pick.");
             if self
                 .target
                 .and_then(|id| source.sketch.curves.iter().find(|curve| curve.id == id))
