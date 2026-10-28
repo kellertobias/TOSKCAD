@@ -503,6 +503,12 @@ impl Application {
                         &project.scene,
                         channel,
                     )?,
+                    crate::modeling::ModelingTool::Split => project.sketch.begin_split(
+                        &project.session,
+                        &project.resources,
+                        &project.scene,
+                        channel,
+                    )?,
                     crate::modeling::ModelingTool::Box
                     | crate::modeling::ModelingTool::Cylinder => project.sketch.begin_primitive(
                         &project.session,
@@ -571,6 +577,10 @@ impl Application {
                             .current()
                             .sketch
                             .boolean_ready(&self.current().session, &self.current().scene),
+                        crate::modeling::ModelingTool::Split => self
+                            .current()
+                            .sketch
+                            .split_ready(&self.current().session, &self.current().scene),
                         _ => self.current().sketch.primitive_ready(),
                     }
             }
@@ -2694,6 +2704,50 @@ mod tests {
         assert!(app.current().sketch.model_active());
         assert_eq!(app.current().session.document(), &before);
         app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        let split = Command::Modeling(crate::modeling::ModelingTool::Split);
+        assert!(
+            !app.enabled(split),
+            "Legacy display-only publication must not enable source-bound Split"
+        );
+        let visible = app.current().scene.visible().unwrap().clone();
+        {
+            let project = app.current_mut();
+            project.scene.retry();
+            project
+                .scene
+                .tick(project.session.document(), project.session.revision());
+        }
+        let stamp = state.lock().unwrap().stamp.unwrap();
+        let bound = Scene::new(
+            stamp,
+            visible.geometries().values().cloned().collect(),
+            visible.instances().to_vec(),
+        )
+        .unwrap()
+        .with_model_evaluation(Arc::new(model::ModelEvaluationInfo {
+            source_hash: multicad_core::project_file::ContentHash::document(
+                app.current().session.document(),
+            )
+            .unwrap(),
+            consumed_bodies: Default::default(),
+            cut_targets: vec![],
+        }))
+        .unwrap();
+        state.lock().unwrap().reply = Some(SceneReply {
+            stamp,
+            result: Ok(Arc::new(bound)),
+        });
+        {
+            let project = app.current_mut();
+            project
+                .scene
+                .tick(project.session.document(), project.session.revision());
+        }
+        assert!(app.enabled(split));
+        app.invoke(split, &[], Channel::Ui).unwrap();
+        assert!(app.current().sketch.model_active());
+        assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         let project = app.current_mut();
         let mut body = project
             .session
@@ -2713,5 +2767,6 @@ mod tests {
             .unwrap();
         assert!(!app.enabled(command));
         assert!(app.invoke(command, &[], Channel::Ui).is_err());
+        assert!(!app.enabled(split));
     }
 }

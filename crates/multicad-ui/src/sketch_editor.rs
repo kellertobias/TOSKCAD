@@ -471,6 +471,38 @@ impl SketchEditor {
                 )
             })
     }
+    pub fn split_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
+        self.primitive_ready()
+            && feed.is_current(session.document().id(), session.revision())
+            && feed.visible().is_some_and(|scene| {
+                crate::modeling::ModelToolController::split_available(
+                    session.document(),
+                    session.revision(),
+                    scene,
+                )
+            })
+    }
+    pub fn begin_split(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        feed: &crate::viewport::SceneFeed,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.split_ready(session, feed) {
+            return Err("Wait for two current native bodies with source-bound evaluation metadata, and finish pending edits before splitting".into());
+        }
+        let scene = feed
+            .visible()
+            .cloned()
+            .ok_or("Wait for the current native model")?;
+        let selected = self.tree_selection.clone();
+        self.finish()?;
+        self.model
+            .begin_split(session, resources, &scene, &selected, channel)?;
+        self.message = "Split · choose one target and tool, then Preview both new parts".into();
+        Ok(())
+    }
     pub fn begin_boolean(
         &mut self,
         session: &Session,
@@ -550,9 +582,13 @@ impl SketchEditor {
         let (sketch, profiles) = self.selected_profiles(session.document(), session.revision())?;
         self.finish()?;
         match tool {
-            crate::modeling::ModelingTool::Extrude => self
-                .model
-                .begin(session, resources, sketch, profiles, channel)?,
+            crate::modeling::ModelingTool::Extrude => {
+                self.model
+                    .begin(session, resources, sketch, profiles, channel)?;
+                if let Some(scene) = self.display_scene.as_deref() {
+                    let _ = self.model.set_extrusion_context(session, resources, scene);
+                }
+            }
             crate::modeling::ModelingTool::Revolve => self
                 .model
                 .begin_revolve(session, resources, sketch, profiles, channel)?,
@@ -1986,7 +2022,9 @@ impl SketchEditor {
         let mut repair_view = false;
         let mut model_view = false;
         self.solid.highlight_reference(None);
-        if let Some(candidate) = self.model.display_scene(session, resources) {
+        if !self.model.termination_picking()
+            && let Some(candidate) = self.model.display_scene(session, resources)
+        {
             scene = Some(candidate);
             current = false;
             model_view = true;
@@ -2247,6 +2285,27 @@ impl SketchEditor {
         ] {
             if let Some(segment) = self.camera.segment([0.; 3], axis, rect) {
                 painter.line_segment(segment, Stroke::new(1., color));
+            }
+        }
+        if self.model.termination_picking() {
+            let selected = self.model.termination_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            );
+            self.solid
+                .highlight_reference(self.model.termination_highlight());
+            if selected {
+                self.message =
+                    "Extrusion end selected · Preview validates its exact current geometry".into();
             }
         }
         if let Some(scene) = &scene {

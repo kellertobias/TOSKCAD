@@ -3,10 +3,12 @@ use super::{
     ExtrudeCapabilities, ExtrudePanel, FormStamp, ModelRequest, ModelingTool, PreviewState,
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
+    extrude_operation::{BooleanIdentities, CutDiscovery, OperationControls},
     form::{ModelEvent, ModelForm, ToolProof},
     names::GeneratedNames,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
+    split::SplitPanel,
 };
 use crate::{
     egui,
@@ -47,6 +49,13 @@ struct Candidate {
     execution: Execution,
     pending: bool,
     scene: Option<Arc<Scene>>,
+    requires_info: bool,
+}
+struct Discovery {
+    cut: CutDiscovery,
+    form: FormStamp,
+    stamp: SceneStamp,
+    channel: Channel,
 }
 struct Handoff {
     document: EntityId,
@@ -60,6 +69,9 @@ pub struct ModelToolController {
     backend: Option<Box<dyn SceneBackend>>,
     scope: Option<Scope>,
     candidate: Option<Candidate>,
+    discovery: Option<Discovery>,
+    operations: Option<OperationControls>,
+    identities: BooleanIdentities,
     handoff: Option<Handoff>,
     generation: u64,
     error: Option<String>,
@@ -122,6 +134,35 @@ impl ModelToolController {
             model::EXTRUDE_TYPE => {
                 let source =
                     model::read_extrude(document, feature).map_err(|error| error.to_string())?;
+                let face_id = |end: &model::Termination| match end {
+                    model::Termination::ToFace { reference, .. } => Some(*reference),
+                    _ => None,
+                };
+                let wanted: std::collections::BTreeSet<_> = match &source.parameters.extent {
+                    model::Extent::OneSided { end } => face_id(end).into_iter().collect(),
+                    model::Extent::TwoSided { forward, backward } => {
+                        [face_id(forward), face_id(backward)]
+                            .into_iter()
+                            .flatten()
+                            .collect()
+                    }
+                    model::Extent::Symmetric { .. } => Default::default(),
+                };
+                let EntityData::Feature { inputs, .. } = &entity.data else {
+                    unreachable!()
+                };
+                let faces = inputs
+                    .iter()
+                    .filter_map(|link| {
+                        link.geometry
+                            .as_ref()
+                            .filter(|intent| wanted.contains(&intent.id))
+                            .map(|intent| model::FaceInput {
+                                source: link.target,
+                                intent: intent.clone(),
+                            })
+                    })
+                    .collect();
                 let mut panel = ExtrudePanel::default();
                 panel.begin_request(ExtrudeRequest {
                     sketch: source.profile.sketch,
@@ -135,10 +176,9 @@ impl ModelToolController {
                     operation: source.operation,
                     targets: source.targets,
                     keep_tools: source.keep_tools,
-                    faces: vec![],
+                    faces,
                 })?;
-                // Validate the current form up front. In particular associative
-                // limits must not silently become distance-only controls.
+                // Reject any end condition the installed form cannot retain.
                 panel.request(document, self.capabilities())?;
                 ModelForm::Extrude(Box::new(panel))
             }
@@ -176,9 +216,11 @@ impl ModelToolController {
         Ok(())
     }
     pub fn pending(&self) -> bool {
-        self.candidate
-            .as_ref()
-            .is_some_and(|candidate| candidate.pending)
+        self.discovery.is_some()
+            || self
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.pending)
     }
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -213,7 +255,9 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Extrude(Box::new(panel)),
-        )
+        )?;
+        self.operations = Some(OperationControls::new(session.document()));
+        Ok(())
     }
     pub fn begin_primitive(
         &mut self,
@@ -293,6 +337,9 @@ impl ModelToolController {
             execution: Execution::Create,
         });
         self.candidate = None;
+        self.discovery = None;
+        self.operations = None;
+        self.identities = BooleanIdentities::default();
         self.handoff = None;
         self.error = None;
         Ok(())
@@ -303,6 +350,29 @@ impl ModelToolController {
         scene: &Scene,
     ) -> bool {
         BooleanPanel::available(document, revision, scene).is_ok_and(|count| count >= 2)
+    }
+    pub fn split_available(
+        document: &multicad_core::document::Document,
+        revision: u64,
+        scene: &Scene,
+    ) -> bool {
+        SplitPanel::available(document, revision, scene).is_ok_and(|count| count >= 2)
+    }
+    pub fn begin_split(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: &Scene,
+        selected: &std::collections::BTreeSet<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let panel = SplitPanel::new(session.document(), session.revision(), scene, selected)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Split(Box::new(panel)),
+        )
     }
     pub fn begin_boolean(
         &mut self,
@@ -324,6 +394,9 @@ impl ModelToolController {
         self.form = None;
         self.scope = None;
         self.candidate = None;
+        self.discovery = None;
+        self.operations = None;
+        self.identities = BooleanIdentities::default();
         self.handoff = None;
         self.error = None;
         // Generation does not reset: a delayed reply from a cancelled tool can
@@ -353,6 +426,10 @@ impl ModelToolController {
     }
     fn invalidate(&mut self) {
         self.candidate = None;
+        self.discovery = None;
+        if let Some(operations) = &mut self.operations {
+            operations.invalidate();
+        }
         self.error = None;
     }
     pub fn preview(
@@ -378,6 +455,23 @@ impl ModelToolController {
         result
     }
     fn submit(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+        form: FormStamp,
+        request: &ModelRequest,
+    ) -> Result<(), String> {
+        if matches!(
+            self.scope.as_ref().map(|scope| scope.execution),
+            Some(Execution::Create)
+        ) && let (Some(_), ModelRequest::Extrude(extrusion)) = (&self.operations, request)
+        {
+            return self.submit_extrusion(session, resources, channel, form, extrusion);
+        }
+        self.submit_final(session, resources, channel, form, request)
+    }
+    fn submit_final(
         &mut self,
         session: &Session,
         resources: &ProjectResources,
@@ -432,6 +526,10 @@ impl ModelToolController {
             execution,
             pending: true,
             scene: None,
+            requires_info: matches!(
+                request,
+                ModelRequest::ExtrudeBoolean(_) | ModelRequest::Split(_)
+            ) || matches!(execution, Execution::Edit { .. }),
         });
         self.error = None;
         Ok(())
@@ -443,12 +541,26 @@ impl ModelToolController {
             && let Err(error) = self.current(session, resources, false)
         {
             self.candidate = None;
+            self.discovery = None;
+            if let Some(operations) = &mut self.operations {
+                operations.invalidate();
+            }
             self.error = Some(error);
         }
         for _ in 0..16 {
             let Some(reply) = self.backend.as_mut().and_then(|backend| backend.poll()) else {
                 break;
             };
+            if self
+                .discovery
+                .as_ref()
+                .is_some_and(|discovery| discovery.stamp == reply.stamp)
+            {
+                if let Err(error) = self.receive_discovery(session, resources, reply) {
+                    self.error = Some(error);
+                }
+                continue;
+            }
             let Some(candidate) = &self.candidate else {
                 continue;
             };
@@ -474,8 +586,8 @@ impl ModelToolController {
                     if info.source_hash != candidate.content {
                         return Err("Native preview returned evaluation metadata for different source content".into());
                     }
-                } else if matches!(candidate.execution, Execution::Edit { .. }) {
-                    return Err("Editing applied features requires a native provider with source-bound evaluation metadata".into());
+                } else if candidate.requires_info {
+                    return Err("This modeling operation requires a native provider with source-bound evaluation metadata".into());
                 }
                 for output in &candidate.outputs {
                     let instance_proven = match candidate.execution {
@@ -673,6 +785,12 @@ impl ModelToolController {
         session: &mut Session,
         resources: &ProjectResources,
     ) -> Result<Option<ModelToolOutcome>, String> {
+        if let Some(operations) = &mut self.operations {
+            if operations.show(ui) {
+                self.operation_changed();
+            }
+            ui.separator();
+        }
         let stamp = self.stamp();
         let preview = match (&self.error, &self.candidate, stamp) {
             (Some(error), _, Some(stamp)) => PreviewState::Failed {
@@ -685,6 +803,7 @@ impl ModelToolController {
             (_, Some(candidate), _) if candidate.scene.is_some() => PreviewState::Ready {
                 stamp: candidate.form,
             },
+            (_, _, Some(stamp)) if self.discovery.is_some() => PreviewState::Pending { stamp },
             _ => PreviewState::Idle,
         };
         let capabilities = if self.backend.is_some() {
@@ -740,5 +859,7 @@ impl ModelToolController {
     }
 }
 
+mod operations;
+mod termination;
 #[cfg(test)]
 mod tests;

@@ -306,7 +306,7 @@ fn reopening_extrusion_and_revolve_preserves_saved_profiles_and_parameters() {
     }
 }
 #[test]
-fn unsupported_associative_extrusion_is_preserved_and_not_reopened_as_distance() {
+fn associative_extrusion_reopens_with_its_saved_end_condition_instead_of_becoming_distance() {
     let (mut session, sketch, profiles) = fixture();
     let mut request = ExtrudeRequest::new(sketch, profiles[..1].to_vec(), Default::default());
     let plane = Source::read(session.document(), sketch).unwrap().2;
@@ -320,21 +320,21 @@ fn unsupported_associative_extrusion_is_preserved_and_not_reopened_as_distance()
         model::prepare_extrude(&session, 0, Actor::local(Channel::Ui), &request).unwrap();
     session.commit(prepared.prepared).unwrap();
     let before = session.document().clone();
-    let mut controller = ModelToolController::default();
-    controller.set_backend(Box::new(ScriptedBackend(Arc::new(Mutex::new(
-        State::default(),
-    )))));
-    assert!(
-        controller
-            .begin_existing(
-                &session,
-                &Default::default(),
-                request.outputs[0].feature,
-                Channel::Ui
-            )
-            .is_err()
+    let (mut controller, state) = existing(&session, request.outputs[0].feature);
+    controller
+        .preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    assert_eq!(&state.lock().unwrap().requests[0].0, &before);
+    assert_eq!(
+        model::read_extrude(
+            controller.candidate.as_ref().unwrap().prepared.document(),
+            request.outputs[0].feature
+        )
+        .unwrap()
+        .parameters,
+        request.parameters
     );
-    assert!(!controller.active());
+    controller.cancel();
     assert_eq!(session.document(), &before);
 }
 

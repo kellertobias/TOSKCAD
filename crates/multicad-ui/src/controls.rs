@@ -14,6 +14,27 @@ pub(crate) fn inspector_combo(ui: &egui::Ui, id: impl egui::AsIdSalt) -> egui::C
         .width(ui.available_width().max(0.))
         .truncate()
 }
+/// egui's default collapsing header extends to its full unwrapped title.
+/// Bound the title before handing it to the header so a disclosure cannot
+/// increase the width of a user's resizable Inspector.
+pub(crate) fn inspector_collapsing<R>(
+    ui: &mut egui::Ui,
+    id: impl egui::AsIdSalt,
+    title: &str,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::collapsing_header::CollapsingResponse<R> {
+    let width =
+        (ui.available_width() - ui.spacing().indent - 2. * ui.spacing().button_padding.x).max(0.);
+    let text = egui::WidgetText::from(title).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        width,
+        egui::TextStyle::Button,
+    );
+    let mut response = egui::CollapsingHeader::new(text).id_salt(id).show(ui, body);
+    response.header_response = response.header_response.on_hover_text(title);
+    response
+}
 #[derive(Clone, Copy)]
 pub struct TabColors {
     pub text: Color32,

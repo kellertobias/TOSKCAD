@@ -6,15 +6,19 @@ mod boolean_edit;
 mod controller;
 mod dimension;
 mod extrude;
+mod extrude_operation;
 mod form;
 mod names;
 mod primitive;
 mod revolve;
+mod split;
+mod termination;
 
 pub use controller::{ModelToolController, ModelToolOutcome};
 pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
 pub use form::ModelRequest;
 use multicad_core::document::EntityId;
+pub use termination::TerminationViewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelingTool {
@@ -23,14 +27,16 @@ pub enum ModelingTool {
     Cylinder,
     Revolve,
     Boolean,
+    Split,
 }
 impl ModelingTool {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Box,
         Self::Cylinder,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
+        Self::Split,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -39,6 +45,7 @@ impl ModelingTool {
             Self::Cylinder => "cylinder",
             Self::Revolve => "revolve",
             Self::Boolean => "boolean",
+            Self::Split => "split",
         }
     }
     pub fn label(self) -> &'static str {
@@ -48,6 +55,7 @@ impl ModelingTool {
             Self::Cylinder => "Cylinder",
             Self::Revolve => "Revolve",
             Self::Boolean => "Boolean",
+            Self::Split => "Split",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -57,6 +65,7 @@ impl ModelingTool {
             Self::Cylinder => crate::icons::Icon::Cylinder,
             Self::Revolve => crate::icons::Icon::Rotate,
             Self::Boolean => crate::icons::Icon::Cut,
+            Self::Split => crate::icons::Icon::Split,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -66,6 +75,7 @@ impl ModelingTool {
             Self::Cylinder => &["cyl", "add-cylinder"],
             Self::Revolve => &["rev", "lathe"],
             Self::Boolean => &["combine", "body-operation"],
+            Self::Split => &["split-body", "inside-outside"],
         }
     }
     pub fn usage(self) -> &'static str {
@@ -83,6 +93,9 @@ impl ModelingTool {
             Self::Boolean => {
                 "Usage: boolean (choose separate targets and tools in the Inspector, then Preview and Apply)"
             }
+            Self::Split => {
+                "Usage: split (choose one target and one separate tool, name the inside/outside parts, then Preview and Apply)"
+            }
         }
     }
     pub fn requirements(self) -> &'static str {
@@ -95,6 +108,9 @@ impl ModelingTool {
             }
             Self::Boolean => {
                 "Requires at least two current native bodies and no pending edits. Targets and tools are chosen explicitly."
+            }
+            Self::Split => {
+                "Requires at least two current native bodies with source-bound evaluation metadata and no pending edits. Each resulting side must remain connected."
             }
         }
     }

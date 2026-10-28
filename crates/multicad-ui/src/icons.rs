@@ -29,6 +29,7 @@ pub enum Icon {
     Box,
     Cylinder,
     Cut,
+    Split,
     Edge,
     Measure,
     Library,
@@ -426,6 +427,13 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             line([4., 5.], [4., 19.]);
             line([20., 5.], [20., 19.]);
             ellipse(19., 0, 16);
+        }
+        Icon::Split => {
+            path(&[[2., 7.], [10., 3.], [10., 21.], [2., 17.], [2., 7.]]);
+            path(&[[14., 3.], [22., 7.], [22., 17.], [14., 21.], [14., 3.]]);
+            for y in [3., 8., 13., 18.] {
+                line([12., y], [12., y + 2.]);
+            }
         }
         Icon::Box | Icon::Cut | Icon::Wire | Icon::AllEdges | Icon::VisibleEdges | Icon::Filled => {
             if matches!(icon, Icon::AllEdges | Icon::VisibleEdges | Icon::Filled) {

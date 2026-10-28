@@ -1,7 +1,10 @@
 use super::{
     ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel, FormStamp, PreviewState,
-    boolean::BooleanPanel, boolean_edit::BooleanEditPanel, primitive::PrimitivePanel,
+    boolean::BooleanPanel,
+    boolean_edit::BooleanEditPanel,
+    primitive::PrimitivePanel,
     revolve::RevolvePanel,
+    split::{SplitEvent, SplitPanel},
 };
 use crate::egui;
 use multicad_core::{
@@ -20,6 +23,8 @@ pub enum ModelRequest {
     Primitive(Box<PrimitiveRequest>),
     Revolve(Box<RevolveRequest>),
     Booleans(Vec<BooleanRequest>),
+    ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
+    Split(Box<model::SplitRequest>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -33,12 +38,13 @@ impl ModelRequest {
         feature: multicad_core::document::EntityId,
     ) -> Result<ModelPrepared, String> {
         match self {
-            Self::Extrude(request) => model::prepare_extrude_edit(
+            Self::Extrude(request) => model::prepare_extrude_edit_with_faces(
                 session,
                 session.revision(),
                 actor,
                 feature,
                 &request.parameters,
+                &request.faces,
             ),
             Self::Primitive(request) => model::prepare_primitive_edit(
                 session,
@@ -86,47 +92,64 @@ impl ModelRequest {
             Self::Booleans(requests) => {
                 model::prepare_booleans(session, session.revision(), actor, requests)
             }
+            Self::ExtrudeBoolean(request) => {
+                model::prepare_extrude_boolean(session, session.revision(), actor, request)
+            }
+            Self::Split(request) => {
+                model::prepare_split(session, session.revision(), actor, request)
+            }
         }
         .map_err(|error| error.to_string())
     }
     /// Final membership follows producer versions: later history can reactivate
     /// a Part whose earlier producer was consumed by a Boolean operation.
     pub(super) fn tool_proof(&self, document: &Document) -> Result<Vec<ToolProof>, String> {
-        let Self::Booleans(requests) = self else {
-            return Ok(vec![]);
+        let inputs: Vec<_> = match self {
+            Self::Booleans(requests) => requests
+                .iter()
+                .flat_map(|request| request.tools.iter().map(|tool| (tool, !request.keep_tools)))
+                .collect(),
+            Self::ExtrudeBoolean(request) => request
+                .booleans
+                .iter()
+                .flat_map(|request| request.tools.iter().map(|tool| (tool, !request.keep_tools)))
+                .collect(),
+            Self::Split(request) => vec![
+                (&request.target, true),
+                (&request.tool, !request.keep_tools),
+            ],
+            _ => return Ok(vec![]),
         };
         let mut tools = std::collections::BTreeMap::new();
-        for request in requests {
-            for tool in &request.tools {
-                let Some(EntityData::Part { features, .. }) =
-                    document.get(tool.body).map(|entity| &entity.data)
-                else {
-                    return Err("Boolean tool body is unavailable".into());
-                };
-                let head = features
-                    .iter()
-                    .rev()
-                    .copied()
-                    .find(|id| {
-                        matches!(
-                            document.get(*id).map(|entity| &entity.data),
-                            Some(EntityData::Feature {
-                                suppressed: false,
-                                ..
-                            })
-                        )
-                    })
-                    .ok_or("Boolean tool has no current producer")?;
-                let consumed = !request.keep_tools && head == tool.producer;
-                let entry = tools.entry(tool.body).or_insert((
-                    BodyInput {
-                        body: tool.body,
-                        producer: head,
-                    },
-                    false,
-                ));
-                entry.1 |= consumed;
-            }
+        for (tool, consume) in inputs {
+            let Some(EntityData::Part { features, .. }) =
+                document.get(tool.body).map(|entity| &entity.data)
+            else {
+                return Err("Model operation input body is unavailable".into());
+            };
+            let head = features
+                .iter()
+                .rev()
+                .copied()
+                .find(|id| {
+                    matches!(
+                        document.get(*id).map(|entity| &entity.data),
+                        Some(EntityData::Feature {
+                            suppressed: false,
+                            ..
+                        })
+                    )
+                })
+                .ok_or("Model operation input has no current producer")?;
+            let consumed = consume && head == tool.producer;
+            let entry = tools.entry(tool.body).or_insert((
+                BodyInput {
+                    body: tool.body,
+                    producer: head,
+                },
+                false,
+            ));
+            entry.1 |= consumed;
         }
         Ok(tools
             .into_values()
@@ -149,6 +172,7 @@ pub(super) enum ModelForm {
     Revolve(Box<RevolvePanel>),
     Boolean(Box<BooleanPanel>),
     BooleanEdit(Box<BooleanEditPanel>),
+    Split(Box<SplitPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -158,6 +182,7 @@ impl ModelForm {
             Self::Revolve(panel) => panel.stamp(),
             Self::Boolean(panel) => panel.stamp(),
             Self::BooleanEdit(panel) => panel.stamp(),
+            Self::Split(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -167,6 +192,7 @@ impl ModelForm {
             Self::Revolve(_) => "Revolve",
             Self::Boolean(_) => "Boolean",
             Self::BooleanEdit(_) => "Boolean",
+            Self::Split(_) => "Split",
         }
     }
     pub fn request(
@@ -190,6 +216,9 @@ impl ModelForm {
             Self::BooleanEdit(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Booleans(vec![request])),
+            Self::Split(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|request| ModelRequest::Split(Box::new(request))),
         }
     }
     pub fn show(
@@ -215,6 +244,17 @@ impl ModelForm {
             Self::Revolve(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Boolean(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::BooleanEdit(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Split(panel) => panel
+                .show(ui, document, capabilities.new_body, preview)
+                .map(|event| match event {
+                    SplitEvent::Changed => ModelEvent::Changed,
+                    SplitEvent::Preview { stamp, request } => ModelEvent::Preview {
+                        stamp,
+                        request: ModelRequest::Split(request),
+                    },
+                    SplitEvent::Apply => ModelEvent::Apply,
+                    SplitEvent::Cancel => ModelEvent::Cancel,
+                }),
         }
     }
 }

@@ -381,8 +381,8 @@ impl Default for Registry {
                     tab(
                         "Common",
                         &[
-                            "box", "cylinder", "extrude", "revolve", "boolean", "edge", "move",
-                            "symbol",
+                            "box", "cylinder", "extrude", "revolve", "boolean", "split", "edge",
+                            "move", "symbol",
                         ],
                     ),
                     tab("Wood", &["panel", "drill", "joint", "cut-list"]),
@@ -572,22 +572,23 @@ mod tests {
         );
     }
     #[test]
-    fn extrusion_ribbon_and_aliases_use_the_shared_modeling_tool_catalog() {
+    fn modeling_ribbon_and_aliases_use_the_shared_tool_catalog() {
         let registry = Registry::default();
-        let tool = ModelingTool::Extrude;
-        let registered = registry.tool(tool.id()).unwrap();
-        assert_eq!(registered.action, Command::Modeling(tool));
-        assert_eq!(registered.label, tool.label());
-        assert!(
-            registry.workspace(Mode::Model).tabs[0]
-                .tools
-                .contains(&tool.id())
-        );
-        for alias in tool.aliases() {
-            assert_eq!(
-                registry.resolve(alias).unwrap().action,
-                Command::Modeling(tool)
+        for tool in ModelingTool::ALL {
+            let registered = registry.tool(tool.id()).unwrap();
+            assert_eq!(registered.action, Command::Modeling(tool));
+            assert_eq!(registered.label, tool.label());
+            assert!(
+                registry.workspace(Mode::Model).tabs[0]
+                    .tools
+                    .contains(&tool.id())
             );
+            for alias in tool.aliases() {
+                assert_eq!(
+                    registry.resolve(alias).unwrap().action,
+                    Command::Modeling(tool)
+                );
+            }
         }
     }
 }

@@ -38,7 +38,7 @@ fn profiles_have_independent_stable_outputs_across_edits_and_requests() {
     assert_ne!(original.outputs[0].feature, original.outputs[1].feature);
     assert_eq!(original.parameters, ExtrudeParameters::default());
     for index in 1..=50 {
-        panel.draft.as_mut().unwrap().forward.text = index.to_string();
+        panel.draft.as_mut().unwrap().forward.distance.text = index.to_string();
         assert!(matches!(
             panel.finish_frame(
                 true,
@@ -63,7 +63,7 @@ fn edit_and_preview_in_one_frame_uses_new_stamp_and_current_values() {
     let document = document();
     let mut panel = panel();
     let old = panel.stamp().unwrap();
-    panel.draft.as_mut().unwrap().forward.text = "37".into();
+    panel.draft.as_mut().unwrap().forward.distance.text = "37".into();
     let event = panel.finish_frame(
         true,
         Some(Action::Preview),
@@ -156,8 +156,8 @@ fn offset_direction_reverse_and_extent_remain_separate_canonical_controls() {
     draft.azimuth.text = "90".into();
     draft.reverse = true;
     draft.offset.text = "10".into();
-    draft.forward.text = "100".into();
-    draft.backward.text = "25".into();
+    draft.forward.distance.text = "100".into();
+    draft.backward.distance.text = "25".into();
     draft.extent = ExtentChoice::TwoSided;
     let request = panel
         .request(&document, ExtrudeCapabilities::distance_bodies())
@@ -215,30 +215,13 @@ fn unsupported_requests_remain_unchanged_and_cannot_be_presented_as_new_body() {
             original
         );
     }
-    let mut associative = original.clone();
-    associative.parameters.extent = Extent::OneSided {
-        end: Termination::ToPlane {
-            plane: EntityId::new(),
-            offset: millimeters(0.),
-        },
-    };
-    assert!(
-        panel
-            .begin_request(associative.clone())
-            .unwrap_err()
-            .contains("stored reference was preserved")
-    );
-    assert!(matches!(
-        associative.parameters.extent,
-        Extent::OneSided {
-            end: Termination::ToPlane { .. }
-        }
-    ));
     let mut invalid_unit = original;
     invalid_unit.parameters.start_offset = degrees(10.);
-    assert_eq!(
-        panel.begin_request(invalid_unit).unwrap_err(),
-        "Incompatible dimension unit"
+    assert!(
+        panel
+            .begin_request(invalid_unit)
+            .unwrap_err()
+            .contains("units")
     );
 }
 
@@ -264,7 +247,7 @@ fn unavailable_capabilities_and_invalid_input_prevent_apply_and_report_errors() 
             .is_none()
     );
     for text in ["NaN", "inf", "-inf", "1e30", "not a number", "=$missing"] {
-        panel.draft.as_mut().unwrap().forward.text = text.into();
+        panel.draft.as_mut().unwrap().forward.distance.text = text.into();
         assert!(
             panel
                 .finish_frame(
@@ -278,11 +261,17 @@ fn unavailable_capabilities_and_invalid_input_prevent_apply_and_report_errors() 
         );
         assert!(panel.error.is_some());
     }
-    panel.draft.as_mut().unwrap().forward.text = "10".into();
+    panel.draft.as_mut().unwrap().forward.distance.text = "10".into();
     panel.draft.as_mut().unwrap().taper.text = "3".into();
     assert!(
         panel
-            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .request(
+                &document,
+                ExtrudeCapabilities {
+                    taper: false,
+                    ..ExtrudeCapabilities::distance_bodies()
+                }
+            )
             .unwrap_err()
             .contains("Taper")
     );
@@ -443,4 +432,223 @@ fn empty_selection_is_rejected_before_allocating_an_active_tool() {
     let mut panel = ExtrudePanel::default();
     assert!(panel.begin(EntityId::new(), vec![]).is_err());
     assert!(!panel.active());
+}
+
+#[test]
+fn associative_plane_controls_reopen_without_replacing_the_reference_or_formula() {
+    let mut document = document();
+    let plane = Entity::new(
+        "Target plane",
+        EntityData::Plane {
+            origin_mm: [0., 0., 30.],
+            normal: [0., 0., 1.],
+            anchor: None,
+        },
+    );
+    document.insert(plane.clone()).unwrap();
+    let mut p = Entity::new(
+        "clearance",
+        EntityData::Parameter {
+            expression: "5".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    document.insert(p.clone()).unwrap();
+    let offset = Dimension::Expression {
+        expression: BoundExpression::bind(&document, "=$clearance + 2", "mm", None).unwrap(),
+    };
+    let mut request = panel()
+        .request(&document, ExtrudeCapabilities::distance_bodies())
+        .unwrap();
+    request.parameters.extent = Extent::TwoSided {
+        forward: Termination::ToPlane {
+            plane: plane.id,
+            offset,
+        },
+        backward: Termination::Distance {
+            distance: millimeters(7.),
+        },
+    };
+    let original = request.clone();
+    let mut panel = ExtrudePanel::default();
+    panel.begin_request(request).unwrap();
+    p.name = "renamed_clearance".into();
+    document.replace(p).unwrap();
+    assert_eq!(
+        panel
+            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .unwrap(),
+        original
+    );
+    assert!(
+        panel
+            .request(
+                &document,
+                ExtrudeCapabilities {
+                    to_plane: false,
+                    ..ExtrudeCapabilities::distance_bodies()
+                }
+            )
+            .is_err()
+    );
+    panel.draft.as_mut().unwrap().taper.text = "2".into();
+    assert!(
+        panel
+            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .unwrap_err()
+            .contains("Nonzero taper")
+    );
+}
+#[test]
+fn face_links_remain_sole_preserved_selectors_and_shared_ends_are_deduplicated() {
+    use multicad_core::{
+        document::Definition,
+        model::FaceInput,
+        references::{Attachment, GeometryIntent, Origin, TopologyKind},
+    };
+    let mut document = document();
+    let producer = Entity::new(
+        "Named source",
+        EntityData::Feature {
+            definition: Definition {
+                type_id: "test.face-source".into(),
+                schema_version: 1,
+                data: serde_json::json!({}),
+            },
+            inputs: vec![],
+            suppressed: false,
+        },
+    );
+    document.insert(producer.clone()).unwrap();
+    let make = |role: &str| {
+        let origin = Origin {
+            source: producer.id,
+            role: role.into(),
+        };
+        FaceInput {
+            source: producer.id,
+            intent: GeometryIntent {
+                id: EntityId::new(),
+                kind: TopologyKind::Face,
+                origins: BTreeSet::from([origin.clone()]),
+                boundary: None,
+                attachment: Some(Attachment {
+                    anchor: origin,
+                    offset_mm: [2., 3., 0.],
+                    angle_rad: 0.5,
+                }),
+            },
+        }
+    };
+    let a = make("cap.start");
+    let b = make("cap.end");
+    let mut request = panel()
+        .request(&document, ExtrudeCapabilities::distance_bodies())
+        .unwrap();
+    request.parameters.extent = Extent::TwoSided {
+        forward: Termination::ToFace {
+            reference: a.intent.id,
+            offset: millimeters(2.),
+        },
+        backward: Termination::ToFace {
+            reference: b.intent.id,
+            offset: millimeters(-3.),
+        },
+    };
+    request.faces = vec![b.clone(), a.clone()];
+    let original = request.clone();
+    let mut panel = ExtrudePanel::default();
+    panel.begin_request(request.clone()).unwrap();
+    assert_eq!(
+        panel
+            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .unwrap(),
+        original
+    );
+    request.parameters.extent = Extent::TwoSided {
+        forward: Termination::ToFace {
+            reference: a.intent.id,
+            offset: millimeters(2.),
+        },
+        backward: Termination::ToFace {
+            reference: a.intent.id,
+            offset: millimeters(-3.),
+        },
+    };
+    request.faces = vec![a.clone()];
+    panel.begin_request(request.clone()).unwrap();
+    assert_eq!(
+        panel
+            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .unwrap(),
+        request
+    );
+    let mut missing = request.clone();
+    missing.faces.clear();
+    assert!(panel.begin_request(missing).is_err());
+    assert_eq!(
+        panel
+            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .unwrap(),
+        request
+    );
+}
+#[test]
+fn external_operation_changes_share_form_stamp_and_picking_blocks_old_ready_apply() {
+    let document = document();
+    let mut panel = panel();
+    let old = panel.stamp().unwrap();
+    let outputs = panel
+        .request(&document, ExtrudeCapabilities::distance_bodies())
+        .unwrap()
+        .outputs;
+    panel.changed();
+    let stamp = panel.stamp().unwrap();
+    assert_eq!(stamp.tool, old.tool);
+    assert_eq!(stamp.revision, old.revision + 1);
+    assert_eq!(
+        panel
+            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .unwrap()
+            .outputs,
+        outputs
+    );
+    assert!(
+        panel
+            .finish_frame(
+                false,
+                Some(Action::Apply),
+                &document,
+                ExtrudeCapabilities::distance_bodies(),
+                PreviewState::Ready { stamp: old }
+            )
+            .is_none()
+    );
+    panel
+        .draft
+        .as_mut()
+        .unwrap()
+        .picker
+        .begin(EndSide::Forward, super::super::termination::EndKind::Face);
+    assert!(
+        panel
+            .request(&document, ExtrudeCapabilities::distance_bodies())
+            .unwrap_err()
+            .contains("selection")
+    );
+    assert!(
+        panel
+            .finish_frame(
+                false,
+                Some(Action::Apply),
+                &document,
+                ExtrudeCapabilities::distance_bodies(),
+                PreviewState::Ready { stamp }
+            )
+            .is_none()
+    );
+    panel.cancel();
+    assert!(!panel.termination_picking());
 }

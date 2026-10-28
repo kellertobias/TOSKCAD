@@ -18,9 +18,21 @@ struct State {
     requests: Vec<(Document, ProjectResources, SceneStamp)>,
     replies: VecDeque<SceneReply>,
     reject: bool,
+    evaluations: Vec<multicad_core::model::EvaluationOptions>,
 }
 struct ScriptedBackend(Arc<Mutex<State>>);
 impl SceneBackend for ScriptedBackend {
+    fn request_evaluation(
+        &mut self,
+        document: &Document,
+        resources: &ProjectResources,
+        stamp: SceneStamp,
+        options: &multicad_core::model::EvaluationOptions,
+    ) -> Result<(), String> {
+        options.validate().map_err(|error| error.to_string())?;
+        self.0.lock().unwrap().evaluations.push(options.clone());
+        self.request_project(document, resources, stamp)
+    }
     fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
         self.request_project(document, &Default::default(), stamp)
     }
@@ -655,3 +667,139 @@ fn consumption_proof_tracks_the_current_producer_version_instead_of_hiding_futur
 
 #[path = "edit_tests.rs"]
 mod edit_tests;
+#[path = "operation_tests.rs"]
+mod operation_tests;
+
+#[test]
+fn split_requires_both_native_outputs_and_original_input_consumption_before_atomic_apply() {
+    use multicad_core::model::{self, ModelEvaluationInfo};
+    use std::collections::BTreeSet;
+    for keep_tools in [false, true] {
+        let (mut session, bodies, raw) = boolean_fixture();
+        let original = session.document().clone();
+        let current = Arc::new(
+            Scene::new(
+                raw.stamp(),
+                raw.geometries().values().cloned().collect(),
+                raw.instances().to_vec(),
+            )
+            .unwrap()
+            .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                source_hash: ContentHash::document(session.document()).unwrap(),
+                consumed_bodies: BTreeSet::new(),
+                cut_targets: vec![],
+            }))
+            .unwrap(),
+        );
+        let state = Arc::new(Mutex::new(State::default()));
+        let mut controller = ModelToolController::default();
+        controller.set_backend(Box::new(ScriptedBackend(state.clone())));
+        controller
+            .begin_split(
+                &session,
+                &Default::default(),
+                &current,
+                &BTreeSet::from([bodies[0].body]),
+                Channel::Ui,
+            )
+            .unwrap();
+        let request = model::SplitRequest::new(
+            BodyInput {
+                body: bodies[0].body,
+                producer: bodies[0].feature,
+            },
+            BodyInput {
+                body: bodies[1].body,
+                producer: bodies[1].feature,
+            },
+            keep_tools,
+        );
+        let request = ModelRequest::Split(Box::new(request));
+        let form = controller.stamp().unwrap();
+        controller
+            .submit(
+                &session,
+                &Default::default(),
+                Channel::CommandLine,
+                form,
+                &request,
+            )
+            .unwrap();
+        let (candidate, _, stamp) = state.lock().unwrap().requests[0].clone();
+        let make_scene = |stamp, consume_target| {
+            let raw = native_scene(&candidate, stamp);
+            let mut consumed = BTreeSet::new();
+            if consume_target {
+                consumed.insert(bodies[0].body);
+            }
+            if !keep_tools {
+                consumed.insert(bodies[1].body);
+            }
+            Arc::new(
+                Scene::new(
+                    stamp,
+                    raw.geometries().values().cloned().collect(),
+                    raw.instances()
+                        .iter()
+                        .filter(|instance| !consumed.contains(&instance.id))
+                        .cloned()
+                        .collect(),
+                )
+                .unwrap()
+                .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                    source_hash: ContentHash::document(&candidate).unwrap(),
+                    consumed_bodies: consumed,
+                    cut_targets: vec![],
+                }))
+                .unwrap(),
+            )
+        };
+        // All requested new bodies are present, but the original target is
+        // incorrectly still a final output. Metadata alone cannot excuse it.
+        state.lock().unwrap().replies.push_back(SceneReply {
+            stamp,
+            result: Ok(make_scene(stamp, false)),
+        });
+        controller.poll(&session, &Default::default());
+        assert!(!controller.can_apply(&session, &Default::default()));
+        assert_eq!(session.document(), &original);
+        controller
+            .submit(
+                &session,
+                &Default::default(),
+                Channel::CommandLine,
+                form,
+                &request,
+            )
+            .unwrap();
+        let stamp = state.lock().unwrap().requests[1].2;
+        state.lock().unwrap().replies.push_back(SceneReply {
+            stamp,
+            result: Ok(make_scene(stamp, true)),
+        });
+        controller.poll(&session, &Default::default());
+        assert!(
+            controller.can_apply(&session, &Default::default()),
+            "{:?}",
+            controller.error()
+        );
+        let outputs = controller.apply(&mut session, &Default::default()).unwrap();
+        assert_eq!(outputs.len(), 2);
+        assert_ne!(outputs[0].body, outputs[1].body);
+        assert!(
+            outputs
+                .iter()
+                .all(|output| original.get(output.body).is_none())
+        );
+        assert_eq!(session.document(), &candidate);
+        assert_eq!(session.revision(), 4);
+        assert_eq!(
+            session.activity().last().unwrap().actor.channel,
+            Channel::CommandLine
+        );
+        session.undo(4, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(session.document(), &original);
+        session.redo(5, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(session.document(), &candidate);
+    }
+}

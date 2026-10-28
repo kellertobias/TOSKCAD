@@ -2,12 +2,16 @@ use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
     form::{self, FormAction as Action},
+    termination::{EndCondition, EndPicker, EndSide, TerminationViewport},
 };
 use crate::{controls, egui};
 use multicad_core::{
     constraint_sketch::Dimension,
     document::{Document, EntityId},
-    model::{Direction, Extent, ExtrudeParameters, ExtrudeRequest, Operation, Termination},
+    model::{
+        Direction, Extent, ExtrudeParameters, ExtrudeRequest, FaceInput, Operation, Termination,
+    },
+    project_file::ContentHash,
     sketch_regions::RegionIntent,
 };
 
@@ -21,6 +25,8 @@ pub struct ExtrudeCapabilities {
     pub two_sided: bool,
     pub symmetric: bool,
     pub taper: bool,
+    pub to_plane: bool,
+    pub to_face: bool,
 }
 impl ExtrudeCapabilities {
     /// The first real vertical slice: independent bodies, distance extents,
@@ -33,7 +39,9 @@ impl ExtrudeCapabilities {
             start_offset: true,
             two_sided: true,
             symmetric: true,
-            taper: false,
+            taper: true,
+            to_plane: true,
+            to_face: true,
         }
     }
 }
@@ -74,30 +82,34 @@ struct Draft {
     offset: DimensionField,
     taper: DimensionField,
     extent: ExtentChoice,
-    forward: DimensionField,
-    backward: DimensionField,
+    forward: EndCondition,
+    backward: EndCondition,
     total: DimensionField,
+    picker: EndPicker,
 }
 impl Draft {
     fn new(request: ExtrudeRequest) -> Result<Self, String> {
         let parameters = &request.parameters;
+        let fallback = || Termination::Distance {
+            distance: millimeters(10.),
+        };
         let (extent, forward, backward, total) = match &parameters.extent {
             Extent::OneSided { end } => (
                 ExtentChoice::OneSided,
-                distance(end)?,
-                millimeters(10.),
+                end.clone(),
+                fallback(),
                 millimeters(10.),
             ),
             Extent::TwoSided { forward, backward } => (
                 ExtentChoice::TwoSided,
-                distance(forward)?,
-                distance(backward)?,
+                forward.clone(),
+                backward.clone(),
                 millimeters(10.),
             ),
             Extent::Symmetric { total } => (
                 ExtentChoice::Symmetric,
-                millimeters(10.),
-                millimeters(10.),
+                fallback(),
+                fallback(),
                 total.clone(),
             ),
         };
@@ -109,8 +121,9 @@ impl Draft {
             offset: DimensionField::from_dimension(&parameters.start_offset, "mm")?,
             taper: DimensionField::from_dimension(&parameters.taper, "deg")?,
             extent,
-            forward: DimensionField::from_dimension(&forward, "mm")?,
-            backward: DimensionField::from_dimension(&backward, "mm")?,
+            forward: EndCondition::new(&forward, &request.faces)?,
+            backward: EndCondition::new(&backward, &request.faces)?,
+            picker: EndPicker::default(),
             total: DimensionField::from_dimension(&total, "mm")?,
             request,
         })
@@ -125,15 +138,27 @@ impl Draft {
         }
         if self.request.operation != Operation::NewBody
             || !self.request.targets.is_empty()
-            || !self.request.faces.is_empty()
+            || self.request.keep_tools
         {
             return Err(
-                "Boolean targets and associative limits are not available in this form yet".into(),
+                "Extrusion profile controls require an independent sweep request; operation controls are configured separately".into(),
             );
         }
         if self.request.outputs.is_empty() {
             return Err("Select at least one exact closed profile".into());
         }
+        if self.picker.active.is_some() {
+            return Err("Finish or cancel end-target selection before Preview".into());
+        }
+        let mut selected_faces = vec![];
+        let mut end = |field: &EndCondition| -> Result<Termination, String> {
+            let (termination, face) =
+                field.resolve(document, capabilities.to_plane, capabilities.to_face)?;
+            if let Some(face) = face {
+                selected_faces.push(face);
+            }
+            Ok(termination)
+        };
         let parameters = ExtrudeParameters {
             direction: Direction {
                 elevation: self.elevation.resolve(document)?,
@@ -144,17 +169,11 @@ impl Draft {
             taper: self.taper.resolve(document)?,
             extent: match self.extent {
                 ExtentChoice::OneSided => Extent::OneSided {
-                    end: Termination::Distance {
-                        distance: self.forward.resolve(document)?,
-                    },
+                    end: end(&self.forward)?,
                 },
                 ExtentChoice::TwoSided if capabilities.two_sided => Extent::TwoSided {
-                    forward: Termination::Distance {
-                        distance: self.forward.resolve(document)?,
-                    },
-                    backward: Termination::Distance {
-                        distance: self.backward.resolve(document)?,
-                    },
+                    forward: end(&self.forward)?,
+                    backward: end(&self.backward)?,
                 },
                 ExtentChoice::Symmetric if capabilities.symmetric => Extent::Symmetric {
                     total: self.total.resolve(document)?,
@@ -175,7 +194,14 @@ impl Draft {
         if !capabilities.taper && parameters.taper != degrees(0.) {
             return Err("Taper is unavailable in the native provider".into());
         }
+        if !matches!(parameters.extent, Extent::Symmetric { .. })
+            && selected_associative(&parameters.extent)
+            && matches!(&parameters.taper,Dimension::Literal{value,..} if *value!=0.)
+        {
+            return Err("Nonzero taper with To plane / To face is not supported; use distance end conditions".into());
+        }
         let mut request = self.request.clone();
+        request.faces = ordered_faces(&self.request.faces, selected_faces)?;
         request.parameters = parameters;
         Ok(request)
     }
@@ -186,19 +212,14 @@ impl Draft {
         self.offset.remember(&request.parameters.start_offset);
         self.taper.remember(&request.parameters.taper);
         match &request.parameters.extent {
-            Extent::OneSided {
-                end: Termination::Distance { distance },
-            } => self.forward.remember(distance),
-            Extent::TwoSided {
-                forward: Termination::Distance { distance: forward },
-                backward: Termination::Distance { distance: backward },
-            } => {
+            Extent::OneSided { end } => self.forward.remember(end),
+            Extent::TwoSided { forward, backward } => {
                 self.forward.remember(forward);
                 self.backward.remember(backward);
             }
             Extent::Symmetric { total } => self.total.remember(total),
-            _ => {}
         }
+        self.request = request.clone();
     }
 }
 
@@ -230,10 +251,24 @@ impl ExtrudePanel {
         }
         if request.operation != Operation::NewBody
             || !request.targets.is_empty()
-            || !request.faces.is_empty()
+            || request.keep_tools
         {
             return Err("This form currently edits independent new-body extrusions only; the original request was preserved".into());
         }
+        let output = &request.outputs[0];
+        multicad_core::model::ExtrudeDefinition {
+            profile: multicad_core::model::ProfileSource {
+                sketch: request.sketch,
+                region: output.region.clone(),
+            },
+            output: multicad_core::model::BodyOutput { body: output.body },
+            parameters: request.parameters.clone(),
+            operation: request.operation,
+            targets: request.targets.clone(),
+            keep_tools: request.keep_tools,
+        }
+        .inputs(&request.faces)
+        .map_err(|error| error.to_string())?;
         let draft = Draft::new(request)?;
         let stamp = draft.stamp;
         self.draft = Some(draft);
@@ -243,12 +278,60 @@ impl ExtrudePanel {
     pub fn active(&self) -> bool {
         self.draft.is_some()
     }
+    pub(crate) fn changed(&mut self) {
+        if let Some(draft) = &mut self.draft {
+            draft.stamp.changed();
+        }
+        self.error = None;
+    }
     pub fn stamp(&self) -> Option<FormStamp> {
         self.draft.as_ref().map(|draft| draft.stamp)
     }
     pub fn cancel(&mut self) {
         self.draft = None;
         self.error = None;
+    }
+    pub fn termination_picking(&self) -> bool {
+        self.draft
+            .as_ref()
+            .is_some_and(|draft| draft.picker.active.is_some())
+    }
+    pub fn termination_highlight(&self) -> Option<crate::viewport::Selection> {
+        self.draft
+            .as_ref()
+            .and_then(|draft| draft.picker.highlight())
+    }
+    pub fn termination_viewport(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        source_hash: ContentHash,
+        view: TerminationViewport<'_>,
+    ) -> bool {
+        let Some(draft) = self.draft.as_mut() else {
+            return false;
+        };
+        if let Some((side, choice)) = draft.picker.viewport(
+            document,
+            revision,
+            source_hash,
+            view,
+            &draft
+                .request
+                .outputs
+                .iter()
+                .map(|o| o.feature)
+                .collect::<Vec<_>>(),
+        ) {
+            match side {
+                EndSide::Forward => draft.forward.accept(choice),
+                EndSide::Backward => draft.backward.accept(choice),
+            }
+            draft.stamp.changed();
+            self.error = None;
+            return true;
+        }
+        false
     }
     pub fn request(
         &self,
@@ -270,24 +353,9 @@ impl ExtrudePanel {
         let draft = self.draft.as_mut()?;
         controls::inspector_layout(ui);
         ui.strong("Extrude");
-        ui.label(format!(
-            "{} selected profiles · one independent body per profile",
-            draft.request.outputs.len()
-        ));
+        ui.label(format!("{} selected profiles", draft.request.outputs.len()));
         ui.small("Preview checks native solids. Apply changes the document only after that preview succeeds.");
         ui.separator();
-        ui.label("Operation");
-        controls::inspector_combo(ui, "extrude-operation")
-            .selected_text("New body")
-            .show_ui(ui, |ui| {
-                ui.label("New body");
-                for label in ["Join", "Cut", "Intersect", "Split"] {
-                    ui.add_enabled(false, egui::Button::new(label))
-                        .on_disabled_hover_text(
-                            "Explicit Boolean targets need the native preview and rebuild provider",
-                        );
-                }
-            });
         let mut changed = false;
         ui.add_enabled_ui(capabilities.direction, |ui| {
             changed |= draft.elevation.show(
@@ -313,6 +381,7 @@ impl ExtrudePanel {
         });
         ui.separator();
         ui.label("Extent");
+        let previous_extent = draft.extent;
         controls::inspector_combo(ui, "extrude-extent")
             .selected_text(draft.extent.label())
             .show_ui(ui, |ui| {
@@ -330,37 +399,55 @@ impl ExtrudePanel {
                     .on_disabled_hover_text("This extent is unavailable in the native provider");
                 }
             });
-        ui.label("End condition");
-        controls::inspector_combo(ui, "extrude-limit")
-            .selected_text("Distance")
-            .show_ui(ui, |ui| {
-                ui.label("Distance");
-                for label in ["To plane", "To face"] {
-                    ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text("Associative limit picking needs the native reference and preview provider");
-                }
-            });
+        if previous_extent != draft.extent {
+            draft.picker.cancel();
+        }
         match draft.extent {
             ExtentChoice::OneSided => {
-                changed |= draft.forward.show(
+                changed |= show_end(
                     ui,
-                    "Distance",
-                    "Distance from the offset start, not an absolute endpoint",
+                    document,
+                    ("End condition", EndSide::Forward),
+                    &mut draft.forward,
+                    &mut draft.picker,
+                    capabilities,
                 )
             }
             ExtentChoice::TwoSided => {
-                changed |= draft.forward.show(ui, "Forward distance", "Independent positive distance along the chosen direction from the offset start");
-                changed |= draft.backward.show(ui, "Backward distance", "Independent positive distance opposite the chosen direction from the offset start");
+                changed |= show_end(
+                    ui,
+                    document,
+                    ("Forward end", EndSide::Forward),
+                    &mut draft.forward,
+                    &mut draft.picker,
+                    capabilities,
+                );
+                ui.separator();
+                changed |= show_end(
+                    ui,
+                    document,
+                    ("Backward end", EndSide::Backward),
+                    &mut draft.backward,
+                    &mut draft.picker,
+                    capabilities,
+                );
             }
             ExtentChoice::Symmetric => {
-                changed |= draft.total.show(ui, "Total distance", "Total span centered at the offset start; each side receives half this distance");
+                draft.picker.cancel();
+                changed|=draft.total.show(ui,"Total distance","Total span centered at the offset start; each side receives half this distance");
                 ui.small("Half of the total distance on each side of the offset start.");
             }
         }
+        if let Some(message) = draft.picker.message() {
+            ui.colored_label(egui::Color32::LIGHT_YELLOW, message);
+        }
         ui.add_enabled_ui(capabilities.taper, |ui| {
-            changed |= draft.taper.show(ui, "Taper angle", "Draft changes the cross-section size. Zero taper keeps a constant section and is separate from extrusion direction.");
+            changed |= draft.taper.show(ui, "Taper angle", "Positive taper expands material and shrinks holes by distance × tan(angle), independently along each side. Exact shared-vertex convex polygons and circles only; arcs, splines, topology changes and plane/face limits with nonzero taper are unsupported.");
         });
         if !capabilities.taper {
             ui.small("Taper is unavailable in the native provider; the section remains constant.");
+        } else {
+            ui.small("Positive widens material; negative narrows. Preview rejects unsupported profiles or collapsing holes.");
         }
         ui.separator();
         if !capabilities.new_body {
@@ -425,11 +512,73 @@ impl ExtrudePanel {
         }
     }
 }
-fn distance(termination: &Termination) -> Result<Dimension, String> {
-    match termination {
-        Termination::Distance { distance } => Ok(distance.clone()),
-        _ => Err("Associative limits require the native picking provider; the stored reference was preserved".into()),
+fn selected_associative(extent: &Extent) -> bool {
+    match extent {
+        Extent::OneSided { end } => !matches!(end, Termination::Distance { .. }),
+        Extent::TwoSided { forward, backward } => {
+            !matches!(forward, Termination::Distance { .. })
+                || !matches!(backward, Termination::Distance { .. })
+        }
+        Extent::Symmetric { .. } => false,
     }
+}
+fn ordered_faces(
+    previous: &[FaceInput],
+    selected: Vec<FaceInput>,
+) -> Result<Vec<FaceInput>, String> {
+    let mut unique = vec![];
+    for face in selected {
+        if let Some(old) = unique
+            .iter()
+            .find(|old: &&FaceInput| old.intent.id == face.intent.id)
+        {
+            if old != &face {
+                return Err(
+                    "The same end reference has conflicting selectors; choose the target again"
+                        .into(),
+                );
+            }
+        } else {
+            unique.push(face);
+        }
+    }
+    let mut result = vec![];
+    for old in previous {
+        if let Some(face) = unique.iter().find(|face| face.intent.id == old.intent.id) {
+            result.push(face.clone());
+        }
+    }
+    for face in unique {
+        if !result.iter().any(|old| old.intent.id == face.intent.id) {
+            result.push(face);
+        }
+    }
+    Ok(result)
+}
+fn show_end(
+    ui: &mut egui::Ui,
+    document: &Document,
+    (label, side): (&str, EndSide),
+    field: &mut EndCondition,
+    picker: &mut EndPicker,
+    capabilities: ExtrudeCapabilities,
+) -> bool {
+    let active = picker.active.is_some_and(|(current, _)| current == side);
+    let action = field.show(
+        ui,
+        document,
+        label,
+        capabilities.to_plane,
+        capabilities.to_face,
+        active,
+    );
+    if action.changed && active || action.cancel {
+        picker.cancel();
+    }
+    if let Some(kind) = action.pick {
+        picker.begin(side, kind);
+    }
+    action.changed || action.pick.is_some() || action.cancel
 }
 fn millimeters(value: f64) -> Dimension {
     Dimension::Literal {

@@ -447,6 +447,7 @@ impl ShortcutMap {
             (Key::B, crate::modeling::ModelingTool::Box),
             (Key::C, crate::modeling::ModelingTool::Cylinder),
             (Key::G, crate::modeling::ModelingTool::Boolean),
+            (Key::T, crate::modeling::ModelingTool::Split),
         ] {
             add(
                 Scope::Mode(Mode::Model),
@@ -638,6 +639,30 @@ mod tests {
                 ..binding
             })
             .is_err()
+        );
+    }
+    #[test]
+    fn split_shortcut_is_model_scoped_and_preserves_typing_sketching_and_wasd() {
+        let map = ShortcutMap::standard();
+        let mut c = context(Mode::Model);
+        assert_eq!(
+            map.resolve(Key::T, Modifiers::NONE, &c).unwrap().action,
+            Action::Command(Command::Modeling(crate::modeling::ModelingTool::Split))
+        );
+        for key in [Key::W, Key::A, Key::S, Key::D] {
+            assert!(matches!(
+                map.resolve(key, Modifiers::NONE, &c).unwrap().action,
+                Action::Pan(_)
+            ));
+        }
+        c.text_input = true;
+        assert!(map.resolve(Key::T, Modifiers::NONE, &c).is_none());
+        c.text_input = false;
+        c.mode = Mode::Sketch;
+        c.sketch_editing = true;
+        assert_eq!(
+            map.resolve(Key::T, Modifiers::NONE, &c).unwrap().action,
+            Action::Command(Command::Draw(DrawTool::Polyline))
         );
     }
     #[test]
