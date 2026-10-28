@@ -473,3 +473,57 @@ fn successful_candidate_receipt_is_revoked_when_resources_change_at_the_same_rev
     assert_eq!(fixture.session.revision(), revision);
     assert_eq!(fixture.session.can_undo(), undo);
 }
+
+#[test]
+fn full_geometry_and_hash_without_a_v2_native_reference_receipt_cannot_authorize_apply() {
+    use super::super::occurrence_tests::catalog_fixture;
+    let (fixture, catalog) = catalog_fixture(1);
+    let before = fixture.session.document().clone();
+    let input = sketch_external::OccurrenceCaptureRequest::new(
+        &catalog,
+        &catalog.results[0].selector,
+        sketch_external::Behavior::ReferenceOnly,
+    )
+    .unwrap();
+    let edits = sketch_external::occurrence_capture_edits(
+        fixture.session.document(),
+        fixture.session.revision(),
+        &input,
+        &catalog,
+        false,
+    )
+    .unwrap();
+    let prepared = fixture
+        .session
+        .prepare(multicad_core::commands::Request {
+            expected_revision: fixture.session.revision(),
+            actor: Actor::local(Channel::Ui),
+            label: "Missing native receipt".into(),
+            edits,
+        })
+        .unwrap();
+    let mut controller = Controller::default();
+    controller.set_backend(Box::new(Backend {
+        base: scene(&fixture, 1),
+        reply: None,
+        partial_candidate: false,
+        bad_hash: false,
+    }));
+    controller
+        .validate_candidate(&fixture.session, &prepared, &Default::default())
+        .unwrap();
+    let error = controller
+        .poll_native(&fixture.session, &Default::default())
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("unresolved driving references"), "{error}");
+    assert!(controller.candidate_validation().unwrap().is_err());
+    assert_eq!(fixture.session.document(), &before);
+    assert!(
+        fixture
+            .session
+            .document()
+            .get(input.query.reference)
+            .is_none()
+    );
+}

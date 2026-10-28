@@ -19,6 +19,11 @@ impl Controller {
         enabled: bool,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> Option<Proposal> {
+        if self.active.as_ref().is_some_and(|a| a.form.is_some())
+            || self.query_pending() && self.active.is_none()
+        {
+            return self.occurrence_inspector(ui, session, enabled, resources);
+        }
         controls::inspector_layout(ui);
         ui.separator();
         ui.strong("External references");
@@ -130,6 +135,9 @@ impl Controller {
                     ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
                 }
             }
+        }
+        if self.active.is_none() {
+            self.occurrence_rows(ui, session, sketch, report, enabled, resources);
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);

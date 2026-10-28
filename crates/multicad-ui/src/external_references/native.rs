@@ -147,6 +147,19 @@ impl Native {
                             "A partial source scene cannot authorize reference Apply".into()
                         );
                     }
+                    let report = scene
+                        .native_reference_report(job.hash)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            multicad_core::references::inspect(
+                                job.ticket.document(),
+                                session.revision(),
+                                &scene.reference_snapshots(),
+                            )
+                        });
+                    if !report.for_model(job.ticket.document())?.all_resolved() {
+                        return Err("Complete native reference validation has unresolved driving references".into());
+                    }
                 }
             }
             Ok(scene)
@@ -184,7 +197,7 @@ impl Controller {
         self.native.backend.is_some()
     }
     pub fn native_pending(&self) -> bool {
-        self.native.pending()
+        self.native.pending() || self.query_pending()
     }
     pub fn poll_native(
         &mut self,
@@ -211,9 +224,9 @@ impl Controller {
     }
     pub(super) fn can_start_repair(&self, session: &Session) -> bool {
         self.context.as_ref().is_some_and(|context| {
-            context.pose == Default::default()
+            (self.has_query_backend() || context.pose == Default::default())
                 && session.validate_preview(&context.ticket).is_ok()
-                && (context.scene.is_some() || self.has_backend())
+                && (context.scene.is_some() || self.has_backend() || self.has_query_backend())
         })
     }
     pub(super) fn request_source(
@@ -230,11 +243,15 @@ impl Controller {
         session
             .validate_preview(&active.ticket)
             .map_err(|e| e.to_string())?;
-        let Purpose::Repair(reference) = active.purpose else {
-            return Err(
-                "Source recovery is only available while repairing an existing reference".into(),
-            );
-        };
+        let reference =
+            match active.purpose {
+                Purpose::Repair(reference) => Some(reference),
+                Purpose::Capture if active.form.is_some() => None,
+                _ => return Err(
+                    "Source recovery is only available for a current reference capture or repair"
+                        .into(),
+                ),
+            };
         let EntityData::Sketch { plane, .. } = &session
             .document()
             .get(context.sketch)
@@ -246,15 +263,27 @@ impl Controller {
         if !matches!(
             session.document().get(replacement).map(|e| &e.data),
             Some(EntityData::Feature { .. })
-        ) {
-            return Err("Select a canonical replacement Feature".into());
+        ) && !(active.form.is_some()
+            && matches!(
+                session.document().get(replacement).map(|e| &e.data),
+                Some(EntityData::Part { .. })
+            ))
+        {
+            return Err("Select a canonical source Part or retained Feature".into());
         }
         let mut roots = std::collections::BTreeSet::from([*plane, replacement]);
         for binding in sketch_external::bindings(session.document(), context.sketch)
             .map_err(|e| e.to_string())?
         {
-            if binding.reference != reference {
+            if Some(binding.reference) != reference {
                 roots.insert(binding.source);
+            }
+        }
+        for binding in sketch_external::occurrence_bindings(session.document(), context.sketch)
+            .map_err(|e| e.to_string())?
+        {
+            if Some(binding.query.reference) != reference {
+                roots.insert(binding.query.source.source);
             }
         }
         if roots.len() > 128 {

@@ -4,6 +4,10 @@ mod backend;
 mod controller;
 mod inspector;
 mod native;
+mod occurrence_controller;
+mod occurrence_form;
+mod occurrence_inspector;
+mod queries;
 #[cfg(test)]
 pub(crate) mod tests;
 use crate::icons::Icon;
@@ -52,3 +56,6 @@ impl ExternalTool {
         }
     }
 }
+
+#[cfg(test)]
+mod occurrence_tests;

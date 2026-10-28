@@ -43,6 +43,7 @@ pub(super) struct Active {
     pub request: Option<CaptureRequest>,
     pub include_hidden: bool,
     pub inspected_source: Option<EntityId>,
+    pub(super) form: Option<Box<super::occurrence_form::Form>>,
 }
 #[derive(Default)]
 pub struct Controller {
@@ -51,6 +52,8 @@ pub struct Controller {
     pub(super) active: Option<Active>,
     pub(super) hover: Option<Hit>,
     pub(super) error: Option<String>,
+    pub(super) queries: super::queries::Queries,
+    pub(super) occurrence_view: Option<super::occurrence_controller::View>,
 }
 pub struct Pointer<'a> {
     pub camera: Camera,
@@ -62,9 +65,10 @@ pub struct Pointer<'a> {
 }
 impl Controller {
     pub fn active(&self) -> bool {
-        self.active.is_some()
+        self.active.is_some() || self.query_pending()
     }
     pub fn cancel(&mut self) {
+        self.queries.cancel();
         self.active = None;
         self.hover = None;
         self.error = None;
@@ -146,11 +150,13 @@ impl Controller {
                 self.error = Some("Native geometry changed. Select the source again".into());
             }
         }
+        self.refresh_occurrence_view(session);
     }
     pub fn ready(&self) -> bool {
-        self.context
-            .as_ref()
-            .is_some_and(|context| context.scene.is_some() && context.pose == Transform::default())
+        self.context.as_ref().is_some_and(|context| {
+            self.has_query_backend()
+                || context.scene.is_some() && context.pose == Transform::default()
+        })
     }
     pub fn ready_for(&self, session: &Session) -> bool {
         self.ready()
@@ -160,6 +166,16 @@ impl Controller {
                 .is_some_and(|context| session.validate_preview(&context.ticket).is_ok())
     }
     pub fn can_preview(&self, session: &Session) -> bool {
+        if let Some(active) = &self.active
+            && let Some(form) = &active.form
+        {
+            return self.has_query_backend()
+                && !self.query_pending()
+                && session.validate_preview(&active.ticket).is_ok()
+                && form.query(session.document()).is_ok()
+                && (form.catalog.is_none()
+                    || form.request(session.document(), active.behavior).is_ok());
+        }
         self.ready_for(session)
             && self.active.as_ref().is_some_and(|active| {
                 session.validate_preview(&active.ticket).is_ok()
@@ -180,6 +196,13 @@ impl Controller {
             return Err(self.unavailable());
         }
         let (ticket, _) = scope(session, context.sketch)?;
+        let form = self
+            .has_query_backend()
+            .then(|| {
+                super::occurrence_form::Form::new(session.document(), context.sketch, tool, None)
+            })
+            .transpose()?
+            .map(Box::new);
         self.active = Some(Active {
             ticket,
             purpose: Purpose::Capture,
@@ -190,7 +213,9 @@ impl Controller {
             request: None,
             include_hidden: false,
             inspected_source: None,
+            form,
         });
+        self.update_occurrence_view(session);
         self.hover = None;
         self.error = None;
         Ok(())
@@ -206,6 +231,11 @@ impl Controller {
             .map_err(|error| error.to_string())?;
         if !self.can_start_repair(session) {
             return Err(self.unavailable());
+        }
+        if sketch_external::is_occurrence_reference(session.document(), reference) {
+            let request = sketch_external::read_occurrence(session.document(), reference)
+                .map_err(|e| e.to_string())?;
+            return self.begin_occurrence_row(session, request);
         }
         let binding = sketch_external::bindings(session.document(), context.sketch)
             .map_err(|e| e.to_string())?
@@ -227,12 +257,16 @@ impl Controller {
             request: None,
             include_hidden: false,
             inspected_source: None,
+            form: None,
         });
         self.error = None;
         self.hover = None;
         Ok(())
     }
     pub fn scene(&self) -> Option<Arc<Scene>> {
+        if let Some(scene) = self.occurrence_scene() {
+            return Some(scene);
+        }
         let active = self.active.as_ref()?;
         let scene = self.context.as_ref()?.scene.clone()?;
         if let Some(source) = active.inspected_source {
@@ -271,7 +305,7 @@ impl Controller {
             self.hover = None;
             return false;
         }
-        let filter = if active.method == Method::Intersect {
+        let filter = if active.form.is_none() && active.method == Method::Intersect {
             PickFilter::Edges
         } else {
             active.filter
@@ -305,6 +339,12 @@ impl Controller {
         if let Some(active) = &mut self.active {
             active.selected = None;
             active.request = None;
+            if let Some(form) = &mut active.form {
+                form.clear_geometry();
+            }
+        }
+        if self.active.as_ref().is_some_and(|a| a.form.is_some()) {
+            return self.select_occurrence(session, hit);
         }
         let context = self.context.as_ref().ok_or("Open a sketch")?;
         let active = self.active.as_ref().ok_or("Start a reference tool")?;
@@ -522,7 +562,11 @@ impl Controller {
         sketch: EntityId,
         id: EntityId,
     ) -> bool {
-        sketch_external::bindings(document, sketch).is_ok_and(|bindings| {
+        sketch_external::occurrence_bindings(document, sketch).is_ok_and(|bindings| {
+            bindings.iter().any(|binding| {
+                binding.output.curve == Some(id) || binding.output.points.contains(&id)
+            })
+        }) || sketch_external::bindings(document, sketch).is_ok_and(|bindings| {
             bindings.iter().any(|binding| {
                 binding.definition.output.curve() == Some(id)
                     || binding.definition.output.points().contains(&id)
@@ -530,7 +574,10 @@ impl Controller {
         })
     }
 }
-fn scope(session: &Session, sketch: EntityId) -> Result<(Prepared, ContentHash), String> {
+pub(super) fn scope(
+    session: &Session,
+    sketch: EntityId,
+) -> Result<(Prepared, ContentHash), String> {
     let entity = session.document().get(sketch).ok_or("Sketch is missing")?;
     let EntityData::Sketch { definition, .. } = &entity.data else {
         return Err("Select a sketch".into());
