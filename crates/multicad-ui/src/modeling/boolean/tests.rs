@@ -4,8 +4,8 @@ use super::*;
 use crate::viewport::{Geometry, Instance, SceneStamp, Transform};
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
-    document::{Entity, Mutation},
-    model::{self, CreatedBody, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest},
+    document::{Entity, EntityData, Mutation},
+    model::{self, BodyInput, CreatedBody, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest},
 };
 use std::sync::Arc;
 fn fixture() -> (Session, Vec<CreatedBody>, Arc<Scene>) {

@@ -1,22 +1,16 @@
 use super::{
     FormStamp, PreviewState,
+    body_choices::{self, BodyChoice},
     form::{self, FormAction, ModelEvent, ModelRequest},
     names::GeneratedNames,
 };
 use crate::{controls, egui, viewport::Scene};
 use multicad_core::{
-    document::{Document, EntityData, EntityId},
-    hierarchy::Index,
-    model::{BodyInput, BooleanRequest, MAX_BOOLEAN_TARGETS, MAX_BOOLEAN_TOOLS, Operation},
+    document::{Document, EntityId},
+    model::{BooleanRequest, MAX_BOOLEAN_TARGETS, MAX_BOOLEAN_TOOLS, Operation},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-struct BodyChoice {
-    input: BodyInput,
-    label: String,
-    path: String,
-    producer: String,
-}
 pub(super) struct BooleanPanel {
     stamp: FormStamp,
     choices: Vec<BodyChoice>,
@@ -30,86 +24,7 @@ pub(super) struct BooleanPanel {
 }
 impl BooleanPanel {
     pub fn available(document: &Document, revision: u64, scene: &Scene) -> Result<usize, String> {
-        if scene.stamp().document != document.id() || scene.stamp().revision != revision {
-            return Err("Wait for current native bodies before choosing Boolean inputs".into());
-        }
-        // Only two available Parts are needed for button readiness. Construct
-        // paths and hierarchy diagnostics once when opening the actual form.
-        Ok(scene
-            .reference_instances()
-            .iter()
-            .filter(|instance| {
-                matches!(
-                    document.get(instance.id).map(|entity| &entity.data),
-                    Some(EntityData::Part { .. })
-                )
-            })
-            .take(2)
-            .count())
-    }
-    fn choices(
-        document: &Document,
-        revision: u64,
-        scene: &Scene,
-    ) -> Result<Vec<BodyChoice>, String> {
-        if scene.stamp().document != document.id() || scene.stamp().revision != revision {
-            return Err("Wait for current native bodies before choosing Boolean inputs".into());
-        }
-        let index = Index::new(document).map_err(|error| error.to_string())?;
-        let mut choices = vec![];
-        for instance in scene.reference_instances() {
-            let Some(entity) = document.get(instance.id) else {
-                return Err("A native body has no canonical source; refresh the model".into());
-            };
-            let EntityData::Part { features, .. } = &entity.data else {
-                continue;
-            };
-            let head = features.iter().rev().copied().find(|id| {
-                matches!(
-                    document.get(*id).map(|entity| &entity.data),
-                    Some(EntityData::Feature {
-                        suppressed: false,
-                        ..
-                    })
-                )
-            });
-            if head != Some(instance.geometry) {
-                return Err("The displayed body producer differs from its current history; refresh the native model".into());
-            }
-            let input = BodyInput {
-                body: instance.id,
-                producer: instance.geometry,
-            };
-            input
-                .resolve_producer(document)
-                .map_err(|error| error.to_string())?;
-            let owner = index
-                .parent(instance.id)
-                .map_err(|error| error.to_string())?;
-            let path = crate::model_tree::container_path(document, &index, owner);
-            let visible = index
-                .effective_visibility(instance.id)
-                .map_err(|error| error.to_string())?;
-            let label = format!(
-                "{} · {}{}",
-                entity.name,
-                path,
-                if visible { "" } else { " · hidden" }
-            );
-            let producer = document
-                .get(instance.geometry)
-                .expect("resolved producer")
-                .name
-                .clone();
-            choices.push(BodyChoice {
-                input,
-                label,
-                path,
-                producer,
-            });
-        }
-        choices.sort_by(|a, b| a.label.cmp(&b.label).then(a.input.body.cmp(&b.input.body)));
-        Ok(choices)
+        body_choices::available(document, revision, scene)
     }
     pub fn new(
         document: &Document,
@@ -117,7 +32,7 @@ impl BooleanPanel {
         scene: &Scene,
         selected: &BTreeSet<EntityId>,
     ) -> Result<Self, String> {
-        let choices = Self::choices(document, revision, scene)?;
+        let choices = body_choices::choices(document, revision, scene)?;
         if choices.len() < 2 {
             return Err("Boolean modeling needs at least two available native bodies".into());
         }
