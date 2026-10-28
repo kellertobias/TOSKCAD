@@ -121,7 +121,7 @@ pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout
     for note in &page.notes {
         let [x, y] = note.position_mm;
         let chars = ((w - m - x - 2.) / CHAR_MM).floor().max(0.) as usize;
-        if chars < 1 {
+        if chars < 2 {
             return Err(invalid("Text note has no printable width"));
         }
         let lines = wrap(&note.text, chars);
@@ -151,12 +151,25 @@ fn overlaps(a: [f64; 4], b: [f64; 4]) -> bool {
 fn wrap(value: &str, width: usize) -> Vec<String> {
     let mut lines = vec![];
     for line in value.split('\n') {
-        let chars = line.replace('\t', "    ").chars().collect::<Vec<_>>();
-        if chars.is_empty() {
+        if line.is_empty() {
             lines.push(String::new());
         } else {
-            for chunk in chars.chunks(width.max(1)) {
-                lines.push(chunk.iter().collect());
+            let mut current = String::new();
+            let mut cells = 0;
+            for character in line.replace('\t', "    ").chars() {
+                // Reserve two monospaced cells for non-ASCII fallback glyphs,
+                // including East Asian text and emoji. Combining sequences may
+                // wrap earlier, but no required character is dropped.
+                let used = if character.is_ascii() { 1 } else { 2 };
+                if cells + used > width && !current.is_empty() {
+                    lines.push(std::mem::take(&mut current));
+                    cells = 0;
+                }
+                current.push(character);
+                cells += used;
+            }
+            if !current.is_empty() {
+                lines.push(current);
             }
         }
     }

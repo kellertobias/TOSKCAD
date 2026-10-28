@@ -168,6 +168,16 @@ fn title_block_wraps_complete_long_and_missing_values_without_overlap_or_silent_
         .unwrap_err()
         .to_string();
     assert!(error.contains("will not be clipped"));
+    let mut unicode = Page::new("国际-01");
+    unicode.info.title = "国际木工图纸🪚".repeat(10);
+    let layout = drawings::layout_page(&unicode, 1, 1).unwrap();
+    assert_eq!(layout.title_cells[0].lines.concat(), unicode.info.title);
+    assert!(layout.title_cells[0].lines.iter().all(|line| {
+        line.chars()
+            .map(|c| if c.is_ascii() { 1 } else { 2 })
+            .sum::<usize>()
+            <= 59
+    }));
 }
 #[test]
 fn invalid_content_and_paper_settings_fail_before_preparation() {
