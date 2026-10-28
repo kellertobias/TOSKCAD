@@ -721,6 +721,14 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     definition.type_id, definition.schema_version
                 ))
             }
+            EntityData::Instance { component, .. }
+                if matches!(
+                    document.get(*component).map(|e| &e.data),
+                    Some(EntityData::Assembly { .. })
+                ) =>
+            {
+                Some(super::ASSEMBLY_CAPABILITY.into())
+            }
             EntityData::Instance {
                 placement_source: Some(_),
                 ..

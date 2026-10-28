@@ -299,3 +299,54 @@ fn overdepth_directed_relationships_fail_before_recursive_pose_resolution() {
     assert_eq!(s.revision(), revision);
     assert!(resolve_instance_pose(s.document(), parent, s.parameters()).is_ok());
 }
+#[test]
+fn placed_legacy_assembly_declares_required_evaluation_capability_on_roundtrip() {
+    use multicad_core::{
+        commands::Request,
+        document::{Entity, EntityData, Mutation},
+    };
+    let (mut s, _, a, _) = setup();
+    let assembly = Entity::new(
+        "Legacy component",
+        EntityData::Assembly {
+            instances: vec![a.instance],
+        },
+    );
+    let id = assembly.id;
+    s.apply(Request {
+        expected_revision: s.revision(),
+        actor: actor(),
+        label: "Legacy definition".into(),
+        edits: vec![Mutation::Insert(assembly)],
+    })
+    .unwrap();
+    assert!(
+        !ProjectFile::new(s.document().clone())
+            .unwrap()
+            .capabilities()
+            .contains(ASSEMBLY_CAPABILITY)
+    );
+    let root = ComponentPlacementRequest::new(id, Default::default());
+    s.commit(
+        prepare_place_component(&s, s.revision(), actor(), &root)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let project = ProjectFile::new(s.document().clone()).unwrap();
+    assert!(project.capabilities().contains(ASSEMBLY_CAPABILITY));
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let opened = project_file::read(
+        &mut std::io::Cursor::new(&bytes),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(opened.project.document, *s.document());
+    let mut older = project_file::supported_capabilities();
+    older.remove(ASSEMBLY_CAPABILITY);
+    assert!(
+        project_file::read(&mut std::io::Cursor::new(bytes), Default::default(), &older).is_err()
+    );
+}
