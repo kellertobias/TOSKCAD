@@ -626,7 +626,10 @@ impl Application {
             Command::Drawing(tool) => {
                 !self.current().editor.dirty()
                     && !self.current().sketch.has_pending_edits()
-                    && self.current().drawings.enabled(tool)
+                    && self
+                        .current()
+                        .drawings
+                        .enabled(tool, &self.current().session)
             }
             Command::Apply | Command::Discard if self.mode == Mode::Drawings => {
                 self.current().drawings.dirty()

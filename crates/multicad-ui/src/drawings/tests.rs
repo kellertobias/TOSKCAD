@@ -47,6 +47,7 @@ fn editor_pages_preserve_independent_drafts_and_undoable_authored_content() {
         "User authored note"
     );
     let before = session.document().clone();
+    assert!(!editor.enabled(DrawingTool::Apply, &session));
     editor
         .invoke(&mut session, DrawingTool::Remove, Channel::Ui)
         .unwrap();
@@ -75,6 +76,7 @@ fn stale_and_invalid_drafts_cannot_replace_saved_page_and_discard_restores_curre
     .unwrap();
     session.commit(edit).unwrap();
     let before = session.document().clone();
+    assert!(!editor.enabled(DrawingTool::Apply, &session));
     assert!(
         editor
             .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
@@ -93,6 +95,33 @@ fn stale_and_invalid_drafts_cannot_replace_saved_page_and_discard_restores_curre
             .is_err()
     );
     assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn unprintable_page_disables_the_shared_apply_command_and_preserves_source() {
+    let mut session = session();
+    let mut editor = DrawingEditor::default();
+    editor
+        .invoke(&mut session, DrawingTool::AddPage, Channel::Ui)
+        .unwrap();
+    let before = session.document().clone();
+    editor.draft.as_mut().unwrap().info.title = "A".repeat(3900);
+    assert!(editor.dirty());
+    assert!(!editor.enabled(DrawingTool::Apply, &session));
+    assert!(editor.enabled(DrawingTool::Discard, &session));
+    assert!(
+        editor
+            .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+            .unwrap_err()
+            .contains("does not fit")
+    );
+    assert_eq!(session.document(), &before);
+    editor
+        .invoke(&mut session, DrawingTool::Discard, Channel::Ui)
+        .unwrap();
+    assert!(!editor.dirty());
+    editor.draft.as_mut().unwrap().info.title = "A printable title".into();
+    assert!(editor.enabled(DrawingTool::Apply, &session));
 }
 
 #[test]

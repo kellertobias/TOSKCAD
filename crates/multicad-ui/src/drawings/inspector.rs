@@ -163,11 +163,7 @@ impl DrawingEditor {
         if let Some(index) = remove {
             page.notes.remove(index);
         }
-        let validation = drawings::DrawingBook {
-            pages: vec![page.clone()],
-        }
-        .validate()
-        .map_err(|error| error.to_string());
+        let validation = self.validate_draft();
         if let Err(error) = &validation {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
@@ -183,7 +179,7 @@ impl DrawingEditor {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    self.dirty() && validation.is_ok() && !stale,
+                    self.enabled(DrawingTool::Apply, session),
                     egui::Button::new("Apply page"),
                 )
                 .clicked()

@@ -147,9 +147,24 @@ impl DrawingEditor {
         }
         Ok(book)
     }
-    pub fn enabled(&self, tool: DrawingTool) -> bool {
+    fn validate_draft(&self) -> Result<(), String> {
+        DrawingBook {
+            pages: vec![self.draft.clone().ok_or("Select a page first")?],
+        }
+        .validate()
+        .map_err(|e| e.to_string())
+    }
+    pub fn enabled(&self, tool: DrawingTool, session: &Session) -> bool {
         match tool {
-            DrawingTool::Apply | DrawingTool::Discard => self.dirty(),
+            DrawingTool::Apply => {
+                self.dirty()
+                    && self.revision == Some(session.revision())
+                    && self
+                        .book
+                        .is_some_and(|id| session.document().get(id).is_some())
+                    && self.validate_draft().is_ok()
+            }
+            DrawingTool::Discard => self.dirty(),
             DrawingTool::Settings => self.selected.is_some(),
             DrawingTool::Text => self.selected.is_some(),
             DrawingTool::AddPage | DrawingTool::NewDocument => !self.dirty(),
