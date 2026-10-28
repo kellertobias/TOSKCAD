@@ -15,6 +15,8 @@ use std::{
     fmt,
     sync::Arc,
 };
+#[path = "advanced_profiles.rs"]
+mod advanced_profiles;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelStamp {
@@ -548,6 +550,25 @@ impl Compiler {
                             solids: &solids,
                             topologies: &topologies,
                             policy: self.policy,
+                        },
+                        id,
+                        &source,
+                        &captures,
+                    )?
+                }
+                (model::ADVANCED_TYPE, model::ADVANCED_SCHEMA) => {
+                    let (source, captures) =
+                        model::read_advanced(document, id).map_err(|e| error(Some(id), e))?;
+                    let selected = profiles.advanced(&source, id, &topologies, interrupt)?;
+                    crate::advanced::build(
+                        crate::advanced::Inputs {
+                            revision,
+                            parameters: context.parameters(),
+                            solids: &solids,
+                            topologies: &topologies,
+                            policy: self.policy,
+                            sections: selected.sections,
+                            path: selected.path,
                         },
                         id,
                         &source,

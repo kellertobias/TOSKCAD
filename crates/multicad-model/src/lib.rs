@@ -1,5 +1,6 @@
 //! Exact native feature evaluation. Native solids stay on the constructing
 //! thread; immutable display and reference snapshots may cross to the UI.
+mod advanced;
 mod alignment;
 mod compiler;
 mod drawings;
