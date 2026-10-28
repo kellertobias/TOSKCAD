@@ -1,34 +1,130 @@
 # Source-linked sketch geometry
 
-[`sketch_external`](../../crates/multicad-core/src/sketch_external/mod.rs) resolves native analytic geometry into a constrained sketch before numerical solving. A sketch links to an external-reference Extension, whose single source link owns the persistent geometry intent. The Extension stores the projection method, profile participation and output/solver-lock identities. It has no link back to its consumer sketch, so the normal dependency graph can order upstream model geometry before the sketch.
+[sketch_external](../../crates/multicad-core/src/sketch_external/mod.rs) supplies
+current native geometry to constrained sketches before numerical solving. Version
+1 binds a canonical Feature through compact analytic descriptors. Version 2
+stores complete source and optional receiving occurrence paths, an exact finite
+query and a semantic result selector. Both use an external-reference Extension
+owned by one sketch.
 
-Constrained sketch schema 4 requires semantic evaluation and remains sticky after removing the final reference. The source payload retains authored point and radius guesses. [`evaluate_checked`](../../crates/multicad-solver/src/evaluated.rs) overwrites numerical seeds from current resolved geometry, injects Fix/Radius equations, then removes those transient constraints from successful returned candidates. Canonical expressions and their parameter bindings remain authored source. The native container declares `core.constrained_sketch.4` and `sketch.external.1` capabilities; unsupported readers reject these documents.
+Constrained sketch schema 4 requires semantic evaluation and remains sticky after
+removing the final reference. Authored point, radius and spline-basis guesses stay
+in canonical source. Native evaluation supplies current geometry and transient
+solver locks. Successful returned candidates omit those transient constraints.
+The native container declares core.constrained_sketch.4, sketch.external.1
+and, when needed, sketch.external.2. Unsupported readers reject the capability.
 
-Capture and repair callers must supply topology snapshots from the current native model. A native UI caller checks both the Scene stamp and its model-evaluation source hash against the canonical session before passing snapshots. Candidate preview geometry cannot authorize a source capture. Headless callers have the same obligation: [`CaptureRequest::new`](../../crates/multicad-core/src/sketch_external/capture.rs) checks snapshot ownership, revision, provenance resolution and supported analytic geometry, but cannot authenticate arbitrary caller-created descriptors.
+## Capture and native authority
 
-[`references::dependency_hash`](../../crates/multicad-core/src/references/dependency.rs) binds each diagnostic to the linked source's transitive canonical dependencies. The external resolver rejects an older report after an upstream edit, including a same-revision candidate document change. Consumer-only constraint edits can reuse the report because they do not change that source closure. This guard does not certify an incorrectly supplied topology map. Missing hashes, unresolved provenance or unavailable analytic descriptors prevent evaluation.
+Legacy [CaptureRequest::new](../../crates/multicad-core/src/sketch_external/capture.rs)
+checks snapshot ownership, revision, provenance and supported analytic geometry.
+Its caller must supply a current source-bound native topology map; the function
+cannot authenticate arbitrary caller-created descriptors.
 
-| Method | Exact native input | Sketch output | Rejection boundary |
+Version 2 uses
+[Compiler::query_external_catalog](../../crates/multicad-model/src/external.rs)
+for detached exact results. The query names a source Part or one explicitly
+retained Feature in that Part's history. Its complete occurrence path identifies
+its placement. A receiving context must own or consume the sketch, or own its
+mounting plane. A world/definition plane remains an explicit alternative.
+
+Native queries use source-local B-reps, then apply the source-to-consumer relative
+pose once. Shared occurrence prefixes cancel before matrix evaluation. Geometry
+ordering includes current diverging pose drivers and their suppliers, while
+structural links retain invalidation and repair diagnostics. The absolute world
+pose used for display is resolved separately. The reasoning and costs are in
+[the occurrence reference decision](0023-occurrence-sketch-references.md).
+
+## Supported geometry and selection
+
+The legacy projection math remains in
+[geometry.rs](../../crates/multicad-core/src/sketch_external/geometry.rs).
+Version 2 uses the
+[native finite query adapter](../../crates/multicad-kernel/src/sketch_references.rs)
+and [semantic catalogue builder](../../crates/multicad-model/src/external_geometry.rs).
+
+| Version | Method | Native input | Output and boundary |
 |---|---|---|---|
-| Coplanar | Point | Point | Point outside the sketch plane |
-| Coplanar | Finite line | Line | Either endpoint outside the plane |
-| Coplanar | Circle or circular arc | Circle or arc | Nonparallel circle plane or offset center |
-| Intersect | Finite line crossing the plane | Point | No crossing or a coincident line |
-| Intersect | Circular edge, spline or face plane | Unavailable | Requires a supported finite intersection selector |
+| 1 | Coplanar | Point, finite line, circle or circular arc | Same supported family; rejects off-plane geometry |
+| 1 | Intersect | Finite straight edge | One crossing point; rejects coincident or absent intersections |
+| 2 | Coplanar | Supported finite point, edge or planar face boundary | Exact point or curve choices on the sketch plane |
+| 2 | Project | Supported finite point, edge or face boundary | Orthogonal projection; tilted conics use exact rational splines |
+| 2 | Intersect | Supported finite edge or face | Actual finite point/curve contacts, including face-hole clipping |
 
-The projection math and tolerance are owned by [`geometry.rs`](../../crates/multicad-core/src/sketch_external/geometry.rs). Source feature roots are supported. Placed occurrence roots require their world-topology adapter. Face plane descriptors do not contain finite boundaries, so the resolver never produces an unbounded substitute for a wall/face intersection.
+Native edge families include lines, circular arcs/circles, ellipses and supported
+Bezier/B-spline curves. Projection trims the native input and maps rational poles
+without fitting. Unsupported curve families, singular conics, collapsed splines
+and closed retraced line projections produce diagnostics. A finite face query
+uses its B-rep extent; a plane descriptor alone never invents an unbounded wall
+intersection.
 
-`ReferenceOnly` makes an output curve construction geometry; `Derived` allows it to participate in profile extraction. Both remain fixed to their source during solving. [`prepare_external_behavior`](../../crates/multicad-solver/src/external.rs) changes participation atomically while retaining identities and dependent constraints. Generic source edits cannot move, trim or remove protected outputs. Explicit reference removal deletes its output geometry and rejects remaining dependent curves or constraints instead of deleting them implicitly.
+Each binding owns one chosen point or curve. Several captures can form a derived
+closed profile. Multiple results require an explicit choice. Persistent selectors
+use source ancestry, family and result count. Finite edge contacts also use native
+parameter bands and crossing direction where those prove a branch identity.
+Native topology ordinals and display coordinates never become persistent result
+selectors. Lost or ambiguous support requires repair.
 
-The solver module exposes checked capture, behavior, repair and removal preparations. Each prepares the complete canonical transaction and solves its consumer sketch before returning a commit-capable preview. Numerical conflicts retain diagnostics without a preview. Cancel drops the preparation; Session commit/Undo/Redo retain the ordinary attribution and revision guards. Generic `references::prepare_repair` is a source-only primitive; external consumers need `prepare_external_repair` before accepting the replacement.
+Empty and coincident results remain visible. Proven analytic tangencies are
+reported and cannot authorize stable capture. General spline-surface
+transversality classification is outside the verified capability.
 
-The native [`external_references`](../../crates/multicad-ui/src/external_references/mod.rs) controller provides Project and Intersect tools in the active sketch ribbon. Its scene context accepts only canonical native evaluations with the current document revision and model source hash. Viewport picking identifies exact topology; the checked core resolves geometry independently of the pointer's display coordinates. An explicit source selector can isolate a retained producer definition. Nonidentity placed source and target sketch contexts remain unavailable until their occurrence-aware reference adapter is supported.
+## Evaluation and source preservation
 
-Metadata-changing reference previews use the existing [`ConstraintEditor`](../../crates/multicad-ui/src/sketch_external_preview.rs) Apply/Discard lane. Adoption permits changes only to the owning sketch and specified reference record, verifies the full semantic candidate hash and freezes further constraint edits until completion. The Inspector shows the proposed source and participation mode; command-line Preview/Apply retain their actor channel. Generic repair UI excludes these owners, so a source-only repair cannot bypass the consumer solve. UI tests check the actual edge-click path, revision/session guards and narrow Inspector layout; physical native UI acceptance remains separate.
+[references::dependency_hash](../../crates/multicad-core/src/references/dependency.rs)
+binds source diagnostics to their canonical dependencies. Version 2 adds native
+result receipts with query, selector, plane and pose hashes. Current semantic
+preflight checks ownership and paths during receipt consumption. Consumer-only
+constraint edits can reuse unchanged scoped geometry; upstream source or relevant
+placement changes invalidate it. Public discovery and proposal adoption also
+require the complete current source hash.
 
-[`multicad-model/tests/sketch_external.rs`](../../crates/multicad-model/tests/sketch_external.rs) checks genuine OCCT straight-edge and circle projection, finite wall-edge intersections, dependent constraints and native solid regeneration. It also checks source placement changes, canonical expression preservation, native-container round trips and Undo/Redo. Pure analytic and solver failure contracts are covered by the corresponding [`core`](../../crates/multicad-core/tests/sketch_external.rs) and [`solver`](../../crates/multicad-solver/tests/sketch_external.rs) suites. These tests do not establish native UI acceptance or manufacturing output quality.
+ReferenceReport carries exact external results and explicit errors. An
+inspect-only report marks version 2 geometry unavailable until native evaluation
+supplies its receipt. Full model publication includes unconsumed sketch bindings.
+The [Scene adapter](../../crates/multicad-ui/src/viewport/scene.rs) retains the
+source-bound native report through visibility filtering, so the UI cannot replace
+it with a clean report reconstructed from display descriptors.
 
+ReferenceOnly makes a curve construction geometry. Derived permits profile
+participation. Native evaluation fixes each output's current geometry during
+solving while preserving authored guesses and compatible output identities.
+Generic edits cannot move, trim or remove protected outputs. Explicit removal
+rejects remaining dependent geometry or constraints rather than deleting them
+implicitly. A changed output family or pole count can require dependent repair.
 
-Consumed sketches can be repaired while their downstream model is broken. The native compiler accepts an explicit, bounded source-root query covering the replacement producer, the sketch plane and the other reference producers needed for the checked solve. It evaluates that dependency closure against the complete current canonical document and retains its document ID, revision and content hash. Native `EvaluationScope::Sources` and UI `SceneScope::Sources` identify the result as incomplete; visibility filtering and source isolation preserve that scope. Drawing generation, cut queries, canonical scene publication, body choices and modeling Apply reject it.
+## Native UI and repair
 
-The external-reference controller owns a separate native worker lane for this inspection. The Inspector lets the user choose and load a replacement Feature when a full model scene is unavailable. That source view is labeled as incomplete. A checked reference draft then requests a separate complete native model rebuild; both Inspector and command Apply remain disabled until the matching full-scope reply succeeds. Request identity, session ownership, source hash and revision are checked independently. Cancel supersedes queued work, stale replies cannot authorize Apply, and canonical source changes only on the shared transaction commit. One broken binding is repaired per transaction; other unresolved dependencies or an invalid downstream result remain explicit errors. Placed occurrence references and unsupported analytic intersection families retain their existing restrictions.
+The [reference controller](../../crates/multicad-ui/src/external_references/mod.rs)
+provides Project and Intersect tools in an opened sketch. Its Inspector separates
+the source occurrence, current Part or retained Feature, receiving context, query
+method and exact result. A scoped leaf view uses the complete native placement
+receipt. Source-definition inspection is labelled separately when recovering a
+broken model.
+
+Discovery, preparation and removal run through a bounded latest-only worker.
+The [backend contract](../../crates/multicad-ui/src/external_references/backend.rs)
+uses immutable preparation snapshots. Replies retain their complete inputs, and
+the controller checks Session ownership, source, resources, actor and canonical
+candidate contents. Cancel supersedes queued work without changing source.
+
+The narrow
+[ConstraintEditor adoption lane](../../crates/multicad-ui/src/sketch_external_preview.rs)
+permits changes only to the owning sketch and requested reference record. Apply
+requires a complete candidate model with resolved driving references. Source-only
+inspection can supply a replacement while a downstream solid is broken, but
+cannot authorize Apply, drawing generation or manufacturing output.
+
+Compatible single-reference repair preserves output identities. Several
+independently broken references can require a staged batch before a complete
+candidate exists. That separate prerequisite is tracked in
+[the batch repair plan](https://plans.tokenet.de/CAD/134) before the generic
+integration checkpoint and Room work.
+
+Native geometry coverage is in
+[model reference tests](../../crates/multicad-model/tests/occurrence_external.rs),
+[kernel query tests](../../crates/multicad-kernel/tests/sketch_references.rs) and
+[production backend tests](../../crates/multicad-app/tests/occurrence_reference_backend.rs).
+Controller tests cover actual result controls, ownership/resource guards and
+native checked preview adoption. Automated evidence, macOS interaction and human
+acceptance remain distinct.
