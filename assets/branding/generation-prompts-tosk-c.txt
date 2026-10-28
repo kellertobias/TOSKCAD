@@ -1,0 +1,7 @@
+Generated with the built-in image_gen tool, editing the TK C blueprint artwork.
+
+ICON
+undefined
+
+LOGO
+undefined
