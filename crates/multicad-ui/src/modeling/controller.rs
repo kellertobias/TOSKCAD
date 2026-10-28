@@ -1071,3 +1071,6 @@ mod advanced;
 
 #[cfg(test)]
 mod chamfer_tests;
+
+#[cfg(test)]
+mod advanced_tests;

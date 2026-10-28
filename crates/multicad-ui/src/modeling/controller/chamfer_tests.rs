@@ -11,13 +11,13 @@ use std::time::{Duration, Instant};
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
 }
-fn canonical(session: &Session) -> Arc<Scene> {
+pub(super) fn canonical(session: &Session) -> Arc<Scene> {
     let m = Compiler::default()
         .compile(session.document(), session.revision())
         .unwrap();
     native_fixture::scene(session.document(), m.snapshot(), 0).unwrap()
 }
-fn frame(
+pub(super) fn frame(
     ctx: &egui::Context,
     controller: &mut ModelToolController,
     session: &mut Session,
@@ -46,7 +46,12 @@ fn frame(
         },
     )
 }
-fn click(ctx: &egui::Context, c: &mut ModelToolController, s: &mut Session, label: &str) {
+pub(super) fn click(
+    ctx: &egui::Context,
+    c: &mut ModelToolController,
+    s: &mut Session,
+    label: &str,
+) {
     frame(ctx, c, s, vec![]).drop_without_applying_deltas();
     let out = frame(ctx, c, s, vec![]);
     let pos = out
@@ -87,7 +92,7 @@ fn click(ctx: &egui::Context, c: &mut ModelToolController, s: &mut Session, labe
         .drop_without_applying_deltas();
     }
 }
-fn wait(c: &mut ModelToolController, s: &Session) {
+pub(super) fn wait(c: &mut ModelToolController, s: &Session) {
     let until = Instant::now() + Duration::from_secs(5);
     while c.pending() {
         c.poll(s, &Default::default());
