@@ -37,6 +37,16 @@ trailing blank row. Apply commits the draft as one transaction; validation failu
 retain it and the last valid source. Exposed values are available in evaluated
 parameter queries. Dynamic symbol authoring remains future work.
 
+Parameter drafts are bound to their original Session and revision. Filtering uses
+the visible row list before virtualization, while new rows and a matched row being
+renamed remain editable until Apply. Unit-only input is a draft. Clearing an
+existing row requires completion or explicit deletion. Evaluated cells show only
+current valid values; invalid and stale drafts show no evaluated number. Apply
+requires a current checked parameter preview. Source-valid edits may still leave
+dependent geometry in a repairable failed state; native consumers reject stale
+results. The [workflow verification](../verification/native-parameter-workflow-2026-10-28.md)
+records actual native interaction and saved-source checks.
+
 [`Registry`](../../crates/multicad-ui/src/registry.rs) describes modes, tabs, tool
 labels, vector icons and command aliases. The ribbon, tool search and bottom
 command entry consume that catalog. Workspace components own their interactions
