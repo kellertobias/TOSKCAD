@@ -279,6 +279,43 @@ fn a_unit_only_new_row_is_an_unapplied_draft_and_errors_name_the_actual_paramete
 }
 
 #[test]
+fn filtering_keeps_new_rows_and_the_row_being_renamed_visible_until_apply() {
+    let mut session = session(1);
+    let mut editor = ParameterEditor::new(&session);
+    let ctx = egui::Context::default();
+    editor.search = "absent".into();
+    editor.rows[1].unit = "cm".into();
+    assert!(painted(&frame(&ctx, &mut editor, &session, vec![]), "cm"));
+    editor.rows[1].name = "new_parameter".into();
+    editor.rows[1].expression = "42".into();
+    assert!(painted(
+        &frame(&ctx, &mut editor, &session, vec![]),
+        "new_parameter"
+    ));
+    editor.apply(&mut session, Channel::Ui).unwrap();
+    assert!(!painted(
+        &frame(&ctx, &mut editor, &session, vec![]),
+        "new_parameter"
+    ));
+    editor.search = "p000".into();
+    editor
+        .rows
+        .iter_mut()
+        .find(|r| r.name == "p000")
+        .unwrap()
+        .name = "renamed".into();
+    assert!(painted(
+        &frame(&ctx, &mut editor, &session, vec![]),
+        "renamed"
+    ));
+    editor.apply(&mut session, Channel::Ui).unwrap();
+    assert!(!painted(
+        &frame(&ctx, &mut editor, &session, vec![]),
+        "renamed"
+    ));
+}
+
+#[test]
 fn invalid_or_stale_drafts_never_display_a_previous_value_as_evaluated() {
     let mut session = session(1);
     let mut editor = ParameterEditor::new(&session);

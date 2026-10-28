@@ -284,6 +284,9 @@ impl ParameterEditor {
                 self.reload(session);
             }
         }
+        if self.dirty() && self.preview.is_none() && self.error.is_none() {
+            self.refresh_preview(session);
+        }
         ui.horizontal(|ui| {
             ui.heading("Parameters");
             ui.add_space(20.0);
@@ -332,6 +335,11 @@ impl ParameterEditor {
             .filter(|(_, row)| {
                 query.is_empty()
                     || row.empty()
+                    || session.document().get(row.id).is_none_or(|source| {
+                        format!("{} {}", source.name, source.description)
+                            .to_lowercase()
+                            .contains(&query)
+                    })
                     || format!("{} {}", row.name, row.description)
                         .to_lowercase()
                         .contains(&query)
@@ -459,7 +467,7 @@ impl ParameterEditor {
         }
         if let Some((a, b)) = movement
             && b < self.rows.len()
-            && !self.rows[b].empty()
+            && (!self.rows[b].empty() || session.document().get(self.rows[b].id).is_some())
         {
             self.rows.swap(a, b);
             changed = true;
