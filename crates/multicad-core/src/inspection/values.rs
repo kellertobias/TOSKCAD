@@ -154,3 +154,18 @@ pub fn analytic_metrics(
     };
     Ok((angle, separation))
 }
+/// A single owner-thread publication for one immutable document snapshot.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementBatch {
+    pub stamp: MeasurementStamp,
+    pub transient: Option<MeasurementEvaluation>,
+    pub pinned: std::collections::BTreeMap<EntityId, MeasurementEvaluation>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementReply {
+    pub request: u64,
+    pub stamp: MeasurementStamp,
+    pub result: Result<MeasurementBatch, String>,
+}

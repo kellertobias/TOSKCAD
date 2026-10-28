@@ -5,6 +5,7 @@ mod compiler;
 mod drawings;
 pub mod export;
 mod extrude;
+pub mod inspection;
 mod occurrences;
 mod runtime;
 mod split;
