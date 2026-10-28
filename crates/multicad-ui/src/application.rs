@@ -149,6 +149,7 @@ pub struct Application {
     text_input_was_focused: bool,
     scene_backends: Option<crate::viewport::BackendFactory>,
     model_backends: Option<crate::viewport::BackendFactory>,
+    external_queries: Option<crate::external_references::ExternalQueryBackendFactory>,
     drawing_backends: Option<crate::drawings::DrawingBackendFactory>,
     measurement_backends: Option<crate::inspection::MeasurementBackendFactory>,
     assembly_queries: Option<crate::assembly::AssemblyInspectionBackendFactory>,
@@ -203,6 +204,7 @@ impl Application {
             text_input_was_focused: false,
             scene_backends: None,
             model_backends: None,
+            external_queries: None,
             drawing_backends: None,
             measurement_backends: None,
             assembly_queries: None,
@@ -293,6 +295,21 @@ impl Application {
             project.sketch.set_query_factory(factory.clone());
         }
         self.sketch_queries = Some(factory);
+    }
+    pub fn set_external_query_backends(
+        &mut self,
+        factory: crate::external_references::ExternalQueryBackendFactory,
+    ) -> Result<(), String> {
+        let backends = self
+            .projects
+            .iter()
+            .map(|_| factory())
+            .collect::<Result<Vec<_>, _>>()?;
+        for (project, backend) in self.projects.iter_mut().zip(backends) {
+            project.sketch.set_external_query_backend(backend);
+        }
+        self.external_queries = Some(factory);
+        Ok(())
     }
     pub fn set_measurement_backends(
         &mut self,
@@ -1853,6 +1870,19 @@ impl Application {
                 }
                 if !project.sketch.has_external_backend() {
                     project.sketch.set_external_backend(factory());
+                }
+            }
+        }
+        if let Some(factory) = &self.external_queries {
+            for project in &mut self.projects {
+                if !project.sketch.has_external_query_backend() {
+                    match factory() {
+                        Ok(backend) => project.sketch.set_external_query_backend(backend),
+                        Err(error) => {
+                            self.message = error;
+                            self.message_error = true;
+                        }
+                    }
                 }
             }
         }

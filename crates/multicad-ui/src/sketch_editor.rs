@@ -485,7 +485,7 @@ impl SketchEditor {
         self.model.poll(session, resources);
         self.assembly.poll(session, resources);
         self.transfer.poll(session, resources);
-        let external_pending = self.poll_external(session);
+        let external_pending = self.poll_external(session, resources);
         self.model.pending()
             || self.assembly.pending()
             || self.transfer.pending()
@@ -1898,10 +1898,15 @@ impl SketchEditor {
             return Err("Apply or discard pending edits before transforming".into());
         }
         let id = self.selected.ok_or("Select a sketch to move")?;
+        if self.waiting_for_sketch_pose(id) {
+            return Err(
+                "Wait for the selected sketch occurrence placement before transforming".into(),
+            );
+        }
         let world_delta = self
             .basis(session.document(), session.revision())?
             .vector(self.delta);
-        let delta = self.contexts.get(&id).map_or(world_delta, |pose| {
+        let delta = self.sketch_pose(id).map_or(world_delta, |pose| {
             std::array::from_fn(|axis| {
                 let mut basis = [0.; 3];
                 basis[axis] = 1.;
@@ -2636,9 +2641,22 @@ impl SketchEditor {
         id: EntityId,
         revision: u64,
     ) -> Result<(Sketch, sketch::Frame, EntityId), multicad_core::document::DocumentError> {
-        if self.contexts.contains_key(&id)
+        if self.waiting_for_sketch_pose(id) {
+            return Err(multicad_core::document::DocumentError::Invalid(
+                "Waiting for the selected sketch occurrence's current native placement".into(),
+            ));
+        }
+        let explicit_placement =
+            self.selected == Some(id) && self.external.editing_pose().is_some();
+        if !explicit_placement
+            && self.contexts.contains_key(&id)
             && self.display_scene.as_ref().is_some_and(|scene| {
-                scene.stamp().document != doc.id() || scene.stamp().revision != revision
+                scene.stamp().document != doc.id()
+                    || scene.stamp().revision != revision
+                    || scene.model_evaluation().is_some_and(|info| {
+                        multicad_core::project_file::ContentHash::document(doc).ok()
+                            != Some(info.source_hash)
+                    })
             })
             && !self
                 .creation_evaluation
@@ -2695,8 +2713,22 @@ impl SketchEditor {
         }?;
         Ok((source, self.display_frame(id, frame), plane))
     }
+    fn sketch_pose(&self, id: EntityId) -> Option<crate::viewport::Transform> {
+        if self.waiting_for_sketch_pose(id) {
+            return None;
+        }
+        (self.selected == Some(id))
+            .then(|| self.external.editing_pose())
+            .flatten()
+            .or_else(|| self.contexts.get(&id).copied())
+    }
+    fn waiting_for_sketch_pose(&self, id: EntityId) -> bool {
+        self.selected == Some(id)
+            && self.external.chosen_sketch_context().is_some()
+            && self.external.editing_pose().is_none()
+    }
     fn display_frame(&self, id: EntityId, frame: Frame) -> Frame {
-        if let Some(pose) = self.contexts.get(&id) {
+        if let Some(pose) = self.sketch_pose(id) {
             Frame {
                 origin: pose.point(frame.origin),
                 u: pose.vector(frame.u),

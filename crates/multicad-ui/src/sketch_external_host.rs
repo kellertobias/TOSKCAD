@@ -11,14 +11,37 @@ impl SketchEditor {
     pub fn has_external_backend(&self) -> bool {
         self.external.has_backend()
     }
-    pub(super) fn poll_external(&mut self, session: &Session) -> bool {
-        self.external.poll_native(session);
+    pub fn set_external_query_backend(
+        &mut self,
+        backend: Box<dyn crate::external_references::ExternalQueryBackend>,
+    ) {
+        self.external.set_query_backend(backend);
+    }
+    pub fn has_external_query_backend(&self) -> bool {
+        self.external.has_query_backend()
+    }
+    pub(super) fn poll_external(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) -> bool {
+        self.external.poll_native(session, resources);
+        if let Some(result) = self.external.poll_query(session, resources) {
+            let result = result.and_then(|proposal| {
+                let sketch = self.selected.ok_or("Open the owning sketch")?;
+                self.adopt_external(session, sketch, proposal, resources)
+            });
+            if let Err(error) = result {
+                self.external.report_error(error.clone());
+                self.message = error;
+            }
+        }
         if self.constraints.external_pending()
             && let Some(result) = self.external.candidate_validation().cloned()
         {
             self.constraints.complete_external_native(result);
         }
-        self.external.native_pending()
+        self.external.native_pending() || self.external.query_pending()
     }
 
     pub(super) fn refresh_external(&mut self, session: &Session, feed: &SceneFeed) {
@@ -162,8 +185,12 @@ impl SketchEditor {
         channel: Channel,
     ) -> Result<(), String> {
         let id = self.selected.ok_or("Open the owning sketch")?;
-        let proposal = self.external.prepare(session, channel)?;
-        self.adopt_external(session, id, proposal, resources)
+        if let Some(proposal) = self.external.request_preview(session, resources, channel)? {
+            self.adopt_external(session, id, proposal, resources)
+        } else {
+            self.message = "Checking exact reference geometry and its consumer…".into();
+            Ok(())
+        }
     }
     pub fn apply_external(&mut self, session: &mut Session) -> Result<(), String> {
         if !self.external_pending() {

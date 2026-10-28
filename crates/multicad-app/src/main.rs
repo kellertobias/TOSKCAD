@@ -2,6 +2,7 @@
 mod assembly_inspection;
 mod drawings;
 mod exchange;
+mod external_queries;
 mod file_picker;
 mod files;
 mod inspection;
@@ -106,6 +107,9 @@ fn run_application() -> Result<(), String> {
     // The tool controller uses its own worker and publication lane so a
     // candidate can never replace canonical geometry under the same revision.
     app.set_model_backends(models);
+    app.set_external_query_backends(std::sync::Arc::new(|| {
+        Ok(Box::new(external_queries::Backend::new()))
+    }))?;
     app.set_measurement_backends(std::sync::Arc::new(|| Box::new(inspection::Backend::new())));
     app.set_assembly_query_backends(std::sync::Arc::new(|| {
         Box::new(assembly_inspection::Backend::new())
