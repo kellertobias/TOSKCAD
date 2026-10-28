@@ -17,7 +17,7 @@ fn fixture() -> (Source, EntityId, EntityId, EntityId) {
     let right = source.add_line(a, b);
     (source, target, left, right)
 }
-fn frame(
+pub(super) fn frame(
     ctx: &egui::Context,
     panel: &mut Panel,
     source: &Source,
@@ -37,7 +37,7 @@ fn frame(
     output.textures_delta.clear();
     output
 }
-fn text_center(output: &FullOutput, text: &str) -> Pos2 {
+pub(super) fn text_center(output: &FullOutput, text: &str) -> Pos2 {
     fn find(shape: &egui::Shape, text: &str) -> Option<Pos2> {
         match shape {
             egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos + t.galley.size() * 0.5),
@@ -51,7 +51,7 @@ fn text_center(output: &FullOutput, text: &str) -> Pos2 {
         .find_map(|s| find(&s.shape, text))
         .expect("Visible pick-lane control")
 }
-fn click(ctx: &egui::Context, panel: &mut Panel, source: &Source, pos: Pos2) {
+pub(super) fn click(ctx: &egui::Context, panel: &mut Panel, source: &Source, pos: Pos2) {
     for pressed in [true, false] {
         frame(
             ctx,

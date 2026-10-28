@@ -1128,3 +1128,7 @@ mod tests {
 #[cfg(test)]
 #[path = "sketch_operations_spline_tests.rs"]
 mod spline_tests;
+
+#[cfg(test)]
+#[path = "sketch_operations_native_tests.rs"]
+mod native_tests;
