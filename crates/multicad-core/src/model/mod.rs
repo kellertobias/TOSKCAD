@@ -4,6 +4,7 @@
 mod alignment;
 mod boolean;
 mod common;
+mod edge_treatment;
 mod evaluation;
 mod extrude_boolean;
 mod extrude_group;
@@ -18,6 +19,7 @@ mod transform;
 mod transform_math;
 pub use alignment::*;
 pub use boolean::*;
+pub use edge_treatment::*;
 pub use evaluation::*;
 pub use extrude_boolean::*;
 pub use extrude_group::*;
