@@ -354,6 +354,7 @@ impl Compiler {
         let mut consumed_versions = BTreeSet::new();
         let mut shapes = BTreeMap::new();
         let mut occurrences = BTreeMap::new();
+        let mut transfer_counts = BTreeMap::new();
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
@@ -645,6 +646,27 @@ impl Compiler {
                         &captures,
                     )?
                 }
+                (model::TRANSFER_TYPE, 1) => {
+                    let (_, source, target, captures) = model::read_transfer_feature(document, id)
+                        .map_err(|e| error(Some(id), e))?;
+                    let result = crate::transfer::build(
+                        crate::transfer::Inputs {
+                            document,
+                            revision,
+                            parameters: context.parameters(),
+                            body_heads: &bodies,
+                            solids: &solids,
+                            topologies: &topologies,
+                            policy: self.policy,
+                        },
+                        id,
+                        &source,
+                        &target,
+                        &captures,
+                    )?;
+                    transfer_counts.insert(id, result.count);
+                    result.solid
+                }
                 (model::ADVANCED_TYPE, model::ADVANCED_SCHEMA) => {
                     let (source, captures) =
                         model::read_advanced(document, id).map_err(|e| error(Some(id), e))?;
@@ -861,7 +883,7 @@ impl Compiler {
                 leaf_occurrences,
                 consumed_bodies,
                 cut_targets: vec![],
-                transfer_counts: BTreeMap::new(),
+                transfer_counts,
                 references,
             },
         })
