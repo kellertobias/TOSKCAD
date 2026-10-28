@@ -41,6 +41,7 @@ impl Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     KeyboardShortcuts,
+    Measure,
     Parameter,
     Apply,
     Discard,
@@ -96,6 +97,13 @@ pub struct Registry {
 impl Default for Registry {
     fn default() -> Self {
         let tools = vec![
+            Tool {
+                id: "measure",
+                label: "Measure",
+                icon: Icon::Measure,
+                action: Command::Measure,
+                aliases: &["measure", "distance"],
+            },
             Tool {
                 id: "shortcuts",
                 label: "Keyboard shortcuts",

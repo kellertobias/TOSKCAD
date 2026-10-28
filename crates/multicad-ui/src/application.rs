@@ -40,6 +40,7 @@ pub struct Project {
     pub sketch: SketchEditor,
     pub drawings: crate::drawings::DrawingEditor,
     pub exchange: crate::exchange::ExportWorkspace,
+    measure_return_view: Option<(Mode, usize)>,
     pub path: Option<PathBuf>,
     pub scene: crate::viewport::SceneFeed,
 }
@@ -60,6 +61,7 @@ impl Project {
             sketch: SketchEditor::default(),
             drawings: Default::default(),
             exchange: Default::default(),
+            measure_return_view: None,
             path: None,
             scene: Default::default(),
         })
@@ -129,6 +131,7 @@ pub struct Application {
     scene_backends: Option<crate::viewport::BackendFactory>,
     model_backends: Option<crate::viewport::BackendFactory>,
     drawing_backends: Option<crate::drawings::DrawingBackendFactory>,
+    measurement_backends: Option<crate::inspection::MeasurementBackendFactory>,
     export_backends: Option<crate::exchange::BackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
 }
@@ -170,6 +173,7 @@ impl Application {
             scene_backends: None,
             model_backends: None,
             drawing_backends: None,
+            measurement_backends: None,
             export_backends: None,
             sketch_queries: None,
         };
@@ -240,6 +244,7 @@ impl Application {
                     | Command::Discard
                     | Command::Mode(Mode::Export)
                     | Command::KeyboardShortcuts
+                    | Command::Measure
                     | Command::New
                     | Command::NewWindow
             )
@@ -249,6 +254,48 @@ impl Application {
             project.sketch.set_query_factory(factory.clone());
         }
         self.sketch_queries = Some(factory);
+    }
+    pub fn set_measurement_backends(
+        &mut self,
+        factory: crate::inspection::MeasurementBackendFactory,
+    ) {
+        for p in &mut self.projects {
+            p.sketch.measurement.set_factory(factory.clone());
+        }
+        self.measurement_backends = Some(factory);
+    }
+    fn close_measurement(&mut self) {
+        let p = self.current_mut();
+        p.sketch.measurement.close();
+        let (mode, tab) = p.measure_return_view.take().unwrap_or((Mode::Model, 0));
+        self.mode = mode;
+        self.tab = tab;
+    }
+    fn activate_project(&mut self, index: usize) {
+        if index != self.active && self.current().sketch.measurement.active() {
+            self.close_measurement();
+        }
+        self.active = index;
+    }
+    fn measurement_blocks(&self, command: Command) -> bool {
+        self.current().sketch.measurement.active()
+            && matches!(
+                command,
+                Command::Apply
+                    | Command::Discard
+                    | Command::Preview
+                    | Command::NewSketch
+                    | Command::Draw(_)
+                    | Command::SketchOperation(_)
+                    | Command::Modeling(_)
+                    | Command::Construction
+                    | Command::Dimension
+                    | Command::External(_)
+                    | Command::FinishSketch
+                    | Command::FinishCurve
+                    | Command::Delete
+                    | Command::Extension("materials")
+            )
     }
     pub fn set_drawing_backends(&mut self, factory: crate::drawings::DrawingBackendFactory) {
         for project in &mut self.projects {
@@ -276,6 +323,17 @@ impl Application {
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        if self.current().sketch.measurement.active()
+            && matches!(command, Command::Drawing(_) | Command::Export(_))
+        {
+            self.close_measurement();
+        }
+        if self.measurement_blocks(command) {
+            return Err(
+                "Close Measure before editing geometry; inspection leaves pending tools unchanged"
+                    .into(),
+            );
+        }
         if self.export_blocks(command) {
             return Err("Save or discard export-set edits first".into());
         }
@@ -322,6 +380,20 @@ impl Application {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
+            Command::Measure => {
+                if self.current().sketch.measurement.active() {
+                    self.close_measurement();
+                } else {
+                    let view = (self.mode, self.tab);
+                    let p = self.current_mut();
+                    p.measure_return_view = Some(view);
+                    p.sketch.measurement.open();
+                    self.mode = Mode::Model;
+                    self.tab = 0;
+                }
+                self.message =
+                    "Measure current B-rep geometry · choose A and B in Inspector".into();
+            }
             Command::External(tool) => {
                 if !args.is_empty() {
                     return Err("Choose this reference tool, select a current native source in the viewport, then Preview and Apply".into());
@@ -392,6 +464,10 @@ impl Application {
             Command::KeyboardShortcuts => self.shortcut_help = true,
             Command::Parameter => {
                 if args.is_empty() && channel == Channel::Ui {
+                    if self.current().sketch.measurement.active() {
+                        self.current_mut().sketch.measurement.close();
+                        self.current_mut().measure_return_view = None;
+                    }
                     self.mode = Mode::Parameters;
                     self.tab = 0;
                     self.message = "Enter or edit a parameter in the table".into();
@@ -421,6 +497,12 @@ impl Application {
                 self.message = "Parameter committed through shared command API".into();
             }
             Command::Mode(mode) => {
+                if !matches!(mode, Mode::Sketch | Mode::Model)
+                    && self.current().sketch.measurement.active()
+                {
+                    self.current_mut().sketch.measurement.close();
+                    self.current_mut().measure_return_view = None;
+                }
                 if self.mode == Mode::Sketch && mode != Mode::Sketch {
                     self.current_mut().sketch.finish()?;
                 }
@@ -549,7 +631,7 @@ impl Application {
                 self.projects.push(Project::new(
                     Document::new(name).map_err(|e| e.to_string())?,
                 )?);
-                self.active = self.projects.len() - 1;
+                self.activate_project(self.projects.len() - 1);
                 self.mode = Mode::Parameters;
                 self.tab = 0;
             }
@@ -798,6 +880,9 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
+        if self.measurement_blocks(command) {
+            return false;
+        }
         if self.export_blocks(command) {
             return false;
         }
@@ -1225,7 +1310,7 @@ impl Application {
             },
         );
         if let Some(index) = switch {
-            self.active = index;
+            self.activate_project(index);
         }
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
@@ -1269,10 +1354,8 @@ impl Application {
                         if icons::labeled_button(ui, Icon::Link, "MCP history").clicked() {
                             self.history_open = true;
                         }
-                        ui.add_enabled_ui(false, |ui| {
-                            icons::labeled_button(ui, Icon::Library, "Library");
-                            icons::labeled_button(ui, Icon::Measure, "Measure");
-                        });
+                        if icons::labeled_button(ui,Icon::Measure,"Measure").on_hover_text("Inspect exact current faces, edges or points; click again to close Measure").clicked(){self.execute(Command::Measure,&[],Channel::Ui);}
+                        ui.add_enabled_ui(false,|ui|{icons::labeled_button(ui,Icon::Library,"Library");});
                     });
                 });
             });
@@ -1549,9 +1632,15 @@ impl Application {
                     let camera = &mut self.current_mut().sketch.camera;
                     camera.perspective = !camera.perspective;
                 }
-                ShortcutAction::Transform => self.current_mut().sketch.toggle_transform(),
+                ShortcutAction::Transform => {
+                    if !self.current().sketch.measurement.active() {
+                        self.current_mut().sketch.toggle_transform();
+                    }
+                }
                 ShortcutAction::Cancel => {
-                    if self.mode == Mode::Export {
+                    if self.current().sketch.measurement.active() {
+                        self.close_measurement();
+                    } else if self.mode == Mode::Export {
                         let p = self.current_mut();
                         p.exchange.discard(&p.session);
                     } else {
@@ -1580,6 +1669,20 @@ impl Application {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll_files();
+        if let Some(factory) = &self.measurement_backends {
+            for p in &mut self.projects {
+                if !p.sketch.measurement.has_factory() {
+                    p.sketch.measurement.set_factory(factory.clone());
+                }
+            }
+        }
+        let active = self.active;
+        let viewport = matches!(self.mode, Mode::Sketch | Mode::Model);
+        for (index, p) in self.projects.iter_mut().enumerate() {
+            if index != active || !viewport {
+                p.sketch.measurement.suspend();
+            }
+        }
         if let Some(factory) = &self.export_backends {
             for p in &mut self.projects {
                 if !p.exchange.has_backend()
@@ -1705,6 +1808,9 @@ impl Application {
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
                     let before = p.session.revision();
+                    p.sketch.set_measure_pin_allowed(
+                        !p.editor.dirty() && !p.drawings.dirty() && !p.exchange.dirty(),
+                    );
                     let modeling_before = p.sketch.model_active();
                     p.sketch.show_project(
                         ui,
@@ -1744,6 +1850,13 @@ impl Application {
                 ui.label("WASD pans the view. Tab / Shift+Tab cycles ribbon workspaces. Text inputs keep their typing and Tab behavior.");
                 egui::ScrollArea::vertical().max_height(460.).show(ui,|ui|{egui::Grid::new("shortcut-list").striped(true).show(ui,|ui|{ui.strong("Key");ui.strong("Context");ui.strong("Action");ui.end_row();for binding in self.shortcuts.bindings(){ui.monospace(binding.chord.label());ui.label(binding.scope.label());ui.label(binding.label);ui.end_row();}});});
             });
+        }
+        if !self.current().sketch.measurement.active()
+            && let Some((mode, tab)) = self.current_mut().measure_return_view.take()
+        {
+            self.mode = mode;
+            self.tab = tab;
+            ctx.request_repaint();
         }
         self.show_close_dialog(&ctx);
         self.text_input_was_focused = ctx.text_edit_focused();
@@ -3186,3 +3299,6 @@ mod tests {
 
 #[cfg(test)]
 mod export_tests;
+
+#[cfg(test)]
+mod measurement_tests;

@@ -11,13 +11,31 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReferenceSelection {
+    pub instance: EntityId,
+    pub key: multicad_core::references::TopologyKey,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
+    References([Option<ReferenceSelection>; 2]),
     Part(EntityId),
     Parts(Arc<BTreeSet<EntityId>>),
     Face { instance: EntityId, ordinal: u32 },
     Edge { instance: EntityId, ordinal: u32 },
     Vertex { instance: EntityId, ordinal: u32 },
+}
+fn reference_code(reference: Option<ReferenceSelection>, instance: EntityId) -> u32 {
+    reference
+        .filter(|r| r.instance == instance)
+        .map_or(u32::MAX, |r| {
+            use multicad_core::references::TopologyKind;
+            match r.key.kind {
+                TopologyKind::Face => r.key.ordinal,
+                TopologyKind::Edge => 0x1000_0000 + r.key.ordinal,
+                TopologyKind::Vertex => 0x2000_0000 + r.key.ordinal,
+            }
+        })
 }
 struct Mesh {
     source: Arc<Geometry>,
@@ -236,7 +254,16 @@ impl Renderer {
                         }) if *id == instance.id => (0x2000_0000 + ordinal, 0),
                         _ => (u32::MAX, 0),
                     };
-                    words(&mut bytes, [face, part, 0, 0]);
+                    let mut emphasis = [face, part, u32::MAX, 0];
+                    if let Some(Selection::References(references)) = &selection {
+                        emphasis = [
+                            reference_code(references[0], instance.id),
+                            0,
+                            reference_code(references[1], instance.id),
+                            0,
+                        ];
+                    }
+                    words(&mut bytes, emphasis);
                 }
                 self.draws.push(Draw {
                     geometry: id,

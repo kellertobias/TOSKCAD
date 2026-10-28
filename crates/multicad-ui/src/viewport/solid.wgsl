@@ -33,11 +33,13 @@ struct Fragment {
     out.color = v.color;
     out.emphasis = 0u;
     if v.selection.y == 1u || v.selection.x == v.face {out.color = vec4(0.95,0.65,0.18,1.0);out.emphasis=1u;}
+    if v.selection.z == v.face {out.color=vec4(0.2,0.6,0.95,1.0);out.emphasis=2u;}
     return out;
 }
 @fragment fn line_fragment(v:Fragment)->@location(0) vec4<f32> {
     if dot(camera.section.xyz, v.world) < camera.section.w { discard; }
     if v.emphasis==1u {return vec4(0.95,0.65,0.18,1.0);}
+    if v.emphasis==2u {return vec4(0.2,0.6,0.95,1.0); }
     if camera.clip.w>0.5 {return vec4(0.53,0.66,0.79,1.0);}
     return vec4(0.07,0.1,0.15,1.0);
 }

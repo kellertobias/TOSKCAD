@@ -4,7 +4,7 @@ pub use scene::*;
 mod gpu;
 pub(crate) use gpu::install;
 mod picking;
-pub use gpu::{Selection, paint_scene, paint_scene_section};
+pub use gpu::{ReferenceSelection, Selection, paint_scene, paint_scene_section};
 pub use picking::{PickFilter, PickOptions};
 mod feed;
 pub use feed::{BackendFactory, ReferenceEvaluation, SceneBackend, SceneFeed, SceneReply};

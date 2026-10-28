@@ -127,7 +127,7 @@ impl Application {
             .iter()
             .position(|p| p.file_stamp.is_some() && p.path.as_ref() == Some(&path))
         {
-            self.active = index;
+            self.activate_project(index);
             self.file_action = None;
             self.file_document = None;
             self.message = "Project already open".into();
@@ -317,7 +317,7 @@ impl Application {
     }
     fn add_loaded_project(&mut self, p: Project, diagnostics: Vec<String>, message: &str) {
         self.projects.push(p);
-        self.active = self.projects.len() - 1;
+        self.activate_project(self.projects.len() - 1);
         self.mode = Mode::Parameters;
         self.tab = 0;
         self.file_action = None;

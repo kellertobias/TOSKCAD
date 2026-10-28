@@ -100,6 +100,8 @@ pub struct SketchEditor {
     operation_error: Option<String>,
     model: crate::modeling::ModelToolController,
     materials: crate::materials::MaterialsEditor,
+    pub measurement: crate::inspection::MeasurementInspector,
+    measure_pin_allowed: bool,
     fitted_model_document: Option<EntityId>,
     tree: crate::model_tree::ModelTree,
     tree_selection: std::collections::BTreeSet<EntityId>,
@@ -163,6 +165,8 @@ impl Default for SketchEditor {
             operation_error: None,
             model: Default::default(),
             materials: Default::default(),
+            measurement: Default::default(),
+            measure_pin_allowed: true,
             fitted_model_document: None,
             tree: Default::default(),
             tree_selection: Default::default(),
@@ -783,6 +787,9 @@ impl SketchEditor {
         self.tool = None;
         self.clear_drawing_progress();
     }
+    pub fn set_measure_pin_allowed(&mut self, allowed: bool) {
+        self.measure_pin_allowed = allowed;
+    }
     pub fn has_pending_edits(&self) -> bool {
         if self.materials.pending() {
             return true;
@@ -795,6 +802,10 @@ impl SketchEditor {
             || self.external.active()
     }
     pub fn cancel(&mut self) {
+        if self.measurement.active() {
+            self.measurement.close();
+            return;
+        }
         self.external.cancel();
         self.materials.cancel();
         if self.model.active() {
@@ -1742,6 +1753,11 @@ impl SketchEditor {
         feed: &mut crate::viewport::SceneFeed,
         resources: &multicad_core::project_file::ProjectResources,
     ) {
+        self.measurement.tick(session);
+        if self.measurement.pending() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
         self.model.poll(session, resources);
         if feed.is_current(session.document().id(), session.revision()) {
             self.model.canonical_ready(session);
@@ -1871,7 +1887,9 @@ impl SketchEditor {
                 self.tool = None;
             }
         }
-        self.materials.show(ui.ctx(), session);
+        if !self.measurement.active() {
+            self.materials.show(ui.ctx(), session);
+        }
         self.poll_profile_pick(session.document(), session.revision());
         if self.pending_profile_pick.is_some() || !self.queued_profile_clicks.is_empty() {
             ui.ctx()
@@ -1882,7 +1900,7 @@ impl SketchEditor {
             .resizable(true)
             .show(ui, |ui| {
                 let options = crate::model_tree::TreeOptions {
-                    enabled: !self.has_pending_edits(),
+                    enabled: !self.has_pending_edits() && !self.measurement.active(),
                     allow_open_sketch: sketch_mode,
                 };
                 let events = self.tree.show(ui, session, &self.tree_selection, options);
@@ -1911,6 +1929,7 @@ impl SketchEditor {
                 egui::ScrollArea::vertical()
                     .id_salt("sketch-inspector-content")
                     .show(ui, |ui| {
+                        if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
                         if self.model.active() {
                             let label=self.model.label();
                             match self.model.show(ui,session,resources) {
@@ -2145,7 +2164,8 @@ impl SketchEditor {
         let mut repair_view = false;
         let mut model_view = false;
         self.solid.highlight_reference(None);
-        if !self.model.termination_picking()
+        if !self.measurement.active()
+            && !self.model.termination_picking()
             && !self.model.alignment_picking()
             && let Some(candidate) = self.model.display_scene(session, resources)
         {
@@ -2153,7 +2173,8 @@ impl SketchEditor {
             current = false;
             model_view = true;
         }
-        if !model_view
+        if !self.measurement.active()
+            && !model_view
             && self.repair.viewing_candidates()
             && let Some(evaluation) = feed.references()
             && evaluation.stamp.revision == session.revision()
@@ -2180,7 +2201,10 @@ impl SketchEditor {
                 },
             }));
         }
-        if !model_view && let Some(source) = self.external.scene() {
+        if !self.measurement.active()
+            && !model_view
+            && let Some(source) = self.external.scene()
+        {
             scene = Some(source);
             current = false;
         }
@@ -2382,6 +2406,7 @@ impl SketchEditor {
         scene: Option<std::sync::Arc<crate::viewport::Scene>>,
         current: bool,
     ) {
+        let sketch_mode = sketch_mode && !self.measurement.active();
         self.refresh_overlay_visibility(session.document(), session.revision());
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         self.viewport_rect = Some(rect);
@@ -2415,7 +2440,25 @@ impl SketchEditor {
                 painter.line_segment(segment, Stroke::new(1., color));
             }
         }
-        if self.model.termination_picking() {
+        if self.measurement.active() {
+            self.measurement.pointer(
+                session,
+                crate::inspection::MeasurementViewport {
+                    scene: scene.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    section: self.solid.section.plane(),
+                },
+            );
+            self.solid.highlight_reference(
+                scene
+                    .as_ref()
+                    .and_then(|s| self.measurement.highlights(session, s)),
+            );
+        }
+        if !self.measurement.active() && self.model.termination_picking() {
             let selected = self.model.termination_viewport(
                 session,
                 crate::modeling::TerminationViewport {
@@ -2436,7 +2479,7 @@ impl SketchEditor {
                     "Extrusion end selected · Preview validates its exact current geometry".into();
             }
         }
-        if self.model.alignment_picking() {
+        if !self.measurement.active() && self.model.alignment_picking() {
             if self.model.alignment_viewport(
                 session,
                 crate::modeling::TerminationViewport {
@@ -2457,7 +2500,7 @@ impl SketchEditor {
             self.solid
                 .highlight_reference(self.model.alignment_highlight());
         }
-        if self.external.active() {
+        if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {
                 camera: self.camera,
                 rect,
@@ -2471,7 +2514,8 @@ impl SketchEditor {
             self.solid.highlight_reference(self.external.highlight());
         }
         if let Some(scene) = &scene {
-            let selectable = current
+            let selectable = !self.measurement.active()
+                && current
                 && !self.editing
                 && !self.picking
                 && !self.moving
@@ -2498,7 +2542,16 @@ impl SketchEditor {
                 self.selected = None;
             }
         }
-        if scene.is_none()
+        self.measurement.paint(
+            &painter,
+            rect,
+            self.camera,
+            session,
+            scene.as_ref(),
+            self.solid.section.plane(),
+        );
+        if !self.measurement.active()
+            && scene.is_none()
             && response.clicked()
             && !self.editing
             && !self.picking
@@ -2542,7 +2595,10 @@ impl SketchEditor {
         let model_view = scene
             .as_ref()
             .is_some_and(|scene| self.model.owns_display_scene(scene));
-        if (model_view || self.external.active() || self.selected.is_none())
+        if (self.measurement.active()
+            || model_view
+            || self.external.active()
+            || self.selected.is_none())
             && let Some(scene) = &scene
             && let Some([low, high]) = self
                 .solid
@@ -2560,10 +2616,11 @@ impl SketchEditor {
             }
         }
         let affected = self.constraints.affected();
-        for e in doc
-            .entities()
-            .filter(|e| !self.repair.viewing_candidates() && self.overlay_visible(e.id))
-        {
+        for e in doc.entities().filter(|e| {
+            !self.measurement.active()
+                && !self.repair.viewing_candidates()
+                && self.overlay_visible(e.id)
+        }) {
             if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
                 let constrained = self.read_solved_source(doc, e.id, session.revision()).ok();
                 let conflicted_curves: std::collections::BTreeSet<_> = constrained
@@ -2965,7 +3022,7 @@ impl SketchEditor {
                 }
             }
         }
-        if self.moving && self.selected.is_some() {
+        if !self.measurement.active() && self.moving && self.selected.is_some() {
             self.gizmo(ui, session, rect);
         }
         if sketch_mode || scene.is_none() {
@@ -3011,7 +3068,7 @@ impl SketchEditor {
                         self.solid
                             .section
                             .control(ui, scene.as_ref().and_then(|s| s.world_bounds()));
-                        let transform = ui.add_enabled_ui(self.selected.is_some() && !self.model.active(),|ui|icons::compact_button(
+                        let transform = ui.add_enabled_ui(self.selected.is_some() && !self.model.active() && !self.measurement.active(),|ui|icons::compact_button(
                             ui,
                             Icon::Transform,
                             &format!(
@@ -3023,6 +3080,7 @@ impl SketchEditor {
                             moving = !moving;
                         }
                         transform.context_menu(|ui| {
+                            if self.measurement.active() { ui.disable(); }
                             ui.strong("Transform coordinates");
                             ui.selectable_value(&mut coordinates, Coordinates::World, "World");
                             ui.selectable_value(&mut coordinates, Coordinates::Object, "Object");

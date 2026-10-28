@@ -21,8 +21,8 @@ raw-window-handle = "=0.6.2"
 cxx-build = "=1.0.205"
 
 [dev-dependencies]
-multicad-kernel.workspace = true
 multicad-model.workspace = true
+multicad-kernel.workspace = true
 naga = { version = "=30.0.1", features = ["wgsl-in"] }
 
 # Only the small audited native-window bridge may declare unsafe FFI.

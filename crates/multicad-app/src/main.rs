@@ -2,6 +2,7 @@
 mod drawings;
 mod exchange;
 mod files;
+mod inspection;
 mod modeling;
 mod self_test;
 
@@ -101,6 +102,7 @@ fn run_application() -> Result<(), String> {
     // The tool controller uses its own worker and publication lane so a
     // candidate can never replace canonical geometry under the same revision.
     app.set_model_backends(models);
+    app.set_measurement_backends(std::sync::Arc::new(|| Box::new(inspection::Backend::new())));
     app.set_drawing_backends(std::sync::Arc::new(|| Box::new(drawings::Backend::new())));
     app.set_export_backends(std::sync::Arc::new(|| Box::new(exchange::Backend::new())))?;
     multicad_ui::launch_with(Box::new(move |_| Ok(Box::new(app))))
