@@ -8,10 +8,15 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SymbolKind { Static, Dynamic }
+pub enum SymbolKind {
+    Static,
+    Dynamic,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SymbolPlan { pub sketch: EntityId }
+pub struct SymbolPlan {
+    pub sketch: EntityId,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SymbolDefinition {
@@ -26,7 +31,10 @@ pub struct SymbolDefinition {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SymbolValue { pub value: f64, pub unit: String }
+pub struct SymbolValue {
+    pub value: f64,
+    pub unit: String,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SymbolInstance {
@@ -52,10 +60,23 @@ pub struct SymbolAuthorRequest {
     pub plan: Option<SymbolPlan>,
 }
 impl SymbolAuthorRequest {
-    pub fn new(name: impl Into<String>, root: EntityId, kind: SymbolKind,
-               exposed: Vec<EntityId>, plan: Option<SymbolPlan>) -> Self {
-        Self { definition: EntityId::new(), symbol: EntityId::new(), revision: "1".into(),
-               name: name.into(), kind, root, exposed, plan }
+    pub fn new(
+        name: impl Into<String>,
+        root: EntityId,
+        kind: SymbolKind,
+        exposed: Vec<EntityId>,
+        plan: Option<SymbolPlan>,
+    ) -> Self {
+        Self {
+            definition: EntityId::new(),
+            symbol: EntityId::new(),
+            revision: "1".into(),
+            name: name.into(),
+            kind,
+            root,
+            exposed,
+            plan,
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
