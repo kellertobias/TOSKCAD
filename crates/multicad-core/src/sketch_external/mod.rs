@@ -4,7 +4,9 @@
 //! arbitrary caller's fabricated topology map.
 mod capture;
 mod geometry;
+mod occurrence;
 mod source;
 pub use capture::*;
 pub use geometry::*;
+pub use occurrence::*;
 pub use source::*;
