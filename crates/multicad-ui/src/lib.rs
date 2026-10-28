@@ -1,4 +1,5 @@
 pub mod application;
+pub mod assembly;
 pub mod camera;
 mod camera_gestures;
 pub mod controls;
