@@ -328,6 +328,11 @@ impl ProjectFile {
         if crate::drawings::required_capability(&self.document) {
             required.insert(crate::drawings::CAPABILITY.into());
         }
+        if crate::drawings::books(&self.document).any(|id| {
+            self.document.get(id).is_some_and(|e| matches!(&e.data, crate::document::EntityData::Drawing{definition,..} if definition.schema_version >= 2))
+        }) {
+            required.insert(crate::drawings::VIEW_CAPABILITY.into());
+        }
         if crate::materials::required_capability(&self.document) {
             required.insert(crate::materials::CAPABILITY.into());
         }
@@ -384,6 +389,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
     BTreeSet::from([
         "core.document.1".into(),
         crate::drawings::CAPABILITY.into(),
+        crate::drawings::VIEW_CAPABILITY.into(),
         "core.plane.offset.1".into(),
         crate::hierarchy::CAPABILITY.into(),
         crate::constraint_sketch::source::V2_CAPABILITY.into(),

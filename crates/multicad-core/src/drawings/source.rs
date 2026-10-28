@@ -106,6 +106,8 @@ pub struct Page {
     pub settings: PageSettings,
     pub info: DrawingInfo,
     pub notes: Vec<TextNote>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<super::DrawingView>,
 }
 impl Page {
     pub fn new(number: impl Into<String>) -> Self {
@@ -115,6 +117,7 @@ impl Page {
             settings: PageSettings::default(),
             info: DrawingInfo::default(),
             notes: vec![],
+            views: vec![],
         }
     }
 }
@@ -131,10 +134,10 @@ impl DrawingBook {
             EntityData::Drawing {
                 definition: Definition {
                     type_id: TYPE_ID.into(),
-                    schema_version: 1,
+                    schema_version: if super::has_views(self) { 2 } else { 1 },
                     data: serde_json::to_value(self).map_err(invalid)?,
                 },
-                inputs: vec![],
+                inputs: super::view_inputs(self),
             },
         ))
     }
@@ -193,20 +196,45 @@ impl DrawingBook {
                 }
             }
             super::layout_page(page, index + 1, self.pages.len())?;
+            if page.views.len() > 256 {
+                return Err(invalid("Too many drawing views on a page"));
+            }
+            for view in &page.views {
+                view.validate()?;
+                if !ids.insert(view.id) {
+                    return Err(invalid("Duplicate drawing content identity"));
+                }
+                if view.position_mm[0] < margin
+                    || view.position_mm[0] >= w - margin
+                    || view.position_mm[1] < margin
+                    || view.position_mm[1] >= h - margin
+                {
+                    return Err(invalid(
+                        "Drawing view anchor must be inside the printable page",
+                    ));
+                }
+            }
         }
         Ok(())
     }
 }
 pub fn read(document: &Document, id: EntityId) -> Result<DrawingBook, DocumentError> {
     let entity = document.get(id).ok_or(DocumentError::Missing(id))?;
-    let EntityData::Drawing { definition, .. } = &entity.data else {
+    let EntityData::Drawing { definition, inputs } = &entity.data else {
         return Err(invalid("Select a drawing book"));
     };
-    if definition.type_id != TYPE_ID || definition.schema_version != 1 {
+    if definition.type_id != TYPE_ID || !matches!(definition.schema_version, 1 | 2) {
         return Err(invalid("Drawing page provider/version is unavailable"));
     }
     let book: DrawingBook = serde_json::from_value(definition.data.clone()).map_err(invalid)?;
     book.validate()?;
+    if (definition.schema_version == 1 && super::has_views(&book))
+        || *inputs != super::view_inputs(&book)
+    {
+        return Err(invalid(
+            "Drawing view schema or source dependencies do not match authored views",
+        ));
+    }
     Ok(book)
 }
 pub fn books(document: &Document) -> impl Iterator<Item = EntityId> + '_ {
@@ -218,7 +246,10 @@ pub fn validate(document: &Document) -> Result<(), DocumentError> {
     for id in books(document) {
         let book = read(document, id)?;
         for page in book.pages {
-            for nested in std::iter::once(page.id).chain(page.notes.iter().map(|note| note.id)) {
+            for nested in std::iter::once(page.id)
+                .chain(page.notes.iter().map(|note| note.id))
+                .chain(page.views.iter().map(|view| view.id))
+            {
                 if !identities.insert(nested) {
                     return Err(invalid(
                         "Drawing page/content identity collides with another source identity",

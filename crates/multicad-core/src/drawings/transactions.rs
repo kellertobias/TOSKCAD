@@ -44,6 +44,9 @@ pub fn prepare(
             for note in &mut copy.notes {
                 note.id = EntityId::new();
             }
+            for view in &mut copy.views {
+                view.id = EntityId::new();
+            }
             book.pages.insert(i + 1, copy);
             "Duplicate drawing page"
         }
@@ -77,9 +80,13 @@ pub fn prepare(
         .get(book_id)
         .ok_or(DocumentError::Missing(book_id))?
         .clone();
-    let EntityData::Drawing { definition, .. } = &mut entity.data else {
+    let EntityData::Drawing { definition, inputs } = &mut entity.data else {
         unreachable!()
     };
+    if super::has_views(&book) {
+        definition.schema_version = 2;
+    }
+    *inputs = super::view_inputs(&book);
     definition.data = serde_json::to_value(book).map_err(invalid)?;
     session
         .prepare(Request {
@@ -127,12 +134,16 @@ pub fn replace_edits(
 ) -> Result<Vec<Mutation>, DocumentError> {
     book.validate()?;
     let mut entity = document.get(id).ok_or(DocumentError::Missing(id))?.clone();
-    let EntityData::Drawing { definition, .. } = &mut entity.data else {
+    let EntityData::Drawing { definition, inputs } = &mut entity.data else {
         return Err(invalid("Select a drawing document"));
     };
     if definition.type_id != TYPE_ID {
         return Err(invalid("Unsupported drawing provider"));
     }
+    if super::has_views(book) {
+        definition.schema_version = 2;
+    }
+    *inputs = super::view_inputs(book);
     definition.data = serde_json::to_value(book).map_err(invalid)?;
     Ok(vec![Mutation::Replace(entity)])
 }
