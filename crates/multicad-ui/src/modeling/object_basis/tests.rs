@@ -205,3 +205,63 @@ fn source_stamp_hash_and_published_instance_pose_are_verified_before_using_objec
         .is_err()
     );
 }
+
+#[test]
+fn exact_scale_retains_the_authored_logical_part_frame_and_rigid_instance_axes() {
+    let (mut s, part, instance) = fixture();
+    let original = scene(&s);
+    let part_basis = object_gizmo_basis(
+        s.document(),
+        s.revision(),
+        &original,
+        &BTreeSet::from([part]),
+    )
+    .unwrap()
+    .basis;
+    let occurrence_basis = object_gizmo_basis(
+        s.document(),
+        s.revision(),
+        &original,
+        &BTreeSet::from([instance]),
+    )
+    .unwrap()
+    .basis;
+    let Some(EntityData::Part { features, .. }) = s.document().get(part).map(|e| &e.data) else {
+        panic!()
+    };
+    let request = model::ScaleBatchRequest::new(
+        s.document(),
+        vec![model::ScaleTarget::Part {
+            input: model::BodyInput {
+                body: part,
+                producer: *features.last().unwrap(),
+            },
+        }],
+        model::ScaleParameters {
+            factors: [2., 3., 4.].map(model::ratio),
+            ..Default::default()
+        },
+        false,
+    )
+    .unwrap();
+    let prepared = model::prepare_scale_batch(&s, s.revision(), actor(), &request).unwrap();
+    s.commit(prepared.prepared).unwrap();
+    let scaled = scene(&s);
+    assert_eq!(
+        object_gizmo_basis(s.document(), s.revision(), &scaled, &BTreeSet::from([part]))
+            .unwrap()
+            .basis,
+        part_basis
+    );
+    assert_eq!(
+        object_gizmo_basis(
+            s.document(),
+            s.revision(),
+            &scaled,
+            &BTreeSet::from([instance])
+        )
+        .unwrap()
+        .basis,
+        occurrence_basis
+    );
+}

@@ -160,6 +160,15 @@ impl Resolver<'_> {
                     axes: upstream.axes.map(|axis| pose.vector(axis)),
                 })
             }
+            model::SCALE_TYPE => {
+                let source = model::read_scale(self.document, feature).map_err(error)?;
+                match source.input {
+                    model::ScaleInput::Part { source } => self.feature(source.producer, seen),
+                    model::ScaleInput::Component { component, .. } => {
+                        self.feature(active_producer(self.document, component)?, seen)
+                    }
+                }
+            }
             model::ALIGN_TYPE => {
                 let (source, references) =
                     model::read_alignment(self.document, feature).map_err(error)?;
