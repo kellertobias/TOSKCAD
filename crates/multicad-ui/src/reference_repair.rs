@@ -526,6 +526,7 @@ mod tests {
             role: "cap.end".into(),
         };
         let mut face = TopologyElement {
+            geometry: None,
             key: TopologyKey {
                 kind: TopologyKind::Face,
                 ordinal: 0,
@@ -684,6 +685,7 @@ mod tests {
             owner: cut,
             revision: 0,
             elements: vec![TopologyElement {
+                geometry: None,
                 key,
                 origins: BTreeSet::from([origin.clone()]),
                 boundary: BTreeSet::new(),

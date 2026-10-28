@@ -651,6 +651,12 @@ impl Scene {
         let geometry = self.geometries.get(&instance.geometry)?;
         let mut elements = geometry.topology.clone();
         for element in &mut elements {
+            element.geometry = element.geometry.map(|g| {
+                g.transformed(
+                    |p| instance.transform.point(p),
+                    |v| instance.transform.vector(v),
+                )
+            });
             for anchored in &mut element.frames {
                 anchored.frame.origin_mm = instance.transform.point(anchored.frame.origin_mm);
                 anchored.frame.u = instance.transform.vector(anchored.frame.u);

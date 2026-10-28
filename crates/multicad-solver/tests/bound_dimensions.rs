@@ -386,6 +386,7 @@ fn attached_semantic_sketch_never_uses_absent_stale_or_unresolved_frames() {
             owner,
             revision,
             elements: vec![TopologyElement {
+                geometry: None,
                 key: TopologyKey {
                     kind: TopologyKind::Face,
                     ordinal: 0,

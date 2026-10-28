@@ -223,6 +223,7 @@ fn snapshot(owner: EntityId, revision: u64) -> TopologySnapshot {
         owner,
         revision,
         elements: vec![TopologyElement {
+            geometry: None,
             key: TopologyKey {
                 kind: TopologyKind::Face,
                 ordinal: 2,

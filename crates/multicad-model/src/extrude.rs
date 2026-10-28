@@ -79,7 +79,7 @@ impl Extrusion<'_> {
                     .ok_or_else(|| {
                         self.failure("Termination face has no current reference evaluation")
                     })?;
-                let Resolution::Resolved { key, frame } = diagnostic.resolution else {
+                let Resolution::Resolved { key, frame, .. } = diagnostic.resolution else {
                     return Err(self.failure(format!(
                         "Termination face is unresolved: {:?}",
                         diagnostic.resolution

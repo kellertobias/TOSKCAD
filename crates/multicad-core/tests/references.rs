@@ -30,6 +30,7 @@ fn frame(z: f64) -> ReferenceFrame {
 }
 fn face(ordinal: u32, origin: &Origin, z: f64) -> TopologyElement {
     TopologyElement {
+        geometry: None,
         key: TopologyKey {
             kind: TopologyKind::Face,
             ordinal,
@@ -67,6 +68,7 @@ fn source_identity_survives_ordinal_reordering_and_attachment_is_not_accumulated
         let Resolution::Resolved {
             key,
             frame: Some(frame),
+            ..
         } = resolve(&intent, &snapshot, revision)
         else {
             panic!("source must remain attached")

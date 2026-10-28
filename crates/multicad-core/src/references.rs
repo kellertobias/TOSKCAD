@@ -7,6 +7,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+mod analytic;
+pub use analytic::AnalyticGeometry;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TopologyKind {
     Face,
@@ -176,6 +178,9 @@ pub struct TopologyElement {
     pub boundary: BTreeSet<Origin>,
     /// Semantic source frames, not arbitrary current surface UV origins.
     pub frames: Vec<AnchoredFrame>,
+    /// Current B-rep geometry, never sampled display edges or authored intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<AnalyticGeometry>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,6 +201,12 @@ impl TopologySnapshot {
             }
             origins_valid(&element.origins)?;
             origins_valid(&element.boundary)?;
+            if let Some(geometry) = element.geometry {
+                geometry.validate()?;
+                if geometry.topology_kind() != element.key.kind {
+                    return Err("Analytic geometry kind differs from its topology element".into());
+                }
+            }
             if element.frames.len() > element.origins.len() {
                 return Err("Frame provenance budget exceeded".into());
             }
@@ -220,6 +231,8 @@ pub enum Resolution {
     Resolved {
         key: TopologyKey,
         frame: Option<ReferenceFrame>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        geometry: Option<AnalyticGeometry>,
     },
     Missing,
     MissingSource,
@@ -287,6 +300,7 @@ pub fn resolve(intent: &GeometryIntent, snapshot: &TopologySnapshot, revision: u
     Resolution::Resolved {
         key: element.key,
         frame,
+        geometry: element.geometry,
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

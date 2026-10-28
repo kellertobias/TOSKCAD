@@ -139,6 +139,7 @@ fn face_snapshot(owner: EntityId, revision: u64, height: f64) -> TopologySnapsho
         owner,
         revision,
         elements: vec![TopologyElement {
+            geometry: None,
             key: TopologyKey {
                 kind: TopologyKind::Face,
                 ordinal: 5,

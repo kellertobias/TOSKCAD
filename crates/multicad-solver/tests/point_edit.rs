@@ -387,6 +387,7 @@ fn attached_point_edits_require_current_geometry_and_reject_a_collapsed_free_edg
         owner: producer.id,
         revision: 0,
         elements: vec![TopologyElement {
+            geometry: None,
             key,
             origins: BTreeSet::from([origin.clone()]),
             boundary: BTreeSet::new(),

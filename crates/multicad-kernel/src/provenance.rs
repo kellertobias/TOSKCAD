@@ -30,6 +30,7 @@ fn empty(key: TopologyKey) -> TopologyElement {
         origins: BTreeSet::new(),
         boundary: BTreeSet::new(),
         frames: vec![],
+        geometry: None,
     }
 }
 fn reference_frame(frame: PlaneFrame) -> ReferenceFrame {
@@ -387,7 +388,7 @@ impl Solid {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
-        let elements = if self.provenance.is_empty() {
+        let mut elements: Vec<TopologyElement> = if self.provenance.is_empty() {
             ffi::topology(&self.native.0)
                 .map_err(failure)?
                 .iter()
@@ -396,6 +397,63 @@ impl Solid {
         } else {
             self.provenance.clone()
         };
+        let xyz = |p: ffi::Point3| [p.x, p.y, p.z];
+        let mut geometry = BTreeMap::new();
+        for edge in ffi::analytic_edges(&self.native.0).map_err(failure)? {
+            let exact = match edge.kind {
+                0 => AnalyticGeometry::Line {
+                    a_mm: xyz(edge.a),
+                    b_mm: xyz(edge.b),
+                },
+                1 => AnalyticGeometry::CircularArc {
+                    frame: ReferenceFrame {
+                        origin_mm: xyz(edge.frame.origin),
+                        u: xyz(edge.frame.u),
+                        v: xyz(edge.frame.v),
+                    },
+                    radius_mm: edge.radius,
+                    start_rad: edge.start,
+                    sweep_rad: edge.sweep,
+                },
+                _ => return Err(failure("Unknown native analytic edge kind")),
+            };
+            geometry.insert(key(1, edge.index)?, exact);
+        }
+        for vertex in ffi::vertices(&self.native.0).map_err(failure)? {
+            geometry.insert(
+                key(2, vertex.index)?,
+                AnalyticGeometry::Point {
+                    position_mm: xyz(vertex.point),
+                },
+            );
+        }
+        for face in self.faces()? {
+            if let Some((origin_mm, normal)) = face.plane {
+                let seed = if normal[0].abs() < 0.9 {
+                    [1., 0., 0.]
+                } else {
+                    [0., 1., 0.]
+                };
+                let dot = seed.iter().zip(normal).map(|(a, b)| a * b).sum::<f64>();
+                let mut u: [f64; 3] = std::array::from_fn(|i| seed[i] - normal[i] * dot);
+                let length = u.iter().map(|v| v * v).sum::<f64>().sqrt();
+                u = u.map(|v| v / length);
+                let v = [
+                    normal[1] * u[2] - normal[2] * u[1],
+                    normal[2] * u[0] - normal[0] * u[2],
+                    normal[0] * u[1] - normal[1] * u[0],
+                ];
+                geometry.insert(
+                    key(0, face.index)?,
+                    AnalyticGeometry::Plane {
+                        frame: ReferenceFrame { origin_mm, u, v },
+                    },
+                );
+            }
+        }
+        for element in &mut elements {
+            element.geometry = geometry.remove(&element.key);
+        }
         let snapshot = TopologySnapshot {
             owner,
             revision,

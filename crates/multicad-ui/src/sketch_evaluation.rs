@@ -1233,6 +1233,7 @@ mod tests {
             owner: feature.id,
             revision: 0,
             elements: vec![TopologyElement {
+                geometry: None,
                 key,
                 origins: BTreeSet::from([origin.clone()]),
                 boundary: BTreeSet::new(),

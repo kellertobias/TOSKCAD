@@ -4,6 +4,7 @@ fn main() {
         .file("src/bridge.cpp")
         .file("src/curves.cpp")
         .file("src/ruled.cpp")
+        .file("src/analytic.cpp")
         .include("include")
         .include(root.join("include"))
         .std("c++17")
@@ -27,6 +28,8 @@ fn main() {
         "src/ruled.cpp",
         "include/ruled.hpp",
         "include/measure.hpp",
+        "src/analytic.cpp",
+        "include/analytic.hpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

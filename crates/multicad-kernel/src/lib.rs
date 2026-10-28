@@ -72,6 +72,16 @@ mod ffi {
         pub index: u32,
         pub point: Point3,
     }
+    pub struct AnalyticEdgeData {
+        pub index: u32,
+        pub kind: u8,
+        pub a: Point3,
+        pub b: Point3,
+        pub frame: Frame3,
+        pub radius: f64,
+        pub start: f64,
+        pub sweep: f64,
+    }
     pub struct SplineData {
         pub degree: u32,
         pub poles: Vec<f64>,
@@ -105,6 +115,7 @@ mod ffi {
     unsafe extern "C++" {
         include!("bridge.hpp");
         include!("curves.hpp");
+        include!("analytic.hpp");
         type Shape;
         fn extrude(width: f64, depth: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn cut(
@@ -144,6 +155,7 @@ mod ffi {
         fn seeds(shape: &Shape) -> Result<Vec<Seed>>;
         fn display_edges(shape: &Shape, deflection: f64) -> Result<Vec<EdgeInfo>>;
         fn vertices(shape: &Shape) -> Result<Vec<VertexInfo>>;
+        fn analytic_edges(shape: &Shape) -> Result<Vec<AnalyticEdgeData>>;
         fn solid_count(shape: &Shape) -> Result<u32>;
         fn curve_evaluate(curve: &CurvedEdgeData, parameter: f64) -> Result<CurveSampleData>;
         fn curve_intersections(

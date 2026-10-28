@@ -295,6 +295,23 @@ fn instance_frames_are_in_world_coordinates_and_camera_rays_match_both_projectio
     .unwrap();
     let scene = Scene::new(stamp(), vec![geometry], vec![part.clone()]).unwrap();
     let [low, high] = scene.instance_bounds(part.id).unwrap();
+    let world = scene.topology_snapshot(part.id).unwrap();
+    for element in &world.elements {
+        let points = match element.geometry.unwrap() {
+            multicad_core::references::AnalyticGeometry::Point { position_mm } => vec![position_mm],
+            multicad_core::references::AnalyticGeometry::Line { a_mm, b_mm } => vec![a_mm, b_mm],
+            multicad_core::references::AnalyticGeometry::Plane { frame } => {
+                frame.validate().unwrap();
+                vec![frame.origin_mm]
+            }
+            _ => panic!("box descriptor must be planar or linear"),
+        };
+        for point in points {
+            for i in 0..3 {
+                assert!(point[i] >= low[i] - 1e-9 && point[i] <= high[i] + 1e-9);
+            }
+        }
+    }
     for (actual, expected) in low
         .into_iter()
         .zip([-50., 20., 30.])
