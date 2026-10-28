@@ -12,6 +12,7 @@ use std::{
 };
 type Position = [f64; 2];
 mod circular;
+mod exact;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeometryStamp {
     pub document: EntityId,
@@ -65,14 +66,14 @@ pub enum TrimRequest {
     ExtendSpline(ExtendSpline),
 }
 impl TrimRequest {
-    fn target(&self) -> EntityId {
+    pub fn target(&self) -> EntityId {
         match self {
             Self::Trim(r) | Self::TrimCurve(r) => r.target,
             Self::Extend(r) | Self::ExtendArc(r) => r.target,
             Self::ExtendSpline(r) => r.target,
         }
     }
-    fn boundaries(&self) -> &BTreeSet<EntityId> {
+    pub fn boundaries(&self) -> &BTreeSet<EntityId> {
         match self {
             Self::Trim(r) | Self::TrimCurve(r) => &r.boundaries,
             Self::Extend(r) | Self::ExtendArc(r) => &r.boundaries,
@@ -128,6 +129,8 @@ pub enum Action {
 pub enum Parameterization {
     LineFraction,
     ArcRadians,
+    /// Normalized parameter of the exact queried curve, including continuation.
+    CurveFraction,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CurveTypeChange {
@@ -590,6 +593,24 @@ pub fn draft(
     request: &TrimRequest,
     policy: TrimPolicy,
 ) -> Result<TrimDraft, TrimError> {
+    draft_with_queries(
+        source,
+        expected,
+        input,
+        request,
+        policy,
+        &crate::sketch_regions::AnalyticQueries,
+    )
+}
+/// Exact worker-side editing. Native query capabilities never enter canonical source.
+pub fn draft_with_queries(
+    source: &Source,
+    expected: GeometryStamp,
+    input: DerivedGeometry<'_>,
+    request: &TrimRequest,
+    policy: TrimPolicy,
+    queries: &dyn crate::sketch_regions::RegionQueries,
+) -> Result<TrimDraft, TrimError> {
     let hash = canonical_hash(source)?;
     if input.stamp != expected || input.canonical_hash != hash {
         return Err(fail(
@@ -649,12 +670,16 @@ pub fn draft(
                 [request.target()],
             )
         })?;
-    if matches!(target.kind, CurveKind::BSpline { .. }) {
-        return Err(fail(
-            TrimErrorKind::UnsupportedTarget,
-            "Spline targets require a dedicated exact curve trim operation",
-            [target.id],
-        ));
+    let spline_boundary = solved.curves.iter().any(|c| {
+        request.boundaries().contains(&c.id) && matches!(c.kind, CurveKind::BSpline { .. })
+    });
+    if matches!(target.kind, CurveKind::BSpline { .. })
+        || spline_boundary
+        || matches!(request, TrimRequest::ExtendSpline(_))
+    {
+        return exact::draft(
+            source, solved, expected, hash, target, request, tolerance, queries,
+        );
     }
     if matches!(
         request,
@@ -903,4 +928,62 @@ pub fn draft(
             contacts,
         },
     })
+}
+
+/// Discover bounded continuation contacts without creating a commit-capable edit.
+pub fn spline_extension_contacts(
+    source: &Source,
+    expected: GeometryStamp,
+    input: DerivedGeometry<'_>,
+    request: &ExtendSpline,
+    policy: TrimPolicy,
+    queries: &dyn crate::sketch_regions::RegionQueries,
+) -> Result<Vec<Contact>, TrimError> {
+    let hash = canonical_hash(source)?;
+    if input.stamp != expected || input.canonical_hash != hash {
+        return Err(fail(
+            TrimErrorKind::InvalidContext,
+            "Derived geometry belongs to stale or foreign source",
+            [expected.sketch],
+        ));
+    }
+    let solved = input.solved.ok_or_else(|| {
+        fail(
+            TrimErrorKind::Unsolved,
+            "A current successful sketch solve is required",
+            [expected.sketch],
+        )
+    })?;
+    if !structure(source, solved) {
+        return Err(fail(
+            TrimErrorKind::InvalidContext,
+            "Solved geometry does not preserve canonical sketch identity",
+            [expected.sketch],
+        ));
+    }
+    Source {
+        u: source.u,
+        sketch: solved.clone(),
+    }
+    .validate()
+    .map_err(|e| {
+        fail(
+            TrimErrorKind::InvalidContext,
+            e.to_string(),
+            [expected.sketch],
+        )
+    })?;
+    let target = source
+        .sketch
+        .curves
+        .iter()
+        .find(|c| c.id == request.target)
+        .ok_or_else(|| {
+            fail(
+                TrimErrorKind::InvalidRequest,
+                "Target is not a current authored curve",
+                [request.target],
+            )
+        })?;
+    exact::extension_contacts(solved, target, request, policy.tolerance_mm, queries)
 }

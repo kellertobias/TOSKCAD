@@ -60,6 +60,28 @@ pub fn prepare_trim(
     request: &TrimRequest,
     policy: TrimPolicy,
 ) -> Result<TrimEdit, TrimEditError> {
+    prepare_trim_with_queries(
+        session,
+        expected_revision,
+        actor,
+        sketch,
+        report,
+        request,
+        policy,
+        &multicad_core::sketch_regions::AnalyticQueries,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_trim_with_queries(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    sketch: EntityId,
+    report: Option<&ReferenceReport>,
+    request: &TrimRequest,
+    policy: TrimPolicy,
+    queries: &dyn multicad_core::sketch_regions::RegionQueries,
+) -> Result<TrimEdit, TrimEditError> {
     if session.revision() != expected_revision {
         return Err(EditError::Command(CommandError {
             code: ErrorCode::StaleRevision,
@@ -105,7 +127,7 @@ pub fn prepare_trim(
         document_hash: evaluated.stamp.source_hash,
     };
     let canonical = evaluated.canonical();
-    let draft = sketch_trim::draft(
+    let draft = sketch_trim::draft_with_queries(
         canonical,
         expected,
         DerivedGeometry {
@@ -115,6 +137,7 @@ pub fn prepare_trim(
         },
         request,
         policy,
+        queries,
     )?;
     let upgraded_source = matches!(&session.document().get(sketch).expect("evaluated sketch").data,EntityData::Sketch {definition,..} if definition.schema_version==1);
     let edit = crate::canonical_edit::prepare_with(
@@ -140,4 +163,74 @@ pub fn prepare_trim(
         report: draft.report,
         upgraded_source,
     })
+}
+
+/// Discover current, source-bound extension choices without preparing a mutation.
+pub fn extension_contacts_with_queries(
+    session: &Session,
+    expected_revision: u64,
+    sketch: EntityId,
+    report: Option<&ReferenceReport>,
+    request: &sketch_trim::ExtendSpline,
+    policy: TrimPolicy,
+    queries: &dyn multicad_core::sketch_regions::RegionQueries,
+) -> Result<Vec<sketch_trim::Contact>, TrimEditError> {
+    if session.revision() != expected_revision {
+        return Err(EditError::Command(CommandError {
+            code: ErrorCode::StaleRevision,
+            message: "Spline contact query is based on a stale document revision".into(),
+            involved: vec![sketch],
+            parameter: None,
+        })
+        .into());
+    }
+    let input = |message: String| {
+        EditError::Input(InputError {
+            source: Some(sketch),
+            message,
+        })
+    };
+    if report.is_some_and(|r| r.revision != expected_revision) {
+        return Err(input("Spline contact query reference report is stale".into()).into());
+    }
+    let evaluated = crate::evaluate_document_sketch_with_parameters(
+        session.document(),
+        expected_revision,
+        sketch,
+        report,
+        session.parameters(),
+    )
+    .map_err(EditError::Input)?;
+    let Some(solved) = evaluated.solved() else {
+        return Err(TrimEditError::Unsolved {
+            sketch,
+            diagnostics: Box::new(evaluated.evaluation.diagnostics.clone()),
+        });
+    };
+    let expected = GeometryStamp {
+        document: session.document().id(),
+        sketch,
+        revision: expected_revision,
+        document_hash: ContentHash::document(session.document()).map_err(input)?,
+    };
+    let stamp = GeometryStamp {
+        document: evaluated.stamp.document,
+        sketch: evaluated.sketch,
+        revision: evaluated.stamp.revision,
+        document_hash: evaluated.stamp.source_hash,
+    };
+    let canonical = evaluated.canonical();
+    sketch_trim::spline_extension_contacts(
+        canonical,
+        expected,
+        DerivedGeometry {
+            stamp,
+            canonical_hash: sketch_trim::canonical_hash(canonical)?,
+            solved: Some(solved),
+        },
+        request,
+        policy,
+        queries,
+    )
+    .map_err(Into::into)
 }
