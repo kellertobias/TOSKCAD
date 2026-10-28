@@ -46,6 +46,15 @@ pub struct ExtendLine {
 }
 pub type TrimCurve = TrimLine;
 pub type ExtendArc = ExtendLine;
+/// Finite exact tangent continuation. Multiple contacts require an explicit sorted contact index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtendSpline {
+    pub target: EntityId,
+    pub endpoint: Endpoint,
+    pub boundaries: BTreeSet<EntityId>,
+    pub max_length_mm: f64,
+    pub contact_index: Option<usize>,
+}
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrimRequest {
     Trim(TrimLine),
@@ -53,18 +62,21 @@ pub enum TrimRequest {
     /// Trim a supported line, circular arc or circle by its picked span.
     TrimCurve(TrimCurve),
     ExtendArc(ExtendArc),
+    ExtendSpline(ExtendSpline),
 }
 impl TrimRequest {
     fn target(&self) -> EntityId {
         match self {
             Self::Trim(r) | Self::TrimCurve(r) => r.target,
             Self::Extend(r) | Self::ExtendArc(r) => r.target,
+            Self::ExtendSpline(r) => r.target,
         }
     }
     fn boundaries(&self) -> &BTreeSet<EntityId> {
         match self {
             Self::Trim(r) | Self::TrimCurve(r) => &r.boundaries,
             Self::Extend(r) | Self::ExtendArc(r) => &r.boundaries,
+            Self::ExtendSpline(r) => &r.boundaries,
         }
     }
 }
@@ -269,6 +281,7 @@ impl Axis {
 fn relevant(request: &TrimRequest, t: f64) -> bool {
     match request {
         TrimRequest::Trim(_) | TrimRequest::TrimCurve(_) => (0. ..=1.).contains(&t),
+        TrimRequest::ExtendSpline(_) => false,
         TrimRequest::Extend(r) | TrimRequest::ExtendArc(r) => match r.endpoint {
             Endpoint::Start => t < 0.,
             Endpoint::End => t > 1.,
@@ -400,6 +413,7 @@ fn contacts(
                         let t1 = dot(sub(b, axis.a), axis.d) / (axis.length * axis.length);
                         let (low, high) = (t0.min(t1), t0.max(t1));
                         let overlaps = match request {
+                            TrimRequest::ExtendSpline(_) => false,
                             TrimRequest::Trim(_) | TrimRequest::TrimCurve(_) => {
                                 high >= 0. && low <= 1.
                             }
@@ -679,6 +693,13 @@ pub fn draft(
     let axis = Axis { a, d, length: size };
     let contacts = contacts(solved, &axis, request, tolerance)?;
     let (spans, action): (Vec<[f64; 2]>, Action) = match request {
+        TrimRequest::ExtendSpline(_) => {
+            return Err(fail(
+                TrimErrorKind::UnsupportedTarget,
+                "Spline extension requires the exact query service",
+                [target.id],
+            ));
+        }
         TrimRequest::Trim(r) | TrimRequest::TrimCurve(r) => {
             if r.pick_mm.iter().any(|v| !v.is_finite() || v.abs() > 1e9) {
                 return Err(fail(

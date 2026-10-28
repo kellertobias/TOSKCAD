@@ -83,6 +83,22 @@ pub struct CurveHits {
     pub points: Vec<Point>,
     pub overlap: bool,
 }
+/// Exact projection on a finite curve. Parameters use its normalized [0, 1] domain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CurveProjection {
+    pub parameter: f64,
+    pub point_mm: Point,
+    /// Nonzero geometric tangent; its magnitude is not part of the contract.
+    pub tangent: Point,
+    pub distance_mm: f64,
+}
+/// A finite G1 tangent continuation with the original curve interval retained.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplineContinuation {
+    pub curve: ExactCurve,
+    /// Original endpoints in the returned curve's normalized [0, 1] domain.
+    pub original_range: [f64; 2],
+}
 /// Exact predicates are injected by the application. Native implementations run
 /// on an evaluation worker; this boundary never accepts tessellated geometry.
 pub trait RegionQueries: Send + Sync {
@@ -105,6 +121,42 @@ pub trait RegionQueries: Send + Sync {
         curve: &ExactCurve,
         tolerance_mm: f64,
     ) -> Result<CurveHits, QueryError>;
+    /// Every isolated closest-point projection; callers must check residuals and ambiguity.
+    fn project_parameters(
+        &self,
+        _curve: &ExactCurve,
+        _point_mm: Point,
+        _tolerance_mm: f64,
+    ) -> Result<Vec<CurveProjection>, QueryError> {
+        Err(QueryError {
+            message: "Exact curve projection requires a native curve editing service".into(),
+        })
+    }
+    /// Return the exact retained curve between increasing normalized parameters.
+    fn curve_segment(
+        &self,
+        _curve: &ExactCurve,
+        _from: f64,
+        _to: f64,
+        _tolerance_mm: f64,
+    ) -> Result<ExactCurve, QueryError> {
+        Err(QueryError {
+            message: "Exact curve segmentation requires a native curve editing service".into(),
+        })
+    }
+    /// Add a bounded straight tangent span while retaining the original spline exactly.
+    /// This promises geometric tangent continuity, without fitting or polynomial extrapolation.
+    fn spline_continuation(
+        &self,
+        _curve: &ExactCurve,
+        _at_start: bool,
+        _max_length_mm: f64,
+        _tolerance_mm: f64,
+    ) -> Result<SplineContinuation, QueryError> {
+        Err(QueryError {
+            message: "Spline tangent continuation requires a native curve editing service".into(),
+        })
+    }
     fn signed_area(&self, edges: &[Edge], tolerance_mm: f64) -> Result<f64, QueryError>;
     fn classify_boundary(
         &self,

@@ -131,6 +131,7 @@ pub fn prepare_trim(
                 TrimRequest::Extend(_) => "Extend line",
                 TrimRequest::TrimCurve(_) => "Trim curve",
                 TrimRequest::ExtendArc(_) => "Extend arc",
+                TrimRequest::ExtendSpline(_) => "Extend spline",
             },
         },
     )?;
