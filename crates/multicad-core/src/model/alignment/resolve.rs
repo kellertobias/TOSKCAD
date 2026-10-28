@@ -102,6 +102,7 @@ fn datum(
                     reference: intent.id,
                 },
                 source: link.target,
+                dependency_hash: Some(references::dependency_hash(document, link.target)?),
                 role: link.role.clone(),
                 intent: intent.clone(),
                 resolution,
