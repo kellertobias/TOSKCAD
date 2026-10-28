@@ -453,6 +453,8 @@ pub struct SceneStamp {
 pub enum SceneScope {
     Full,
     Sources(Vec<EntityId>),
+    /// Source-neutral presentation, never a model preview or geometry proof.
+    Presentation,
 }
 pub struct Scene {
     scope: SceneScope,
@@ -664,6 +666,46 @@ impl Scene {
     pub fn instances(&self) -> &[Instance] {
         &self.instances
     }
+    /// Offset visible objects for an exploded illustration. Native bounds and
+    /// model proof are deliberately absent; source references remain assembled.
+    pub fn presentation_offsets(
+        &self,
+        offsets: &BTreeMap<EntityId, Point>,
+    ) -> Result<Arc<Self>, String> {
+        if !self.is_full_model() || offsets.len() > 128 {
+            return Err(
+                "Exploded display needs a complete source scene and at most 128 offsets".into(),
+            );
+        }
+        if offsets.iter().any(|(id, delta)| {
+            !self.instances.iter().any(|instance| instance.id == *id)
+                || delta
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > 1e7)
+        }) {
+            return Err("Exploded display contains an unknown object or invalid offset".into());
+        }
+        let mut instances = self.instances.to_vec();
+        for instance in &mut instances {
+            if let Some(delta) = offsets.get(&instance.id) {
+                for (value, offset) in instance.transform.translation.iter_mut().zip(delta) {
+                    *value += offset;
+                    if !value.is_finite() || value.abs() > 1e9 {
+                        return Err("Exploded display exceeds the coordinate budget".into());
+                    }
+                }
+            }
+        }
+        let mut view = Self::new(
+            self.stamp,
+            self.geometries.values().cloned().collect(),
+            instances,
+        )?;
+        view.scope = SceneScope::Presentation;
+        view.reference_instances = self.reference_instances.clone();
+        view.reference_aliases = self.reference_aliases.clone();
+        Ok(Arc::new(view))
+    }
     /// All evaluated occurrences remain available for semantic references even
     /// when a source visibility view omits them from drawing and picking.
     pub fn reference_instances(&self) -> &[Instance] {
@@ -822,6 +864,9 @@ impl Scene {
         self.pick_face_section(ray, None)
     }
     pub fn pick_face_section(&self, ray: Ray, section: Option<super::SectionPlane>) -> Option<Hit> {
+        if self.scope == SceneScope::Presentation {
+            return None;
+        }
         let mut best = None;
         let (minimum, mut limit) = if let Some(section) = section {
             section.ray_interval(ray)?

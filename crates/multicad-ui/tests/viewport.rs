@@ -71,6 +71,46 @@ fn stamp() -> SceneStamp {
     }
 }
 #[test]
+fn exploded_presentation_keeps_source_geometry_and_cannot_author_native_operations() {
+    use std::collections::BTreeMap;
+    let geometry = box_geometry();
+    let part = instance(&geometry, [10., 20., 30.]);
+    let original = Arc::new(Scene::new(stamp(), vec![geometry], vec![part.clone()]).unwrap());
+    let original_topology = original.topology_snapshot(part.id).unwrap();
+    let offsets = BTreeMap::from([(part.id, [200., 0., 0.])]);
+    let view = original.presentation_offsets(&offsets).unwrap();
+    assert_eq!(view.scope(), &SceneScope::Presentation);
+    assert!(!view.is_full_model());
+    assert!(view.model_evaluation().is_none());
+    assert!(view.native_instance_bounds(part.id).is_none());
+    assert_eq!(view.instance_bounds(part.id).unwrap()[0], [210., 20., 30.]);
+    assert_eq!(
+        original.instance_bounds(part.id).unwrap()[0],
+        [10., 20., 30.]
+    );
+    assert_eq!(view.topology_snapshot(part.id).unwrap(), original_topology);
+    assert!(
+        view.pick_face(Ray::new([220., 30., 100.], [0., 0., -1.]).unwrap())
+            .is_none()
+    );
+    let mut store = SceneStore::default();
+    store.begin(original.stamp()).unwrap();
+    store.publish(original.clone()).unwrap();
+    assert!(store.publish(view.clone()).is_err());
+    assert!(Arc::ptr_eq(store.visible().unwrap(), &original));
+    assert!(view.presentation_offsets(&offsets).is_err());
+    assert!(
+        original
+            .presentation_offsets(&BTreeMap::from([(EntityId::new(), [0.; 3])]))
+            .is_err()
+    );
+    assert!(
+        original
+            .presentation_offsets(&BTreeMap::from([(part.id, [f64::NAN; 3])]))
+            .is_err()
+    );
+}
+#[test]
 fn display_detail_follows_projected_size_and_preserves_selection_intent() {
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.));
     let bounds = [[0., 0., 0.], [100., 60., 18.]];

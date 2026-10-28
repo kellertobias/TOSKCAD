@@ -76,6 +76,9 @@ impl Scene {
         pointer: Pos2,
         options: PickOptions,
     ) -> Option<Hit> {
+        if self.scope() == &super::SceneScope::Presentation {
+            return None;
+        }
         let PickOptions {
             filter,
             include_hidden,
