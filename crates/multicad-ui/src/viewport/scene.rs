@@ -454,6 +454,7 @@ pub struct Scene {
     geometries: BTreeMap<EntityId, Arc<Geometry>>,
     instances: Arc<[Instance]>,
     reference_instances: Arc<[Instance]>,
+    reference_aliases: Arc<BTreeMap<EntityId, EntityId>>,
     world_bounds: Option<[Point; 2]>,
     model_evaluation: Option<Arc<multicad_core::model::ModelEvaluationInfo>>,
 }
@@ -514,6 +515,7 @@ impl Scene {
             stamp,
             geometries: map,
             reference_instances: instances.clone(),
+            reference_aliases: Arc::new(BTreeMap::new()),
             instances,
             world_bounds,
             model_evaluation: None,
@@ -535,6 +537,33 @@ impl Scene {
             return Err("Consumed bodies cannot remain evaluated display instances".into());
         }
         self.model_evaluation = Some(info);
+        Ok(self)
+    }
+    /// Reference-only canonical Part aliases. They do not add a draw/pick
+    /// occurrence or turn a consumed construction body into a physical output.
+    pub fn with_reference_aliases(
+        mut self,
+        aliases: BTreeMap<EntityId, EntityId>,
+    ) -> Result<Self, String> {
+        if aliases.len() > 100_000 {
+            return Err("Reference alias budget exceeded".into());
+        }
+        for (alias, producer) in &aliases {
+            if alias.is_nil()
+                || self.geometries.contains_key(alias)
+                || !self.geometries.contains_key(producer)
+            {
+                return Err("Invalid canonical reference alias".into());
+            }
+            if self.reference_instances.iter().any(|instance| {
+                instance.id == *alias
+                    && (instance.geometry != *producer
+                        || instance.transform != Transform::default())
+            }) {
+                return Err("Reference aliases cannot replace a placed occurrence".into());
+            }
+        }
+        self.reference_aliases = Arc::new(aliases);
         Ok(self)
     }
     pub fn model_evaluation(&self) -> Option<&Arc<multicad_core::model::ModelEvaluationInfo>> {
@@ -572,6 +601,7 @@ impl Scene {
             instances,
         )?;
         view.reference_instances = self.reference_instances.clone();
+        view.reference_aliases = self.reference_aliases.clone();
         view.model_evaluation = self.model_evaluation.clone();
         Ok(Arc::new(view))
     }
@@ -604,6 +634,12 @@ impl Scene {
                 )
             })
             .collect();
+        for (alias, producer) in self.reference_aliases.iter() {
+            if let Some(mut snapshot) = self.geometry_snapshot(*producer) {
+                snapshot.owner = *alias;
+                snapshots.insert(*alias, snapshot);
+            }
+        }
         for instance in self.reference_instances.iter() {
             if let Some(snapshot) = self.topology_snapshot(instance.id) {
                 snapshots.insert(instance.id, snapshot);
@@ -618,12 +654,17 @@ impl Scene {
             if let Some(instance) = self.reference_instances.iter().find(|i| i.id == source) {
                 instance.clone()
             } else {
-                if !self.geometries.contains_key(&source) {
+                let producer = self
+                    .reference_aliases
+                    .get(&source)
+                    .copied()
+                    .unwrap_or(source);
+                if !self.geometries.contains_key(&producer) {
                     return Err("Repair source has no current display geometry".into());
                 }
                 Instance {
                     id: source,
-                    geometry: source,
+                    geometry: producer,
                     transform: Transform::default(),
                     color: [145, 173, 195, 255],
                 }
@@ -654,7 +695,12 @@ impl Scene {
         Some([world.min, world.max])
     }
     pub fn topology_snapshot(&self, instance: EntityId) -> Option<TopologySnapshot> {
-        let instance = self.reference_instances.iter().find(|i| i.id == instance)?;
+        let Some(instance) = self.reference_instances.iter().find(|i| i.id == instance) else {
+            let producer = self.reference_aliases.get(&instance)?;
+            let mut snapshot = self.geometry_snapshot(*producer)?;
+            snapshot.owner = instance;
+            return Some(snapshot);
+        };
         let geometry = self.geometries.get(&instance.geometry)?;
         let mut elements = geometry.topology.clone();
         for element in &mut elements {

@@ -148,6 +148,7 @@ fn scene(
         generation,
     };
     viewport::Scene::new(stamp, geometries, instances)
+        .and_then(|scene| scene.with_reference_aliases(model.body_sources.clone()))
         .and_then(|scene| {
             scene.with_model_evaluation(Arc::new(ModelEvaluationInfo {
                 source_hash: model.stamp.source_hash,

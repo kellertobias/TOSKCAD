@@ -334,3 +334,38 @@ fn oblique_cylinder_occurrence_keeps_exact_circular_descriptors_and_world_step_g
         assert!((a - b).abs() < 1e-7);
     }
 }
+
+#[test]
+fn occurrence_dependency_closure_uses_current_head_instead_of_unneeded_opaque_history() {
+    let (session, part, _, _) = fixture();
+    let mut entity = session.document().get(part.body).unwrap().clone();
+    let opaque = Entity::new(
+        "Preserved unavailable history",
+        EntityData::Feature {
+            definition: multicad_core::document::Definition {
+                type_id: "unavailable.legacy-provider".into(),
+                schema_version: 1,
+                data: Default::default(),
+            },
+            inputs: vec![],
+            suppressed: false,
+        },
+    );
+    let EntityData::Part { features, .. } = &mut entity.data else {
+        panic!()
+    };
+    features.insert(0, opaque.id);
+    let doc = session
+        .document()
+        .edited(&[Mutation::Insert(opaque.clone()), Mutation::Replace(entity)])
+        .unwrap();
+    let canonical = doc.clone();
+    let native = Compiler::default()
+        .compile(&doc, session.revision() + 1)
+        .unwrap();
+    assert!(!native.snapshot().shapes.contains_key(&opaque.id));
+    assert_eq!(native.snapshot().body_sources[&part.body], part.feature);
+    assert_eq!(native.snapshot().occurrences.len(), 1);
+    assert_eq!(doc, canonical);
+    assert_eq!(doc.get(opaque.id), Some(&opaque));
+}

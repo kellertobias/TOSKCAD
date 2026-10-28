@@ -40,6 +40,9 @@ pub struct ModelSnapshot {
     pub shapes: BTreeMap<EntityId, Arc<ShapeSnapshot>>,
     /// Canonical Part identity to its final unsuppressed producing feature.
     pub bodies: BTreeMap<EntityId, EntityId>,
+    /// Current canonical Part definitions, including consumed tool geometry.
+    /// These are reference sources, not additional physical output occurrences.
+    pub body_sources: BTreeMap<EntityId, EntityId>,
     /// Explicit occurrence poses/world topology; component meshes remain shared.
     pub occurrences: BTreeMap<EntityId, Arc<crate::OccurrenceSnapshot>>,
     /// Canonical tool Parts retained as source/history but consumed by an
@@ -148,8 +151,13 @@ impl Model {
     pub fn snapshot(&self) -> &ModelSnapshot {
         &self.snapshot
     }
-    pub fn solid(&self, producer: EntityId) -> Option<&Solid> {
-        self.solids.get(&producer)
+    pub fn solid(&self, source: EntityId) -> Option<&Solid> {
+        self.solids.get(&source).or_else(|| {
+            self.snapshot
+                .body_sources
+                .get(&source)
+                .and_then(|producer| self.solids.get(producer))
+        })
     }
 }
 
@@ -224,7 +232,13 @@ impl Compiler {
                 let entity = document
                     .get(id)
                     .ok_or_else(|| error(Some(id), "Missing model dependency"))?;
-                pending.extend(entity.references().into_iter().map(|link| link.target));
+                if matches!(entity.data, EntityData::Part { .. }) {
+                    if let Some(head) = bodies.get(&id) {
+                        pending.push(*head);
+                    }
+                } else {
+                    pending.extend(entity.references().into_iter().map(|link| link.target));
+                }
             }
         }
         let mut profiles = Profiles {
@@ -236,16 +250,29 @@ impl Compiler {
         let mut consumed_versions = BTreeSet::new();
         let mut shapes = BTreeMap::new();
         let mut occurrences = BTreeMap::new();
-        let mut topologies = BTreeMap::new();
+        let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
         for id in document.topological_order().map_err(|e| error(None, e))? {
-            if !needed.contains(&id) {
-                continue;
-            }
             checkpoint(interrupt)?;
             let entity = document
                 .get(id)
                 .ok_or_else(|| error(Some(id), "Missing model source"))?;
+            if matches!(entity.data, EntityData::Part { .. }) {
+                if let Some(head) = bodies.get(&id) {
+                    let mut topology = topologies
+                        .get(head)
+                        .ok_or_else(|| {
+                            error(Some(id), "Current Part head has no evaluated topology")
+                        })?
+                        .clone();
+                    topology.owner = id;
+                    topologies.insert(id, topology);
+                }
+                continue;
+            }
+            if !needed.contains(&id) {
+                continue;
+            }
             if matches!(entity.data, EntityData::Instance { .. }) {
                 if occurrences.len() >= crate::MAX_MODEL_OCCURRENCES {
                     return Err(error(
@@ -541,6 +568,7 @@ impl Compiler {
                     .then_some(*body)
             })
             .collect::<BTreeSet<_>>();
+        let body_sources = bodies.clone();
         bodies.retain(|body, _| !consumed_bodies.contains(body));
         Ok(Model {
             policy: self.policy,
@@ -549,6 +577,7 @@ impl Compiler {
                 stamp,
                 shapes,
                 bodies,
+                body_sources,
                 occurrences,
                 consumed_bodies,
                 cut_targets: vec![],

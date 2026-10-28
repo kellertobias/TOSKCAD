@@ -320,6 +320,18 @@ fn production_scene_retains_consumed_tool_history_with_source_bound_metadata() {
     assert_eq!(scene.reference_instances()[0].geometry, cut.feature);
     assert!(scene.geometry_snapshot(tool.feature).is_some());
     assert!(scene.geometry_snapshot(target.feature).is_some());
+    let alias = scene
+        .topology_snapshot(tool.body)
+        .expect("Consumed definitions stay referenceable without becoming physical occurrences");
+    assert_eq!(alias.owner, tool.body);
+    assert!(scene.reference_snapshots().contains_key(&tool.body));
+    let isolated = scene.isolated_source(tool.body).unwrap();
+    assert_eq!(isolated.instances().len(), 1);
+    assert_eq!(isolated.instances()[0].id, tool.body);
+    assert_eq!(isolated.instances()[0].geometry, tool.feature);
+    let hidden = scene.visible_subset(&Default::default()).unwrap();
+    assert!(hidden.instances().is_empty());
+    assert!(hidden.topology_snapshot(tool.body).is_some());
 }
 
 #[test]

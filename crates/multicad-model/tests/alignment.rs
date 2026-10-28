@@ -517,3 +517,208 @@ fn real_named_edges_and_vertices_drive_axis_and_position_alignment() {
         assert!((shape.volume_mm3 - 24.).abs() < 1e-9);
     }
 }
+
+#[test]
+fn current_part_target_alias_follows_appended_and_edited_head_and_rejects_indirect_cycles() {
+    let mut session = Session::new(Document::new("Current-head alignment").unwrap()).unwrap();
+    let moving = box_(&mut session, "Moving", [30., 0., 0.], [2., 3., 4.]);
+    let target = box_(&mut session, "Target", [0.; 3], [10.; 3]);
+    let compiler = Compiler::default();
+    let original = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let from = cap(&original, moving.feature, "cap.start");
+    let mut to = cap(&original, target.feature, "cap.end");
+    to.source = target.body;
+    let request = AlignmentRequest::new(
+        BodyInput {
+            body: moving.body,
+            producer: moving.feature,
+        },
+        AlignmentParameters {
+            source: AlignmentAnchor::Geometry {
+                reference: from.intent.id,
+            },
+            target: AlignmentAnchor::Geometry {
+                reference: to.intent.id,
+            },
+            opposed: true,
+            ..Default::default()
+        },
+        vec![from, to],
+    );
+    let prepared =
+        model::prepare_alignment(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let transform = model::TransformRequest::new(
+        BodyInput {
+            body: target.body,
+            producer: target.feature,
+        },
+        model::NumericTransform {
+            translation: [length(10.), length(0.), length(5.)],
+            ..Default::default()
+        },
+    );
+    let prepared =
+        model::prepare_transform(&session, session.revision(), actor(), &transform).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let moved = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    assert_eq!(
+        moved.snapshot().shapes[&request.feature].bounds.min,
+        [10., 0., 15.]
+    );
+    assert_eq!(
+        moved.snapshot().body_sources[&target.body],
+        transform.feature
+    );
+    assert_eq!(
+        moved.solid(target.body).unwrap().bounds().unwrap().max,
+        [20., 10., 15.]
+    );
+    let part_ids = session.document().get(target.body).unwrap().clone();
+    let old_hash = moved.snapshot().stamp.source_hash;
+    let changed = model::NumericTransform {
+        translation: [length(20.), length(0.), length(7.)],
+        ..Default::default()
+    };
+    let prepared = model::prepare_transform_edit(
+        &session,
+        session.revision(),
+        actor(),
+        transform.feature,
+        &changed,
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    assert_eq!(session.document().get(target.body).unwrap(), &part_ids);
+    let current = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    assert_ne!(current.snapshot().stamp.source_hash, old_hash);
+    assert_eq!(
+        current.snapshot().shapes[&request.feature].bounds.min,
+        [20., 0., 17.]
+    );
+    assert_eq!(current.snapshot().references.revision, session.revision());
+    assert!(current.snapshot().references.entries.iter().any(|diagnostic|diagnostic.source==target.body&&matches!(diagnostic.resolution,multicad_core::references::Resolution::Resolved {frame:Some(frame),..} if frame.origin_mm==[20.,0.,17.])));
+    let mut source = cap(&current, target.feature, "cap.start");
+    source.source = transform.feature;
+    let mut destination = cap(&current, moving.feature, "cap.end");
+    destination.source = moving.body;
+    let cyclic = AlignmentRequest::new(
+        BodyInput {
+            body: target.body,
+            producer: transform.feature,
+        },
+        AlignmentParameters {
+            source: AlignmentAnchor::Geometry {
+                reference: source.intent.id,
+            },
+            target: AlignmentAnchor::Geometry {
+                reference: destination.intent.id,
+            },
+            ..Default::default()
+        },
+        vec![source, destination],
+    );
+    let before = session.document().clone();
+    let error = model::prepare_alignment(&session, session.revision(), actor(), &cyclic)
+        .expect_err("Cross-Part current-head dependencies must reject an indirect cycle");
+    assert!(
+        error.to_string().to_lowercase().contains("cycle"),
+        "{error}"
+    );
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn an_instance_local_component_alias_follows_later_source_geometry_transforms() {
+    let mut session = Session::new(Document::new("Component-local current head").unwrap()).unwrap();
+    let moving = box_(&mut session, "Moving", [30., 0., 0.], [2., 3., 4.]);
+    let target = box_(&mut session, "Target", [0.; 3], [10.; 3]);
+    let copied = model::InstanceCopyRequest::new(
+        model::InstanceCopySource::Part {
+            source: BodyInput {
+                body: moving.body,
+                producer: moving.feature,
+            },
+        },
+        Default::default(),
+    );
+    let prepared = model::prepare_instance_copies(
+        &session,
+        session.revision(),
+        actor(),
+        std::slice::from_ref(&copied),
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let compiler = Compiler::default();
+    let native = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let mut source = cap(&native, moving.feature, "cap.start");
+    source.source = moving.body;
+    let mut destination = cap(&native, target.feature, "cap.end");
+    destination.source = target.body;
+    let request = model::InstanceAlignmentRequest::new(
+        copied.instance,
+        AlignmentParameters {
+            source: AlignmentAnchor::Geometry {
+                reference: source.intent.id,
+            },
+            target: AlignmentAnchor::Geometry {
+                reference: destination.intent.id,
+            },
+            opposed: true,
+            ..Default::default()
+        },
+        vec![source, destination],
+    );
+    let prepared = model::prepare_instance_alignments(
+        &session,
+        session.revision(),
+        actor(),
+        std::slice::from_ref(&request),
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let first = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    assert_eq!(
+        first.snapshot().occurrences[&copied.instance].bounds.min,
+        [0., 0., 10.]
+    );
+    let transform = model::TransformRequest::new(
+        BodyInput {
+            body: moving.body,
+            producer: moving.feature,
+        },
+        model::NumericTransform {
+            translation: [length(5.), length(6.), length(7.)],
+            ..Default::default()
+        },
+    );
+    let prepared =
+        model::prepare_transform(&session, session.revision(), actor(), &transform).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let moved = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    assert_eq!(
+        moved.snapshot().occurrences[&copied.instance].bounds.min,
+        [0., 0., 10.]
+    );
+    assert_eq!(
+        moved.snapshot().occurrences[&copied.instance].bounds.max,
+        [2., 3., 14.]
+    );
+    assert_eq!(
+        moved.snapshot().shapes[&transform.feature].bounds.min,
+        [35., 6., 7.]
+    );
+}

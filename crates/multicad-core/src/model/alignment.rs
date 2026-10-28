@@ -277,7 +277,9 @@ pub fn read_alignment(
             let valid = if link.geometry.is_some() {
                 matches!(
                     entity.data,
-                    EntityData::Feature { .. } | EntityData::Instance { .. }
+                    EntityData::Feature { .. }
+                        | EntityData::Instance { .. }
+                        | EntityData::Part { .. }
                 )
             } else if link.role == "source" {
                 matches!(entity.data, EntityData::Feature { .. })

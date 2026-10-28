@@ -82,10 +82,11 @@ pub fn read_instance_alignment(
         if let (Some(EntityData::Part { features, .. }), AlignmentAnchor::Geometry { reference }) = (
             document.get(component).map(|e| &e.data),
             &source.parameters.source,
-        ) && references
-            .iter()
-            .any(|input| input.intent.id == *reference && !features.contains(&input.source))
-        {
+        ) && references.iter().any(|input| {
+            input.intent.id == *reference
+                && input.source != component
+                && !features.contains(&input.source)
+        }) {
             return Err(invalid(
                 "An instance's moving source anchor must refer to its local component producer, never its own world occurrence",
             ));
@@ -104,7 +105,9 @@ pub fn read_instance_alignment(
             let valid = if link.geometry.is_some() {
                 matches!(
                     entity.data,
-                    EntityData::Feature { .. } | EntityData::Instance { .. }
+                    EntityData::Feature { .. }
+                        | EntityData::Instance { .. }
+                        | EntityData::Part { .. }
                 )
             } else if link.role == "previous_pose" {
                 matches!(entity.data, EntityData::Extension { .. })
