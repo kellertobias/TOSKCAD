@@ -1,22 +1,17 @@
 use multicad_core::{
     commands::{Actor, Session},
     document::{Document, EntityId},
-    model::{self, EdgeTreatmentParameters, EdgeTreatmentRequest, ModelPrepared},
-    references::GeometryIntent,
+    model::{self, EdgeTreatmentRequest, ModelPrepared},
 };
 #[derive(Clone, Debug)]
 pub enum EdgeTreatmentCommand {
     Create(EdgeTreatmentRequest),
-    Edit {
-        feature: EntityId,
-        parameters: EdgeTreatmentParameters,
-        edges: Vec<GeometryIntent>,
-    },
+    Edit(EdgeTreatmentRequest),
 }
 impl EdgeTreatmentCommand {
     pub(crate) fn edit_id(&self) -> Option<EntityId> {
         match self {
-            Self::Edit { feature, .. } => Some(*feature),
+            Self::Edit(request) => Some(request.feature),
             _ => None,
         }
     }
@@ -25,17 +20,11 @@ impl EdgeTreatmentCommand {
             Self::Create(request) => {
                 model::prepare_edge_treatment(session, session.revision(), actor, request)
             }
-            Self::Edit {
-                feature,
-                parameters,
-                edges,
-            } => model::prepare_edge_treatment_edit(
+            Self::Edit(request) => model::prepare_edge_treatment_edit_request(
                 session,
                 session.revision(),
                 actor,
-                *feature,
-                parameters,
-                edges,
+                request,
             ),
         }
         .map_err(|e| e.to_string())

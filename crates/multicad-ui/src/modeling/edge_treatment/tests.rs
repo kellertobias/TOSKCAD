@@ -94,7 +94,7 @@ fn frame(
 ) -> egui::FullOutput {
     ctx.run_ui(
         egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(260., 300.))),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(260., 700.))),
             focused: true,
             events,
             ..Default::default()
@@ -114,17 +114,25 @@ fn frame(
 fn click(ctx: &Context, p: &mut EdgeTreatmentPanel, s: &Session, label: &str) {
     frame(ctx, p, s, vec![]).drop_without_applying_deltas();
     let out = frame(ctx, p, s, vec![]);
-    let b = out
-        .platform_output
-        .accesskit_update
-        .as_ref()
-        .unwrap()
-        .nodes
+    let pos = out
+        .shapes
         .iter()
-        .find(|(_, n)| n.label() == Some(label))
-        .and_then(|(_, n)| n.bounds())
+        .find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos + t.galley.size() * 0.5),
+            _ => None,
+        })
+        .or_else(|| {
+            out.platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(label))
+                .and_then(|(_, n)| n.bounds())
+                .map(|b| egui::pos2(((b.x0 + b.x1) * 0.5) as f32, ((b.y0 + b.y1) * 0.5) as f32))
+        })
         .unwrap_or_else(|| panic!("Missing {label}"));
-    let pos = Pos2::new(((b.x0 + b.x1) * 0.5) as f32, ((b.y0 + b.y1) * 0.5) as f32);
     out.drop_without_applying_deltas();
     for pressed in [true, false] {
         frame(
@@ -287,4 +295,118 @@ fn renamed_parameter_retains_bound_size_and_missing_parameter_is_diagnostic() {
     d.remove(parameter.id).unwrap();
     assert!(p.parameters(&d).is_err());
     assert!(BoundExpression::bind(s.document(), "=$radius", "mm", None).is_ok());
+}
+
+#[test]
+fn actual_chamfer_modes_require_explicit_per_edge_faces_and_keep_schema_one_compatibility() {
+    let (session, scene, body, edges, _) = fixture();
+    let before = session.document().clone();
+    let mut panel = EdgeTreatmentPanel::new(
+        session.document(),
+        session.revision(),
+        &scene,
+        body,
+        edges[..2].to_vec(),
+    )
+    .unwrap();
+    let snapshot = scene.geometry_snapshot(panel.input.producer).unwrap();
+    let key = snapshot
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face)
+        .unwrap()
+        .key;
+    let face = GeometryIntent::capture(&snapshot, key).unwrap();
+    let ctx = Context::default();
+    ctx.enable_accesskit();
+    click(&ctx, &mut panel, &session, "Chamfer");
+    click(&ctx, &mut panel, &session, "Symmetric distances");
+    click(&ctx, &mut panel, &session, "Two distances");
+    assert_eq!(panel.mode, ChamferMode::TwoDistances);
+    assert!(panel.request(session.document(), true).is_err());
+    for index in 0..2 {
+        // The user binds each selected edge explicitly. The native compiler,
+        // rather than this source-contract test, validates actual adjacency.
+        click(
+            &ctx,
+            &mut panel,
+            &session,
+            &format!("Choose side face for edge {}", index + 1),
+        );
+        assert_eq!(panel.pick_kind(), Some(TopologyKind::Face));
+        let fresh = GeometryIntent::capture(&snapshot, key).unwrap();
+        assert!(panel.set_pick_captures(&scene, &[fresh]).unwrap());
+    }
+    assert_eq!(
+        panel.side_faces.len(),
+        1,
+        "Shared side faces retain one canonical capture"
+    );
+    let EdgeTreatmentCommand::Create(request) = panel.request(session.document(), true).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        request
+            .edges
+            .iter()
+            .filter(|e| e.kind == TopologyKind::Edge)
+            .count(),
+        2
+    );
+    assert_eq!(
+        request
+            .edges
+            .iter()
+            .filter(|e| e.kind == TopologyKind::Face)
+            .count(),
+        1
+    );
+    let Some(model::ChamferSettings::TwoDistances { sides, .. }) = &request.chamfer else {
+        panic!()
+    };
+    assert_eq!(sides.len(), 2);
+    assert_eq!(sides[0].face, sides[1].face);
+    let candidate =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+    let (source, captures) =
+        model::read_edge_treatment(candidate.prepared.document(), request.feature).unwrap();
+    assert_eq!(source.definition().unwrap().schema_version, 2);
+    assert_eq!(captures.len(), 3);
+    let saved =
+        EdgeTreatmentPanel::existing(candidate.prepared.document(), request.feature).unwrap();
+    assert_eq!(saved.input, panel.input);
+    assert_eq!(saved.sides, panel.sides);
+    assert_eq!(saved.side_faces, panel.side_faces);
+    click(&ctx, &mut panel, &session, "Two distances");
+    click(&ctx, &mut panel, &session, "Distance + angle");
+    for text in ["0", "90", "NaN"] {
+        panel.angle.text = text.into();
+        assert!(panel.request(session.document(), true).is_err());
+    }
+    panel.angle.text = "30".into();
+    let EdgeTreatmentCommand::Create(request) = panel.request(session.document(), true).unwrap()
+    else {
+        panic!()
+    };
+    assert!(matches!(
+        request.chamfer,
+        Some(model::ChamferSettings::DistanceAngle { .. })
+    ));
+    click(&ctx, &mut panel, &session, "Fillet");
+    assert!(panel.sides.is_empty());
+    assert!(panel.side_faces.is_empty());
+    let EdgeTreatmentCommand::Create(request) = panel.request(session.document(), true).unwrap()
+    else {
+        panic!()
+    };
+    assert!(request.chamfer.is_none());
+    assert_eq!(request.edges.len(), 2);
+    let candidate =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+    let (source, _) =
+        model::read_edge_treatment(candidate.prepared.document(), request.feature).unwrap();
+    assert_eq!(source.definition().unwrap().schema_version, 1);
+    assert_eq!(session.document(), &before);
+    assert_eq!(face.kind, TopologyKind::Face);
 }

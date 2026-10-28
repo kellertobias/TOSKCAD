@@ -49,6 +49,37 @@ impl ModelToolController {
     pub fn edge_treatment_picking(&self) -> bool {
         matches!(&self.form,Some(ModelForm::EdgeTreatment(panel))if panel.picking())
     }
+    pub fn edge_treatment_pick_kind(&self) -> Option<multicad_core::references::TopologyKind> {
+        match &self.form {
+            Some(ModelForm::EdgeTreatment(p)) => p.pick_kind(),
+            _ => None,
+        }
+    }
+    pub fn edge_treatment_pick_captures(&self) -> Option<&[GeometryIntent]> {
+        match &self.form {
+            Some(ModelForm::EdgeTreatment(p)) => Some(p.pick_captures()),
+            _ => None,
+        }
+    }
+    pub fn set_edge_treatment_pick_captures(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: &Scene,
+        captures: Vec<GeometryIntent>,
+    ) -> Result<(), String> {
+        self.verify_context(session, resources, scene)?;
+        if !scene.is_full_model() {
+            return Err("Chamfer captures require the complete current canonical model".into());
+        }
+        let Some(ModelForm::EdgeTreatment(panel)) = &mut self.form else {
+            return Err("Open Fillet / Chamfer before selecting native geometry".into());
+        };
+        if panel.set_pick_captures(scene, &captures)? {
+            self.invalidate();
+        }
+        Ok(())
+    }
     pub fn set_edge_treatment_edges(
         &mut self,
         session: &Session,
