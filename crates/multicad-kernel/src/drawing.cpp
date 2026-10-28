@@ -25,6 +25,7 @@
 #include <gp_Circ.hxx>
 #include <gp_Pln.hxx>
 #include <cmath>
+#include <mutex>
 #include <stdexcept>
 
 namespace multicad::kernel {
@@ -147,7 +148,13 @@ static void hatch_face(Collector &out,const TopoDS_Face &face,const DrawingInput
     }
   }
 }
+// OCCT 7.9.3 HLR extraction reaches BRepLib_MakeEdge2d, whose BRepLib::Plane
+// uses an explicitly non-thread-safe process-global lazy handle. Independent
+// document workers must share this boundary; a per-job mutex cannot protect it.
+// Keep compilation and the asynchronous Rust job/cancellation lifecycle outside.
+static std::mutex drawing_projection_mutex;
 rust::Vec<DrawingCurveData> drawing_run(DrawingJob &job) {
+  const std::lock_guard<std::mutex> guard(drawing_projection_mutex);
   try {
     Collector out(job);Handle(HLRBRep_Algo) algo=new HLRBRep_Algo();
     std::vector<TopoDS_Shape> shapes; bool any=false;
