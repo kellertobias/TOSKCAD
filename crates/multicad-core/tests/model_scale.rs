@@ -336,3 +336,162 @@ fn invalid_stale_or_double_effect_requests_leave_source_unchanged_and_feature_ed
     .unwrap();
     assert!(s.commit(edited.prepared).is_err());
 }
+
+#[test]
+fn owned_components_preserve_linked_material_overrides_with_stable_independent_assignments() {
+    use multicad_core::materials::{
+        self, Appearance, Assignment, Grain, LibraryDefinition, Stock, StockKind,
+    };
+    let (mut s, _, b, instance, other) = fixture();
+    let material = Entity::new(
+        "Oak",
+        EntityData::Material {
+            density_kg_m3: Some(700.),
+            color_rgba: [90, 60, 30, 255],
+            section_hatch: None,
+        },
+    );
+    let appearance = LibraryDefinition::Appearance(Appearance {
+        color_rgba: [180, 120, 60, 255],
+        roughness: 0.7,
+        metallic: 0.,
+    })
+    .entity(EntityId::new(), "Finished oak")
+    .unwrap();
+    let stock = LibraryDefinition::Stock(Stock {
+        material: material.id,
+        specification: StockKind::Panel {
+            thickness_mm: 30.,
+            length_mm: 2440.,
+            width_mm: 1220.,
+            grain: Grain::AlongLength,
+        },
+    })
+    .entity(EntityId::new(), "Oak panel")
+    .unwrap();
+    s.commit(
+        materials::prepare_library(
+            &s,
+            s.revision(),
+            actor(),
+            &[material.clone(), appearance.clone(), stock.clone()],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    s.commit(
+        materials::prepare_assignment(
+            &s,
+            s.revision(),
+            actor(),
+            &[b.body],
+            &Assignment {
+                material: Some(material.id),
+                stock: Some(stock.id),
+                appearance: Some(appearance.id),
+                hatch: None,
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let expected = materials::resolve(s.document(), b.body).unwrap();
+    let original = s.document().clone();
+    let original_properties = materials::part_properties(s.document(), b.body)
+        .unwrap()
+        .unwrap()
+        .0;
+    for (target, copy) in [
+        (
+            ScaleTarget::Part {
+                input: BodyInput {
+                    body: b.body,
+                    producer: b.feature,
+                },
+            },
+            true,
+        ),
+        (ScaleTarget::Instance { instance }, true),
+        (ScaleTarget::Instance { instance }, false),
+    ] {
+        let request =
+            ScaleBatchRequest::new(s.document(), vec![target], controls(&s), copy).unwrap();
+        let candidate = prepare_scale_batch(&s, s.revision(), actor(), &request).unwrap();
+        let repeated = prepare_scale_batch(&s, s.revision(), actor(), &request).unwrap();
+        assert_eq!(candidate.prepared.document(), repeated.prepared.document());
+        let EntityData::Instance { component, .. } = candidate
+            .prepared
+            .document()
+            .get(candidate.instances[0])
+            .unwrap()
+            .data
+        else {
+            panic!()
+        };
+        assert_eq!(
+            materials::resolve(candidate.prepared.document(), component).unwrap(),
+            expected
+        );
+        let (properties, _) = materials::part_properties(candidate.prepared.document(), component)
+            .unwrap()
+            .unwrap();
+        assert_ne!(properties, original_properties);
+        assert_eq!(
+            candidate.prepared.document().get(original_properties),
+            original.get(original_properties)
+        );
+        assert_eq!(
+            candidate.prepared.document().get(other),
+            original.get(other)
+        );
+        if !copy {
+            s.commit(candidate.prepared).unwrap();
+            let nested = ScaleBatchRequest::new(
+                s.document(),
+                vec![ScaleTarget::Instance { instance }],
+                controls(&s),
+                true,
+            )
+            .unwrap();
+            let nested = prepare_scale_batch(&s, s.revision(), actor(), &nested).unwrap();
+            let EntityData::Instance { component, .. } = nested
+                .prepared
+                .document()
+                .get(nested.instances[0])
+                .unwrap()
+                .data
+            else {
+                panic!()
+            };
+            assert_eq!(
+                materials::resolve(nested.prepared.document(), component).unwrap(),
+                expected
+            );
+            s.undo(s.revision(), actor()).unwrap();
+            assert_eq!(s.document(), &original);
+        }
+    }
+    let request = ScaleBatchRequest::new(
+        s.document(),
+        vec![ScaleTarget::Instance { instance }],
+        controls(&s),
+        false,
+    )
+    .unwrap();
+    s.apply(Request {
+        expected_revision: s.revision(),
+        actor: actor(),
+        label: "Remove properties".into(),
+        edits: vec![Mutation::Remove(original_properties)],
+    })
+    .unwrap();
+    let unchanged = s.document().clone();
+    assert!(
+        prepare_scale_batch(&s, s.revision(), actor(), &request)
+            .err()
+            .unwrap()
+            .message
+            .contains("property assignments changed")
+    );
+    assert_eq!(s.document(), &unchanged);
+}

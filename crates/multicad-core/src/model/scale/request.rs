@@ -23,12 +23,14 @@ pub enum ScaleOperation {
         instance: EntityId,
         component: EntityId,
         feature: EntityId,
+        properties: Option<EntityId>,
     },
     Copy {
         source: ScaleTarget,
         instance: EntityId,
         component: EntityId,
         feature: EntityId,
+        properties: Option<EntityId>,
         drivers: BTreeMap<EntityId, EntityId>,
         references: BTreeMap<EntityId, EntityId>,
     },
@@ -67,6 +69,17 @@ impl ScaleBatchRequest {
                 return Err(invalid("A scale target cannot be selected twice"));
             }
             let feature = EntityId::new();
+            let source_component = match &target {
+                ScaleTarget::Part { input } => input.body,
+                ScaleTarget::Instance { instance } => {
+                    match document.get(*instance).map(|e| &e.data) {
+                        Some(EntityData::Instance { component, .. }) => *component,
+                        _ => return Err(invalid("Choose an existing Instance to scale")),
+                    }
+                }
+            };
+            let properties = crate::materials::part_properties(document, source_component)?
+                .map(|_| EntityId::new());
             if copy {
                 let mut drivers = BTreeMap::new();
                 let mut references = BTreeMap::new();
@@ -87,6 +100,7 @@ impl ScaleBatchRequest {
                     instance: EntityId::new(),
                     component: EntityId::new(),
                     feature,
+                    properties,
                     drivers,
                     references,
                 });
@@ -97,6 +111,7 @@ impl ScaleBatchRequest {
                         instance,
                         component: EntityId::new(),
                         feature,
+                        properties,
                     },
                 });
             }

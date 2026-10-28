@@ -209,10 +209,19 @@ pub fn prepare_scale_batch(
                 instance,
                 component,
                 feature: output,
+                properties,
             } => {
                 fresh(document, *component, &mut ids)?;
                 fresh(document, *output, &mut ids)?;
                 let (source_component, placement, driver) = instance_source(document, *instance)?;
+                clone_properties(
+                    document,
+                    source_component,
+                    *component,
+                    *properties,
+                    &mut ids,
+                    &mut edits,
+                )?;
                 let mut owner = document
                     .get(*instance)
                     .ok_or_else(|| error("Scale target is missing"))?
@@ -250,6 +259,7 @@ pub fn prepare_scale_batch(
                 instance,
                 component,
                 feature: output,
+                properties,
                 drivers,
                 references,
             } => {
@@ -284,6 +294,14 @@ pub fn prepare_scale_batch(
                     output: BodyOutput { body: *component },
                     parameters: request.parameters.clone(),
                 };
+                clone_properties(
+                    document,
+                    source_component,
+                    *component,
+                    *properties,
+                    &mut ids,
+                    &mut edits,
+                )?;
                 let source_name = document
                     .get(source.entity())
                     .map_or("object", |e| e.name.as_str())
@@ -372,6 +390,30 @@ fn component_part(
     );
     part.id = body;
     Ok(part)
+}
+fn clone_properties(
+    document: &crate::document::Document,
+    source: EntityId,
+    component: EntityId,
+    output: Option<EntityId>,
+    ids: &mut BTreeSet<EntityId>,
+    edits: &mut Vec<Mutation>,
+) -> Result<(), CommandError> {
+    match (crate::materials::part_properties(document, source)?, output) {
+        (None, None) => Ok(()),
+        (Some((_, mut properties)), Some(id)) => {
+            fresh(document, id, ids)?;
+            properties.part = component;
+            edits.push(Mutation::Insert(
+                crate::materials::LibraryDefinition::PartProperties(properties)
+                    .entity(id, "Scaled occurrence properties")?,
+            ));
+            Ok(())
+        }
+        _ => Err(error(
+            "Scale source property assignments changed; select it again",
+        )),
+    }
 }
 pub fn prepare_scale_edit(
     session: &Session,
