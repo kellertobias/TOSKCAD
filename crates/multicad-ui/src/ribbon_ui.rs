@@ -42,7 +42,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
             entries: vec![
                 Entry::Tool("boolean"),
                 Entry::Tool("split"),
-                Entry::Tool("edge"),
+                Entry::Tool("edge-treatment"),
             ],
         },
         Group {
