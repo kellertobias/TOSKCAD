@@ -151,6 +151,7 @@ pub struct Application {
     model_backends: Option<crate::viewport::BackendFactory>,
     drawing_backends: Option<crate::drawings::DrawingBackendFactory>,
     measurement_backends: Option<crate::inspection::MeasurementBackendFactory>,
+    assembly_queries: Option<crate::assembly::AssemblyInspectionBackendFactory>,
     export_backends: Option<crate::exchange::BackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
 }
@@ -204,6 +205,7 @@ impl Application {
             model_backends: None,
             drawing_backends: None,
             measurement_backends: None,
+            assembly_queries: None,
             export_backends: None,
             sketch_queries: None,
         };
@@ -244,6 +246,7 @@ impl Application {
     pub fn set_model_backends(&mut self, factory: crate::viewport::BackendFactory) {
         for project in &mut self.projects {
             project.sketch.set_model_backend(factory());
+            project.sketch.set_assembly_backend(factory());
             project.sketch.set_external_backend(factory());
         }
         self.model_backends = Some(factory);
@@ -299,6 +302,15 @@ impl Application {
         }
         self.measurement_backends = Some(factory);
     }
+    pub fn set_assembly_query_backends(
+        &mut self,
+        factory: crate::assembly::AssemblyInspectionBackendFactory,
+    ) {
+        for project in &mut self.projects {
+            project.sketch.set_assembly_query_factory(factory.clone());
+        }
+        self.assembly_queries = Some(factory);
+    }
     fn close_measurement(&mut self) {
         let p = self.current_mut();
         p.sketch.measurement.close();
@@ -328,6 +340,7 @@ impl Application {
                     | Command::Draw(_)
                     | Command::SketchOperation(_)
                     | Command::Modeling(_)
+                    | Command::Assembly(_)
                     | Command::Construction
                     | Command::Dimension
                     | Command::External(_)
@@ -360,6 +373,7 @@ impl Application {
                     | Command::FinishSketch
                     | Command::Delete
                     | Command::Modeling(_)
+                    | Command::Assembly(_)
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
@@ -416,6 +430,11 @@ impl Application {
             return Err(tool.usage());
         }
         if let Command::Modeling(tool) = command
+            && !args.is_empty()
+        {
+            return Err(tool.usage().into());
+        }
+        if let Command::Assembly(tool) = command
             && !args.is_empty()
         {
             return Err(tool.usage().into());
@@ -885,6 +904,33 @@ impl Application {
                     tool.label()
                 );
             }
+            Command::Assembly(tool) => {
+                if self.current().editor.dirty() {
+                    return Err(
+                        "Apply or discard parameter edits before working with assemblies".into(),
+                    );
+                }
+                if !matches!(self.mode, Mode::Sketch | Mode::Model) {
+                    return Err("Open Model before starting an assembly tool".into());
+                }
+                let project = self.current_mut();
+                project.sketch.begin_assembly_tool(
+                    &project.session,
+                    &project.resources,
+                    &project.scene,
+                    tool,
+                    channel,
+                )?;
+                self.mode = Mode::Model;
+                self.tab = self
+                    .registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.tools.contains(&tool.id()))
+                    .unwrap_or(0);
+                self.message = format!("{} · choose controls in the Inspector", tool.label());
+            }
             Command::Delete => {
                 let p = self.current_mut();
                 p.sketch.delete(&mut p.session, channel)?;
@@ -996,6 +1042,11 @@ impl Application {
             }
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
             Command::Modeling(_) => {
+                matches!(self.mode, Mode::Sketch | Mode::Model)
+                    && !self.current().editor.dirty()
+                    && self.current().sketch.modeling_available()
+            }
+            Command::Assembly(_) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
                     && self.current().sketch.modeling_available()
@@ -1758,8 +1809,18 @@ impl Application {
                 if !project.sketch.has_model_backend() {
                     project.sketch.set_model_backend(factory());
                 }
+                if !project.sketch.has_assembly_backend() {
+                    project.sketch.set_assembly_backend(factory());
+                }
                 if !project.sketch.has_external_backend() {
                     project.sketch.set_external_backend(factory());
+                }
+            }
+        }
+        if let Some(factory) = &self.assembly_queries {
+            for project in &mut self.projects {
+                if !project.sketch.has_assembly_query_factory() {
+                    project.sketch.set_assembly_query_factory(factory.clone());
                 }
             }
         }

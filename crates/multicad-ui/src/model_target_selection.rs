@@ -69,7 +69,7 @@ impl SketchEditor {
         self.primitive_ready()
     }
     pub fn model_interaction_active(&self) -> bool {
-        self.model.active() || self.acquisition.is_some()
+        self.model.active() || self.assembly.active() || self.acquisition.is_some()
     }
     pub fn awaiting_model_targets(&self) -> bool {
         self.acquisition.is_some() && !self.model.active()

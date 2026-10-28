@@ -18,6 +18,11 @@ use std::collections::VecDeque;
 mod advanced_context_tests;
 #[path = "sketch_advanced_host.rs"]
 mod advanced_host;
+#[path = "sketch_assembly_host.rs"]
+mod assembly_host;
+#[cfg(test)]
+#[path = "sketch_assembly_host_tests.rs"]
+mod assembly_host_tests;
 #[path = "sketch_edge_host.rs"]
 mod edge_host;
 #[cfg(test)]
@@ -118,6 +123,9 @@ pub struct SketchEditor {
     external: crate::external_references::Controller,
     operation_error: Option<String>,
     model: crate::modeling::ModelToolController,
+    assembly: crate::assembly::AssemblyController,
+    assembly_anchor: Option<assembly_host::PendingAnchor>,
+    assembly_presentation: Option<assembly_host::PresentationCache>,
     acquisition: Option<model_target_selection::Acquisition>,
     advanced_context_stamp: Option<(Option<crate::sketch_evaluation::EvaluationStamp>, usize)>,
     materials: crate::materials::MaterialsEditor,
@@ -185,6 +193,9 @@ impl Default for SketchEditor {
             external: Default::default(),
             operation_error: None,
             model: Default::default(),
+            assembly: Default::default(),
+            assembly_anchor: None,
+            assembly_presentation: None,
             acquisition: None,
             advanced_context_stamp: None,
             materials: Default::default(),
@@ -444,17 +455,25 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
     ) -> bool {
         self.model.poll(session, resources);
+        self.assembly.poll(session, resources);
         let external_pending = self.poll_external(session);
-        self.model.pending() || external_pending
+        self.model.pending() || self.assembly.pending() || external_pending
     }
     pub fn model_active(&self) -> bool {
-        self.model.active()
+        self.model.active() || self.assembly.active()
     }
     pub fn model_label(&self) -> &'static str {
-        self.model.label()
+        if self.assembly.active() {
+            self.assembly.label()
+        } else {
+            self.model.label()
+        }
     }
     pub fn primitive_ready(&self) -> bool {
-        self.model.has_backend() && !self.has_pending_edits() && !self.picking
+        self.model.has_backend()
+            && !self.has_pending_edits()
+            && !self.assembly.active()
+            && !self.picking
     }
     fn selected_applied_feature(&self, document: &Document) -> Option<(EntityId, bool)> {
         if self.tree_selection.len() != 1 {
@@ -709,7 +728,11 @@ impl SketchEditor {
         session: &Session,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> bool {
-        self.model.can_apply(session, resources)
+        if self.assembly.active() {
+            self.assembly.can_apply(session, resources)
+        } else {
+            self.model.can_apply(session, resources)
+        }
     }
     pub fn extrusion_ready(&self, document: &Document, revision: u64) -> bool {
         self.profile_model_ready(document, revision)
@@ -786,13 +809,22 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
-        self.model.preview(session, resources, channel)
+        if self.assembly.active() {
+            self.assembly.preview(session, resources, channel)
+        } else {
+            self.model.preview(session, resources, channel)
+        }
     }
     pub fn apply_model(
         &mut self,
         session: &mut Session,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> Result<(), String> {
+        if self.assembly.active() {
+            let outcome = self.assembly.apply(session, resources)?;
+            self.accept_assembly_outcome(outcome);
+            return Ok(());
+        }
         let label = self.model.label();
         let instances = self.model.candidate_instances();
         let fit = !self.model.placement_active() && !self.model.scaling_active();
@@ -816,6 +848,8 @@ impl SketchEditor {
     }
     pub fn cancel_model(&mut self) {
         self.acquisition = None;
+        self.assembly.cancel();
+        self.assembly_anchor = None;
         self.model.cancel();
         self.message = "Modeling cancelled · document unchanged".into();
     }
@@ -882,6 +916,7 @@ impl SketchEditor {
             || self.repair.has_pending()
             || self.tree.tool_active()
             || self.model.active()
+            || self.assembly.dirty()
             || self.acquisition.is_some()
             || self.external.active()
     }
@@ -891,6 +926,8 @@ impl SketchEditor {
             return;
         }
         self.acquisition = None;
+        self.assembly.cancel();
+        self.assembly_anchor = None;
         self.external.cancel();
         self.materials.cancel();
         if self.model.active() {
@@ -1878,13 +1915,15 @@ impl SketchEditor {
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
         self.model.poll(session, resources);
+        self.assembly.poll(session, resources);
         if feed.is_current(session.document().id(), session.revision()) {
             self.model.canonical_ready(session);
+            self.assembly.canonical_ready(session);
             if let Some(scene) = feed.visible() {
                 self.model.refresh_source_context(session, resources, scene);
             }
         }
-        if self.model.pending() {
+        if self.model.pending() || self.assembly.pending() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
@@ -2059,6 +2098,7 @@ impl SketchEditor {
                 ui.separator();
                 use crate::inspector_actions::Owner;
                 let owner=if self.measurement.active(){None}
+                    else if self.assembly.active(){Some(Owner::Assembly)}
                     else if self.model.active(){Some(Owner::Model)}
                     else if self.acquisition.is_some(){Some(Owner::Targets)}
                     else if self.tree.tool_active(){Some(Owner::Tree)}
@@ -2074,6 +2114,16 @@ impl SketchEditor {
                 crate::inspector_actions::scope(ui,owner,accent,|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
                         if self.target_inspector(ui, session, resources, feed) { return; }
+                        if self.assembly.active() {
+                            self.assembly_anchor_controls(ui,session,resources,feed);
+                            match self.assembly.show(ui,session,resources) {
+                                Ok(Some(outcome))=>self.accept_assembly_outcome(outcome),
+                                Err(error)=>self.message=error,
+                                Ok(None)=>{}
+                            }
+                            if self.assembly.pending(){ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));}
+                            return;
+                        }
                         if self.model.active() {
                             let label=self.model.label();
                             let fit = !self.model.placement_active() && !self.model.scaling_active();
@@ -2095,6 +2145,8 @@ impl SketchEditor {
                             self.handle_tree_events(session,scene.as_deref(),events);
                         }
                         if hierarchy_tool {return;}
+                        self.assembly_edit_controls(ui,session,resources,feed);
+                        if self.assembly.active(){return;}
                         if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
                         else if feed.refining() {ui.small("Refining display…");}
                         else if feed.pending() {ui.small("Rebuilding model…");}
@@ -2305,12 +2357,24 @@ impl SketchEditor {
         let mut current = feed.is_current(session.document().id(), session.revision());
         let mut repair_view = false;
         let mut model_view = false;
+        let mut assembly_view = false;
+        let mut exploded_view = false;
         self.solid.highlight_reference(None);
+        if !self.measurement.active()
+            && self.assembly.anchor_pick().is_none()
+            && let Some(candidate) = self.assembly.display_scene(session, resources)
+        {
+            scene = Some(candidate);
+            current = false;
+            model_view = true;
+            assembly_view = true;
+        }
         if !self.measurement.active()
             && !self.model.termination_picking()
             && !self.model.alignment_picking()
             && !self.model.edge_treatment_picking()
             && !self.model.advanced_picking()
+            && !assembly_view
             && let Some(candidate) = self.model.display_scene(session, resources)
         {
             scene = Some(candidate);
@@ -2370,6 +2434,19 @@ impl SketchEditor {
             scene = Some(source);
             current = false;
         }
+        if !self.measurement.active()
+            && let Some(canonical) = &scene
+        {
+            match self.assembly_exploded_scene(session, resources, canonical) {
+                Ok(Some(view)) => {
+                    scene = Some(view);
+                    current = false;
+                    exploded_view = true;
+                }
+                Ok(None) => {}
+                Err(error) => self.message = error,
+            }
+        }
         if self.fitted_model_document != Some(session.document().id())
             && scene
                 .as_ref()
@@ -2400,13 +2477,22 @@ impl SketchEditor {
             );
         }
         if model_view
-            && self.model.active()
+            && self.model_active()
             && let Some(rect) = self.viewport_rect
         {
             ui.painter().text(
                 rect.left_top() + Vec2::new(14., 12.),
                 Align2::LEFT_TOP,
-                format!("{} preview · not applied", self.model.label()),
+                format!("{} preview · not applied", self.model_label()),
+                FontId::proportional(12.),
+                Color32::LIGHT_YELLOW,
+            );
+        }
+        if exploded_view && let Some(rect) = self.viewport_rect {
+            ui.painter().text(
+                rect.left_top() + Vec2::new(14., 12.),
+                Align2::LEFT_TOP,
+                "Exploded display · inspection uses assembled geometry",
                 FontId::proportional(12.),
                 Color32::LIGHT_YELLOW,
             );
@@ -2691,6 +2777,7 @@ impl SketchEditor {
         if !self.measurement.active()
             && let Some(ref context) = model_context
         {
+            self.assembly_viewport(&response, session, context.resources, context.feed, rect);
             self.advanced_viewport(
                 ui,
                 &response,
@@ -2712,6 +2799,7 @@ impl SketchEditor {
         }
         if let Some(scene) = &scene {
             let selectable = !self.measurement.active()
+                && !self.assembly.active()
                 && current
                 && !self.editing
                 && !self.picking

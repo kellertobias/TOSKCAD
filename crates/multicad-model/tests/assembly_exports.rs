@@ -179,8 +179,7 @@ fn repeated_nested_members_export_their_actual_world_step_and_planar_contours() 
         .unwrap();
     assert_eq!(receipt.files.len(), 8);
     for file in &receipt.files {
-        let path = std::path::Path::new(&receipt.directory)
-            .join(&file.artifact.output.filename);
+        let path = std::path::Path::new(&receipt.directory).join(&file.artifact.output.filename);
         if file.artifact.planar.is_some() {
             let drawing = ::dxf::Drawing::load_file(&path).unwrap();
             assert!(

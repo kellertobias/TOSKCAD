@@ -61,6 +61,7 @@ pub enum Command {
     SketchOperation(OperationTool),
     External(crate::external_references::ExternalTool),
     Modeling(ModelingTool),
+    Assembly(crate::assembly::AssemblyTool),
     Construction,
     Dimension,
     FinishSketch,
@@ -292,6 +293,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for tool in crate::assembly::AssemblyTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::Assembly(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for mode in Mode::ALL {
             registry.tools.push(Tool {
                 id: mode.title(),
@@ -434,7 +444,15 @@ impl Default for Registry {
                         &["sheet", "bend", "fastener", "flat", "bend-list"],
                     ),
                     tab("Weld", &["tube", "cope", "weld", "weld-list"]),
-                    tab("Relationships", &["transfer", "align"]),
+                    RibbonTab {
+                        title: "Relationships",
+                        tools: crate::assembly::AssemblyTool::ALL
+                            .into_iter()
+                            .map(|tool| tool.id())
+                            .chain(["align", "transfer"])
+                            .collect(),
+                        requires_active_sketch: false,
+                    },
                     tab("FDM aids", &["support", "tab"]),
                     tab("Materials", &["materials"]),
                 ],
