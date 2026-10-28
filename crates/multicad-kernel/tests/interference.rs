@@ -134,3 +134,29 @@ fn rotated_intersecting_solids_keep_only_consistent_native_witnesses() {
         result.minimum_distance.total_solutions > result.minimum_distance.witnesses.len() as u32
     );
 }
+#[test]
+fn independent_native_owners_inspect_pairs_concurrently_without_source_mutation() {
+    let ready = std::sync::Arc::new(std::sync::Barrier::new(4));
+    let workers: Vec<_> = (0..4)
+        .map(|_| {
+            let ready = ready.clone();
+            std::thread::spawn(move || {
+                ready.wait();
+                let owner = EntityId::new();
+                let a = Solid::box_named([10.; 3], owner, p()).unwrap();
+                let b = moved(&a, [5., 0., 0.]);
+                let before = a.topology_snapshot(owner, 0).unwrap();
+                for _ in 0..8 {
+                    let result = a.inspect_pair(&b, 1e-7, p()).unwrap();
+                    assert_eq!(result.relation, SolidPairRelation::Overlapping);
+                    near(result.common_volume_mm3, 500.);
+                    near(result.minimum_distance.distance_mm, 0.);
+                }
+                assert_eq!(a.topology_snapshot(owner, 0).unwrap(), before);
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
