@@ -140,101 +140,106 @@ pub fn show(
         return None;
     }
     let mut action = None;
-    egui::ScrollArea::horizontal().show(ui, |ui| {
-        ui.horizontal(|ui| {
-            for (index, section) in sections.iter().enumerate() {
-                if index > 0 {
-                    ui.add_space(9.);
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(1., 90.), egui::Sense::hover());
-                    ui.painter().vline(
-                        rect.center().x,
-                        rect.y_range(),
-                        egui::Stroke::new(1., egui::Color32::from_gray(65)),
-                    );
-                    ui.add_space(9.);
-                }
-                ui.vertical(|ui| {
-                    ui.set_width(section.entries.len() as f32 * 76.);
-                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.;
-                        for entry in &section.entries {
-                            match entry {
-                                Entry::Tool(id) => {
-                                    let tool = registry.tool(id).expect("catalog entry");
-                                    let response = ui
-                                        .add_enabled_ui(enabled(tool.action), |ui| {
-                                            icons::tool_with_hint(
-                                                ui,
-                                                tool.icon,
-                                                tool.label,
-                                                &hint(tool.action, tool.label),
-                                            )
-                                        })
-                                        .inner;
-                                    if response
-                                        .on_disabled_hover_text(match tool.action {
-                                            Command::Modeling(tool) => tool.requirements(),
-                                            _ => "Unavailable in the current context",
-                                        })
-                                        .clicked()
-                                    {
-                                        action = Some(tool.action);
+    egui::ScrollArea::horizontal()
+        .id_salt(("workspace-ribbon", mode.title(), tab.title))
+        .max_height(108.)
+        .min_scrolled_height(108.)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (index, section) in sections.iter().enumerate() {
+                    if index > 0 {
+                        ui.add_space(9.);
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(1., 90.), egui::Sense::hover());
+                        ui.painter().vline(
+                            rect.center().x,
+                            rect.y_range(),
+                            egui::Stroke::new(1., egui::Color32::from_gray(65)),
+                        );
+                        ui.add_space(9.);
+                    }
+                    ui.vertical(|ui| {
+                        ui.set_width(section.entries.len() as f32 * 76.);
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.;
+                            for entry in &section.entries {
+                                match entry {
+                                    Entry::Tool(id) => {
+                                        let tool = registry.tool(id).expect("catalog entry");
+                                        let response = ui
+                                            .add_enabled_ui(enabled(tool.action), |ui| {
+                                                icons::tool_with_hint(
+                                                    ui,
+                                                    tool.icon,
+                                                    tool.label,
+                                                    &hint(tool.action, tool.label),
+                                                )
+                                            })
+                                            .inner;
+                                        if response
+                                            .on_disabled_hover_text(match tool.action {
+                                                Command::Modeling(tool) => tool.requirements(),
+                                                _ => "Unavailable in the current context",
+                                            })
+                                            .clicked()
+                                        {
+                                            action = Some(tool.action);
+                                        }
+                                    }
+                                    Entry::Menu { label, icon, tools } => {
+                                        let response = icons::tool_with_hint(
+                                            ui,
+                                            *icon,
+                                            label,
+                                            "Add a Box or Cylinder primitive",
+                                        );
+                                        let rect = response.rect;
+                                        let center = rect.right_top() + egui::vec2(-9., 12.);
+                                        ui.painter().add(egui::Shape::convex_polygon(
+                                            vec![
+                                                center + egui::vec2(-3., -2.),
+                                                center + egui::vec2(3., -2.),
+                                                center + egui::vec2(0., 2.),
+                                            ],
+                                            egui::Color32::LIGHT_GRAY,
+                                            egui::Stroke::NONE,
+                                        ));
+                                        egui::Popup::menu(&response).show(|ui| {
+                                            for id in tools {
+                                                let tool =
+                                                    registry.tool(id).expect("menu catalog entry");
+                                                if ui
+                                                    .add_enabled(
+                                                        enabled(tool.action),
+                                                        egui::Button::new(tool.label),
+                                                    )
+                                                    .on_hover_text(hint(tool.action, tool.label))
+                                                    .clicked()
+                                                {
+                                                    action = Some(tool.action);
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
                                     }
                                 }
-                                Entry::Menu { label, icon, tools } => {
-                                    let response = icons::tool_with_hint(
-                                        ui,
-                                        *icon,
-                                        label,
-                                        "Add a Box or Cylinder primitive",
-                                    );
-                                    let rect = response.rect;
-                                    let center = rect.right_top() + egui::vec2(-9., 12.);
-                                    ui.painter().add(egui::Shape::convex_polygon(
-                                        vec![
-                                            center + egui::vec2(-3., -2.),
-                                            center + egui::vec2(3., -2.),
-                                            center + egui::vec2(0., 2.),
-                                        ],
-                                        egui::Color32::LIGHT_GRAY,
-                                        egui::Stroke::NONE,
-                                    ));
-                                    egui::Popup::menu(&response).show(|ui| {
-                                        for id in tools {
-                                            let tool =
-                                                registry.tool(id).expect("menu catalog entry");
-                                            if ui
-                                                .add_enabled(
-                                                    enabled(tool.action),
-                                                    egui::Button::new(tool.label),
-                                                )
-                                                .on_hover_text(hint(tool.action, tool.label))
-                                                .clicked()
-                                            {
-                                                action = Some(tool.action);
-                                                ui.close();
-                                            }
-                                        }
-                                    });
-                                }
                             }
+                        });
+                        if !section.label.is_empty() {
+                            ui.add_space(2.);
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                ui.small(
+                                    egui::RichText::new(section.label)
+                                        .color(egui::Color32::from_gray(160)),
+                                );
+                            });
                         }
                     });
-                    if !section.label.is_empty() {
-                        ui.add_space(2.);
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                            ui.small(
-                                egui::RichText::new(section.label)
-                                    .color(egui::Color32::from_gray(160)),
-                            );
-                        });
-                    }
-                });
-            }
+                }
+            });
         });
-    });
     action
 }
 

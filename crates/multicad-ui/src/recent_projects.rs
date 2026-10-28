@@ -1,7 +1,8 @@
 //! Local launch history is metadata; it never replaces a canonical project.
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
+    sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
 };
 pub const MAX_RECENTS: usize = 20;
 /// User-local navigation state. It is never part of CAD source or Undo.
@@ -85,6 +86,7 @@ pub struct RecentWorker {
     pending: usize,
     pending_records: usize,
     loading: bool,
+    deferred: BTreeMap<PathBuf, RecentProject>,
 }
 impl RecentWorker {
     pub fn new(mut store: Box<dyn RecentStore>) -> Result<Self, String> {
@@ -113,18 +115,53 @@ impl RecentWorker {
             pending: 1,
             pending_records: 0,
             loading: true,
+            deferred: BTreeMap::new(),
         })
     }
-    pub fn record(&mut self, entry: RecentProject) -> Result<(), String> {
+    pub fn record(&mut self, mut entry: RecentProject) -> Result<(), String> {
         entry.validate()?;
-        self.tx
-            .try_send(Job::Record(entry))
-            .map_err(|e| format!("Recent-project metadata queue: {e}"))?;
-        self.pending += 1;
-        self.pending_records += 1;
+        if let Some(previous) = self.deferred.get(&entry.path)
+            && entry.view.is_none()
+        {
+            entry.view = previous.view.clone();
+        }
+        self.deferred.insert(entry.path.clone(), entry);
+        // Keep only the same bounded history the persistent store can retain.
+        if self.deferred.len() > MAX_RECENTS {
+            let oldest = self
+                .deferred
+                .values()
+                .min_by_key(|entry| entry.last_opened_unix_ms)
+                .map(|entry| entry.path.clone())
+                .expect("nonempty");
+            self.deferred.remove(&oldest);
+        }
+        self.flush_deferred()
+    }
+    fn flush_deferred(&mut self) -> Result<(), String> {
+        while let Some((_, entry)) = self.deferred.pop_first() {
+            match self.tx.try_send(Job::Record(entry)) {
+                Ok(()) => {
+                    self.pending += 1;
+                    self.pending_records += 1;
+                }
+                Err(TrySendError::Full(Job::Record(entry))) => {
+                    self.deferred.insert(entry.path.clone(), entry);
+                    break;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.deferred.clear();
+                    return Err("Recent-project metadata worker stopped".into());
+                }
+                Err(TrySendError::Full(Job::Load)) => unreachable!("only records are flushed"),
+            }
+        }
         Ok(())
     }
     pub fn poll(&mut self) -> Option<Result<Vec<RecentProject>, String>> {
+        if let Err(error) = self.flush_deferred() {
+            return Some(Err(error));
+        }
         match self.rx.try_recv() {
             Ok((record, result)) => {
                 if !record {
@@ -148,10 +185,10 @@ impl RecentWorker {
         self.loading
     }
     pub fn writing(&self) -> bool {
-        self.pending_records > 0
+        self.pending_records > 0 || !self.deferred.is_empty()
     }
     pub fn pending(&self) -> bool {
-        self.pending > 0
+        self.pending > 0 || !self.deferred.is_empty()
     }
 }
 
@@ -213,5 +250,83 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(!worker.writing() && !worker.pending());
+    }
+}
+
+#[cfg(test)]
+mod backpressure_tests {
+    use super::*;
+    use std::{
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+    #[test]
+    fn a_full_queue_coalesces_and_eventually_persists_the_last_workspace() {
+        struct Store {
+            entered: mpsc::Sender<()>,
+            gate: Receiver<()>,
+            first: bool,
+            last: Arc<Mutex<Option<RecentProject>>>,
+        }
+        impl RecentStore for Store {
+            fn load(&mut self) -> Result<Vec<RecentProject>, String> {
+                Ok(vec![])
+            }
+            fn record(&mut self, entry: &RecentProject) -> Result<Vec<RecentProject>, String> {
+                if self.first {
+                    self.first = false;
+                    self.entered.send(()).unwrap();
+                    self.gate.recv().unwrap();
+                }
+                *self.last.lock().unwrap() = Some(entry.clone());
+                Ok(vec![entry.clone()])
+            }
+        }
+        let (entered, started) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let last = Arc::new(Mutex::new(None));
+        let mut worker = RecentWorker::new(Box::new(Store {
+            entered,
+            gate,
+            first: true,
+            last: last.clone(),
+        }))
+        .unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while worker.pending() {
+            let _ = worker.poll();
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        let mut entry = RecentProject {
+            path: PathBuf::from("/private/tmp/rapid-view.multicad"),
+            title: "Rapid".into(),
+            last_opened_unix_ms: 1,
+            view: Some(RecentView::default()),
+        };
+        worker.record(entry.clone()).unwrap();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        for index in 2..102 {
+            entry.last_opened_unix_ms = index;
+            entry.view = Some(RecentView {
+                mode: crate::registry::Mode::Model,
+                workspace: format!("Workspace {index}"),
+            });
+            worker.record(entry.clone()).unwrap();
+        }
+        assert!(!worker.deferred.is_empty());
+        assert!(worker.deferred.len() <= MAX_RECENTS);
+        assert!(worker.writing());
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while worker.pending() {
+            if let Some(result) = worker.poll() {
+                result.unwrap();
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(last.lock().unwrap().as_ref(), Some(&entry));
+        assert!(!worker.writing());
     }
 }

@@ -71,6 +71,13 @@ impl Application {
             self.tab = 0;
         }
     }
+    pub(super) fn cancel_pending_view_restore(&mut self) {
+        let p = self.current_mut();
+        if p.view_restore_pending {
+            p.view_restore_pending = false;
+            p.view_needs_record = true;
+        }
+    }
     pub(super) fn remember_current_view(&mut self) {
         if self.welcome {
             return;
@@ -81,11 +88,12 @@ impl Application {
             mode: self.mode,
             workspace: workspace.tabs[tab].title.into(),
         };
-        if self.current().view == view {
+        if self.current().view == view && !self.current().view_needs_record {
             return;
         }
         let path = self.current().file_stamp.and(self.current().path.clone());
         self.current_mut().view = view.clone();
+        self.current_mut().view_needs_record = false;
         self.current_mut().view_restore_pending = false;
         if let Some(path) = path {
             self.remember_recent(path, Some(view));
@@ -505,5 +513,75 @@ mod tests {
         assert_eq!(app.mode, Mode::Model);
         assert_eq!(app.tab, 0);
         assert!(!app.current().session.dirty());
+    }
+    #[test]
+    fn explicit_default_workspace_wins_over_delayed_initial_history() {
+        use std::sync::mpsc;
+        struct Delayed {
+            base: Recents,
+            gate: mpsc::Receiver<()>,
+        }
+        impl RecentStore for Delayed {
+            fn load(&mut self) -> Result<Vec<RecentProject>, String> {
+                self.gate.recv().unwrap();
+                self.base.load()
+            }
+            fn record(&mut self, entry: &RecentProject) -> Result<Vec<RecentProject>, String> {
+                self.base.record(entry)
+            }
+        }
+        let path = PathBuf::from("/private/tmp/slow-history.multicad");
+        let entries = Arc::new(Mutex::new(vec![RecentProject {
+            path: path.clone(),
+            title: "Slow history".into(),
+            last_opened_unix_ms: 1,
+            view: Some(RecentView {
+                mode: Mode::Model,
+                workspace: "Wood".into(),
+            }),
+        }]));
+        let (release, gate) = mpsc::channel();
+        let source = Document::new("User chose Parameters").unwrap();
+        let mut app = Application::welcome(Box::new(Storage {
+            document: source.clone(),
+            fail: false,
+        }))
+        .unwrap();
+        app.set_recent_store(Box::new(Delayed {
+            base: Recents(entries.clone()),
+            gate,
+        }));
+        app.load_path(path.clone()).unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while !app.pending_files.is_empty() {
+            app.poll_files();
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert!(app.current().view_restore_pending);
+        assert_eq!(app.mode, Mode::Parameters);
+        app.invoke(Command::Mode(Mode::Parameters), &[], Channel::Ui)
+            .unwrap();
+        app.remember_current_view();
+        assert!(!app.current().view_restore_pending);
+        release.send(()).unwrap();
+        drain(&mut app);
+        assert_eq!(app.mode, Mode::Parameters);
+        assert_eq!(app.tab, 0);
+        assert_eq!(app.current().session.document(), &source);
+        assert_eq!(app.current().session.revision(), 0);
+        assert_eq!(
+            entries
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|entry| entry.path == path)
+                .unwrap()
+                .view
+                .as_ref()
+                .unwrap()
+                .mode,
+            Mode::Parameters
+        );
     }
 }

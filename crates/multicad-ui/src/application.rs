@@ -32,6 +32,7 @@ use std::{
 pub struct Project {
     view: crate::recent_projects::RecentView,
     view_restore_pending: bool,
+    view_needs_record: bool,
     local_id: EntityId,
     pub resources: ProjectResources,
     pub file_stamp: Option<FileStamp>,
@@ -55,6 +56,7 @@ impl Project {
         Ok(Self {
             view: Default::default(),
             view_restore_pending: false,
+            view_needs_record: false,
             local_id: EntityId::new(),
             resources: ProjectResources::default(),
             file_stamp: None,
@@ -372,6 +374,20 @@ impl Application {
             )
         {
             return Err("Create or open a project first".into());
+        }
+        if !self.welcome
+            && !matches!(
+                command,
+                Command::Open
+                    | Command::Save
+                    | Command::SaveAs
+                    | Command::ImportSource
+                    | Command::RecoverProjects
+                    | Command::RecoverySnapshot
+                    | Command::NewWindow
+            )
+        {
+            self.cancel_pending_view_restore();
         }
         if self.current().sketch.measurement.active()
             && matches!(command, Command::Drawing(_) | Command::Export(_))
@@ -1356,6 +1372,7 @@ impl Application {
                         .clicked()
                         {
                             self.tab = index;
+                            self.current_mut().view_restore_pending=false;
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1656,6 +1673,23 @@ impl Application {
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if !self.welcome
+            && self.current().view_restore_pending
+            && ctx.input(|i| {
+                i.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Key { pressed: true, .. }
+                            | egui::Event::PointerButton { pressed: true, .. }
+                            | egui::Event::MouseWheel { .. }
+                    )
+                })
+            })
+        {
+            self.cancel_pending_view_restore();
+        }
         self.poll_recents(&ctx);
         self.poll_files();
         self.handle_close_request(&ctx);
@@ -1756,6 +1790,7 @@ impl Application {
             )
             .show(ui, |ui| self.header(ui));
         egui::Panel::top("ribbon")
+            .exact_size(153.)
             .frame(egui::Frame::new())
             .show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("command-entry")
@@ -3394,5 +3429,64 @@ mod modal_input_tests {
         );
         assert_eq!(app.projects.len(), 1);
         assert_eq!(app.current().session.revision(), 0);
+    }
+}
+
+#[cfg(test)]
+mod ribbon_layout_tests {
+    use super::*;
+    struct Storage;
+    impl DocumentStorage for Storage {
+        fn save(&mut self, _: &std::path::Path, _: &Document) -> Result<(), String> {
+            Ok(())
+        }
+        fn load(&mut self, _: &std::path::Path) -> Result<Document, String> {
+            Err("unused".into())
+        }
+    }
+    #[test]
+    fn returning_from_empty_workspace_keeps_tools_painted_inside_the_ribbon() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        app.mode = Mode::Model;
+        let ctx = egui::Context::default();
+        let frame = |app: &mut Application| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1360., 860.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            );
+            output.textures_delta.clear();
+            output
+        };
+        for tab in [0, 0, 1, 1, 0, 0, 1, 0, 0] {
+            app.tab = tab;
+            let output = frame(&mut app);
+            if tab == 0 {
+                let painted: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "Extrude" => {
+                            Some((text.pos, text.galley.size(), shape.clip_rect))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert!(!painted.is_empty(), "Extrude text must be painted");
+                assert!(
+                    painted
+                        .iter()
+                        .any(|(pos, size, clip)| clip.contains(*pos + *size * 0.5)),
+                    "Tool text escaped its ribbon clip: {painted:?}"
+                );
+            }
+            output.drop_without_applying_deltas();
+        }
     }
 }
