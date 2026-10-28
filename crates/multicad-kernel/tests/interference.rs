@@ -105,3 +105,32 @@ fn overlapping_compound_members_count_actual_common_occupied_volume_once() {
     near(result.common_volume_mm3, 1.);
     near(result.minimum_distance.distance_mm, 0.);
 }
+#[test]
+fn rotated_intersecting_solids_keep_only_consistent_native_witnesses() {
+    let a = Solid::box_solid([10.; 3], p()).unwrap();
+    let angle: f64 = 1.;
+    let (s, c) = angle.sin_cos();
+    let b = a
+        .transformed(RigidTransform {
+            rotation: [[c, -s, 0.], [s, c, 0.], [0., 0., 1.]],
+            translation_mm: [0.; 3],
+        })
+        .unwrap();
+    let result = a.inspect_pair(&b, 1e-7, p()).unwrap();
+    assert_eq!(result.relation, SolidPairRelation::Overlapping);
+    near(result.minimum_distance.distance_mm, 0.);
+    assert!(!result.minimum_distance.witnesses.is_empty());
+    for w in &result.minimum_distance.witnesses {
+        near(
+            (0..3)
+                .map(|i| (w.a_mm[i] - w.b_mm[i]).powi(2))
+                .sum::<f64>()
+                .sqrt(),
+            0.,
+        );
+    }
+    assert!(!result.minimum_distance.witnesses_complete);
+    assert!(
+        result.minimum_distance.total_solutions > result.minimum_distance.witnesses.len() as u32
+    );
+}

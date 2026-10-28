@@ -25,8 +25,17 @@ static DistanceData measured(const TopoDS_Shape &left,const TopoDS_Shape &right,
   if(!operation.Perform()||!operation.IsDone()||operation.NbSolution()<1)throw std::runtime_error("Native minimum distance did not converge");
   const double value=operation.Value();if(!std::isfinite(value)||value<0.)throw std::runtime_error("Native distance is not a finite nonnegative length");
   DistanceData result{};result.distance=value;result.total_solutions=static_cast<uint32_t>(operation.NbSolution());result.inner=operation.InnerSolution();result.complete=static_cast<uint32_t>(operation.NbSolution())<=maximum;
-  const auto count=std::min(static_cast<uint32_t>(operation.NbSolution()),maximum);
-  for(uint32_t i=0;i<count;++i){const auto p=operation.PointOnShape1(i+1),q=operation.PointOnShape2(i+1);result.witnesses.push_back(DistanceWitnessData{Point3{p.X(),p.Y(),p.Z()},Point3{q.X(),q.Y(),q.Z()}});}
+  if(result.total_solutions>1000000)throw std::runtime_error("Clearance solution budget exceeded");
+  // OCCT can append inconsistent point pairs for intersecting rotated solids.
+  // Keep only actual native pairs agreeing with its scalar; never synthesize
+  // coincident witnesses. Preserve the raw count and report incompleteness.
+  for(uint32_t i=0;i<result.total_solutions;++i){
+    const auto p=operation.PointOnShape1(i+1),q=operation.PointOnShape2(i+1);
+    const double distance=p.Distance(q);
+    if(!std::isfinite(distance)||std::abs(distance-value)>4.*tolerance){result.complete=false;continue;}
+    if(result.witnesses.size()<maximum)result.witnesses.push_back(DistanceWitnessData{Point3{p.X(),p.Y(),p.Z()},Point3{q.X(),q.Y(),q.Z()}});
+  }
+  if(result.witnesses.empty())throw std::runtime_error("Native minimum distance has no consistent witness");
   return result;
 }
 DistanceData minimum_distance(const Shape &a,const Shape &b,const DistanceOptionsData &options) {
