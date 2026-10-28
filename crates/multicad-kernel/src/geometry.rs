@@ -610,3 +610,112 @@ impl Solid {
         frame: PlaneFrame,
     ) -> Result<multicad_core::manufacturing::PlanarContours, GeometryError> {
         crate::planar_contours::extract(self, face, frame, self.policy)
+    }
+    pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        ffi::faces(&self.native.0)
+            .map_err(|e| native("faces", e))
+            .map(|faces| {
+                faces
+                    .into_iter()
+                    .map(|f| Face {
+                        index: f.index,
+                        plane: f.planar.then_some((xyz(f.origin), xyz(f.normal))),
+                        center_mm: xyz(f.center),
+                        area_mm2: f.area,
+                    })
+                    .collect()
+            })
+    }
+    pub fn mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
+        if !options.linear_deflection_mm.is_finite()
+            || options.linear_deflection_mm < self.policy.linear_tolerance_mm.max(0.001)
+            || options.linear_deflection_mm > self.policy.maximum_coordinate_mm
+            || !options.angular_deflection_rad.is_finite()
+            || !(0.01..=1.).contains(&options.angular_deflection_rad)
+            || options.maximum_triangles == 0
+            || options.maximum_triangles > 5_000_000
+        {
+            return Err(input("Invalid display tessellation settings/budget"));
+        }
+        let mesh = ffi::tessellate(
+            &self.native.0,
+            options.linear_deflection_mm,
+            options.angular_deflection_rad,
+            options.maximum_triangles,
+        )
+        .map_err(|e| native("mesh", e))?;
+        if mesh.vertices.is_empty()
+            || !mesh.vertices.len().is_multiple_of(3)
+            || !mesh.indices.len().is_multiple_of(3)
+            || mesh.face_indices.len() != mesh.indices.len() / 3
+            || mesh.vertices.iter().any(|v| !v.is_finite())
+            || mesh
+                .indices
+                .iter()
+                .any(|i| *i as usize >= mesh.vertices.len() / 3)
+        {
+            return Err(error(
+                "mesh",
+                GeometryErrorKind::InvalidResult,
+                "Invalid display mesh",
+            ));
+        }
+        Ok(mesh)
+    }
+    pub fn display_edges(&self, deflection_mm: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
+        if !deflection_mm.is_finite()
+            || deflection_mm < 0.001
+            || deflection_mm > self.policy.maximum_coordinate_mm
+        {
+            return Err(input("Invalid edge display deflection"));
+        }
+        let edges = ffi::display_edges(&self.native.0, deflection_mm)
+            .map_err(|e| native("display edges", e))?;
+        edges
+            .into_iter()
+            .map(|edge| {
+                if edge.points.len() < 6
+                    || !edge.points.len().is_multiple_of(3)
+                    || edge.points.iter().any(|v| !v.is_finite())
+                {
+                    return Err(error(
+                        "display edges",
+                        GeometryErrorKind::InvalidResult,
+                        "Invalid native edge display data",
+                    ));
+                }
+                Ok(DisplayEdge {
+                    index: edge.index,
+                    points_mm: edge.points.as_chunks::<3>().0.to_vec(),
+                })
+            })
+            .collect()
+    }
+    pub fn display_vertices(&self) -> Result<Vec<DisplayVertex>, GeometryError> {
+        ffi::vertices(&self.native.0)
+            .map_err(|e| native("display vertices", e))?
+            .into_iter()
+            .map(|v| {
+                let position_mm = xyz(v.point);
+                self.policy.point(position_mm)?;
+                Ok(DisplayVertex {
+                    index: v.index,
+                    position_mm,
+                })
+            })
+            .collect()
+    }
+    pub fn write_step(&self, path: &Path) -> Result<(), GeometryError> {
+        let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
+        ffi::write_step(&self.native.0, path).map_err(|e| native("write STEP", e))
+    }
+    pub fn read_step(path: &Path, policy: GeometryPolicy) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
+        Self::adopt(
+            ffi::read_step(path).map_err(|e| native("read STEP", e))?,
+            policy,
+            "read STEP",
+        )
+    }
+}
