@@ -301,9 +301,11 @@ impl EdgeTreatmentPanel {
                         ChamferMode::TwoDistances,
                         ChamferMode::DistanceAngle,
                     ] {
-                        changed |= ui
-                            .selectable_value(&mut self.mode, mode, mode.label())
-                            .changed();
+                        let choice = ui.selectable_value(&mut self.mode, mode, mode.label());
+                        changed |= choice.changed();
+                        if choice.clicked() {
+                            ui.close();
+                        }
                     }
                 });
         }

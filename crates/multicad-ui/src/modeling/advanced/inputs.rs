@@ -134,7 +134,7 @@ impl Inputs {
 if ui.add_enabled_ui(index+1<self.profiles.len(),|ui|mini_button(ui,Icon::ArrowDown,"Move section later")).inner.on_hover_text("Move this section later; its seam follows").clicked(){reorder=Some((index,index+1));}
 if ui.button("Remove section").clicked(){remove=Some(index);}});
                 if let fields::ParameterFields::Loft{seams,..}=fields
-                    && let Some(seam)=seams.get_mut(index){controls::inspector_combo(ui,"section-seam").selected_text(format!("Start: {}",curve_label(document,p.sketch,*seam))).show_ui(ui,|ui|{for curve in &p.region.outer.curves{changed|=ui.selectable_value(seam,*curve,curve_label(document,p.sketch,*curve)).changed();}});ui.small("Start curves are explicit correspondence choices; native Preview rejects incompatible sections.");}
+                    && let Some(seam)=seams.get_mut(index){controls::inspector_combo(ui,"section-seam").selected_text(format!("Start: {}",curve_label(document,p.sketch,*seam))).show_ui(ui,|ui|{for curve in &p.region.outer.curves{let choice=ui.selectable_value(seam,*curve,curve_label(document,p.sketch,*curve));changed|=choice.changed();if choice.clicked(){ui.close();}}});ui.small("Start curves are explicit correspondence choices; native Preview rejects incompatible sections.");}
 
             });
         }
