@@ -5,6 +5,7 @@ use crate::egui::{self, Color32, Rect, Vec2};
 pub(crate) enum Owner {
     Model,
     Assembly,
+    Transfer,
     Targets,
     Plane,
     Tree,
