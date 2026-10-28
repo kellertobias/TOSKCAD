@@ -16,12 +16,15 @@ pub(super) struct Native {
     pending: Option<Job>,
     pub scene: Option<Arc<Scene>>,
     pub validation: Option<Result<(), String>>,
+    scene_resources: Option<ProjectResources>,
+    validation_resources: Option<ProjectResources>,
 }
 struct Job {
     stamp: SceneStamp,
     hash: ContentHash,
     ticket: Prepared,
     kind: Kind,
+    resources: ProjectResources,
 }
 enum Kind {
     Sources(Vec<EntityId>),
@@ -37,6 +40,8 @@ impl Native {
         self.pending = None;
         self.scene = None;
         self.validation = None;
+        self.scene_resources = None;
+        self.validation_resources = None;
     }
     pub fn pending(&self) -> bool {
         self.pending.is_some()
@@ -59,6 +64,7 @@ impl Native {
         resources: &ProjectResources,
     ) -> Result<(), String> {
         self.validation = None;
+        self.validation_resources = None;
         self.pending = None;
         session
             .validate_preview(prepared)
@@ -74,10 +80,43 @@ impl Native {
             hash,
             ticket: prepared.clone(),
             kind: Kind::Candidate,
+            resources: resources.clone(),
         });
         Ok(())
     }
-    pub fn poll(&mut self, session: &Session) -> Option<Result<(), String>> {
+    fn resources_current(&self, resources: &ProjectResources) -> bool {
+        self.pending
+            .as_ref()
+            .is_none_or(|job| &job.resources == resources)
+            && self
+                .scene_resources
+                .as_ref()
+                .is_none_or(|old| old == resources)
+            && self
+                .validation_resources
+                .as_ref()
+                .is_none_or(|old| old == resources)
+    }
+    pub fn poll(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> Option<Result<(), String>> {
+        if !self.resources_current(resources) {
+            let candidate = self.validation.is_some()
+                || self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|job| matches!(job.kind, Kind::Candidate));
+            let error =
+                "Project resources changed. Load current sources and Preview again".to_string();
+            self.clear();
+            if candidate {
+                self.validation = Some(Err(error.clone()));
+                self.validation_resources = Some(resources.clone());
+            }
+            return Some(Err(error));
+        }
         let reply = self.backend.as_mut()?.poll()?;
         let expected = self.pending.as_ref()?;
         if reply.stamp != expected.stamp {
@@ -116,16 +155,19 @@ impl Native {
             Kind::Sources(_) => match result {
                 Ok(scene) => {
                     self.scene = Some(scene);
+                    self.scene_resources = Some(job.resources);
                     None
                 }
                 Err(error) => {
                     self.scene = None;
+                    self.scene_resources = None;
                     Some(Err(error))
                 }
             },
             Kind::Candidate => {
                 let result = result.map(|_| ());
                 self.validation = Some(result.clone());
+                self.validation_resources = Some(job.resources);
                 Some(result)
             }
         }
@@ -144,8 +186,24 @@ impl Controller {
     pub fn native_pending(&self) -> bool {
         self.native.pending()
     }
-    pub fn poll_native(&mut self, session: &Session) -> Option<Result<(), String>> {
-        let result = self.native.poll(session);
+    pub fn poll_native(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> Option<Result<(), String>> {
+        let changed = !self.native.resources_current(resources);
+        let result = self.native.poll(session, resources);
+        if changed {
+            if let Some(context) = &mut self.context {
+                context.scene = None;
+                context.snapshots.clear();
+            }
+            if let Some(active) = &mut self.active {
+                active.selected = None;
+                active.request = None;
+            }
+            self.hover = None;
+        }
         if let Some(Err(error)) = &result {
             self.error = Some(error.clone());
         }
@@ -226,6 +284,7 @@ impl Controller {
             hash,
             ticket,
             kind: Kind::Sources(roots),
+            resources: resources.clone(),
         });
         self.error = None;
         Ok(())

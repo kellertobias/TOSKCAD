@@ -121,7 +121,7 @@ fn repair_can_open_without_canonical_scene_but_only_current_source_scope_can_be_
         .unwrap();
     assert!(controller.native_pending());
     assert!(!controller.can_preview(&fixture.session));
-    controller.poll_native(&fixture.session);
+    controller.poll_native(&fixture.session, &Default::default());
     controller.refresh(
         &fixture.session,
         Some(fixture.sketch),
@@ -163,7 +163,12 @@ fn repair_can_open_without_canonical_scene_but_only_current_source_scope_can_be_
             &Default::default(),
         )
         .unwrap();
-    assert!(controller.poll_native(&fixture.session).unwrap().is_ok());
+    assert!(
+        controller
+            .poll_native(&fixture.session, &Default::default())
+            .unwrap()
+            .is_ok()
+    );
     editor.complete_external_native(controller.candidate_validation().unwrap().clone());
     assert!(editor.external_can_apply(&fixture.session, fixture.sketch));
     let hash = ContentHash::document(fixture.session.document()).unwrap();
@@ -227,7 +232,12 @@ fn source_scope_survives_visibility_and_isolation_and_cannot_publish_canonical_o
                 &Default::default(),
             )
             .unwrap();
-        assert!(controller.poll_native(&fixture.session).unwrap().is_err());
+        assert!(
+            controller
+                .poll_native(&fixture.session, &Default::default())
+                .unwrap()
+                .is_err()
+        );
         assert!(controller.candidate_validation().unwrap().is_err());
     }
 }
@@ -281,7 +291,12 @@ fn a_source_change_rejects_pending_native_reference_receipts() {
             )],
         })
         .unwrap();
-    assert!(controller.poll_native(&fixture.session).unwrap().is_err());
+    assert!(
+        controller
+            .poll_native(&fixture.session, &Default::default())
+            .unwrap()
+            .is_err()
+    );
 }
 #[test]
 fn foreign_session_with_identical_document_revision_and_hash_cannot_authorize_apply() {
@@ -336,9 +351,125 @@ fn foreign_session_with_identical_document_revision_and_hash_cannot_authorize_ap
     assert_eq!(foreign.revision(), fixture.session.revision());
     assert!(
         native
-            .poll(&foreign)
+            .poll(&foreign, &Default::default())
             .unwrap()
             .unwrap_err()
             .contains("different session")
     );
+}
+
+#[test]
+fn resources_changed_before_or_after_source_receipt_revoke_picking_without_source_changes() {
+    for complete_first in [false, true] {
+        let (fixture, reference) = linked();
+        let before = fixture.session.document().clone();
+        let native = scene(&fixture, 1);
+        let mut controller = Controller::default();
+        controller.set_backend(Box::new(Backend {
+            base: native,
+            reply: None,
+            partial_candidate: false,
+            bad_hash: false,
+        }));
+        controller.refresh(
+            &fixture.session,
+            Some(fixture.sketch),
+            None,
+            Default::default(),
+        );
+        controller
+            .begin_repair(&fixture.session, reference)
+            .unwrap();
+        let resources = ProjectResources::default();
+        controller
+            .request_source(&fixture.session, fixture.source.feature, &resources)
+            .unwrap();
+        if complete_first {
+            controller.poll_native(&fixture.session, &resources);
+            controller.refresh(
+                &fixture.session,
+                Some(fixture.sketch),
+                None,
+                Default::default(),
+            );
+            let inspected = controller.scene().unwrap();
+            controller
+                .select(&fixture.session, hit(&fixture, &inspected, false))
+                .unwrap();
+            assert!(controller.can_preview(&fixture.session));
+        }
+        let mut changed = resources.clone();
+        changed
+            .metadata
+            .insert("source-version".into(), serde_json::json!(2));
+        assert!(
+            controller
+                .poll_native(&fixture.session, &changed)
+                .unwrap()
+                .is_err()
+        );
+        assert!(!controller.can_preview(&fixture.session));
+        assert!(controller.scene().is_none());
+        assert!(controller.native.scene.is_none());
+        assert!(controller.active());
+        assert_eq!(fixture.session.document(), &before);
+        assert!(!controller.native_pending());
+    }
+}
+#[test]
+fn successful_candidate_receipt_is_revoked_when_resources_change_at_the_same_revision() {
+    let fixture = fixture();
+    let before = fixture.session.document().clone();
+    let revision = fixture.session.revision();
+    let undo = fixture.session.can_undo();
+    let native = scene(&fixture, 1);
+    let mut controller = Controller::default();
+    controller.refresh(
+        &fixture.session,
+        Some(fixture.sketch),
+        Some(native.clone()),
+        Default::default(),
+    );
+    controller
+        .begin(&fixture.session, ExternalTool::Project)
+        .unwrap();
+    controller
+        .select(&fixture.session, hit(&fixture, &native, false))
+        .unwrap();
+    let proposal = controller.prepare(&fixture.session, Channel::Ui).unwrap();
+    controller.set_backend(Box::new(Backend {
+        base: native,
+        reply: None,
+        partial_candidate: false,
+        bad_hash: false,
+    }));
+    let resources = ProjectResources::default();
+    controller
+        .validate_candidate(
+            &fixture.session,
+            proposal.edit.preview.as_ref().unwrap(),
+            &resources,
+        )
+        .unwrap();
+    assert!(
+        controller
+            .poll_native(&fixture.session, &resources)
+            .unwrap()
+            .is_ok()
+    );
+    assert!(controller.candidate_validation().unwrap().is_ok());
+    let mut changed = resources.clone();
+    changed
+        .metadata
+        .insert("source-version".into(), serde_json::json!(2));
+    assert!(
+        controller
+            .poll_native(&fixture.session, &changed)
+            .unwrap()
+            .is_err()
+    );
+    assert!(controller.candidate_validation().unwrap().is_err());
+    assert_eq!(fixture.session.document(), &before);
+    assert_eq!(fixture.session.revision(), revision);
+    assert_eq!(fixture.session.can_undo(), undo);
 }

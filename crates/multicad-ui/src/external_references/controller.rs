@@ -49,7 +49,7 @@ pub struct Controller {
     pub(super) native: super::native::Native,
     pub(super) context: Option<Context>,
     pub(super) active: Option<Active>,
-    hover: Option<Hit>,
+    pub(super) hover: Option<Hit>,
     pub(super) error: Option<String>,
 }
 pub struct Pointer<'a> {
