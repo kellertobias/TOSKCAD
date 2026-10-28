@@ -179,6 +179,30 @@ fn compound_patterns_preserve_member_references_count_identity_and_explicit_merg
         input.body
     );
     persist_and_check(&mut session, input.body, 18000., 3);
+    let mut reduced = AdvancedRequest::existing(session.document(), request.feature).unwrap();
+    let AdvancedParameters::LinearPattern(p) = &mut reduced.parameters else {
+        panic!()
+    };
+    p.count = multicad_core::constraint_sketch::Dimension::Literal {
+        value: 1.,
+        unit: "count".into(),
+    };
+    let candidate =
+        model::prepare_advanced_edit(&session, session.revision(), actor(), &reduced).unwrap();
+    let reduced_native = multicad_model::Compiler::default()
+        .compile(candidate.prepared.document(), session.revision())
+        .unwrap();
+    assert!(
+        !matches!(
+            references::resolve(
+                &capture,
+                &reduced_native.snapshot().shapes[&request.feature].topology,
+                session.revision()
+            ),
+            Resolution::Resolved { .. }
+        ),
+        "A removed member must require repair rather than bind to a surviving member"
+    );
     let mut edit = AdvancedRequest::existing(session.document(), request.feature).unwrap();
     let AdvancedParameters::LinearPattern(p) = &mut edit.parameters else {
         panic!()
