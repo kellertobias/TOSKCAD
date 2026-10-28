@@ -123,6 +123,60 @@ fn transfer_counts_require_matching_complete_receipts_and_never_escape_source_in
     );
 }
 #[test]
+fn explicit_leaf_inspection_uses_the_complete_path_receipt_instead_of_its_outer_instance_pose() {
+    use multicad_core::{
+        model::{AssemblyEvaluationInfo, AssemblyLeafReceipt, OccurrencePath, RigidPose},
+        project_file::ContentHash,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let geometry = box_geometry();
+    let root = instance(&geometry, [100., 0., 0.]);
+    let component = EntityId::new();
+    let path = OccurrencePath {
+        root: root.id,
+        members: vec![EntityId::new(), EntityId::new()],
+    };
+    let pose = RigidPose {
+        rotation: [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]],
+        translation_mm: [35., 4., 9.],
+    };
+    let source_hash = ContentHash::of(b"complete native leaf source");
+    let scene = Scene::new(stamp(), vec![geometry.clone()], vec![root.clone()])
+        .unwrap()
+        .with_reference_aliases(BTreeMap::from([(component, geometry.id())]))
+        .unwrap()
+        .with_model_evaluation(Arc::new(multicad_core::model::ModelEvaluationInfo {
+            source_hash,
+            consumed_bodies: BTreeSet::new(),
+            cut_targets: vec![],
+        }))
+        .unwrap()
+        .with_assembly_evaluation(Arc::new(AssemblyEvaluationInfo {
+            source_hash,
+            leaves: vec![AssemblyLeafReceipt {
+                path: path.clone(),
+                component,
+                producer: geometry.id(),
+                pose,
+            }],
+        }))
+        .unwrap();
+    let view = scene.isolated_occurrence_source(&path).unwrap();
+    assert!(!view.is_full_model());
+    assert!(view.assembly_evaluation().is_none());
+    assert_eq!(view.reference_instances().len(), 1);
+    let inspected = &view.reference_instances()[0];
+    assert_eq!(inspected.id, root.id);
+    assert_eq!(inspected.geometry, geometry.id());
+    assert_eq!(inspected.transform.point([0.; 3]), [35., 4., 9.]);
+    assert_eq!(inspected.transform.point([1., 0., 0.]), [35., 5., 9.]);
+    assert_eq!(root.transform.point([0.; 3]), [100., 0., 0.]);
+    let mut unknown = path;
+    unknown.members.pop();
+    assert!(scene.isolated_occurrence_source(&unknown).is_err());
+    assert!(view.isolated_occurrence_source(&unknown).is_err());
+}
+#[test]
 fn assembly_receipts_require_current_complete_known_leaf_sources() {
     use multicad_core::{
         model::{AssemblyEvaluationInfo, AssemblyLeafReceipt, OccurrencePath},

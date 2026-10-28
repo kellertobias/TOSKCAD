@@ -1024,6 +1024,40 @@ impl Scene {
         };
         Ok(Arc::new(view))
     }
+    /// Inspect one explicitly selected physical leaf at its native world pose.
+    /// The single-view instance identity is only a picking handle; persistent
+    /// consumers retain the complete canonical occurrence path separately.
+    pub fn isolated_occurrence_source(
+        &self,
+        path: &multicad_core::model::OccurrencePath,
+    ) -> Result<Arc<Self>, String> {
+        let leaf = self
+            .assembly_evaluation()
+            .and_then(|info| info.leaves.iter().find(|leaf| &leaf.path == path))
+            .ok_or("Selected occurrence has no current complete native placement receipt")?;
+        let geometry = self
+            .geometries
+            .get(&leaf.producer)
+            .ok_or("Selected occurrence has no current source geometry")?
+            .clone();
+        let color = self
+            .reference_instances
+            .iter()
+            .find(|instance| instance.id == path.root)
+            .map_or([145, 173, 195, 255], |instance| instance.color);
+        let view = Self::new(
+            self.stamp,
+            vec![geometry],
+            vec![Instance {
+                id: path.root,
+                geometry: leaf.producer,
+                transform: Transform::from_rigid_pose(leaf.pose)?,
+                color,
+            }],
+        )?
+        .with_source_scope(vec![leaf.producer])?;
+        Ok(Arc::new(view))
+    }
     pub fn world_bounds(&self) -> Option<[Point; 2]> {
         self.world_bounds
     }
