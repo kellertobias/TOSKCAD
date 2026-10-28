@@ -98,18 +98,80 @@ lay beyond its endpoint and offered no Apply action. Choosing the boundary at
 was saved as `artifacts/hierarchy-review/analytic-edits.multicad`, preserving
 the earlier patterned-spline asset. The review application then quit cleanly.
 
+## Numerical pole editing and nested regions
+
+Commits `eee0596` and `caacdea` add a typed point-position request and its
+Inspector controls. The review executable SHA-256 was
+`979bf04ddea37b38cc3b393819fb38082c8d7d7b96607e02cde1fe0e3a042e41`.
+Selecting spline pole P2 showed its current position `(-100, -70)` mm. Entering
+`(-110, -80)` and Preview deformed the curve at revision 0. Apply created one
+transaction at revision 1. Native Undo restored P2 to `(-100, -70)` at revision
+2; Redo restored `(-110, -80)` at revision 3. These values were read from the
+current solved point rows.
+
+The saved project is `artifacts/hierarchy-review/point-edited.multicad`.
+`point-edited-comparison.json` confirms that exactly one point position changes.
+Every point and curve ID, all spline bases, constraints, other entities and the
+hierarchy remain identical. No temporary solver constraint is persisted.
+The solver tests also require fresh regeneration without the temporary target
+constraint and reject a case that succeeds only with that hidden constraint.
+
+The file was physically reopened in the hierarchy-review executable through
+`6db1f0f`, SHA-256
+`d93093274edd3b86194d3dd719fbbfe1d043814bf65a86ec58d271dff689ca77`.
+It regenerated the deformed spline and its three regions. Adding
+`circle -80 -45 5` produced four exact regions: an inner circle of 78.54 mm²,
+the deformed spline region of 2058.92 mm² with one hole, and the two unchanged
+1800 mm² regions. A viewport interior click selected the holed outer region.
+The source was saved separately as
+`artifacts/hierarchy-review/mixed-regions.multicad`.
+
+This check found a footer width defect, corrected by `6db1f0f` with repeated
+narrow-panel tests. It also found the same modifier-release defect in the
+Inspector's region list, corrected separately by `6a68afc`.
+
+## Final selection check
+
+Commit `736b185` retains committed canvas clicks in order above the worker's
+latest-query mechanism. Additive clicks and repeated toggles use a bounded
+queue of 32 active and waiting intents. Plain replacement, changed source or
+reference scope, tool changes and explicit Inspector choices cancel obsolete
+work. Downstream profile retrieval waits until the queue drains. Overflow gives
+visible feedback without discarding accepted clicks. Six regressions send
+actual canvas events while a query is deliberately blocked; they verify the
+timing case rather than draining the worker between clicks.
+
+The final hierarchy-review executable through `736b185` had SHA-256
+`aedd07189652fb4338ce8537b12b0769affa940fc04e976b9fe315860d4a1fe3`.
+Physically reopening `mixed-regions.multicad` regenerated all four exact regions
+at revision 0. Selecting the inner circle in the Inspector and Shift-clicking
+the holed outer region retained both selections. Canvas clicks also selected
+the outer region and another spline area together. The controlled blocked-query
+timing evidence comes from the regression tests, not this native interaction.
+
+Selecting P2 restored its saved `(-110, -80)` position. Previewing `(-111, -80)`
+kept the long Apply action and Discard inside the 250-pixel Inspector. Discard
+left revision 0 and the saved project unchanged. The review application then
+quit cleanly.
+
 ## Verification scope
 
 Formatting, workspace Clippy with warnings denied and workspace tests passed
 for the integration snapshot: 410 passed and two ignored. The upstream OCCT
 deprecated `sprintf` compiler warning remains. The selection-fix snapshot passed
-the same checks with 413 tests passed and two ignored.
+the same checks with 413 tests passed and two ignored. The point-edit and
+multi-body-fixture integration through `6db1f0f` passed with 428 tests and two
+ignored. The integration through `736b185` passed the same checks with 436 tests
+passed and two ignored. One ignored test is a subprocess helper exercised by its parent test;
+the other requires an explicit GPU test run.
 
 Native multi-selection exposed a second defect: Shift release later in the same
 input frame replaced the selection. A regression reproduces the failure; the
 shared click-modifier correction uses modifiers captured at mouse release and
 passes the native recheck above. Downstream profile retrieval also refuses an
 unapplied pointer query and validates the canonical source at its action
-boundary. CAD-62 and CAD-114 remain in progress: numerical point/pole editing
-and a richer hierarchy fixture are still being completed. This report records
-no human acceptance or low-power performance benchmark.
+boundary. CAD-114 has requested Review / test; CAD-62 can now request it too.
+Known limits remain explicit: spline trim/extend are unavailable, patterns make
+independent copies, and numerical point moves reject targets that conflict or
+drift when regenerated. This report records no human acceptance, general solid
+authoring or low-power performance benchmark.
