@@ -1,0 +1,431 @@
+use super::{SymbolAction, SymbolOutcome, SymbolSelection, SymbolTool, forms::Form};
+use crate::{
+    egui,
+    inspector_actions::{self, Button, Owner},
+    viewport::{Scene, SceneBackend, SceneStamp, VisibilityFilter},
+};
+use multicad_core::{
+    commands::{Actor, Channel, Prepared, Request, Session},
+    document::EntityId,
+    project_file::{ContentHash, ProjectResources},
+    symbols::SymbolDefinition,
+};
+use std::{collections::VecDeque, sync::Arc};
+struct Scope {
+    guard: Prepared,
+    source: ContentHash,
+    resources: ProjectResources,
+}
+struct Candidate {
+    prepared: Prepared,
+    source: ContentHash,
+    stamp: SceneStamp,
+    version: u64,
+    selected: Vec<EntityId>,
+    pending: bool,
+    scene: Option<Arc<Scene>>,
+}
+struct Handoff {
+    document: EntityId,
+    revision: u64,
+    resources: ProjectResources,
+    scene: Arc<Scene>,
+}
+#[derive(Default)]
+pub struct SymbolController {
+    pub(super) form: Option<Form>,
+    scope: Option<Scope>,
+    backend: Option<Box<dyn SceneBackend>>,
+    candidate: Option<Candidate>,
+    handoff: Option<Handoff>,
+    pub(super) library: Vec<SymbolDefinition>,
+    actions: VecDeque<SymbolAction>,
+    generation: u64,
+    pub(super) error: Option<String>,
+}
+impl SymbolController {
+    pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
+        self.cancel();
+        self.backend = Some(backend);
+    }
+    pub fn has_backend(&self) -> bool {
+        self.backend.is_some()
+    }
+    pub fn set_library_snapshot(
+        &mut self,
+        definitions: Vec<SymbolDefinition>,
+    ) -> Result<(), String> {
+        if definitions.len() > 256 {
+            return Err("A library snapshot may contain at most 256 definitions".into());
+        }
+        let mut entries = std::collections::BTreeMap::new();
+        for definition in definitions {
+            let pin = definition.pin().map_err(|e| e.to_string())?;
+            let key = (definition.symbol, definition.revision.clone());
+            if entries
+                .get(&key)
+                .is_some_and(|(previous, _)| *previous != pin)
+            {
+                return Err(
+                    "Two different library contents claim the same symbol and revision".into(),
+                );
+            }
+            entries.insert(key, (pin, definition));
+        }
+        self.library = entries
+            .into_values()
+            .map(|(_, definition)| definition)
+            .collect();
+        Ok(())
+    }
+    pub fn active(&self) -> bool {
+        self.form.is_some()
+    }
+    pub fn dirty(&self) -> bool {
+        self.form.as_ref().is_some_and(Form::authoring)
+    }
+    pub fn pending(&self) -> bool {
+        self.candidate.as_ref().is_some_and(|c| c.pending)
+    }
+    pub fn label(&self) -> &'static str {
+        self.form.as_ref().map_or("Symbols", |f| f.tool.label())
+    }
+    pub fn begin(
+        &mut self,
+        kind: SymbolTool,
+        session: &Session,
+        resources: &ProjectResources,
+        _scene: Option<&Arc<Scene>>,
+        selection: SymbolSelection,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let form = Form::new(kind, session.document(), selection)?;
+        self.open(form, session, resources, channel)
+    }
+    pub fn begin_existing(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        _scene: Option<&Arc<Scene>>,
+        instance: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.open(
+            Form::existing(session.document(), instance)?,
+            session,
+            resources,
+            channel,
+        )
+    }
+    fn open(
+        &mut self,
+        form: Form,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if self.active() {
+            return Err("Apply or cancel the active symbol controls first".into());
+        }
+        if form.authoring() && !self.has_backend() {
+            return Err("Native symbol preview is unavailable".into());
+        }
+        let guard = session
+            .prepare(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(channel),
+                label: "Open symbol controls".into(),
+                edits: vec![],
+            })
+            .map_err(|e| e.to_string())?;
+        self.scope = Some(Scope {
+            guard,
+            source: ContentHash::document(session.document())?,
+            resources: resources.clone(),
+        });
+        self.form = Some(form);
+        self.candidate = None;
+        self.handoff = None;
+        self.error = None;
+        Ok(())
+    }
+    fn current(&self, session: &Session, resources: &ProjectResources) -> Result<(), String> {
+        let scope = self.scope.as_ref().ok_or("Open symbol controls first")?;
+        session.validate_preview(&scope.guard).map_err(|_| {
+            "The source session changed; cancel and reopen these symbol controls".to_string()
+        })?;
+        if &scope.resources != resources
+            || ContentHash::document(session.document())? != scope.source
+        {
+            return Err(
+                "Source or project resources changed; cancel and reopen the symbol controls".into(),
+            );
+        }
+        Ok(())
+    }
+    pub fn preview(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.invalidate();
+        let result = self.request_preview(session, resources, channel);
+        if let Err(error) = &result {
+            self.error = Some(error.clone());
+        }
+        result
+    }
+    fn request_preview(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.current(session, resources)?;
+        let form = self.form.as_mut().ok_or("Open symbol controls first")?;
+        let result = form.prepare(session, Actor::local(channel))?;
+        if result.prepared.document() == session.document() {
+            return Err(
+                "This exact definition is already embedded. Select it in Library to place it"
+                    .into(),
+            );
+        }
+        let selected = if result.instances.is_empty() {
+            vec![result.definition]
+        } else {
+            result.instances
+        };
+        let source = ContentHash::document(result.prepared.document())?;
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or("Symbol preview generation limit reached")?;
+        let stamp = SceneStamp {
+            document: session.document().id(),
+            revision: session.revision(),
+            generation: self.generation,
+        };
+        self.backend
+            .as_mut()
+            .ok_or("Native symbol preview is unavailable")?
+            .request_evaluation(
+                result.prepared.document(),
+                resources,
+                stamp,
+                &Default::default(),
+            )?;
+        self.candidate = Some(Candidate {
+            prepared: result.prepared,
+            source,
+            stamp,
+            version: form.version,
+            selected,
+            pending: true,
+            scene: None,
+        });
+        self.error = None;
+        Ok(())
+    }
+    pub fn poll(&mut self, session: &Session, resources: &ProjectResources) {
+        if self.active()
+            && let Err(error) = self.current(session, resources)
+        {
+            self.invalidate();
+            self.error = Some(error);
+        }
+        if self.handoff.as_ref().is_some_and(|h| {
+            h.document != session.document().id()
+                || h.revision != session.revision()
+                || &h.resources != resources
+        }) {
+            self.handoff = None;
+        }
+        for _ in 0..16 {
+            let Some(reply) = self.backend.as_mut().and_then(|b| b.poll()) else {
+                break;
+            };
+            let Some(candidate) = &self.candidate else {
+                continue;
+            };
+            if !candidate.pending || candidate.stamp != reply.stamp {
+                continue;
+            }
+            let result = (|| {
+                self.current(session, resources)?;
+                let candidate = self.candidate.as_ref().expect("matching candidate");
+                session
+                    .validate_preview(&candidate.prepared)
+                    .map_err(|e| e.to_string())?;
+                if self.form.as_ref().map(|f| f.version) != Some(candidate.version) {
+                    return Err("Symbol controls changed; preview them again".into());
+                }
+                let scene = reply.result?;
+                super::proof::validate(candidate.prepared.document(), candidate.stamp, &scene)?;
+                VisibilityFilter::default().apply(
+                    &scene,
+                    candidate.prepared.document(),
+                    candidate.stamp.revision,
+                )
+            })();
+            let candidate = self.candidate.as_mut().expect("matching candidate");
+            candidate.pending = false;
+            match result {
+                Ok(scene) => {
+                    candidate.scene = Some(scene);
+                    self.error = None;
+                }
+                Err(error) => {
+                    candidate.scene = None;
+                    self.error = Some(error);
+                }
+            }
+        }
+    }
+    pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
+        self.dirty()
+            && self.current(session, resources).is_ok()
+            && self.error.is_none()
+            && self.candidate.as_ref().is_some_and(|c| {
+                !c.pending
+                    && c.scene.is_some()
+                    && self.form.as_ref().map(|f| f.version) == Some(c.version)
+                    && session.validate_preview(&c.prepared).is_ok()
+            })
+    }
+    pub fn apply(
+        &mut self,
+        session: &mut Session,
+        resources: &ProjectResources,
+    ) -> Result<SymbolOutcome, String> {
+        self.current(session, resources)?;
+        if !self.can_apply(session, resources) {
+            return Err(
+                "Wait for a successful native preview of the current symbol controls".into(),
+            );
+        }
+        let candidate = self.candidate.take().expect("checked candidate");
+        if ContentHash::document(candidate.prepared.document())? != candidate.source {
+            return Err("Symbol candidate content changed; preview again".into());
+        }
+        let label = self.label();
+        let scene = candidate.scene.expect("checked native scene");
+        session
+            .commit(candidate.prepared)
+            .map_err(|e| e.to_string())?;
+        self.cancel();
+        self.handoff = Some(Handoff {
+            document: session.document().id(),
+            revision: session.revision(),
+            resources: resources.clone(),
+            scene,
+        });
+        Ok(SymbolOutcome::Applied {
+            selected: candidate.selected,
+            label,
+        })
+    }
+    pub fn display_scene(
+        &self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> Option<Arc<Scene>> {
+        if self.can_apply(session, resources) {
+            return self.candidate.as_ref().and_then(|c| c.scene.clone());
+        }
+        self.handoff
+            .as_ref()
+            .filter(|h| {
+                h.document == session.document().id()
+                    && h.revision == session.revision()
+                    && &h.resources == resources
+            })
+            .map(|h| h.scene.clone())
+    }
+    pub fn canonical_ready(&mut self, session: &Session) {
+        if self.handoff.as_ref().is_some_and(|h| {
+            h.document == session.document().id() && h.revision <= session.revision()
+        }) {
+            self.handoff = None;
+        }
+    }
+    fn invalidate(&mut self) {
+        if let Some(backend) = &mut self.backend {
+            backend.cancel();
+        }
+        self.candidate = None;
+        self.error = None;
+    }
+    pub fn cancel(&mut self) {
+        self.invalidate();
+        self.form = None;
+        self.scope = None;
+        self.handoff = None;
+        self.actions.clear();
+    }
+    pub fn take_action(&mut self) -> Option<SymbolAction> {
+        self.actions.pop_front()
+    }
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        resources: &ProjectResources,
+        enabled: bool,
+    ) -> Option<SymbolOutcome> {
+        let current = self.current(session, resources).is_ok();
+        let pending = self.pending();
+        let version = self.form.as_ref().map(|f| f.version);
+        let (action, error) = super::inspector::show(
+            self.form.as_mut()?,
+            ui,
+            session.document(),
+            &self.library,
+            enabled && current && !pending,
+        );
+        if self.form.as_ref().map(|f| f.version) != version {
+            self.invalidate();
+        }
+        if let Some(action) = action {
+            self.actions.push_back(action);
+        }
+        if let Some(error) = error {
+            self.error = Some(error);
+        }
+        if let Some(error) = &self.error {
+            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        }
+        if pending {
+            ui.small("Evaluating exact symbol geometry…");
+        }
+        let clicks = inspector_actions::row(
+            ui,
+            Owner::Symbols,
+            Some(Button::new(
+                "Preview",
+                enabled && current && !pending && self.dirty(),
+                "Rebuild the complete candidate before Apply",
+            )),
+            Button::new(
+                "Apply",
+                enabled && self.can_apply(session, resources),
+                "Commit one native-checked symbol transaction",
+            ),
+            Button::new("Cancel", true, "Discard these uncommitted symbol controls"),
+        );
+        if clicks.cancel {
+            self.cancel();
+            return Some(SymbolOutcome::Cancelled);
+        }
+        if clicks.preview {
+            let _ = self.preview(session, resources, Channel::Ui);
+        }
+        if clicks.apply {
+            match self.apply(session, resources) {
+                Ok(outcome) => return Some(outcome),
+                Err(error) => self.error = Some(error),
+            }
+        }
+        None
+    }
+}
