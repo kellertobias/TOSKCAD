@@ -169,6 +169,27 @@ mod ffi {
         pub parameter: f64,
         pub distance: f64,
     }
+    pub struct SketchSupportData {
+        pub kind: u8,
+        pub index: u32,
+    }
+    pub struct SketchReferenceData {
+        pub geometry: u8,
+        pub point: Point3,
+        pub curve: CurvedEdgeData,
+        pub support: Vec<SketchSupportData>,
+        pub has_parameter: bool,
+        pub parameter: f64,
+        pub has_interval: bool,
+        pub first: f64,
+        pub last: f64,
+        pub tangent: bool,
+        pub crossing: i8,
+    }
+    pub struct SketchReferenceCatalogData {
+        pub results: Vec<SketchReferenceData>,
+        pub coincident: bool,
+    }
     pub struct LoftSectionData {
         pub frame: Frame3,
         pub edges: Vec<CurvedEdgeData>,
@@ -190,6 +211,15 @@ mod ffi {
         include!("distance.hpp");
         include!("planar_contours.hpp");
         include!("advanced.hpp");
+        include!("sketch_references.hpp");
+        fn sketch_reference_geometry(
+            shape: &Shape,
+            kind: u8,
+            index: u32,
+            frame: &Frame3,
+            method: u8,
+            tolerance: f64,
+        ) -> Result<SketchReferenceCatalogData>;
         type CompoundJob;
         fn compound_job() -> Result<UniquePtr<CompoundJob>>;
         fn compound_add(job: Pin<&mut CompoundJob>, shape: &Shape) -> Result<()>;
@@ -472,3 +502,6 @@ mod transferred_cuts;
 pub use transferred_cuts::TransferHoleAxis;
 mod spline_edits;
 pub use spline_edits::*;
+
+mod sketch_references;
+pub use sketch_references::*;

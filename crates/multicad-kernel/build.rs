@@ -9,6 +9,7 @@ fn main() {
         .file("src/distance.cpp")
         .file("src/planar_contours.cpp")
         .file("src/advanced.cpp")
+        .file("src/sketch_references.cpp")
         .include("include")
         .include(root.join("include"))
         .std("c++17")
@@ -42,6 +43,8 @@ fn main() {
         "include/planar_contours.hpp",
         "src/advanced.cpp",
         "include/advanced.hpp",
+        "src/sketch_references.cpp",
+        "include/sketch_references.hpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
