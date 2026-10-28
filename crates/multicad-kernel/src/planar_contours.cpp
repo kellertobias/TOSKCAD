@@ -16,6 +16,7 @@
 #include <TopoDS_Edge.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Cylinder.hxx>
 #include <cmath>
 #include <stdexcept>
 namespace multicad::kernel {
@@ -24,6 +25,29 @@ static gp_Vec v(const Point3 &p) {return {p.x,p.y,p.z};}
 static Point3 local(const gp_Pnt &a,const Frame3 &frame) {
   const gp_Vec delta(p(frame.origin),a);
   return {delta.Dot(v(frame.u)),delta.Dot(v(frame.v)),0.};
+}
+HoleAxisData transfer_hole_axis(const Shape &shape,uint8_t kind,uint32_t index,double tolerance) {
+ try {
+    if(!std::isfinite(tolerance)||tolerance<=0.)throw std::runtime_error("Invalid source-axis tolerance");
+    if(kind>1)throw std::runtime_error("A source axis requires a full circular Edge or cylindrical Face");
+    TopTools_IndexedMapOfShape elements;TopExp::MapShapes(shape.value,kind==0?TopAbs_FACE:TopAbs_EDGE,elements);
+    if(index>=static_cast<uint32_t>(elements.Extent()))throw std::runtime_error("Selected source-axis topology no longer exists");
+    gp_Ax1 axis;double radius;
+    constexpr double full=6.2831853071795864769;
+    if(kind==1) {
+      BRepAdaptor_Curve curve(TopoDS::Edge(elements(index+1)));
+      if(curve.GetType()!=GeomAbs_Circle||std::abs(curve.LastParameter()-curve.FirstParameter()-full)>1e-9)throw std::runtime_error("Source Edge must be one exact full circle; partial arcs, ellipses and splines are unsupported");
+      const auto circle=curve.Circle();axis=circle.Axis();radius=circle.Radius();
+    } else {
+      const auto face=TopoDS::Face(elements(index+1));BRepAdaptor_Surface surface(face);
+      if(surface.GetType()!=GeomAbs_Cylinder)throw std::runtime_error("Source Face must be an exact cylindrical surface; cones, planes and spline surfaces are unsupported");
+      double umin,umax,vmin,vmax;BRepTools::UVBounds(face,umin,umax,vmin,vmax);
+      if(!std::isfinite(umin)||!std::isfinite(umax)||!std::isfinite(vmin)||!std::isfinite(vmax)||std::abs(umax-umin-full)>1e-9||vmax-vmin<=tolerance)throw std::runtime_error("Source cylindrical Face must have a finite full-angle span; partial or degenerate cylinders are unsupported");
+      const auto cylinder=surface.Cylinder();axis=cylinder.Axis();radius=cylinder.Radius();
+    }
+    const auto origin=axis.Location();const auto direction=axis.Direction();
+    return HoleAxisData{Point3{origin.X(),origin.Y(),origin.Z()},Point3{direction.X(),direction.Y(),direction.Z()},radius};
+ } catch(const Standard_Failure &e){throw std::runtime_error(e.GetMessageString()?e.GetMessageString():"Native source-axis extraction failed");}
 }
 rust::Vec<PlanarWireData> planar_face_contours(const Shape &shape,uint32_t index,const Frame3 &frame,double tolerance) {
   try {

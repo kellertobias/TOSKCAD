@@ -400,3 +400,122 @@ fn invalid_direction_no_material_complete_removal_split_and_bad_origins_fail_wit
     }
     assert_eq!(target.topology_snapshot(owner, 0).unwrap(), before);
 }
+#[test]
+fn selected_full_rim_and_cylindrical_face_return_actual_native_axis_in_each_frame() {
+    let base = EntityId::new();
+    let bore = EntityId::new();
+    let name = names(1);
+    let source = rail(30., base, bore, &name);
+    let snapshot = source.topology_snapshot(base, 0).unwrap();
+    let contours = source
+        .planar_face_contours_with_sources(face_at(&source, 2, 2.), xy(2.))
+        .unwrap();
+    let hole = contours
+        .contours
+        .loops
+        .iter()
+        .position(|w| !w.outer)
+        .unwrap();
+    let edge = contours.edge_keys[hole][0];
+    let face = snapshot
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face && e.origins.contains(&name[0]))
+        .unwrap()
+        .key;
+    for key in [edge, face] {
+        let axis = source.transfer_hole_axis(key).unwrap();
+        near(axis.origin_mm[0], 30.);
+        near(axis.origin_mm[1], 10.);
+        near(axis.axis[2].abs(), 1.);
+        near(axis.radius_mm, 2.);
+        let selected = GeometryIntent::capture(&snapshot, key).unwrap();
+        let edited = rail(45., base, bore, &name);
+        let next = edited.topology_snapshot(base, 1).unwrap();
+        let Resolution::Resolved { key, .. } = resolve(&selected, &next, 1) else {
+            panic!("native selected hole source lost provenance")
+        };
+        near(edited.transfer_hole_axis(key).unwrap().origin_mm[0], 45.);
+    }
+    let world = source
+        .transformed(RigidTransform {
+            rotation: [[0., 0., 1.], [0., 1., 0.], [-1., 0., 0.]],
+            translation_mm: [200., 40., 100.],
+        })
+        .unwrap();
+    let world_snapshot = world.topology_snapshot(base, 0).unwrap();
+    let selected = GeometryIntent::capture(&snapshot, face).unwrap();
+    let Resolution::Resolved { key, .. } = resolve(&selected, &world_snapshot, 0) else {
+        panic!("placed axis missing")
+    };
+    let axis = world.transfer_hole_axis(key).unwrap();
+    near(axis.axis[0].abs(), 1.);
+    near(axis.origin_mm[1], 50.);
+    near(axis.origin_mm[2], 70.);
+    near(axis.radius_mm, 2.);
+    assert_eq!(source.topology_snapshot(base, 0).unwrap(), snapshot);
+}
+#[test]
+fn source_axis_rejects_partial_arcs_partial_cylinders_wrong_kinds_and_missing_topology() {
+    use multicad_core::references::TopologyKey;
+    let profile = CurvedProfile {
+        frame: xy(0.),
+        outer: vec![
+            CurvedEdge2d::Line {
+                a: [-5., 0.],
+                b: [5., 0.],
+            },
+            CurvedEdge2d::Arc {
+                center: [0., 0.],
+                a: [5., 0.],
+                b: [-5., 0.],
+                clockwise: false,
+            },
+        ],
+        holes: vec![],
+    };
+    let feature = EntityId::new();
+    let body = Solid::extrude_curved_profile_named(&profile, 3., feature, &names(2), p()).unwrap();
+    let snapshot = body.topology_snapshot(feature, 0).unwrap();
+    let arc = snapshot
+        .elements
+        .iter()
+        .find(|e| {
+            e.key.kind == TopologyKind::Edge
+                && matches!(e.geometry, Some(AnalyticGeometry::CircularArc { .. }))
+        })
+        .unwrap()
+        .key;
+    assert!(body.transfer_hole_axis(arc).is_err());
+    let curved = body
+        .faces()
+        .unwrap()
+        .iter()
+        .find(|f| f.plane.is_none())
+        .unwrap()
+        .index;
+    assert!(
+        body.transfer_hole_axis(TopologyKey {
+            kind: TopologyKind::Face,
+            ordinal: curved
+        })
+        .is_err()
+    );
+    let top = face_at(&body, 2, 3.);
+    assert!(
+        body.transfer_hole_axis(TopologyKey {
+            kind: TopologyKind::Face,
+            ordinal: top
+        })
+        .is_err()
+    );
+    for kind in [TopologyKind::Face, TopologyKind::Edge, TopologyKind::Vertex] {
+        assert!(
+            body.transfer_hole_axis(TopologyKey {
+                kind,
+                ordinal: u32::MAX
+            })
+            .is_err()
+        );
+    }
+}

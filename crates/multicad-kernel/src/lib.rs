@@ -144,6 +144,11 @@ mod ffi {
         pub outer: bool,
         pub segments: Vec<PlanarSegmentData>,
     }
+    pub struct HoleAxisData {
+        pub origin: Point3,
+        pub axis: Point3,
+        pub radius: f64,
+    }
     pub struct CurvedEdgeData {
         pub kind: u8,
         pub a: Point3,
@@ -218,6 +223,12 @@ mod ffi {
             frame: &Frame3,
             tolerance: f64,
         ) -> Result<Vec<PlanarWireData>>;
+        fn transfer_hole_axis(
+            shape: &Shape,
+            kind: u8,
+            index: u32,
+            tolerance: f64,
+        ) -> Result<HoleAxisData>;
         fn drawing_run(job: Pin<&mut DrawingJob>) -> Result<Vec<DrawingCurveData>>;
         fn extrude(width: f64, depth: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn cut(
@@ -446,3 +457,4 @@ impl Shape {
 mod planar_contours;
 pub use planar_contours::SourcedPlanarContours;
 mod transferred_cuts;
+pub use transferred_cuts::TransferHoleAxis;

@@ -4,7 +4,18 @@ use crate::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryError, GeometryErrorKind,
     GeometryPolicy, PlaneFrame, RigidTransform, Solid,
 };
-use multicad_core::{document::EntityId, references::Origin};
+use multicad_core::{
+    document::EntityId,
+    references::{Origin, TopologyKey, TopologyKind},
+};
+/// An axis from explicitly selected analytic topology. This does not infer
+/// whether a cylinder is an inner hole or an outer surface, or its cut depth.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransferHoleAxis {
+    pub origin_mm: [f64; 3],
+    pub axis: [f64; 3],
+    pub radius_mm: f64,
+}
 fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError {
     GeometryError {
         operation: "transferred cut",
@@ -72,6 +83,42 @@ impl CurvedProfile {
     }
 }
 impl Solid {
+    pub fn transfer_hole_axis(&self, key: TopologyKey) -> Result<TransferHoleAxis, GeometryError> {
+        let kind = match key.kind {
+            TopologyKind::Face => 0,
+            TopologyKind::Edge => 1,
+            _ => {
+                return Err(failure(
+                    GeometryErrorKind::Input,
+                    "A source axis requires a full circular Edge or cylindrical Face",
+                ));
+            }
+        };
+        let policy = self.geometry_policy();
+        let native = crate::ffi::transfer_hole_axis(
+            &self.native.0,
+            kind,
+            key.ordinal,
+            policy.linear_tolerance_mm,
+        )
+        .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
+        let value = TransferHoleAxis {
+            origin_mm: [native.origin.x, native.origin.y, native.origin.z],
+            axis: [native.axis.x, native.axis.y, native.axis.z],
+            radius_mm: native.radius,
+        };
+        policy.point(value.origin_mm)?;
+        policy.length(value.radius_mm)?;
+        if value.axis.iter().any(|v| !v.is_finite())
+            || (value.axis.iter().map(|v| v * v).sum::<f64>() - 1.).abs() > 1e-10
+        {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Native source axis is not a finite unit direction",
+            ));
+        }
+        Ok(value)
+    }
     /// Compute a signed through depth from finite native bounds along this
     /// entry frame's normal. The whole target must be on the requested side.
     /// Overshoot is max(minimum_feature_mm, 8*linear_tolerance_mm), bounded by
