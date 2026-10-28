@@ -45,7 +45,8 @@ impl Application {
             if self.current().editor.dirty() || self.current().sketch.has_pending_edits() { ui.label("Apply or discard this document's pending edits before saving."); }
             ui.horizontal(|ui| {
                 if ui.button("Cancel").on_hover_text("Keep all documents open").clicked() {self.close_confirm=false;}
-                if ui.add_enabled(!busy && self.enabled(Command::Save),egui::Button::new("Save selected document")).on_hover_text("Save the selected tab; a new document needs a destination").clicked() {
+                let selected_unsaved = dirty.iter().any(|(index, _, _)| *index == self.active);
+                if ui.add_enabled(!busy && selected_unsaved && self.enabled(Command::Save),egui::Button::new("Save selected document")).on_hover_text("Save the selected unsaved tab; a new document needs a destination").on_disabled_hover_text("Select an unsaved document and finish or discard its pending edits before saving").clicked() {
                     self.close_confirm=false;
                     self.execute(Command::Save,&[],Channel::Ui);
                 }
@@ -67,6 +68,103 @@ mod tests {
         fn load(&mut self, _: &std::path::Path) -> Result<Document, String> {
             Err("unused".into())
         }
+    }
+    fn dialog_frame(
+        app: &mut Application,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200., 800.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |_| app.show_close_dialog(ctx),
+        )
+    }
+    fn click_dialog(app: &mut Application, ctx: &egui::Context, label: &str) {
+        dialog_frame(app, ctx, vec![]).drop_without_applying_deltas();
+        let output = dialog_frame(app, ctx, vec![]);
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing close dialog control: {label}"));
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            dialog_frame(
+                app,
+                ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+    }
+    #[test]
+    fn close_save_requires_selection_in_the_unsaved_list_and_routes_to_that_document() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        let unsaved = app.projects[0].local_id;
+        let mut clean = Project::new(Document::new("Saved active project").unwrap()).unwrap();
+        clean.session.mark_saved(0).unwrap();
+        clean.path = Some(PathBuf::from("/private/tmp/close-selection-clean.multicad"));
+        app.projects.push(clean);
+        app.active = 1;
+        app.close_confirm = true;
+        let ctx = egui::Context::default();
+        click_dialog(&mut app, &ctx, "Save selected document");
+        assert!(
+            app.close_confirm,
+            "A clean active tab is not selected in the unsaved list"
+        );
+        assert!(
+            app.pending_files.is_empty(),
+            "Do not submit a save for a different clean tab"
+        );
+        assert!(app.file_action.is_none());
+        click_dialog(&mut app, &ctx, "Untitled");
+        assert_eq!(app.active, 0);
+        click_dialog(&mut app, &ctx, "Save selected document");
+        assert!(!app.close_confirm);
+        assert!(matches!(app.file_action, Some(FileAction::Save)));
+        assert_eq!(app.file_document, Some(unsaved));
+        assert!(
+            app.pending_files.is_empty(),
+            "The new unsaved tab needs a destination first"
+        );
+    }
+    #[test]
+    fn close_save_stays_disabled_for_selected_drafts_and_pending_file_jobs() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        app.close_confirm = true;
+        app.current_mut().editor.rows[0].name = "unfinished".into();
+        let ctx = egui::Context::default();
+        click_dialog(&mut app, &ctx, "Save selected document");
+        assert!(app.close_confirm && app.file_action.is_none());
+        let editor = ParameterEditor::new(&app.projects[0].session);
+        app.projects[0].editor = editor;
+        app.pending_files.insert(42, PendingFile::Discover);
+        click_dialog(&mut app, &ctx, "Save selected document");
+        assert!(app.close_confirm && app.file_action.is_none());
+        assert_eq!(app.pending_files.len(), 1);
     }
     #[test]
     fn explicit_discard_close_keeps_live_source_and_never_interrupts_a_file_job() {
