@@ -72,6 +72,115 @@ fn side_frame(profile: &Profile, edge: &ProfileEdge, height: f64) -> Option<Refe
 }
 
 impl Solid {
+    pub fn with_member_origin(
+        mut self,
+        feature: EntityId,
+        index: u32,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() || index >= 128 {
+            return Err(failure(
+                "Pattern member identity exceeds the feature/member budget",
+            ));
+        }
+        let origin = Origin {
+            source: feature,
+            role: format!("member/{index}"),
+        };
+        let snapshot = self.topology_snapshot(feature, 0)?;
+        if snapshot
+            .elements
+            .iter()
+            .any(|e| e.origins.contains(&origin))
+        {
+            return Err(failure(
+                "Pattern member origin collides with existing source provenance",
+            ));
+        }
+        let elements: BTreeMap<_, _> = snapshot
+            .elements
+            .into_iter()
+            .map(|mut element| {
+                element.origins.insert(origin.clone());
+                if let Some(AnalyticGeometry::Plane { frame }) = element.geometry {
+                    element.frames.push(AnchoredFrame {
+                        origin: origin.clone(),
+                        frame,
+                    });
+                }
+                element.boundary.clear();
+                (element.key, element)
+            })
+            .collect();
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        self.finish_provenance(elements, &nodes)?;
+        Ok(self)
+    }
+    pub(crate) fn inherit_advanced_provenance(
+        &mut self,
+        source: &Self,
+        selected: &[Origin],
+        owner: EntityId,
+    ) -> Result<(), GeometryError> {
+        self.inherit_current_provenance(source, owner)?;
+        let source_snapshot = source.topology_snapshot(owner, 0)?;
+        let inputs: BTreeMap<_, _> = source_snapshot
+            .elements
+            .iter()
+            .map(|e| (e.key, e))
+            .collect();
+        let mut elements: BTreeMap<_, _> = self
+            .topology_snapshot(owner, 0)?
+            .elements
+            .into_iter()
+            .map(|mut e| {
+                e.boundary.clear();
+                (e.key, e)
+            })
+            .collect();
+        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+            let origins: Vec<_> = match seed.role {
+                3 => vec![
+                    selected
+                        .get(seed.source_index as usize)
+                        .ok_or_else(|| failure("Advanced history names an absent selected face"))?
+                        .clone(),
+                ],
+                5 => inputs
+                    .get(&key(0, seed.source_index)?)
+                    .ok_or_else(|| failure("Offset history names an absent source face"))?
+                    .origins
+                    .iter()
+                    .map(|origin| Origin {
+                        source: owner,
+                        role: format!("offset/{}/{}", origin.source, origin.role),
+                    })
+                    .collect(),
+                _ => return Err(failure("Unknown advanced history role")),
+            };
+            let element = elements
+                .get_mut(&key(0, seed.face)?)
+                .ok_or_else(|| failure("Advanced history names an absent generated face"))?;
+            for origin in origins {
+                GeometryIntent {
+                    id: owner,
+                    kind: TopologyKind::Face,
+                    origins: BTreeSet::from([origin.clone()]),
+                    boundary: None,
+                    attachment: None,
+                }
+                .validate()
+                .map_err(failure)?;
+                element.origins.insert(origin.clone());
+                if let Some(AnalyticGeometry::Plane { frame }) = element.geometry
+                    && !element.frames.iter().any(|f| f.origin == origin)
+                {
+                    element.frames.push(AnchoredFrame { origin, frame });
+                }
+            }
+        }
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        self.finish_provenance(elements, &nodes)
+    }
     /// Deformation/reflection frames must describe current native planes rather
     /// than preserve the pre-operation normals or support-plane positions.
     pub(crate) fn inherit_current_provenance(

@@ -173,6 +173,24 @@ mod ffi {
         include!("drawing.hpp");
         include!("distance.hpp");
         include!("planar_contours.hpp");
+        include!("advanced.hpp");
+        type CompoundJob;
+        fn compound_job() -> Result<UniquePtr<CompoundJob>>;
+        fn compound_add(job: Pin<&mut CompoundJob>, shape: &Shape) -> Result<()>;
+        fn compound_finish(job: Pin<&mut CompoundJob>) -> Result<UniquePtr<Shape>>;
+        fn shell_solid(
+            shape: &Shape,
+            faces: &[u32],
+            thickness: f64,
+            tolerance: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        fn draft_solid(
+            shape: &Shape,
+            faces: &[u32],
+            direction: &Point3,
+            neutral: &Frame3,
+            angle: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn minimum_distance(
             a: &Shape,
             b: &Shape,
@@ -333,6 +351,7 @@ mod affine;
 pub use affine::AffineTransform;
 mod advanced;
 pub use advanced::TreatmentFace;
+mod advanced_operations;
 mod edge_treatment;
 pub use edge_treatment::{EdgeTreatment, SidedChamfer, SidedTreatmentEdge, TreatmentEdge};
 mod drawing;
