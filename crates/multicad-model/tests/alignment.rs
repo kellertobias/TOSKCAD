@@ -580,6 +580,8 @@ fn current_part_target_alias_follows_appended_and_edited_head_and_rejects_indire
     );
     let part_ids = session.document().get(target.body).unwrap().clone();
     let old_hash = moved.snapshot().stamp.source_hash;
+    let old_dependency =
+        multicad_core::references::dependency_hash(session.document(), target.body).unwrap();
     let changed = model::NumericTransform {
         translation: [length(20.), length(0.), length(7.)],
         ..Default::default()
@@ -598,6 +600,35 @@ fn current_part_target_alias_follows_appended_and_edited_head_and_rejects_indire
         .compile(session.document(), session.revision())
         .unwrap();
     assert_ne!(current.snapshot().stamp.source_hash, old_hash);
+    let dependency =
+        multicad_core::references::dependency_hash(session.document(), target.body).unwrap();
+    assert_ne!(dependency, old_dependency);
+    assert!(
+        current
+            .snapshot()
+            .references
+            .entries
+            .iter()
+            .any(|diagnostic| diagnostic.source == target.body
+                && diagnostic.dependency_hash == Some(dependency))
+    );
+    let project =
+        multicad_core::project_file::ProjectFile::new(session.document().clone()).unwrap();
+    assert!(
+        project
+            .capabilities()
+            .contains(model::PART_REFERENCE_CAPABILITY)
+    );
+    let mut bytes = Vec::new();
+    multicad_core::project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let opened = multicad_core::project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        Default::default(),
+        &multicad_core::project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(opened.project.document, *session.document());
+
     assert_eq!(
         current.snapshot().shapes[&request.feature].bounds.min,
         [20., 0., 17.]

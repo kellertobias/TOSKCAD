@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 pub const EXTRUDE_TYPE: &str = "model.extrude";
 pub const EXTRUDE_SCHEMA: u32 = 1;
 pub const CAPABILITY: &str = "model.extrude.1";
+pub const PART_REFERENCE_CAPABILITY: &str = "model.part_reference.1";
 pub const MAX_EXTRUDE_OUTPUTS: usize = 128;
 
 pub(super) fn invalid(message: impl Into<String>) -> DocumentError {
@@ -671,7 +672,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     Ok(())
 }
 pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
-    document
+    let mut capabilities: BTreeSet<String> = document
         .entities()
         .filter_map(|entity| match &entity.data {
             EntityData::Feature { definition, .. }
@@ -710,5 +711,16 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             } => Some(super::INSTANCE_PLACEMENT_CAPABILITY.into()),
             _ => None,
         })
-        .collect()
+        .collect();
+    if document.entities().any(|entity| {
+        entity.references().iter().any(|link| {
+            link.geometry.is_some()
+                && document
+                    .get(link.target)
+                    .is_some_and(|target| matches!(target.data, EntityData::Part { .. }))
+        })
+    }) {
+        capabilities.insert(PART_REFERENCE_CAPABILITY.into());
+    }
+    capabilities
 }
