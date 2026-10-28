@@ -23,6 +23,10 @@ pub enum PlacementMode {
 }
 pub(super) struct PlacementPanel {
     command: PlacementCommand,
+    alternate: Option<PlacementCommand>,
+    create_copy: bool,
+    copy_modifier: bool,
+    selected: BTreeSet<EntityId>,
     stamp: FormStamp,
     translation: [DimensionField; 3],
     pivot: [DimensionField; 3],
@@ -45,7 +49,8 @@ pub(super) fn available(
     scene: &Scene,
     selected: &BTreeSet<EntityId>,
 ) -> bool {
-    scene.stamp().document == document.id()
+    scene.is_full_model()
+        && scene.stamp().document == document.id()
         && scene.stamp().revision == revision
         && scene.model_evaluation().is_some()
         && !selected.is_empty()
@@ -77,8 +82,26 @@ impl PlacementPanel {
         {
             return Err("Placement requires a current source-bound native model".into());
         }
-        if mode==PlacementMode::Move && selected.iter().any(|id| matches!(document.get(*id).map(|e|&e.data),Some(EntityData::Instance{component,..}) if selected.contains(component))) { return Err("Choose a Part definition or its linked Instance, not both; moving the definition already moves the linked geometry".into()); }
         let parameters = NumericTransform::default();
+        let (command, targets) = Self::commands(document, scene, selected, mode, &parameters)?;
+        let other = if mode == PlacementMode::Move {
+            PlacementMode::Copy
+        } else {
+            PlacementMode::Move
+        };
+        let (alternate, _) = Self::commands(document, scene, selected, other, &parameters)?;
+        let mut panel = Self::from_command(command, parameters, targets)?;
+        panel.alternate = Some(alternate);
+        panel.selected = selected.clone();
+        Ok(panel)
+    }
+    fn commands(
+        document: &Document,
+        scene: &Scene,
+        selected: &BTreeSet<EntityId>,
+        mode: PlacementMode,
+        parameters: &NumericTransform,
+    ) -> Result<(PlacementCommand, Vec<String>), String> {
         let mut batch = PlacementBatchRequest::default();
         let mut targets = vec![];
         for id in selected {
@@ -130,7 +153,7 @@ impl PlacementPanel {
                 }
             ));
         }
-        Self::from_command(PlacementCommand::Batch(batch), parameters, targets)
+        Ok((PlacementCommand::Batch(batch), targets))
     }
     pub fn existing(document: &Document, id: EntityId) -> Result<Self, String> {
         if let Ok(source) = model::read_transform(document, id) {
@@ -170,7 +193,11 @@ impl PlacementPanel {
         targets: Vec<String>,
     ) -> Result<Self, String> {
         Ok(Self {
+            create_copy: command.is_copy(),
             command,
+            alternate: None,
+            copy_modifier: false,
+            selected: BTreeSet::new(),
             stamp: FormStamp::new(),
             translation: fields(&parameters.translation)?,
             pivot: fields(&parameters.pivot)?,
@@ -183,19 +210,79 @@ impl PlacementPanel {
         self.stamp
     }
     pub fn label(&self) -> &'static str {
-        if self.command.is_copy() {
-            "Placed copy"
-        } else {
-            "Move / rotate"
+        "Move / Copy"
+    }
+    pub fn selected(&self) -> &BTreeSet<EntityId> {
+        &self.selected
+    }
+    pub fn retarget(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        scene: &Scene,
+        selected: &BTreeSet<EntityId>,
+    ) -> Result<(), String> {
+        if self.alternate.is_none() {
+            return Err("Finish the saved feature edit before choosing different targets".into());
         }
+        if selected == &self.selected {
+            return Ok(());
+        }
+        if !selected.is_empty() && !available(document, revision, scene, selected) {
+            return Err("Choose current native Parts or Instances".into());
+        }
+        if scene
+            .model_evaluation()
+            .is_none_or(|info| ContentHash::document(document).ok() != Some(info.source_hash))
+        {
+            return Err("Target selection requires the current native source".into());
+        }
+        let parameters = self.parameters(document)?;
+        let (command, targets) =
+            Self::commands(document, scene, selected, PlacementMode::Move, &parameters)?;
+        let (alternate, _) =
+            Self::commands(document, scene, selected, PlacementMode::Copy, &parameters)?;
+        self.command = command;
+        self.alternate = Some(alternate);
+        self.targets = targets;
+        self.selected = selected.clone();
+        self.stamp.changed();
+        Ok(())
+    }
+    fn active_command(&self) -> &PlacementCommand {
+        let copy = self.create_copy || self.copy_modifier;
+        if copy != self.command.is_copy() {
+            self.alternate.as_ref().unwrap_or(&self.command)
+        } else {
+            &self.command
+        }
+    }
+    pub fn set_copy_modifier(&mut self, active: bool) -> bool {
+        let active = active && self.alternate.is_some();
+        if self.copy_modifier == active {
+            return false;
+        }
+        self.copy_modifier = active;
+        self.stamp.changed();
+        true
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<PlacementCommand, String> {
         if !enabled {
             return Err("Native placement preview is unavailable".into());
         }
-        Ok(self.command.with_parameters(self.parameters(document)?))
+        if self.alternate.is_some() && self.selected.is_empty() {
+            return Err(
+                "Select one or more Parts or Instances; Shift-click adds or removes targets".into(),
+            );
+        }
+        if !self.active_command().is_copy() && self.selected.iter().any(|id| matches!(document.get(*id).map(|e| &e.data), Some(EntityData::Instance { component, .. }) if self.selected.contains(component))) {
+            return Err("Choose a Part definition or its linked Instance for moving; Create copy can copy both independently".into());
+        }
+        Ok(self
+            .active_command()
+            .with_parameters(self.parameters(document)?))
     }
-    fn parameters(&self, document: &Document) -> Result<NumericTransform, String> {
+    pub(super) fn parameters(&self, document: &Document) -> Result<NumericTransform, String> {
         let parameters = NumericTransform {
             translation: [
                 self.translation[0].resolve(document)?,
@@ -229,7 +316,8 @@ impl PlacementPanel {
             field.remember(value);
         }
         self.angle.remember(&parameters.angle);
-        Ok(self.command.with_parameters(parameters))
+        self.request(document, enabled)?;
+        Ok(self.active_command().with_parameters(parameters))
     }
     pub fn show(
         &mut self,
@@ -249,8 +337,16 @@ impl PlacementPanel {
                     ui.label(target).on_hover_text(target);
                 }
             });
-        ui.small(if self.command.is_copy(){"Create independent Instances sharing the original Part geometry. Existing geometry and poses stay unchanged."}else{"Part definition edits propagate to its linked Instances. An Instance selection changes only that occurrence's pose."});
         let mut changed = false;
+        if self.alternate.is_some() {
+            changed |= ui.checkbox(&mut self.create_copy, "Create copy")
+                .on_hover_text("Create independent linked Instances. Hold Option on macOS or Alt on Windows/Linux while dragging to copy temporarily; Shift changes selection")
+                .changed();
+            if self.copy_modifier {
+                ui.small("Option / Alt: copying this gesture");
+            }
+        }
+        ui.small(if self.active_command().is_copy(){"Create independent Instances sharing the original Part geometry. Existing geometry and poses stay unchanged."}else{"Part definition edits propagate to its linked Instances. An Instance selection changes only that occurrence's pose."});
         ui.separator();
         ui.strong("World translation");
         for (field, label) in self.translation.iter_mut().zip(["X", "Y", "Z"]) {

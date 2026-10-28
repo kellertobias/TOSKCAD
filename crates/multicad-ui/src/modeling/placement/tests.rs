@@ -624,12 +624,121 @@ fn moving_definition_and_its_own_instance_is_explicitly_rejected_but_copy_is_ind
         cut_targets: vec![],
     }))
     .unwrap();
-    let error = PlacementPanel::new(&d, s.revision(), &scene, &selected, PlacementMode::Move)
-        .err()
-        .unwrap();
-    assert!(error.contains("not both"));
+    let panel =
+        PlacementPanel::new(&d, s.revision(), &scene, &selected, PlacementMode::Move).unwrap();
+    let error = panel.request(&d, true).err().unwrap();
+    assert!(error.contains("Part definition or its linked Instance"));
     let p = PlacementPanel::new(&d, s.revision(), &scene, &selected, PlacementMode::Copy).unwrap();
     assert_eq!(batch(&p.request(&d, true).unwrap()).copies.len(), 2);
+}
+
+#[test]
+fn actual_copy_checkbox_and_temporary_modifier_keep_controls_and_stable_distinct_commands() {
+    let (session, scene, selected) = fixture();
+    let mut panel = PlacementPanel::new(
+        session.document(),
+        session.revision(),
+        &scene,
+        &selected,
+        PlacementMode::Move,
+    )
+    .unwrap();
+    panel.translation[0].text = "=$offset + 5".into();
+    panel.pivot[1].text = "7".into();
+    panel.angle.text = "90".into();
+    let original = session.document().clone();
+    let moved = panel.preview_request(session.document(), true).unwrap();
+    let values = parameters(&moved).clone();
+    let ctx = egui::Context::default();
+    assert!(matches!(
+        click(
+            &mut panel,
+            session.document(),
+            &ctx,
+            PreviewState::Idle,
+            true,
+            "Create copy"
+        ),
+        Some(ModelEvent::Changed)
+    ));
+    let copied = panel.preview_request(session.document(), true).unwrap();
+    assert_eq!(parameters(&copied), &values);
+    assert_eq!(batch(&copied).copies.len(), selected.len());
+    assert!(batch(&copied).transforms.is_empty() && batch(&copied).instances.is_empty());
+    let copy_bytes = serde_json::to_value(batch(&copied)).unwrap();
+    assert!(matches!(
+        click(
+            &mut panel,
+            session.document(),
+            &ctx,
+            PreviewState::Idle,
+            true,
+            "Create copy"
+        ),
+        Some(ModelEvent::Changed)
+    ));
+    assert_eq!(
+        serde_json::to_value(batch(&panel.request(session.document(), true).unwrap())).unwrap(),
+        serde_json::to_value(batch(&moved)).unwrap()
+    );
+    assert!(panel.set_copy_modifier(true));
+    assert_eq!(
+        serde_json::to_value(batch(&panel.request(session.document(), true).unwrap())).unwrap(),
+        copy_bytes
+    );
+    assert!(!panel.set_copy_modifier(true));
+    assert!(panel.set_copy_modifier(false));
+    assert_eq!(panel.selected(), &selected);
+    assert_eq!(session.document(), &original);
+}
+
+#[test]
+fn changing_targets_preserves_numeric_intent_and_empty_selection_cannot_apply() {
+    let (session, scene, selected) = fixture();
+    let first = BTreeSet::from([*selected.first().unwrap()]);
+    let mut panel = PlacementPanel::new(
+        session.document(),
+        session.revision(),
+        &scene,
+        &first,
+        PlacementMode::Move,
+    )
+    .unwrap();
+    panel.translation[0].text = "=$offset + 5".into();
+    panel.create_copy = true;
+    let values = parameters(&panel.preview_request(session.document(), true).unwrap()).clone();
+    panel
+        .retarget(session.document(), session.revision(), &scene, &selected)
+        .unwrap();
+    let request = panel.request(session.document(), true).unwrap();
+    assert_eq!(batch(&request).copies.len(), selected.len());
+    assert_eq!(parameters(&request), &values);
+    let stamp = panel.stamp();
+    let bytes = serde_json::to_value(batch(&request)).unwrap();
+    panel
+        .retarget(session.document(), session.revision(), &scene, &selected)
+        .unwrap();
+    assert_eq!(panel.stamp(), stamp);
+    assert_eq!(
+        serde_json::to_value(batch(&panel.request(session.document(), true).unwrap())).unwrap(),
+        bytes
+    );
+    panel
+        .retarget(
+            session.document(),
+            session.revision(),
+            &scene,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    assert!(panel.request(session.document(), true).is_err());
+    panel
+        .retarget(session.document(), session.revision(), &scene, &first)
+        .unwrap();
+    assert_eq!(
+        parameters(&panel.request(session.document(), true).unwrap()),
+        &values
+    );
 }
 #[test]
 fn numeric_placement_fields_stay_within_a_resizable_inspector_across_repeated_frames() {

@@ -986,6 +986,7 @@ mod context;
 mod groups;
 mod legacy;
 mod operations;
+mod placement_interaction;
 mod proof;
 mod termination;
 #[cfg(test)]

@@ -74,7 +74,7 @@ impl ModelingTool {
             Self::Revolve => "Revolve",
             Self::Boolean => "Boolean",
             Self::Split => "Split",
-            Self::Move => "Move / rotate",
+            Self::Move => "Move / Copy",
             Self::Copy => "Placed copy",
             Self::Align => "Align",
         }
