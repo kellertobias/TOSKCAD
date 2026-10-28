@@ -16,6 +16,9 @@ impl Application {
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.close_allowed {
             if self.should_defer_close() {
+                // This guarded attempt supersedes an earlier clean Quit that
+                // was waiting for history. Cancel must revoke both attempts.
+                self.close_after_recents = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.close_confirm = true;
             } else if self.recents_writing() {
@@ -111,6 +114,11 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recent_projects::{RecentProject, RecentStore};
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
     struct Storage;
     impl DocumentStorage for Storage {
         fn save(&mut self, _: &std::path::Path, _: &Document) -> Result<(), String> {
@@ -119,6 +127,168 @@ mod tests {
         fn load(&mut self, _: &std::path::Path) -> Result<Document, String> {
             Err("unused".into())
         }
+    }
+    struct DelayedRecents {
+        entered: mpsc::Sender<()>,
+        finish: mpsc::Receiver<()>,
+    }
+    impl RecentStore for DelayedRecents {
+        fn load(&mut self) -> Result<Vec<RecentProject>, String> {
+            Ok(vec![])
+        }
+        fn record(&mut self, entry: &RecentProject) -> Result<Vec<RecentProject>, String> {
+            self.entered.send(()).unwrap();
+            self.finish.recv().unwrap();
+            Ok(vec![entry.clone()])
+        }
+    }
+    fn delayed_history_app() -> (Application, egui::Context, mpsc::Sender<()>) {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        app.current_mut().session.mark_saved(0).unwrap();
+        app.current_mut().path = Some(PathBuf::from("/private/tmp/saved-close-project.multicad"));
+        let (entered, signal) = mpsc::channel();
+        let (finish, gate) = mpsc::channel();
+        app.set_recent_store(Box::new(DelayedRecents {
+            entered,
+            finish: gate,
+        }));
+        app.remember_recent(PathBuf::from("/private/tmp/saved-close-project.multicad"));
+        signal.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(app.recents_writing());
+        assert!(!app.should_defer_close());
+        (app, egui::Context::default(), finish)
+    }
+    fn close_frame(
+        app: &mut Application,
+        ctx: &egui::Context,
+        requested: bool,
+    ) -> Vec<egui::ViewportCommand> {
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200., 800.),
+            )),
+            ..Default::default()
+        };
+        if requested {
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .events
+                .push(egui::ViewportEvent::Close);
+        }
+        let output = ctx.run_ui(input, |ui| app.show(ui));
+        let commands = output
+            .viewport_output
+            .values()
+            .flat_map(|o| o.commands.clone())
+            .collect();
+        output.drop_without_applying_deltas();
+        commands
+    }
+    fn count_close(commands: &[egui::ViewportCommand]) -> usize {
+        commands
+            .iter()
+            .filter(|c| matches!(c, egui::ViewportCommand::Close))
+            .count()
+    }
+    fn drain_history(app: &mut Application, ctx: &egui::Context) -> Vec<egui::ViewportCommand> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut commands = vec![];
+        while app.recents_writing() {
+            commands.extend(close_frame(app, ctx, false));
+            assert!(Instant::now() < deadline, "Recent-history receipt timeout");
+            std::thread::yield_now();
+        }
+        commands.extend(close_frame(app, ctx, false));
+        commands
+    }
+    fn edit_title(app: &mut Application) {
+        app.current_mut()
+            .session
+            .apply(Request {
+                expected_revision: 0,
+                actor: Actor::local(Channel::Mcp),
+                label: "Concurrent title edit".into(),
+                edits: vec![Mutation::RenameDocument("Changed while draining".into())],
+            })
+            .unwrap();
+        let editor = ParameterEditor::new(&app.current().session);
+        app.current_mut().editor = editor;
+    }
+    #[test]
+    fn clean_quit_waits_for_recent_history_receipt_then_emits_exactly_one_close() {
+        let (mut app, ctx, finish) = delayed_history_app();
+        let original = app.current().session.document().clone();
+        let commands = close_frame(&mut app, &ctx, true);
+        assert_eq!(count_close(&commands), 0);
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|c| matches!(c, egui::ViewportCommand::CancelClose))
+                .count(),
+            1
+        );
+        assert!(app.close_after_recents && !app.close_allowed && !app.close_confirm);
+        for _ in 0..3 {
+            assert_eq!(count_close(&close_frame(&mut app, &ctx, false)), 0);
+        }
+        finish.send(()).unwrap();
+        let commands = drain_history(&mut app, &ctx);
+        assert_eq!(count_close(&commands), 1);
+        assert!(!app.close_after_recents && app.close_allowed);
+        assert_eq!(count_close(&close_frame(&mut app, &ctx, false)), 0);
+        assert_eq!(app.current().session.document(), &original);
+        assert!(!app.current().dirty());
+    }
+    #[test]
+    fn a_new_dirty_edit_while_history_drains_prevents_automatic_close() {
+        let (mut app, ctx, finish) = delayed_history_app();
+        assert_eq!(count_close(&close_frame(&mut app, &ctx, true)), 0);
+        edit_title(&mut app);
+        let edited = app.current().session.document().clone();
+        assert!(app.current().dirty());
+        finish.send(()).unwrap();
+        assert_eq!(count_close(&drain_history(&mut app, &ctx)), 0);
+        assert!(!app.close_allowed && !app.close_after_recents);
+        assert_eq!(app.current().session.document(), &edited);
+        let commands = close_frame(&mut app, &ctx, true);
+        assert_eq!(count_close(&commands), 0);
+        assert!(app.close_confirm);
+        click_dialog(&mut app, &ctx, "Cancel");
+        assert!(!app.close_confirm);
+        assert_eq!(count_close(&close_frame(&mut app, &ctx, false)), 0);
+        assert!(app.current().dirty());
+        assert_eq!(app.current().session.document(), &edited);
+    }
+    #[test]
+    fn cancelling_a_new_close_request_during_history_drain_revokes_the_old_auto_close() {
+        let (mut app, ctx, finish) = delayed_history_app();
+        let original = app.current().session.document().clone();
+        close_frame(&mut app, &ctx, true);
+        edit_title(&mut app);
+        close_frame(&mut app, &ctx, true);
+        assert!(app.close_confirm);
+        click_dialog(&mut app, &ctx, "Cancel");
+        assert!(!app.close_confirm);
+        let revision = app.current().session.revision();
+        app.current_mut()
+            .session
+            .undo(revision, Actor::local(Channel::Ui))
+            .unwrap();
+        let editor = ParameterEditor::new(&app.current().session);
+        app.current_mut().editor = editor;
+        assert!(!app.current().dirty());
+        finish.send(()).unwrap();
+        assert_eq!(
+            count_close(&drain_history(&mut app, &ctx)),
+            0,
+            "Cancelled close must not revive when the document becomes clean"
+        );
+        assert!(!app.close_allowed && !app.close_after_recents);
+        assert_eq!(app.current().session.document(), &original);
     }
     fn dialog_frame(
         app: &mut Application,
