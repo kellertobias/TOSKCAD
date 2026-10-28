@@ -356,6 +356,13 @@ pub fn prepare_update(
                 .into());
             }
         }
+        for id in keys.iter().filter(|id| !value.ids.contains_key(id)) {
+            if let Some(mapped) = map.get(id)
+                && (value.ids.values().any(|old| old == mapped) || doc.get(*mapped).is_some())
+            {
+                return Err(invalid("New source identities require fresh owned IDs; removed source identities cannot be silently reused").into());
+            }
+        }
         value.ids = map.clone();
         value.overrides = request.instance_overrides[&record].clone();
         value.pin = request.replacement.pin()?;

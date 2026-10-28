@@ -121,6 +121,7 @@ pub fn validate(doc: &Document) -> Result<(), DocumentError> {
     let mut revisions = BTreeSet::new();
     let mut owned = BTreeSet::new();
     let mut outers = BTreeSet::new();
+    let mut namespaced = BTreeSet::new();
     let mut count = 0;
     for (id, def) in &defs {
         if !revisions.insert((def.symbol, def.revision.clone())) {
@@ -155,6 +156,26 @@ pub fn validate(doc: &Document) -> Result<(), DocumentError> {
                 return Err(invalid(
                     "Symbol instance/wrapper identities must be distinct and uniquely owned",
                 ));
+            }
+            for id in value.ids.values().copied().chain([
+                record,
+                value.instance,
+                value.wrapper,
+                value.wrapper_metadata,
+                value.member,
+            ]) {
+                if !namespaced.insert(id) {
+                    return Err(invalid(
+                        "Symbol placements must have disjoint private identity namespaces",
+                    ));
+                }
+            }
+            for (source, mapped) in &value.ids {
+                if def.template.get(*source).is_none() && doc.get(*mapped).is_some() {
+                    return Err(invalid(
+                        "Local symbol identities cannot alias canonical document entities",
+                    ));
+                }
             }
             let Some(EntityData::Instance { component, .. }) =
                 doc.get(value.instance).map(|e| &e.data)

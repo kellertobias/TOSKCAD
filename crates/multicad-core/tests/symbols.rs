@@ -368,3 +368,69 @@ fn packaging_preserves_uuid_looking_user_text_and_inline_hatches_without_rekeyin
         material.data
     );
 }
+
+#[test]
+fn explicit_upgrade_never_reuses_a_removed_source_identity_for_new_content() {
+    let (_, def, width, _) = author_fixture(SymbolKind::Dynamic);
+    let (mut s, id) = host(&def);
+    let placed = SymbolPlaceRequest::new(
+        s.document(),
+        id,
+        "Door",
+        value(width, 120.),
+        Placement::default(),
+    )
+    .unwrap();
+    s.commit(
+        prepare_place(&s, s.revision(), actor(), &placed)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let old_feature = match &def.template.get(def.root).unwrap().data {
+        EntityData::Part { features, .. } => features[0],
+        _ => unreachable!(),
+    };
+    let new_root = EntityId::new();
+    let new_feature = EntityId::new();
+    let mut part = def.template.get(def.root).unwrap().clone();
+    part.id = new_root;
+    if let EntityData::Part { features, .. } = &mut part.data {
+        *features = vec![new_feature];
+    }
+    let mut source = read_primitive(&def.template, old_feature).unwrap();
+    source.output.body = new_root;
+    let mut feature = def.template.get(old_feature).unwrap().clone();
+    feature.id = new_feature;
+    if let EntityData::Feature { definition, .. } = &mut feature.data {
+        *definition = source.definition().unwrap();
+    }
+    let mut incoming = def.clone();
+    incoming.revision = "2".into();
+    incoming.root = new_root;
+    incoming.template = incoming
+        .template
+        .edited(&[
+            Mutation::Remove(def.root),
+            Mutation::Remove(old_feature),
+            Mutation::Insert(part),
+            Mutation::Insert(feature),
+        ])
+        .unwrap();
+    let good = SymbolUpdateRequest::new(s.document(), id, incoming).unwrap();
+    let mut forged = good.clone();
+    forged
+        .maps
+        .get_mut(&placed.record)
+        .unwrap()
+        .insert(new_root, placed.ids[&def.root]);
+    let before = s.document().clone();
+    assert!(prepare_update(&s, s.revision(), actor(), &forged).is_err());
+    assert_eq!(s.document(), &before);
+    let preview = prepare_update(&s, s.revision(), actor(), &good).unwrap();
+    s.commit(preview.prepared).unwrap();
+    let current = read_instance(s.document(), placed.instance).unwrap();
+    assert_eq!(current.ids[&width], placed.ids[&width]);
+    assert_ne!(current.ids[&new_root], placed.ids[&def.root]);
+    assert!(s.document().get(placed.ids[&def.root]).is_none());
+}
