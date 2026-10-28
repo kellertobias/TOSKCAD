@@ -307,3 +307,55 @@ fn later_target_history_reactivates_only_the_new_version_after_split_consumption
     };
     assert_eq!(features, &[f.target.feature, request.feature]);
 }
+
+#[test]
+fn suppressing_outputs_releases_consumption_but_suppressing_a_required_input_never_falls_back() {
+    let mut f = Fixture::new(false);
+    f.commit();
+    let set_suppressed = |f: &mut Fixture, id, suppressed| {
+        let mut entity = f.session.document().get(id).unwrap().clone();
+        let EntityData::Feature { suppressed: s, .. } = &mut entity.data else {
+            panic!()
+        };
+        *s = suppressed;
+        f.apply(vec![Mutation::Replace(entity)]);
+    };
+    let inside = f.output(SplitSide::InsideTool).clone();
+    let outside = f.output(SplitSide::OutsideTool).clone();
+    set_suppressed(&mut f, inside.feature, true);
+    let one = f.compile();
+    assert_eq!(one.snapshot().bodies.len(), 1);
+    assert_eq!(one.snapshot().bodies[&outside.body], outside.feature);
+    assert!(!one.snapshot().shapes.contains_key(&inside.feature));
+    set_suppressed(&mut f, outside.feature, true);
+    let released = f.compile();
+    assert_eq!(released.snapshot().bodies.len(), 2);
+    assert_eq!(released.snapshot().bodies[&f.target.body], f.target.feature);
+    assert_eq!(released.snapshot().bodies[&f.tool.body], f.tool.feature);
+    assert!(released.snapshot().consumed_bodies.is_empty());
+    set_suppressed(&mut f, inside.feature, false);
+    let previous = f.compile();
+    let tool = f.tool.feature;
+    set_suppressed(&mut f, tool, true);
+    let source = f.session.document().clone();
+    let error = Compiler::default()
+        .compile(&source, f.session.revision())
+        .err()
+        .unwrap();
+    assert_eq!(error.entity, Some(tool));
+    assert!(error.message.contains("suppressed"));
+    let stale_query = multicad_model::CutTargetQuery {
+        tools: vec![inside.feature],
+        component: None,
+        include: vec![],
+        exclude: vec![],
+    };
+    assert!(
+        previous
+            .cut_targets(&source, f.session.revision(), &stale_query, None)
+            .unwrap_err()
+            .message
+            .contains("current document")
+    );
+    assert_eq!(f.session.document(), &source);
+}

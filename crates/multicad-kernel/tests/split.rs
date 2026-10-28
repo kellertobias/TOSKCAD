@@ -125,3 +125,51 @@ fn disconnected_inputs_are_not_accepted_as_one_semantic_body() {
         GeometryErrorKind::Input
     );
 }
+
+#[test]
+fn small_positive_partitions_are_not_discarded_by_an_absolute_volume_threshold() {
+    let edge = GeometryPolicy::default().minimum_feature_mm;
+    let target = cube([edge; 3], [0.; 3]);
+    let tool = cube([edge; 3], [edge / 2., 0., 0.]);
+    let split = target.split_by_solid(&tool, p()).unwrap();
+    let expected = edge.powi(3) / 2.;
+    assert!(expected < 1e-12);
+    for solid in [&split.inside, &split.outside] {
+        let volume = solid.volume_mm3().unwrap();
+        assert!(volume > 0. && volume.is_finite());
+        assert!(
+            (volume / expected - 1.).abs() < 1e-6,
+            "{volume} != {expected}"
+        );
+        assert_eq!(solid.solid_count().unwrap(), 1);
+    }
+}
+
+#[test]
+fn accepted_near_tolerance_partitions_do_not_overlap_or_silently_change_membership() {
+    let target = cube([10.; 3], [0.; 3]);
+    let mut accepted = 0;
+    for width in [1e-4, 1e-5, 1e-6, 5e-7, 2e-7, 1e-7, 5e-8, 1e-8] {
+        let tool = cube([12.; 3], [10. - width, -1., -1.]);
+        if let Ok(split) = target.split_by_solid(&tool, p()) {
+            accepted += 1;
+            let inside = split.inside.volume_mm3().unwrap();
+            assert!(
+                (inside / (100. * width) - 1.).abs() < 1e-4,
+                "Accepted inside width {width}: volume {inside}"
+            );
+            assert!(
+                split
+                    .inside
+                    .boolean(&split.outside, BooleanOperation::Intersect, p())
+                    .unwrap()
+                    .is_none(),
+                "Accepted overlapping partitions at width {width}"
+            );
+        }
+    }
+    assert!(
+        accepted > 0,
+        "The test must exercise accepted native partitions"
+    );
+}

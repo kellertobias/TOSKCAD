@@ -635,3 +635,48 @@ fn tangent_native_cylinders_with_overlapping_bounds_are_zero_volume_contacts() {
     assert!(result.targets.is_empty());
     assert_eq!(result.not_intersecting, vec![a.body]);
 }
+
+#[test]
+fn positive_native_intersections_below_absolute_volume_scales_remain_cut_targets() {
+    let mut session = root();
+    let edge = GeometryPolicy::default().minimum_feature_mm;
+    let target = box_part(&mut session, "Small target", [0.; 3], [edge; 3]);
+    let tool = box_part(
+        &mut session,
+        "Small intersecting tool",
+        [edge / 2., 0., 0.],
+        [edge; 3],
+    );
+    let source = session.document().clone();
+    let model = Compiler::default()
+        .compile(&source, session.revision())
+        .unwrap();
+    let query = CutTargetQuery {
+        tools: vec![tool.producer],
+        component: None,
+        include: vec![],
+        exclude: vec![],
+    };
+    let selection = model
+        .cut_targets(&source, session.revision(), &query, None)
+        .unwrap();
+    assert_eq!(selection.targets, vec![target.clone()]);
+    let common = model
+        .solid(target.producer)
+        .unwrap()
+        .boolean(
+            model.solid(tool.producer).unwrap(),
+            multicad_kernel::BooleanOperation::Intersect,
+            GeometryPolicy::default(),
+        )
+        .unwrap()
+        .unwrap();
+    let expected = edge.powi(3) / 2.;
+    let actual = common.volume_mm3().unwrap();
+    assert!(expected < 1e-12 && actual > 0.);
+    assert!(
+        (actual / expected - 1.).abs() < 1e-6,
+        "{actual} != {expected}"
+    );
+    assert_eq!(session.document(), &source);
+}
