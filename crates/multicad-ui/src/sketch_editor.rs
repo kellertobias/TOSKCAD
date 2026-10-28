@@ -2723,9 +2723,7 @@ impl SketchEditor {
             .or_else(|| self.contexts.get(&id).copied())
     }
     fn waiting_for_sketch_pose(&self, id: EntityId) -> bool {
-        self.selected == Some(id)
-            && self.external.chosen_sketch_context().is_some()
-            && self.external.editing_pose().is_none()
+        self.selected == Some(id) && self.external.waiting_for_editing_pose()
     }
     fn display_frame(&self, id: EntityId, frame: Frame) -> Frame {
         if let Some(pose) = self.sketch_pose(id) {
