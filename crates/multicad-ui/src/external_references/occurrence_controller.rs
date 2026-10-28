@@ -20,6 +20,7 @@ pub(super) struct View {
     pub consumer: Consumer,
     pub pose: Option<Transform>,
     pub resources: Option<ProjectResources>,
+    pub rejected_scene: Option<crate::viewport::SceneStamp>,
 }
 impl Controller {
     pub fn set_query_backend(&mut self, backend: Box<dyn ExternalQueryBackend>) {
@@ -48,6 +49,22 @@ impl Controller {
     pub fn editing_pose(&self) -> Option<Transform> {
         self.occurrence_view.as_ref()?.pose
     }
+    pub fn waiting_for_editing_pose(&self) -> bool {
+        if let Some(form) = self.active.as_ref().and_then(|a| a.form.as_ref()) {
+            return match form.consumer {
+                Consumer::Unset => true,
+                Consumer::World => false,
+                Consumer::Occurrence(_) => self.editing_pose().is_none(),
+            };
+        }
+        self.occurrence_view
+            .as_ref()
+            .is_some_and(|view| match view.consumer {
+                Consumer::Unset => true,
+                Consumer::World => false,
+                Consumer::Occurrence(_) => view.pose.is_none(),
+            })
+    }
     pub(super) fn refresh_occurrence_view(&mut self, session: &Session) {
         let Some(context) = &self.context else {
             self.occurrence_view = None;
@@ -56,6 +73,17 @@ impl Controller {
         if self.occurrence_view.as_ref().is_some_and(|v| {
             v.sketch == context.sketch && session.validate_preview(&v.ticket).is_ok()
         }) {
+            if let Some(view) = &mut self.occurrence_view {
+                let rejected = context
+                    .scene
+                    .as_ref()
+                    .is_some_and(|scene| view.rejected_scene == Some(scene.stamp()));
+                if (view.consumer == Consumer::World || !rejected)
+                    && let Some(pose) = consumer_pose(context, &view.consumer)
+                {
+                    view.pose = Some(pose);
+                }
+            }
             return;
         }
         self.occurrence_view = None;
@@ -80,6 +108,7 @@ impl Controller {
                 consumer: consumer.clone(),
                 pose: consumer_pose(context, consumer),
                 resources: None,
+                rejected_scene: None,
             });
         }
     }
@@ -93,17 +122,37 @@ impl Controller {
         if session.validate_preview(&active.ticket).is_err() {
             return;
         }
-        let pose = form
-            .catalog
+        let rejected_scene = self
+            .occurrence_view
             .as_ref()
-            .and_then(|catalog| Transform::from_rigid_pose(catalog.sketch_world_pose).ok())
-            .or_else(|| consumer_pose(context, &form.consumer));
+            .and_then(|view| view.rejected_scene);
+        let rejected = context
+            .scene
+            .as_ref()
+            .is_some_and(|scene| rejected_scene == Some(scene.stamp()));
+        let pose = if form.consumer == Consumer::World {
+            Some(Transform::default())
+        } else {
+            form.catalog
+                .as_ref()
+                .and_then(|catalog| Transform::from_rigid_pose(catalog.sketch_world_pose).ok())
+                .or_else(|| {
+                    (!rejected)
+                        .then(|| consumer_pose(context, &form.consumer))
+                        .flatten()
+                })
+        };
         self.occurrence_view = Some(View {
             sketch: context.sketch,
             ticket: active.ticket.clone(),
             consumer: form.consumer.clone(),
             pose,
             resources: form.catalog_resources.clone(),
+            rejected_scene: if form.catalog.is_some() {
+                None
+            } else {
+                rejected_scene
+            },
         });
     }
     pub(crate) fn request_preview(
@@ -149,6 +198,11 @@ impl Controller {
                 view.pose = None;
             }
             view.resources = None;
+            view.rejected_scene = self
+                .context
+                .as_ref()
+                .and_then(|context| context.scene.as_ref())
+                .map(|scene| scene.stamp());
         }
         if self
             .active

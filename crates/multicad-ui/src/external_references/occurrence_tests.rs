@@ -23,7 +23,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 #[derive(Default)]
-struct State {
+pub(super) struct State {
     next: u64,
     tasks: Vec<Task>,
     replies: VecDeque<ExternalQueryReply>,
@@ -75,7 +75,7 @@ impl ExternalQueryBackend for Backend {
         self.0.lock().unwrap().cancelled += 1;
     }
 }
-fn backend() -> (Box<dyn ExternalQueryBackend>, Arc<Mutex<State>>) {
+pub(super) fn backend() -> (Box<dyn ExternalQueryBackend>, Arc<Mutex<State>>) {
     let state = Arc::new(Mutex::new(State::default()));
     (Box::new(Backend(state.clone())), state)
 }
@@ -376,7 +376,7 @@ fn controller_with_catalog(
     form.intent = Some(catalog.query.intent.clone());
     (fixture, controller, state, catalog)
 }
-fn frame(
+pub(super) fn frame(
     ctx: &egui::Context,
     controller: &mut Controller,
     session: &Session,
@@ -410,7 +410,7 @@ fn frame(
     output.textures_delta.clear();
     output
 }
-fn text_center(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
+pub(super) fn text_center(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
     fn find(shape: &egui::Shape, text: &str) -> Option<egui::Pos2> {
         match shape {
             egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos + t.galley.size() * 0.5),
@@ -424,7 +424,12 @@ fn text_center(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
         .find_map(|s| find(&s.shape, text))
         .unwrap_or_else(|| panic!("Visible control {text}"))
 }
-fn click(ctx: &egui::Context, controller: &mut Controller, session: &Session, point: egui::Pos2) {
+pub(super) fn click(
+    ctx: &egui::Context,
+    controller: &mut Controller,
+    session: &Session,
+    point: egui::Pos2,
+) {
     for pressed in [true, false] {
         frame(
             ctx,

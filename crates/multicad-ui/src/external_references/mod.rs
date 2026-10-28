@@ -59,3 +59,9 @@ impl ExternalTool {
 
 #[cfg(test)]
 mod occurrence_tests;
+
+#[cfg(test)]
+mod occurrence_context_tests;
+
+#[cfg(test)]
+mod occurrence_native_tests;
