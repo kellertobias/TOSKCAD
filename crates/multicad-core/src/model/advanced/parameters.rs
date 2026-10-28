@@ -298,9 +298,12 @@ impl AdvancedParameters {
             Self::Loft(p) => ResolvedAdvanced::Loft { ruled: p.ruled },
             Self::Draft(p) => {
                 let angle_rad = number(&p.angle, Unit::Radian, parameters)?;
-                if !angle_rad.is_finite() || angle_rad.abs() >= std::f64::consts::FRAC_PI_2 {
+                if !angle_rad.is_finite()
+                    || angle_rad == 0.
+                    || angle_rad.abs() >= std::f64::consts::FRAC_PI_2
+                {
                     return Err(invalid(
-                        "Draft angle must be strictly between -90 and 90 degrees",
+                        "Draft angle must be nonzero and strictly between -90 and 90 degrees",
                     ));
                 }
                 let neutral = p.neutral.resolve(parameters)?;

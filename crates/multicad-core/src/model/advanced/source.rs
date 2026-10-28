@@ -67,7 +67,13 @@ impl AdvancedDefinition {
             return Err(invalid("Select at most 128 distinct face captures"));
         }
         match &self.parameters {
-            AdvancedParameters::Shell(_) => {}
+            AdvancedParameters::Shell(_) => {
+                if self.faces.is_empty() {
+                    return Err(invalid(
+                        "Shell / Thickness needs at least one explicit opening face; closed offsets are unsupported",
+                    ));
+                }
+            }
             AdvancedParameters::Draft(_) => {
                 if self.faces.is_empty() {
                     return Err(invalid("Draft requires at least one explicit face"));

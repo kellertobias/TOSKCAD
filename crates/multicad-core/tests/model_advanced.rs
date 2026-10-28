@@ -136,6 +136,35 @@ fn pattern_counts_keep_bound_units_and_reject_fractional_or_unbounded_rebuilds()
         p.resolve(&parameters::evaluate(&doc).unwrap()).unwrap();
     }
 }
+
+#[test]
+fn shell_requires_an_opening_and_zero_draft_is_not_a_supported_operation() {
+    let doc = Document::new("Explicit supported operations").unwrap();
+    let parameters = parameters::evaluate(&doc).unwrap();
+    assert!(
+        AdvancedParameters::Draft(DraftParameters {
+            angle: angle(0.),
+            ..Default::default()
+        })
+        .resolve(&parameters)
+        .is_err()
+    );
+    let request = AdvancedRequest::on_body(
+        BodyInput {
+            body: EntityId::new(),
+            producer: EntityId::new(),
+        },
+        AdvancedParameters::Shell(Default::default()),
+        vec![],
+    );
+    assert!(
+        request
+            .source()
+            .unwrap_err()
+            .to_string()
+            .contains("opening face")
+    );
+}
 #[test]
 fn advanced_face_intent_lives_only_in_its_frozen_canonical_link() {
     let body = EntityId::new();
