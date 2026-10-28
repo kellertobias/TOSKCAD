@@ -1069,7 +1069,8 @@ impl Application {
             Command::Apply | Command::Discard if self.mode == Mode::Drawings => {
                 self.current().drawings.dirty()
             }
-            Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
+            Command::Apply => self.current().editor.can_apply(&self.current().session),
+            Command::Discard | Command::Preview => self.current().editor.dirty(),
             Command::Modeling(_) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
@@ -2963,6 +2964,54 @@ mod tests {
         assert_eq!(app.current().editor.rows.len(), 1);
         app.example().unwrap();
         assert_eq!(app.current().session.parameters().values.len(), 4);
+    }
+    #[test]
+    fn a_unit_only_parameter_draft_survives_commands_and_document_switches() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.current_mut().editor.rows[0].unit = "cm".into();
+        let original = app.current().session.document().clone();
+        assert!(app.current().editor.dirty());
+        assert!(app.invoke(Command::Save, &[], Channel::Ui).is_err());
+        app.invoke(Command::Mode(Mode::Model), &[], Channel::Ui)
+            .unwrap();
+        assert_eq!(app.current().editor.rows[0].unit, "cm");
+        app.invoke(Command::New, &[], Channel::Ui).unwrap();
+        assert_eq!(app.projects.len(), 2);
+        assert!(!app.current().editor.dirty());
+        app.activate_project(0);
+        assert_eq!(app.current().editor.rows[0].unit, "cm");
+        assert!(app.current().editor.dirty());
+        assert_eq!(app.current().session.document(), &original);
+        app.invoke(Command::Mode(Mode::Parameters), &[], Channel::Ui)
+            .unwrap();
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert_eq!(app.current().editor.rows[0].unit, "mm");
+        assert!(!app.current().editor.dirty());
+    }
+    #[test]
+    fn parameter_apply_requires_a_current_valid_table_preview() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let p = app.current_mut();
+        p.editor.rows[0].name = "width".into();
+        p.editor.rows[0].expression = "=1 < = 2".into();
+        p.editor.refresh_preview(&p.session);
+        assert!(!app.enabled(Command::Apply));
+        assert!(app.enabled(Command::Discard));
+        let p = app.current_mut();
+        p.editor.rows[0].expression = "600".into();
+        p.editor.refresh_preview(&p.session);
+        assert!(app.enabled(Command::Apply));
+        app.current_mut()
+            .session
+            .apply(Request {
+                expected_revision: 0,
+                actor: Actor::local(Channel::Mcp),
+                label: "External document edit".into(),
+                edits: vec![Mutation::RenameDocument("Changed".into())],
+            })
+            .unwrap();
+        assert!(!app.enabled(Command::Apply));
+        assert!(app.enabled(Command::Discard));
     }
     #[test]
     fn accessible_mode_targets_keep_their_full_hit_area_at_standard_and_retina_density() {

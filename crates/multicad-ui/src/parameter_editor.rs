@@ -35,6 +35,7 @@ impl Row {
         self.name.is_empty()
             && self.description.is_empty()
             && self.expression.is_empty()
+            && self.unit == "mm"
             && !self.exposed
     }
     fn entity(&self, document: &Document) -> Entity {
@@ -62,6 +63,17 @@ pub struct ParameterEditor {
     pub error: Option<CommandError>,
     pub preview: Option<Prepared>,
     revision: u64,
+    guard: Prepared,
+}
+fn session_guard(session: &Session) -> Prepared {
+    session
+        .prepare(Request {
+            expected_revision: session.revision(),
+            actor: Actor::local(Channel::Ui),
+            label: "Open parameter editor".into(),
+            edits: vec![],
+        })
+        .expect("An empty request against a valid session must prepare")
 }
 impl ParameterEditor {
     pub fn new(session: &Session) -> Self {
@@ -72,6 +84,7 @@ impl ParameterEditor {
             error: None,
             preview: None,
             revision: session.revision(),
+            guard: session_guard(session),
         };
         value.reload(session);
         value
@@ -117,6 +130,7 @@ impl ParameterEditor {
         self.error = None;
         self.preview = None;
         self.revision = session.revision();
+        self.guard = session_guard(session);
     }
     pub fn dirty(&self) -> bool {
         let mut rows = self.rows.iter().filter(|r| !r.empty());
@@ -141,7 +155,9 @@ impl ParameterEditor {
         }
     }
     pub fn prepare(&self, session: &Session, channel: Channel) -> Result<Prepared, CommandError> {
-        for row in self.rows.iter().filter(|r| !r.empty()) {
+        session.validate_preview(&self.guard)?;
+        let authored = |r: &&Row| !r.empty() || session.document().get(r.id).is_some();
+        for row in self.rows.iter().filter(authored) {
             if !row.complete() || row.unit.trim().is_empty() {
                 return Err(CommandError {
                     code: ErrorCode::InvalidParameter,
@@ -153,7 +169,7 @@ impl ParameterEditor {
         }
         let mut edits = Vec::new();
         let mut present = BTreeSet::new();
-        for row in self.rows.iter().filter(|r| !r.empty()) {
+        for row in self.rows.iter().filter(authored) {
             multicad_core::parameters::validate_input(&row.expression).map_err(|mut e| {
                 e.entity = Some(row.id);
                 CommandError::from(e)
@@ -175,12 +191,7 @@ impl ParameterEditor {
                 edits.push(Mutation::Remove(entity.id));
             }
         }
-        let order: Vec<_> = self
-            .rows
-            .iter()
-            .filter(|r| !r.empty())
-            .map(|r| r.id)
-            .collect();
+        let order: Vec<_> = self.rows.iter().filter(authored).map(|r| r.id).collect();
         let previous=session.document().entities().find(|e|matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==ORDER_TYPE));
         if !order.is_empty() || previous.is_some() {
             let mut entity = previous.cloned().unwrap_or_else(|| {
@@ -218,10 +229,11 @@ impl ParameterEditor {
         })
     }
     pub fn error_text(&self, error: &CommandError) -> String {
+        let entity = error.parameter.as_ref().and_then(|p| p.entity);
         let name = self
             .rows
             .iter()
-            .find(|r| error.involved.contains(&r.id))
+            .find(|r| entity.map_or_else(|| error.involved.contains(&r.id), |id| r.id == id))
             .map(|r| {
                 if r.name.is_empty() {
                     "New row"
@@ -249,6 +261,14 @@ impl ParameterEditor {
             }
         }
     }
+    pub fn can_apply(&self, session: &Session) -> bool {
+        self.dirty()
+            && self.error.is_none()
+            && self
+                .preview
+                .as_ref()
+                .is_some_and(|p| session.validate_preview(p).is_ok())
+    }
     pub fn apply(&mut self, session: &mut Session, channel: Channel) -> Result<(), CommandError> {
         let prepared = self.prepare(session, channel)?;
         session.commit(prepared)?;
@@ -256,8 +276,13 @@ impl ParameterEditor {
         Ok(())
     }
     pub fn show(&mut self, ui: &mut egui::Ui, session: &Session) {
-        if self.revision != session.revision() && !self.dirty() {
-            self.reload(session);
+        if let Err(error) = session.validate_preview(&self.guard) {
+            if self.dirty() {
+                self.preview = None;
+                self.error = Some(error);
+            } else {
+                self.reload(session);
+            }
         }
         ui.horizontal(|ui| {
             ui.heading("Parameters");
@@ -300,17 +325,30 @@ impl ParameterEditor {
         let mut delete = None;
         let mut movement = None;
         let query = self.search.to_lowercase();
-        egui::ScrollArea::vertical().show_rows(ui, 36.0, self.rows.len(), |ui, range| {
-            for index in range {
-                let row = &mut self.rows[index];
-                if !query.is_empty()
-                    && !row.empty()
-                    && !format!("{} {}", row.name, row.description)
+        let visible: Vec<_> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                query.is_empty()
+                    || row.empty()
+                    || format!("{} {}", row.name, row.description)
                         .to_lowercase()
                         .contains(&query)
-                {
-                    continue;
-                }
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let values = self
+            .preview
+            .as_ref()
+            .filter(|p| session.validate_preview(p).is_ok())
+            .map(|p| p.parameters())
+            .or_else(|| (!self.dirty()).then(|| session.parameters()));
+        egui::ScrollArea::vertical().show_rows(ui, 36.0, visible.len(), |ui, range| {
+            for visible_index in range {
+                let index = visible[visible_index];
+                let can_move_down = self.rows.get(index + 1).is_some_and(|r| !r.empty() || session.document().get(r.id).is_some());
+                let row = &mut self.rows[index];
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(width, 36.0), egui::Sense::hover());
                 let color = if self.error.as_ref().is_some_and(|e| {
@@ -319,7 +357,7 @@ impl ParameterEditor {
                         .is_some_and(|p| p.entity == Some(row.id))
                 }) {
                     Color32::from_rgb(71, 33, 39)
-                } else if index % 2 == 0 {
+                } else if visible_index % 2 == 0 {
                     Color32::from_rgb(29, 35, 45)
                 } else {
                     Color32::from_rgb(33, 40, 51)
@@ -386,12 +424,7 @@ impl ParameterEditor {
                                     .changed()
                             }
                             4 => {
-                                let values = self
-                                    .preview
-                                    .as_ref()
-                                    .map(|p| p.parameters())
-                                    .unwrap_or_else(|| session.parameters());
-                                if let Some(value) = values.values.get(&row.id) {
+                                if let Some(value) = values.and_then(|v| v.values.get(&row.id)) {
                                     ui.label(format!(
                                         "{:.6} {}",
                                         value.quantity.in_unit(value.unit).unwrap_or(0.0),
@@ -403,15 +436,15 @@ impl ParameterEditor {
                                 }
                             }
                             5 => changed |= ui.checkbox(&mut row.exposed, "").on_hover_text("Expose this default to symbols and external clients. A supplied value replaces its formula.").changed(),
-                            6 if !row.empty() => {
+                            6 if !row.empty() || session.document().get(row.id).is_some() => {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing=Vec2::new(4.,0.);
                                     ui.vertical(|ui| {
                                         ui.spacing_mut().item_spacing.y=0.;
-                                        if ui.add_enabled_ui(index>0,|ui|crate::icons::mini_button(ui,crate::icons::Icon::ArrowUp,"Move parameter up")).inner.clicked(){movement=Some((index,index-1));}
-                                        if crate::icons::mini_button(ui,crate::icons::Icon::ArrowDown,"Move parameter down").clicked(){movement=Some((index,index+1));}
+                                        if ui.add_enabled_ui(index>0,|ui|crate::icons::mini_button(ui,crate::icons::Icon::ArrowUp,&format!("Move {} up", row.name))).inner.clicked(){movement=Some((index,index-1));}
+                                        if ui.add_enabled_ui(can_move_down,|ui|crate::icons::mini_button(ui,crate::icons::Icon::ArrowDown,&format!("Move {} down", row.name))).inner.clicked(){movement=Some((index,index+1));}
                                     });
-                                    if crate::icons::compact_button(ui,crate::icons::Icon::Trash,"Delete parameter").clicked(){delete=Some(index);}
+                                    if crate::icons::compact_button(ui,crate::icons::Icon::Trash,&format!("Delete parameter {}", row.name)).clicked(){delete=Some(index);}
                                 });
                             }
                             _ => {}
@@ -449,6 +482,10 @@ fn cell_help(column: usize) -> &'static str {
         _ => "Unit: mm, cm, m, in, ft, deg, rad, count, ratio or %",
     }
 }
+
+#[cfg(test)]
+#[path = "parameter_editor_workflow_tests.rs"]
+mod workflow_tests;
 
 #[cfg(test)]
 mod tests {
