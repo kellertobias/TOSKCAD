@@ -376,5 +376,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::constraint_sketch::source::V2_CAPABILITY.into(),
         crate::constraint_sketch::source::V3_CAPABILITY.into(),
         crate::model::CAPABILITY.into(),
+        crate::model::PRIMITIVE_CAPABILITY.into(),
+        crate::model::REVOLVE_CAPABILITY.into(),
     ])
 }

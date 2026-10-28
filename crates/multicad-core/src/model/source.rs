@@ -179,7 +179,7 @@ pub struct ResolvedExtrude {
     pub forward_mm: f64,
     pub backward_mm: f64,
 }
-fn check_dimension(value: &Dimension, unit: Unit) -> Result<(), DocumentError> {
+pub(super) fn check_dimension(value: &Dimension, unit: Unit) -> Result<(), DocumentError> {
     if Unit::parse(value.unit()).is_none_or(|u| u.dimension() != unit.dimension()) {
         return Err(invalid(format!(
             "Expected {}-compatible model units",
@@ -546,9 +546,19 @@ pub fn read_extrude(
 }
 pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     for entity in document.entities() {
-        if matches!(&entity.data,EntityData::Feature{definition,..} if definition.type_id==EXTRUDE_TYPE)
-        {
-            read_extrude(document, entity.id)?;
+        if let EntityData::Feature { definition, .. } = &entity.data {
+            match definition.type_id.as_str() {
+                EXTRUDE_TYPE => {
+                    read_extrude(document, entity.id)?;
+                }
+                super::PRIMITIVE_TYPE => {
+                    super::read_primitive(document, entity.id)?;
+                }
+                super::REVOLVE_TYPE => {
+                    super::read_revolve(document, entity.id)?;
+                }
+                _ => {}
+            }
         }
     }
     Ok(())
@@ -557,8 +567,14 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     document
         .entities()
         .filter_map(|entity| match &entity.data {
-            EntityData::Feature { definition, .. } if definition.type_id == EXTRUDE_TYPE => {
-                Some(format!("{EXTRUDE_TYPE}.{}", definition.schema_version))
+            EntityData::Feature { definition, .. }
+                if [EXTRUDE_TYPE, super::PRIMITIVE_TYPE, super::REVOLVE_TYPE]
+                    .contains(&definition.type_id.as_str()) =>
+            {
+                Some(format!(
+                    "{}.{}",
+                    definition.type_id, definition.schema_version
+                ))
             }
             _ => None,
         })
