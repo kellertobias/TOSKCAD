@@ -1604,7 +1604,11 @@ impl SketchEditor {
                                         let before = session.revision();
                                         let selection_before=self.constraints.selection().to_vec();
                                         ui.add_enabled_ui(!self.repair.has_pending(),|ui|self.constraints.show(ui, session, id, self.element));
-                                        if self.constraints.selection()!=selection_before {self.profiles.clear();self.cancel_profile_clicks();}
+                                        if self.constraints.selection()!=selection_before {
+                                            self.profiles.clear();
+                                            self.cancel_profile_clicks();
+                                            self.message=format!("{} selected sketch entities · Shift-click adds or removes",self.constraints.selection().len());
+                                        }
                                         if session.revision() != before {
                                             self.message =
                                                 "Sketch edit applied · one undoable source edit"
