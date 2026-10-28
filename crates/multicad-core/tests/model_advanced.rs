@@ -7,6 +7,87 @@ use multicad_core::{
 };
 use std::collections::BTreeSet;
 #[test]
+fn advanced_edits_retain_identity_and_roundtrip_bound_count_through_undo() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        project_file::{self, ProjectFile},
+    };
+    let actor = Actor::local(Channel::Ui);
+    let mut session = Session::new(Document::new("Advanced source edits").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Stock",
+        PrimitiveParameters::Box {
+            size: [length(10.), length(20.), length(30.)],
+            frame: Default::default(),
+        },
+    );
+    session
+        .commit(
+            prepare_primitive(&session, 0, actor.clone(), &stock)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let before = session.document().clone();
+    let request = AdvancedRequest::on_body(
+        BodyInput {
+            body: stock.body,
+            producer: stock.feature,
+        },
+        AdvancedParameters::LinearPattern(Default::default()),
+        vec![],
+    );
+    let prepared = prepare_advanced(&session, session.revision(), actor.clone(), &request).unwrap();
+    assert_eq!(
+        prepared.prepared.document(),
+        prepare_advanced(&session, session.revision(), actor.clone(), &request)
+            .unwrap()
+            .prepared
+            .document()
+    );
+    assert_eq!(session.document(), &before);
+    session.commit(prepared.prepared).unwrap();
+    let initial = session.document().clone();
+    let mut edit = AdvancedRequest::existing(session.document(), request.feature).unwrap();
+    let AdvancedParameters::LinearPattern(p) = &mut edit.parameters else {
+        panic!()
+    };
+    p.count = Dimension::Literal {
+        value: 3.,
+        unit: "count".into(),
+    };
+    session
+        .commit(
+            prepare_advanced_edit(&session, session.revision(), actor.clone(), &edit)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let edited = session.document().clone();
+    session.undo(session.revision(), actor.clone()).unwrap();
+    assert_eq!(session.document(), &initial);
+    session.redo(session.revision(), actor.clone()).unwrap();
+    assert_eq!(session.document(), &edited);
+    edit.body = EntityId::new();
+    assert!(prepare_advanced_edit(&session, session.revision(), actor.clone(), &edit).is_err());
+    assert!(prepare_advanced(&session, session.revision() + 1, actor, &request).is_err());
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(edited.clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(opened.project.document, edited);
+    assert!(opened.project.capabilities().contains(ADVANCED_CAPABILITY));
+}
+#[test]
 fn pattern_counts_keep_bound_units_and_reject_fractional_or_unbounded_rebuilds() {
     let mut doc = Document::new("Advanced parameter source").unwrap();
     doc.insert(Entity::new(
