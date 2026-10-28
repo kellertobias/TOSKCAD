@@ -1,11 +1,13 @@
 mod common;
 use common::*;
 use multicad_core::{
+    commands::Session,
     constraint_sketch::{Dimension, source::Source},
-    document::{Entity, EntityData, Mutation},
+    document::{Document, Entity, EntityData, Mutation},
     model::{
-        self, BodyInput, Direction, Extent, ExtrudeParameters, Operation, Termination, angle,
-        length,
+        self, BodyInput, Direction, Extent, ExtrudeParameters, Operation, PrimitiveFrame,
+        PrimitiveParameters, PrimitiveRequest, RevolveParameters, RevolveRequest, Termination,
+        angle, length,
     },
     parameters::BoundExpression,
     project_file::ContentHash,
@@ -560,4 +562,260 @@ fn parameter_bound_extrusion_uses_source_units_and_stable_identity_after_rename_
         .err()
         .expect("Deleted binding must not rebind to a reused name");
     assert_eq!(error.entity, Some(depth.id));
+}
+#[test]
+fn rotated_box_and_cylinder_primitives_compile_named_exact_solids_in_their_frames() {
+    let mut session = Session::new(Document::new("Placed primitives").unwrap()).unwrap();
+    let box_request = PrimitiveRequest::new(
+        "Rotated box",
+        PrimitiveParameters::Box {
+            size: [length(10.), length(20.), length(30.)],
+            frame: PrimitiveFrame {
+                origin: [length(100.), length(-10.), length(5.)],
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+            },
+        },
+    );
+    let cylinder = PrimitiveRequest::new(
+        "Rotated cylinder",
+        PrimitiveParameters::Cylinder {
+            radius: length(3.),
+            height: length(12.),
+            frame: PrimitiveFrame {
+                origin: [length(-20.), length(15.), length(8.)],
+                u: [1., 0., 0.],
+                v: [0., 0., -1.],
+            },
+        },
+    );
+    for request in [&box_request, &cylinder] {
+        let prepared =
+            model::prepare_primitive(&session, session.revision(), actor(), request).unwrap();
+        session.commit(prepared.prepared).unwrap();
+    }
+    let original = session.document().clone();
+    let model = Compiler::default()
+        .compile(&original, session.revision())
+        .unwrap();
+    assert_eq!(model.snapshot().bodies.len(), 2);
+    let box_shape = shape(&model, box_request.body);
+    near(box_shape.volume_mm3, 6000.);
+    point_near(box_shape.bounds.min, [100., -10., 5.]);
+    point_near(box_shape.bounds.max, [130., 0., 25.]);
+    let cylinder_shape = shape(&model, cylinder.body);
+    near(cylinder_shape.volume_mm3, 108. * std::f64::consts::PI);
+    point_near(cylinder_shape.bounds.min, [-23., 15., 5.]);
+    point_near(cylinder_shape.bounds.max, [-17., 27., 11.]);
+    for request in [&box_request, &cylinder] {
+        let shape = shape(&model, request.body);
+        assert_eq!(shape.solid_count, 1);
+        for role in ["cap.start", "cap.end"] {
+            let cap = shape
+                .topology
+                .elements
+                .iter()
+                .find(|element| {
+                    element.key.kind == TopologyKind::Face
+                        && element.origins.contains(&Origin {
+                            source: request.feature,
+                            role: role.into(),
+                        })
+                })
+                .expect("Named primitive cap");
+            assert!(
+                !cap.frames.is_empty(),
+                "Primitive planar cap has no truthful source frame"
+            );
+        }
+    }
+    assert_eq!(session.document(), &original);
+}
+fn revolved_fixture(degrees: f64) -> (SharedProfiles, RevolveRequest) {
+    let mut fixture = SharedProfiles::new(Default::default());
+    let regions = fixture
+        .request
+        .outputs
+        .iter()
+        .map(|output| output.region.clone())
+        .collect();
+    let removals = fixture
+        .request
+        .outputs
+        .iter()
+        .flat_map(|output| {
+            [
+                Mutation::Remove(output.feature),
+                Mutation::Remove(output.body),
+            ]
+        })
+        .collect();
+    fixture.apply(removals);
+    let request = RevolveRequest::new(
+        fixture.sketch,
+        regions,
+        RevolveParameters {
+            axis_origin: [length(-10.), length(0.)],
+            axis_angle: angle(90.),
+            angle: angle(degrees),
+        },
+    );
+    let prepared = model::prepare_revolve(
+        &fixture.session,
+        fixture.session.revision(),
+        actor(),
+        &request,
+    )
+    .unwrap();
+    fixture.session.commit(prepared.prepared).unwrap();
+    (fixture, request)
+}
+#[test]
+fn shared_profiles_revolve_into_signed_partial_and_full_real_solids() {
+    for degrees in [90_f64, -90., 360., -360.] {
+        let (fixture, request) = revolved_fixture(degrees);
+        let original = fixture.session.document().clone();
+        let model = Compiler::default()
+            .compile(&original, fixture.session.revision())
+            .unwrap();
+        assert_eq!(model.snapshot().bodies.len(), 2);
+        let outer = request
+            .outputs
+            .iter()
+            .find(|output| output.region.holes.len() == 1)
+            .unwrap();
+        let inner = request
+            .outputs
+            .iter()
+            .find(|output| output.region.holes.is_empty())
+            .unwrap();
+        let outer_shape = shape(&model, outer.body);
+        let inner_shape = shape(&model, inner.body);
+        let sweep = degrees.to_radians().abs();
+        near(
+            outer_shape.volume_mm3,
+            (WIDTH * HEIGHT * 50. - INNER_AREA * 30.) * sweep,
+        );
+        near(inner_shape.volume_mm3, INNER_AREA * 30. * sweep);
+        near(
+            outer_shape.volume_mm3 + inner_shape.volume_mm3,
+            240000. * sweep,
+        );
+        if degrees.abs() == 360. {
+            point_near(outer_shape.bounds.min, [-100., 0., -90.]);
+            point_near(outer_shape.bounds.max, [80., HEIGHT, 90.]);
+            point_near(inner_shape.bounds.min, [-46., 14., -36.]);
+            point_near(inner_shape.bounds.max, [26., 26., 36.]);
+        } else if degrees > 0. {
+            point_near(outer_shape.bounds.min, [-10., 0., -90.]);
+            point_near(outer_shape.bounds.max, [80., HEIGHT, 0.]);
+            point_near(inner_shape.bounds.min, [-10., 14., -36.]);
+            point_near(inner_shape.bounds.max, [26., 26., 0.]);
+        } else {
+            point_near(outer_shape.bounds.min, [-10., 0., 0.]);
+            point_near(outer_shape.bounds.max, [80., HEIGHT, 90.]);
+            point_near(inner_shape.bounds.min, [-10., 14., 0.]);
+            point_near(inner_shape.bounds.max, [26., 26., 36.]);
+        }
+        for output in &request.outputs {
+            let result = shape(&model, output.body);
+            assert_eq!(result.solid_count, 1);
+            let caps = result
+                .topology
+                .elements
+                .iter()
+                .filter(|element| {
+                    element.key.kind == TopologyKind::Face
+                        && element.origins.iter().any(|origin| {
+                            origin.source == output.feature
+                                && ["cap.start", "cap.end"].contains(&origin.role.as_str())
+                        })
+                })
+                .count();
+            assert_eq!(caps, if degrees.abs() == 360. { 0 } else { 2 });
+        }
+        assert_eq!(fixture.session.document(), &original);
+        assert_eq!(
+            model.snapshot().stamp.source_hash,
+            ContentHash::document(&original).unwrap()
+        );
+    }
+}
+#[test]
+fn revolve_angle_edits_preserve_identity_and_crossing_axis_is_an_explicit_error() {
+    let (mut fixture, request) = revolved_fixture(90.);
+    let compiler = Compiler::default();
+    let first = compiler
+        .compile(fixture.session.document(), fixture.session.revision())
+        .unwrap();
+    let original_sketch = fixture
+        .session
+        .document()
+        .get(fixture.sketch)
+        .unwrap()
+        .clone();
+    let mut changed = request.parameters.clone();
+    changed.angle = angle(-90.);
+    for output in &request.outputs {
+        let prepared = model::prepare_revolve_edit(
+            &fixture.session,
+            fixture.session.revision(),
+            actor(),
+            output.feature,
+            &changed,
+        )
+        .unwrap();
+        fixture.session.commit(prepared.prepared).unwrap();
+    }
+    let second = compiler
+        .compile(fixture.session.document(), fixture.session.revision())
+        .unwrap();
+    assert_eq!(second.snapshot().bodies, first.snapshot().bodies);
+    assert_eq!(
+        fixture.session.document().get(fixture.sketch).unwrap(),
+        &original_sketch
+    );
+    let outer = request
+        .outputs
+        .iter()
+        .find(|output| output.region.holes.len() == 1)
+        .unwrap();
+    near(
+        shape(&second, outer.body).volume_mm3,
+        shape(&first, outer.body).volume_mm3,
+    );
+    point_near(shape(&second, outer.body).bounds.max, [80., HEIGHT, 90.]);
+    let mut crossing = changed;
+    crossing.axis_origin = [length(40.), length(0.)];
+    let prepared = model::prepare_revolve_edit(
+        &fixture.session,
+        fixture.session.revision(),
+        actor(),
+        outer.feature,
+        &crossing,
+    )
+    .unwrap();
+    fixture.session.commit(prepared.prepared).unwrap();
+    let original = fixture.session.document().clone();
+    let error = compiler
+        .compile(&original, fixture.session.revision())
+        .err()
+        .expect("A section crossing the axis must not produce a self-overlapping solid");
+    assert_eq!(error.entity, Some(outer.feature));
+    assert!(error.message.contains("crosses"));
+    assert_eq!(fixture.session.document(), &original);
+    let mut source = model::read_revolve(&original, outer.feature).unwrap();
+    source.parameters.angle = angle(0.);
+    let mut feature = original.get(outer.feature).unwrap().clone();
+    let EntityData::Feature { definition, .. } = &mut feature.data else {
+        panic!()
+    };
+    *definition = source.definition().unwrap();
+    fixture.apply(vec![Mutation::Replace(feature)]);
+    let error = compiler
+        .compile(fixture.session.document(), fixture.session.revision())
+        .err()
+        .expect("Zero angle cannot default to a full turn");
+    assert_eq!(error.entity, Some(outer.feature));
+    assert!(error.message.contains("nonzero"));
 }
