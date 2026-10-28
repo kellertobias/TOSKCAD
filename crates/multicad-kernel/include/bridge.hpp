@@ -41,6 +41,7 @@ std::unique_ptr<Shape> cylinder(const Frame3 &,double radius,double height);
 std::unique_ptr<Shape> profile_extrude(const Frame3 &,rust::Slice<const CurveEdge>,rust::Slice<const uint32_t>,double height);
 std::unique_ptr<Shape> boolean_shapes(const Shape &,const Shape &,uint8_t operation,double fuzzy);
 std::unique_ptr<Shape> transform_shape(const Shape &,rust::Slice<const double>,const Point3 &);
+std::unique_ptr<Shape> affine_transform_shape(const Shape &,rust::Slice<const double>,const Point3 &);
 Bounds3 bounds(const Shape &);
 rust::Vec<FaceInfo> faces(const Shape &);
 uint32_t solid_count(const Shape &);

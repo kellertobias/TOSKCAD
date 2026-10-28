@@ -10,6 +10,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
@@ -21,6 +22,7 @@
 #include <gp_Circ.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_GTrsf.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -332,6 +334,53 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
       throw std::runtime_error("Rigid transform failed");
     auto result = checked(operation.Shape());
     record_history(*result, s, 0, operation);
+    return result;
+  });
+}
+std::unique_ptr<Shape> affine_transform_shape(const Shape &s,
+                                            rust::Slice<const double> m,
+                                            const Point3 &t) {
+  return guard([&] {
+    if (m.size() != 9)
+      throw std::runtime_error("Affine transform requires nine coefficients");
+    // Only literal scalar matrices take this path. Near-uniform or conjugated
+    // matrices keep every supplied coefficient in the general transform.
+    if (m[0] == m[4] && m[4] == m[8] && m[1] == 0. && m[2] == 0. &&
+        m[3] == 0. && m[5] == 0. && m[6] == 0. && m[7] == 0.) {
+      gp_Trsf tr;
+      tr.SetScale(gp::Origin(), m[0]);
+      tr.SetTranslationPart(gp_Vec(t.x, t.y, t.z));
+      BRepBuilderAPI_Transform operation(s.value, tr, true);
+      if (!operation.IsDone()) throw std::runtime_error("Uniform affine transform failed");
+      auto result = checked(operation.Shape());
+      record_history(*result, s, 0, operation);
+      return result;
+    }
+    gp_GTrsf tr(gp_Mat(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]),
+                gp_XYZ(t.x, t.y, t.z));
+    if (tr.IsNegative() || tr.IsSingular())
+      throw std::runtime_error("Affine transform is singular or reflects the solid");
+    BRepBuilderAPI_GTransform operation(s.value, tr, true);
+    if (!operation.IsDone()) throw std::runtime_error("General affine transform failed");
+    auto result = checked(operation.Shape());
+    // OCCT 7.9.3 GTransform::Modified() does not expose its collected list.
+    // Its ModifiedShape() composes the exact NURBS-conversion and transform
+    // histories. Affine maps preserve topology; require a complete bijection.
+    for (uint8_t kind = 0; kind < 3; ++kind) {
+      const auto input = topology_map(s.value, kind);
+      const auto output = topology_map(result->value, kind);
+      std::set<int> mapped;
+      for (int i = 1; i <= input.Extent(); ++i) {
+        const auto modified = operation.ModifiedShape(input(i));
+        const int index = output.FindIndex(modified);
+        if (index <= 0 || !mapped.insert(index).second)
+          throw std::runtime_error("Affine transform lacks unique exact topology ancestry");
+        result->ancestry.push_back(NativeAncestry{kind, 0,
+            static_cast<uint32_t>(index - 1), static_cast<uint32_t>(i - 1)});
+      }
+      if (mapped.size() != static_cast<size_t>(output.Extent()))
+        throw std::runtime_error("Affine transform added unsupported topology");
+    }
     return result;
   });
 }

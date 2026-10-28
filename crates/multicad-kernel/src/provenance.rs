@@ -1,7 +1,7 @@
 //! Semantic prism sources and exact native ancestry, separate from display data.
 use crate::{
-    GeometryError, GeometryErrorKind, GeometryPolicy, PlaneFrame, Profile, ProfileEdge,
-    RigidTransform, Solid, ffi,
+    AffineTransform, GeometryError, GeometryErrorKind, GeometryPolicy, PlaneFrame, Profile,
+    ProfileEdge, RigidTransform, Solid, ffi,
 };
 use multicad_core::{document::EntityId, references::*};
 use std::collections::{BTreeMap, BTreeSet};
@@ -452,7 +452,12 @@ impl Solid {
             }
         }
         for element in &mut elements {
-            element.geometry = geometry.remove(&element.key);
+            // Native supported geometry takes precedence. Proven affine
+            // Plane/Line/Point descriptors remain exact when OCCT stores their
+            // output as NURBS; these are never inferred from sampled meshes.
+            if let Some(current) = geometry.remove(&element.key) {
+                element.geometry = Some(current);
+            }
         }
         let snapshot = TopologySnapshot {
             owner,
@@ -494,6 +499,15 @@ impl Solid {
                 .get_mut(&out)
                 .ok_or_else(|| failure("Invalid native history result"))?;
             element.origins.extend(input.origins.iter().cloned());
+            if let Some(transform) = transform
+                && let Some(geometry) = input.geometry
+            {
+                element.geometry = AffineTransform {
+                    matrix: transform.rotation,
+                    translation_mm: transform.translation_mm,
+                }
+                .analytic(geometry)?;
+            }
             for anchored in &input.frames {
                 let frame = transform.map_or(anchored.frame, |t| transformed(anchored.frame, t));
                 frames
@@ -514,6 +528,53 @@ impl Solid {
                 .into_iter()
                 .filter_map(|(origin, frame)| frame.map(|frame| AnchoredFrame { origin, frame }))
                 .collect();
+        }
+        self.finish_provenance(elements, &nodes)
+    }
+    pub(crate) fn inherit_affine_provenance(
+        &mut self,
+        source: &Self,
+        transform: AffineTransform,
+        owner: EntityId,
+    ) -> Result<(), GeometryError> {
+        let snapshot = source.topology_snapshot(owner, 0)?;
+        let inputs: BTreeMap<_, _> = snapshot.elements.iter().map(|e| (e.key, e)).collect();
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let mut elements: BTreeMap<_, _> = nodes
+            .iter()
+            .map(|n| key(n.kind, n.index).map(|k| (k, empty(k))))
+            .collect::<Result<_, _>>()?;
+        let mut mapped = BTreeSet::new();
+        for relation in ffi::ancestry(&self.native.0).map_err(failure)? {
+            let out = key(relation.kind, relation.output)?;
+            if relation.operand != 0 || !mapped.insert(out) {
+                return Err(failure("Affine history is not a unique source mapping"));
+            }
+            let input = inputs
+                .get(&key(relation.kind, relation.input)?)
+                .ok_or_else(|| failure("Affine source topology is absent"))?;
+            let element = elements
+                .get_mut(&out)
+                .ok_or_else(|| failure("Affine output topology is absent"))?;
+            element.origins = input.origins.clone();
+            element.frames = input
+                .frames
+                .iter()
+                .map(|a| {
+                    Ok(AnchoredFrame {
+                        origin: a.origin.clone(),
+                        frame: transform.frame(a.frame)?,
+                    })
+                })
+                .collect::<Result<_, GeometryError>>()?;
+            element.geometry = input
+                .geometry
+                .map(|g| transform.analytic(g))
+                .transpose()?
+                .flatten();
+        }
+        if mapped.len() != elements.len() {
+            return Err(failure("Affine output has incomplete source topology"));
         }
         self.finish_provenance(elements, &nodes)
     }

@@ -227,6 +227,11 @@ mod ffi {
             rotation: &[f64],
             translation: &Point3,
         ) -> Result<UniquePtr<Shape>>;
+        fn affine_transform_shape(
+            shape: &Shape,
+            matrix: &[f64],
+            translation: &Point3,
+        ) -> Result<UniquePtr<Shape>>;
         fn bounds(shape: &Shape) -> Result<Bounds3>;
         fn faces(shape: &Shape) -> Result<Vec<FaceInfo>>;
         fn topology(shape: &Shape) -> Result<Vec<TopologyNode>>;
@@ -309,6 +314,8 @@ mod distance;
 pub use distance::{BRepSelection, DistanceWitness, MinimumDistance};
 mod geometry;
 pub use geometry::*;
+mod affine;
+pub use affine::AffineTransform;
 mod drawing;
 pub use drawing::*;
 mod worker;

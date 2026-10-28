@@ -612,6 +612,21 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        // An exact affine image of a proven plane stays planar even when OCCT
+        // stores it as a NURBS surface. Preserve that typed proof for picking;
+        // no surface fitting or display triangles establish this descriptor.
+        let planes: std::collections::BTreeMap<_, _> = self
+            .provenance
+            .iter()
+            .filter_map(|e| match e.geometry {
+                Some(multicad_core::references::AnalyticGeometry::Plane { frame })
+                    if e.key.kind == multicad_core::references::TopologyKind::Face =>
+                {
+                    Some((e.key.ordinal, (frame.origin_mm, frame.normal())))
+                }
+                _ => None,
+            })
+            .collect();
         ffi::faces(&self.native.0)
             .map_err(|e| native("faces", e))
             .map(|faces| {
@@ -619,7 +634,10 @@ impl Solid {
                     .into_iter()
                     .map(|f| Face {
                         index: f.index,
-                        plane: f.planar.then_some((xyz(f.origin), xyz(f.normal))),
+                        plane: f
+                            .planar
+                            .then_some((xyz(f.origin), xyz(f.normal)))
+                            .or_else(|| planes.get(&f.index).copied()),
                         center_mm: xyz(f.center),
                         area_mm2: f.area,
                     })
