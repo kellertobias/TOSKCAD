@@ -684,6 +684,9 @@ impl Application {
                 };
                 let project = Project::new(Document::new(name).map_err(|e| e.to_string())?)?;
                 if !self.welcome {
+                    if self.current().sketch.measurement.active() {
+                        self.close_measurement();
+                    }
                     self.remember_current_view();
                 }
                 self.discard_welcome_placeholder();

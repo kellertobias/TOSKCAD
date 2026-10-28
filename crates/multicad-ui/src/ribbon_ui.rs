@@ -68,6 +68,27 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
         });
     }
     sections.retain(|group| !group.entries.is_empty());
+    let used: std::collections::BTreeSet<_> = sections
+        .iter()
+        .flat_map(|group| {
+            group.entries.iter().flat_map(|entry| match entry {
+                Entry::Tool(id) => vec![*id],
+                Entry::Menu { tools, .. } => tools.clone(),
+            })
+        })
+        .collect();
+    let extra: Vec<_> = tab
+        .tools
+        .iter()
+        .filter(|id| !used.contains(**id))
+        .map(|id| Entry::Tool(id))
+        .collect();
+    if !extra.is_empty() {
+        sections.push(Group {
+            label: "More",
+            entries: extra,
+        });
+    }
     sections
 }
 fn implemented(command: Command) -> bool {
@@ -341,5 +362,19 @@ mod tests {
         assert!((center.x - 600.).abs() < 16.);
         assert!((center.y - 62.).abs() < 16.);
         output.drop_without_applying_deltas();
+    }
+    #[test]
+    fn additional_catalog_tools_are_not_lost_by_common_grouping() {
+        let tab = RibbonTab {
+            title: "Common",
+            tools: vec!["box", "cylinder", "new-module-tool"],
+            requires_active_sketch: false,
+        };
+        assert!(groups(Mode::Model, &tab).iter().any(|group| {
+            group
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, Entry::Tool("new-module-tool")))
+        }));
     }
 }

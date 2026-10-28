@@ -31,7 +31,7 @@ fn version_is_machine_readable_and_has_no_extra_diagnostics() {
         assert_eq!(
             String::from_utf8(output.stdout).expect("version is UTF-8"),
             format!(
-                "MultiCAD {}\n",
+                "Tusk Cut {}\n",
                 option_env!("MULTICAD_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
             )
         );
