@@ -74,7 +74,7 @@ fn report(document: &Document) -> Result<serde_json::Value, Error> {
         })
         .collect::<Result<Vec<_>, Error>>()?;
     Ok(
-        serde_json::json!({"document":document.id(),"source_hash":snapshot.stamp.source_hash,"bodies":bodies,"body_sources":snapshot.body_sources,"occurrences":occurrences,"leaf_occurrences":leaf_occurrences,"parameters":parameters,"placement_drivers":placement_drivers,"producer_sources":producer_sources,"sketches":sketches,"consumed_bodies":snapshot.consumed_bodies,"references":snapshot.references,"references_resolved":snapshot.references.all_resolved(),"scope":"Saved canonical source regenerated with the production native model compiler and checked sketch solver. Occurrence bounds, volume and topology come from exact world B-reps; display meshes are not manufacturing input."}),
+        serde_json::json!({"document":document.id(),"source_hash":snapshot.stamp.source_hash,"bodies":bodies,"body_sources":snapshot.body_sources,"occurrences":occurrences,"leaf_occurrences":leaf_occurrences,"transfer_counts":snapshot.transfer_counts,"parameters":parameters,"placement_drivers":placement_drivers,"producer_sources":producer_sources,"sketches":sketches,"consumed_bodies":snapshot.consumed_bodies,"references":snapshot.references,"references_resolved":snapshot.references.all_resolved(),"scope":"Saved canonical source regenerated with the production native model compiler and checked sketch solver. Occurrence bounds, volume and topology come from exact world B-reps; display meshes are not manufacturing input."}),
     )
 }
 fn write_new(path: &Path, report: &serde_json::Value) -> Result<(), Error> {
