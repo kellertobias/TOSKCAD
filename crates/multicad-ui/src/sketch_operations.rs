@@ -8,7 +8,9 @@ use multicad_core::{
     document::EntityId,
     sketch_pattern::{MAX_PATTERN_INSTANCES, Pattern, PatternOptions, PatternRequest},
     sketch_transform::{Transform, TransformOptions, TransformRequest},
-    sketch_trim::{Endpoint, ExtendLine, TrimCurve, TrimPolicy, TrimRequest},
+    sketch_trim::{
+        Contact, Endpoint, ExtendLine, ExtendSpline, TrimCurve, TrimPolicy, TrimRequest,
+    },
 };
 use std::collections::BTreeSet;
 
@@ -122,6 +124,9 @@ pub struct Panel {
     boundaries: BTreeSet<EntityId>,
     pick_mm: [f64; 2],
     endpoint: Endpoint,
+    max_length_mm: f64,
+    extension_contacts: Option<(ExtendSpline, Vec<Contact>)>,
+    extension_contact: Option<usize>,
     selection_seeded: bool,
     error: Option<String>,
 }
@@ -140,6 +145,9 @@ impl Default for Panel {
             boundaries: BTreeSet::new(),
             pick_mm: [0.; 2],
             endpoint: Endpoint::End,
+            max_length_mm: 100.,
+            extension_contacts: None,
+            extension_contact: None,
             selection_seeded: false,
             error: None,
         }
@@ -174,6 +182,51 @@ impl Panel {
     }
     pub fn curve_selection(&self) -> BTreeSet<EntityId> {
         self.boundaries.iter().copied().chain(self.target).collect()
+    }
+    pub fn clear_extension_contacts(&mut self) {
+        self.extension_contacts = None;
+        self.extension_contact = None;
+    }
+    /// The host must independently validate the query's source/session stamp.
+    /// A matching form is necessary, but never authorizes a model mutation.
+    pub fn set_extension_contacts(
+        &mut self,
+        request: &ExtendSpline,
+        contacts: Vec<Contact>,
+    ) -> Result<(), String> {
+        let mut base = request.clone();
+        base.contact_index = None;
+        if self.tool != Some(OperationTool::Extend) || self.extension_spec().as_ref() != Some(&base)
+        {
+            return Err("Extension choices belong to different operation controls".into());
+        }
+        if contacts.len() > 256
+            || contacts.iter().any(|contact| {
+                !contact.parameter.is_finite()
+                    || !(0. ..=1.).contains(&contact.parameter)
+                    || contact.point_mm.iter().any(|v| !v.is_finite())
+                    || contact.boundaries.is_empty()
+                    || !contact.boundaries.is_subset(&base.boundaries)
+            })
+            || contacts
+                .windows(2)
+                .any(|pair| pair[1].parameter - pair[0].parameter <= 1e-12)
+        {
+            return Err("Invalid or unordered exact extension contacts".into());
+        }
+        self.extension_contacts = Some((base, contacts));
+        self.extension_contact = None;
+        self.error = None;
+        Ok(())
+    }
+    fn extension_spec(&self) -> Option<ExtendSpline> {
+        Some(ExtendSpline {
+            target: self.target?,
+            endpoint: self.endpoint,
+            boundaries: self.boundaries.clone(),
+            max_length_mm: self.max_length_mm,
+            contact_index: None,
+        })
     }
     pub fn set_curve_pick(
         &mut self,
@@ -220,12 +273,6 @@ impl Panel {
                 if self.target == Some(curve) {
                     return Err("A curve cannot be its own trim or extension boundary".into());
                 }
-                if matches!(kind, CurveKind::BSpline { .. }) {
-                    return Err(
-                        "Spline boundaries are unavailable until an exact query is supported"
-                            .into(),
-                    );
-                }
                 if !toggle {
                     self.boundaries.clear();
                 }
@@ -234,6 +281,7 @@ impl Panel {
                 }
             }
         }
+        self.clear_extension_contacts();
         self.selection_seeded = true;
         self.error = None;
         Ok(())
@@ -360,9 +408,6 @@ impl Panel {
             .iter()
             .find(|curve| curve.id == target)
             .ok_or("The target curve no longer exists")?;
-        if matches!(curve.kind, CurveKind::BSpline { .. }) {
-            return Err("Spline targets are not supported by trim or extend yet".into());
-        }
         if tool == OperationTool::Extend && matches!(curve.kind, CurveKind::Circle { .. }) {
             return Err("A closed circle has no endpoint to extend; choose a line or arc".into());
         }
@@ -373,15 +418,12 @@ impl Panel {
             return Err("A curve cannot be its own trim or extension boundary".into());
         }
         for id in &self.boundaries {
-            let curve = source
+            source
                 .sketch
                 .curves
                 .iter()
                 .find(|curve| curve.id == *id)
                 .ok_or("A boundary no longer exists")?;
-            if matches!(curve.kind, CurveKind::BSpline { .. }) {
-                return Err("Spline boundaries are not supported by trim/extend yet; choose a line, arc or circle".into());
-            }
         }
         let request = match tool {
             OperationTool::Trim => {
@@ -400,7 +442,38 @@ impl Panel {
                     endpoint: self.endpoint,
                     boundaries: self.boundaries.clone(),
                 };
-                if matches!(curve.kind, CurveKind::Arc { .. }) {
+                if matches!(curve.kind, CurveKind::BSpline { .. }) {
+                    if !self.max_length_mm.is_finite()
+                        || self.max_length_mm <= 0.
+                        || self.max_length_mm > 1e6
+                    {
+                        return Err("Maximum continuation must be finite, greater than zero and at most 1000000 mm".into());
+                    }
+                    let mut spline = self.extension_spec().ok_or("Choose a spline target")?;
+                    if let Some((base, contacts)) = &self.extension_contacts {
+                        if *base != spline {
+                            return Err(
+                                "Operation inputs changed; Preview exact contacts again".into()
+                            );
+                        }
+                        if contacts.is_empty() {
+                            return Err(
+                                "No exact boundary contact within the maximum continuation".into(),
+                            );
+                        }
+                        if contacts.len() > 1 && self.extension_contact.is_none() {
+                            return Err("Choose an exact contact, then Preview again".into());
+                        }
+                        if self
+                            .extension_contact
+                            .is_some_and(|index| index >= contacts.len())
+                        {
+                            return Err("The chosen exact contact is no longer available".into());
+                        }
+                        spline.contact_index = self.extension_contact;
+                    }
+                    TrimRequest::ExtendSpline(spline)
+                } else if matches!(curve.kind, CurveKind::Arc { .. }) {
                     TrimRequest::ExtendArc(request)
                 } else {
                     TrimRequest::Extend(request)
@@ -543,6 +616,7 @@ impl Panel {
         }
     }
     fn curve_controls(&mut self, ui: &mut egui::Ui, source: &Source, tool: OperationTool) {
+        let prior_spec = self.extension_spec();
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.pick_lane, CurvePickLane::Target, "Pick target")
                 .on_hover_text("Click a curve in the viewer to choose the curve to edit");
@@ -579,14 +653,14 @@ impl Panel {
                 for (index, curve) in source.sketch.curves.iter().enumerate() {
                     let supported = target_supported(tool, &curve.kind);
                     ui.add_enabled_ui(supported, |ui| {
-                        ui.selectable_value(&mut self.target, Some(curve.id), curve_label_at(index, &curve.kind))
-                            .on_disabled_hover_text(if matches!(curve.kind, CurveKind::Circle { .. }) { "A closed circle has no endpoint to extend" } else { "Spline targets are unavailable for trim/extend" });
+                        if ui.selectable_value(&mut self.target, Some(curve.id), curve_label_at(index, &curve.kind))
+                            .on_disabled_hover_text("A closed circle has no endpoint to extend").clicked() { ui.close(); }
                     });
                 }
             })
             .response
             .on_hover_text(
-                "Trim supports lines, arcs and circles. Extend supports lines and arcs. Curve identities remain canonical",
+                "Trim supports lines, arcs, circles and splines. Extend supports open lines, arcs and splines. Preview checks exact intersections",
             );
         if prior != self.target
             && let Some(target) = self.target
@@ -611,8 +685,18 @@ impl Panel {
                     Endpoint::End => "End endpoint",
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.endpoint, Endpoint::Start, "Start endpoint");
-                    ui.selectable_value(&mut self.endpoint, Endpoint::End, "End endpoint");
+                    if ui
+                        .selectable_value(&mut self.endpoint, Endpoint::Start, "Start endpoint")
+                        .clicked()
+                    {
+                        ui.close();
+                    }
+                    if ui
+                        .selectable_value(&mut self.endpoint, Endpoint::End, "End endpoint")
+                        .clicked()
+                    {
+                        ui.close();
+                    }
                 });
         }
         ui.horizontal(|ui| {
@@ -639,17 +723,9 @@ impl Panel {
                 for index in range {
                     let (source_index, curve) = boundaries[index];
                     let mut checked = self.boundaries.contains(&curve.id);
-                    let supported = !matches!(curve.kind, CurveKind::BSpline { .. });
                     if ui
-                        .add_enabled(
-                            supported || checked,
-                            egui::Checkbox::new(&mut checked, curve_label_at(source_index, &curve.kind)),
-                        )
-                        .on_hover_text(if supported {
-                            "Use this exact line, arc or circle as a boundary"
-                        } else {
-                            "Spline boundaries are unavailable for trim/extend; uncheck to exclude this boundary"
-                        })
+                        .checkbox(&mut checked, curve_label_at(source_index, &curve.kind))
+                        .on_hover_text("Use this exact line, arc, circle or spline as a boundary")
                         .changed()
                     {
                         if checked {
@@ -660,13 +736,56 @@ impl Panel {
                     }
                 }
             });
-        ui.small(if tool == OperationTool::Trim { "Trim lines, arcs or circles against exact line, arc or circle boundaries. Spline edits are unavailable." } else { "Extend a line or arc endpoint to an exact line, arc or circle boundary. Closed circles and splines cannot be extended." });
+        if prior_spec != self.extension_spec() {
+            self.clear_extension_contacts();
+        }
+        let spline_extension = tool == OperationTool::Extend
+            && self
+                .target
+                .and_then(|id| source.sketch.curves.iter().find(|curve| curve.id == id))
+                .is_some_and(|curve| matches!(curve.kind, CurveKind::BSpline { .. }));
+        if spline_extension {
+            let prior_length = self.max_length_mm;
+            number_input(ui, "Maximum continuation", &mut self.max_length_mm, " mm");
+            if prior_length != self.max_length_mm {
+                self.clear_extension_contacts();
+            }
+            ui.small("Keeps the original spline segment exactly and adds a straight continuation along its geometric endpoint tangent. Maximum: 1000000 mm.");
+            if let Some((_, contacts)) = &self.extension_contacts {
+                if contacts.is_empty() {
+                    ui.colored_label(
+                        Color32::LIGHT_RED,
+                        "No exact boundary contact within this distance.",
+                    );
+                } else {
+                    ui.label(format!("{} exact boundary contact(s)", contacts.len()));
+                    if contacts.len() > 1 {
+                        egui::ComboBox::from_id_salt("spline-extension-contact")
+                            .selected_text(self.extension_contact.map(|i| format!("Contact {}", i + 1)).unwrap_or_else(|| "Choose exact contact".into()))
+                            .show_ui(ui, |ui| {
+                                for (index, contact) in contacts.iter().enumerate() {
+                                    if ui.selectable_value(&mut self.extension_contact, Some(index), format!("Contact {} · X {:.6} / Y {:.6} mm", index + 1, contact.point_mm[0], contact.point_mm[1])).on_hover_text("Select this exact boundary contact, then Preview to check the resulting spline and constraints").clicked() {
+                                        self.error = None;
+                                        ui.close();
+                                    }
+                                }
+                            }).response.on_hover_text("Multiple contacts require an explicit choice; no nearest contact is chosen for you");
+                    }
+                    ui.small(
+                        "Preview checks the chosen endpoint and affected constraints before Apply.",
+                    );
+                }
+            } else {
+                ui.small("Preview finds exact contacts. If there is more than one, choose a contact and Preview again.");
+            }
+        }
+        ui.small(if tool == OperationTool::Trim { "Trim a picked span against exact line, arc, circle or spline boundaries." } else { "Extend an open curve endpoint to an exact boundary. Missing, tangent or ambiguous contacts keep the source unchanged." });
     }
 }
 fn target_supported(tool: OperationTool, kind: &CurveKind) -> bool {
     match tool {
-        OperationTool::Trim => !matches!(kind, CurveKind::BSpline { .. }),
-        OperationTool::Extend => matches!(kind, CurveKind::Line { .. } | CurveKind::Arc { .. }),
+        OperationTool::Trim => true,
+        OperationTool::Extend => !matches!(kind, CurveKind::Circle { .. }),
         _ => false,
     }
 }
@@ -842,7 +961,7 @@ mod tests {
         assert_eq!(source, before);
     }
     #[test]
-    fn unsupported_spline_is_reported_without_silently_dropping_selected_boundaries() {
+    fn spline_targets_and_boundaries_build_explicit_exact_query_inputs() {
         let (mut source, line, _) = source();
         let poles: Vec<_> = [[0., 1.], [4., 3.], [7., 2.], [10., 1.]]
             .into_iter()
@@ -859,22 +978,26 @@ mod tests {
         });
         let mut panel = Panel::default();
         panel.begin(OperationTool::Trim);
-        panel.seed_target_selection(&source, &[line, spline]);
-        assert_eq!(panel.target, Some(line));
-        assert!(panel.boundaries.contains(&spline));
-        assert!(
-            panel
-                .request(&source, &[])
-                .unwrap_err()
-                .contains("Spline boundaries")
-        );
+        panel.target = Some(line);
+        panel.boundaries.insert(spline);
+        assert!(matches!(
+            panel.request(&source, &[]).unwrap(),
+            OperationRequest::Trim(TrimRequest::TrimCurve(_), _)
+        ));
         panel.target = Some(spline);
-        assert!(
-            panel
-                .request(&source, &[])
-                .unwrap_err()
-                .contains("Spline targets")
-        );
+        panel.boundaries = BTreeSet::from([line]);
+        assert!(matches!(
+            panel.request(&source, &[]).unwrap(),
+            OperationRequest::Trim(TrimRequest::TrimCurve(_), _)
+        ));
+        panel.tool = Some(OperationTool::Extend);
+        let OperationRequest::Trim(TrimRequest::ExtendSpline(request), _) =
+            panel.request(&source, &[]).unwrap()
+        else {
+            panic!("Spline extension")
+        };
+        assert_eq!(request.max_length_mm, 100.);
+        assert_eq!(request.contact_index, None);
     }
     #[test]
     fn every_panel_builds_headlessly_without_emitting_a_request_or_changing_source() {
