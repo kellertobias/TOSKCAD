@@ -115,19 +115,26 @@ pub(crate) fn build(
     };
     if !matches!(
         document.get(*component).map(|e| &e.data),
-        Some(EntityData::Part { .. })
+        Some(EntityData::Part { .. } | EntityData::Assembly { .. })
     ) {
         return Err(error(
             Some(instance),
             "Nested subassembly instances require the assembly evaluator; no unplaced fallback is published",
         ));
     }
-    let producer = *body_heads.get(component).ok_or_else(|| {
-        error(
-            Some(instance),
-            "Occurrence component has no current unsuppressed solid producer",
-        )
-    })?;
+    let producer = if matches!(
+        document.get(*component).map(|e| &e.data),
+        Some(EntityData::Assembly { .. })
+    ) {
+        *component
+    } else {
+        *body_heads.get(component).ok_or_else(|| {
+            error(
+                Some(instance),
+                "Occurrence component has no current unsuppressed solid producer",
+            )
+        })?
+    };
     let source = solids.get(&producer).ok_or_else(|| {
         error(
             Some(instance),

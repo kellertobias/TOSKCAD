@@ -54,6 +54,8 @@ pub struct ModelSnapshot {
     pub body_sources: BTreeMap<EntityId, EntityId>,
     /// Explicit occurrence poses/world topology; component meshes remain shared.
     pub occurrences: BTreeMap<EntityId, Arc<crate::OccurrenceSnapshot>>,
+    /// Final physical Part leaves only; source definitions are accessed explicitly.
+    pub leaf_occurrences: BTreeMap<model::OccurrencePath, Arc<crate::LeafOccurrenceSnapshot>>,
     /// Canonical tool Parts retained as source/history but consumed by an
     /// unsuppressed Boolean rather than emitted as independent final bodies.
     pub consumed_bodies: BTreeSet<EntityId>,
@@ -155,8 +157,39 @@ pub struct Model {
     pub(crate) policy: GeometryPolicy,
     solids: BTreeMap<EntityId, Solid>,
     snapshot: ModelSnapshot,
+    leaves: crate::assemblies::LeafStore,
 }
 impl Model {
+    pub fn leaf_solid(&self, path: &model::OccurrencePath) -> Option<&Solid> {
+        self.leaves.solids.get(path).or_else(|| {
+            path.members
+                .is_empty()
+                .then(|| self.solid(path.root))
+                .flatten()
+        })
+    }
+    pub fn leaf_snapshot(
+        &self,
+        path: &model::OccurrencePath,
+    ) -> Option<&crate::LeafOccurrenceSnapshot> {
+        self.leaves.snapshots.get(path).map(Arc::as_ref)
+    }
+    pub fn assembly_evaluation(&self) -> model::AssemblyEvaluationInfo {
+        model::AssemblyEvaluationInfo {
+            source_hash: self.snapshot.stamp.source_hash,
+            leaves: self
+                .snapshot
+                .leaf_occurrences
+                .values()
+                .map(|leaf| model::AssemblyLeafReceipt {
+                    path: leaf.path.clone(),
+                    component: leaf.component,
+                    producer: leaf.producer,
+                    pose: leaf.pose,
+                })
+                .collect(),
+        }
+    }
     pub fn snapshot(&self) -> &ModelSnapshot {
         &self.snapshot
     }
@@ -268,7 +301,7 @@ impl Compiler {
                 .chain(
                     document
                         .entities()
-                        .filter(|e| matches!(e.data, EntityData::Instance { .. }))
+                        .filter(|e| matches!(&e.data, EntityData::Instance { .. })||matches!(&e.data,EntityData::Assembly{instances}if !instances.is_empty()))
                         .map(|e| e.id),
                 )
                 .collect()
@@ -307,6 +340,7 @@ impl Compiler {
         let mut consumed_versions = BTreeSet::new();
         let mut shapes = BTreeMap::new();
         let mut occurrences = BTreeMap::new();
+        let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
         for id in document.topological_order().map_err(|e| error(None, e))? {
@@ -333,6 +367,43 @@ impl Compiler {
             if !needed.contains(&id) {
                 continue;
             }
+            if matches!(entity.data, EntityData::Assembly { .. }) {
+                let solid = crate::assemblies::component(
+                    document,
+                    id,
+                    &occurrences,
+                    &solids,
+                    &mut leaves,
+                    revision,
+                    self.policy,
+                )?;
+                let topology = solid
+                    .topology_snapshot(id, revision)
+                    .map_err(|e| error(Some(id), e))?;
+                let snapshot = ShapeSnapshot {
+                    producer: id,
+                    bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
+                    volume_mm3: solid.volume_mm3().map_err(|e| error(Some(id), e))?,
+                    solid_count: solid.solid_count().map_err(|e| error(Some(id), e))?,
+                    mesh: solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?,
+                    edges: solid
+                        .display_edges(self.mesh.linear_deflection_mm)
+                        .map_err(|e| error(Some(id), e))?,
+                    vertices: solid.display_vertices().map_err(|e| error(Some(id), e))?,
+                    topology: topology.clone(),
+                };
+                triangles = triangles.saturating_add(snapshot.mesh.indices.len() / 3);
+                if triangles > MAX_MODEL_TRIANGLES {
+                    return Err(error(
+                        Some(id),
+                        "Assembly display exceeds the native triangle budget",
+                    ));
+                }
+                topologies.insert(id, topology);
+                shapes.insert(id, Arc::new(snapshot));
+                solids.insert(id, solid);
+                continue;
+            }
             if matches!(entity.data, EntityData::Instance { .. }) {
                 if occurrences.len() >= crate::MAX_MODEL_OCCURRENCES {
                     return Err(error(
@@ -353,6 +424,7 @@ impl Compiler {
                     revision,
                 )?;
                 topologies.insert(id, occurrence.topology.clone());
+                leaves.instance(document, &occurrence, revision)?;
                 solids.insert(id, solid);
                 occurrences.insert(id, Arc::new(occurrence));
                 continue;
@@ -695,9 +767,40 @@ impl Compiler {
                 bodies.remove(body);
             }
         }
+        let definitions = model::assembly_definition_parts(document).map_err(|e| error(None, e))?;
+        let members = model::assembly_member_instances(document).map_err(|e| error(None, e))?;
+        bodies.retain(|body, _| !definitions.contains(body));
+        occurrences.retain(|instance, _| !members.contains(instance));
+        for (body, producer) in &body_sources {
+            if let Some(shape) = shapes.get(producer) {
+                leaves.part(
+                    *body,
+                    *body,
+                    *producer,
+                    Default::default(),
+                    shape.bounds,
+                    shape.topology.clone(),
+                )?;
+            }
+        }
+        let leaf_occurrences = leaves
+            .snapshots
+            .iter()
+            .filter(|(path, _)| {
+                bodies.contains_key(&path.root) || occurrences.contains_key(&path.root)
+            })
+            .map(|(path, leaf)| (path.clone(), leaf.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if leaf_occurrences.len() > crate::MAX_MODEL_OCCURRENCES {
+            return Err(error(
+                None,
+                "Physical Assembly expansion exceeds the 4096-leaf budget",
+            ));
+        }
         Ok(Model {
             policy: self.policy,
             solids,
+            leaves,
             snapshot: ModelSnapshot {
                 scope: roots.map_or(EvaluationScope::Full, EvaluationScope::Sources),
                 stamp,
@@ -705,6 +808,7 @@ impl Compiler {
                 bodies,
                 body_sources,
                 occurrences,
+                leaf_occurrences,
                 consumed_bodies,
                 cut_targets: vec![],
                 references,
@@ -737,6 +841,7 @@ pub fn validate_source_roots(
                 EntityData::Feature { .. }
                     | EntityData::Part { .. }
                     | EntityData::Instance { .. }
+                    | EntityData::Assembly { .. }
                     | EntityData::Plane { .. }
             )
         ) {

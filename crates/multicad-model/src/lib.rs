@@ -2,6 +2,7 @@
 //! thread; immutable display and reference snapshots may cross to the UI.
 mod advanced;
 mod alignment;
+mod assemblies;
 mod compiler;
 mod drawings;
 mod edge_treatment;
@@ -14,6 +15,7 @@ mod scale;
 mod split;
 mod targets;
 mod transform;
+pub use assemblies::LeafOccurrenceSnapshot;
 pub use compiler::*;
 pub use drawings::*;
 pub use occurrences::{MAX_MODEL_OCCURRENCES, OccurrenceSnapshot};
