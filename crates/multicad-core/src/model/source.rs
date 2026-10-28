@@ -654,6 +654,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::SPLIT_TYPE => {
                     super::read_split(document, entity.id)?;
                 }
+                super::TRANSFORM_TYPE => {
+                    super::read_transform(document, entity.id)?;
+                }
                 super::REVOLVE_TYPE => {
                     super::read_revolve(document, entity.id)?;
                 }
@@ -674,6 +677,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::REVOLVE_TYPE,
                     super::BOOLEAN_TYPE,
                     super::SPLIT_TYPE,
+                    super::TRANSFORM_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {

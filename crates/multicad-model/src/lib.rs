@@ -5,6 +5,7 @@ mod extrude;
 mod runtime;
 mod split;
 mod targets;
+mod transform;
 pub use compiler::*;
 pub use runtime::*;
 pub use targets::*;

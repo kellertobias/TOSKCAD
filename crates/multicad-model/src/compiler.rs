@@ -380,6 +380,11 @@ impl Compiler {
                     )
                     .map_err(|e| error(Some(id), e))?
                 }
+                (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA) => {
+                    let source =
+                        model::read_transform(document, id).map_err(|e| error(Some(id), e))?;
+                    crate::transform::build(id, &source, context.parameters(), &solids)?
+                }
                 (model::SPLIT_TYPE, model::SPLIT_SCHEMA) => {
                     let source = model::read_split(document, id).map_err(|e| error(Some(id), e))?;
                     let solid = crate::split::build(
