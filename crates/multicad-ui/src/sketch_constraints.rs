@@ -228,6 +228,10 @@ fn solution_matches_source(
                                 ..
                             },
                         ) if external.contains(&a.id) => ca == cb && sa == sb && ea == eb,
+                        (
+                            model::CurveKind::BSpline { poles: pa, .. },
+                            model::CurveKind::BSpline { poles: pb, .. },
+                        ) if external.contains(&a.id) => pa == pb,
                         (a, b) => a == b,
                     }
             })
@@ -320,9 +324,7 @@ impl ConstraintEditor {
         multicad_core::document::DocumentError,
     > {
         if let Some(current) = self.current.as_ref().filter(|current| {
-            current.sketch == id
-                && current.stamp.document == session.document().id()
-                && current.stamp.revision == session.revision()
+            current.sketch == id && current.is_current(session.document(), session.revision())
         }) {
             return Ok((current.canonical().clone(), current.frame, current.plane));
         }
@@ -831,11 +833,7 @@ impl ConstraintEditor {
                 semantic.evaluation.diagnostics.state,
                 SolveState::FullyConstrained | SolveState::Underconstrained
             );
-            let external = multicad_core::sketch_external::bindings(&candidate, id)
-                .map_err(|e| e.to_string())?
-                .iter()
-                .filter_map(|binding| binding.definition.output.curve())
-                .collect();
+            let external = external_preview::external_curve_ids(&candidate, id)?;
             if !success || !solution_matches_source(&source, solved, &external) {
                 return Err(
                     "Operation solution does not match its canonical source geometry".into(),
@@ -2507,6 +2505,8 @@ mod tests {
         assert!(editor.semantic_preview().is_some());
         assert!(editor.canonical_draft);
         editor.set_evaluation(Some(ReferenceReport {
+            external_results: Default::default(),
+            external_errors: Default::default(),
             revision: session.revision(),
             entries: vec![],
         }));

@@ -1158,6 +1158,8 @@ mod tests {
             generation: 1,
         };
         let report = ReferenceReport {
+            external_results: Default::default(),
+            external_errors: Default::default(),
             revision: session.revision(),
             entries: vec![],
         };

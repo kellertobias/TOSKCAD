@@ -1,5 +1,37 @@
 //! External metadata and sketch geometry share one checked Apply/Discard lane.
 use super::*;
+fn owns_external_reference(
+    document: &Document,
+    sketch: EntityId,
+    reference: EntityId,
+) -> Result<bool, String> {
+    use multicad_core::sketch_external;
+    Ok(sketch_external::bindings(document, sketch)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|binding| binding.reference == reference)
+        || sketch_external::occurrence_bindings(document, sketch)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .any(|request| request.query.reference == reference))
+}
+pub(super) fn external_curve_ids(
+    document: &Document,
+    sketch: EntityId,
+) -> Result<BTreeSet<EntityId>, String> {
+    use multicad_core::sketch_external;
+    Ok(sketch_external::bindings(document, sketch)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter_map(|binding| binding.definition.output.curve())
+        .chain(
+            sketch_external::occurrence_bindings(document, sketch)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter_map(|request| request.output.curve),
+        )
+        .collect())
+}
 #[derive(Default)]
 pub(super) struct NativeCheck {
     pub required: bool,
@@ -97,20 +129,10 @@ impl ConstraintEditor {
         if old.is_none() && next.is_none() {
             return Err("Reference edit has no metadata owner".into());
         }
-        if old.is_some()
-            && !multicad_core::sketch_external::bindings(session.document(), id)
-                .map_err(|e| e.to_string())?
-                .iter()
-                .any(|binding| binding.reference == reference)
-        {
+        if old.is_some() && !owns_external_reference(session.document(), id, reference)? {
             return Err("Reference does not belong to the selected sketch".into());
         }
-        if next.is_some()
-            && !multicad_core::sketch_external::bindings(candidate, id)
-                .map_err(|e| e.to_string())?
-                .iter()
-                .any(|binding| binding.reference == reference)
-        {
+        if next.is_some() && !owns_external_reference(candidate, id, reference)? {
             return Err("Candidate reference does not belong to the selected sketch".into());
         }
         let mut changes = vec![Mutation::Replace(candidate_sketch.clone())];
@@ -143,11 +165,7 @@ impl ConstraintEditor {
         let solved = semantic
             .solved()
             .ok_or("Reference edit has no solved geometry")?;
-        let external = multicad_core::sketch_external::bindings(candidate, id)
-            .map_err(|e| e.to_string())?
-            .iter()
-            .filter_map(|binding| binding.definition.output.curve())
-            .collect();
+        let external = external_curve_ids(candidate, id)?;
         if !matches!(
             edit.evaluation.diagnostics.state,
             SolveState::FullyConstrained | SolveState::Underconstrained
@@ -215,6 +233,35 @@ impl ConstraintEditor {
                     crate::external_references::method_label(binding.definition.method),
                     crate::external_references::behavior_label(binding.definition.behavior)
                 ));
+            } else if let Ok(request) =
+                multicad_core::sketch_external::read_occurrence(preview.document(), reference)
+            {
+                ui.label(format!(
+                    "Source: {}",
+                    preview
+                        .document()
+                        .get(request.query.source.component)
+                        .map_or("Missing Part", |entity| entity.name.as_str())
+                ));
+                let method = match request.query.method {
+                    multicad_core::sketch_external::QueryMethod::Coplanar => "Coplanar projection",
+                    multicad_core::sketch_external::QueryMethod::Project => "Project onto plane",
+                    multicad_core::sketch_external::QueryMethod::Intersect => "Plane intersection",
+                };
+                ui.label(format!(
+                    "{method} · {}",
+                    crate::external_references::behavior_label(request.behavior)
+                ));
+                ui.small(format!(
+                    "Source path · {} nested members",
+                    request.query.source.path.members.len()
+                ))
+                .on_hover_text(format!("{:?}", request.query.source.path));
+                ui.small(if request.query.sketch_context.is_some() {
+                    "Coordinates relative to the selected sketch occurrence"
+                } else {
+                    "Coordinates relative to the world sketch plane"
+                });
             } else if preview.document().get(reference).is_none() {
                 ui.label("This reference and its protected output geometry will be removed.");
             }
