@@ -3,6 +3,7 @@
 mod advanced;
 mod alignment;
 mod assemblies;
+pub mod assembly_inspection;
 mod compiler;
 mod drawings;
 mod edge_treatment;
