@@ -456,6 +456,9 @@ pub struct Solid {
     pub(crate) provenance: Vec<multicad_core::references::TopologyElement>,
 }
 impl Solid {
+    pub fn geometry_policy(&self) -> GeometryPolicy {
+        self.policy
+    }
     pub(crate) fn adopt(
         handle: cxx::UniquePtr<ffi::Shape>,
         policy: GeometryPolicy,

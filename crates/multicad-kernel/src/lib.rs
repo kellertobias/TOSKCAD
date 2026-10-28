@@ -244,6 +244,7 @@ mod ffi {
             operation: u8,
             fuzzy: f64,
         ) -> Result<UniquePtr<Shape>>;
+        fn inspection_union(shape: &Shape) -> Result<UniquePtr<Shape>>;
         fn transform_shape(
             shape: &Shape,
             rotation: &[f64],
@@ -360,6 +361,8 @@ pub struct Shape(cxx::UniquePtr<ffi::Shape>);
 pub type Error = Box<dyn std::error::Error>;
 mod distance;
 pub use distance::{BRepSelection, DistanceWitness, MinimumDistance};
+mod interference;
+pub use interference::{SolidPairInspection, SolidPairRelation};
 mod geometry;
 pub use geometry::*;
 mod affine;

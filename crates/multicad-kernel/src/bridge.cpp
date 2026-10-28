@@ -457,6 +457,30 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
     return result;
   });
 }
+// Query-only occupied space. Compound members remain distinct in canonical
+// source; normalize deep copies so overlapping members cannot invalidate COMMON
+// or count the same physical overlap twice.
+std::unique_ptr<Shape> inspection_union(const Shape &source) {
+  return guard([&] {
+    TopTools_IndexedMapOfShape solids;TopExp::MapShapes(source.value,TopAbs_SOLID,solids);
+    if(solids.IsEmpty()||solids.Extent()>128)throw std::runtime_error("Occupied-space inspection supports 1 to 128 solids per Part");
+    BRepBuilderAPI_Copy first(solids(1),true,false);
+    if(!first.IsDone())throw std::runtime_error("Inspection input copy failed");
+    auto result=checked(first.Shape());
+    for(int i=2;i<=solids.Extent();++i) {
+      BRepBuilderAPI_Copy copy(solids(i),true,false);
+      if(!copy.IsDone())throw std::runtime_error("Inspection member copy failed");
+      BRepAlgoAPI_Fuse operation;
+      TopTools_ListOfShape arguments,tools;arguments.Append(result->value);tools.Append(copy.Shape());
+      operation.SetArguments(arguments);operation.SetTools(tools);
+      operation.SetNonDestructive(true);operation.SetRunParallel(false);operation.SetFuzzyValue(0.);
+      operation.Build();
+      if(!operation.IsDone()||operation.HasErrors())throw std::runtime_error("Native occupied-space normalization failed");
+      result=checked(operation.Shape());
+    }
+    return result;
+  });
+}
 std::unique_ptr<Shape> affine_transform_shape(const Shape &s,
                                             rust::Slice<const double> m,
                                             const Point3 &t) {
