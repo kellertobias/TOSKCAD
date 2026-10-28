@@ -530,6 +530,9 @@ fn query_input_pool_and_final_target_budgets_are_bounded_with_overrides_applied_
     }
     doc = doc.edited(&edits).unwrap();
     let m = Compiler::default().compile(&doc, 0).unwrap();
+    assert!(m.snapshot().leaf_occurrences.len() > model::MAX_PLACED_INSTANCES);
+    assert!(m.snapshot().leaf_occurrences.len() <= model::MAX_ASSEMBLY_LEAVES);
+    m.assembly_evaluation().validate().unwrap();
     let q = CutTargetQuery {
         tools: vec![tool.producer],
         component: None,

@@ -27,10 +27,15 @@ impl LeafStore {
         snapshot: LeafOccurrenceSnapshot,
         solid: Option<Solid>,
     ) -> Result<(), ModelError> {
-        if snapshot.path.members.len() > 32 || self.snapshots.len() >= 16_384 {
+        if snapshot.path.members.len() > 32
+            || self.snapshots.len() >= multicad_core::model::MAX_ASSEMBLY_LEAVES
+        {
             return Err(error(
                 Some(snapshot.path.root),
-                "Assembly expansion exceeds the 32-level/16384 source-leaf budget",
+                format!(
+                    "Assembly expansion exceeds the 32-level/{} source-leaf budget",
+                    multicad_core::model::MAX_ASSEMBLY_LEAVES
+                ),
             ));
         }
         let key = snapshot.path.clone();

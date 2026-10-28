@@ -28,8 +28,11 @@ pub struct AssemblyEvaluationInfo {
 impl AssemblyEvaluationInfo {
     pub fn validate(&self) -> Result<(), DocumentError> {
         let mut paths = BTreeSet::new();
-        if self.leaves.len() > 4096 {
-            return Err(invalid("Assembly receipt exceeds the 4096-leaf budget"));
+        if self.leaves.len() > super::MAX_ASSEMBLY_LEAVES {
+            return Err(invalid(format!(
+                "Assembly receipt exceeds the {}-leaf budget",
+                super::MAX_ASSEMBLY_LEAVES
+            )));
         }
         for leaf in &self.leaves {
             if leaf.path.root.is_nil()

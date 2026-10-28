@@ -824,10 +824,13 @@ impl Compiler {
             })
             .map(|(path, leaf)| (path.clone(), leaf.clone()))
             .collect::<BTreeMap<_, _>>();
-        if leaf_occurrences.len() > crate::MAX_MODEL_OCCURRENCES {
+        if leaf_occurrences.len() > model::MAX_ASSEMBLY_LEAVES {
             return Err(error(
                 None,
-                "Physical Assembly expansion exceeds the 4096-leaf budget",
+                format!(
+                    "Physical Assembly expansion exceeds the {}-leaf budget",
+                    model::MAX_ASSEMBLY_LEAVES
+                ),
             ));
         }
         Ok(Model {

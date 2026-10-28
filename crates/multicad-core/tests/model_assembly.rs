@@ -350,3 +350,41 @@ fn placed_legacy_assembly_declares_required_evaluation_capability_on_roundtrip()
         project_file::read(&mut std::io::Cursor::new(bytes), Default::default(), &older).is_err()
     );
 }
+#[test]
+fn total_leaf_receipts_have_a_separate_bounded_capacity_from_placed_roots() {
+    use multicad_core::{document::EntityId, project_file::ContentHash};
+    let component = EntityId::new();
+    let producer = EntityId::new();
+    let mut receipt = AssemblyEvaluationInfo {
+        source_hash: ContentHash::of(b"leaf budget"),
+        leaves: (0..MAX_ASSEMBLY_LEAVES)
+            .map(|_| AssemblyLeafReceipt {
+                path: OccurrencePath {
+                    root: EntityId::new(),
+                    members: vec![],
+                },
+                component,
+                producer,
+                pose: Default::default(),
+            })
+            .collect(),
+    };
+    assert!(receipt.leaves.len() > MAX_PLACED_INSTANCES);
+    receipt.validate().unwrap();
+    receipt.leaves.push(AssemblyLeafReceipt {
+        path: OccurrencePath {
+            root: EntityId::new(),
+            members: vec![],
+        },
+        component,
+        producer,
+        pose: Default::default(),
+    });
+    assert!(
+        receipt
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains(&format!("{MAX_ASSEMBLY_LEAVES}-leaf budget"))
+    );
+}
