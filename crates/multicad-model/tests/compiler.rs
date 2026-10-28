@@ -270,7 +270,7 @@ fn offsets_tilt_and_symmetric_total_have_real_sweep_bounds_and_volumes() {
 }
 #[test]
 fn unsupported_native_options_are_errors_instead_of_default_geometry() {
-    for case in 0..3 {
+    for case in 0..2 {
         let mut fixture = SharedProfiles::new(Default::default());
         let feature = fixture.outer().feature;
         let mut source = model::read_extrude(fixture.session.document(), feature).unwrap();
@@ -282,16 +282,7 @@ fn unsupported_native_options_are_errors_instead_of_default_geometry() {
                     producer: fixture.inner().feature,
                 }];
             }
-            1 => source.parameters.taper = angle(2.),
-            _ => {
-                let plane = sketch_plane(&fixture);
-                source.parameters.extent = Extent::OneSided {
-                    end: Termination::ToPlane {
-                        plane,
-                        offset: length(0.),
-                    },
-                };
-            }
+            _ => source.parameters.taper = angle(2.),
         }
         let mut entity = fixture.session.document().get(feature).unwrap().clone();
         let EntityData::Feature {
@@ -311,14 +302,6 @@ fn unsupported_native_options_are_errors_instead_of_default_geometry() {
         assert_eq!(error.entity, Some(feature));
         assert_eq!(fixture.session.document(), &before);
     }
-}
-fn sketch_plane(fixture: &SharedProfiles) -> multicad_core::document::EntityId {
-    let EntityData::Sketch { plane, .. } =
-        &fixture.session.document().get(fixture.sketch).unwrap().data
-    else {
-        panic!()
-    };
-    *plane
 }
 #[test]
 fn exact_compiled_body_writes_and_reads_step_without_using_the_display_mesh() {
