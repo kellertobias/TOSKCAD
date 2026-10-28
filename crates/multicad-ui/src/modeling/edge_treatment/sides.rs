@@ -52,7 +52,11 @@ impl EdgeTreatmentPanel {
         let sided =
             self.profile == EdgeTreatmentProfile::Chamfer && self.mode != ChamferMode::Symmetric;
         if sided {
-            ui.small("Choose an explicit adjacent reference face for every edge. Shared faces are allowed; Preview checks adjacency. No side is guessed from face order.");
+            ui.small(if self.mode==ChamferMode::TwoDistances {
+                "First distance is measured from the edge along your chosen face; second distance is measured along the other adjacent face."
+            } else {
+                "Distance is measured from the edge along your chosen face. The angle is between that face and the new chamfer surface."
+            });
         }
         let mut remove = None;
         for (index, edge) in self.edges.iter().enumerate() {

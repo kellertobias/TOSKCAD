@@ -322,12 +322,16 @@ impl EdgeTreatmentPanel {
         changed |= self.size.show(
             ui,
             label,
-            "Positive millimeters or =$parameter; the complete native preview validates the solid",
+            if self.profile==EdgeTreatmentProfile::Chamfer && self.mode!=ChamferMode::Symmetric {
+                "Positive millimeters from the original edge along your chosen side face; or =$parameter"
+            } else {
+                "Positive millimeters or =$parameter; symmetric Chamfer uses the same distance on both adjacent faces"
+            },
         );
         if self.profile == EdgeTreatmentProfile::Chamfer {
             match self.mode{
-                ChamferMode::TwoDistances=>changed|=self.second.show(ui,"Second distance","Positive millimeters measured relative to each explicitly selected adjacent face"),
-                ChamferMode::DistanceAngle=>changed|=self.angle.show(ui,"Chamfer angle","An angle strictly between zero and 90 degrees; orientation follows each explicit adjacent face"),
+                ChamferMode::TwoDistances=>changed|=self.second.show(ui,"Second distance","Positive millimeters measured from the original edge along the other adjacent face"),
+                ChamferMode::DistanceAngle=>changed|=self.angle.show(ui,"Chamfer angle","Angle between the chosen side face and the new chamfer surface; strictly between zero and 90 degrees"),
                 ChamferMode::Symmetric=>{}
             }
         }
