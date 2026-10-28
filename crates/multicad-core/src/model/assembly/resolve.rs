@@ -6,6 +6,26 @@ use crate::{
     references::{self, ReferenceFrame, Resolution, TopologySnapshot},
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub const MAX_JOINT_PARENT_DEPTH: usize = 64;
+pub fn validate_joint_parent_depth(
+    document: &Document,
+    owner: EntityId,
+    mut parent: Option<EntityId>,
+) -> Result<(), DocumentError> {
+    let mut visited = BTreeSet::from([owner]);
+    while let Some(id) = parent {
+        if visited.len() >= MAX_JOINT_PARENT_DEPTH || !visited.insert(id) {
+            return Err(invalid(
+                "Directed joint parent chain contains a cycle or exceeds the 64-Instance depth budget",
+            ));
+        }
+        parent = joint_driver(document, id)?
+            .map(|joint| read_joint(document, joint).map(|(source, _)| source.parameters.parent))
+            .transpose()?
+            .flatten();
+    }
+    Ok(())
+}
 pub fn joint_driver(
     document: &Document,
     instance: EntityId,
@@ -109,6 +129,7 @@ pub fn resolve_joint(
     base: RigidPose,
 ) -> Result<RigidPose, DocumentError> {
     source.inputs(inputs)?;
+    validate_joint_parent_depth(document, source.owner, source.parameters.parent)?;
     let values = source.parameters.resolve(parameters)?;
     let moving = pose(anchor(
         document,

@@ -381,7 +381,8 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), DocumentError
         if let EntityData::Extension { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
                 JOINT_TYPE => {
-                    read_joint(document, entity.id)?;
+                    let (source, _) = read_joint(document, entity.id)?;
+                    validate_joint_parent_depth(document, source.owner, source.parameters.parent)?;
                 }
                 NAMED_POSE_TYPE => {
                     read_named_pose(document, entity.id)?;

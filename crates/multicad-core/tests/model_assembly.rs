@@ -246,3 +246,56 @@ fn reusable_assembly_preserves_member_ids_and_explicit_definition_ownership() {
     s.undo(s.revision(), actor()).unwrap();
     assert_eq!(s.document(), &before);
 }
+#[test]
+fn overdepth_directed_relationships_fail_before_recursive_pose_resolution() {
+    let (mut s, part, a, _) = setup();
+    let mut parent = a.instance;
+    for _ in 1..MAX_JOINT_PARENT_DEPTH {
+        let instance = ComponentPlacementRequest::new(part.body, Default::default());
+        s.commit(
+            prepare_place_component(&s, s.revision(), actor(), &instance)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+        let request = JointRequest::new(
+            instance.instance,
+            JointParameters {
+                parent: Some(parent),
+                ..Default::default()
+            },
+            vec![],
+        );
+        s.commit(
+            prepare_joint(&s, s.revision(), actor(), &request)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+        parent = instance.instance;
+    }
+    let instance = ComponentPlacementRequest::new(part.body, Default::default());
+    s.commit(
+        prepare_place_component(&s, s.revision(), actor(), &instance)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let before = s.document().clone();
+    let revision = s.revision();
+    let request = JointRequest::new(
+        instance.instance,
+        JointParameters {
+            parent: Some(parent),
+            ..Default::default()
+        },
+        vec![],
+    );
+    let error = prepare_joint(&s, revision, actor(), &request)
+        .err()
+        .unwrap();
+    assert!(error.message.contains("depth budget"));
+    assert_eq!(s.document(), &before);
+    assert_eq!(s.revision(), revision);
+    assert!(resolve_instance_pose(s.document(), parent, s.parameters()).is_ok());
+}
