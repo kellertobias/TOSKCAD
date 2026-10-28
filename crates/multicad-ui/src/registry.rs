@@ -382,7 +382,10 @@ impl Default for Registry {
                 tabs: vec![
                     tab(
                         "Common",
-                        &["extrude", "revolve", "boolean", "edge", "move", "symbol"],
+                        &[
+                            "box", "cylinder", "extrude", "revolve", "boolean", "edge", "move",
+                            "symbol",
+                        ],
                     ),
                     tab("Wood", &["panel", "drill", "joint", "cut-list"]),
                     tab(

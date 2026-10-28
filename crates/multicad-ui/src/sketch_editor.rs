@@ -388,6 +388,12 @@ impl SketchEditor {
     pub fn model_active(&self) -> bool {
         self.model.active()
     }
+    pub fn model_label(&self) -> &'static str {
+        self.model.label()
+    }
+    pub fn primitive_ready(&self) -> bool {
+        self.model.has_backend() && !self.has_pending_edits() && !self.picking
+    }
     pub fn model_can_apply(
         &self,
         session: &Session,
@@ -433,19 +439,44 @@ impl SketchEditor {
         session: &mut Session,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> Result<(), String> {
+        let label = self.model.label();
         let outputs = self.model.apply(session, resources)?;
-        self.accept_model_outputs(outputs);
+        self.accept_model_outputs(outputs, label);
         Ok(())
     }
-    fn accept_model_outputs(&mut self, outputs: Vec<multicad_core::model::CreatedBody>) {
+    fn accept_model_outputs(
+        &mut self,
+        outputs: Vec<multicad_core::model::CreatedBody>,
+        label: &str,
+    ) {
         self.tree_selection = outputs.into_iter().map(|output| output.body).collect();
         self.selected = None;
         self.solid.clear();
         self.fit_requested = true;
-        self.message = "Extrusion applied · one undoable source edit".into();
+        self.message = format!("{label} applied · one undoable source edit");
     }
     pub fn cancel_model(&mut self) {
         self.model.cancel();
+        self.message = "Modeling cancelled · document unchanged".into();
+    }
+    pub fn begin_primitive(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        kind: crate::modeling::ModelingTool,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Install native modeling and apply or cancel pending edits before creating a primitive".into());
+        }
+        self.finish()?;
+        self.model
+            .begin_primitive(session, resources, kind, channel)?;
+        self.message = format!(
+            "{} · enter dimensions in the Inspector, then Preview",
+            kind.label()
+        );
+        Ok(())
     }
     pub fn set_display_style(&mut self, style: DisplayStyle) {
         self.style = style;
@@ -487,6 +518,9 @@ impl SketchEditor {
             || self.model.active()
     }
     pub fn cancel(&mut self) {
+        if self.model.active() {
+            self.message = "Modeling cancelled · document unchanged".into();
+        }
         self.model.cancel();
         self.operations.cancel();
         self.tree.cancel_tool();
@@ -1594,8 +1628,10 @@ impl SketchEditor {
                     .id_salt("sketch-inspector-content")
                     .show(ui, |ui| {
                         if self.model.active() {
+                            let label=self.model.label();
                             match self.model.show(ui,session,resources) {
-                                Ok(Some(outputs))=>self.accept_model_outputs(outputs),
+                                Ok(Some(crate::modeling::ModelToolOutcome::Applied(outputs)))=>self.accept_model_outputs(outputs,label),
+                                Ok(Some(crate::modeling::ModelToolOutcome::Cancelled))=>self.message="Modeling cancelled · document unchanged".into(),
                                 Err(error)=>self.message=error,
                                 Ok(None)=>{}
                             }
@@ -1867,7 +1903,7 @@ impl SketchEditor {
             ui.painter().text(
                 rect.left_top() + Vec2::new(14., 12.),
                 Align2::LEFT_TOP,
-                "Extrusion preview · not applied",
+                format!("{} preview · not applied", self.model.label()),
                 FontId::proportional(12.),
                 Color32::LIGHT_YELLOW,
             );

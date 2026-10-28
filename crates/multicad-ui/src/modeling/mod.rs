@@ -3,41 +3,59 @@
 mod controller;
 mod dimension;
 mod extrude;
+mod form;
+mod names;
+mod primitive;
 
-pub use controller::ModelToolController;
+pub use controller::{ModelToolController, ModelToolOutcome};
 pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
+pub use form::ModelRequest;
 use multicad_core::document::EntityId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelingTool {
     Extrude,
+    Box,
+    Cylinder,
 }
 impl ModelingTool {
-    pub const ALL: [Self; 1] = [Self::Extrude];
+    pub const ALL: [Self; 3] = [Self::Box, Self::Cylinder, Self::Extrude];
     pub fn id(self) -> &'static str {
         match self {
             Self::Extrude => "extrude",
+            Self::Box => "box",
+            Self::Cylinder => "cylinder",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::Extrude => "Extrude",
+            Self::Box => "Box",
+            Self::Cylinder => "Cylinder",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
         match self {
             Self::Extrude => crate::icons::Icon::Box,
+            Self::Box => crate::icons::Icon::Box,
+            Self::Cylinder => crate::icons::Icon::Cylinder,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
         match self {
             Self::Extrude => &["ext", "extrusion"],
+            Self::Box => &["cube", "add-box"],
+            Self::Cylinder => &["cyl", "add-cylinder"],
         }
     }
     pub fn usage(self) -> &'static str {
         match self {
             Self::Extrude => {
                 "Usage: extrude (select closed sketch areas, open the controls, then Preview and Apply)"
+            }
+            Self::Box => "Usage: box (enter dimensions in the Inspector, then Preview and Apply)",
+            Self::Cylinder => {
+                "Usage: cylinder (enter radius and height in the Inspector, then Preview and Apply)"
             }
         }
     }

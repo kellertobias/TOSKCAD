@@ -443,6 +443,18 @@ impl ShortcutMap {
             "Extrude selected profiles",
             false,
         );
+        for (key, tool) in [
+            (Key::B, crate::modeling::ModelingTool::Box),
+            (Key::C, crate::modeling::ModelingTool::Cylinder),
+        ] {
+            add(
+                Scope::Mode(Mode::Model),
+                Chord::plain(key),
+                Command(crate::registry::Command::Modeling(tool)),
+                tool.label(),
+                false,
+            );
+        }
         add(
             Scope::Mode(Mode::Model),
             Chord::plain(Key::R),

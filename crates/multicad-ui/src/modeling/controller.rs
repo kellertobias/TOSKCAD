@@ -1,5 +1,10 @@
 //! A candidate evaluation lane, separate from canonical display publication.
-use super::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel, FormStamp, PreviewState};
+use super::{
+    ExtrudeCapabilities, ExtrudePanel, FormStamp, ModelRequest, ModelingTool, PreviewState,
+    form::{ModelEvent, ModelForm},
+    names::GeneratedNames,
+    primitive::PrimitivePanel,
+};
 use crate::{
     egui,
     viewport::{Scene, SceneBackend, SceneStamp, VisibilityFilter},
@@ -7,7 +12,9 @@ use crate::{
 use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     document::{EntityData, EntityId},
-    model::{self, CreatedBody, ExtrudeRequest},
+    model::{
+        CreatedBody, ExtrudeRequest, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length,
+    },
     project_file::{ContentHash, ProjectResources},
     sketch_regions::RegionIntent,
 };
@@ -37,13 +44,17 @@ struct Handoff {
 }
 #[derive(Default)]
 pub struct ModelToolController {
-    panel: ExtrudePanel,
+    form: Option<ModelForm>,
     backend: Option<Box<dyn SceneBackend>>,
     scope: Option<Scope>,
     candidate: Option<Candidate>,
     handoff: Option<Handoff>,
     generation: u64,
     error: Option<String>,
+}
+pub enum ModelToolOutcome {
+    Applied(Vec<CreatedBody>),
+    Cancelled,
 }
 impl ModelToolController {
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
@@ -54,7 +65,10 @@ impl ModelToolController {
         self.backend.is_some()
     }
     pub fn active(&self) -> bool {
-        self.panel.active()
+        self.form.is_some()
+    }
+    pub fn label(&self) -> &'static str {
+        self.form.as_ref().map_or("Modeling", ModelForm::label)
     }
     pub fn pending(&self) -> bool {
         self.candidate
@@ -65,7 +79,7 @@ impl ModelToolController {
         self.error.as_deref()
     }
     pub fn stamp(&self) -> Option<FormStamp> {
-        self.panel.stamp()
+        self.form.as_ref().map(ModelForm::stamp)
     }
     pub fn capabilities(&self) -> ExtrudeCapabilities {
         if self.has_backend() {
@@ -82,6 +96,55 @@ impl ModelToolController {
         profiles: Vec<RegionIntent>,
         channel: Channel,
     ) -> Result<(), String> {
+        let mut request = ExtrudeRequest::new(sketch, profiles, Default::default());
+        let mut names = GeneratedNames::new(session.document());
+        for output in &mut request.outputs {
+            output.name = names.numbered("Extruded part", " extrusion");
+        }
+        let mut panel = ExtrudePanel::default();
+        panel.begin_request(request)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Extrude(Box::new(panel)),
+        )
+    }
+    pub fn begin_primitive(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        kind: ModelingTool,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let parameters = match kind {
+            ModelingTool::Box => PrimitiveParameters::Box {
+                size: [length(100.), length(60.), length(20.)],
+                frame: PrimitiveFrame::default(),
+            },
+            ModelingTool::Cylinder => PrimitiveParameters::Cylinder {
+                radius: length(20.),
+                height: length(50.),
+                frame: PrimitiveFrame::default(),
+            },
+            _ => return Err("Choose a box or cylinder primitive".into()),
+        };
+        let name = GeneratedNames::new(session.document()).numbered(kind.label(), " feature");
+        let request = PrimitiveRequest::new(name, parameters);
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Primitive(Box::new(PrimitivePanel::new(request)?)),
+        )
+    }
+    fn begin_form(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+        form: ModelForm,
+    ) -> Result<(), String> {
         if !self.has_backend() {
             return Err("The native modeling preview provider is unavailable".into());
         }
@@ -92,12 +155,12 @@ impl ModelToolController {
             .prepare(Request {
                 expected_revision: session.revision(),
                 actor: Actor::local(channel),
-                label: "Open extrusion controls".into(),
+                label: "Open modeling controls".into(),
                 edits: vec![],
             })
             .map_err(|error| error.to_string())?;
         let source = ContentHash::document(session.document())?;
-        self.panel.begin(sketch, profiles)?;
+        self.form = Some(form);
         self.scope = Some(Scope {
             session: scope,
             source,
@@ -109,7 +172,7 @@ impl ModelToolController {
         Ok(())
     }
     pub fn cancel(&mut self) {
-        self.panel.cancel();
+        self.form = None;
         self.scope = None;
         self.candidate = None;
         self.handoff = None;
@@ -123,15 +186,19 @@ impl ModelToolController {
         resources: &ProjectResources,
         full: bool,
     ) -> Result<(), String> {
-        let scope = self.scope.as_ref().ok_or("Start Extrude first")?;
+        let scope = self.scope.as_ref().ok_or("Start a modeling tool first")?;
         session.validate_preview(&scope.session).map_err(|_| {
-            "The source session changed; cancel Extrude and start again".to_string()
+            "The source session changed; cancel the modeling tool and start again".to_string()
         })?;
         if &scope.resources != resources {
-            return Err("Project resources changed; cancel Extrude and start again".into());
+            return Err(
+                "Project resources changed; cancel the modeling tool and start again".into(),
+            );
         }
         if full && ContentHash::document(session.document())? != scope.source {
-            return Err("The source content changed; cancel Extrude and start again".into());
+            return Err(
+                "The source content changed; cancel the modeling tool and start again".into(),
+            );
         }
         Ok(())
     }
@@ -148,9 +215,11 @@ impl ModelToolController {
         self.invalidate();
         let result: Result<(), String> = (|| {
             self.current(session, resources, true)?;
-            let stamp = self.panel.stamp().ok_or("Start Extrude first")?;
+            let stamp = self.stamp().ok_or("Start a modeling tool first")?;
             let request = self
-                .panel
+                .form
+                .as_ref()
+                .ok_or("Start a modeling tool first")?
                 .request(session.document(), self.capabilities())?;
             self.submit(session, resources, channel, stamp, &request)
         })();
@@ -165,15 +234,13 @@ impl ModelToolController {
         resources: &ProjectResources,
         channel: Channel,
         form: FormStamp,
-        request: &ExtrudeRequest,
+        request: &ModelRequest,
     ) -> Result<(), String> {
         self.current(session, resources, true)?;
-        if self.panel.stamp() != Some(form) {
-            return Err("Extrusion inputs changed; preview the current values".into());
+        if self.stamp() != Some(form) {
+            return Err("Modeling inputs changed; preview the current values".into());
         }
-        let prepared =
-            model::prepare_extrude(session, session.revision(), Actor::local(channel), request)
-                .map_err(|error| error.to_string())?;
+        let prepared = request.prepare(session, Actor::local(channel))?;
         session
             .validate_preview(&prepared.prepared)
             .map_err(|error| error.to_string())?;
@@ -228,10 +295,10 @@ impl ModelToolController {
                 session
                     .validate_preview(&candidate.prepared)
                     .map_err(|error| error.to_string())?;
-                if self.panel.stamp() != Some(candidate.form)
+                if self.stamp() != Some(candidate.form)
                     || ContentHash::document(candidate.prepared.document())? != candidate.content
                 {
-                    return Err("Extrusion candidate changed; preview it again".into());
+                    return Err("Modeling candidate changed; preview it again".into());
                 }
                 let scene = reply.result?;
                 if scene.stamp() != candidate.stamp {
@@ -281,7 +348,7 @@ impl ModelToolController {
             && self.candidate.as_ref().is_some_and(|candidate| {
                 !candidate.pending
                     && candidate.scene.is_some()
-                    && self.panel.stamp() == Some(candidate.form)
+                    && self.stamp() == Some(candidate.form)
                     && session.validate_preview(&candidate.prepared).is_ok()
             })
     }
@@ -294,12 +361,12 @@ impl ModelToolController {
             self.current(session, resources, true)?;
             if !self.can_apply(session, resources) {
                 return Err(
-                    "Wait for a successful native preview of the current extrusion inputs".into(),
+                    "Wait for a successful native preview of the current modeling inputs".into(),
                 );
             }
             let candidate = self.candidate.as_ref().expect("checked preview");
             if ContentHash::document(candidate.prepared.document())? != candidate.content {
-                return Err("Extrusion candidate content changed; preview it again".into());
+                return Err("Modeling candidate content changed; preview it again".into());
             }
             session
                 .validate_preview(&candidate.prepared)
@@ -357,8 +424,8 @@ impl ModelToolController {
         ui: &mut egui::Ui,
         session: &mut Session,
         resources: &ProjectResources,
-    ) -> Result<Option<Vec<CreatedBody>>, String> {
-        let stamp = self.panel.stamp();
+    ) -> Result<Option<ModelToolOutcome>, String> {
+        let stamp = self.stamp();
         let preview = match (&self.error, &self.candidate, stamp) {
             (Some(error), _, Some(stamp)) => PreviewState::Failed {
                 stamp,
@@ -378,22 +445,26 @@ impl ModelToolController {
             ExtrudeCapabilities::default()
         };
         let event = self
-            .panel
+            .form
+            .as_mut()
+            .ok_or("Start a modeling tool first")?
             .show(ui, session.document(), capabilities, preview);
         let result = match event {
-            Some(ExtrudeEvent::Changed(_)) => {
+            Some(ModelEvent::Changed) => {
                 self.invalidate();
                 Ok(None)
             }
-            Some(ExtrudeEvent::Preview { stamp, request }) => {
+            Some(ModelEvent::Preview { stamp, request }) => {
                 self.invalidate();
                 self.submit(session, resources, Channel::Ui, stamp, &request)
                     .map(|()| None)
             }
-            Some(ExtrudeEvent::Apply(_)) => self.apply(session, resources).map(Some),
-            Some(ExtrudeEvent::Cancel) => {
+            Some(ModelEvent::Apply) => self
+                .apply(session, resources)
+                .map(|outputs| Some(ModelToolOutcome::Applied(outputs))),
+            Some(ModelEvent::Cancel) => {
                 self.cancel();
-                Ok(None)
+                Ok(Some(ModelToolOutcome::Cancelled))
             }
             None => Ok(None),
         };

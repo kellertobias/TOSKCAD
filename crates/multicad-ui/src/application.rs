@@ -221,7 +221,9 @@ impl Application {
                     )
             )
         {
-            return Err("Apply or cancel Extrude before changing workspace or parameters".into());
+            return Err(
+                "Apply or cancel the modeling tool before changing workspace or parameters".into(),
+            );
         }
         if !args.is_empty()
             && !matches!(
@@ -273,9 +275,10 @@ impl Application {
             Command::Apply => {
                 let p = self.current_mut();
                 if p.sketch.model_active() {
+                    let label = p.sketch.model_label();
                     p.sketch.apply_model(&mut p.session, &p.resources)?;
                     p.editor.reload(&p.session);
-                    self.message = "Extrusion applied · one undoable source edit".into();
+                    self.message = format!("{label} applied · one undoable source edit");
                     return Ok(());
                 }
                 p.editor
@@ -290,7 +293,7 @@ impl Application {
                 let p = self.current_mut();
                 if p.sketch.model_active() {
                     p.sketch.cancel_model();
-                    self.message = "Unapplied extrusion discarded".into();
+                    self.message = "Unapplied modeling controls discarded".into();
                     return Ok(());
                 }
                 p.editor.reload(&p.session);
@@ -300,7 +303,10 @@ impl Application {
                 let p = self.current_mut();
                 if p.sketch.model_active() {
                     p.sketch.preview_model(&p.session, &p.resources, channel)?;
-                    self.message = "Building native extrusion preview · document unchanged".into();
+                    self.message = format!(
+                        "Building native {} preview · document unchanged",
+                        p.sketch.model_label()
+                    );
                     return Ok(());
                 }
                 p.editor.refresh_preview(&p.session);
@@ -470,7 +476,7 @@ impl Application {
                     tool.label()
                 );
             }
-            Command::Modeling(crate::modeling::ModelingTool::Extrude) => {
+            Command::Modeling(tool) => {
                 if self.current().editor.dirty() {
                     return Err("Apply or discard parameter edits before extruding".into());
                 }
@@ -480,12 +486,26 @@ impl Application {
                     );
                 }
                 let project = self.current_mut();
-                project
-                    .sketch
-                    .begin_extrude(&project.session, &project.resources, channel)?;
+                match tool {
+                    crate::modeling::ModelingTool::Extrude => project.sketch.begin_extrude(
+                        &project.session,
+                        &project.resources,
+                        channel,
+                    )?,
+                    crate::modeling::ModelingTool::Box
+                    | crate::modeling::ModelingTool::Cylinder => project.sketch.begin_primitive(
+                        &project.session,
+                        &project.resources,
+                        tool,
+                        channel,
+                    )?,
+                }
                 self.mode = Mode::Model;
                 self.tab = 0;
-                self.message = "Extrude · choose controls in the Inspector, then Preview".into();
+                self.message = format!(
+                    "{} · choose controls in the Inspector, then Preview",
+                    tool.label()
+                );
             }
             Command::Delete => {
                 let p = self.current_mut();
@@ -525,13 +545,18 @@ impl Application {
                 .model_can_apply(&self.current().session, &self.current().resources),
             Command::Discard | Command::Preview if self.current().sketch.model_active() => true,
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
-            Command::Modeling(_) => {
+            Command::Modeling(tool) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
-                    && self.current().sketch.extrusion_ready(
-                        self.current().session.document(),
-                        self.current().session.revision(),
-                    )
+                    && match tool {
+                        crate::modeling::ModelingTool::Extrude => {
+                            self.current().sketch.extrusion_ready(
+                                self.current().session.document(),
+                                self.current().session.revision(),
+                            )
+                        }
+                        _ => self.current().sketch.primitive_ready(),
+                    }
             }
             Command::Mode(mode) if self.current().sketch.model_active() => mode == Mode::Model,
             Command::Parameter if self.current().sketch.model_active() => false,
@@ -1295,6 +1320,7 @@ impl Application {
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
                     let before = p.session.revision();
+                    let modeling_before = p.sketch.model_active();
                     p.sketch.show_project(
                         ui,
                         &mut p.session,
@@ -1305,6 +1331,9 @@ impl Application {
                     if let Some(delay) = p.scene.quality_wakeup(ctx.input(|i| i.time)) {
                         ctx.request_repaint_after(delay);
                     }
+                    let modeling_cancelled = modeling_before
+                        && !p.sketch.model_active()
+                        && p.session.revision() == before;
                     if p.session.revision() != before {
                         let label = p
                             .session
@@ -1315,6 +1344,9 @@ impl Application {
                         self.message = label;
                         self.message_error = false;
                         ctx.request_repaint();
+                    } else if modeling_cancelled {
+                        self.message = "Modeling cancelled · document unchanged".into();
+                        self.message_error = false;
                     }
                 }
             });
@@ -2456,5 +2488,90 @@ mod tests {
         assert!(app.projects[0].scene.has_backend());
         assert!(app.current().scene.has_backend());
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+    #[test]
+    fn primitive_starts_without_sketch_and_inspector_cancel_updates_status_without_editing_source()
+    {
+        struct Backend;
+        impl crate::viewport::SceneBackend for Backend {
+            fn request(
+                &mut self,
+                _: &Document,
+                _: crate::viewport::SceneStamp,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            fn poll(&mut self) -> Option<crate::viewport::SceneReply> {
+                None
+            }
+        }
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.set_model_backends(std::sync::Arc::new(|| Box::new(Backend)));
+        app.mode = Mode::Model;
+        let before = app.current().session.document().clone();
+        let command = Command::Modeling(crate::modeling::ModelingTool::Box);
+        assert!(app.enabled(command));
+        app.invoke(command, &[], Channel::Ui).unwrap();
+        assert!(app.current().sketch.model_active());
+        assert!(!app.current().sketch.editing);
+        assert!(!app.enabled(Command::Save));
+        assert!(!app.enabled(Command::Mode(Mode::Parameters)));
+        assert!(
+            app.invoke(Command::Mode(Mode::Parameters), &[], Channel::Ui)
+                .is_err()
+        );
+        assert!(app.invoke(Command::Apply, &[], Channel::Ui).is_err());
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let frame = |app: &mut Application, events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400., 1100.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            )
+        };
+        frame(&mut app, vec![]).drop_without_applying_deltas();
+        let output = frame(&mut app, vec![]);
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Cancel"))
+            .and_then(|(_, node)| node.bounds())
+            .expect("Active model form needs a Cancel button");
+        let pointer = egui::Pos2::new(
+            ((bounds.x0 + bounds.x1) / 2.) as f32,
+            ((bounds.y0 + bounds.y1) / 2.) as f32,
+        );
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::PointerButton {
+                        pos: pointer,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+        assert!(!app.current().sketch.model_active());
+        assert_eq!(app.message, "Modeling cancelled · document unchanged");
+        assert!(!app.message_error);
+        assert_eq!(app.current().session.document(), &before);
+        assert_eq!(app.current().session.revision(), 0);
     }
 }

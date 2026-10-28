@@ -301,10 +301,17 @@ fn candidate_hash_and_form_stamp_are_checked_independently_of_reply_scope() {
             controller.candidate.as_mut().unwrap().content = ContentHash::of(b"wrong candidate");
         } else {
             let request = controller
-                .panel
+                .form
+                .as_ref()
+                .unwrap()
                 .request(session.document(), controller.capabilities())
                 .unwrap();
-            controller.panel.begin_request(request).unwrap();
+            let ModelRequest::Extrude(request) = request else {
+                panic!("extrusion form")
+            };
+            let mut panel = ExtrudePanel::default();
+            panel.begin_request(*request).unwrap();
+            controller.form = Some(ModelForm::Extrude(Box::new(panel)));
         }
         reply(&state, 0);
         controller.poll(&session, &Default::default());
@@ -314,5 +321,95 @@ fn candidate_hash_and_form_stamp_are_checked_independently_of_reply_scope() {
                 .display_scene(&session, &Default::default())
                 .is_none()
         );
+    }
+}
+
+#[test]
+fn primitives_use_the_same_native_gate_without_any_sketch() {
+    for kind in [ModelingTool::Box, ModelingTool::Cylinder] {
+        let mut session = Session::new(Document::new("No sketch required").unwrap()).unwrap();
+        let before = session.document().clone();
+        let state = Arc::new(Mutex::new(State::default()));
+        let mut controller = ModelToolController::default();
+        controller.set_backend(Box::new(ScriptedBackend(state.clone())));
+        controller
+            .begin_primitive(&session, &Default::default(), kind, Channel::Ui)
+            .unwrap();
+        assert_eq!(controller.label(), kind.label());
+        assert!(controller.active());
+        assert_eq!(session.document(), &before);
+        controller
+            .preview(&session, &Default::default(), Channel::Ui)
+            .unwrap();
+        let first = state.lock().unwrap().requests[0].0.clone();
+        controller
+            .preview(&session, &Default::default(), Channel::Ui)
+            .unwrap();
+        assert_eq!(
+            state.lock().unwrap().requests[1].0,
+            first,
+            "Repeated previews preserve primitive identities and names"
+        );
+        reply(&state, 0);
+        controller.poll(&session, &Default::default());
+        assert!(!controller.can_apply(&session, &Default::default()));
+        reply(&state, 1);
+        controller.poll(&session, &Default::default());
+        let output = controller.apply(&mut session, &Default::default()).unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(session.document(), &first);
+        assert_eq!(session.revision(), 1);
+        let source =
+            multicad_core::model::read_primitive(session.document(), output[0].feature).unwrap();
+        assert!(matches!(
+            (kind, source.parameters),
+            (ModelingTool::Box, PrimitiveParameters::Box { .. })
+                | (ModelingTool::Cylinder, PrimitiveParameters::Cylinder { .. })
+        ));
+        session.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(session.document(), &before);
+    }
+}
+#[test]
+fn generated_names_are_unique_against_committed_bodies_and_stable_during_preview() {
+    let (mut session, sketch, profiles) = fixture();
+    let (mut controller, state) = controller(&session, sketch, profiles.clone());
+    controller
+        .preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    reply(&state, 0);
+    controller.poll(&session, &Default::default());
+    let first = controller.apply(&mut session, &Default::default()).unwrap();
+    let old_names = first
+        .iter()
+        .map(|body| session.document().get(body.body).unwrap().name.clone())
+        .collect::<Vec<_>>();
+    controller
+        .begin(&session, &Default::default(), sketch, profiles, Channel::Ui)
+        .unwrap();
+    let ModelRequest::Extrude(request) = controller
+        .form
+        .as_ref()
+        .unwrap()
+        .request(session.document(), controller.capabilities())
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(old_names, ["Extruded part 1", "Extruded part 2"]);
+    assert_eq!(
+        request
+            .outputs
+            .iter()
+            .map(|body| body.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Extruded part 3", "Extruded part 4"]
+    );
+    controller
+        .preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    let sent = state.lock().unwrap().requests[1].0.clone();
+    for output in &request.outputs {
+        assert_eq!(sent.get(output.body).unwrap().name, output.name);
     }
 }

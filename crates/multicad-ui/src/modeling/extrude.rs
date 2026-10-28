@@ -1,4 +1,8 @@
-use super::{FormStamp, PreviewState, dimension::DimensionField};
+use super::{
+    FormStamp, PreviewState,
+    dimension::DimensionField,
+    form::{self, FormAction as Action},
+};
 use crate::{controls, egui};
 use multicad_core::{
     constraint_sketch::Dimension,
@@ -50,12 +54,6 @@ enum ExtentChoice {
     OneSided,
     TwoSided,
     Symmetric,
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Action {
-    Preview,
-    Apply,
-    Cancel,
 }
 impl ExtentChoice {
     fn label(self) -> &'static str {
@@ -371,52 +369,13 @@ impl ExtrudePanel {
                 "The native extrusion provider is unavailable.",
             );
         }
-        match preview {
-            PreviewState::Pending { stamp } if stamp == draft.stamp => {
-                ui.label("Building native preview…");
-            }
-            PreviewState::Ready { stamp } if stamp == draft.stamp => {
-                ui.label("Native preview ready");
-            }
-            PreviewState::Failed { stamp, message } if stamp == draft.stamp => {
-                ui.colored_label(egui::Color32::LIGHT_RED, message);
-            }
-            _ => {}
-        }
+        form::preview_status(ui, draft.stamp, preview);
         let validation = draft.request(document, capabilities);
         let valid = validation.is_ok();
         if let Err(error) = &validation {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
-        let mut requested = None;
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(valid, egui::Button::new("Preview"))
-                .on_hover_text("Validate this exact source-neutral request using native geometry")
-                .clicked()
-            {
-                requested = Some(Action::Preview);
-            }
-            if ui
-                .add_enabled(
-                    valid && !changed && preview.ready(draft.stamp),
-                    egui::Button::new("Apply"),
-                )
-                .on_hover_text(
-                    "Commit the exact transaction whose matching native preview succeeded",
-                )
-                .clicked()
-            {
-                requested = Some(Action::Apply);
-            }
-            if ui
-                .button("Cancel")
-                .on_hover_text("Discard local controls and the uncommitted preview")
-                .clicked()
-            {
-                requested = Some(Action::Cancel);
-            }
-        });
+        let requested = form::actions(ui, valid, changed, draft.stamp, preview);
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }

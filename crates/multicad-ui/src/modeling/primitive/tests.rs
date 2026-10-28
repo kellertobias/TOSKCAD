@@ -1,0 +1,174 @@
+use super::*;
+use multicad_core::{
+    document::{Entity, EntityData},
+    model::ResolvedPrimitive,
+    parameters::{self, Unit},
+};
+fn panel(kind: ModelingTool) -> PrimitivePanel {
+    let parameters = match kind {
+        ModelingTool::Box => PrimitiveParameters::Box {
+            size: [model::length(100.), model::length(60.), model::length(20.)],
+            frame: PrimitiveFrame::default(),
+        },
+        _ => PrimitiveParameters::Cylinder {
+            radius: model::length(20.),
+            height: model::length(50.),
+            frame: PrimitiveFrame::default(),
+        },
+    };
+    PrimitivePanel::new(PrimitiveRequest::new("Editable body", parameters)).unwrap()
+}
+#[test]
+fn orientation_and_formula_origin_are_canonical_source_and_not_display_moves() {
+    let mut document = Document::new("Primitive fields").unwrap();
+    document
+        .insert(Entity::new(
+            "offset",
+            EntityData::Parameter {
+                expression: "25".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        ))
+        .unwrap();
+    let before = document.clone();
+    for kind in [ModelingTool::Box, ModelingTool::Cylinder] {
+        let mut panel = panel(kind);
+        let original = panel.request(&document, true).unwrap();
+        panel.origin[0].text = "=$offset + 5".into();
+        panel.origin[1].text = "-12".into();
+        panel.plane = Datum::Xz;
+        let request = panel.request(&document, true).unwrap();
+        assert_eq!(
+            (request.feature, request.body),
+            (original.feature, original.body)
+        );
+        let resolved = request
+            .parameters
+            .resolve(&parameters::evaluate(&document).unwrap())
+            .unwrap();
+        let frame = match resolved {
+            ResolvedPrimitive::Box { frame, .. } | ResolvedPrimitive::Cylinder { frame, .. } => {
+                frame
+            }
+        };
+        assert_eq!(frame.origin, [30., -12., 0.]);
+        assert_eq!(frame.u, [1., 0., 0.]);
+        assert_eq!(frame.v, [0., 0., 1.]);
+        assert_eq!(frame.n, [0., -1., 0.]);
+        assert_eq!(document, before);
+    }
+}
+#[test]
+fn primitive_controls_share_edit_preview_apply_stamps_and_allow_intentional_names() {
+    let mut document = Document::new("Primitive events").unwrap();
+    document
+        .insert(Entity::new(
+            "Intentionally duplicated label",
+            EntityData::Group {},
+        ))
+        .unwrap();
+    let mut panel = panel(ModelingTool::Box);
+    let stamp = panel.stamp();
+    panel.size[0].text = "135".into();
+    let Some(ModelEvent::Preview {
+        stamp: new,
+        request: ModelRequest::Primitive(request),
+    }) = panel.finish_frame(
+        true,
+        Some(FormAction::Preview),
+        &document,
+        true,
+        PreviewState::Ready { stamp },
+    )
+    else {
+        panic!("Preview must use this frame's new values")
+    };
+    assert_ne!(new, stamp);
+    let PrimitiveParameters::Box { size, .. } = request.parameters else {
+        panic!()
+    };
+    assert_eq!(size[0].value_in(Unit::Millimeter, None).unwrap(), 135.);
+    assert!(
+        panel
+            .finish_frame(
+                false,
+                Some(FormAction::Apply),
+                &document,
+                true,
+                PreviewState::Ready { stamp }
+            )
+            .is_none()
+    );
+    assert!(matches!(
+        panel.finish_frame(
+            false,
+            Some(FormAction::Apply),
+            &document,
+            true,
+            PreviewState::Ready { stamp: new }
+        ),
+        Some(ModelEvent::Apply)
+    ));
+    assert!(matches!(
+        panel.finish_frame(
+            true,
+            Some(FormAction::Cancel),
+            &document,
+            true,
+            PreviewState::Ready { stamp: new }
+        ),
+        Some(ModelEvent::Cancel)
+    ));
+    assert!(panel.request(&document, false).is_err());
+    panel.name.clear();
+    assert!(panel.request(&document, true).is_err());
+    panel.name = "Intentionally duplicated label".into();
+    assert_eq!(
+        panel.request(&document, true).unwrap().name,
+        "Intentionally duplicated label"
+    );
+}
+#[test]
+fn primitive_forms_stay_narrow_and_source_neutral_across_frames() {
+    let document = Document::new("Narrow primitive Inspector").unwrap();
+    let before = document.clone();
+    for kind in [ModelingTool::Box, ModelingTool::Cylinder] {
+        let context = egui::Context::default();
+        let mut panel = panel(kind);
+        let ids = panel.request(&document, true).unwrap();
+        for _ in 0..90 {
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200., 1000.),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let inspector = egui::Panel::right("primitive-inspector")
+                            .default_size(180.)
+                            .min_size(0.)
+                            .resizable(true)
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    assert!(
+                                        panel
+                                            .show(ui, &document, true, PreviewState::Idle)
+                                            .is_none()
+                                    );
+                                });
+                            });
+                        assert!(inspector.response.rect.width() <= 181.);
+                    },
+                )
+                .drop_without_applying_deltas();
+            let request = panel.request(&document, true).unwrap();
+            assert_eq!((request.body, request.feature), (ids.body, ids.feature));
+        }
+    }
+    assert_eq!(document, before);
+}

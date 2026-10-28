@@ -27,6 +27,7 @@ pub enum Icon {
     Spline,
     Construction,
     Box,
+    Cylinder,
     Cut,
     Edge,
     Measure,
@@ -410,6 +411,21 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             ]);
             line([13.0, 7.0], [17.0, 11.0]);
             line([4.0, 23.0], [21.0, 23.0]);
+        }
+        Icon::Cylinder => {
+            let ellipse = |cy: f32, start: usize, end: usize| {
+                let points = (start..=end)
+                    .map(|step| {
+                        let angle = step as f32 * std::f32::consts::TAU / 32.;
+                        v(12. + 8. * angle.cos(), cy + 3. * angle.sin())
+                    })
+                    .collect();
+                p.add(egui::Shape::line(points, stroke));
+            };
+            ellipse(5., 0, 32);
+            line([4., 5.], [4., 19.]);
+            line([20., 5.], [20., 19.]);
+            ellipse(19., 0, 16);
         }
         Icon::Box | Icon::Cut | Icon::Wire | Icon::AllEdges | Icon::VisibleEdges | Icon::Filled => {
             if matches!(icon, Icon::AllEdges | Icon::VisibleEdges | Icon::Filled) {
