@@ -143,6 +143,27 @@ pub struct Session {
     redo: VecDeque<History>,
     activity: VecDeque<Activity>,
 }
+
+/// Immutable command preparation input for a bounded background worker.
+/// Prepared results retain the originating Session identity and base revision;
+/// only that live Session can commit them after normal freshness checks.
+pub struct PreparationSnapshot {
+    session: Session,
+}
+impl PreparationSnapshot {
+    /// Existing preparation/query adapters can borrow this source, but cannot
+    /// mutate it or obtain an independent document/history owner.
+    ///
+    /// ```compile_fail
+    /// use multicad_core::{commands::Session, document::Document};
+    /// let session = Session::new(Document::new("Example").unwrap()).unwrap();
+    /// let snapshot = session.preparation_snapshot();
+    /// snapshot.session().mark_saved(0).unwrap();
+    /// ```
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+}
 fn difference(before: &Document, after: &Document, revision: u64) -> Result<Change, CommandError> {
     let ids: BTreeSet<_> = before
         .entities()
@@ -185,6 +206,19 @@ impl Session {
     }
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    pub fn preparation_snapshot(&self) -> PreparationSnapshot {
+        PreparationSnapshot {
+            session: Self {
+                id: self.id,
+                current: self.current.clone(),
+                revision: self.revision,
+                saved: None,
+                undo: VecDeque::new(),
+                redo: VecDeque::new(),
+                activity: VecDeque::new(),
+            },
+        }
     }
     pub fn dirty(&self) -> bool {
         self.saved.as_ref() != Some(self.document())
