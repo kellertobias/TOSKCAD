@@ -123,6 +123,100 @@ fn captured_target_toggles_preserve_old_predecessors_and_pin_new_feature_ids_onc
     assert_eq!(prepared.restored, vec![fixture.targets[1].clone()]);
 }
 #[test]
+fn new_body_toggle_clears_request_targets_but_keeps_local_retained_bindings() {
+    let (fixture, mut panel) = panel();
+    let original = fixture.session.document().clone();
+    let before = panel
+        .request(&original, ExtrudeCapabilities::distance_bodies())
+        .unwrap();
+    panel.edit.operation = Operation::NewBody;
+    panel.edit.keep_tools = true;
+    panel.extrusion.changed();
+    let new_body = panel
+        .request(&original, ExtrudeCapabilities::distance_bodies())
+        .unwrap();
+    assert_eq!(new_body.operation, Operation::NewBody);
+    assert!(!new_body.keep_tools);
+    assert!(new_body.targets.is_empty());
+    assert_eq!(new_body.group, before.group);
+    panel.edit.operation = Operation::Cut;
+    panel.edit.keep_tools = before.keep_tools;
+    panel.extrusion.changed();
+    assert_eq!(
+        panel
+            .request(&original, ExtrudeCapabilities::distance_bodies())
+            .unwrap(),
+        before
+    );
+    assert_eq!(fixture.session.document(), &original);
+}
+#[test]
+fn saved_new_body_group_opens_without_boolean_results_and_requires_explicit_new_target_selection() {
+    let (fixture, mut panel) = panel();
+    panel.edit.operation = Operation::NewBody;
+    let edit = panel
+        .request(
+            fixture.session.document(),
+            ExtrudeCapabilities::distance_bodies(),
+        )
+        .unwrap();
+    let prepared = model::prepare_extrude_group_edit(
+        &fixture.session,
+        fixture.session.revision(),
+        Actor::local(Channel::Ui),
+        &edit,
+    )
+    .unwrap();
+    let document = prepared.prepared.document();
+    let state = model::inspect_extrude_group(document, fixture.group).unwrap();
+    let mut panel = GroupEditPanel::new(document, state).unwrap();
+    assert_eq!(panel.edit.operation, Operation::NewBody);
+    assert!(panel.rows.is_empty());
+    panel
+        .set_context(
+            document,
+            fixture.session.revision(),
+            &scene(
+                document,
+                crate::viewport::SceneStamp {
+                    document: document.id(),
+                    revision: fixture.session.revision(),
+                    generation: 2,
+                },
+                Default::default(),
+                None,
+            ),
+        )
+        .unwrap();
+    assert!(panel.rows.iter().all(|row| !row.checked));
+    assert!(panel.rows.iter().all(|row| {
+        !fixture
+            .request
+            .extrusion
+            .outputs
+            .iter()
+            .any(|tool| tool.body == row.body)
+    }));
+    panel.edit.operation = Operation::Join;
+    assert!(
+        panel
+            .request(document, ExtrudeCapabilities::distance_bodies())
+            .is_err()
+    );
+    let row = panel
+        .rows
+        .iter_mut()
+        .find(|row| row.body == fixture.targets[0].body)
+        .unwrap();
+    row.checked = true;
+    let request = panel
+        .request(document, ExtrudeCapabilities::distance_bodies())
+        .unwrap();
+    assert!(
+        matches!(&request.targets[0], ExtrudeGroupTarget::Add{target,..} if target == &fixture.targets[0])
+    );
+}
+#[test]
 fn empty_target_set_is_invalid_and_refresh_does_not_allocate_or_rebind_rows() {
     let (fixture, mut panel) = panel();
     let before = panel

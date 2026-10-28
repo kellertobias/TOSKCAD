@@ -27,6 +27,7 @@ pub enum ModelRequest {
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
     Split(Box<model::SplitRequest>),
     ExtrudeGroupEdit(Box<model::ExtrudeGroupEdit>),
+    GroupedExtrude(Box<model::GroupedExtrudeRequest>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -99,6 +100,9 @@ impl ModelRequest {
             }
             Self::Split(request) => {
                 model::prepare_split(session, session.revision(), actor, request)
+            }
+            Self::GroupedExtrude(request) => {
+                model::prepare_grouped_extrude(session, session.revision(), actor, request)
             }
             Self::ExtrudeGroupEdit(_) => {
                 return Err(

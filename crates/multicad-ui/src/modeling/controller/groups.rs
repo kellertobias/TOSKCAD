@@ -61,6 +61,12 @@ impl ModelToolController {
             edit,
         )
         .map_err(|error| error.to_string())?;
+        Self::group_prepared(prepared, group)
+    }
+    pub(super) fn group_prepared(
+        prepared: model::ExtrudeGroupPrepared,
+        group: EntityId,
+    ) -> Result<(ModelPrepared, SceneProof), String> {
         let state = model::inspect_extrude_group(prepared.prepared.document(), group)
             .map_err(|error| error.to_string())?;
         let mut producers: Vec<_> = state

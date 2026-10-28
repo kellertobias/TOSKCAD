@@ -491,6 +491,11 @@ impl BooleanIdentities {
             group: Some(model::ExtrudeGroupDraft::new(name, None)),
         }
     }
+    pub fn group_draft(&mut self) -> model::ExtrudeGroupDraft {
+        self.group
+            .get_or_insert_with(|| model::ExtrudeGroupDraft::new("Extrusion operation", None))
+            .clone()
+    }
     pub fn compose(
         &mut self,
         extrusion: ExtrudeRequest,
@@ -508,11 +513,7 @@ impl BooleanIdentities {
             return Err("No affected bodies; change the extent or choose explicit targets".into());
         }
         let mut request = ExtrudeBooleanRequest::new(extrusion, operation, targets, keep_tools);
-        request.group = Some(
-            self.group
-                .get_or_insert_with(|| model::ExtrudeGroupDraft::new("Extrusion operation", None))
-                .clone(),
-        );
+        request.group = Some(self.group_draft());
         for boolean in &mut request.booleans {
             boolean.feature = *self.features.entry(boolean.target.body).or_default();
         }

@@ -43,13 +43,15 @@ impl ModelToolController {
             .as_ref()
             .ok_or("Start a new extrusion first")?;
         match controls.operation {
-            Operation::NewBody => self.submit_final(
-                session,
-                resources,
-                channel,
-                form,
-                &ModelRequest::Extrude(Box::new(extrusion.clone())),
-            ),
+            Operation::NewBody => {
+                let request = ModelRequest::GroupedExtrude(Box::new(
+                    multicad_core::model::GroupedExtrudeRequest {
+                        extrusion: extrusion.clone(),
+                        group: self.identities.group_draft(),
+                    },
+                ));
+                self.submit_final(session, resources, channel, form, &request)
+            }
             Operation::Cut => {
                 let cut = CutDiscovery::prepare(
                     session,

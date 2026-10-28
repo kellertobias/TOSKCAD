@@ -21,6 +21,8 @@ impl SceneProof {
             body: input.body,
             feature: input.producer,
         }));
+        let mut seen = BTreeSet::new();
+        producers.retain(|output| seen.insert((output.body, output.feature)));
         let bodies = producers
             .iter()
             .map(|output| output.body)

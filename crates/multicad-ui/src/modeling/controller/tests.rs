@@ -665,6 +665,8 @@ fn consumption_proof_tracks_the_current_producer_version_instead_of_hiding_futur
     assert_eq!(proof[0].input.producer, feature.id);
 }
 
+#[path = "conversion_tests.rs"]
+mod conversion_tests;
 #[path = "edit_tests.rs"]
 mod edit_tests;
 #[path = "group_tests.rs"]

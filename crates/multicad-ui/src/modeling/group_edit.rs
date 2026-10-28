@@ -29,9 +29,31 @@ pub(super) struct GroupEditPanel {
     rows: Vec<TargetRow>,
     context_error: Option<String>,
     names: GeneratedNames,
+    title: String,
+    legacy: bool,
 }
 impl GroupEditPanel {
     pub fn new(document: &Document, state: ExtrudeGroupState) -> Result<Self, String> {
+        let title = document
+            .get(state.group)
+            .ok_or("The recorded extrusion operation is missing")?
+            .name
+            .clone();
+        Self::build(document, state, title, false)
+    }
+    pub fn legacy(
+        document: &Document,
+        state: ExtrudeGroupState,
+        title: String,
+    ) -> Result<Self, String> {
+        Self::build(document, state, title, true)
+    }
+    fn build(
+        document: &Document,
+        state: ExtrudeGroupState,
+        title: String,
+        legacy: bool,
+    ) -> Result<Self, String> {
         let edit = ExtrudeGroupEdit::from_state(&state).map_err(|error| error.to_string())?;
         let index =
             multicad_core::hierarchy::Index::new(document).map_err(|error| error.to_string())?;
@@ -69,10 +91,9 @@ impl GroupEditPanel {
                 "Current native bodies must be available before adding a new target".into(),
             ),
             names: GeneratedNames::new(document),
+            title,
+            legacy,
         })
-    }
-    pub fn group(&self) -> EntityId {
-        self.state.group
     }
     pub fn stamp(&self) -> FormStamp {
         self.extrusion.stamp().expect("active grouped extrusion")
@@ -143,6 +164,11 @@ impl GroupEditPanel {
         let mut edit = self.edit.clone();
         edit.parameters = extrusion.parameters;
         edit.faces = Some(extrusion.faces);
+        if edit.operation == Operation::NewBody {
+            edit.targets.clear();
+            edit.keep_tools = false;
+            return Ok(edit);
+        }
         edit.targets = self
             .rows
             .iter()
@@ -163,18 +189,21 @@ impl GroupEditPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong("Edit extrusion operation");
-        ui.label(
-            document
-                .get(self.group())
-                .map_or("Missing operation record", |entity| entity.name.as_str()),
-        );
-        ui.small("The checked bodies are an explicit captured target set. Changing dimensions does not rediscover targets. Saved predecessor versions stay fixed.");
+        ui.label(&self.title);
+        if self.legacy {
+            ui.small("This edit affects only the selected extrusion. Choosing a body operation creates an editable operation with the target bodies you select.");
+        }
         ui.label("Operation");
         let mut changed = false;
         controls::inspector_combo(ui, "grouped-extrusion-operation")
             .selected_text(operation_label(self.edit.operation))
             .show_ui(ui, |ui| {
-                for operation in [Operation::Join, Operation::Cut, Operation::Intersect] {
+                for operation in [
+                    Operation::NewBody,
+                    Operation::Join,
+                    Operation::Cut,
+                    Operation::Intersect,
+                ] {
                     changed |= ui
                         .selectable_value(
                             &mut self.edit.operation,
@@ -184,70 +213,78 @@ impl GroupEditPanel {
                         .changed();
                 }
             });
-        changed|=ui.checkbox(&mut self.edit.keep_tools,"Keep extrusion tool bodies").on_hover_text("Change retention of the group's saved extrusion producer versions without replacing their identities").changed();
-        ui.strong(format!(
-            "Affected bodies · {}",
-            self.rows.iter().filter(|row| row.checked).count()
-        ));
-        for row in &mut self.rows {
-            let hint = if row.saved {
-                "Saved predecessor; changing the current body history will not silently replace this input"
-            } else {
-                "A newly added target explicitly pins this current native producer"
-            };
-            changed |= ui
-                .push_id(row.body, |ui| ui.checkbox(&mut row.checked, &row.label))
-                .inner
-                .on_hover_text(format!(
-                    "{hint}\nInput: {}\nProducer: {}",
-                    row.predecessor, row.input.producer
-                ))
-                .changed();
-            if row.checked {
-                ui.small(format!(
-                    "{} input: {}",
-                    if row.saved { "Saved" } else { "New" },
-                    row.predecessor
-                ));
-            }
-        }
-        if let Some(error) = &self.context_error {
-            ui.small(error);
-        }
-        controls::inspector_collapsing(
-            ui,
-            "group-captured-context",
-            "Original capture context",
-            |ui| {
-                if let Some(scope) = &self.state.definition.captured_scope {
-                    ui.small("Historical context only; it is not an active automatic rule.");
-                    let component = scope
-                        .component
-                        .map(|id| {
-                            document
-                                .get(id)
-                                .map(|entity| entity.name.clone())
-                                .unwrap_or_else(|| format!("Unavailable component {id}"))
-                        })
-                        .unwrap_or_else(|| "Document root".into());
-                    ui.label(format!("Component: {component}"));
-                    for (label, ids) in [("Included", &scope.include), ("Excluded", &scope.exclude)]
-                    {
-                        for id in ids {
-                            ui.label(format!(
-                                "{label}: {}",
-                                document
-                                    .get(*id)
-                                    .map(|entity| entity.name.clone())
-                                    .unwrap_or_else(|| id.to_string())
-                            ));
-                        }
-                    }
+        if self.edit.operation != Operation::NewBody {
+            ui.small("The checked bodies are an explicit captured target set. Changing dimensions does not rediscover targets. Saved predecessor versions stay fixed.");
+            changed|=ui.checkbox(&mut self.edit.keep_tools,"Keep extrusion tool bodies").on_hover_text("Change retention of the group's saved extrusion producer versions without replacing their identities").changed();
+            ui.strong(format!(
+                "Affected bodies · {}",
+                self.rows.iter().filter(|row| row.checked).count()
+            ));
+            for row in &mut self.rows {
+                let hint = if row.saved {
+                    "Saved predecessor; changing the current body history will not silently replace this input"
                 } else {
-                    ui.small("Targets were explicitly selected when this operation was created.");
+                    "A newly added target explicitly pins this current native producer"
+                };
+                changed |= ui
+                    .push_id(row.body, |ui| ui.checkbox(&mut row.checked, &row.label))
+                    .inner
+                    .on_hover_text(format!(
+                        "{hint}\nInput: {}\nProducer: {}",
+                        row.predecessor, row.input.producer
+                    ))
+                    .changed();
+                if row.checked {
+                    ui.small(format!(
+                        "{} input: {}",
+                        if row.saved { "Saved" } else { "New" },
+                        row.predecessor
+                    ));
                 }
-            },
-        );
+            }
+            if let Some(error) = &self.context_error {
+                ui.small(error);
+            }
+        } else {
+            ui.small("Keep the existing extrusion body identities. Any owned body-operation results are removed only after a successful Preview and Apply; their targets return to the saved upstream results.");
+        }
+        if !self.legacy {
+            controls::inspector_collapsing(
+                ui,
+                "group-captured-context",
+                "Original capture context",
+                |ui| {
+                    if let Some(scope) = &self.state.definition.captured_scope {
+                        ui.small("Historical context only; it is not an active automatic rule.");
+                        let component = scope
+                            .component
+                            .map(|id| {
+                                document
+                                    .get(id)
+                                    .map(|entity| entity.name.clone())
+                                    .unwrap_or_else(|| format!("Unavailable component {id}"))
+                            })
+                            .unwrap_or_else(|| "Document root".into());
+                        ui.label(format!("Component: {component}"));
+                        for (label, ids) in
+                            [("Included", &scope.include), ("Excluded", &scope.exclude)]
+                        {
+                            for id in ids {
+                                ui.label(format!(
+                                    "{label}: {}",
+                                    document
+                                        .get(*id)
+                                        .map(|entity| entity.name.clone())
+                                        .unwrap_or_else(|| id.to_string())
+                                ));
+                            }
+                        }
+                    } else {
+                        ui.small("Body-operation targets are selected explicitly.");
+                    }
+                },
+            );
+        }
         if changed {
             self.extrusion.changed();
         }
@@ -279,6 +316,7 @@ impl GroupEditPanel {
 }
 fn operation_label(operation: Operation) -> &'static str {
     match operation {
+        Operation::NewBody => "New body",
         Operation::Join => "Join / merge",
         Operation::Cut => "Cut / remove material",
         Operation::Intersect => "Intersect",

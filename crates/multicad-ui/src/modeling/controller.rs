@@ -35,12 +35,14 @@ struct Scope {
     source: ContentHash,
     resources: ProjectResources,
     execution: Execution,
+    adoption: Option<multicad_core::model::ExtrudeGroupDraft>,
 }
 #[derive(Clone, Copy)]
 enum Execution {
     Create,
     Edit { feature: EntityId },
     EditGroup { group: EntityId },
+    LegacyExtrusion { feature: EntityId, group: EntityId },
 }
 struct Candidate {
     prepared: Prepared,
@@ -101,6 +103,7 @@ impl ModelToolController {
         match self.scope.as_ref().map(|scope| scope.execution) {
             Some(Execution::EditGroup { .. }) => "Extrusion operation edit",
             Some(Execution::Edit { .. }) => "Feature edit",
+            Some(Execution::LegacyExtrusion { .. }) => "Extrusion edit",
             _ => self.form.as_ref().map_or("Modeling", ModelForm::label),
         }
     }
@@ -108,7 +111,9 @@ impl ModelToolController {
         self.scope.as_ref().is_some_and(|scope| {
             matches!(
                 scope.execution,
-                Execution::Edit { .. } | Execution::EditGroup { .. }
+                Execution::Edit { .. }
+                    | Execution::EditGroup { .. }
+                    | Execution::LegacyExtrusion { .. }
             )
         })
     }
@@ -146,53 +151,7 @@ impl ModelToolController {
         };
         let form = match definition.type_id.as_str() {
             model::EXTRUDE_TYPE => {
-                let source =
-                    model::read_extrude(document, feature).map_err(|error| error.to_string())?;
-                let face_id = |end: &model::Termination| match end {
-                    model::Termination::ToFace { reference, .. } => Some(*reference),
-                    _ => None,
-                };
-                let wanted: std::collections::BTreeSet<_> = match &source.parameters.extent {
-                    model::Extent::OneSided { end } => face_id(end).into_iter().collect(),
-                    model::Extent::TwoSided { forward, backward } => {
-                        [face_id(forward), face_id(backward)]
-                            .into_iter()
-                            .flatten()
-                            .collect()
-                    }
-                    model::Extent::Symmetric { .. } => Default::default(),
-                };
-                let EntityData::Feature { inputs, .. } = &entity.data else {
-                    unreachable!()
-                };
-                let faces = inputs
-                    .iter()
-                    .filter_map(|link| {
-                        link.geometry
-                            .as_ref()
-                            .filter(|intent| wanted.contains(&intent.id))
-                            .map(|intent| model::FaceInput {
-                                source: link.target,
-                                intent: intent.clone(),
-                            })
-                    })
-                    .collect();
-                let mut panel = ExtrudePanel::default();
-                panel.begin_request(ExtrudeRequest {
-                    sketch: source.profile.sketch,
-                    outputs: vec![model::ExtrudeOutput {
-                        feature,
-                        body: source.output.body,
-                        name: body_name(source.output.body)?,
-                        region: source.profile.region,
-                    }],
-                    parameters: source.parameters,
-                    operation: source.operation,
-                    targets: source.targets,
-                    keep_tools: source.keep_tools,
-                    faces,
-                })?;
-                ModelForm::Extrude(Box::new(panel))
+                return self.begin_legacy_extrusion(session, resources, feature, channel);
             }
             model::PRIMITIVE_TYPE => {
                 let source =
@@ -351,6 +310,7 @@ impl ModelToolController {
             source,
             resources: resources.clone(),
             execution: Execution::Create,
+            adoption: None,
         });
         self.candidate = None;
         self.discovery = None;
@@ -526,6 +486,9 @@ impl ModelToolController {
             Execution::EditGroup { group } => {
                 self.prepare_group(session, channel, group, request)?
             }
+            Execution::LegacyExtrusion { feature, group } => {
+                self.prepare_legacy_extrusion(session, channel, feature, group, request)?
+            }
         };
         session
             .validate_preview(&prepared.prepared)
@@ -533,7 +496,9 @@ impl ModelToolController {
         let content = ContentHash::document(prepared.prepared.document())?;
         let tools = match execution {
             Execution::Create => request.tool_proof(prepared.prepared.document())?,
-            Execution::Edit { .. } | Execution::EditGroup { .. } => vec![],
+            Execution::Edit { .. }
+            | Execution::EditGroup { .. }
+            | Execution::LegacyExtrusion { .. } => vec![],
         };
         self.generation = self
             .generation
@@ -566,10 +531,7 @@ impl ModelToolController {
             requires_info: matches!(
                 request,
                 ModelRequest::ExtrudeBoolean(_) | ModelRequest::Split(_)
-            ) || matches!(
-                execution,
-                Execution::Edit { .. } | Execution::EditGroup { .. }
-            ),
+            ) || !matches!(execution, Execution::Create),
         });
         self.error = None;
         Ok(())
@@ -848,6 +810,7 @@ impl ModelToolController {
 
 mod context;
 mod groups;
+mod legacy;
 mod operations;
 mod proof;
 mod termination;
