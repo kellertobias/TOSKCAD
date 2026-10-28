@@ -69,6 +69,11 @@ impl Application {
     }
     pub(super) fn show_welcome(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Recent-card loads have no open picker to drive repaint requests.
+        // Keep polling their guarded file receipts even while the mouse is idle.
+        if !self.pending_files.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
         self.handle_shortcuts(&ctx);
         egui::Panel::top("welcome-titlebar")
             .frame(
@@ -253,5 +258,79 @@ mod tests {
                 assert_eq!(app.recents[0].path, path);
             }
         }
+    }
+    #[test]
+    fn welcome_polls_delayed_recent_open_without_another_input_event() {
+        use std::sync::mpsc;
+        struct Delayed {
+            gate: mpsc::Receiver<()>,
+        }
+        impl DocumentStorage for Delayed {
+            fn save(&mut self, _: &Path, _: &Document) -> Result<(), String> {
+                panic!("unused")
+            }
+            fn load(&mut self, _: &Path) -> Result<Document, String> {
+                panic!("unused")
+            }
+            fn open_project(&mut self, _: &Path) -> Result<LoadedProject, StorageError> {
+                self.gate.recv().unwrap();
+                Ok(LoadedProject {
+                    file: ProjectFile::new(Document::new("Delayed recent").unwrap()).unwrap(),
+                    stamp: Some(FileStamp {
+                        manifest: ContentHash::of(b"delayed"),
+                        length: 1,
+                    }),
+                    diagnostics: vec![],
+                })
+            }
+        }
+        let (release, gate) = mpsc::channel();
+        let mut app = Application::welcome(Box::new(Delayed { gate })).unwrap();
+        drain(&mut app);
+        let ctx = egui::Context::default();
+        ctx.style_mut_of(egui::Theme::Dark, |s| s.animation_time = 0.);
+        ctx.style_mut_of(egui::Theme::Light, |s| s.animation_time = 0.);
+        let mut time = 0.;
+        let frame = |app: &mut Application, time: &mut f64| {
+            *time += 0.2;
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(*time),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 800.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            );
+            let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            output.drop_without_applying_deltas();
+            delay
+        };
+        for _ in 0..6 {
+            frame(&mut app, &mut time);
+        }
+        app.load_path(PathBuf::from("/private/tmp/delayed-recent.multicad"))
+            .unwrap();
+        for index in 0..8 {
+            let delay = frame(&mut app, &mut time);
+            if index >= 5 {
+                assert!(
+                    delay <= Duration::from_millis(16),
+                    "Idle Welcome must schedule the next file receipt poll: {delay:?}"
+                );
+            }
+        }
+        assert!(app.welcome);
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while app.welcome {
+            let delay = frame(&mut app, &mut time);
+            assert!(Instant::now() < until, "recent open receipt never appeared");
+            std::thread::sleep(delay.min(Duration::from_millis(16)));
+        }
+        assert_eq!(app.current().session.document().name(), "Delayed recent");
+        assert_eq!(app.projects.len(), 1);
     }
 }
