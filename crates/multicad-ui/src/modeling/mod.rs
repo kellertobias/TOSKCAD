@@ -14,7 +14,7 @@ mod group_edit;
 mod group_fixture;
 mod names;
 #[cfg(test)]
-mod native_fixture;
+pub(crate) mod native_fixture;
 mod placement;
 mod primitive;
 mod revolve;

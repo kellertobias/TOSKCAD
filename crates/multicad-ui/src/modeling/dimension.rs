@@ -45,7 +45,7 @@ impl DimensionField {
         ui.label(format!("{label} ({})", self.unit));
         ui.add(
             egui::TextEdit::singleline(&mut self.text)
-                .desired_width(ui.available_width())
+                .desired_width(crate::controls::inspector_width(ui))
                 .hint_text(format!("Value or =$parameter · {}", self.unit)),
         )
         .on_hover_text(help)

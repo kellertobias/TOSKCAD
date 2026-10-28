@@ -7,7 +7,7 @@ use multicad_core::{
 };
 use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use std::sync::Arc;
-pub(super) fn scene(
+pub(crate) fn scene(
     _document: &Document,
     model: &ModelSnapshot,
     generation: u64,
@@ -85,7 +85,7 @@ pub(super) fn scene(
         message,
     })
 }
-pub(super) struct NativeBackend {
+pub(crate) struct NativeBackend {
     runtime: Runtime<Arc<Scene>>,
     expected: Option<(u64, SceneStamp)>,
 }

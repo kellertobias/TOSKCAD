@@ -7,11 +7,40 @@ pub(crate) fn inspector_layout(ui: &mut egui::Ui) {
     let combo_width = ui.spacing().combo_width.min(ui.available_width().max(0.));
     ui.spacing_mut().combo_width = combo_width;
 }
+/// Finite remaining width on this row. A wrapping horizontal layout reports
+/// its whole row through available_width(), even after another control used
+/// part of that row; using it as a selector minimum creates sizing feedback.
+pub(crate) fn inspector_width(ui: &egui::Ui) -> f32 {
+    let width = [
+        ui.available_size_before_wrap().x,
+        ui.available_width(),
+        ui.clip_rect().width(),
+    ]
+    .into_iter()
+    .filter(|width| width.is_finite())
+    .reduce(f32::min)
+    .unwrap_or(ui.spacing().text_edit_width);
+    width.max(0.)
+}
+/// Keep a persisted resizable Inspector from consuming the entire viewport.
+/// Widget contents must still fit their requested width without this limit.
+pub(crate) fn inspector_panel(ui: &egui::Ui, id: impl Into<egui::Id>) -> egui::Panel {
+    let available = ui.available_width();
+    let maximum = if available.is_finite() {
+        (available * 0.5).max(0.)
+    } else {
+        600.
+    };
+    egui::Panel::right(id)
+        .default_size(250.)
+        .size_range(160_f32.min(maximum)..=maximum)
+        .resizable(true)
+}
 /// A one-line Inspector selector. egui's width is a minimum; explicit
 /// truncation prevents a long selected value from growing the parent panel.
 pub(crate) fn inspector_combo(ui: &egui::Ui, id: impl egui::AsIdSalt) -> egui::ComboBox {
     egui::ComboBox::from_id_salt(id)
-        .width(ui.available_width().max(0.))
+        .width(inspector_width(ui))
         .truncate()
 }
 /// egui's default collapsing header extends to its full unwrapped title.

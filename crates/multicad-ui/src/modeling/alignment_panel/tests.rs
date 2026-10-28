@@ -551,3 +551,65 @@ fn alignment_preview_keeps_new_offset_formula_bindings_across_parameter_rename()
     };
     assert_eq!(rebound.parameters.offset, original.parameters.offset);
 }
+#[test]
+fn alignment_controls_do_not_grow_a_resizable_inspector_across_idle_and_picking_frames() {
+    let (session, a, _b, scene) = fixture();
+    let original = session.document().clone();
+    for width in [180., 250.] {
+        let ctx = egui::Context::default();
+        let mut panel = AlignmentPanel::new(
+            session.document(),
+            session.revision(),
+            &scene,
+            &BTreeSet::from([a.body]),
+        )
+        .unwrap();
+        for frame in 0..120 {
+            if frame == 40 {
+                panel.picking = Some(Side::Source);
+            }
+            if frame == 80 {
+                panel.picking = None;
+                panel.mode = AlignmentMode::Axis;
+            }
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 1200.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let inspector = egui::Panel::right("alignment-size-regression")
+                        .default_size(width)
+                        .min_size(0.)
+                        .resizable(true)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                let available = ui.available_width();
+                                assert!(
+                                    panel
+                                        .show(ui, session.document(), true, PreviewState::Idle)
+                                        .is_none()
+                                );
+                                assert!(
+                                    ui.min_rect().width() <= available + 1.,
+                                    "Frame {frame}: content grew from {available} to {}",
+                                    ui.min_rect().width()
+                                );
+                            });
+                        });
+                    assert!(
+                        inspector.response.rect.width() <= width + 1.,
+                        "Frame {frame}: inspector grew from {width} to {}",
+                        inspector.response.rect.width()
+                    );
+                    assert!(ui.available_width() >= 940.);
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+    }
+    assert_eq!(session.document(), &original);
+}

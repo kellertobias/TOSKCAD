@@ -1903,9 +1903,7 @@ impl SketchEditor {
                     }
                 }
             });
-        egui::Panel::right("source-inspector")
-            .default_size(250.)
-            .resizable(true)
+        crate::controls::inspector_panel(ui,"source-inspector")
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
                 ui.heading("Inspector");
@@ -5510,3 +5508,6 @@ mod tests {
 #[cfg(test)]
 #[path = "sketch_editor/feature_edit_tests.rs"]
 mod feature_edit_tests;
+
+#[cfg(test)]
+mod inspector_tests;

@@ -631,3 +631,55 @@ fn moving_definition_and_its_own_instance_is_explicitly_rejected_but_copy_is_ind
     let p = PlacementPanel::new(&d, s.revision(), &scene, &selected, PlacementMode::Copy).unwrap();
     assert_eq!(batch(&p.request(&d, true).unwrap()).copies.len(), 2);
 }
+#[test]
+fn numeric_placement_fields_stay_within_a_resizable_inspector_across_repeated_frames() {
+    let (session, scene, selected) = fixture();
+    let original = session.document().clone();
+    for width in [180., 250.] {
+        let ctx = egui::Context::default();
+        let mut panel = PlacementPanel::new(
+            session.document(),
+            session.revision(),
+            &scene,
+            &selected,
+            PlacementMode::Move,
+        )
+        .unwrap();
+        for iteration in 0..120 {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 1200.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let inspector = egui::Panel::right("numeric-placement-size")
+                        .default_size(width)
+                        .min_size(0.)
+                        .resizable(true)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                let available = ui.available_width();
+                                assert!(
+                                    panel
+                                        .show(ui, session.document(), true, PreviewState::Idle)
+                                        .is_none()
+                                );
+                                assert!(ui.min_rect().width() <= available + 1.);
+                            });
+                        });
+                    assert!(
+                        inspector.response.rect.width() <= width + 1.,
+                        "Frame {iteration}: Inspector grew to {}",
+                        inspector.response.rect.width()
+                    );
+                    assert!(ui.available_width() >= 940.);
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+    }
+    assert_eq!(session.document(), &original);
+}
