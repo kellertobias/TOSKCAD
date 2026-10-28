@@ -506,4 +506,70 @@ mod tests {
         }
         assert!(q.validate().is_err());
     }
+    #[test]
+    fn report_validation_rejects_missing_pairs_foreign_samples_and_fabricated_metrics() {
+        let q = query();
+        let p = q.pair_query();
+        let values = PairValues {
+            relation: PairRelation::Separated,
+            overlap_volume_mm3: 0.,
+            minimum_clearance_mm: 1.,
+            witnesses: vec![InspectionWitness {
+                a_mm: [0.; 3],
+                b_mm: [1., 0., 0.],
+            }],
+            witnesses_complete: true,
+            total_solutions: 1,
+            inner_solution: false,
+            tolerance_mm: p.contact_tolerance_mm,
+            boolean_fuzzy_mm: 0.,
+        };
+        let report = PairReport {
+            stamp: p.expected,
+            query: p.clone(),
+            pairs: vec![PairEvaluation {
+                pair: p.pairs[0].clone(),
+                result: Ok(values.clone()),
+            }],
+        };
+        report.validate_against(&p).unwrap();
+        let mut bad = report.clone();
+        bad.pairs.clear();
+        assert!(bad.validate_against(&p).is_err());
+        let mut bad = report.clone();
+        bad.pairs[0].pair.a.root = EntityId::new();
+        assert!(bad.validate_against(&p).is_err());
+        let mut bad = values.clone();
+        bad.overlap_volume_mm3 = 1.;
+        assert!(bad.validate(&p).is_err());
+        let mut bad = values.clone();
+        bad.witnesses[0].b_mm[0] = 2.;
+        assert!(bad.validate(&p).is_err());
+        let mut bad = values;
+        bad.minimum_clearance_mm = f64::NAN;
+        assert!(bad.validate(&p).is_err());
+        let values = q.sample_values().unwrap();
+        let mut range = MotionRangeReport {
+            stamp: q.expected,
+            query: q.clone(),
+            unit: q.unit(),
+            coverage: RangeCoverage::SamplesOnly,
+            actual_intervals: values.windows(2).map(|p| p[1] - p[0]).collect(),
+            sample_values: values.clone(),
+            samples: values
+                .iter()
+                .map(|v| RangeSample {
+                    value: *v,
+                    candidate_stamp: Some(q.expected),
+                    result: Ok(report.clone()),
+                })
+                .collect(),
+        };
+        range.validate_against(&q).unwrap();
+        range.samples[0].candidate_stamp.as_mut().unwrap().document = EntityId::new();
+        assert!(range.validate_against(&q).is_err());
+        range.samples[0].candidate_stamp = Some(q.expected);
+        range.actual_intervals[0] = 1.;
+        assert!(range.validate_against(&q).is_err());
+    }
 }
