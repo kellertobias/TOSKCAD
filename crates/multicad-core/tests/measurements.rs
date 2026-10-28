@@ -194,6 +194,8 @@ fn model_publication_filters_only_valid_canonical_non_driving_owners_and_keeps_f
     let mut unclassified = report.entries[0].clone();
     unclassified.address.owner = r.query.a.source;
     let report = ReferenceReport {
+        external_results: Default::default(),
+        external_errors: Default::default(),
         revision: s.revision(),
         entries: vec![unclassified],
     };

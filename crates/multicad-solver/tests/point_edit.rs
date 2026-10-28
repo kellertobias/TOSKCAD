@@ -430,6 +430,8 @@ fn attached_point_edits_require_current_geometry_and_reject_a_collapsed_free_edg
     );
     assert!(report.all_resolved());
     let stale = ReferenceReport {
+        external_results: Default::default(),
+        external_errors: Default::default(),
         revision: 1,
         entries: vec![],
     };

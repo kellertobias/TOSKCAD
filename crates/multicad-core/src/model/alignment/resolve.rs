@@ -116,7 +116,12 @@ fn datum(
             break;
         }
     }
-    let report = ReferenceReport { revision, entries };
+    let report = ReferenceReport {
+        revision,
+        entries,
+        external_results: Default::default(),
+        external_errors: Default::default(),
+    };
     let frame = sketch::inspect_plane(document, plane, revision, Some(&report))?;
     Ok(ReferenceFrame {
         origin_mm: frame.origin,

@@ -518,6 +518,8 @@ fn failures_keep_source_and_numeric_conflicts_do_not_supply_a_draft() {
         matches!(stale,OperationError::Edit(EditError::Command(ref e)) if e.code==ErrorCode::StaleRevision)
     );
     let report = ReferenceReport {
+        external_results: Default::default(),
+        external_errors: Default::default(),
         revision: 1,
         entries: vec![],
     };

@@ -325,6 +325,10 @@ pub struct Diagnostic {
 pub struct ReferenceReport {
     pub revision: u64,
     pub entries: Vec<Diagnostic>,
+    #[serde(default)]
+    pub external_results: BTreeMap<EntityId, crate::sketch_external::ExternalResultReceipt>,
+    #[serde(default)]
+    pub external_errors: BTreeMap<EntityId, String>,
 }
 impl ReferenceReport {
     /// Geometry publication omits validated non-driving measurements and export
@@ -370,12 +374,16 @@ impl ReferenceReport {
         Ok(Self {
             revision: self.revision,
             entries,
+            external_results: self.external_results.clone(),
+            external_errors: self.external_errors.clone(),
         })
     }
     pub fn all_resolved(&self) -> bool {
-        self.entries
-            .iter()
-            .all(|e| matches!(e.resolution, Resolution::Resolved { .. }))
+        self.external_errors.is_empty()
+            && self
+                .entries
+                .iter()
+                .all(|e| matches!(e.resolution, Resolution::Resolved { .. }))
     }
     pub fn get(&self, address: ReferenceAddress) -> Option<&Diagnostic> {
         self.entries.iter().find(|e| e.address == address)
@@ -419,7 +427,12 @@ pub fn inspect(
             }
         }
     }
-    ReferenceReport { revision, entries }
+    ReferenceReport {
+        revision,
+        entries,
+        external_results: BTreeMap::new(),
+        external_errors: BTreeMap::new(),
+    }
 }
 /// Authored datum coordinates are never a fallback for unresolved attachments.
 pub(crate) fn plane_frame(

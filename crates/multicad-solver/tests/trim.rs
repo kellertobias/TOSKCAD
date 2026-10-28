@@ -275,6 +275,8 @@ fn stale_missing_unsolved_and_affected_reference_constraints_return_no_draft_or_
         matches!(stale,TrimEditError::Edit(EditError::Command(ref e)) if e.code==ErrorCode::StaleRevision)
     );
     let report = ReferenceReport {
+        external_results: Default::default(),
+        external_errors: Default::default(),
         revision: 1,
         entries: vec![],
     };

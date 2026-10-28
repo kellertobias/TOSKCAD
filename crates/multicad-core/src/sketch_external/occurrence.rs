@@ -4,7 +4,7 @@ use super::{Behavior, source::invalid};
 use crate::{
     constraint_sketch::SplineBasis,
     document::{DocumentError, EntityId},
-    model::OccurrencePath,
+    model::{OccurrencePath, RigidPose},
     project_file::ContentHash,
     references::{GeometryIntent, Origin},
 };
@@ -252,6 +252,7 @@ pub struct ExternalCatalog {
     pub source_hash: ContentHash,
     pub query_hash: ContentHash,
     pub query: ExternalQuery,
+    pub sketch_world_pose: RigidPose,
     pub results: Vec<ExternalChoice>,
     pub coincident: bool,
     pub diagnostics: Vec<String>,
@@ -259,6 +260,7 @@ pub struct ExternalCatalog {
 impl ExternalCatalog {
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.query.validate()?;
+        self.sketch_world_pose.validate()?;
         if self.document.is_nil()
             || self.query.hash()? != self.query_hash
             || self.results.len() > MAX_EXTERNAL_RESULTS
@@ -287,6 +289,53 @@ impl ExternalCatalog {
         }
         Ok(())
     }
+}
+/// Resolve a persisted semantic branch against a current catalogue. Recomputed
+/// midpoint bands may move; only the actual current source parameter is tested
+/// against the saved interval. No nearest, output index or coordinate fallback.
+pub fn select_external_choice<'a>(
+    catalog: &'a ExternalCatalog,
+    selector: &ResultSelector,
+) -> Result<&'a ExternalChoice, DocumentError> {
+    catalog.validate()?;
+    selector.validate()?;
+    if selector.expected_count != catalog.results.len() {
+        return Err(invalid(
+            "External intersection count changed; explicitly repair the saved result selection",
+        ));
+    }
+    let candidates = catalog
+        .results
+        .iter()
+        .filter(|choice| {
+            if choice.tangent
+                || choice.selector.support != selector.support
+                || choice.selector.family != selector.family
+            {
+                return false;
+            }
+            match &selector.branch {
+                None => choice.selector.branch.is_none(),
+                Some(branch) => {
+                    choice.source_parameter.is_some_and(|p| {
+                        p >= branch.source_interval[0] && p <= branch.source_interval[1]
+                    }) && choice
+                        .selector
+                        .branch
+                        .as_ref()
+                        .is_some_and(|current| current.crossing == branch.crossing)
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    if candidates.len() != 1
+        || (catalog.coincident && catalog.query.method == QueryMethod::Intersect)
+    {
+        return Err(invalid(
+            "Saved external support/branch is missing, tangent or ambiguous; explicitly repair without nearest-result rebinding",
+        ));
+    }
+    Ok(candidates[0])
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -359,7 +408,8 @@ impl OccurrenceCaptureRequest {
             .iter()
             .find(|c| &c.selector == selector)
             .ok_or_else(|| invalid("Explicitly select one current semantic native result"))?;
-        if choice.tangent || catalog.coincident {
+        if choice.tangent || (catalog.coincident && catalog.query.method == QueryMethod::Intersect)
+        {
             return Err(invalid(
                 "Tangent/coincident native results require an unambiguous alternative selection",
             ));
