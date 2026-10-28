@@ -131,7 +131,7 @@ fn failed_and_conflicting_saves_preserve_the_last_valid_project() {
     let bytes = std::fs::read(&path).unwrap();
     project.document.rename("Changed source").unwrap();
     assert!(
-        atomic_save_with(&path, &project, SaveMode::Replace(original.stamp), || Err(
+        atomic_save_with(&path, &project, SaveMode::Replace(original.stamp), |_| Err(
             StorageError::Message("Injected write interruption".into())
         ))
         .is_err()
@@ -300,7 +300,7 @@ fn interrupted_writer_child() {
         &path,
         &opened.file,
         SaveMode::Replace(opened.stamp.unwrap()),
-        || std::process::exit(73),
+        |_| std::process::exit(73),
     );
     panic!("The writer should have exited before publication");
 }
@@ -329,7 +329,7 @@ fn external_replacement_during_serialization_is_preserved_and_cannot_be_acknowle
     external.document.rename("External writer source").unwrap();
     let mut bytes = vec![];
     project_file::write(&external, &mut bytes, FileLimits::default()).unwrap();
-    let result = atomic_save_with(&path, &ours, SaveMode::Replace(original.stamp), || {
+    let result = atomic_save_with(&path, &ours, SaveMode::Replace(original.stamp), |_| {
         std::fs::write(&path, &bytes)?;
         Ok(())
     });
@@ -338,6 +338,112 @@ fn external_replacement_during_serialization_is_preserved_and_cannot_be_acknowle
     assert_eq!(
         store.open_project(&path).unwrap().file.document,
         external.document
+    );
+}
+
+fn retained_lock_alias_release(inject_error: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("retained-lock.multicad");
+    let lock_path = dir
+        .path()
+        .join(".retained-lock.multicad.multicad-save.lock");
+    let mut store = ProjectStore::new(dir.path().join("recovery"));
+    let mut file = ProjectFile::new(Document::new("Original source").unwrap()).unwrap();
+    let saved = store.save_project(&path, &file, SaveMode::Create).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    file.document.rename("Updated source").unwrap();
+    let mut retained = None;
+    let result = atomic_save_with(&path, &file, SaveMode::Replace(saved.stamp), |lock| {
+        retained = Some(lock.try_clone()?);
+        let independent = OpenOptions::new().read(true).write(true).open(&lock_path)?;
+        assert!(
+            matches!(
+                independent.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ),
+            "The real save must retain exclusion through publication"
+        );
+        if inject_error {
+            return Err(StorageError::Message(
+                "Injected pre-publication failure".into(),
+            ));
+        }
+        Ok(())
+    });
+    let retained = retained.expect("A duplicate of the real save lock stays open across return");
+    let next = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    next.try_lock().expect("The returned save must explicitly unlock even while an inherited or cloned descriptor remains open");
+    next.unlock().unwrap();
+    assert!(lock_path.is_file(), "The persistent lock inode must remain");
+    if inject_error {
+        assert!(
+            matches!(result,Err(StorageError::Message(ref error)) if error=="Injected pre-publication failure")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            store.open_project(&path).unwrap().file.document.name(),
+            "Original source"
+        );
+    } else {
+        let saved = result.unwrap();
+        let opened = store.open_project(&path).unwrap();
+        assert_eq!(opened.stamp, Some(saved.stamp));
+        assert_eq!(opened.file.document, file.document);
+        assert_ne!(std::fs::read(&path).unwrap(), before);
+    }
+    drop(retained);
+}
+
+#[test]
+fn successful_save_releases_with_a_retained_lock_alias() {
+    retained_lock_alias_release(false);
+}
+#[test]
+fn failed_save_releases_with_a_retained_lock_alias() {
+    retained_lock_alias_release(true);
+}
+#[test]
+fn serialization_failure_preserves_source_and_releases_before_another_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("serialization.multicad");
+    let mut store = ProjectStore::new(dir.path().join("recovery"));
+    let file = ProjectFile::new(Document::new("Valid source").unwrap()).unwrap();
+    let saved = store.save_project(&path, &file, SaveMode::Create).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let mut invalid = file.clone();
+    invalid
+        .resources
+        .required_capabilities
+        .insert(String::new());
+    let error = store
+        .save_project(&path, &invalid, SaveMode::Replace(saved.stamp))
+        .unwrap_err();
+    assert!(
+        matches!(error,StorageError::Message(ref message) if message.contains("capability")),
+        "Unexpected serialization failure: {error:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let next = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(
+            dir.path()
+                .join(".serialization.multicad.multicad-save.lock"),
+        )
+        .unwrap();
+    next.try_lock()
+        .expect("Serialization errors must release the acquired save lock");
+    next.unlock().unwrap();
+    store
+        .save_project(&path, &file, SaveMode::Replace(saved.stamp))
+        .unwrap();
+    assert_eq!(
+        store.open_project(&path).unwrap().file.document,
+        file.document
     );
 }
 

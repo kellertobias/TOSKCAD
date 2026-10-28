@@ -144,13 +144,21 @@ fn atomic_save(
     project: &ProjectFile,
     mode: SaveMode,
 ) -> Result<SavedProject, StorageError> {
-    atomic_save_with(path, project, mode, || Ok(()))
+    atomic_save_with(path, project, mode, |_| Ok(()))
+}
+struct SaveLock(File);
+impl Drop for SaveLock {
+    fn drop(&mut self) {
+        // Closing this handle alone can leave a fork-inherited or cloned
+        // descriptor holding the same lock after this writer has returned.
+        let _ = self.0.unlock();
+    }
 }
 fn atomic_save_with(
     path: &Path,
     project: &ProjectFile,
     mode: SaveMode,
-    before_publish: impl FnOnce() -> Result<(), StorageError>,
+    before_publish: impl FnOnce(&File) -> Result<(), StorageError>,
 ) -> Result<SavedProject, StorageError> {
     let parent = path
         .parent()
@@ -161,7 +169,7 @@ fn atomic_save_with(
         .ok_or_else(|| StorageError::Message("Choose a project filename".into()))?;
     let lock_path = parent.join(format!(".{}.multicad-save.lock", name.to_string_lossy()));
     // A persistent lock inode avoids races between processes waiting on the same
-    // path. OS locks release automatically if a writer exits unexpectedly.
+    // path. The guard explicitly releases our lock on every normal/error exit.
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -171,13 +179,14 @@ fn atomic_save_with(
     lock.try_lock().map_err(|e| {
         StorageError::Message(format!("Another process is saving this project: {e}"))
     })?;
+    let lock = SaveLock(lock);
     check_destination(path, mode)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     project_file::write(project, &mut temporary, FileLimits::default())
         .map_err(StorageError::Message)?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
-    before_publish()?;
+    before_publish(&lock.0)?;
     // Serialization can be long. Detect a noncooperating writer again before
     // publication; the advisory lock serializes cooperating MultiCAD writers.
     check_destination(path, mode)?;
