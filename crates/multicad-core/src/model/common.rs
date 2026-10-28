@@ -7,6 +7,25 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+/// Preserve exact cardinal directions instead of introducing libm residuals.
+/// Only exact equality after turn reduction is special; nearby authored angles
+/// retain the ordinary trigonometric result from their original argument.
+pub(super) fn cardinal_sin_cos(angle: f64) -> (f64, f64) {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let reduced = angle.rem_euclid(TAU);
+    if reduced == 0. {
+        (0., 1.)
+    } else if reduced == FRAC_PI_2 {
+        (1., 0.)
+    } else if reduced == PI {
+        (0., -1.)
+    } else if reduced == 3. * FRAC_PI_2 {
+        (-1., 0.)
+    } else {
+        angle.sin_cos()
+    }
+}
+
 pub(super) fn parameter_links(dimensions: Vec<&Dimension>) -> Vec<Link> {
     dimensions
         .into_iter()

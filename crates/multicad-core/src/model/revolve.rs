@@ -67,6 +67,7 @@ impl RevolveParameters {
     ) -> Result<ResolvedRevolve, DocumentError> {
         self.validate()?;
         let bearing = number(&self.axis_angle, Unit::Radian, parameters)?;
+        let (axis_sin, axis_cos) = cardinal_sin_cos(bearing);
         let angle_rad = number(&self.angle, Unit::Radian, parameters)?;
         if angle_rad == 0. || angle_rad.abs() > std::f64::consts::TAU {
             return Err(invalid(
@@ -78,7 +79,7 @@ impl RevolveParameters {
                 number(&self.axis_origin[0], Unit::Millimeter, parameters)?,
                 number(&self.axis_origin[1], Unit::Millimeter, parameters)?,
             ],
-            axis_direction: [bearing.cos(), bearing.sin()],
+            axis_direction: [axis_cos, axis_sin],
             angle_rad,
         })
     }

@@ -339,7 +339,9 @@ impl ExtrudeParameters {
         let number = |d: &Dimension, u| d.value_in(u, Some(parameters)).map_err(invalid);
         let elevation = number(&self.direction.elevation, Unit::Radian)?;
         let azimuth = number(&self.direction.azimuth, Unit::Radian)?;
-        if elevation <= 0. || elevation >= std::f64::consts::PI || elevation.sin().abs() < 1e-8 {
+        let (elevation_sin, elevation_cos) = super::common::cardinal_sin_cos(elevation);
+        let (azimuth_sin, azimuth_cos) = super::common::cardinal_sin_cos(azimuth);
+        if elevation <= 0. || elevation >= std::f64::consts::PI || elevation_sin.abs() < 1e-8 {
             return Err(invalid(
                 "Extrusion elevation must be between 0 and 180 degrees and cross the sketch plane",
             ));
@@ -352,9 +354,9 @@ impl ExtrudeParameters {
         }
         let sign = if self.direction.reverse { -1. } else { 1. };
         let direction = [
-            elevation.cos() * azimuth.cos() * sign,
-            elevation.cos() * azimuth.sin() * sign,
-            elevation.sin() * sign,
+            elevation_cos * azimuth_cos * sign,
+            elevation_cos * azimuth_sin * sign,
+            elevation_sin * sign,
         ];
         let extent = match &self.extent {
             Extent::OneSided { end } => ResolvedExtent::OneSided {
