@@ -23,6 +23,8 @@ The [native modeling checkpoint](docs/verification/native-modeling-2026-10-28.md
 
 The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow-2026-10-28.md) records table editing, expression diagnostics, stable renamed bindings, native solid rebuilding and save/reopen behavior.
 
+The [spline editing checkpoint](docs/verification/native-spline-editing-2026-10-28.md) records exact trims, bounded tangent continuation, explicit contact choice, guarded background previews and native save/reopen checks.
+
 [Associative feature transfer](docs/architecture/0021-associative-feature-transfer.md) derives holes and supported outer-face cutouts through explicit occurrence paths. Each receiving Part stores its diameter, clearance and cut depth; missing source references require explicit repair. The [native transfer checkpoint](docs/verification/native-feature-transfer-2026-10-28.md) records multi-material rail examples, source edits, native GUI repair and validation limits.
 
 [CI and releases](.github/workflows/release.yml) keep Forgejo authoritative and GitHub responsible for builds and tag-only hosted releases. Publishing remains disabled until the repositories and mirror tag reconciliation are verified. No remote is configured and nothing has been pushed. See [RELEASING.md](docs/RELEASING.md).
