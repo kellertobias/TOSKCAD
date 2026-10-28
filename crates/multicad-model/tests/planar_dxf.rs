@@ -585,3 +585,32 @@ fn exact_arc_writer_roundtrips_units_and_rejects_invalid_layers_or_tampering() {
         assert!(dxf::encode(&contours, LengthUnit::Millimeter, &layers, "Bad", 1e-7).is_err());
     }
 }
+
+#[test]
+fn missing_export_faces_keep_repair_diagnostics_without_blocking_model_publication() {
+    let (mut session, part) = panel();
+    let (set, _) = choose(&mut session, scope(part.body), LengthUnit::Millimeter);
+    let report = multicad_core::references::inspect(
+        session.document(),
+        session.revision(),
+        &Default::default(),
+    );
+    assert!(!report.all_resolved());
+    assert!(
+        report
+            .entries
+            .iter()
+            .all(|entry| entry.address.owner == set)
+    );
+    let model_report = report.for_model(session.document()).unwrap();
+    assert!(model_report.all_resolved());
+    assert!(model_report.entries.is_empty());
+    // An unrelated owner must not inherit the export owner's publication exemption.
+    let mut forged = report.clone();
+    forged.entries[0].address.owner = part.body;
+    assert!(!forged.for_model(session.document()).unwrap().all_resolved());
+    assert!(
+        !report.entries.is_empty(),
+        "The complete report remains available for export repair"
+    );
+}

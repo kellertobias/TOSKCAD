@@ -327,12 +327,15 @@ pub struct ReferenceReport {
     pub entries: Vec<Diagnostic>,
 }
 impl ReferenceReport {
-    /// Geometry publication ignores only validated non-driving measurement
-    /// owners. The original complete report remains available for repair.
+    /// Geometry publication omits validated non-driving measurements and export
+    /// face bindings. The complete report remains available for inspection/repair.
     pub fn for_model(&self, document: &Document) -> Result<Self, String> {
         let mut entries = Vec::with_capacity(self.entries.len());
         let mut pins = BTreeMap::new();
         for diagnostic in &self.entries {
+            if crate::exchange::is_non_driving_planar_reference(document, diagnostic) {
+                continue;
+            }
             let measurement = matches!(document.get(diagnostic.address.owner).map(|e|&e.data),Some(EntityData::Extension{definition,..})if definition.type_id==crate::inspection::TYPE_ID);
             if !measurement {
                 entries.push(diagnostic.clone());
