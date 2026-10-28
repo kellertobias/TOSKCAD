@@ -423,6 +423,7 @@ impl Default for Registry {
                         title: "Common",
                         tools: ModelingTool::ALL
                             .into_iter()
+                            .filter(|tool| *tool != ModelingTool::Copy)
                             .map(ModelingTool::id)
                             .chain(["edge", "symbol"])
                             .collect(),
@@ -700,10 +701,12 @@ mod tests {
             let registered = registry.tool(tool.id()).unwrap();
             assert_eq!(registered.action, Command::Modeling(tool));
             assert_eq!(registered.label, tool.label());
-            assert!(
+            assert_eq!(
                 registry.workspace(Mode::Model).tabs[0]
                     .tools
-                    .contains(&tool.id())
+                    .contains(&tool.id()),
+                tool != ModelingTool::Copy,
+                "Copy keeps a separate command but shares the Move / Copy ribbon entry"
             );
             for alias in tool.aliases() {
                 assert_eq!(

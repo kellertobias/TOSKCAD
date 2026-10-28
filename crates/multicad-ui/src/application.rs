@@ -354,7 +354,7 @@ impl Application {
         {
             return Err(tool.usage().into());
         }
-        if self.current().sketch.model_active()
+        if self.current().sketch.model_interaction_active()
             && matches!(
                 command,
                 Command::Parameter
@@ -577,7 +577,7 @@ impl Application {
                     return Ok(());
                 }
                 let p = self.current_mut();
-                if p.sketch.model_active() {
+                if p.sketch.model_interaction_active() {
                     p.sketch.cancel_model();
                     self.message = "Unapplied modeling controls discarded".into();
                     return Ok(());
@@ -793,56 +793,13 @@ impl Application {
                     );
                 }
                 let project = self.current_mut();
-                match tool {
-                    crate::modeling::ModelingTool::Extrude => project.sketch.begin_extrude(
-                        &project.session,
-                        &project.resources,
-                        channel,
-                    )?,
-                    crate::modeling::ModelingTool::Revolve => project.sketch.begin_revolve(
-                        &project.session,
-                        &project.resources,
-                        channel,
-                    )?,
-                    crate::modeling::ModelingTool::Boolean => project.sketch.begin_boolean(
-                        &project.session,
-                        &project.resources,
-                        &project.scene,
-                        channel,
-                    )?,
-                    crate::modeling::ModelingTool::Split => project.sketch.begin_split(
-                        &project.session,
-                        &project.resources,
-                        &project.scene,
-                        channel,
-                    )?,
-                    crate::modeling::ModelingTool::Align => project.sketch.begin_alignment(
-                        &project.session,
-                        &project.resources,
-                        &project.scene,
-                        channel,
-                    )?,
-                    crate::modeling::ModelingTool::Move | crate::modeling::ModelingTool::Copy => {
-                        project.sketch.begin_placement(
-                            &project.session,
-                            &project.resources,
-                            &project.scene,
-                            if tool == crate::modeling::ModelingTool::Move {
-                                crate::modeling::PlacementMode::Move
-                            } else {
-                                crate::modeling::PlacementMode::Copy
-                            },
-                            channel,
-                        )?
-                    }
-                    crate::modeling::ModelingTool::Box
-                    | crate::modeling::ModelingTool::Cylinder => project.sketch.begin_primitive(
-                        &project.session,
-                        &project.resources,
-                        tool,
-                        channel,
-                    )?,
-                }
+                project.sketch.activate_model_tool(
+                    &project.session,
+                    &project.resources,
+                    &project.scene,
+                    tool,
+                    channel,
+                )?;
                 self.mode = Mode::Model;
                 self.tab = 0;
                 self.message = format!(
@@ -935,6 +892,7 @@ impl Application {
                 .sketch
                 .model_can_apply(&self.current().session, &self.current().resources),
             Command::Discard | Command::Preview if self.current().sketch.model_active() => true,
+            Command::Discard if self.current().sketch.awaiting_model_targets() => true,
             Command::Drawing(tool) => {
                 !self.current().editor.dirty()
                     && !self.current().sketch.has_pending_edits()
@@ -947,39 +905,15 @@ impl Application {
                 self.current().drawings.dirty()
             }
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
-            Command::Modeling(tool) => {
+            Command::Modeling(_) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
-                    && match tool {
-                        crate::modeling::ModelingTool::Extrude
-                        | crate::modeling::ModelingTool::Revolve => {
-                            self.current().sketch.profile_model_ready(
-                                self.current().session.document(),
-                                self.current().session.revision(),
-                            )
-                        }
-                        crate::modeling::ModelingTool::Align => self
-                            .current()
-                            .sketch
-                            .alignment_ready(&self.current().session, &self.current().scene),
-                        crate::modeling::ModelingTool::Move
-                        | crate::modeling::ModelingTool::Copy => self
-                            .current()
-                            .sketch
-                            .placement_ready(&self.current().session, &self.current().scene),
-                        crate::modeling::ModelingTool::Boolean => self
-                            .current()
-                            .sketch
-                            .boolean_ready(&self.current().session, &self.current().scene),
-                        crate::modeling::ModelingTool::Split => self
-                            .current()
-                            .sketch
-                            .split_ready(&self.current().session, &self.current().scene),
-                        _ => self.current().sketch.primitive_ready(),
-                    }
+                    && self.current().sketch.modeling_available()
             }
-            Command::Mode(mode) if self.current().sketch.model_active() => mode == Mode::Model,
-            Command::Parameter if self.current().sketch.model_active() => false,
+            Command::Mode(mode) if self.current().sketch.model_interaction_active() => {
+                mode == Mode::Model
+            }
+            Command::Parameter if self.current().sketch.model_interaction_active() => false,
             Command::Undo => self.current().session.can_undo() && !pending(),
             Command::Redo => self.current().session.can_redo() && !pending(),
             Command::Save | Command::SaveAs | Command::RecoverySnapshot => {
@@ -3025,8 +2959,10 @@ mod tests {
             "Canonical display, modeling candidates and reference recovery need separate workers"
         );
         app.mode = Mode::Model;
-        assert!(!app.enabled(command));
-        assert!(app.invoke(command, &[], Channel::Ui).is_err());
+        assert!(app.enabled(command));
+        app.invoke(command, &[], Channel::Ui).unwrap();
+        assert!(app.current().sketch.awaiting_model_targets());
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         assert!(
             app.invoke(command, &["100"], Channel::CommandLine)
                 .unwrap_err()
@@ -3181,7 +3117,7 @@ mod tests {
             Box::new(Backend(Arc::new(Mutex::new(State::default()))))
         }));
         let command = Command::Modeling(crate::modeling::ModelingTool::Boolean);
-        assert!(!app.enabled(command));
+        assert!(app.enabled(command));
         {
             let project = app.current_mut();
             project
@@ -3227,13 +3163,18 @@ mod tests {
         assert!(app.enabled(command));
         let before = app.current().session.document().clone();
         app.invoke(command, &[], Channel::Ui).unwrap();
-        assert!(app.current().sketch.model_active());
+        assert!(app.current().sketch.awaiting_model_targets());
+        assert!(
+            !app.current()
+                .sketch
+                .model_can_apply(&app.current().session, &app.current().resources)
+        );
         assert_eq!(app.current().session.document(), &before);
         app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         let split = Command::Modeling(crate::modeling::ModelingTool::Split);
         assert!(
-            !app.enabled(split),
-            "Legacy display-only publication must not enable source-bound Split"
+            app.enabled(split),
+            "A missing target or current scene must not hide a supported tool"
         );
         let visible = app.current().scene.visible().unwrap().clone();
         {
@@ -3271,7 +3212,12 @@ mod tests {
         }
         assert!(app.enabled(split));
         app.invoke(split, &[], Channel::Ui).unwrap();
-        assert!(app.current().sketch.model_active());
+        assert!(app.current().sketch.awaiting_model_targets());
+        assert!(
+            !app.current()
+                .sketch
+                .model_can_apply(&app.current().session, &app.current().resources)
+        );
         assert_eq!(app.current().session.document(), &before);
         app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         let project = app.current_mut();
@@ -3291,9 +3237,16 @@ mod tests {
                 edits: vec![Mutation::Replace(body)],
             })
             .unwrap();
-        assert!(!app.enabled(command));
-        assert!(app.invoke(command, &[], Channel::Ui).is_err());
-        assert!(!app.enabled(split));
+        assert!(app.enabled(command));
+        app.invoke(command, &[], Channel::Ui).unwrap();
+        assert!(app.current().sketch.awaiting_model_targets());
+        assert!(
+            !app.current()
+                .sketch
+                .model_can_apply(&app.current().session, &app.current().resources)
+        );
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert!(app.enabled(split));
     }
 }
 

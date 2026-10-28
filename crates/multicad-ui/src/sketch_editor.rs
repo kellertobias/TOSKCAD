@@ -15,6 +15,8 @@ use multicad_core::{
 use std::collections::VecDeque;
 #[path = "sketch_external_host.rs"]
 mod external_host;
+#[path = "model_target_selection.rs"]
+mod model_target_selection;
 
 const MAX_PROFILE_CLICKS: usize = 32;
 #[derive(Clone, Copy)]
@@ -53,6 +55,10 @@ struct MoveDrag {
     start: Pos2,
     screen: Vec2,
     length: f64,
+}
+struct ModelCanvas<'a> {
+    resources: &'a multicad_core::project_file::ProjectResources,
+    feed: &'a crate::viewport::SceneFeed,
 }
 struct SplinePointer {
     frame: Frame,
@@ -99,6 +105,7 @@ pub struct SketchEditor {
     external: crate::external_references::Controller,
     operation_error: Option<String>,
     model: crate::modeling::ModelToolController,
+    acquisition: Option<model_target_selection::Acquisition>,
     materials: crate::materials::MaterialsEditor,
     pub measurement: crate::inspection::MeasurementInspector,
     measure_pin_allowed: bool,
@@ -164,6 +171,7 @@ impl Default for SketchEditor {
             external: Default::default(),
             operation_error: None,
             model: Default::default(),
+            acquisition: None,
             materials: Default::default(),
             measurement: Default::default(),
             measure_pin_allowed: true,
@@ -726,6 +734,7 @@ impl SketchEditor {
         outputs: Vec<multicad_core::model::CreatedBody>,
         label: &str,
     ) {
+        self.acquisition = None;
         self.tree_selection = outputs.into_iter().map(|output| output.body).collect();
         self.selected = None;
         self.solid.clear();
@@ -733,6 +742,7 @@ impl SketchEditor {
         self.message = format!("{label} applied · one undoable source edit");
     }
     pub fn cancel_model(&mut self) {
+        self.acquisition = None;
         self.model.cancel();
         self.message = "Modeling cancelled · document unchanged".into();
     }
@@ -768,8 +778,8 @@ impl SketchEditor {
         };
     }
     pub fn toggle_transform(&mut self) {
-        if self.model.active() {
-            self.message = "Apply or cancel Extrude before transforming".into();
+        if self.model_interaction_active() {
+            self.message = "Apply or cancel the modeling tool before transforming".into();
             return;
         }
         if self.selected.is_none() {
@@ -799,6 +809,7 @@ impl SketchEditor {
             || self.repair.has_pending()
             || self.tree.tool_active()
             || self.model.active()
+            || self.acquisition.is_some()
             || self.external.active()
     }
     pub fn cancel(&mut self) {
@@ -806,6 +817,7 @@ impl SketchEditor {
             self.measurement.close();
             return;
         }
+        self.acquisition = None;
         self.external.cancel();
         self.materials.cancel();
         if self.model.active() {
@@ -998,6 +1010,9 @@ impl SketchEditor {
         events: crate::model_tree::TreeEvents,
     ) {
         if let Some(selection) = events.selection {
+            if !self.accept_target_selection(session.document(), &selection) {
+                return;
+            }
             let explicit = [&selection, &self.tree_selection]
                 .into_iter()
                 .find_map(|ids| {
@@ -1101,10 +1116,10 @@ impl SketchEditor {
         extend: bool,
     ) -> Result<(), String> {
         if self.selected != Some(sketch)
-            || !self.editing
+            || (!self.editing && !self.acquiring_profiles())
             || self.tool.is_some()
             || self.moving
-            || self.has_pending_edits()
+            || (self.has_pending_edits() && !self.acquiring_profiles())
         {
             return Err("Open an idle sketch before selecting profile areas".into());
         }
@@ -1177,10 +1192,10 @@ impl SketchEditor {
         let current = self
             .selected
             .and_then(|id| self.sketch_evaluation.current(id));
-        let invalid = !self.editing
+        let invalid = (!self.editing && !self.acquiring_profiles())
             || self.tool.is_some()
             || self.moving
-            || self.has_pending_edits()
+            || (self.has_pending_edits() && !self.acquiring_profiles())
             || current.is_none_or(|p| {
                 p.stamp.document != document.id()
                     || p.stamp.revision != revision
@@ -1753,6 +1768,7 @@ impl SketchEditor {
         feed: &mut crate::viewport::SceneFeed,
         resources: &multicad_core::project_file::ProjectResources,
     ) {
+        self.reconcile_acquisition(session);
         self.measurement.tick(session);
         if self.measurement.pending() {
             ui.ctx()
@@ -1900,11 +1916,20 @@ impl SketchEditor {
             .resizable(true)
             .show(ui, |ui| {
                 let options = crate::model_tree::TreeOptions {
-                    enabled: !self.has_pending_edits() && !self.measurement.active(),
-                    allow_open_sketch: sketch_mode,
+                    enabled: (!self.has_pending_edits() || self.acquisition.is_some())
+                        && !self.measurement.active(),
+                    allow_open_sketch: sketch_mode && self.acquisition.is_none(),
                 };
-                let events = self.tree.show(ui, session, &self.tree_selection, options);
+                let events = if self.acquisition.is_some() {
+                    self.tree
+                        .show_targets(ui, session, &self.tree_selection, options)
+                } else {
+                    self.tree.show(ui, session, &self.tree_selection, options)
+                };
                 self.handle_tree_events(session, scene.as_deref(), events);
+                if !self.measurement.active() {
+                    self.advance_model_targets(session, resources, feed, false);
+                }
                 if sketch_mode
                     && self.selected.is_some()
                     && !self.editing
@@ -1930,12 +1955,13 @@ impl SketchEditor {
                     .id_salt("sketch-inspector-content")
                     .show(ui, |ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
+                        if self.target_inspector(ui, session, resources, feed) { return; }
                         if self.model.active() {
                             let label=self.model.label();
                             match self.model.show(ui,session,resources) {
                                 Ok(Some(crate::modeling::ModelToolOutcome::Applied(outputs)))=>self.accept_model_outputs(outputs,label),
                                 Ok(Some(crate::modeling::ModelToolOutcome::Placed{parts,instances}))=>{self.accept_model_outputs(parts,label);self.tree_selection.extend(instances);},
-                                Ok(Some(crate::modeling::ModelToolOutcome::Cancelled))=>self.message="Modeling cancelled · document unchanged".into(),
+                                Ok(Some(crate::modeling::ModelToolOutcome::Cancelled))=>{self.acquisition=None;self.message="Modeling cancelled · document unchanged".into();},
                                 Err(error)=>self.message=error,
                                 Ok(None)=>{}
                             }
@@ -2219,7 +2245,14 @@ impl SketchEditor {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
             .show(ui, |ui| {
-                self.canvas(ui, session, sketch_mode, scene.clone(), current)
+                self.canvas_with_model(
+                    ui,
+                    session,
+                    sketch_mode,
+                    scene.clone(),
+                    current,
+                    Some(ModelCanvas { resources, feed }),
+                )
             });
         if repair_view && let Some(rect) = self.viewport_rect {
             ui.painter().text(
@@ -2398,6 +2431,7 @@ impl SketchEditor {
     ) -> Result<(Source, Frame, EntityId), multicad_core::document::DocumentError> {
         Source::read_for_evaluation(doc, id, revision, self.evaluated.as_ref())
     }
+    #[cfg(test)]
     fn canvas(
         &mut self,
         ui: &mut egui::Ui,
@@ -2405,6 +2439,17 @@ impl SketchEditor {
         sketch_mode: bool,
         scene: Option<std::sync::Arc<crate::viewport::Scene>>,
         current: bool,
+    ) {
+        self.canvas_with_model(ui, session, sketch_mode, scene, current, None);
+    }
+    fn canvas_with_model(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        sketch_mode: bool,
+        scene: Option<std::sync::Arc<crate::viewport::Scene>>,
+        current: bool,
+        model_context: Option<ModelCanvas<'_>>,
     ) {
         let sketch_mode = sketch_mode && !self.measurement.active();
         self.refresh_overlay_visibility(session.document(), session.revision());
@@ -2540,6 +2585,79 @@ impl SketchEditor {
             }
             if self.solid.selected_id().is_some() && !self.editing {
                 self.selected = None;
+            }
+        }
+        if !self.measurement.active()
+            && let Some(context) = model_context
+        {
+            let mut owned = false;
+            if self.model.placement_active() {
+                self.model
+                    .set_placement_copy_modifier(ui.input(|i| i.modifiers.alt));
+                let placement_result = match self.placement_basis(session) {
+                    Ok(basis) => self.model.placement_viewport(
+                        ui,
+                        session,
+                        context.resources,
+                        crate::modeling::PlacementViewport {
+                            scene: context
+                                .feed
+                                .visible()
+                                .filter(|_| {
+                                    context
+                                        .feed
+                                        .is_current(session.document().id(), session.revision())
+                                })
+                                .map(|s| s.as_ref()),
+                            camera: self.camera,
+                            rect,
+                            basis,
+                        },
+                    ),
+                    Err(error) => {
+                        self.message = error;
+                        Ok(crate::modeling::PlacementViewportResult::default())
+                    }
+                };
+                match placement_result {
+                    Ok(result) => {
+                        owned = result.input_owned;
+                        match result.outcome {
+                            Some(crate::modeling::ModelToolOutcome::Applied(parts)) => {
+                                self.accept_model_outputs(parts, "Move / Copy")
+                            }
+                            Some(crate::modeling::ModelToolOutcome::Placed {
+                                parts,
+                                instances,
+                            }) => {
+                                self.accept_model_outputs(parts, "Move / Copy");
+                                self.tree_selection.extend(instances);
+                            }
+                            Some(crate::modeling::ModelToolOutcome::Cancelled) => {
+                                self.cancel_model()
+                            }
+                            None => {}
+                        }
+                    }
+                    Err(error) => {
+                        owned = true;
+                        self.message = error;
+                    }
+                }
+                if self.model.pending() {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(16));
+                }
+            }
+            if !owned {
+                self.target_viewport(
+                    ui,
+                    &response,
+                    session,
+                    context.resources,
+                    context.feed,
+                    rect,
+                );
             }
         }
         self.measurement.paint(
@@ -3068,7 +3186,7 @@ impl SketchEditor {
                         self.solid
                             .section
                             .control(ui, scene.as_ref().and_then(|s| s.world_bounds()));
-                        let transform = ui.add_enabled_ui(self.selected.is_some() && !self.model.active() && !self.measurement.active(),|ui|icons::compact_button(
+                        let transform = ui.add_enabled_ui((self.model.placement_active() || (self.selected.is_some() && !self.model.active() && self.acquisition.is_none())) && !self.measurement.active(),|ui|icons::compact_button(
                             ui,
                             Icon::Transform,
                             &format!(
@@ -3076,7 +3194,7 @@ impl SketchEditor {
                                 coordinates.label()
                             ),
                         )).inner.on_disabled_hover_text("Select a sketch to transform");
-                        if transform.clicked() {
+                        if transform.clicked() && !self.model.placement_active() {
                             moving = !moving;
                         }
                         transform.context_menu(|ui| {
@@ -3422,6 +3540,89 @@ mod tests {
         check_fit(&mut editor, &mut session, handoff);
     }
 
+    #[test]
+    fn tool_first_extrude_accepts_viewport_profiles_and_blocks_legacy_sketch_move() {
+        let mut h = ProfileHarness::new();
+        h.editor.set_model_backend(Box::new(
+            crate::modeling::native_fixture::NativeBackend::new(),
+        ));
+        let before = h.session.document().clone();
+        let revision = h.session.revision();
+        let feed = crate::viewport::SceneFeed::default();
+        h.editor
+            .activate_model_tool(
+                &h.session,
+                &Default::default(),
+                &feed,
+                crate::modeling::ModelingTool::Extrude,
+                Channel::Ui,
+            )
+            .unwrap();
+        assert!(h.editor.awaiting_model_targets());
+        assert!(!h.editor.editing);
+        h.editor.toggle_transform();
+        assert!(!h.editor.moving);
+        let rect = h.editor.viewport_rect.unwrap();
+        let frame = h
+            .editor
+            .read_sketch(h.session.document(), h.editor.selected.unwrap(), revision)
+            .unwrap()
+            .1;
+        for (point, shift) in [([15., 15.], false), ([65., 15.], true)] {
+            let p = h
+                .editor
+                .camera
+                .project(frame.point(point).map(|v| v as f32), rect);
+            let pos = Pos2::new(p[0], p[1]);
+            let modifiers = egui::Modifiers {
+                shift,
+                ..Default::default()
+            };
+            for pressed in [true, false] {
+                h.ctx
+                    .run_ui(
+                        input(vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers,
+                            },
+                        ]),
+                        |ui| {
+                            let (_, response) =
+                                ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+                            h.editor.target_viewport(
+                                ui,
+                                &response,
+                                &h.session,
+                                &Default::default(),
+                                &feed,
+                                rect,
+                            );
+                        },
+                    )
+                    .drop_without_applying_deltas();
+            }
+            h.drain();
+        }
+        assert_eq!(
+            h.editor
+                .selected_profiles(h.session.document(), revision)
+                .unwrap()
+                .1
+                .len(),
+            2
+        );
+        h.editor
+            .advance_model_targets(&h.session, &Default::default(), &feed, true);
+        assert!(h.editor.model_active());
+        assert!(!h.editor.awaiting_model_targets());
+        h.editor.cancel_model();
+        assert_eq!(h.session.document(), &before);
+        assert_eq!(h.session.revision(), revision);
+    }
     #[test]
     fn extrusion_captures_checked_profiles_and_owns_the_existing_tool_gate() {
         struct UnavailableReplyBackend;
