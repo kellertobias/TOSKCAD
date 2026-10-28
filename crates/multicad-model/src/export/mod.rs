@@ -39,6 +39,42 @@ fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ExportError> {
         Ok(())
     }
 }
+/// A nested leaf is selected by its authored path, never by the aggregate's
+/// solid or an unplaced component definition.
+fn subject_solid<'a>(
+    model: &'a Model,
+    subject: &PartRef,
+    direct: EntityId,
+) -> Result<&'a multicad_kernel::Solid, ExportError> {
+    let solid = if let Some(root) = subject.occurrence_path.first() {
+        model.leaf_solid(&multicad_core::model::OccurrencePath {
+            root: *root,
+            members: subject.occurrence_path[1..].to_vec(),
+        })
+    } else {
+        model.solid(direct)
+    };
+    solid.ok_or_else(|| {
+        failure(
+            ErrorKind::Missing,
+            Some(direct),
+            "Exact native geometry for the selected occurrence path is unavailable",
+        )
+    })
+}
+fn artifact_solid<'a>(
+    model: &'a Model,
+    artifact: &ExportArtifact,
+) -> Result<&'a multicad_kernel::Solid, ExportError> {
+    let OutputSubject::Part(subject) = &artifact.output.subject else {
+        return Err(failure(
+            ErrorKind::Unsupported,
+            Some(artifact.solid),
+            "Native solid output requires an explicit Part subject",
+        ));
+    };
+    subject_solid(model, subject, artifact.solid)
+}
 fn unsupported(output: &RecipeOutput) -> Option<String> {
     match output {
         RecipeOutput::Step {
@@ -152,22 +188,18 @@ impl Exporter {
             for part in &selection.parts {
                 checkpoint(interrupt)?;
                 let reference = &part.reference;
-                if reference.occurrence_path.len() > 1 {
-                    return Err(failure(
-                        ErrorKind::Unsupported,
-                        Some(reference.part),
-                        "Nested assembly output needs the assembly evaluator; no local/unplaced fallback is exported",
-                    ));
-                }
                 let key = if let Some(instance) = reference.occurrence_path.first() {
-                    let occurrence =
-                        model.snapshot().occurrences.get(instance).ok_or_else(|| {
-                            failure(
-                                ErrorKind::Unsupported,
-                                Some(*instance),
-                                "Current occurrence geometry is unavailable",
-                            )
-                        })?;
+                    let path = multicad_core::model::OccurrencePath {
+                        root: *instance,
+                        members: reference.occurrence_path[1..].to_vec(),
+                    };
+                    let occurrence = model.leaf_snapshot(&path).ok_or_else(|| {
+                        failure(
+                            ErrorKind::Unsupported,
+                            Some(*instance),
+                            "The exact occurrence path is missing; repair the export scope",
+                        )
+                    })?;
                     if occurrence.component != reference.part {
                         return Err(failure(
                             ErrorKind::Invalid,
@@ -194,13 +226,7 @@ impl Exporter {
                     });
                     continue;
                 };
-                let shape = model.solid(solid).ok_or_else(|| {
-                    failure(
-                        ErrorKind::Invalid,
-                        Some(solid),
-                        "Native output binding has no current solid",
-                    )
-                })?;
+                let shape = subject_solid(model, reference, solid)?;
                 let bounds = shape
                     .bounds()
                     .map_err(|e| failure(ErrorKind::Invalid, Some(solid), e))?;

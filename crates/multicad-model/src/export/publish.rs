@@ -236,15 +236,7 @@ pub(super) fn run(
                 .map_err(io)?;
             file.write_all(bytes).map_err(io)?;
         } else {
-            model
-                .solid(artifact.solid)
-                .ok_or_else(|| {
-                    failure(
-                        ErrorKind::Invalid,
-                        Some(artifact.solid),
-                        "Current native solid was lost",
-                    )
-                })?
+            artifact_solid(model, artifact)?
                 .write_step(&path)
                 .map_err(io)?;
         }

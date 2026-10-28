@@ -69,7 +69,7 @@ impl PlanarFace {
         let expected = self
             .subject
             .occurrence_path
-            .last()
+            .first()
             .copied()
             .unwrap_or(self.subject.part);
         if self.recipe.is_nil()

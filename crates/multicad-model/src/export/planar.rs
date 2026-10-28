@@ -22,15 +22,12 @@ pub(super) fn binding(
     model: &Model,
     subject: &PartRef,
 ) -> Result<(EntityId, EntityId, EntityId, TopologySnapshot), ExportError> {
-    if subject.occurrence_path.len() > 1 {
-        return Err(failure(
-            ErrorKind::Unsupported,
-            Some(subject.part),
-            "Nested planar occurrences require the assembly evaluator",
-        ));
-    }
     if let Some(instance) = subject.occurrence_path.first() {
-        let o = model.snapshot().occurrences.get(instance).ok_or_else(|| {
+        let path = multicad_core::model::OccurrencePath {
+            root: *instance,
+            members: subject.occurrence_path[1..].to_vec(),
+        };
+        let o = model.leaf_snapshot(&path).ok_or_else(|| {
             failure(
                 ErrorKind::Missing,
                 Some(*instance),
@@ -147,13 +144,7 @@ impl Exporter {
             match binding(&model, &part.reference) {
                 Err(e) => value.diagnostics.push(e.message),
                 Ok((source, solid, _, topology)) => {
-                    let native = model.solid(solid).ok_or_else(|| {
-                        failure(
-                            ErrorKind::Missing,
-                            Some(solid),
-                            "Native planar solid is missing",
-                        )
-                    })?;
+                    let native = subject_solid(&model, &part.reference, solid)?;
                     let faces = native
                         .faces()
                         .map_err(|e| failure(ErrorKind::Invalid, Some(solid), e))?;
@@ -286,15 +277,7 @@ pub(super) fn contours(
         .horizontal
         .frame(plane)
         .map_err(|e| failure(ErrorKind::Unsupported, Some(source), e))?;
-    model
-        .solid(solid)
-        .ok_or_else(|| {
-            failure(
-                ErrorKind::Missing,
-                Some(solid),
-                "Native planar solid is missing",
-            )
-        })?
+    subject_solid(model, subject, solid)?
         .planar_face_contours(
             key.ordinal,
             PlaneFrame {
