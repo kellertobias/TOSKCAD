@@ -1,6 +1,6 @@
 use multicad_core::{
     document::{Document, EntityData, EntityId},
-    model::{self, Operation},
+    model::{self, CutTargetProbeResult, Operation},
     project_file::ContentHash,
     references::{self, Origin, ReferenceReport, TopologySnapshot},
     sketch_regions::{Extraction, RegionIntent},
@@ -43,6 +43,8 @@ pub struct ModelSnapshot {
     /// Canonical tool Parts retained as source/history but consumed by an
     /// unsuppressed Boolean rather than emitted as independent final bodies.
     pub consumed_bodies: BTreeSet<EntityId>,
+    /// Optional derived query receipts for this exact evaluation request.
+    pub cut_targets: Vec<CutTargetProbeResult>,
     pub references: ReferenceReport,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -476,6 +478,7 @@ impl Compiler {
                 shapes,
                 bodies,
                 consumed_bodies,
+                cut_targets: vec![],
                 references,
             },
         })

@@ -1,7 +1,10 @@
 use multicad_core::{
     commands::{Actor, Channel, Session},
-    document::Document,
-    model::{self, PrimitiveParameters, PrimitiveRequest, length},
+    document::{Document, EntityId},
+    model::{
+        self, BodyInput, CutTargetProbe, CutTargetQuery, EvaluationOptions, PrimitiveFrame,
+        PrimitiveParameters, PrimitiveRequest, length,
+    },
 };
 use multicad_model::{Compiler, ModelReply, Runtime, ShapeSnapshot};
 use std::{
@@ -187,4 +190,213 @@ fn shutdown_does_not_join_or_block_on_an_active_native_publication() {
     drop(runtime);
     release.send(()).unwrap();
     finished_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+}
+
+fn probe_fixture() -> (Session, Vec<BodyInput>, CutTargetQuery) {
+    let mut session = Session::new(Document::new("Runtime query fixture").unwrap()).unwrap();
+    let mut bodies = vec![];
+    for (name, origin, size) in [
+        ("Target A", [0.; 3], [10.; 3]),
+        ("Target B", [0.; 3], [10.; 3]),
+        ("Tool", [4., 4., -1.], [2., 2., 12.]),
+    ] {
+        let request = PrimitiveRequest::new(
+            name,
+            PrimitiveParameters::Box {
+                size: size.map(length),
+                frame: PrimitiveFrame {
+                    origin: origin.map(length),
+                    ..Default::default()
+                },
+            },
+        );
+        let p = model::prepare_primitive(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Mcp),
+            &request,
+        )
+        .unwrap();
+        session.commit(p.prepared).unwrap();
+        bodies.push(BodyInput {
+            body: request.body,
+            producer: request.feature,
+        });
+    }
+    let query = CutTargetQuery {
+        tools: vec![bodies[2].producer],
+        component: None,
+        include: vec![],
+        exclude: vec![],
+    };
+    (session, bodies, query)
+}
+#[test]
+fn same_document_revision_tag_and_probe_id_still_publish_only_latest_owned_options() {
+    let (session, bodies, query) = probe_fixture();
+    let before = session.document().clone();
+    let (first_entered, entered) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let publications = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&publications);
+    let mut runtime = Runtime::with_publisher(Compiler::default(), move |_, snapshot, tag| {
+        assert_eq!(tag, 77);
+        if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+            first_entered
+                .send((snapshot.stamp, snapshot.cut_targets.clone()))
+                .unwrap();
+            released.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        Ok(Arc::new(snapshot.clone()))
+    })
+    .unwrap();
+    let id = EntityId::new();
+    let mut first_options = EvaluationOptions {
+        cut_targets: vec![CutTargetProbe { id, query }],
+    };
+    first_options.cut_targets[0].query.exclude = vec![bodies[0].body];
+    let first = runtime
+        .request_evaluation(&before, session.revision(), 77, &first_options)
+        .unwrap();
+    first_options.cut_targets[0].query.exclude = vec![bodies[1].body];
+    let (stamp, old) = entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        old[0].result.as_ref().unwrap().targets,
+        vec![bodies[1].clone()]
+    );
+    let mut latest_options = first_options.clone();
+    let latest = runtime
+        .request_evaluation(&before, session.revision(), 77, &latest_options)
+        .unwrap();
+    assert!(latest > first);
+    latest_options.cut_targets[0].query.exclude = vec![bodies[0].body];
+    assert!(runtime.poll().is_none());
+    release.send(()).unwrap();
+    let current = reply(&mut runtime);
+    assert_eq!(current.generation, latest);
+    let snapshot = current.result.unwrap();
+    assert_eq!(snapshot.stamp, stamp);
+    assert_eq!(snapshot.cut_targets[0].id, id);
+    assert_eq!(
+        snapshot.cut_targets[0].result.as_ref().unwrap().targets,
+        vec![bodies[0].clone()]
+    );
+    assert!(runtime.poll().is_none());
+    assert_eq!(session.document(), &before);
+    let next = runtime
+        .request_tagged(&before, session.revision(), 77)
+        .unwrap();
+    let empty = reply(&mut runtime);
+    assert_eq!(empty.generation, next);
+    assert!(empty.result.unwrap().cut_targets.is_empty());
+}
+#[test]
+fn query_errors_are_correlated_receipts_and_do_not_replace_valid_base_geometry() {
+    let (session, bodies, query) = probe_fixture();
+    let before = session.document().clone();
+    let valid = EntityId::new();
+    let invalid = EntityId::new();
+    let bad = EntityId::new();
+    let options = EvaluationOptions {
+        cut_targets: vec![
+            CutTargetProbe {
+                id: invalid,
+                query: CutTargetQuery {
+                    tools: vec![bad],
+                    ..query.clone()
+                },
+            },
+            CutTargetProbe { id: valid, query },
+        ],
+    };
+    let mut runtime = Runtime::new(Compiler::default()).unwrap();
+    let generation = runtime
+        .request_evaluation(&before, session.revision(), 42, &options)
+        .unwrap();
+    let result = reply(&mut runtime);
+    assert_eq!(result.generation, generation);
+    let snapshot = result.result.unwrap();
+    assert_eq!(snapshot.bodies.len(), 3);
+    assert_eq!(snapshot.shapes.len(), 3);
+    assert_eq!(snapshot.cut_targets.len(), 2);
+    assert_eq!(snapshot.cut_targets[0].id, invalid);
+    let error = snapshot.cut_targets[0].result.as_ref().unwrap_err();
+    assert_eq!(error.entity, Some(bad));
+    assert!(error.message.contains("current unconsumed"));
+    assert_eq!(snapshot.cut_targets[1].id, valid);
+    let targets = &snapshot.cut_targets[1].result.as_ref().unwrap().targets;
+    assert!(targets.contains(&bodies[0]));
+    assert!(targets.contains(&bodies[1]));
+    assert_eq!(session.document(), &before);
+    assert!(
+        Compiler::default()
+            .compile(&before, session.revision())
+            .unwrap()
+            .snapshot()
+            .cut_targets
+            .is_empty()
+    );
+}
+#[test]
+fn invalid_options_do_not_supersede_pending_jobs_or_advance_private_generation() {
+    let (session, _, query) = probe_fixture();
+    let (first_entered, entered) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let published = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&published);
+    let mut runtime = Runtime::with_publisher(Compiler::default(), move |_, snapshot, _| {
+        if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+            first_entered.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        Ok(Arc::new(snapshot.clone()))
+    })
+    .unwrap();
+    let probe = CutTargetProbe {
+        id: EntityId::new(),
+        query,
+    };
+    let options = EvaluationOptions {
+        cut_targets: vec![probe.clone()],
+    };
+    let first = runtime
+        .request_evaluation(session.document(), session.revision(), 1, &options)
+        .unwrap();
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    let nil = EntityId::parse("00000000-0000-0000-0000-000000000000").unwrap();
+    let invalid = [
+        EvaluationOptions {
+            cut_targets: vec![probe.clone(), probe.clone()],
+        },
+        EvaluationOptions {
+            cut_targets: vec![CutTargetProbe {
+                id: nil,
+                query: probe.query.clone(),
+            }],
+        },
+        EvaluationOptions {
+            cut_targets: (0..9)
+                .map(|_| CutTargetProbe {
+                    id: EntityId::new(),
+                    query: probe.query.clone(),
+                })
+                .collect(),
+        },
+    ];
+    for options in invalid {
+        assert!(
+            runtime
+                .request_evaluation(session.document(), session.revision(), 2, &options)
+                .is_err()
+        );
+    }
+    release.send(()).unwrap();
+    let kept = reply(&mut runtime);
+    assert_eq!(kept.generation, first);
+    assert_eq!(kept.result.unwrap().cut_targets[0].id, probe.id);
+    let next = runtime
+        .request(session.document(), session.revision())
+        .unwrap();
+    assert_eq!(next, first + 1);
+    assert!(reply(&mut runtime).result.unwrap().cut_targets.is_empty());
 }

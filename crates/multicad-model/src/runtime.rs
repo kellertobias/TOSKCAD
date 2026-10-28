@@ -1,7 +1,10 @@
 //! Bounded latest-source worker. A request supersedes queued work and active
 //! work stops at the next Rust/native boundary. UI polling never waits.
 use crate::{Compiler, Model, ModelError, ModelSnapshot};
-use multicad_core::document::Document;
+use multicad_core::{
+    document::Document,
+    model::{CutTargetProbeResult, EvaluationOptions, ModelQueryError},
+};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -17,6 +20,7 @@ struct Job {
     document: Document,
     revision: u64,
     tag: u64,
+    options: EvaluationOptions,
 }
 struct Slots<T> {
     pending: Option<Job>,
@@ -118,7 +122,46 @@ impl<T: Send + 'static> Runtime<T> {
                         continue;
                     }
                     let result = result.and_then(|model| {
-                        let snapshot = publish(&job.document, model.snapshot(), job.tag)?;
+                        let queried = if job.options.cut_targets.is_empty() {
+                            None
+                        } else {
+                            let mut snapshot = model.snapshot().clone();
+                            for probe in &job.options.cut_targets {
+                                if superseded() {
+                                    return Err(ModelError {
+                                        entity: None,
+                                        message: "Model evaluation superseded".into(),
+                                    });
+                                }
+                                let result = model
+                                    .cut_targets(
+                                        &job.document,
+                                        job.revision,
+                                        &probe.query,
+                                        Some(&superseded),
+                                    )
+                                    .map_err(|error| ModelQueryError {
+                                        entity: error.entity,
+                                        message: error.message,
+                                    });
+                                snapshot.cut_targets.push(CutTargetProbeResult {
+                                    id: probe.id,
+                                    result,
+                                });
+                            }
+                            Some(snapshot)
+                        };
+                        if superseded() {
+                            return Err(ModelError {
+                                entity: None,
+                                message: "Model evaluation superseded".into(),
+                            });
+                        }
+                        let snapshot = publish(
+                            &job.document,
+                            queried.as_ref().unwrap_or_else(|| model.snapshot()),
+                            job.tag,
+                        )?;
                         retained = Some(model);
                         Ok(snapshot)
                     });
@@ -150,6 +193,19 @@ impl<T: Send + 'static> Runtime<T> {
         revision: u64,
         tag: u64,
     ) -> Result<u64, String> {
+        self.request_evaluation(document, revision, tag, &EvaluationOptions::default())
+    }
+    /// Enqueue owned, validated query options with a fresh private generation.
+    /// Per-probe query errors remain receipts alongside successfully compiled
+    /// geometry; only a source/compiler failure prevents scene publication.
+    pub fn request_evaluation(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        tag: u64,
+        options: &EvaluationOptions,
+    ) -> Result<u64, String> {
+        options.validate().map_err(|error| error.to_string())?;
         let mut slots = self
             .shared
             .slots
@@ -170,6 +226,7 @@ impl<T: Send + 'static> Runtime<T> {
             document: document.clone(),
             revision,
             tag,
+            options: options.clone(),
         });
         slots.reply = None;
         self.shared.wake.notify_one();
