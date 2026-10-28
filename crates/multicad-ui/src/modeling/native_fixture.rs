@@ -105,6 +105,7 @@ pub(crate) fn scene(
                 consumed_bodies: model.consumed_bodies.clone(),
                 cut_targets: model.cut_targets.clone(),
             }))?
+            .with_native_reference_report(model.stamp.source_hash, model.references.clone())?
             .with_native_bounds(model.stamp.source_hash, native_bounds)?;
         if !scene.is_full_model() {
             return Ok(scene);
