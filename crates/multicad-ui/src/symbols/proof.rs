@@ -35,19 +35,24 @@ pub(super) fn validate(
     crate::assembly::validate_scene(document, stamp.revision, scene)?;
     // Validate the pin and owned maps against the same candidate source whose
     // real leaf geometry was checked above, including definitions without placements.
+    symbols::validate(document).map_err(|e| e.to_string())?;
     let definitions = symbols::definitions(document).map_err(|e| e.to_string())?;
     let pins = definitions
         .iter()
         .map(|(id, d)| d.pin().map(|pin| (*id, pin)).map_err(|e| e.to_string()))
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    for (definition, _) in definitions {
+    for (definition, source) in definitions {
         for (_, instance) in symbols::instances(document, definition).map_err(|e| e.to_string())? {
             if pins.get(&instance.definition) != Some(&instance.pin) {
                 return Err(
                     "The symbol instance pin does not match its embedded definition".into(),
                 );
             }
-            for owned in instance.ids.values() {
+            for entity in source.template.entities() {
+                let owned = instance
+                    .ids
+                    .get(&entity.id)
+                    .ok_or("Symbol entity map is incomplete")?;
                 if document.get(*owned).is_none() {
                     return Err("The candidate omits owned editable symbol content".into());
                 }

@@ -473,3 +473,96 @@ fn override_values_reject_removed_incompatible_and_nonfinite_inputs() {
     assert!(c.set_library_snapshot(vec![d, conflicting]).is_err());
     assert!(c.library.is_empty());
 }
+
+#[test]
+fn constrained_sketch_extrusion_and_linked_plan_keep_local_ids_through_native_place_apply() {
+    use multicad_core::{constraint_sketch::source::Source, model::ExtrudeRequest, sketch::Datum};
+    let (sketch, edits) = Source::create(Datum::Xy, "Cabinet footprint").unwrap();
+    let document = Document::new("Constrained symbol")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut source = Source::read(&document, sketch).unwrap().0;
+    source.add_rectangle([0., 0.], [30., 20.]).unwrap();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let mut s = Session::new(document).unwrap();
+    let profiles =
+        multicad_solver::evaluate_document_sketch(s.document(), s.revision(), sketch, None)
+            .unwrap()
+            .regions()
+            .unwrap()
+            .regions
+            .iter()
+            .map(|r| r.intent())
+            .collect();
+    let extrude = ExtrudeRequest::new(sketch, profiles, Default::default());
+    let body = extrude.outputs[0].body;
+    s.commit(
+        model::prepare_extrude(&s, s.revision(), actor(), &extrude)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let mut c = controller();
+    begin(
+        &mut c,
+        &s,
+        SymbolTool::Create,
+        SymbolSelection {
+            component: Some(body),
+            plan_sketch: Some(sketch),
+            ..Default::default()
+        },
+    );
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    wait(&mut c, &s, &Default::default());
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error);
+    let SymbolOutcome::Applied { selected, .. } = c.apply(&mut s, &Default::default()).unwrap()
+    else {
+        panic!()
+    };
+    let definition = selected[0];
+    begin(&mut c, &s, SymbolTool::Place, Default::default());
+    c.form
+        .as_mut()
+        .unwrap()
+        .place(s.document(), definition)
+        .unwrap();
+    let before = s.document().clone();
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    wait(&mut c, &s, &Default::default());
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error);
+    assert_eq!(s.document(), &before);
+    let SymbolOutcome::Applied { selected, .. } = c.apply(&mut s, &Default::default()).unwrap()
+    else {
+        panic!()
+    };
+    let instance = selected[0];
+    let ownership = symbols::read_instance(s.document(), instance).unwrap();
+    let definition = symbols::read_definition(s.document(), definition).unwrap();
+    assert!(
+        ownership.ids.len() > definition.template.entities().count(),
+        "The symbol owns local curve/point/constraint IDs as well as Document entities"
+    );
+    assert!(
+        ownership
+            .ids
+            .values()
+            .any(|id| s.document().get(*id).is_none())
+    );
+    let (outer, plan) = symbols::symbol_plan(s.document(), instance)
+        .unwrap()
+        .unwrap();
+    assert_eq!(outer, instance);
+    assert_eq!(plan, ownership.ids[&sketch]);
+    let mapped = Source::read(s.document(), plan).unwrap().0;
+    assert_eq!(mapped.sketch.curves.len(), source.sketch.curves.len());
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &before);
+    s.redo(s.revision(), actor()).unwrap();
+    multicad_model::Compiler::default()
+        .compile(s.document(), s.revision())
+        .unwrap();
+}
