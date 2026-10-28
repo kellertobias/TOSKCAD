@@ -269,39 +269,32 @@ fn offsets_tilt_and_symmetric_total_have_real_sweep_bounds_and_volumes() {
     }
 }
 #[test]
-fn unsupported_native_options_are_errors_instead_of_default_geometry() {
-    for case in 0..2 {
-        let mut fixture = SharedProfiles::new(Default::default());
-        let feature = fixture.outer().feature;
-        let mut source = model::read_extrude(fixture.session.document(), feature).unwrap();
-        match case {
-            0 => {
-                source.operation = Operation::Cut;
-                source.targets = vec![BodyInput {
-                    body: fixture.inner().body,
-                    producer: fixture.inner().feature,
-                }];
-            }
-            _ => source.parameters.taper = angle(2.),
-        }
-        let mut entity = fixture.session.document().get(feature).unwrap().clone();
-        let EntityData::Feature {
-            definition, inputs, ..
-        } = &mut entity.data
-        else {
-            panic!()
-        };
-        *definition = source.definition().unwrap();
-        *inputs = source.inputs(&[]).unwrap();
-        fixture.apply(vec![Mutation::Replace(entity)]);
-        let before = fixture.session.document().clone();
-        let error = Compiler::default()
-            .compile(&before, fixture.session.revision())
-            .err()
-            .expect("Unsupported mode must not produce default extrusion");
-        assert_eq!(error.entity, Some(feature));
-        assert_eq!(fixture.session.document(), &before);
-    }
+fn unsupported_extrusion_operation_is_an_error_instead_of_default_geometry() {
+    let mut fixture = SharedProfiles::new(Default::default());
+    let feature = fixture.outer().feature;
+    let mut source = model::read_extrude(fixture.session.document(), feature).unwrap();
+    source.operation = Operation::Cut;
+    source.targets = vec![BodyInput {
+        body: fixture.inner().body,
+        producer: fixture.inner().feature,
+    }];
+    let mut entity = fixture.session.document().get(feature).unwrap().clone();
+    let EntityData::Feature {
+        definition, inputs, ..
+    } = &mut entity.data
+    else {
+        panic!()
+    };
+    *definition = source.definition().unwrap();
+    *inputs = source.inputs(&[]).unwrap();
+    fixture.apply(vec![Mutation::Replace(entity)]);
+    let before = fixture.session.document().clone();
+    let error = Compiler::default()
+        .compile(&before, fixture.session.revision())
+        .err()
+        .expect("Unsupported mode must not produce default extrusion");
+    assert_eq!(error.entity, Some(feature));
+    assert_eq!(fixture.session.document(), &before);
 }
 #[test]
 fn exact_compiled_body_writes_and_reads_step_without_using_the_display_mesh() {

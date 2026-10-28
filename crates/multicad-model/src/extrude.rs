@@ -173,20 +173,23 @@ impl Extrusion<'_> {
         direction: [f64; 3],
         end: &ResolvedTermination,
         origins: &[Origin],
+        taper_rad: f64,
     ) -> Result<Solid, ModelError> {
         if self.interrupt.is_some_and(|interrupt| interrupt()) {
             return Err(self.failure("Model evaluation superseded"));
         }
         match end {
             ResolvedTermination::Distance { distance_mm } => {
-                Solid::extrude_curved_profile_vector_named(
+                Solid::extrude_curved_profile_vector_tapered_named(
                     profile,
                     direction.map(|n| n * distance_mm),
+                    taper_rad,
                     self.feature,
                     origins,
                     self.policy,
                 )
             }
+            _ if taper_rad!=0. => return Err(self.failure("Taper with an associative end plane is not supported yet")),
             _ => Solid::extrude_curved_profile_to_plane_named(
                 profile,
                 direction,
@@ -197,6 +200,31 @@ impl Extrusion<'_> {
             ),
         }
         .map_err(|e| self.failure(e))
+    }
+    fn halves(
+        &self,
+        profile: &CurvedProfile,
+        direction: [f64; 3],
+        ends: [&ResolvedTermination; 2],
+        origins: &[Origin],
+        taper_rad: f64,
+    ) -> Result<Solid, ModelError> {
+        let forward = self.side(profile, direction, ends[0], origins, taper_rad)?;
+        let backward = self
+            .side(profile, direction.map(|n| -n), ends[1], origins, taper_rad)?
+            .with_feature_cap_roles(self.feature, "cap.end", "cap.start")
+            .map_err(|e| self.failure(e))?;
+        if self.interrupt.is_some_and(|interrupt| interrupt()) {
+            return Err(self.failure("Model evaluation superseded"));
+        }
+        let solid = forward
+            .boolean(&backward, BooleanOperation::Union, self.policy)
+            .map_err(|e| self.failure(e))?
+            .ok_or_else(|| self.failure("Two-sided extrusion produced no solid"))?;
+        if solid.solid_count().map_err(|e| self.failure(e))? != 1 {
+            return Err(self.failure("Two-sided extrusion did not form one connected body"));
+        }
+        Ok(solid)
     }
     pub fn build(
         &self,
@@ -213,9 +241,40 @@ impl Extrusion<'_> {
         });
         profile.frame.origin =
             std::array::from_fn(|i| frame.origin[i] + normal[i] * controls.start_offset_mm);
+        if controls.taper_rad != 0. {
+            let referenced = match &controls.extent {
+                ResolvedExtent::OneSided { end } => {
+                    !matches!(end, ResolvedTermination::Distance { .. })
+                }
+                ResolvedExtent::TwoSided { forward, backward } => {
+                    !matches!(forward, ResolvedTermination::Distance { .. })
+                        || !matches!(backward, ResolvedTermination::Distance { .. })
+                }
+                ResolvedExtent::Symmetric { .. } => false,
+            };
+            if referenced {
+                return Err(
+                    self.failure("Taper with an associative end plane is not supported yet")
+                );
+            }
+        }
         match &controls.extent {
-            ResolvedExtent::OneSided { end } => self.side(&profile, direction, end, origins),
+            ResolvedExtent::OneSided { end } => {
+                self.side(&profile, direction, end, origins, controls.taper_rad)
+            }
             ResolvedExtent::Symmetric { total_mm } => {
+                if controls.taper_rad != 0. {
+                    let half = ResolvedTermination::Distance {
+                        distance_mm: total_mm / 2.,
+                    };
+                    return self.halves(
+                        &profile,
+                        direction,
+                        [&half, &half],
+                        origins,
+                        controls.taper_rad,
+                    );
+                }
                 profile.frame.origin =
                     std::array::from_fn(|i| profile.frame.origin[i] - direction[i] * total_mm / 2.);
                 Solid::extrude_curved_profile_vector_named(
@@ -236,7 +295,7 @@ impl Extrusion<'_> {
                     ResolvedTermination::Distance {
                         distance_mm: backward,
                     },
-            } => {
+            } if controls.taper_rad == 0. => {
                 profile.frame.origin =
                     std::array::from_fn(|i| profile.frame.origin[i] - direction[i] * backward);
                 Solid::extrude_curved_profile_vector_named(
@@ -248,24 +307,13 @@ impl Extrusion<'_> {
                 )
                 .map_err(|e| self.failure(e))
             }
-            ResolvedExtent::TwoSided { forward, backward } => {
-                let forward = self.side(&profile, direction, forward, origins)?;
-                let backward = self
-                    .side(&profile, direction.map(|n| -n), backward, origins)?
-                    .with_feature_cap_roles(self.feature, "cap.end", "cap.start")
-                    .map_err(|e| self.failure(e))?;
-                if self.interrupt.is_some_and(|interrupt| interrupt()) {
-                    return Err(self.failure("Model evaluation superseded"));
-                }
-                let solid = forward
-                    .boolean(&backward, BooleanOperation::Union, self.policy)
-                    .map_err(|e| self.failure(e))?
-                    .ok_or_else(|| self.failure("Two-sided extrusion produced no solid"))?;
-                if solid.solid_count().map_err(|e| self.failure(e))? != 1 {
-                    return Err(self.failure("Two-sided extrusion did not form one connected body"));
-                }
-                Ok(solid)
-            }
+            ResolvedExtent::TwoSided { forward, backward } => self.halves(
+                &profile,
+                direction,
+                [forward, backward],
+                origins,
+                controls.taper_rad,
+            ),
         }
     }
 }
