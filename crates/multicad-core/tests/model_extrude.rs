@@ -445,7 +445,7 @@ fn unsupported_modes_and_invalid_numeric_inputs_are_explicit_errors_without_prev
         cases.push(r);
     }
     let mut taper = request.clone();
-    taper.parameters.taper = angle(1.);
+    taper.parameters.taper = angle(90.);
     cases.push(taper);
     let mut wrong_unit = request.clone();
     wrong_unit.parameters.start_offset = angle(2.);

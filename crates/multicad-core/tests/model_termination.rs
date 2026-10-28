@@ -444,7 +444,16 @@ fn formula_bindings_stay_stable_and_numeric_compatibility_checks_remain_strict()
     );
     let mut invalid = canonical.parameters.clone();
     invalid.taper = angle(1.);
-    assert!(invalid.resolve_controls(f.session.parameters()).is_err());
+    assert!(
+        (invalid
+            .resolve_controls(f.session.parameters())
+            .unwrap()
+            .taper_rad
+            - 1_f64.to_radians())
+        .abs()
+            < 1e-12
+    );
+    assert!(invalid.resolve(f.session.parameters()).is_err());
     invalid = canonical.parameters.clone();
     invalid.extent = Extent::TwoSided {
         forward: Termination::Distance {

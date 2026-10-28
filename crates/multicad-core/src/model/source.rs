@@ -217,7 +217,9 @@ pub struct ResolvedExtrudeControls {
     pub direction: [f64; 3],
     /// Offset along the sketch normal, independently of the sweep direction.
     pub start_offset_mm: f64,
-    /// Nonzero taper remains unsupported and is rejected during resolution.
+    /// Signed draft angle, strictly between -PI/2 and PI/2. Positive values
+    /// expand the profile toward each distance end; native geometry validates
+    /// supported profiles and rejects collapsing or intersecting boundaries.
     pub taper_rad: f64,
     pub extent: ResolvedExtent,
 }
@@ -343,9 +345,9 @@ impl ExtrudeParameters {
             ));
         }
         let taper_rad = number(&self.taper, Unit::Radian)?;
-        if taper_rad != 0. {
+        if !taper_rad.is_finite() || taper_rad.abs() >= std::f64::consts::FRAC_PI_2 {
             return Err(invalid(
-                "Tapered extrusion is not supported by this model preparation yet",
+                "Extrusion taper must be strictly between -90 and 90 degrees",
             ));
         }
         let sign = if self.direction.reverse { -1. } else { 1. };
@@ -395,6 +397,11 @@ impl ExtrudeParameters {
         parameters: &EvaluatedParameters,
     ) -> Result<ResolvedExtrude, DocumentError> {
         let controls = self.resolve_controls(parameters)?;
+        if controls.taper_rad != 0. {
+            return Err(invalid(
+                "Numeric distance sweep cannot represent extrusion taper; use resolved controls",
+            ));
+        }
         let (forward_mm, backward_mm) = match &controls.extent {
             ResolvedExtent::OneSided { end } => (end.distance()?, 0.),
             ResolvedExtent::TwoSided { forward, backward } => {
