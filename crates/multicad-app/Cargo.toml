@@ -16,6 +16,7 @@ path = "src/main.rs"
 multicad-core.workspace = true
 multicad-kernel.workspace = true
 multicad-solver.workspace = true
+multicad-model.workspace = true
 multicad-ui.workspace = true
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 tempfile = "=3.27.0"

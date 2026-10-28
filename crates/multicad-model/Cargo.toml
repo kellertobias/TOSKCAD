@@ -1,0 +1,16 @@
+[package]
+name = "multicad-model"
+description = "Native parametric feature evaluation and owned exact model runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+multicad-core.workspace = true
+multicad-kernel.workspace = true
+multicad-solver.workspace = true
+
+[lints]
+workspace = true

@@ -110,6 +110,10 @@ impl<'a> SketchEvaluationContext<'a> {
     pub fn document(&self) -> &Document {
         self.document
     }
+    /// The checked parameter snapshot shared by this evaluation job.
+    pub fn parameters(&self) -> &EvaluatedParameters {
+        &self.parameters
+    }
     pub fn evaluate(
         &self,
         sketch: EntityId,

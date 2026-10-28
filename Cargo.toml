@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/multicad-core", "crates/multicad-app", "crates/multicad-native-build", "crates/multicad-kernel", "crates/multicad-solver", "crates/multicad-ui"]
+members = ["crates/multicad-core", "crates/multicad-app", "crates/multicad-native-build", "crates/multicad-kernel", "crates/multicad-solver", "crates/multicad-model", "crates/multicad-ui"]
 default-members = ["crates/multicad-app"]
 resolver = "3"
 exclude = ["spikes/native-foundation"]
@@ -15,6 +15,7 @@ publish = false
 multicad-core = { path = "crates/multicad-core" }
 multicad-kernel = { path = "crates/multicad-kernel" }
 multicad-solver = { path = "crates/multicad-solver" }
+multicad-model = { path = "crates/multicad-model" }
 multicad-ui = { path = "crates/multicad-ui" }
 multicad-native-build = { path = "crates/multicad-native-build" }
 eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }

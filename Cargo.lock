@@ -1777,6 +1777,7 @@ version = "0.1.0-dev"
 dependencies = [
  "multicad-core",
  "multicad-kernel",
+ "multicad-model",
  "multicad-solver",
  "multicad-ui",
  "serde_json",
@@ -1804,6 +1805,15 @@ dependencies = [
  "multicad-native-build",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "multicad-model"
+version = "0.1.0-dev"
+dependencies = [
+ "multicad-core",
+ "multicad-kernel",
+ "multicad-solver",
 ]
 
 [[package]]
