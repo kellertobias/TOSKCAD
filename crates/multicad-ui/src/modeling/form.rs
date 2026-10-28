@@ -7,6 +7,7 @@ use super::{
     placement::PlacementPanel,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
+    scaling::ScalePanel,
     split::{SplitEvent, SplitPanel},
 };
 use crate::egui;
@@ -31,6 +32,7 @@ pub enum ModelRequest {
     ExtrudeGroupEdit(Box<model::ExtrudeGroupEdit>),
     GroupedExtrude(Box<model::GroupedExtrudeRequest>),
     Placement(Box<super::PlacementCommand>),
+    Scale(Box<super::ScaleCommand>),
     Alignment(Box<super::AlignmentCommand>),
 }
 pub(super) struct ToolProof {
@@ -45,6 +47,12 @@ impl ModelRequest {
         feature: multicad_core::document::EntityId,
     ) -> Result<ModelPrepared, String> {
         match self {
+            Self::Scale(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Scale edit changed its saved producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Placement(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Placement edit changed its saved producer identity".into());
@@ -99,6 +107,12 @@ impl ModelRequest {
     }
     pub(super) fn prepare(&self, session: &Session, actor: Actor) -> Result<ModelPrepared, String> {
         match self {
+            Self::Scale(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved scale before editing its source".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Placement(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved placement before editing its source".into());
@@ -214,6 +228,7 @@ pub(super) enum ModelForm {
     Split(Box<SplitPanel>),
     ExtrudeGroup(Box<GroupEditPanel>),
     Placement(Box<PlacementPanel>),
+    Scale(Box<ScalePanel>),
     Alignment(Box<AlignmentPanel>),
 }
 impl ModelForm {
@@ -227,6 +242,7 @@ impl ModelForm {
             Self::Split(panel) => panel.stamp(),
             Self::ExtrudeGroup(panel) => panel.stamp(),
             Self::Placement(panel) => panel.stamp(),
+            Self::Scale(panel) => panel.stamp(),
             Self::Alignment(panel) => panel.stamp(),
         }
     }
@@ -240,6 +256,7 @@ impl ModelForm {
             Self::Split(_) => "Split",
             Self::ExtrudeGroup(_) => "Extrusion operation",
             Self::Placement(panel) => panel.label(),
+            Self::Scale(panel) => panel.label(),
             Self::Alignment(_) => "Referenced alignment",
         }
     }
@@ -255,6 +272,9 @@ impl ModelForm {
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
+            Self::Scale(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Scale(Box::new(command))),
             Self::Extrude(panel) => panel
                 .request(document, capabilities)
                 .map(|request| ModelRequest::Extrude(Box::new(request))),
@@ -314,6 +334,7 @@ impl ModelForm {
                 }),
             Self::ExtrudeGroup(panel) => panel.show(ui, document, capabilities, preview),
             Self::Placement(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Scale(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Alignment(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }

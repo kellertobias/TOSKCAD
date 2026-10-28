@@ -1,6 +1,6 @@
 //! Display handles produce typed rigid-placement controls. They never edit a
 //! mesh or commit a document; the controller requires a complete native receipt.
-mod math;
+pub(super) mod math;
 use crate::{camera::Camera, egui, viewport::Scene};
 use egui::{Color32, Pos2, Rect, Stroke};
 use math::*;

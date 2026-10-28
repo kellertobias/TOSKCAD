@@ -20,6 +20,8 @@ mod object_basis;
 mod placement;
 mod primitive;
 mod revolve;
+mod scale_gizmo;
+mod scaling;
 mod split;
 mod termination;
 
@@ -32,6 +34,8 @@ pub use gizmo::{GizmoBasis, PlacementViewport};
 use multicad_core::document::EntityId;
 pub use object_basis::{ObjectGizmoBasis, object_gizmo_basis};
 pub use placement::{PlacementCommand, PlacementMode};
+pub use scale_gizmo::ScaleViewport;
+pub use scaling::ScaleCommand;
 pub use termination::TerminationViewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

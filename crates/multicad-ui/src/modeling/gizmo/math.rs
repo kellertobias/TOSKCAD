@@ -3,20 +3,20 @@ use multicad_core::{
     model::{self, NumericTransform},
     parameters::{EvaluatedParameters, Unit},
 };
-pub(super) type Point = [f64; 3];
-pub(super) fn dot(a: Point, b: Point) -> f64 {
+pub(crate) type Point = [f64; 3];
+pub(crate) fn dot(a: Point, b: Point) -> f64 {
     a.into_iter().zip(b).map(|(a, b)| a * b).sum()
 }
-pub(super) fn add(a: Point, b: Point) -> Point {
+pub(crate) fn add(a: Point, b: Point) -> Point {
     std::array::from_fn(|i| a[i] + b[i])
 }
-pub(super) fn sub(a: Point, b: Point) -> Point {
+pub(crate) fn sub(a: Point, b: Point) -> Point {
     std::array::from_fn(|i| a[i] - b[i])
 }
-pub(super) fn mul(a: Point, b: f64) -> Point {
+pub(crate) fn mul(a: Point, b: f64) -> Point {
     a.map(|a| a * b)
 }
-pub(super) fn cross(a: Point, b: Point) -> Point {
+pub(crate) fn cross(a: Point, b: Point) -> Point {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -47,7 +47,7 @@ fn number(d: &Dimension, unit: Unit, parameters: &EvaluatedParameters) -> Result
     Ok(value)
 }
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Values {
+pub(crate) struct Values {
     pub translation: Point,
     pub pivot: Point,
     pub axis: Point,
@@ -77,7 +77,7 @@ impl Values {
         add(self.pivot, self.translation)
     }
 }
-pub(super) fn translated(
+pub(crate) fn translated(
     source: &NumericTransform,
     values: Values,
     delta: Point,
@@ -145,7 +145,7 @@ fn axis_angle(rotation: [[f64; 3]; 3]) -> Result<(Point, f64), String> {
         (2. * sine.atan2(q[3])).to_degrees(),
     ))
 }
-pub(super) fn rotated(
+pub(crate) fn rotated(
     source: &NumericTransform,
     values: Values,
     axis: Point,
@@ -187,7 +187,7 @@ pub(super) fn rotated(
     result.validate().map_err(|e| e.to_string())?;
     Ok(result)
 }
-pub(super) fn axis_parameter(ray: crate::viewport::Ray, origin: Point, axis: Point) -> Option<f64> {
+pub(crate) fn axis_parameter(ray: crate::viewport::Ray, origin: Point, axis: Point) -> Option<f64> {
     let direction = ray.direction();
     let w = sub(ray.origin(), origin);
     let parallel = dot(axis, direction);
@@ -198,7 +198,7 @@ pub(super) fn axis_parameter(ray: crate::viewport::Ray, origin: Point, axis: Poi
     let parameter = (dot(axis, w) - parallel * dot(direction, w)) / denominator;
     parameter.is_finite().then_some(parameter)
 }
-pub(super) fn plane_point(
+pub(crate) fn plane_point(
     ray: crate::viewport::Ray,
     origin: Point,
     normal: Point,

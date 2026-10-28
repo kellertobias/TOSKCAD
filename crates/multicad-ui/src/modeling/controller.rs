@@ -11,6 +11,7 @@ use super::{
     placement::PlacementPanel,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
+    scaling::ScalePanel,
     split::SplitPanel,
 };
 use crate::{
@@ -89,6 +90,9 @@ pub struct ModelToolController {
     context_notice: Option<String>,
     placement_interaction: super::gizmo::Interaction,
     placement_confirm: Option<FormStamp>,
+    scale_interaction: super::scale_gizmo::Interaction,
+    scale_confirm: Option<FormStamp>,
+    scale_host_basis: Option<super::GizmoBasis>,
 }
 pub enum ModelToolOutcome {
     Applied(Vec<CreatedBody>),
@@ -140,7 +144,8 @@ impl ModelToolController {
             return false;
         }
 
-        if super::PlacementCommand::editable(document, feature)
+        if super::ScaleCommand::editable(document, feature)
+            || super::PlacementCommand::editable(document, feature)
             || multicad_core::model::read_alignment(document, feature).is_ok()
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
         {
@@ -171,6 +176,17 @@ impl ModelToolController {
                 resources,
                 channel,
                 ModelForm::Alignment(Box::new(panel)),
+            )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
+        }
+        if super::ScaleCommand::editable(document, feature) {
+            let panel = ScalePanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Scale(Box::new(panel)),
             )?;
             self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
             return Ok(());
@@ -506,7 +522,10 @@ impl ModelToolController {
     }
     pub fn cancel(&mut self) {
         self.placement_interaction = Default::default();
+        self.scale_interaction = Default::default();
+        self.scale_host_basis = None;
         self.placement_confirm = None;
+        self.scale_confirm = None;
         self.form = None;
         self.scope = None;
         self.candidate = None;
@@ -545,6 +564,7 @@ impl ModelToolController {
     }
     fn invalidate(&mut self) {
         self.placement_confirm = None;
+        self.scale_confirm = None;
         self.candidate = None;
         self.discovery = None;
         if let Some(operations) = &mut self.operations {
@@ -664,12 +684,13 @@ impl ModelToolController {
             outputs: prepared.outputs,
             instances: match request {
                 ModelRequest::Placement(command) => command.instances(),
+                ModelRequest::Scale(command) => command.instances(),
                 ModelRequest::Alignment(command) => command.instances(),
                 _ => vec![],
             },
             placement: matches!(
                 request,
-                ModelRequest::Placement(_) | ModelRequest::Alignment(_)
+                ModelRequest::Placement(_) | ModelRequest::Scale(_) | ModelRequest::Alignment(_)
             ),
             tools,
             proof,
@@ -680,6 +701,7 @@ impl ModelToolController {
                 ModelRequest::ExtrudeBoolean(_)
                     | ModelRequest::Split(_)
                     | ModelRequest::Placement(_)
+                    | ModelRequest::Scale(_)
                     | ModelRequest::Alignment(_)
             ) || !matches!(execution, Execution::Create),
         });
@@ -815,7 +837,7 @@ impl ModelToolController {
         resources: &ProjectResources,
     ) -> Result<Vec<CreatedBody>, String> {
         let result: Result<Vec<CreatedBody>, String> = (|| {
-            if self.placement_interaction.active() {
+            if self.placement_interaction.active() || self.scale_interaction.active() {
                 return Err(
                     "Release the placement handle before applying its native preview".into(),
                 );
@@ -997,6 +1019,7 @@ mod groups;
 mod legacy;
 mod operations;
 mod placement_interaction;
+mod scale_interaction;
 pub use placement_interaction::PlacementViewportResult;
 mod proof;
 mod termination;
@@ -1005,3 +1028,6 @@ mod tests;
 
 #[cfg(test)]
 mod placement_tests;
+
+#[cfg(test)]
+mod scale_tests;
