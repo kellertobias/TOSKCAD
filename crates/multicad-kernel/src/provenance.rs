@@ -72,6 +72,69 @@ fn side_frame(profile: &Profile, edge: &ProfileEdge, height: f64) -> Option<Refe
 }
 
 impl Solid {
+    pub(crate) fn name_advanced_profile(
+        &mut self,
+        feature: EntityId,
+        origins: &[Origin],
+    ) -> Result<(), GeometryError> {
+        let mut elements: BTreeMap<_, _> = self
+            .topology_snapshot(feature, 0)?
+            .elements
+            .into_iter()
+            .map(|element| (element.key, element))
+            .collect();
+        let mut caps = [false; 2];
+        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+            let element = elements
+                .get_mut(&key(0, seed.face)?)
+                .ok_or_else(|| failure("Profile history names an absent face"))?;
+            let names = match seed.role {
+                0 | 1 => {
+                    caps[seed.role as usize] = true;
+                    if !matches!(element.geometry, Some(AnalyticGeometry::Plane { .. })) {
+                        return Err(failure(
+                            "Native profile end cap has no supported exact plane",
+                        ));
+                    }
+                    vec![Origin {
+                        source: feature,
+                        role: if seed.role == 0 {
+                            "cap.start"
+                        } else {
+                            "cap.end"
+                        }
+                        .into(),
+                    }]
+                }
+                2 => {
+                    let origin = origins
+                        .get(seed.source_index as usize)
+                        .ok_or_else(|| failure("Profile history names an absent authored curve"))?;
+                    vec![
+                        origin.clone(),
+                        Origin {
+                            source: feature,
+                            role: format!("side/{}/{}", origin.source, origin.role),
+                        },
+                    ]
+                }
+                _ => return Err(failure("Unknown advanced profile history role")),
+            };
+            for origin in names {
+                element.origins.insert(origin.clone());
+                if let Some(AnalyticGeometry::Plane { frame }) = element.geometry
+                    && !element.frames.iter().any(|f| f.origin == origin)
+                {
+                    element.frames.push(AnchoredFrame { origin, frame });
+                }
+            }
+        }
+        if !caps.into_iter().all(|cap| cap) {
+            return Err(failure("Both native profile end caps need exact history"));
+        }
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        self.finish_provenance(elements, &nodes)
+    }
     pub fn with_member_origin(
         mut self,
         feature: EntityId,

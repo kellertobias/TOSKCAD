@@ -157,6 +157,10 @@ mod ffi {
         pub point: Point3,
         pub derivative: Point3,
     }
+    pub struct LoftSectionData {
+        pub frame: Frame3,
+        pub edges: Vec<CurvedEdgeData>,
+    }
     pub struct CurveIntersectionData {
         pub point: Point3,
         pub first: f64,
@@ -332,6 +336,17 @@ mod ffi {
             offsets: &[u32],
             tolerance: f64,
         ) -> Result<UniquePtr<Shape>>;
+        fn curved_profile_pipe(
+            frame: &Frame3,
+            edges: &[CurvedEdgeData],
+            path: &[Point3],
+            tolerance: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        fn curved_profile_loft(
+            sections: &[LoftSectionData],
+            ruled: bool,
+            tolerance: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn tessellate(
             shape: &Shape,
             deflection: f64,
@@ -352,6 +367,7 @@ pub use affine::AffineTransform;
 mod advanced;
 pub use advanced::TreatmentFace;
 mod advanced_operations;
+mod advanced_profiles;
 mod edge_treatment;
 pub use edge_treatment::{EdgeTreatment, SidedChamfer, SidedTreatmentEdge, TreatmentEdge};
 mod drawing;

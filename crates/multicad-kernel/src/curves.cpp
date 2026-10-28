@@ -3,6 +3,10 @@
 #include "multicad-kernel/src/lib.rs.h"
 #include "ruled.hpp"
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Check.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepTools.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -33,6 +37,8 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <algorithm>
+#include <set>
+#include <tuple>
 #include <cmath>
 #include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
@@ -528,6 +534,91 @@ curved_profile_ruled(const Frame3 &startFrame, const Frame3 &endFrame,
     auto end = build(endFrame, {b.data(), b.size()}, offsets, tolerance);
     return ruled_profile_solid(start.face, end.face, start.sources, end.sources,
                                startEdges, tolerance);
+  });
+}
+namespace {
+void interference_check(const TopoDS_Shape &shape, const char *message) {
+  BRepAlgoAPI_Check check;
+  check.SetData(shape,false,true);
+  check.SetRunParallel(false);
+  check.Perform();
+  if(!check.IsValid())throw std::runtime_error(message);
+}
+template<class Operation>
+std::unique_ptr<Shape> named_profile_result(Operation &operation,
+    const std::vector<std::pair<TopoDS_Edge,uint32_t>> &sources) {
+  const auto shape=operation.Shape();
+  if(!operation.IsDone()||shape.IsNull()||!BRepCheck_Analyzer(shape).IsValid())
+    throw std::runtime_error("Native profile operation produced invalid geometry");
+  interference_check(shape,"Native profile solid self-intersects; repair the path or section correspondence");
+  auto result=std::make_unique<Shape>(Shape{shape,{},{}});
+  TopTools_IndexedMapOfShape faces;TopExp::MapShapes(shape,TopAbs_FACE,faces);
+  if(faces.Extent()>100000)throw std::runtime_error("Profile topology budget exceeded");
+  std::set<std::tuple<uint32_t,uint32_t,uint8_t>> seeds;
+  auto seed=[&](const TopoDS_Shape &face,uint8_t role,uint32_t source) {
+    const int index=faces.FindIndex(face);
+    if(index>0)seeds.emplace(static_cast<uint32_t>(index-1),source,role);
+  };
+  auto cap=[&](const TopoDS_Shape &boundary,uint8_t role) {
+    if(boundary.IsNull())throw std::runtime_error("Profile result has no native cap history");
+    if(boundary.ShapeType()==TopAbs_FACE&&faces.Contains(boundary)) {seed(boundary,role,0);return;}
+    TopTools_IndexedMapOfShape expected;TopExp::MapShapes(boundary,TopAbs_EDGE,expected);
+    int count=0;
+    for(int i=1;i<=faces.Extent();++i) {
+      TopTools_IndexedMapOfShape actual;TopExp::MapShapes(BRepTools::OuterWire(TopoDS::Face(faces(i))),TopAbs_EDGE,actual);
+      if(actual.Extent()!=expected.Extent())continue;
+      bool same=!expected.IsEmpty();for(int j=1;j<=expected.Extent();++j)same=same&&actual.Contains(expected(j));
+      if(same) {seed(faces(i),role,0);++count;}
+    }
+    if(count!=1)throw std::runtime_error("Profile cap cannot be named uniquely from exact boundary history");
+  };
+  cap(operation.FirstShape(),0);cap(operation.LastShape(),1);
+  for(const auto &source:sources)for(const auto &generated:operation.Generated(source.first))seed(generated,2,source.second);
+  for(const auto &[face,source,role]:seeds)result->seeds.push_back(NativeSeed{face,source,role});
+  return result;
+}
+}
+std::unique_ptr<Shape> curved_profile_pipe(const Frame3 &frame,
+    rust::Slice<const CurvedEdgeData> edges,rust::Slice<const Point3> points,double tolerance) {
+  return guarded([&] {
+    if(points.size()<2||points.size()>65)throw std::runtime_error("Sweep path needs 2 to 65 explicit points");
+    const uint32_t offsets[]={0,static_cast<uint32_t>(edges.size())};
+    const auto profile=build(frame,edges,{offsets,2},tolerance);
+    BRepBuilderAPI_MakeWire spine;
+    std::vector<std::pair<TopoDS_Edge,uint32_t>> sources=profile.sources;
+    for(size_t i=1;i<points.size();++i) {
+      const auto &a=points[i-1],&b=points[i];
+      BRepBuilderAPI_MakeEdge edge(gp_Pnt(a.x,a.y,a.z),gp_Pnt(b.x,b.y,b.z));
+      if(!edge.IsDone())throw std::runtime_error("Sweep path contains a degenerate segment");
+      spine.Add(edge.Edge());if(!spine.IsDone())throw std::runtime_error("Sweep path is disconnected");
+      sources.emplace_back(spine.Edge(),static_cast<uint32_t>(edges.size()+i-1));
+    }
+    interference_check(spine.Wire(),"Sweep polyline self-intersects");
+    BRepOffsetAPI_MakePipeShell operation(spine.Wire());
+    operation.SetMode(false);
+    operation.SetTransitionMode(BRepBuilderAPI_RightCorner);
+    operation.SetTolerance(tolerance,tolerance,1e-8);
+    operation.Add(BRepTools::OuterWire(profile.face),TopExp::FirstVertex(sources[profile.sources.size()].first,true),false,false);
+    operation.Build();
+    if(!operation.IsDone()||!operation.MakeSolid())throw std::runtime_error("Native sweep could not build one closed solid from the explicit path");
+    return named_profile_result(operation,sources);
+  });
+}
+std::unique_ptr<Shape> curved_profile_loft(rust::Slice<const LoftSectionData> sections,bool ruled,double tolerance) {
+  return guarded([&] {
+    if(sections.size()<2||sections.size()>16)throw std::runtime_error("Loft needs 2 to 16 ordered sections");
+    BRepOffsetAPI_ThruSections operation(true,ruled,tolerance);
+    operation.CheckCompatibility(false);operation.SetMutableInput(false);
+    std::vector<std::pair<TopoDS_Edge,uint32_t>> sources;uint32_t base=0;
+    for(const auto &section:sections) {
+      const uint32_t offsets[]={0,static_cast<uint32_t>(section.edges.size())};
+      const auto profile=build(section.frame,{section.edges.data(),section.edges.size()},{offsets,2},tolerance);
+      BRepBuilderAPI_MakeWire authored;
+      for(const auto &edge:profile.sources) {authored.Add(edge.first);if(!authored.IsDone())throw std::runtime_error("Authored loft wire is disconnected");sources.emplace_back(authored.Edge(),base+edge.second);}
+      operation.AddWire(authored.Wire());base+=static_cast<uint32_t>(section.edges.size());
+    }
+    operation.Build();if(!operation.IsDone())throw std::runtime_error("Loft failed for the authored section order/correspondence");
+    return named_profile_result(operation,sources);
   });
 }
 } // namespace multicad::kernel

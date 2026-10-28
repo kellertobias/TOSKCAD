@@ -5,6 +5,9 @@ struct CurvedEdgeData;
 struct CurveSampleData;
 struct CurveQueryData;
 struct SweepLimits;
+struct LoftSectionData;
+std::unique_ptr<Shape> curved_profile_pipe(const Frame3 &,rust::Slice<const CurvedEdgeData>,rust::Slice<const Point3>,double tolerance);
+std::unique_ptr<Shape> curved_profile_loft(rust::Slice<const LoftSectionData>,bool ruled,double tolerance);
 CurveSampleData curve_evaluate(const CurvedEdgeData &, double parameter);
 CurveQueryData curve_intersections(const CurvedEdgeData &,
                                    const CurvedEdgeData &, double tolerance,
