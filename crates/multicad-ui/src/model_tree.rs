@@ -710,6 +710,7 @@ impl ModelTree {
         selected: &BTreeSet<EntityId>,
         options: TreeOptions,
     ) -> TreeEvents {
+        crate::controls::inspector_layout(ui);
         let enabled = options.enabled;
         if let Err(error) = self.ensure_view(session) {
             return TreeEvents {
@@ -744,8 +745,9 @@ impl ModelTree {
                         if prior != *parent { *before = None; }
                         let key = parent.unwrap_or(session.document().id());
                         let siblings = session.document().hierarchy().members.get(&key).cloned().unwrap_or_default();
-                        egui::ComboBox::from_id_salt("move-before")
-                            .selected_text(before.and_then(|id| session.document().get(id).map(|entity| entity.name.clone())).unwrap_or_else(|| "Append at end".into()))
+                        let before_label = before.and_then(|id| session.document().get(id).map(|entity| entity.name.clone())).unwrap_or_else(|| "Append at end".into());
+                        crate::controls::inspector_combo(ui, "move-before")
+                            .selected_text(&before_label)
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(before, None, "Append at end");
                                 for id in siblings {
@@ -753,13 +755,13 @@ impl ModelTree {
                                         ui.selectable_value(before, Some(id), format!("Before {}", entity.name));
                                     }
                                 }
-                            }).response.on_hover_text("Order relative to an explicit member; normalize legacy membership before reordering its instances");
+                            }).response.on_hover_text(format!("{before_label}\nOrder relative to an explicit member; normalize legacy membership before reordering its instances"));
                     }
                 }
                 if !current {
                     ui.colored_label(Color32::LIGHT_RED, "The document changed. Cancel and reopen this tool to review the current state.");
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     apply = ui.add_enabled(current, egui::Button::new("Apply")).on_hover_text("Commit one undoable hierarchy transaction").clicked();
                     cancel = ui.button("Cancel").on_hover_text("Discard this source-neutral form").clicked();
                 });
@@ -978,8 +980,7 @@ fn parent_choice(
         .find(|entry| entry.id == *parent)
         .map(|entry| entry.path.as_str())
         .unwrap_or("Missing container");
-    egui::ComboBox::from_id_salt(id)
-        .width(ui.available_width())
+    crate::controls::inspector_combo(ui, id)
         .selected_text(current)
         .show_ui(ui, |ui| {
             for destination in destinations {
@@ -987,7 +988,9 @@ fn parent_choice(
             }
         })
         .response
-        .on_hover_text("Full model paths distinguish nested components and groups");
+        .on_hover_text(format!(
+            "{current}\nFull model paths distinguish nested components and groups"
+        ));
 }
 
 #[cfg(test)]
@@ -1494,6 +1497,212 @@ mod tests {
             }
             assert_eq!(session.document(), &document);
             assert_eq!(session.revision(), 0);
+        }
+    }
+    #[test]
+    fn resizable_inspector_stays_bounded_through_long_parent_move_and_shared_summary() {
+        use crate::viewport::{Geometry, Instance, Interaction, Scene, SceneStamp, Transform};
+        use multicad_core::document::{Definition, Placement};
+        use multicad_kernel::{MeshOptions, Solid};
+        use std::sync::Arc;
+        let (session, component, _, body) = fixture();
+        let nested = Entity::new(
+            "Drawer module with a long descriptive component name",
+            EntityData::Assembly { instances: vec![] },
+        );
+        let material = Entity::new(
+            "Birch plywood with a long manufacturing material description",
+            EntityData::Material {
+                density_kg_m3: Some(700.),
+                color_rgba: [140, 170, 190, 255],
+                section_hatch: None,
+            },
+        );
+        let producer = Entity::new(
+            "Independent native source",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.native-box".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let occurrence = Entity::new(
+            "Placed reference with a long ordering description",
+            EntityData::Instance {
+                component: body,
+                placement: Placement {
+                    translation_mm: [30., 0., 0.],
+                    ..Default::default()
+                },
+            },
+        );
+        let mut source_body = session.document().get(body).unwrap().clone();
+        source_body.name = "Visible side A with a long descriptive body name".into();
+        let EntityData::Part {
+            features,
+            material: body_material,
+            tags,
+        } = &mut source_body.data
+        else {
+            unreachable!()
+        };
+        features.push(producer.id);
+        *body_material = Some(material.id);
+        tags.extend([
+            "carcass-panel-for-cabinet-A-ready-for-manufacturing-without-finishing".into(),
+            "shared-woodworking-tag-with-a-long-unbroken-identifier-that-needs-wrapping".into(),
+        ]);
+        let mut state = session.document().hierarchy().clone();
+        state.members.get_mut(&component).unwrap().push(nested.id);
+        state.members.insert(nested.id, vec![occurrence.id]);
+        let document = session
+            .document()
+            .edited(&[
+                Mutation::Insert(nested.clone()),
+                Mutation::Insert(material),
+                Mutation::Insert(producer.clone()),
+                Mutation::Insert(occurrence.clone()),
+                Mutation::Replace(source_body),
+                Mutation::SetHierarchy(state),
+            ])
+            .unwrap();
+        let solid = Solid::box_named([20., 12., 8.], producer.id, Default::default()).unwrap();
+        let mesh = solid.mesh(MeshOptions::default()).unwrap();
+        let geometry = Arc::new(
+            Geometry::new(
+                producer.id,
+                mesh.vertices.as_chunks::<3>().0.to_vec(),
+                mesh.indices,
+                mesh.face_indices,
+                solid.topology_snapshot(producer.id, 0).unwrap().elements,
+            )
+            .unwrap(),
+        );
+        for pixels_per_point in [1., 2.] {
+            for panel_width in [250., 180.] {
+                let ctx = egui::Context::default();
+                ctx.set_pixels_per_point(pixels_per_point);
+                let mut session = Session::new(document.clone()).unwrap();
+                let mut tree = ModelTree::default();
+                let mut interaction = Interaction::default();
+                let selected = BTreeSet::from([body]);
+                tree.begin_move(&session, vec![body]).unwrap();
+                for frame in 0..240 {
+                    if frame == 80 {
+                        let Some(Tool::Move { parent, before, .. }) = &mut tree.tool else {
+                            panic!("move form")
+                        };
+                        *parent = Some(nested.id);
+                        *before = Some(occurrence.id);
+                    }
+                    if frame == 160 {
+                        let result = tree.apply_tool(&mut session);
+                        assert!(result.error.is_none(), "{:?}", result.error);
+                        assert_eq!(session.revision(), 1);
+                        assert_eq!(
+                            Index::new(session.document())
+                                .unwrap()
+                                .owning_component(body)
+                                .unwrap(),
+                            Some(nested.id)
+                        );
+                    }
+                    let scene = Scene::new(
+                        SceneStamp {
+                            document: document.id(),
+                            revision: session.revision(),
+                            generation: session.revision() + 1,
+                        },
+                        vec![geometry.clone()],
+                        vec![
+                            Instance {
+                                id: body,
+                                geometry: producer.id,
+                                transform: Default::default(),
+                                color: [140, 170, 190, 255],
+                            },
+                            Instance {
+                                id: occurrence.id,
+                                geometry: producer.id,
+                                transform: Transform::from_placement(Placement {
+                                    translation_mm: [30., 0., 0.],
+                                    ..Default::default()
+                                })
+                                .unwrap(),
+                                color: [140, 170, 190, 255],
+                            },
+                        ],
+                    )
+                    .unwrap();
+                    interaction
+                        .select_source_entities(
+                            session.document(),
+                            session.revision(),
+                            &scene,
+                            &selected,
+                        )
+                        .unwrap();
+                    let mut width = 0.;
+                    let mut viewport_width = 0.;
+                    ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1360., 860.),
+                            )),
+                            focused: true,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            egui::Panel::left("inspector-regression-tree")
+                                .default_size(225.)
+                                .resizable(true)
+                                .show(ui, |ui| {
+                                    ui.label("Model tree");
+                                });
+                            let inspector = egui::Panel::right("inspector-regression")
+                                .default_size(panel_width)
+                                .resizable(true)
+                                .show(ui, |ui| {
+                                    ui.heading("Inspector");
+                                    ui.separator();
+                                    egui::ScrollArea::vertical().show(ui, |ui| {
+                                        let tool_active = tree.tool_active();
+                                        let events = tree.inspector(
+                                            ui,
+                                            &mut session,
+                                            &selected,
+                                            TreeOptions::default(),
+                                        );
+                                        assert!(events.change.is_none());
+                                        if !tool_active {
+                                            interaction.inspector(ui, session.document());
+                                            interaction.quick_actions(ui, &mut session, true);
+                                        }
+                                    });
+                                });
+                            width = inspector.response.rect.width();
+                            egui::CentralPanel::default().show(ui, |ui| {
+                                viewport_width = ui.available_width();
+                            });
+                        },
+                    )
+                    .drop_without_applying_deltas();
+                    assert!(
+                        width <= panel_width + 2.,
+                        "Inspector grew to {width} from {panel_width} at frame {frame}, scale {pixels_per_point}"
+                    );
+                    assert!(
+                        viewport_width >= 800.,
+                        "Inspector starved viewport: {viewport_width}"
+                    );
+                }
+                assert_eq!(session.revision(), 1);
+            }
         }
     }
 }

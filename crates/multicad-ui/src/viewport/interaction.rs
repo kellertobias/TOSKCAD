@@ -162,6 +162,7 @@ impl Interaction {
         changed
     }
     pub fn inspector(&self, ui: &mut egui::Ui, document: &Document) {
+        crate::controls::inspector_layout(ui);
         if self.parts.len() > 1 {
             ui.strong(format!("{} selected parts", self.parts.len()));
             for id in self.parts.iter().take(12) {
@@ -302,13 +303,14 @@ impl Interaction {
         session: &mut Session,
         current: bool,
     ) -> bool {
+        crate::controls::inspector_layout(ui);
         if self.selected_id().is_none() {
             return false;
         }
         let mut fit = false;
         ui.horizontal_wrapped(|ui| {
             fit = ui
-                .button("Fit selection")
+                .add(egui::Button::new("Fit selection").wrap())
                 .on_hover_text("Frame all selected parts without changing source")
                 .clicked();
             let duplicate = current
@@ -323,7 +325,7 @@ impl Interaction {
                     )
                 });
             if ui
-                .add_enabled(duplicate, egui::Button::new("Duplicate"))
+                .add_enabled(duplicate, egui::Button::new("Duplicate").wrap())
                 .on_hover_text(
                     "Create linked instances at the same placement in one undoable transaction",
                 )
@@ -333,7 +335,7 @@ impl Interaction {
                 self.action_error = self.duplicate_selected(session).err();
             }
             if ui
-                .button("Clear selection")
+                .add(egui::Button::new("Clear selection").wrap())
                 .on_hover_text("Clear selected parts and topology")
                 .clicked()
             {

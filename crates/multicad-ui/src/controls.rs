@@ -1,5 +1,19 @@
 //! Fixed-geometry tabs; interaction state changes paint, never layout.
 use eframe::egui::{self, Color32, FontId, Pos2, Stroke, Vec2};
+/// Inspector content fits the user's resizable panel: text wraps, and the
+/// default selector minimum never exceeds the current content width.
+pub(crate) fn inspector_layout(ui: &mut egui::Ui) {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    let combo_width = ui.spacing().combo_width.min(ui.available_width().max(0.));
+    ui.spacing_mut().combo_width = combo_width;
+}
+/// A one-line Inspector selector. egui's width is a minimum; explicit
+/// truncation prevents a long selected value from growing the parent panel.
+pub(crate) fn inspector_combo(ui: &egui::Ui, id: impl egui::AsIdSalt) -> egui::ComboBox {
+    egui::ComboBox::from_id_salt(id)
+        .width(ui.available_width().max(0.))
+        .truncate()
+}
 #[derive(Clone, Copy)]
 pub struct TabColors {
     pub text: Color32,

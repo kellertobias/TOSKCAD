@@ -1352,6 +1352,7 @@ impl SketchEditor {
             .default_size(250.)
             .resizable(true)
             .show(ui, |ui| {
+                crate::controls::inspector_layout(ui);
                 ui.heading("Inspector");
                 ui.separator();
                 egui::ScrollArea::vertical()
