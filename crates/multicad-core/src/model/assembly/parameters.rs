@@ -10,6 +10,44 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssemblyLeafReceipt {
+    pub path: OccurrencePath,
+    pub component: EntityId,
+    pub producer: EntityId,
+    pub pose: crate::model::RigidPose,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssemblyEvaluationInfo {
+    pub source_hash: crate::project_file::ContentHash,
+    pub leaves: Vec<AssemblyLeafReceipt>,
+}
+impl AssemblyEvaluationInfo {
+    pub fn validate(&self) -> Result<(), DocumentError> {
+        let mut paths = BTreeSet::new();
+        if self.leaves.len() > 4096 {
+            return Err(invalid("Assembly receipt exceeds the 4096-leaf budget"));
+        }
+        for leaf in &self.leaves {
+            if leaf.path.root.is_nil()
+                || leaf.component.is_nil()
+                || leaf.producer.is_nil()
+                || leaf.path.members.len() > 32
+                || leaf.path.members.iter().any(|id| id.is_nil())
+                || !paths.insert(&leaf.path)
+            {
+                return Err(invalid(
+                    "Assembly receipt needs unique bounded canonical occurrence paths and valid Part producers",
+                ));
+            }
+            leaf.pose.validate()?;
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OccurrencePath {
