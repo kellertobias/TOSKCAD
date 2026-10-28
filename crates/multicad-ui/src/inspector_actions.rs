@@ -14,7 +14,6 @@ pub(crate) enum Owner {
     Operation,
     Move,
     Drawing,
-    Properties,
 }
 #[derive(Clone)]
 struct Footer {
