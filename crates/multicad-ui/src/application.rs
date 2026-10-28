@@ -1,6 +1,9 @@
 //! Native application composition over canonical sessions and declarative tools.
 pub use crate::storage::DocumentStorage;
 mod closing;
+#[cfg(test)]
+#[path = "external_reference_app_tests.rs"]
+mod external_reference_tests;
 mod files;
 #[cfg(test)]
 use crate::sketch_editor::DrawTool;
@@ -218,6 +221,7 @@ impl Application {
                     | Command::NewSketch
                     | Command::Draw(_)
                     | Command::SketchOperation(_)
+                    | Command::External(_)
                     | Command::Construction
                     | Command::Dimension
                     | Command::FinishSketch
@@ -265,6 +269,26 @@ impl Application {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
+            Command::External(tool) => {
+                if !args.is_empty() {
+                    return Err("Choose this reference tool, select a current native source in the viewport, then Preview and Apply".into());
+                }
+                if self.mode != Mode::Sketch || self.current().editor.dirty() {
+                    return Err("Open a sketch and finish pending parameter edits before selecting external references".into());
+                }
+                let p = self.current_mut();
+                p.sketch.begin_external(&p.session, tool)?;
+                if let Some(index) = self
+                    .registry
+                    .workspace(Mode::Sketch)
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.tools.contains(&tool.id()))
+                {
+                    self.tab = index;
+                }
+                self.message = format!("{} · select exact native geometry", tool.label());
+            }
             Command::Drawing(tool) => {
                 if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
                     return Err(
@@ -320,6 +344,12 @@ impl Application {
                 self.tab = 0;
             }
             Command::Apply => {
+                if self.current().sketch.external_pending() {
+                    let p = self.current_mut();
+                    p.sketch.apply_external(&mut p.session)?;
+                    self.message = "External reference applied · one undoable source edit".into();
+                    return Ok(());
+                }
                 if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     p.drawings.invoke(
@@ -347,6 +377,13 @@ impl Application {
                 );
             }
             Command::Discard => {
+                if self.current().sketch.external_pending()
+                    || self.current().sketch.external_active()
+                {
+                    self.current_mut().sketch.discard_external();
+                    self.message = "External reference cancelled · document unchanged".into();
+                    return Ok(());
+                }
                 if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     p.drawings.invoke(
@@ -367,6 +404,15 @@ impl Application {
                 self.message = "Unapplied parameter edits discarded".into();
             }
             Command::Preview => {
+                if self.current().sketch.external_pending() {
+                    return Err("Apply or discard the checked reference preview first".into());
+                }
+                if self.current().sketch.external_active() {
+                    let p = self.current_mut();
+                    p.sketch.preview_external(&p.session, channel)?;
+                    self.message = "Checked external reference preview · source unchanged".into();
+                    return Ok(());
+                }
                 let p = self.current_mut();
                 if p.sketch.model_active() {
                     p.sketch.preview_model(&p.session, &p.resources, channel)?;
@@ -637,6 +683,28 @@ impl Application {
         }
         let pending = || self.current().pending_edits();
         match command {
+            Command::External(_) => {
+                self.mode == Mode::Sketch
+                    && !self.current().editor.dirty()
+                    && self
+                        .current()
+                        .sketch
+                        .external_ready(&self.current().session)
+            }
+            Command::Apply if self.current().sketch.external_pending() => self
+                .current()
+                .sketch
+                .external_can_apply(&self.current().session),
+            Command::Discard
+                if self.current().sketch.external_pending()
+                    || self.current().sketch.external_active() =>
+            {
+                true
+            }
+            Command::Preview if self.current().sketch.external_active() => self
+                .current()
+                .sketch
+                .external_can_preview(&self.current().session),
             Command::Apply if self.current().sketch.model_active() => self
                 .current()
                 .sketch

@@ -13,6 +13,8 @@ use multicad_core::{
     sketch::{self, Datum, Frame, Geometry, Sketch},
 };
 use std::collections::VecDeque;
+#[path = "sketch_external_host.rs"]
+mod external_host;
 
 const MAX_PROFILE_CLICKS: usize = 32;
 #[derive(Clone, Copy)]
@@ -94,6 +96,7 @@ pub struct SketchEditor {
     sketch_evaluation: crate::sketch_evaluation::SketchEvaluationFeed,
     profiles: crate::sketch_selection::ProfileSelection,
     operations: crate::sketch_operations::Panel,
+    external: crate::external_references::Controller,
     operation_error: Option<String>,
     model: crate::modeling::ModelToolController,
     materials: crate::materials::MaterialsEditor,
@@ -156,6 +159,7 @@ impl Default for SketchEditor {
             sketch_evaluation: Default::default(),
             profiles: Default::default(),
             operations: Default::default(),
+            external: Default::default(),
             operation_error: None,
             model: Default::default(),
             materials: Default::default(),
@@ -699,8 +703,10 @@ impl SketchEditor {
             || self.repair.has_pending()
             || self.tree.tool_active()
             || self.model.active()
+            || self.external.active()
     }
     pub fn cancel(&mut self) {
+        self.external.cancel();
         self.materials.cancel();
         if self.model.active() {
             self.message = "Modeling cancelled · document unchanged".into();
@@ -1203,6 +1209,7 @@ impl SketchEditor {
         }
         self.cancel_move();
         self.operations.cancel();
+        self.external.cancel();
         self.moving = false;
         self.tool = Some(tool);
         self.clear_drawing_progress();
@@ -1238,6 +1245,7 @@ impl SketchEditor {
         self.cancel_move();
         self.clear_drawing_progress();
         self.operations.begin(tool);
+        self.external.cancel();
         self.operation_error = None;
         self.message = format!(
             "{} · select geometry and preview the edit in Inspector",
@@ -1754,6 +1762,7 @@ impl SketchEditor {
         }
         self.display_scene = scene.clone();
         self.refresh_contexts(session.document(), session.revision());
+        self.refresh_external(session, feed);
         if self.revision != session.revision() {
             self.cancel_move();
             self.clear_drawing_progress();
@@ -1845,6 +1854,10 @@ impl SketchEditor {
                             self.repair.show(ui,session,evaluation);
                         }
                         if self.repair.has_pending() {self.tool=None;self.clear_drawing_progress();self.moving=false;self.cancel_move();}
+                        if self.editing && let Some(id)=self.selected {
+                            self.external_inspector(ui,session,id);
+                            if self.external.active(){return;}
+                        }
                         if let Some((feature,latest))=self.selected_applied_feature(session.document()) {
                             let ready=self.feature_edit_ready(session,feed,feature);
                             if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this producer's saved controls or its recorded operation group; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires an installed native modeling provider, a supported readable source feature, and no pending tool").clicked()
@@ -1937,9 +1950,10 @@ impl SketchEditor {
                                     if self.editing
                                         && ui
                                             .add_enabled(
-                                                self.element.is_some(),
+                                                self.element.is_some_and(|element|!crate::external_references::Controller::protected(session.document(),id,element)),
                                                 egui::Button::new("Delete selected element"),
                                             )
+                                            .on_disabled_hover_text("Select authored geometry to delete. External outputs follow their source; use Remove reference in External references instead")
                                             .clicked()
                                         && let Err(e) = self.delete(session, Channel::Ui)
                                     {
@@ -2076,6 +2090,10 @@ impl SketchEditor {
                     ordinal: key.ordinal,
                 },
             }));
+        }
+        if !model_view && let Some(source) = self.external.scene() {
+            scene = Some(source);
+            current = false;
         }
         if self.fitted_model_document != Some(session.document().id())
             && scene
@@ -2329,6 +2347,19 @@ impl SketchEditor {
                     "Extrusion end selected · Preview validates its exact current geometry".into();
             }
         }
+        if self.external.active() {
+            if self.external.pointer(crate::external_references::Pointer {
+                camera: self.camera,
+                rect,
+                position: response.hover_pos(),
+                clicked: response.clicked(),
+                section: self.solid.section.plane(),
+                session,
+            }) {
+                self.message = "Exact source selected · Preview the reference in Inspector".into();
+            }
+            self.solid.highlight_reference(self.external.highlight());
+        }
         if let Some(scene) = &scene {
             let selectable = current
                 && !self.editing
@@ -2401,7 +2432,7 @@ impl SketchEditor {
         let model_view = scene
             .as_ref()
             .is_some_and(|scene| self.model.owns_display_scene(scene));
-        if (model_view || self.selected.is_none())
+        if (model_view || self.external.active() || self.selected.is_none())
             && let Some(scene) = &scene
             && let Some([low, high]) = self
                 .solid
@@ -2477,6 +2508,7 @@ impl SketchEditor {
                         let a = frame.point(a);
                         let b = frame.point(b);
                         if !model_view
+                            && !self.external.active()
                             && self.solid.selected_id().is_none()
                             && self.selected.is_none_or(|id| id == e.id)
                         {
@@ -2748,6 +2780,7 @@ impl SketchEditor {
         if sketch_mode
             && self.editing
             && self.tool.is_none()
+            && !self.external.active()
             && !self.moving
             && !self.has_pending_edits()
             && response.clicked()

@@ -2,6 +2,7 @@ pub mod application;
 pub mod camera;
 pub mod controls;
 pub mod drawings;
+pub mod external_references;
 pub mod icons;
 pub mod materials;
 pub mod model_tree;

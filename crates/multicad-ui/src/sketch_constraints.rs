@@ -187,7 +187,11 @@ fn label(kind: &Kind) -> &'static str {
         Kind::Angle { .. } => "Angle",
     }
 }
-fn solution_matches_source(source: &Source, solved: &model::Sketch) -> bool {
+fn solution_matches_source(
+    source: &Source,
+    solved: &model::Sketch,
+    external: &BTreeSet<EntityId>,
+) -> bool {
     source.sketch.points.len() == solved.points.len()
         && source.sketch.curves.len() == solved.curves.len()
         && source.sketch.constraints == solved.constraints
@@ -210,6 +214,20 @@ fn solution_matches_source(source: &Source, solved: &model::Sketch) -> bool {
                             model::CurveKind::Circle { center: a, .. },
                             model::CurveKind::Circle { center: b, .. },
                         ) => a == b,
+                        (
+                            model::CurveKind::Arc {
+                                center: ca,
+                                start: sa,
+                                end: ea,
+                                ..
+                            },
+                            model::CurveKind::Arc {
+                                center: cb,
+                                start: sb,
+                                end: eb,
+                                ..
+                            },
+                        ) if external.contains(&a.id) => ca == cb && sa == sb && ea == eb,
                         (a, b) => a == b,
                     }
             })
@@ -232,6 +250,7 @@ pub struct ConstraintEditor {
     preview_geometry: Option<Vec<multicad_core::sketch::Geometry>>,
     apply_label: String,
     canonical_draft: bool,
+    external_reference: Option<EntityId>,
     point_display: Option<PointDisplay>,
     point_position: Option<PointPositionFields>,
 }
@@ -258,6 +277,7 @@ impl Default for ConstraintEditor {
             preview_geometry: None,
             apply_label: "Apply constraints".into(),
             canonical_draft: false,
+            external_reference: None,
             point_display: None,
             point_position: None,
         }
@@ -422,6 +442,7 @@ impl ConstraintEditor {
         self.dimension_fields.clear();
         self.apply_label = "Apply constraints".into();
         self.canonical_draft = false;
+        self.external_reference = None;
         self.point_display = None;
         self.point_position = None;
     }
@@ -804,7 +825,12 @@ impl ConstraintEditor {
                 semantic.evaluation.diagnostics.state,
                 SolveState::FullyConstrained | SolveState::Underconstrained
             );
-            if !success || !solution_matches_source(&source, solved) {
+            let external = multicad_core::sketch_external::bindings(&candidate, id)
+                .map_err(|e| e.to_string())?
+                .iter()
+                .filter_map(|binding| binding.definition.output.curve())
+                .collect();
+            if !success || !solution_matches_source(&source, solved, &external) {
                 return Err(
                     "Operation solution does not match its canonical source geometry".into(),
                 );
@@ -833,6 +859,7 @@ impl ConstraintEditor {
         self.error = None;
         self.apply_label = label.into();
         self.canonical_draft = true;
+        self.external_reference = None;
         self.point_display = None;
         self.dimension_fields.clear();
         self.selection.clear();
@@ -929,6 +956,10 @@ impl ConstraintEditor {
     ) {
         ui.separator();
         ui.strong("Constraints");
+        if self.external_reference.is_some() {
+            self.show_external_preview(ui, session, id);
+            return;
+        }
         if self.owner != Some(id) && self.dirty() {
             ui.colored_label(
                 Color32::LIGHT_RED,
@@ -2451,3 +2482,6 @@ mod tests {
         assert!(!editor.canonical_draft);
     }
 }
+
+#[path = "sketch_external_preview.rs"]
+mod external_preview;

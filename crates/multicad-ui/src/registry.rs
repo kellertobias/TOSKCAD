@@ -58,6 +58,7 @@ pub enum Command {
     NewSketch,
     Draw(DrawTool),
     SketchOperation(OperationTool),
+    External(crate::external_references::ExternalTool),
     Modeling(ModelingTool),
     Construction,
     Dimension,
@@ -264,6 +265,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for tool in crate::external_references::ExternalTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::External(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for tool in ModelingTool::ALL {
             registry.tools.push(Tool {
                 id: tool.id(),
@@ -377,6 +387,15 @@ impl Default for Registry {
                         tools: OperationTool::ALL
                             .into_iter()
                             .map(OperationTool::id)
+                            .collect(),
+                        requires_active_sketch: true,
+                    },
+                    RibbonTab {
+                        title: "References",
+                        tools: crate::external_references::ExternalTool::ALL
+                            .into_iter()
+                            .map(|tool| tool.id())
+                            .chain(["preview", "apply", "discard"])
                             .collect(),
                         requires_active_sketch: true,
                     },
@@ -590,6 +609,33 @@ mod tests {
             ),
             "Page creation must not pretend to produce linked model views"
         );
+    }
+    #[test]
+    fn external_reference_tools_share_active_sketch_ribbon_and_command_catalog() {
+        let registry = Registry::default();
+        let tab = registry
+            .workspace(Mode::Sketch)
+            .tabs
+            .iter()
+            .find(|tab| tab.title == "References")
+            .unwrap();
+        assert!(tab.requires_active_sketch);
+        for tool in crate::external_references::ExternalTool::ALL {
+            assert_eq!(
+                registry.tool(tool.id()).unwrap().action,
+                Command::External(tool)
+            );
+            assert!(tab.tools.contains(&tool.id()));
+            for alias in tool.aliases() {
+                assert_eq!(
+                    registry.parse_line(alias).unwrap().0,
+                    Command::External(tool)
+                );
+            }
+        }
+        for action in ["preview", "apply", "discard"] {
+            assert!(tab.tools.contains(&action));
+        }
     }
     #[test]
     fn sketch_operation_catalog_drives_edit_ribbon_and_unambiguous_aliases() {

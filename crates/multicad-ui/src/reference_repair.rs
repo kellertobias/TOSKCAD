@@ -214,6 +214,9 @@ impl RepairPanel {
             .and_then(|id| evaluation.snapshots.get(&id))
             .ok_or("Choose a replacement source")?;
         let address = self.address.ok_or("Choose a reference to repair")?;
+        if external_owner(session.document(), address.owner) {
+            return Err("Use the sketch external-reference tool to solve the consumer before accepting this repair".into());
+        }
         let selected = self.selected.ok_or("Choose a replacement candidate")?;
         self.preview = Some(
             references::prepare_repair(
@@ -256,11 +259,18 @@ impl RepairPanel {
         evaluation: &ReferenceEvaluation,
     ) {
         let current = self.synchronize(session, evaluation);
+        if self
+            .address
+            .is_some_and(|address| external_owner(session.document(), address.owner))
+        {
+            self.cancel();
+        }
         let unresolved: Vec<_> = evaluation
             .report
             .entries
             .iter()
             .filter(|d| !matches!(d.resolution, Resolution::Resolved { .. }))
+            .filter(|d| !external_owner(session.document(), d.address.owner))
             .collect();
         if unresolved.is_empty() && !self.has_pending() {
             return;
@@ -469,10 +479,77 @@ impl RepairPanel {
         }
     }
 }
+fn external_owner(document: &Document, id: EntityId) -> bool {
+    matches!(document.get(id).map(|entity|&entity.data),Some(multicad_core::document::EntityData::Extension{definition,..})if definition.type_id==multicad_core::sketch_external::TYPE_ID)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_reference_owners_cannot_use_source_only_generic_repair() {
+        let mut fixture = crate::external_references::tests::fixture();
+        let scene = crate::external_references::tests::scene(&fixture, 1);
+        let selected = crate::external_references::tests::hit(&fixture, &scene, false);
+        let snapshots = scene.reference_snapshots();
+        let request = multicad_core::sketch_external::CaptureRequest::new(
+            fixture.session.document(),
+            fixture.session.revision(),
+            multicad_core::sketch_external::CaptureInput {
+                sketch: fixture.sketch,
+                source: fixture.source.feature,
+                intent: selected.intent.unwrap(),
+                method: multicad_core::sketch_external::Method::Coplanar,
+                behavior: multicad_core::sketch_external::Behavior::ReferenceOnly,
+            },
+            &snapshots,
+        )
+        .unwrap();
+        let prepared = multicad_solver::prepare_external_reference(
+            &fixture.session,
+            fixture.session.revision(),
+            Actor::local(Channel::Ui),
+            &request,
+            &snapshots,
+        )
+        .unwrap();
+        fixture
+            .session
+            .commit(prepared.edit.preview.unwrap())
+            .unwrap();
+        let current = crate::external_references::tests::scene(&fixture, 2);
+        let snapshots = current.reference_snapshots();
+        let report = references::inspect(
+            fixture.session.document(),
+            fixture.session.revision(),
+            &snapshots,
+        );
+        let diagnostic = report
+            .entries
+            .iter()
+            .find(|diagnostic| diagnostic.address.owner == request.reference)
+            .unwrap()
+            .clone();
+        let evaluation = ReferenceEvaluation {
+            stamp: current.stamp(),
+            report,
+            snapshots,
+            candidate: current,
+        };
+        let mut panel = RepairPanel::default();
+        assert!(panel.synchronize(&fixture.session, &evaluation));
+        panel.begin(&diagnostic);
+        panel.choose_candidate(&evaluation, selected.key);
+        let before = fixture.session.document().clone();
+        assert!(
+            panel
+                .prepare(&fixture.session, &evaluation)
+                .unwrap_err()
+                .contains("external-reference")
+        );
+        assert!(panel.preview.is_none());
+        assert_eq!(fixture.session.document(), &before);
+    }
     use crate::viewport::Scene;
     use multicad_core::document::*;
     use multicad_core::references::*;
