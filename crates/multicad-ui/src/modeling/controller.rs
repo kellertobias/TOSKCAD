@@ -1068,3 +1068,6 @@ mod placement_tests;
 mod scale_tests;
 
 mod advanced;
+
+#[cfg(test)]
+mod chamfer_tests;
