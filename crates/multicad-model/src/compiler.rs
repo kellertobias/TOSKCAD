@@ -136,6 +136,7 @@ impl Profiles<'_> {
 /// An evaluated model owns genuine B-reps, never reconstructed display meshes.
 /// The kernel's !Send/!Sync ownership also applies to this container.
 pub struct Model {
+    pub(crate) policy: GeometryPolicy,
     solids: BTreeMap<EntityId, Solid>,
     snapshot: ModelSnapshot,
 }
@@ -468,6 +469,7 @@ impl Compiler {
             .collect::<BTreeSet<_>>();
         bodies.retain(|body, _| !consumed_bodies.contains(body));
         Ok(Model {
+            policy: self.policy,
             solids,
             snapshot: ModelSnapshot {
                 stamp,

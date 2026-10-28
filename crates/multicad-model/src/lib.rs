@@ -3,5 +3,7 @@
 mod compiler;
 mod extrude;
 mod runtime;
+mod targets;
 pub use compiler::*;
 pub use runtime::*;
+pub use targets::*;
