@@ -336,6 +336,15 @@ fn assembly_host_nested_member_anchor_pick_uses_its_native_source_not_outer_copy
     );
     assert_eq!(h.feed.visible().unwrap().instances()[0].id, outer.instance);
     let baseline = h.session.document().clone();
+    h.editor.tree_selection = BTreeSet::from([outer.instance]);
+    assert_eq!(
+        h.editor.assembly_edit_actions(h.session.document()),
+        vec![(definition.assembly, "Edit assembly definition")]
+    );
+    h.click("Edit assembly definition");
+    assert!(h.editor.assembly.active(), "{}", h.editor.message);
+    h.click("Cancel");
+    assert_eq!(h.session.document(), &baseline);
     h.editor.tree_selection = BTreeSet::from([h.instance]);
     h.click("Edit relationship");
     h.click("Moving local anchor");
