@@ -13,6 +13,8 @@ use multicad_core::{
     sketch::{self, Datum, Frame, Geometry, Sketch},
 };
 use std::collections::VecDeque;
+#[path = "sketch_advanced_host.rs"]
+mod advanced_host;
 #[path = "sketch_edge_host.rs"]
 mod edge_host;
 #[cfg(test)]
@@ -114,6 +116,7 @@ pub struct SketchEditor {
     operation_error: Option<String>,
     model: crate::modeling::ModelToolController,
     acquisition: Option<model_target_selection::Acquisition>,
+    advanced_context_stamp: Option<(Option<crate::sketch_evaluation::EvaluationStamp>, usize)>,
     materials: crate::materials::MaterialsEditor,
     pub measurement: crate::inspection::MeasurementInspector,
     measure_pin_allowed: bool,
@@ -180,6 +183,7 @@ impl Default for SketchEditor {
             operation_error: None,
             model: Default::default(),
             acquisition: None,
+            advanced_context_stamp: None,
             materials: Default::default(),
             measurement: Default::default(),
             measure_pin_allowed: true,
@@ -1926,6 +1930,9 @@ impl SketchEditor {
                 .sync(session.document(), session.revision(), reference_context);
         }
         self.sketch_evaluation.poll();
+        if let Err(error) = self.refresh_advanced_sketch_context(session) {
+            self.message = error;
+        }
         if self.sketch_evaluation.pending() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
@@ -2300,6 +2307,7 @@ impl SketchEditor {
             && !self.model.termination_picking()
             && !self.model.alignment_picking()
             && !self.model.edge_treatment_picking()
+            && !self.model.advanced_picking()
             && let Some(candidate) = self.model.display_scene(session, resources)
         {
             scene = Some(candidate);
@@ -2308,6 +2316,15 @@ impl SketchEditor {
         }
         if !self.measurement.active() && self.model.edge_treatment_picking() {
             match self.edge_source_scene(session, feed) {
+                Ok(source) => {
+                    scene = Some(source);
+                    current = false;
+                }
+                Err(error) => self.message = error,
+            }
+        }
+        if !self.measurement.active() && self.model.advanced_picking() {
+            match self.advanced_source_scene(session, feed) {
                 Ok(source) => {
                     scene = Some(source);
                     current = false;
@@ -2568,6 +2585,8 @@ impl SketchEditor {
         model_context: Option<ModelCanvas<'_>>,
     ) {
         let sketch_mode = sketch_mode && !self.measurement.active();
+        let edge_face_picking = self.model.edge_treatment_pick_kind()
+            == Some(multicad_core::references::TopologyKind::Face);
         self.refresh_overlay_visibility(session.document(), session.revision());
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         self.viewport_rect = Some(rect);
@@ -2666,6 +2685,28 @@ impl SketchEditor {
             }
             self.solid.highlight_reference(self.external.highlight());
         }
+        if !self.measurement.active()
+            && let Some(ref context) = model_context
+        {
+            self.advanced_viewport(
+                ui,
+                &response,
+                session,
+                context.resources,
+                context.feed,
+                rect,
+            );
+            if edge_face_picking {
+                self.edge_viewport(
+                    ui,
+                    &response,
+                    session,
+                    context.resources,
+                    context.feed,
+                    rect,
+                );
+            }
+        }
         if let Some(scene) = &scene {
             let selectable = !self.measurement.active()
                 && current
@@ -2698,7 +2739,7 @@ impl SketchEditor {
         if !self.measurement.active()
             && let Some(context) = model_context
         {
-            if self.model.edge_treatment_picking() {
+            if self.model.edge_treatment_picking() && !edge_face_picking {
                 self.edge_viewport(
                     ui,
                     &response,

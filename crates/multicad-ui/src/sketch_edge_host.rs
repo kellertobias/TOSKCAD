@@ -84,13 +84,21 @@ impl SketchEditor {
             return;
         };
         let snapshot = scene.geometry_snapshot(input.producer);
+        let kind = self
+            .model
+            .edge_treatment_pick_kind()
+            .unwrap_or(TopologyKind::Edge);
         let hovered = response.hover_pos().and_then(|pointer| {
             scene.pick_screen_with(
                 self.camera,
                 rect,
                 pointer,
                 PickOptions {
-                    filter: PickFilter::Edges,
+                    filter: if kind == TopologyKind::Face {
+                        PickFilter::Faces
+                    } else {
+                        PickFilter::Edges
+                    },
                     include_hidden: false,
                     section: self.solid.section.plane(),
                 },
@@ -99,12 +107,17 @@ impl SketchEditor {
         if response.clicked() {
             if let Some(hit) = &hovered {
                 if let Some(capture) = &hit.intent {
-                    let current = self.model.edge_treatment_edges().unwrap_or_default();
+                    let current = self
+                        .model
+                        .edge_treatment_pick_captures()
+                        .unwrap_or_default();
                     let same = current.iter().position(|intent| {
                         matches!(snapshot.as_ref().map(|snapshot| references::resolve(intent, snapshot, session.revision())), Some(Resolution::Resolved {key, ..}) if key == hit.key)
                     });
                     let modifiers = crate::selection_input::click_modifiers(ui, response);
-                    let edges = if modifiers.shift || modifiers.command {
+                    let edges = if kind == TopologyKind::Edge
+                        && (modifiers.shift || modifiers.command)
+                    {
                         let mut edges = current.to_vec();
                         if let Some(index) = same {
                             edges.remove(index);
@@ -115,7 +128,7 @@ impl SketchEditor {
                     } else {
                         vec![same.map_or_else(|| capture.clone(), |index| current[index].clone())]
                     };
-                    if let Err(error) = self.model.set_edge_treatment_edges(
+                    if let Err(error) = self.model.set_edge_treatment_pick_captures(
                         session,
                         resources,
                         feed.visible().expect("current canonical scene"),
@@ -124,11 +137,35 @@ impl SketchEditor {
                         self.message = error;
                     }
                 } else {
-                    self.message="This native edge has no persistent geometry name; select another edge or repair its source".into();
+                    self.message="This native element has no persistent geometry name; select another or repair its source".into();
                 }
             } else {
-                self.message = "Choose a visible edge of the upstream Part shown here".into();
+                self.message = if kind == TopologyKind::Face {
+                    "Choose the adjacent side face for this chamfer edge"
+                } else {
+                    "Choose a visible edge of the upstream Part shown here"
+                }
+                .into();
             }
+        }
+        if kind == TopologyKind::Face {
+            let highlight = hovered.as_ref().map(|hit| hit.key).or_else(|| {
+                self.model
+                    .edge_treatment_pick_captures()?
+                    .last()
+                    .and_then(|capture| {
+                        match references::resolve(capture, snapshot.as_ref()?, session.revision()) {
+                            Resolution::Resolved { key, .. } => Some(key),
+                            _ => None,
+                        }
+                    })
+            });
+            self.solid
+                .highlight_reference(highlight.map(|key| crate::viewport::Selection::Face {
+                    instance: input.producer,
+                    ordinal: key.ordinal,
+                }));
+            return;
         }
         let selected = self
             .model

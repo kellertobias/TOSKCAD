@@ -687,6 +687,15 @@ impl SketchEvaluationFeed {
     pub fn current(&self, sketch: EntityId) -> Option<&SketchPresentation> {
         self.current.get(&sketch)
     }
+    /// Batch identity for consumers that cache current profile/path choices.
+    /// An in-flight batch can have this stamp without any current presentations.
+    pub fn current_stamp(&self) -> Option<EvaluationStamp> {
+        self.expected
+    }
+    /// Current solved presentations only; retained display geometry is separate.
+    pub fn current_presentations(&self) -> impl ExactSizeIterator<Item = &SketchPresentation> {
+        self.current.values()
+    }
     /// Retained geometry is explicitly display-only, potentially from an older
     /// revision/reference context. It is not valid for picking or manufacture.
     pub fn last_valid(&self, sketch: EntityId) -> Option<&SketchPresentation> {

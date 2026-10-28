@@ -35,6 +35,8 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                 },
                 Entry::Tool("extrude"),
                 Entry::Tool("revolve"),
+                Entry::Tool("sweep"),
+                Entry::Tool("loft"),
             ],
         },
         Group {
@@ -43,6 +45,8 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                 Entry::Tool("boolean"),
                 Entry::Tool("split"),
                 Entry::Tool("edge-treatment"),
+                Entry::Tool("shell"),
+                Entry::Tool("draft"),
             ],
         },
         Group {
@@ -52,6 +56,18 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                 Entry::Tool("align"),
                 Entry::Tool("scale"),
             ],
+        },
+        Group {
+            label: "Repeat",
+            entries: vec![Entry::Menu {
+                label: "Pattern",
+                icon: Icon::CircularPattern,
+                tools: vec![
+                    "model-mirror",
+                    "model-linear-pattern",
+                    "model-circular-pattern",
+                ],
+            }],
         },
         Group {
             label: "Library",
@@ -193,7 +209,7 @@ pub fn show(
                                             ui,
                                             *icon,
                                             label,
-                                            "Add a Box or Cylinder primitive",
+                                            &format!("{label} · choose a tool"),
                                         );
                                         let rect = response.rect;
                                         let center = rect.right_top() + egui::vec2(-9., 12.);

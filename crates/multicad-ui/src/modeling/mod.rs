@@ -55,9 +55,10 @@ pub enum ModelingTool {
     Align,
     Scale,
     EdgeTreatment,
+    Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 18] = [
         Self::Box,
         Self::Cylinder,
         Self::Extrude,
@@ -69,7 +70,20 @@ impl ModelingTool {
         Self::Align,
         Self::Scale,
         Self::EdgeTreatment,
+        Self::Advanced(AdvancedKind::Shell),
+        Self::Advanced(AdvancedKind::Sweep),
+        Self::Advanced(AdvancedKind::Loft),
+        Self::Advanced(AdvancedKind::Draft),
+        Self::Advanced(AdvancedKind::Mirror),
+        Self::Advanced(AdvancedKind::LinearPattern),
+        Self::Advanced(AdvancedKind::CircularPattern),
     ];
+    pub fn advanced_kind(self) -> Option<AdvancedKind> {
+        match self {
+            Self::Advanced(kind) => Some(kind),
+            _ => None,
+        }
+    }
     pub fn id(self) -> &'static str {
         match self {
             Self::Extrude => "extrude",
@@ -83,6 +97,15 @@ impl ModelingTool {
             Self::Align => "align",
             Self::Scale => "scale",
             Self::EdgeTreatment => "edge-treatment",
+            Self::Advanced(kind) => match kind {
+                AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
+                AdvancedKind::Sweep => "sweep",
+                AdvancedKind::Loft => "loft",
+                AdvancedKind::Draft => "draft",
+                AdvancedKind::Mirror => "model-mirror",
+                AdvancedKind::LinearPattern => "model-linear-pattern",
+                AdvancedKind::CircularPattern => "model-circular-pattern",
+            },
         }
     }
     pub fn label(self) -> &'static str {
@@ -98,6 +121,15 @@ impl ModelingTool {
             Self::Align => "Align",
             Self::Scale => "Scale",
             Self::EdgeTreatment => "Fillet / Chamfer",
+            Self::Advanced(kind) => match kind {
+                AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
+                AdvancedKind::Sweep => "Sweep",
+                AdvancedKind::Loft => "Loft",
+                AdvancedKind::Draft => "Draft",
+                AdvancedKind::Mirror => "Mirror",
+                AdvancedKind::LinearPattern => "Linear pattern",
+                AdvancedKind::CircularPattern => "Circular pattern",
+            },
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -113,6 +145,15 @@ impl ModelingTool {
             Self::Align => crate::icons::Icon::Link,
             Self::Scale => crate::icons::Icon::Scale,
             Self::EdgeTreatment => crate::icons::Icon::Edge,
+            Self::Advanced(kind) => match kind {
+                AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
+                AdvancedKind::Sweep => crate::icons::Icon::Sweep,
+                AdvancedKind::Loft => crate::icons::Icon::Loft,
+                AdvancedKind::Draft => crate::icons::Icon::Draft,
+                AdvancedKind::Mirror => crate::icons::Icon::Mirror,
+                AdvancedKind::LinearPattern => crate::icons::Icon::LinearPattern,
+                AdvancedKind::CircularPattern => crate::icons::Icon::CircularPattern,
+            },
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -128,12 +169,24 @@ impl ModelingTool {
             Self::Align => &["align-body", "mate", "align-part"],
             Self::Scale => &["scale-body", "resize-solid"],
             Self::EdgeTreatment => &["fillet", "chamfer", "edge"],
+            Self::Advanced(kind) => match kind {
+                AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
+                AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
+                AdvancedKind::Loft => &["loft-body"],
+                AdvancedKind::Draft => &["draft-faces"],
+                AdvancedKind::Mirror => &["mirror-body", "solid-mirror"],
+                AdvancedKind::LinearPattern => &["array-body", "pattern-linear"],
+                AdvancedKind::CircularPattern => &["polar-array-body", "pattern-circular"],
+            },
         }
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::Advanced(_) => {
+                "Usage: choose explicit source geometry and controls in the Inspector, then Preview and Apply"
+            }
             Self::EdgeTreatment => {
-                "Usage: edge-treatment (choose one Part and its edges, select Fillet radius or symmetric Chamfer distance, then Preview and Apply)"
+                "Usage: edge-treatment (choose Part edges, a Fillet radius or Chamfer distances/angle and explicit adjacent faces, then Preview and Apply)"
             }
             Self::Scale => {
                 "Usage: scale (select Parts or Instances, set positive factors and a pivot, then drag or Preview and Apply)"
@@ -164,8 +217,14 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::Advanced(AdvancedKind::Sweep | AdvancedKind::Loft) => {
+                "Choose current closed sketch profiles and an explicitly ordered path or section list. Native Preview validates the resulting solid."
+            }
+            Self::Advanced(_) => {
+                "Choose one current Part definition. Linked Instances follow its editable source; face-based tools capture native geometry explicitly. Patterns create a compound Part."
+            }
             Self::EdgeTreatment => {
-                "Select native edges of one Part definition. Linked occurrences follow the definition; Instance-only, angled and asymmetric edge treatments are unsupported."
+                "Select native edges of one Part definition. Sided Chamfer distances/angles use explicit adjacent face captures. Linked Instances follow the definition."
             }
             Self::Scale => {
                 "Select current native Parts or Instances and finish pending edits. Positive scale factors change exact geometry; an Instance selection affects only that occurrence."

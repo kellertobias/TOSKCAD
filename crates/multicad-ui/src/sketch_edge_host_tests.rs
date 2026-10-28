@@ -19,6 +19,187 @@ struct Host {
     body: EntityId,
     producer: EntityId,
 }
+
+#[test]
+fn sided_chamfer_face_click_does_not_replace_the_edge_selection() {
+    let mut h = Host::new();
+    let original = h.session.document().clone();
+    h.editor.tree_selection = BTreeSet::from([h.body]);
+    h.editor
+        .activate_model_tool(
+            &h.session,
+            &Default::default(),
+            &h.feed,
+            ModelingTool::EdgeTreatment,
+            Channel::Ui,
+        )
+        .unwrap();
+    h.frame(vec![]);
+    let (point, edge_key) = h.edges()[0];
+    h.click(point, false);
+    let selected = h.editor.model.edge_treatment_edges().unwrap().to_vec();
+    h.click_label("Chamfer");
+    h.click_label("Symmetric distances");
+    h.click_label("Two distances");
+    h.click_label("Choose side face for edge 1");
+    assert_eq!(
+        h.editor.model.edge_treatment_pick_kind(),
+        Some(TopologyKind::Face)
+    );
+    let scene = h.editor.edge_source_scene(&h.session, &h.feed).unwrap();
+    let snapshot = scene.geometry_snapshot(h.producer).unwrap();
+    let edge = snapshot
+        .elements
+        .iter()
+        .find(|e| e.key == edge_key)
+        .unwrap();
+    let Some(AnalyticGeometry::Line { a_mm, .. }) = edge.geometry else {
+        panic!("Expected a vertical edge")
+    };
+    let rect = h.editor.viewport_rect.unwrap();
+    let point = [[0., 10., 5.], [30., 10., 5.], [15., 0., 5.], [15., 20., 5.]]
+        .into_iter()
+        .filter(|p| p[0] == a_mm[0] || p[1] == a_mm[1])
+        .find_map(|p| {
+            let p = h.editor.camera.project(p.map(|v| v as f32), rect);
+            let p = Pos2::new(p[0], p[1]);
+            scene
+                .pick_screen_with(
+                    h.editor.camera,
+                    rect,
+                    p,
+                    PickOptions {
+                        filter: PickFilter::Faces,
+                        include_hidden: false,
+                        section: None,
+                    },
+                )
+                .map(|_| p)
+        })
+        .expect("An adjacent native side face must be visible");
+    h.click(point, false);
+    assert_eq!(h.editor.model.edge_treatment_edges().unwrap(), selected);
+    assert_eq!(h.session.document(), &original);
+    h.click_label("Preview");
+    h.ready();
+    h.click_label("Apply");
+    let native = multicad_model::Compiler::default()
+        .compile(h.session.document(), h.session.revision())
+        .unwrap();
+    let volume = native.solid(h.body).unwrap().volume_mm3().unwrap();
+    assert!(volume > 0. && volume < 6000.);
+    let EntityData::Part { features, .. } = &h.session.document().get(h.body).unwrap().data else {
+        panic!()
+    };
+    let (saved, _) =
+        model::read_edge_treatment(h.session.document(), *features.last().unwrap()).unwrap();
+    assert!(matches!(
+        saved.chamfer,
+        Some(model::ChamferSettings::TwoDistances { .. })
+    ));
+}
+
+#[test]
+fn shell_tool_first_face_selection_shift_toggle_and_native_apply_are_source_bound() {
+    use crate::modeling::AdvancedKind;
+    let mut h = Host::new();
+    let original = h.session.document().clone();
+    let revision = h.session.revision();
+    h.editor
+        .activate_model_tool(
+            &h.session,
+            &Default::default(),
+            &h.feed,
+            ModelingTool::Advanced(AdvancedKind::Shell),
+            Channel::Ui,
+        )
+        .unwrap();
+    assert!(h.editor.awaiting_model_targets());
+    h.click_label("Select Body Stock");
+    assert!(h.editor.model.advanced_active());
+    assert_eq!(h.editor.model.advanced_input().unwrap().body, h.body);
+    assert!(h.editor.model.advanced_picking());
+    let source = h.editor.advanced_source_scene(&h.session, &h.feed).unwrap();
+    assert!(!source.is_full_model());
+    assert_eq!(source.instances()[0].geometry, h.producer);
+    let rect = h.editor.viewport_rect.unwrap();
+    let point = h.editor.camera.project([15., 10., 10.], rect);
+    let point = Pos2::new(point[0], point[1]);
+    h.click(point, false);
+    let capture = h.editor.model.advanced_captures().unwrap()[0].clone();
+    assert_eq!(capture.kind, TopologyKind::Face);
+    h.click(point, true);
+    assert!(h.editor.model.advanced_captures().unwrap().is_empty());
+    h.click(point, false);
+    h.click_label("Preview");
+    h.ready();
+    assert_eq!(h.session.document(), &original);
+    h.click_label("Apply");
+    assert_eq!(h.session.revision(), revision + 1);
+    let native = multicad_model::Compiler::default()
+        .compile(h.session.document(), h.session.revision())
+        .unwrap();
+    let solid = native.solid(h.body).unwrap();
+    assert_eq!(solid.solid_count().unwrap(), 1);
+    let volume = solid.volume_mm3().unwrap();
+    assert!(
+        volume > 0. && volume < 6000.,
+        "Shell must change exact solid geometry: {volume}"
+    );
+    let feature = match &h.session.document().get(h.body).unwrap().data {
+        EntityData::Part { features, .. } => *features.last().unwrap(),
+        _ => panic!("Expected the original Part"),
+    };
+    let applied = h.session.document().clone();
+    h.settle();
+    h.editor
+        .begin_feature_edit(
+            &h.session,
+            &Default::default(),
+            &h.feed,
+            feature,
+            Channel::Ui,
+        )
+        .unwrap();
+    h.frame(vec![]);
+    assert_eq!(
+        h.editor.model.advanced_input().unwrap().producer,
+        h.producer
+    );
+    h.click_label("Cancel");
+    assert_eq!(h.session.document(), &applied);
+    h.session
+        .undo(h.session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(h.session.document(), &original);
+}
+
+#[test]
+fn sweep_and_loft_open_tool_first_without_selecting_an_unrelated_solid() {
+    use crate::modeling::AdvancedKind;
+    let mut h = Host::new();
+    let original = h.session.document().clone();
+    let revision = h.session.revision();
+    for kind in [AdvancedKind::Sweep, AdvancedKind::Loft] {
+        h.editor
+            .activate_model_tool(
+                &h.session,
+                &Default::default(),
+                &h.feed,
+                ModelingTool::Advanced(kind),
+                Channel::Ui,
+            )
+            .unwrap();
+        h.frame(vec![]);
+        assert!(h.editor.model.advanced_active());
+        assert!(!h.editor.awaiting_model_targets());
+        assert!(h.editor.model.advanced_input().is_none());
+        assert!(!h.editor.model_can_apply(&h.session, &Default::default()));
+        h.click_label("Cancel");
+        assert_eq!(h.session.document(), &original);
+        assert_eq!(h.session.revision(), revision);
+    }
+}
 impl Host {
     fn new() -> Self {
         let mut session =
@@ -96,20 +277,32 @@ impl Host {
     fn click_label(&mut self, label: &str) {
         self.frame(vec![]);
         let out = self.render(vec![]);
-        let bounds = out
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
+        let pos = out
+            .shapes
             .iter()
-            .find(|(_, node)| node.label() == Some(label))
-            .and_then(|(_, node)| node.bounds())
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                out.platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .and_then(|(_, node)| node.bounds())
+                    .map(|bounds| {
+                        Pos2::new(
+                            ((bounds.x0 + bounds.x1) / 2.) as f32,
+                            ((bounds.y0 + bounds.y1) / 2.) as f32,
+                        )
+                    })
+            })
             .unwrap_or_else(|| panic!("Missing {label}"));
-        let pos = Pos2::new(
-            ((bounds.x0 + bounds.x1) / 2.) as f32,
-            ((bounds.y0 + bounds.y1) / 2.) as f32,
-        );
         out.drop_without_applying_deltas();
         self.click(pos, false);
     }

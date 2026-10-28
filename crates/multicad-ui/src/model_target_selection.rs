@@ -46,7 +46,11 @@ impl Acquisition {
         }
     }
     fn maximum(&self) -> usize {
-        if self.profiles() || matches!(self.tool, ModelingTool::Align | ModelingTool::EdgeTreatment)
+        if self.profiles()
+            || matches!(
+                self.tool,
+                ModelingTool::Align | ModelingTool::EdgeTreatment | ModelingTool::Advanced(_)
+            )
         {
             1
         } else {
@@ -86,6 +90,12 @@ impl SketchEditor {
         }
         if matches!(tool, ModelingTool::Box | ModelingTool::Cylinder) {
             return self.begin_primitive(session, resources, tool, channel);
+        }
+        if let Some(
+            kind @ (crate::modeling::AdvancedKind::Sweep | crate::modeling::AdvancedKind::Loft),
+        ) = tool.advanced_kind()
+        {
+            return self.begin_advanced_model(session, resources, feed, kind, channel);
         }
         self.finish()?;
         let acquisition = Acquisition {
@@ -251,6 +261,7 @@ impl SketchEditor {
                             | ModelingTool::Align
                             | ModelingTool::Scale
                             | ModelingTool::EdgeTreatment
+                            | ModelingTool::Advanced(_)
                     ))
         };
         if !ready {
@@ -258,6 +269,9 @@ impl SketchEditor {
             return;
         }
         let result = match a.tool {
+            ModelingTool::Advanced(kind) => {
+                self.begin_advanced_model(session, resources, feed, kind, a.channel)
+            }
             ModelingTool::EdgeTreatment => {
                 self.begin_edge_treatment(session, resources, feed, a.channel)
             }
