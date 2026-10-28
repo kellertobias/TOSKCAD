@@ -359,18 +359,25 @@ impl SketchEditor {
         } else {
             enough && feed.is_current(session.document().id(), session.revision())
         };
-        if ui
-            .add_enabled(ready, egui::Button::new("Use selected targets"))
-            .on_hover_text("Open the same modeling controls as selection-first entry")
-            .clicked()
-        {
+        let clicked = crate::inspector_actions::row(
+            ui,
+            crate::inspector_actions::Owner::Targets,
+            None,
+            crate::inspector_actions::Button::new(
+                "Use selected targets",
+                ready,
+                "Open the same modeling controls as selection-first entry",
+            ),
+            crate::inspector_actions::Button::new(
+                "Cancel tool",
+                true,
+                "Leave selection mode without changing the document",
+            ),
+        );
+        if clicked.apply {
             self.advance_model_targets(session, resources, feed, true);
         }
-        if ui
-            .button("Cancel tool")
-            .on_hover_text("Leave selection mode without changing the document")
-            .clicked()
-        {
+        if clicked.cancel {
             self.cancel_model();
         }
         true
