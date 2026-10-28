@@ -19,7 +19,7 @@ impl Default for GizmoBasis {
     }
 }
 impl GizmoBasis {
-    fn validate(self) -> Result<(), String> {
+    pub(super) fn validate(self) -> Result<(), String> {
         if self.axes.iter().flatten().any(|v| !v.is_finite())
             || self.axes.iter().any(|v| (dot(*v, *v) - 1.).abs() > 1e-6)
             || dot(cross(self.axes[0], self.axes[1]), self.axes[2]) < 1. - 1e-6

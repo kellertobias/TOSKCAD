@@ -16,6 +16,7 @@ mod group_fixture;
 mod names;
 #[cfg(test)]
 pub(crate) mod native_fixture;
+mod object_basis;
 mod placement;
 mod primitive;
 mod revolve;
@@ -29,6 +30,7 @@ pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
 pub use form::ModelRequest;
 pub use gizmo::{GizmoBasis, PlacementViewport};
 use multicad_core::document::EntityId;
+pub use object_basis::{ObjectGizmoBasis, object_gizmo_basis};
 pub use placement::{PlacementCommand, PlacementMode};
 pub use termination::TerminationViewport;
 
