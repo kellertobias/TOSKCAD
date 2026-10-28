@@ -35,6 +35,11 @@ mod model_target_selection;
 #[cfg(test)]
 #[path = "sketch_scale_host_tests.rs"]
 mod scale_host_tests;
+#[path = "sketch_transfer_host.rs"]
+mod transfer_host;
+#[cfg(test)]
+#[path = "sketch_transfer_host_tests.rs"]
+mod transfer_host_tests;
 
 const MAX_PROFILE_CLICKS: usize = 32;
 #[derive(Clone, Copy)]
@@ -127,6 +132,8 @@ pub struct SketchEditor {
     assembly_anchor: Option<assembly_host::PendingAnchor>,
     assembly_presentation: Option<assembly_host::PresentationCache>,
     assembly_pick_view: Option<assembly_host::AnchorView>,
+    transfer: crate::transfer::TransferController,
+    transfer_source_view: Option<transfer_host::TransferSourceView>,
     acquisition: Option<model_target_selection::Acquisition>,
     advanced_context_stamp: Option<(Option<crate::sketch_evaluation::EvaluationStamp>, usize)>,
     materials: crate::materials::MaterialsEditor,
@@ -198,6 +205,8 @@ impl Default for SketchEditor {
             assembly_anchor: None,
             assembly_presentation: None,
             assembly_pick_view: None,
+            transfer: Default::default(),
+            transfer_source_view: None,
             acquisition: None,
             advanced_context_stamp: None,
             materials: Default::default(),
@@ -458,14 +467,20 @@ impl SketchEditor {
     ) -> bool {
         self.model.poll(session, resources);
         self.assembly.poll(session, resources);
+        self.transfer.poll(session, resources);
         let external_pending = self.poll_external(session);
-        self.model.pending() || self.assembly.pending() || external_pending
+        self.model.pending()
+            || self.assembly.pending()
+            || self.transfer.pending()
+            || external_pending
     }
     pub fn model_active(&self) -> bool {
-        self.model.active() || self.assembly.active()
+        self.model.active() || self.assembly.active() || self.transfer.active()
     }
     pub fn model_label(&self) -> &'static str {
-        if self.assembly.active() {
+        if self.transfer.active() {
+            self.transfer.label()
+        } else if self.assembly.active() {
             self.assembly.label()
         } else {
             self.model.label()
@@ -475,6 +490,7 @@ impl SketchEditor {
         self.model.has_backend()
             && !self.has_pending_edits()
             && !self.assembly.active()
+            && !self.transfer.active()
             && !self.picking
     }
     fn selected_applied_feature(&self, document: &Document) -> Option<(EntityId, bool)> {
@@ -543,7 +559,8 @@ impl SketchEditor {
     ) -> bool {
         self.primitive_ready()
             && !self.editing
-            && crate::modeling::ModelToolController::editable(session.document(), feature)
+            && (crate::modeling::ModelToolController::editable(session.document(), feature)
+                || crate::transfer::TransferController::editable(session.document(), feature))
     }
     pub fn begin_feature_edit(
         &mut self,
@@ -555,6 +572,9 @@ impl SketchEditor {
     ) -> Result<(), String> {
         if !self.feature_edit_ready(session, feed, feature) {
             return Err("Select a supported readable applied feature and apply or cancel pending edits before opening its saved controls".into());
+        }
+        if crate::transfer::TransferController::editable(session.document(), feature) {
+            return self.begin_transfer_edit(session, resources, feed, feature, channel);
         }
         self.model
             .begin_existing(session, resources, feature, channel)?;
@@ -730,7 +750,9 @@ impl SketchEditor {
         session: &Session,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> bool {
-        if self.assembly.active() {
+        if self.transfer.active() {
+            self.transfer.can_apply(session, resources)
+        } else if self.assembly.active() {
             self.assembly.can_apply(session, resources)
         } else {
             self.model.can_apply(session, resources)
@@ -811,7 +833,9 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
-        if self.assembly.active() {
+        if self.transfer.active() {
+            self.transfer.preview(session, resources, channel)
+        } else if self.assembly.active() {
             self.assembly.preview(session, resources, channel)
         } else {
             self.model.preview(session, resources, channel)
@@ -822,6 +846,11 @@ impl SketchEditor {
         session: &mut Session,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> Result<(), String> {
+        if self.transfer.active() {
+            let outcome = self.transfer.apply(session, resources)?;
+            self.accept_transfer_outcome(outcome);
+            return Ok(());
+        }
         if self.assembly.active() {
             let outcome = self.assembly.apply(session, resources)?;
             self.accept_assembly_outcome(outcome);
@@ -850,6 +879,7 @@ impl SketchEditor {
     }
     pub fn cancel_model(&mut self) {
         self.acquisition = None;
+        self.transfer.cancel();
         self.assembly.cancel();
         self.assembly_anchor = None;
         self.model.cancel();
@@ -919,6 +949,7 @@ impl SketchEditor {
             || self.tree.tool_active()
             || self.model.active()
             || self.assembly.dirty()
+            || self.transfer.dirty()
             || self.acquisition.is_some()
             || self.external.active()
     }
@@ -928,6 +959,7 @@ impl SketchEditor {
             return;
         }
         self.acquisition = None;
+        self.transfer.cancel();
         self.assembly.cancel();
         self.assembly_anchor = None;
         self.external.cancel();
@@ -1918,14 +1950,26 @@ impl SketchEditor {
         }
         self.model.poll(session, resources);
         self.assembly.poll(session, resources);
+        self.transfer.poll(session, resources);
         if feed.is_current(session.document().id(), session.revision()) {
             self.model.canonical_ready(session);
             self.assembly.canonical_ready(session);
+            self.transfer.canonical_ready(session);
             if let Some(scene) = feed.visible() {
                 self.model.refresh_source_context(session, resources, scene);
             }
         }
-        if self.model.pending() || self.assembly.pending() {
+        if self.transfer.active()
+            && let Err(error) = self.transfer.refresh_scene(
+                session,
+                resources,
+                feed.visible()
+                    .filter(|_| feed.is_current(session.document().id(), session.revision())),
+            )
+        {
+            self.message = error;
+        }
+        if self.model.pending() || self.assembly.pending() || self.transfer.pending() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
@@ -2100,6 +2144,7 @@ impl SketchEditor {
                 ui.separator();
                 use crate::inspector_actions::Owner;
                 let owner=if self.measurement.active(){None}
+                    else if self.transfer.active(){Some(Owner::Transfer)}
                     else if self.assembly.active(){Some(Owner::Assembly)}
                     else if self.model.active(){Some(Owner::Model)}
                     else if self.acquisition.is_some(){Some(Owner::Targets)}
@@ -2115,6 +2160,15 @@ impl SketchEditor {
                 crate::inspector_actions::scope(ui,owner,accent,|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
                         if self.target_inspector(ui, session, resources, feed) { return; }
+                        if self.transfer.active() {
+                            match self.transfer.show(ui,session,resources) {
+                                Ok(Some(outcome))=>self.accept_transfer_outcome(outcome),
+                                Err(error)=>self.message=error,
+                                Ok(None)=>{}
+                            }
+                            if self.transfer.pending(){ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));}
+                            return;
+                        }
                         if self.assembly.active() {
                             self.assembly_anchor_controls(ui,session,resources,feed);
                             match self.assembly.show(ui,session,resources) {
@@ -2167,7 +2221,7 @@ impl SketchEditor {
                             let ready=self.feature_edit_ready(session,feed,feature);
                             if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this producer's saved controls or its recorded operation group; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires an installed native modeling provider, a supported readable source feature, and no pending tool").clicked()
                                 && let Err(error)=self.begin_feature_edit(session,resources,feed,feature,Channel::Ui) {self.message=error;}
-                            if self.model.active() {return;}
+                            if self.model_active() {return;}
                         }
                         self.solid.inspector(ui,session.document());
                         if !sketch_mode && !self.editing {
@@ -2361,6 +2415,7 @@ impl SketchEditor {
         let mut assembly_view = false;
         let mut exploded_view = false;
         let mut anchor_view = false;
+        let mut transfer_source_view = false;
         self.solid.highlight_reference(None);
         match self.assembly_anchor_scene(session, feed) {
             Ok(Some(source)) => {
@@ -2370,6 +2425,23 @@ impl SketchEditor {
             }
             Ok(None) => {}
             Err(error) => self.message = error,
+        }
+        match self.transfer_pick_scene(session, resources) {
+            Ok(Some(source)) => {
+                scene = Some(source);
+                current = false;
+                transfer_source_view = true;
+            }
+            Ok(None) => {}
+            Err(error) => self.message = error,
+        }
+        if !self.measurement.active()
+            && self.transfer.picker().is_none()
+            && let Some(candidate) = self.transfer.display_scene(session, resources)
+        {
+            scene = Some(candidate);
+            current = false;
+            model_view = true;
         }
         if !self.measurement.active()
             && self.assembly.anchor_pick().is_none()
@@ -2513,6 +2585,15 @@ impl SketchEditor {
                 rect.left_top() + Vec2::new(14., 12.),
                 Align2::LEFT_TOP,
                 "Relationship anchor · component source view",
+                FontId::proportional(12.),
+                Color32::LIGHT_YELLOW,
+            );
+        }
+        if transfer_source_view && let Some(rect) = self.viewport_rect {
+            ui.painter().text(
+                rect.left_top() + Vec2::new(14., 12.),
+                Align2::LEFT_TOP,
+                "Transfer reference · component-local source view",
                 FontId::proportional(12.),
                 Color32::LIGHT_YELLOW,
             );
@@ -2798,6 +2879,7 @@ impl SketchEditor {
             && let Some(ref context) = model_context
         {
             self.assembly_viewport(&response, session, context.resources, context.feed, rect);
+            self.transfer_viewport(&response, session, context.resources, rect);
             self.advanced_viewport(
                 ui,
                 &response,
@@ -2820,6 +2902,7 @@ impl SketchEditor {
         if let Some(scene) = &scene {
             let selectable = !self.measurement.active()
                 && !self.assembly.active()
+                && !self.transfer.active()
                 && current
                 && !self.editing
                 && !self.picking

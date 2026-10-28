@@ -76,6 +76,18 @@ impl Scene {
         pointer: Pos2,
         options: PickOptions,
     ) -> Option<Hit> {
+        self.pick_screen_matching(camera, rect, pointer, options, |_, _| true)
+    }
+    /// Filter eligible topology before ranking screen candidates. A seam or
+    /// unsupported edge at the same pixel must not mask a valid tool reference.
+    pub fn pick_screen_matching(
+        &self,
+        camera: Camera,
+        rect: Rect,
+        pointer: Pos2,
+        options: PickOptions,
+        accept: impl Fn(EntityId, TopologyKey) -> bool,
+    ) -> Option<Hit> {
         if self.scope() == &super::SceneScope::Presentation {
             return None;
         }
@@ -86,7 +98,9 @@ impl Scene {
         } = options;
         let ray = camera.ray(pointer, rect)?;
         if matches!(filter, PickFilter::Faces | PickFilter::Parts) {
-            return self.pick_face_section(ray, section);
+            return self
+                .pick_face_section(ray, section)
+                .filter(|hit| accept(hit.instance, hit.key));
         }
         let radius = 7.;
         let distance = rect.height().max(1.) / camera.scale * 2.;
@@ -117,6 +131,10 @@ impl Scene {
                 continue;
             }
             let mut add = |kind, ordinal, point, screen: Pos2| {
+                let key = TopologyKey { kind, ordinal };
+                if !accept(instance.id, key) {
+                    return;
+                }
                 let projected = project(point);
                 let pixels = screen.distance(pointer);
                 if projected[2] >= 0.1
@@ -125,7 +143,7 @@ impl Scene {
                 {
                     candidates.push(Candidate {
                         instance: instance.id,
-                        key: TopologyKey { kind, ordinal },
+                        key,
                         point,
                         screen,
                         pixels,
@@ -210,6 +228,7 @@ impl Scene {
         }
         if filter == PickFilter::Auto {
             self.pick_face_section(ray, section)
+                .filter(|hit| accept(hit.instance, hit.key))
         } else {
             None
         }

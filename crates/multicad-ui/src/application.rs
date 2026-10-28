@@ -247,6 +247,7 @@ impl Application {
         for project in &mut self.projects {
             project.sketch.set_model_backend(factory());
             project.sketch.set_assembly_backend(factory());
+            project.sketch.set_transfer_backend(factory());
             project.sketch.set_external_backend(factory());
         }
         self.model_backends = Some(factory);
@@ -341,6 +342,7 @@ impl Application {
                     | Command::SketchOperation(_)
                     | Command::Modeling(_)
                     | Command::Assembly(_)
+                    | Command::Transfer
                     | Command::Construction
                     | Command::Dimension
                     | Command::External(_)
@@ -374,6 +376,7 @@ impl Application {
                     | Command::Delete
                     | Command::Modeling(_)
                     | Command::Assembly(_)
+                    | Command::Transfer
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
@@ -931,6 +934,32 @@ impl Application {
                     .unwrap_or(0);
                 self.message = format!("{} · choose controls in the Inspector", tool.label());
             }
+            Command::Transfer => {
+                if self.current().editor.dirty() {
+                    return Err(
+                        "Apply or discard parameter edits before transferring features".into(),
+                    );
+                }
+                if !matches!(self.mode, Mode::Sketch | Mode::Model) {
+                    return Err("Open Model before transferring features".into());
+                }
+                let project = self.current_mut();
+                project.sketch.begin_transfer_tool(
+                    &project.session,
+                    &project.resources,
+                    &project.scene,
+                    channel,
+                )?;
+                self.mode = Mode::Model;
+                self.tab = self
+                    .registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.tools.contains(&"transfer"))
+                    .unwrap_or(0);
+                self.message = "Transfer features · choose source geometry and receiving faces in the Inspector".into();
+            }
             Command::Delete => {
                 let p = self.current_mut();
                 p.sketch.delete(&mut p.session, channel)?;
@@ -1049,6 +1078,12 @@ impl Application {
             Command::Assembly(_) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
+                    && self.current().sketch.modeling_available()
+            }
+            Command::Transfer => {
+                matches!(self.mode, Mode::Sketch | Mode::Model)
+                    && !self.current().editor.dirty()
+                    && self.current().sketch.has_transfer_backend()
                     && self.current().sketch.modeling_available()
             }
             Command::Mode(mode) if self.current().sketch.model_interaction_active() => {
@@ -1811,6 +1846,9 @@ impl Application {
                 }
                 if !project.sketch.has_assembly_backend() {
                     project.sketch.set_assembly_backend(factory());
+                }
+                if !project.sketch.has_transfer_backend() {
+                    project.sketch.set_transfer_backend(factory());
                 }
                 if !project.sketch.has_external_backend() {
                     project.sketch.set_external_backend(factory());
@@ -3109,10 +3147,11 @@ mod tests {
         app.set_model_backends(factory);
         assert!(app.current().sketch.has_model_backend());
         assert!(app.current().sketch.has_assembly_backend());
+        assert!(app.current().sketch.has_transfer_backend());
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            4,
-            "Canonical display, modeling, assembly candidates and reference recovery need separate workers"
+            5,
+            "Canonical display, modeling, assembly, transfer candidates and reference recovery need separate workers"
         );
         app.mode = Mode::Model;
         for command in [
@@ -3142,14 +3181,32 @@ mod tests {
             app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
             assert_eq!(app.current().session.document(), &before);
         }
+        assert!(
+            app.enabled(Command::Transfer),
+            "Transfer is available before selecting its source or targets"
+        );
+        app.invoke(Command::Transfer, &[], Channel::CommandLine)
+            .unwrap();
+        assert!(app.current().sketch.model_active());
+        assert!(app.current().sketch.has_pending_edits());
+        assert!(!app.enabled(Command::Parameter));
+        assert!(!app.enabled(Command::NewSketch));
+        assert!(!app.enabled(Command::Apply));
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert_eq!(app.current().session.document(), &before);
+        assert!(
+            app.invoke(Command::Transfer, &["unexpected"], Channel::CommandLine)
+                .is_err()
+        );
         app.invoke(Command::New, &[], Channel::Ui).unwrap();
         let context = egui::Context::default();
         shortcut_frame(&context, &mut app, vec![]);
         assert!(app.current().sketch.has_model_backend());
         assert!(app.current().sketch.has_assembly_backend());
+        assert!(app.current().sketch.has_transfer_backend());
         assert!(app.projects[0].scene.has_backend());
         assert!(app.current().scene.has_backend());
-        assert_eq!(calls.load(Ordering::SeqCst), 8);
+        assert_eq!(calls.load(Ordering::SeqCst), 10);
     }
     #[test]
     fn primitive_starts_without_sketch_and_inspector_cancel_updates_status_without_editing_source()

@@ -62,6 +62,7 @@ pub enum Command {
     External(crate::external_references::ExternalTool),
     Modeling(ModelingTool),
     Assembly(crate::assembly::AssemblyTool),
+    Transfer,
     Construction,
     Dimension,
     FinishSketch,
@@ -302,6 +303,13 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        registry.tools.push(Tool {
+            id: "transfer",
+            label: "Transfer features",
+            icon: Icon::Transfer,
+            action: Command::Transfer,
+            aliases: &["derive-holes", "transfer-holes", "project-cutouts"],
+        });
         for mode in Mode::ALL {
             registry.tools.push(Tool {
                 id: mode.title(),
@@ -350,7 +358,6 @@ impl Default for Registry {
             ("cope", "Miter / cope", Icon::Cut),
             ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
-            ("transfer", "Transfer rail holes", Icon::Link),
             ("support", "Thin support", Icon::Box),
             ("tab", "Breakaway tab", Icon::Edge),
             ("materials", "Materials", Icon::Library),
