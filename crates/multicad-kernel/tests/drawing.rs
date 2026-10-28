@@ -238,3 +238,83 @@ fn section_can_remove_all_sources_and_uncut_sections_do_not_generate_hatches() {
             .all(|v| !matches!(v.role, VectorRole::Hatch | VectorRole::Section))
     );
 }
+
+#[test]
+fn oblique_triangular_section_hatches_in_its_actual_plane_and_clips_a_real_hole() {
+    let body = Solid::box_solid([10.; 3], Default::default()).unwrap();
+    let s = 2f64.sqrt().recip();
+    let t = 6f64.sqrt().recip();
+    let n = 3f64.sqrt().recip();
+    let frame = PlaneFrame {
+        origin: [0.; 3],
+        u: [s, -s, 0.],
+        v: [t, t, -2. * t],
+    };
+    // x+y+z=1 cuts a triangle with world AABB center (.5,.5,.5),
+    // which is not on that plane. A circular bore crosses its centroid.
+    let bore = Solid::cylinder(
+        PlaneFrame {
+            origin: [1. / 3. - n; 3],
+            ..frame
+        },
+        0.1,
+        20.,
+        Default::default(),
+    )
+    .unwrap();
+    let hollow = body
+        .boolean(&bore, BooleanOperation::Subtract, Default::default())
+        .unwrap()
+        .unwrap();
+    for (solid, hole) in [(&body, false), (&hollow, true)] {
+        let vectors = project_drawing(
+            &[DrawingSolid {
+                solid,
+                hatch: Some(DrawingHatch {
+                    angle_rad: 0.37,
+                    spacing_mm: 0.05,
+                    cross: true,
+                }),
+            }],
+            DrawingProjection {
+                frame,
+                section_offset_mm: Some(n),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(vectors.iter().any(|v| v.role == VectorRole::Section));
+        let hatches: Vec<_> = vectors
+            .iter()
+            .filter(|v| v.role == VectorRole::Hatch)
+            .collect();
+        assert!(
+            hatches.len() > 5,
+            "An oblique cut must not silently lose all its hatching"
+        );
+        for hatch in hatches {
+            let VectorCurve::Line { a, b } = hatch.curve else {
+                panic!("Hatches are exact lines");
+            };
+            for q in [0., 0.25, 0.5, 0.75, 1.] {
+                let p = [a[0] + (b[0] - a[0]) * q, a[1] + (b[1] - a[1]) * q];
+                let world = [
+                    1. / 3. + s * p[0] + t * p[1],
+                    1. / 3. - s * p[0] + t * p[1],
+                    1. / 3. - 2. * t * p[1],
+                ];
+                assert!(
+                    world.iter().all(|v| *v >= -1e-6 && *v <= 1. + 1e-6),
+                    "Hatch escaped triangular cut: {world:?}"
+                );
+                assert!((world.iter().sum::<f64>() - 1.).abs() < 1e-7);
+                if hole {
+                    assert!(
+                        p[0].hypot(p[1]) >= 0.1 - 1e-6,
+                        "Hatch crosses the real bore"
+                    );
+                }
+            }
+        }
+    }
+}

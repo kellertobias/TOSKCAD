@@ -125,7 +125,13 @@ static void hatch_face(Collector &out,const TopoDS_Face &face,const DrawingInput
     const double angle=input.angle+pass*1.57079632679489661923;
     const gp_Vec direction=gp_Vec(job.frame.XDirection())*std::cos(angle)+gp_Vec(job.frame.YDirection())*std::sin(angle);
     const gp_Vec perpendicular=gp_Vec(job.frame.XDirection())*(-std::sin(angle))+gp_Vec(job.frame.YDirection())*std::cos(angle);
-    const gp_Pnt center((xmin+xmax)*.5,(ymin+ymax)*.5,(zmin+zmax)*.5);
+    gp_Pnt center((xmin+xmax)*.5,(ymin+ymax)*.5,(zmin+zmax)*.5);
+    // A world-axis bounding-box center need not lie on an oblique cut face
+    // (for example a triangular corner section). Keep every clipping line in
+    // the actual face plane; otherwise the exact common operation is empty.
+    const auto plane=BRepAdaptor_Surface(face).Plane();
+    const gp_Vec normal(plane.Axis().Direction());
+    center.Translate(normal*(-gp_Vec(plane.Location(),center).Dot(normal)));
     const double requested=std::ceil(diagonal/input.spacing)+2.;
     if(!std::isfinite(requested)||requested>20000)throw std::runtime_error("Section hatch line budget exceeded");
     const int count=static_cast<int>(requested);
