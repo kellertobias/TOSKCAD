@@ -35,8 +35,8 @@ pub enum Operation {
     Join,
     Cut,
     Intersect,
-    /// Reserved intent. Executable split/output expansion requires a later
-    /// versioned output contract; schema1 preparation always rejects it.
+    /// Generic extrusion/Boolean Split is reserved. Bounded two-membership
+    /// partitions use the separate model.split contract and semantic outputs.
     Split,
 }
 
@@ -648,6 +648,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::BOOLEAN_TYPE => {
                     super::read_boolean(document, entity.id)?;
                 }
+                super::SPLIT_TYPE => {
+                    super::read_split(document, entity.id)?;
+                }
                 super::REVOLVE_TYPE => {
                     super::read_revolve(document, entity.id)?;
                 }
@@ -667,6 +670,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::PRIMITIVE_TYPE,
                     super::REVOLVE_TYPE,
                     super::BOOLEAN_TYPE,
+                    super::SPLIT_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {

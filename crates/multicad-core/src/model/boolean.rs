@@ -191,7 +191,11 @@ impl BooleanRequest {
         }
     }
 }
-fn available(document: &Document, input: &BodyInput, latest: bool) -> Result<(), DocumentError> {
+pub(super) fn available(
+    document: &Document,
+    input: &BodyInput,
+    latest: bool,
+) -> Result<(), DocumentError> {
     input.resolve_producer(document)?;
     let mut pending = vec![input.producer];
     let mut visited = BTreeSet::new();
