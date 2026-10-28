@@ -12,6 +12,16 @@ use multicad_core::{
     document::{Document, EntityData, EntityId, Mutation},
     sketch::{self, Datum, Frame, Geometry, Sketch},
 };
+use std::collections::VecDeque;
+
+const MAX_PROFILE_CLICKS: usize = 32;
+#[derive(Clone, Copy)]
+struct ProfileClick {
+    evaluation: crate::sketch_evaluation::EvaluationStamp,
+    sketch: EntityId,
+    point_mm: [f64; 2],
+    extend: bool,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawTool {
     Line,
@@ -92,6 +102,7 @@ pub struct SketchEditor {
     overlay_visibility: Option<((EntityId, u64), std::collections::BTreeSet<EntityId>)>,
     tree_scene_stamp: Option<crate::viewport::SceneStamp>,
     pending_profile_pick: Option<(crate::sketch_evaluation::ProfilePickStamp, bool)>,
+    queued_profile_clicks: VecDeque<ProfileClick>,
     solid: crate::viewport::Interaction,
     repair: crate::reference_repair::RepairPanel,
     evaluated: Option<multicad_core::references::ReferenceReport>,
@@ -150,6 +161,7 @@ impl Default for SketchEditor {
             overlay_visibility: None,
             tree_scene_stamp: None,
             pending_profile_pick: None,
+            queued_profile_clicks: VecDeque::new(),
             solid: Default::default(),
             repair: Default::default(),
             evaluated: None,
@@ -184,11 +196,22 @@ impl SketchEditor {
         self.sketch_evaluation.has_query_factory()
     }
     pub fn set_query_factory(&mut self, factory: crate::sketch_evaluation::RegionQueryFactory) {
+        self.reset_profile_clicks();
         self.sketch_evaluation.set_query_factory(factory);
     }
-    fn clear_drawing_progress(&mut self) {
+    fn cancel_profile_clicks(&mut self) {
         self.pending_profile_pick = None;
+        self.queued_profile_clicks.clear();
         self.sketch_evaluation.cancel_profile_pick();
+    }
+    fn reset_profile_clicks(&mut self) {
+        if self.pending_profile_pick.is_some() || !self.queued_profile_clicks.is_empty() {
+            self.profiles.clear();
+        }
+        self.cancel_profile_clicks();
+    }
+    fn clear_drawing_progress(&mut self) {
+        self.reset_profile_clicks();
         self.first = None;
         self.first_anchor = None;
         self.arc_start = None;
@@ -319,6 +342,10 @@ impl SketchEditor {
             stamp.sketch == id
                 && stamp.evaluation.document == document.id()
                 && stamp.evaluation.revision == revision
+        }) || self.queued_profile_clicks.iter().any(|click| {
+            click.sketch == id
+                && click.evaluation.document == document.id()
+                && click.evaluation.revision == revision
         }) {
             return Err("Wait for the current profile selection query".into());
         }
@@ -655,7 +682,110 @@ impl SketchEditor {
                 .as_ref()
                 .is_some_and(|(_, visible)| visible.contains(&id))
     }
+    fn enqueue_profile_click(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        sketch: EntityId,
+        point_mm: [f64; 2],
+        extend: bool,
+    ) -> Result<(), String> {
+        if self.selected != Some(sketch)
+            || !self.editing
+            || self.tool.is_some()
+            || self.moving
+            || self.has_pending_edits()
+        {
+            return Err("Open an idle sketch before selecting profile areas".into());
+        }
+        let evaluation = self
+            .sketch_evaluation
+            .current(sketch)
+            .filter(|p| p.stamp.document == document.id() && p.stamp.revision == revision)
+            .ok_or("Wait for current valid sketch profiles")?
+            .stamp;
+        if !extend
+            || self
+                .pending_profile_pick
+                .is_some_and(|(stamp, _)| stamp.sketch != sketch || stamp.evaluation != evaluation)
+            || self
+                .queued_profile_clicks
+                .iter()
+                .any(|click| click.sketch != sketch || click.evaluation != evaluation)
+        {
+            self.reset_profile_clicks();
+        }
+        if self.queued_profile_clicks.len() + usize::from(self.pending_profile_pick.is_some())
+            >= MAX_PROFILE_CLICKS
+        {
+            return Err(format!(
+                "Profile selection is busy ({MAX_PROFILE_CLICKS} clicks); wait, then click again"
+            ));
+        }
+        self.queued_profile_clicks.push_back(ProfileClick {
+            evaluation,
+            sketch,
+            point_mm,
+            extend,
+        });
+        self.dispatch_profile_click();
+        Ok(())
+    }
+    fn dispatch_profile_click(&mut self) {
+        if self.pending_profile_pick.is_some() {
+            return;
+        }
+        let Some(click) = self.queued_profile_clicks.pop_front() else {
+            return;
+        };
+        if self
+            .sketch_evaluation
+            .current(click.sketch)
+            .is_none_or(|p| p.stamp != click.evaluation)
+        {
+            self.reset_profile_clicks();
+            self.profiles.clear();
+            return;
+        }
+        // Every committed click, including repeated toggles at one position,
+        // gets its own ordered reply. The worker may still coalesce previews.
+        self.sketch_evaluation.cancel_profile_pick();
+        self.pending_profile_pick = self
+            .sketch_evaluation
+            .request_profile_pick(click.sketch, click.point_mm)
+            .map(|stamp| (stamp, click.extend));
+        if self.pending_profile_pick.is_none() {
+            self.reset_profile_clicks();
+            self.profiles.clear();
+            self.message = "Profile selection unavailable; select the areas again".into();
+        }
+    }
     fn poll_profile_pick(&mut self, document: &Document, revision: u64) {
+        if self.pending_profile_pick.is_none() && self.queued_profile_clicks.is_empty() {
+            return;
+        }
+        let current = self
+            .selected
+            .and_then(|id| self.sketch_evaluation.current(id));
+        let invalid = !self.editing
+            || self.tool.is_some()
+            || self.moving
+            || self.has_pending_edits()
+            || current.is_none_or(|p| {
+                p.stamp.document != document.id()
+                    || p.stamp.revision != revision
+                    || self.pending_profile_pick.is_some_and(|(stamp, _)| {
+                        stamp.sketch != p.evaluated.sketch || stamp.evaluation != p.stamp
+                    })
+                    || self.queued_profile_clicks.iter().any(|click| {
+                        click.sketch != p.evaluated.sketch || click.evaluation != p.stamp
+                    })
+            });
+        if invalid {
+            self.reset_profile_clicks();
+            return;
+        }
+        self.dispatch_profile_click();
         let Some((expected, extend)) = self.pending_profile_pick else {
             return;
         };
@@ -666,16 +796,6 @@ impl SketchEditor {
             .cloned();
         if let Some(reply) = reply {
             self.pending_profile_pick = None;
-            if self.selected != Some(expected.sketch)
-                || !self.editing
-                || self.tool.is_some()
-                || self.moving
-                || self.has_pending_edits()
-                || expected.evaluation.document != document.id()
-                || expected.evaluation.revision != revision
-            {
-                return;
-            }
             use crate::sketch_evaluation::ProfileHit;
             match reply.result {
                 Ok(ProfileHit::Inside(intent)) => {
@@ -702,10 +822,17 @@ impl SketchEditor {
                 Ok(ProfileHit::Boundary) => self.message =
                     "Click inside the desired area; its shared boundary is not an area selection"
                         .into(),
-                Err(error) => self.message = error,
+                Err(error) => {
+                    self.reset_profile_clicks();
+                    self.profiles.clear();
+                    self.message = error;
+                    return;
+                }
             }
+            self.dispatch_profile_click();
         } else if !self.sketch_evaluation.pick_pending() {
-            self.pending_profile_pick = None;
+            self.reset_profile_clicks();
+            self.message = "Profile selection unavailable; select the areas again".into();
         }
     }
     pub fn open(&mut self, doc: &Document, id: EntityId) -> Result<(), String> {
@@ -1322,6 +1449,10 @@ impl SketchEditor {
             }
         }
         self.poll_profile_pick(session.document(), session.revision());
+        if self.pending_profile_pick.is_some() || !self.queued_profile_clicks.is_empty() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
         egui::Panel::left("source-tree")
             .default_size(225.)
             .resizable(true)
@@ -1451,7 +1582,7 @@ impl SketchEditor {
                                     }
                                     if let Some(presentation)=self.sketch_evaluation.current(id) && self.profiles.show(ui,id,&presentation.regions) {
                                             self.element=None;self.constraints.clear_geometry_selection();
-                                            self.pending_profile_pick=None;self.sketch_evaluation.cancel_profile_pick();
+                                            self.cancel_profile_clicks();
                                     }
                                     if self.editing
                                         && ui
@@ -1473,7 +1604,7 @@ impl SketchEditor {
                                         let before = session.revision();
                                         let selection_before=self.constraints.selection().to_vec();
                                         ui.add_enabled_ui(!self.repair.has_pending(),|ui|self.constraints.show(ui, session, id, self.element));
-                                        if self.constraints.selection()!=selection_before {self.profiles.clear();self.pending_profile_pick=None;self.sketch_evaluation.cancel_profile_pick();}
+                                        if self.constraints.selection()!=selection_before {self.profiles.clear();self.cancel_profile_clicks();}
                                         if session.revision() != before {
                                             self.message =
                                                 "Sketch edit applied · one undoable source edit"
@@ -2229,10 +2360,9 @@ impl SketchEditor {
             });
             let modifiers = crate::selection_input::click_modifiers(ui, &response);
             let extend = modifiers.shift || modifiers.command;
-            self.pending_profile_pick = None;
-            self.sketch_evaluation.cancel_profile_pick();
             match hit {
                 Some(Hit::Point(point)) => {
+                    self.reset_profile_clicks();
                     self.element = None;
                     self.constraints.select_geometry(point, None, extend);
                     self.profiles.clear();
@@ -2242,6 +2372,7 @@ impl SketchEditor {
                     );
                 }
                 Some(Hit::Curve(curve)) => {
+                    self.reset_profile_clicks();
                     self.element = Some(curve);
                     if !self.constraints.select_geometry(curve, Some(curve), extend) {
                         self.element = None;
@@ -2253,6 +2384,7 @@ impl SketchEditor {
                     );
                 }
                 Some(Hit::Region(region)) => {
+                    self.reset_profile_clicks();
                     self.element = None;
                     self.constraints.clear_geometry_selection();
                     self.profiles.reconcile(id, &presentation.regions);
@@ -2264,10 +2396,15 @@ impl SketchEditor {
                 }
                 None => {
                     if let Some(point) = self.camera.on_plane(pointer, rect, frame) {
-                        self.pending_profile_pick = self
-                            .sketch_evaluation
-                            .request_profile_pick(id, point)
-                            .map(|stamp| (stamp, extend));
+                        if let Err(error) = self.enqueue_profile_click(
+                            session.document(),
+                            session.revision(),
+                            id,
+                            point,
+                            extend,
+                        ) {
+                            self.message = error;
+                        }
                         if self.pending_profile_pick.is_some() {
                             ui.ctx()
                                 .request_repaint_after(std::time::Duration::from_millis(16));
@@ -2462,6 +2599,227 @@ impl SketchEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use multicad_core::sketch_regions::{
+        AnalyticQueries, CurveHits, Edge, ExactCurve, PointLocation, QueryError, RegionQueries,
+    };
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    struct ProfileGate {
+        block_next: AtomicBool,
+        started: mpsc::SyncSender<[f64; 2]>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    struct BlockedProfileQueries(Arc<ProfileGate>);
+    impl RegionQueries for BlockedProfileQueries {
+        fn intersections(
+            &self,
+            a: &ExactCurve,
+            b: &ExactCurve,
+            t: f64,
+        ) -> Result<CurveHits, QueryError> {
+            AnalyticQueries.intersections(a, b, t)
+        }
+        fn self_intersections(&self, c: &ExactCurve, t: f64) -> Result<CurveHits, QueryError> {
+            AnalyticQueries.self_intersections(c, t)
+        }
+        fn signed_area(&self, edges: &[Edge], t: f64) -> Result<f64, QueryError> {
+            AnalyticQueries.signed_area(edges, t)
+        }
+        fn classify_boundary(
+            &self,
+            edges: &[Edge],
+            point: [f64; 2],
+            t: f64,
+        ) -> Result<PointLocation, QueryError> {
+            if self.0.block_next.swap(false, Ordering::AcqRel) {
+                self.0.started.send(point).unwrap();
+                self.0
+                    .release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .map_err(|e| QueryError {
+                        message: e.to_string(),
+                    })?;
+            }
+            AnalyticQueries.classify_boundary(edges, point, t)
+        }
+    }
+    struct ProfileHarness {
+        session: Session,
+        editor: SketchEditor,
+        ctx: egui::Context,
+        gate: Arc<ProfileGate>,
+        started: mpsc::Receiver<[f64; 2]>,
+        release: mpsc::SyncSender<()>,
+    }
+    impl ProfileHarness {
+        fn new() -> Self {
+            let (started_tx, started) = mpsc::sync_channel(1);
+            let (release, release_rx) = mpsc::sync_channel(1);
+            let gate = Arc::new(ProfileGate {
+                block_next: AtomicBool::new(false),
+                started: started_tx,
+                release: Mutex::new(release_rx),
+            });
+            let mut session = session();
+            let mut editor = SketchEditor::default();
+            let service = gate.clone();
+            editor.set_query_factory(Arc::new(move || {
+                Ok(Box::new(BlockedProfileQueries(service.clone())))
+            }));
+            editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+            for (a, b) in [([0., 0.], [30., 30.]), ([50., 0.], [80., 30.])] {
+                editor
+                    .add(&mut session, DrawTool::Rectangle, a, b, Channel::Ui)
+                    .unwrap();
+            }
+            editor.tool = None;
+            settle(&mut editor, &session);
+            let ctx = egui::Context::default();
+            ctx.all_styles_mut(|style| style.animation_time = 0.);
+            ctx.run_ui(input(vec![]), |ui| {
+                editor.canvas(ui, &mut session, true, None, false)
+            })
+            .drop_without_applying_deltas();
+            Self {
+                session,
+                editor,
+                ctx,
+                gate,
+                started,
+                release,
+            }
+        }
+        fn click(&mut self, point: [f64; 2], modifiers: egui::Modifiers) {
+            self.ctx
+                .run_ui(input(vec![]), |ui| {
+                    self.editor.canvas(ui, &mut self.session, true, None, false)
+                })
+                .drop_without_applying_deltas();
+            let id = self.editor.selected.unwrap();
+            let frame = self
+                .editor
+                .read_sketch(self.session.document(), id, self.session.revision())
+                .unwrap()
+                .1;
+            let p = self.editor.camera.project(
+                frame.point(point).map(|v| v as f32),
+                self.editor.viewport_rect.unwrap(),
+            );
+            let pos = Pos2::new(p[0], p[1]);
+            for pressed in [true, false] {
+                let mut events = vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    },
+                ];
+                if !pressed {
+                    events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                }
+                // Intentionally do not settle or poll: this models clicks that
+                // arrive while an exact classification is still in flight.
+                self.ctx
+                    .run_ui(input(events), |ui| {
+                        self.editor.canvas(ui, &mut self.session, true, None, false)
+                    })
+                    .drop_without_applying_deltas();
+            }
+        }
+        fn block_click(&mut self, point: [f64; 2], modifiers: egui::Modifiers) {
+            self.gate.block_next.store(true, Ordering::Release);
+            self.click(point, modifiers);
+            let observed = self
+                .started
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap();
+            assert!((observed[0] - point[0]).abs() < 1e-5 && (observed[1] - point[1]).abs() < 1e-5);
+        }
+        fn drain(&mut self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                self.editor.sketch_evaluation.poll();
+                self.editor
+                    .poll_profile_pick(self.session.document(), self.session.revision());
+                if self.editor.pending_profile_pick.is_none()
+                    && self.editor.queued_profile_clicks.is_empty()
+                    && !self.editor.sketch_evaluation.pending()
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Profile click sequence did not drain"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        fn selected(&self) -> Vec<multicad_core::sketch_regions::RegionIntent> {
+            self.editor
+                .selected_profiles(self.session.document(), self.session.revision())
+                .unwrap()
+                .1
+        }
+        fn intent(&self, point: [f64; 2]) -> multicad_core::sketch_regions::RegionIntent {
+            self.editor
+                .sketch_evaluation
+                .current(self.editor.selected.unwrap())
+                .unwrap()
+                .regions
+                .regions
+                .iter()
+                .find(|r| r.contains(point).unwrap())
+                .unwrap()
+                .intent()
+        }
+        fn inspector_frame(
+            &mut self,
+            feed: &mut crate::viewport::SceneFeed,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut output = self.ctx.run_ui(input(events), |ui| {
+                self.editor.show(ui, &mut self.session, true, feed);
+            });
+            output.textures_delta.clear();
+            output
+        }
+        fn inspector_click(&mut self, feed: &mut crate::viewport::SceneFeed, label: &str) {
+            let output = self.inspector_frame(feed, vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Missing Inspector label {label}"));
+            for pressed in [true, false] {
+                self.inspector_frame(
+                    feed,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        }
+    }
     fn settle(editor: &mut SketchEditor, session: &Session) {
         if let Some(report) = editor
             .evaluated
@@ -2985,6 +3343,234 @@ mod tests {
                 .drop_without_applying_deltas();
         }
         settle(editor, session);
+    }
+    #[test]
+    fn rapid_profile_clicks_apply_in_order_and_repeated_toggles_are_not_coalesced() {
+        let mut h = ProfileHarness::new();
+        let before = h.session.document().clone();
+        let a = h.intent([15., 15.]);
+        let b = h.intent([65., 15.]);
+        h.block_click([15., 15.], egui::Modifiers::NONE);
+        h.click([65., 15.], egui::Modifiers::SHIFT);
+        assert_eq!(h.editor.queued_profile_clicks.len(), 1);
+        assert!(matches!(
+            h.started.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(
+            h.editor
+                .selected_profiles(h.session.document(), h.session.revision())
+                .is_err()
+        );
+        h.release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while h.editor.sketch_evaluation.profile_pick().is_none() {
+            h.editor.sketch_evaluation.poll();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!h.editor.sketch_evaluation.pending());
+        // A has finished, but the UI has not applied its reply or submitted B.
+        // Dispatching B must schedule another repaint even from this idle feed.
+        h.gate.block_next.store(true, Ordering::Release);
+        let output = h.inspector_frame(&mut crate::viewport::SceneFeed::default(), vec![]);
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+                <= std::time::Duration::from_millis(16)
+        );
+        let b_point = h
+            .started
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert!((b_point[0] - 65.).abs() < 1e-5);
+        assert!(
+            h.editor
+                .selected_profiles(h.session.document(), h.session.revision())
+                .is_err()
+        );
+        h.release.send(()).unwrap();
+        h.drain();
+        assert_eq!(h.selected(), vec![a.clone(), b.clone()]);
+        h.block_click([15., 15.], egui::Modifiers::SHIFT);
+        h.click([15., 15.], egui::Modifiers::SHIFT);
+        assert_eq!(h.editor.queued_profile_clicks.len(), 1);
+        h.release.send(()).unwrap();
+        h.drain();
+        assert_eq!(h.selected(), vec![b, a]);
+        assert_eq!(h.session.document(), &before);
+    }
+    #[test]
+    fn plain_profile_replacement_cancels_an_unfinished_additive_sequence() {
+        let mut h = ProfileHarness::new();
+        let b = h.intent([65., 15.]);
+        h.block_click([15., 15.], egui::Modifiers::NONE);
+        h.click([65., 15.], egui::Modifiers::SHIFT);
+        let obsolete = h.editor.pending_profile_pick.unwrap().0;
+        h.click([65., 15.], egui::Modifiers::NONE);
+        assert!(h.editor.queued_profile_clicks.is_empty());
+        assert_ne!(h.editor.pending_profile_pick.unwrap().0, obsolete);
+        assert!(
+            h.editor
+                .selected_profiles(h.session.document(), h.session.revision())
+                .is_err()
+        );
+        h.release.send(()).unwrap();
+        h.drain();
+        assert_eq!(h.selected(), vec![b]);
+    }
+    #[test]
+    fn profile_click_queue_is_bounded_and_rejected_click_has_visible_feedback() {
+        let mut h = ProfileHarness::new();
+        let a = h.intent([15., 15.]);
+        h.block_click([15., 15.], egui::Modifiers::NONE);
+        for _ in 1..MAX_PROFILE_CLICKS {
+            h.click([15., 15.], egui::Modifiers::SHIFT);
+        }
+        assert_eq!(h.editor.queued_profile_clicks.len(), MAX_PROFILE_CLICKS - 1);
+        h.click([65., 15.], egui::Modifiers::SHIFT);
+        assert_eq!(h.editor.queued_profile_clicks.len(), MAX_PROFILE_CLICKS - 1);
+        assert!(h.editor.message.contains("wait, then click again"));
+        let mut output = h.ctx.run_ui(input(vec![]), |ui| {
+            h.editor.canvas(ui, &mut h.session, true, None, false)
+        });
+        output.textures_delta.clear();
+        assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text().contains("wait, then click again"))));
+        assert!(
+            h.editor
+                .selected_profiles(h.session.document(), h.session.revision())
+                .is_err()
+        );
+        h.release.send(()).unwrap();
+        h.drain();
+        // One replacement plus31 toggles leaves no selection. The rejected B
+        // click never silently replaces or joins the accepted sequence.
+        assert!(h.editor.profiles.selected().is_empty());
+        assert!(!h.editor.profiles.selected().contains(&a));
+    }
+    #[test]
+    fn source_tool_and_geometry_resets_cancel_profile_sequences_without_reviving_old_selection() {
+        for reset in 0..3 {
+            let mut h = ProfileHarness::new();
+            h.click([15., 15.], egui::Modifiers::NONE);
+            h.drain();
+            assert_eq!(h.selected().len(), 1);
+            h.block_click([65., 15.], egui::Modifiers::NONE);
+            h.click([15., 15.], egui::Modifiers::SHIFT);
+            match reset {
+                0 => {
+                    commit(
+                        &mut h.session,
+                        "Unrelated source edit",
+                        vec![Mutation::Insert(multicad_core::document::Entity::new(
+                            "Group",
+                            EntityData::Group {},
+                        ))],
+                        Channel::Ui,
+                    )
+                    .unwrap();
+                    h.editor
+                        .poll_profile_pick(h.session.document(), h.session.revision());
+                }
+                1 => h.editor.set_tool(DrawTool::Line).unwrap(),
+                _ => h.click([0., 0.], egui::Modifiers::NONE),
+            }
+            assert!(h.editor.pending_profile_pick.is_none());
+            assert!(h.editor.queued_profile_clicks.is_empty());
+            assert!(
+                h.editor.profiles.selected().is_empty(),
+                "Reset {reset} revived the pre-click profile"
+            );
+            assert!(
+                h.editor
+                    .selected_profiles(h.session.document(), h.session.revision())
+                    .is_err()
+            );
+            h.release.send(()).unwrap();
+            h.drain();
+            assert!(h.editor.profiles.selected().is_empty());
+            if reset == 2 {
+                assert_eq!(h.editor.constraints.selection().len(), 1);
+            }
+        }
+    }
+    #[test]
+    fn inspector_profile_selection_overrides_all_pending_canvas_clicks() {
+        let mut h = ProfileHarness::new();
+        let b = h.intent([65., 15.]);
+        let presentation = h
+            .editor
+            .sketch_evaluation
+            .current(h.editor.selected.unwrap())
+            .unwrap();
+        let (index, region) = presentation
+            .regions
+            .regions
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.intent() == b)
+            .unwrap();
+        let label = format!(
+            "Area {} · {:.2} mm² · {} holes",
+            index + 1,
+            region.area_mm2,
+            region.holes.len()
+        );
+        h.block_click([15., 15.], egui::Modifiers::NONE);
+        h.click([65., 15.], egui::Modifiers::SHIFT);
+        let mut feed = crate::viewport::SceneFeed::default();
+        h.inspector_click(&mut feed, "Profiles · 2 closed areas");
+        h.inspector_click(&mut feed, &label);
+        assert!(h.editor.pending_profile_pick.is_none());
+        assert!(h.editor.queued_profile_clicks.is_empty());
+        assert_eq!(h.selected(), vec![b.clone()]);
+        h.release.send(()).unwrap();
+        h.drain();
+        assert_eq!(h.selected(), vec![b]);
+    }
+    #[test]
+    fn changed_reference_publication_at_same_revision_cannot_replay_queued_clicks() {
+        let mut h = ProfileHarness::new();
+        let original = h.session.document().clone();
+        h.block_click([15., 15.], egui::Modifiers::NONE);
+        h.click([65., 15.], egui::Modifiers::SHIFT);
+        let old = h.editor.pending_profile_pick.unwrap().0.evaluation;
+        let report = multicad_core::references::inspect(
+            h.session.document(),
+            h.session.revision(),
+            &Default::default(),
+        );
+        h.editor.sketch_evaluation.sync_creation_report(
+            h.session.document(),
+            h.session.revision(),
+            report,
+        );
+        h.release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while h.editor.sketch_evaluation.pending() {
+            h.editor.sketch_evaluation.poll();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let current = h
+            .editor
+            .sketch_evaluation
+            .current(h.editor.selected.unwrap())
+            .unwrap()
+            .stamp;
+        assert_eq!(current.document, old.document);
+        assert_eq!(current.revision, old.revision);
+        assert_ne!(current, old);
+        h.editor
+            .poll_profile_pick(h.session.document(), h.session.revision());
+        assert!(h.editor.pending_profile_pick.is_none());
+        assert!(h.editor.queued_profile_clicks.is_empty());
+        assert!(h.editor.profiles.selected().is_empty());
+        assert!(
+            h.editor
+                .selected_profiles(h.session.document(), h.session.revision())
+                .is_err()
+        );
+        assert_eq!(h.session.document(), &original);
     }
     #[test]
     fn pending_profile_click_cannot_supply_the_previous_manufacturing_selection() {
