@@ -25,6 +25,13 @@ pub enum ExternalQueryReply {
         query: ExternalQuery,
         result: Result<Box<ExternalCatalog>, String>,
     },
+    Removed {
+        request: u64,
+        source_hash: ContentHash,
+        sketch: EntityId,
+        reference: EntityId,
+        result: Result<Box<ExternalPrepared>, String>,
+    },
     Prepared {
         request: u64,
         source_hash: ContentHash,
@@ -50,6 +57,16 @@ pub trait ExternalQueryBackend: Send {
         request: OccurrenceCaptureRequest,
         repair: bool,
     ) -> Result<u64, String>;
+    fn request_remove(
+        &mut self,
+        _source: PreparationSnapshot,
+        _resources: ProjectResources,
+        _actor: Actor,
+        _sketch: EntityId,
+        _reference: EntityId,
+    ) -> Result<u64, String> {
+        Err("Native occurrence-reference removal is unavailable".into())
+    }
     fn poll(&mut self) -> Option<ExternalQueryReply>;
     fn cancel(&mut self);
 }
