@@ -437,25 +437,75 @@ impl Solid {
         height_mm: f64,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        Self::extrude_curved_profile_vector(
+            profile,
+            profile.frame.normal().map(|n| n * height_mm),
+            policy,
+        )
+    }
+    /// Sweep an unchanged section by a world-space displacement. A nonzero
+    /// component normal to the section is required for a volumetric result.
+    pub fn extrude_curved_profile_vector(
+        profile: &CurvedProfile,
+        displacement_mm: [f64; 3],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
         policy.validate()?;
-        policy.length(height_mm.abs())?;
         let c = profile.checked(policy)?;
+        policy.point(displacement_mm)?;
+        let length = displacement_mm
+            .into_iter()
+            .map(|v| v * v)
+            .sum::<f64>()
+            .sqrt();
+        policy.length(length)?;
+        let height = profile
+            .frame
+            .normal()
+            .into_iter()
+            .zip(displacement_mm)
+            .map(|(n, v)| n * v)
+            .sum::<f64>();
+        if !height.is_finite() || height.abs() < policy.minimum_feature_mm {
+            return Err(input(
+                "Extrusion displacement is parallel to the profile or below the minimum normal feature height",
+            ));
+        }
         Self::adopt(
-            ffi::curved_profile_extrude(
+            ffi::curved_profile_extrude_vector(
                 &c.frame,
                 &c.edges,
                 &c.offsets,
                 policy.linear_tolerance_mm,
-                height_mm,
+                &ffi::Point3 {
+                    x: displacement_mm[0],
+                    y: displacement_mm[1],
+                    z: displacement_mm[2],
+                },
             )
             .map_err(native)?,
             policy,
-            "curved extrusion",
+            "vector extrusion",
         )
     }
     pub fn extrude_curved_profile_named(
         profile: &CurvedProfile,
         height_mm: f64,
+        feature: EntityId,
+        origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::extrude_curved_profile_vector_named(
+            profile,
+            profile.frame.normal().map(|n| n * height_mm),
+            feature,
+            origins,
+            policy,
+        )
+    }
+    pub fn extrude_curved_profile_vector_named(
+        profile: &CurvedProfile,
+        displacement_mm: [f64; 3],
         feature: EntityId,
         origins: &[Origin],
         policy: GeometryPolicy,
@@ -470,7 +520,7 @@ impl Solid {
                 "Every curved profile edge needs an authored origin and feature identity",
             ));
         }
-        let mut solid = Self::extrude_curved_profile(profile, height_mm, policy)?;
+        let mut solid = Self::extrude_curved_profile_vector(profile, displacement_mm, policy)?;
         let frames: Vec<_> = edges
             .into_iter()
             .map(|e| match e {
@@ -478,10 +528,19 @@ impl Solid {
                     let a = profile.frame.point(*a);
                     let b = profile.frame.point(*b);
                     let length = (0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt();
+                    let u = std::array::from_fn(|i| (b[i] - a[i]) / length);
+                    let along = u
+                        .into_iter()
+                        .zip(displacement_mm)
+                        .map(|(a, b)| a * b)
+                        .sum::<f64>();
+                    let perpendicular: [f64; 3] =
+                        std::array::from_fn(|i| displacement_mm[i] - u[i] * along);
+                    let length = perpendicular.into_iter().map(|v| v * v).sum::<f64>().sqrt();
                     Some(ReferenceFrame {
                         origin_mm: a,
-                        u: std::array::from_fn(|i| (b[i] - a[i]) / length),
-                        v: profile.frame.normal().map(|v| v * height_mm.signum()),
+                        u,
+                        v: perpendicular.map(|v| v / length),
                     })
                 }
                 CurvedEdge2d::BSpline(_)
@@ -489,7 +548,13 @@ impl Solid {
                 | CurvedEdge2d::Circle { .. } => None,
             })
             .collect();
-        solid.name_profile_prism(profile.frame, height_mm, feature, origins, &frames)?;
+        solid.name_profile_vector_prism(
+            profile.frame,
+            displacement_mm,
+            feature,
+            origins,
+            &frames,
+        )?;
         Ok(solid)
     }
 }

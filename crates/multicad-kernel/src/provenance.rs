@@ -128,6 +128,34 @@ impl Solid {
         curves: &[Origin],
         side_frames: &[Option<ReferenceFrame>],
     ) -> Result<(), GeometryError> {
+        self.name_profile_vector_prism(
+            frame,
+            frame.normal().map(|n| n * height_mm),
+            feature,
+            curves,
+            side_frames,
+        )
+    }
+    pub(crate) fn name_profile_vector_prism(
+        &mut self,
+        frame: PlaneFrame,
+        displacement_mm: [f64; 3],
+        feature: EntityId,
+        curves: &[Origin],
+        side_frames: &[Option<ReferenceFrame>],
+    ) -> Result<(), GeometryError> {
+        let start = reference_frame(frame);
+        let mut end = start;
+        end.origin_mm = std::array::from_fn(|i| start.origin_mm[i] + displacement_mm[i]);
+        self.name_profile_sweep([Some(start), Some(end)], feature, curves, side_frames)
+    }
+    pub(crate) fn name_profile_sweep(
+        &mut self,
+        cap_frames: [Option<ReferenceFrame>; 2],
+        feature: EntityId,
+        curves: &[Origin],
+        side_frames: &[Option<ReferenceFrame>],
+    ) -> Result<(), GeometryError> {
         if feature.is_nil()
             || curves.len() != side_frames.len()
             || curves.iter().collect::<BTreeSet<_>>().len() != curves.len()
@@ -166,12 +194,8 @@ impl Solid {
                 .ok_or_else(|| failure("Native seed refers to absent face"))?;
             let (origin, frame, curve) = match seed.role {
                 0 | 1 => {
-                    let mut cap_frame = reference_frame(frame);
-                    if seed.role == 1 {
-                        cap_frame.origin_mm = std::array::from_fn(|i| {
-                            cap_frame.origin_mm[i] + frame.normal()[i] * height_mm
-                        });
-                    }
+                    let cap_frame = cap_frames[seed.role as usize]
+                        .ok_or_else(|| failure("Native sweep supplied an unexpected cap face"))?;
                     (
                         Origin {
                             source: feature,

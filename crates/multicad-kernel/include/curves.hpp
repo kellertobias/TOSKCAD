@@ -18,8 +18,8 @@ uint8_t curved_profile_classify(const Frame3 &,
                                 rust::Slice<const CurvedEdgeData>,
                                 rust::Slice<const uint32_t>, double tolerance,
                                 const Point3 &);
-std::unique_ptr<Shape> curved_profile_extrude(const Frame3 &,
-                                              rust::Slice<const CurvedEdgeData>,
-                                              rust::Slice<const uint32_t>,
-                                              double tolerance, double height);
+std::unique_ptr<Shape>
+curved_profile_extrude_vector(const Frame3 &, rust::Slice<const CurvedEdgeData>,
+                              rust::Slice<const uint32_t>, double tolerance,
+                              const Point3 &displacement);
 } // namespace multicad::kernel

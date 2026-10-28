@@ -327,13 +327,14 @@ uint8_t curved_profile_classify(const Frame3 &f,
   });
 }
 std::unique_ptr<Shape>
-curved_profile_extrude(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
-                       rust::Slice<const uint32_t> offsets, double tolerance,
-                       double height) {
+curved_profile_extrude_vector(const Frame3 &f,
+                              rust::Slice<const CurvedEdgeData> edges,
+                              rust::Slice<const uint32_t> offsets,
+                              double tolerance, const Point3 &displacement) {
   return guarded([&] {
     auto face = build(f, edges, offsets, tolerance);
-    const auto normal = plane(f).Axis().Direction();
-    BRepPrimAPI_MakePrism prism(face.face, gp_Vec(normal) * height);
+    BRepPrimAPI_MakePrism prism(
+        face.face, gp_Vec(displacement.x, displacement.y, displacement.z));
     if (!prism.IsDone() || prism.Shape().IsNull() ||
         !BRepCheck_Analyzer(prism.Shape()).IsValid())
       throw std::runtime_error("Exact curved prism is invalid");

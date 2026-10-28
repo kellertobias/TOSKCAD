@@ -1,8 +1,9 @@
 //! Bounded background evaluator. Native handles never leave this worker;
 //! receipts contain owned display/query data and revision-bound opaque keys.
 use crate::{
-    BooleanOperation, Bounds, DisplayEdge, DisplayVertex, Face, GeometryError, GeometryErrorKind,
-    GeometryPolicy, Mesh, MeshOptions, PlaneFrame, Profile, RigidTransform, Solid,
+    BooleanOperation, Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, Face,
+    GeometryError, GeometryErrorKind, GeometryPolicy, Mesh, MeshOptions, PlaneFrame, Profile,
+    RigidTransform, Solid,
 };
 use multicad_core::{
     document::EntityId,
@@ -47,6 +48,12 @@ pub enum GeometryOperation {
     NamedExtrude {
         profile: Profile,
         height_mm: f64,
+        feature: EntityId,
+        curve_origins: Vec<Origin>,
+    },
+    NamedVectorExtrude {
+        profile: CurvedProfile,
+        displacement_mm: [f64; 3],
         feature: EntityId,
         curve_origins: Vec<Origin>,
     },
@@ -95,6 +102,40 @@ impl GeometryProgram {
             let references = match operation {
                 GeometryOperation::Transform { source, .. } => vec![*source],
                 GeometryOperation::Boolean { a, b, .. } => vec![*a, *b],
+                GeometryOperation::NamedVectorExtrude {
+                    profile,
+                    curve_origins,
+                    ..
+                } => {
+                    let count = profile
+                        .outer
+                        .len()
+                        .saturating_add(profile.holes.iter().map(Vec::len).sum::<usize>());
+                    let poles = profile
+                        .outer
+                        .iter()
+                        .chain(profile.holes.iter().flatten())
+                        .map(|e| {
+                            if let CurvedEdge2d::BSpline(s) = e {
+                                s.poles.len()
+                            } else {
+                                0
+                            }
+                        })
+                        .sum::<usize>();
+                    if count > crate::MAX_CURVED_PROFILE_EDGES
+                        || profile.holes.len() > 16
+                        || poles > 2048
+                        || curve_origins.len() > crate::MAX_CURVED_PROFILE_EDGES
+                    {
+                        return Err(error(
+                            GeometryErrorKind::Limit,
+                            "Vector profile exceeds edge, hole, pole or provenance budget",
+                        ));
+                    }
+                    edges = edges.saturating_add(count);
+                    vec![]
+                }
                 GeometryOperation::Extrude { profile, .. }
                 | GeometryOperation::NamedExtrude { profile, .. } => {
                     if profile.outer.len() > 4096
@@ -669,6 +710,18 @@ fn compute(
             GeometryOperation::Transform { source, placement } => {
                 Some(get(*source)?.transformed(*placement)?)
             }
+            GeometryOperation::NamedVectorExtrude {
+                profile,
+                displacement_mm,
+                feature,
+                curve_origins,
+            } => Some(Solid::extrude_curved_profile_vector_named(
+                profile,
+                *displacement_mm,
+                *feature,
+                curve_origins,
+                program.policy,
+            )?),
             GeometryOperation::Boolean { a, b, operation } => {
                 get(*a)?.boolean(get(*b)?, *operation, program.policy)?
             }

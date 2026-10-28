@@ -166,12 +166,12 @@ mod ffi {
             tolerance: f64,
             point: &Point3,
         ) -> Result<u8>;
-        fn curved_profile_extrude(
+        fn curved_profile_extrude_vector(
             frame: &Frame3,
             edges: &[CurvedEdgeData],
             offsets: &[u32],
             tolerance: f64,
-            height: f64,
+            displacement: &Point3,
         ) -> Result<UniquePtr<Shape>>;
         fn tessellate(
             shape: &Shape,
