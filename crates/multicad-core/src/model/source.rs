@@ -554,6 +554,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::PRIMITIVE_TYPE => {
                     super::read_primitive(document, entity.id)?;
                 }
+                super::BOOLEAN_TYPE => {
+                    super::read_boolean(document, entity.id)?;
+                }
                 super::REVOLVE_TYPE => {
                     super::read_revolve(document, entity.id)?;
                 }
@@ -568,8 +571,13 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         .entities()
         .filter_map(|entity| match &entity.data {
             EntityData::Feature { definition, .. }
-                if [EXTRUDE_TYPE, super::PRIMITIVE_TYPE, super::REVOLVE_TYPE]
-                    .contains(&definition.type_id.as_str()) =>
+                if [
+                    EXTRUDE_TYPE,
+                    super::PRIMITIVE_TYPE,
+                    super::REVOLVE_TYPE,
+                    super::BOOLEAN_TYPE,
+                ]
+                .contains(&definition.type_id.as_str()) =>
             {
                 Some(format!(
                     "{}.{}",
