@@ -8,6 +8,7 @@ mod extrude;
 pub mod inspection;
 mod occurrences;
 mod runtime;
+mod scale;
 mod split;
 mod targets;
 mod transform;

@@ -119,13 +119,21 @@ impl ResolvedScale {
     }
     pub fn affine(self) -> Result<([[f64; 3]; 3], [f64; 3]), DocumentError> {
         self.validate()?;
-        let matrix = std::array::from_fn(|i| {
-            std::array::from_fn(|j| {
-                (0..3)
-                    .map(|axis| self.axes[axis][i] * self.factors[axis] * self.axes[axis][j])
-                    .sum::<f64>()
+        let matrix = if self.factors[0] == self.factors[1] && self.factors[0] == self.factors[2] {
+            // Equal authored factors are basis-independent. Keep that exact
+            // semantic identity instead of multiplying rotated basis residuals.
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| if i == j { self.factors[0] } else { 0. })
             })
-        });
+        } else {
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| {
+                    (0..3)
+                        .map(|axis| self.axes[axis][i] * self.factors[axis] * self.axes[axis][j])
+                        .sum::<f64>()
+                })
+            })
+        };
         let translation = std::array::from_fn(|i| {
             self.pivot_mm[i] - (0..3).map(|j| matrix[i][j] * self.pivot_mm[j]).sum::<f64>()
         });
@@ -203,6 +211,14 @@ mod tests {
                 point(scale.affine().unwrap(), pose.point(p)),
             );
         }
+        let uniform = ResolvedScale {
+            factors: [2.; 3],
+            pivot_mm: [0.; 3],
+            axes: scale.in_pose(pose).unwrap().axes,
+        }
+        .affine()
+        .unwrap();
+        assert_eq!(uniform.0, [[2., 0., 0.], [0., 2., 0.], [0., 0., 2.]]);
     }
     #[test]
     fn ratio_formulas_rebuild_by_identity_and_invalid_factors_are_rejected() {

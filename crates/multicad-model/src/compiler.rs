@@ -519,6 +519,22 @@ impl Compiler {
                         model::read_transform(document, id).map_err(|e| error(Some(id), e))?;
                     crate::transform::build(id, &source, context.parameters(), &solids)?
                 }
+                (model::SCALE_TYPE, model::SCALE_SCHEMA) => {
+                    let source = model::read_scale(document, id).map_err(|e| error(Some(id), e))?;
+                    crate::scale::build(
+                        crate::scale::Inputs {
+                            document,
+                            revision,
+                            parameters: context.parameters(),
+                            body_heads: &bodies,
+                            solids: &solids,
+                            topologies: &topologies,
+                            policy: self.policy,
+                        },
+                        id,
+                        &source,
+                    )?
+                }
                 (model::SPLIT_TYPE, model::SPLIT_SCHEMA) => {
                     let source = model::read_split(document, id).map_err(|e| error(Some(id), e))?;
                     let solid = crate::split::build(
@@ -631,6 +647,14 @@ impl Compiler {
             .collect::<BTreeSet<_>>();
         let body_sources = bodies.clone();
         bodies.retain(|body, _| !consumed_bodies.contains(body));
+        for body in body_sources.keys() {
+            if model::scale_component_owner(document, *body)
+                .map_err(|e| error(Some(*body), e))?
+                .is_some()
+            {
+                bodies.remove(body);
+            }
+        }
         Ok(Model {
             policy: self.policy,
             solids,
