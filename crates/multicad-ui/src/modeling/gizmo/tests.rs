@@ -44,6 +44,7 @@ fn frame(
                             camera,
                             rect: rect(),
                             basis,
+                            start_allowed: true,
                         },
                         source,
                         &parameters(),

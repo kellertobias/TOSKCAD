@@ -46,6 +46,7 @@ struct Harness {
     camera: Camera,
     basis: GizmoBasis,
     scene: Arc<Scene>,
+    start_allowed: bool,
 }
 impl Harness {
     fn new(scene: Arc<Scene>) -> Self {
@@ -60,6 +61,7 @@ impl Harness {
             },
             basis: Default::default(),
             scene,
+            start_allowed: true,
         }
     }
     fn rect() -> Rect {
@@ -96,6 +98,7 @@ impl Harness {
                             camera: self.camera,
                             rect: Self::rect(),
                             basis: self.basis,
+                            start_allowed: self.start_allowed,
                         },
                     ));
                 },
@@ -596,4 +599,74 @@ fn a_measure_or_view_interruption_cancels_an_in_progress_gesture_without_a_trans
         assert_eq!(s.document(), &original);
         assert_eq!(s.revision(), revision);
     }
+}
+
+#[test]
+fn overlay_pointer_ownership_blocks_new_drags_but_does_not_drop_a_captured_native_gesture() {
+    let (mut s, a, _, _) = fixture();
+    let original = s.document().clone();
+    let revision = s.revision();
+    let scene = canonical(&s);
+    let mut h = Harness::new(scene.clone());
+    let (mut c, gate) = begin(&s, &scene, BTreeSet::from([a.body]), true);
+    let start = h.point([18., 0., 0.]);
+    let end = h.point([28., 0., 0.]);
+    h.start_allowed = false;
+    h.frame(
+        &mut c,
+        &mut s,
+        vec![Event::PointerMoved(start)],
+        Modifiers::NONE,
+    )
+    .unwrap();
+    let event = Event::PointerButton {
+        pos: start,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    };
+    assert!(
+        !h.frame(&mut c, &mut s, vec![event], Modifiers::NONE)
+            .unwrap()
+            .input_owned
+    );
+    assert!(
+        !h.release(&mut c, &mut s, start, Modifiers::NONE)
+            .input_owned
+    );
+    assert!(!c.placement_interaction.active());
+    assert!(!c.pending());
+    assert_eq!(s.document(), &original);
+    assert_eq!(s.revision(), revision);
+    h.start_allowed = true;
+    h.start(&mut c, &mut s, start, Modifiers::NONE);
+    h.start_allowed = false;
+    assert!(
+        h.frame(
+            &mut c,
+            &mut s,
+            vec![Event::PointerMoved(end)],
+            Modifiers::NONE
+        )
+        .unwrap()
+        .input_owned
+    );
+    assert!(h.release(&mut c, &mut s, end, Modifiers::NONE).input_owned);
+    assert!(
+        h.frame(&mut c, &mut s, vec![], Modifiers::NONE)
+            .unwrap()
+            .input_owned
+    );
+    gate.store(false, Ordering::SeqCst);
+    let ModelToolOutcome::Applied(parts) = h.finish(&mut c, &mut s) else {
+        panic!()
+    };
+    assert_eq!(s.revision(), revision + 1);
+    let native = Compiler::default()
+        .compile(s.document(), s.revision())
+        .unwrap();
+    close(
+        native.snapshot().shapes[&parts[0].feature].bounds.min,
+        [10., 0., 0.],
+    );
 }

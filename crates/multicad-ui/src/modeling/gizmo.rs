@@ -36,6 +36,9 @@ pub struct PlacementViewport<'a> {
     pub camera: Camera,
     pub rect: Rect,
     pub basis: GizmoBasis,
+    /// The canvas owns the pointer rather than a popup, orientation widget or
+    /// camera control. This gates new gestures; captured gestures still finish.
+    pub start_allowed: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Handle {
@@ -371,16 +374,19 @@ impl Interaction {
         let draw_origin = values.origin();
         let draw_basis = self.drag.as_ref().map_or(input.basis, |d| d.basis);
         let geometry = shapes(input.camera, input.rect, draw_origin, draw_basis);
-        let hovered = pointer.filter(|p| input.rect.contains(*p)).and_then(|p| {
-            geometry
-                .iter()
-                .map(|s| (s, s.distance(p)))
-                .filter(|(_, d)| *d < 7.)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map(|(s, _)| s.handle)
-        });
+        let hovered = pointer
+            .filter(|p| input.rect.contains(*p) && (input.start_allowed || self.drag.is_some()))
+            .and_then(|p| {
+                geometry
+                    .iter()
+                    .map(|s| (s, s.distance(p)))
+                    .filter(|(_, d)| *d < 7.)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(s, _)| s.handle)
+            });
         let mut started = false;
         if self.drag.is_none()
+            && input.start_allowed
             && pressed
             && let (Some(handle), Some(pointer)) = (hovered, pointer)
         {
