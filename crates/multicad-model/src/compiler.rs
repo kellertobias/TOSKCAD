@@ -368,6 +368,9 @@ impl Compiler {
                 continue;
             }
             if matches!(entity.data, EntityData::Assembly { .. }) {
+                if matches!(&entity.data,EntityData::Assembly{instances}if instances.is_empty()) {
+                    continue;
+                }
                 let solid = crate::assemblies::component(
                     document,
                     id,
@@ -768,6 +771,36 @@ impl Compiler {
             }
         }
         let definitions = model::assembly_definition_parts(document).map_err(|e| error(None, e))?;
+        let reusable = model::reusable_assemblies(document).map_err(|e| error(None, e))?;
+        let referenced_components = document
+            .entities()
+            .filter_map(|e| {
+                if let EntityData::Instance { component, .. } = e.data {
+                    Some(component)
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        for entity in document.entities() {
+            if matches!(&entity.data,EntityData::Assembly{instances}if !instances.is_empty())
+                && !reusable.contains(&entity.id)
+                && !referenced_components.contains(&entity.id)
+                && let Some(shape) = shapes.get(&entity.id)
+            {
+                occurrences.insert(
+                    entity.id,
+                    Arc::new(crate::OccurrenceSnapshot {
+                        instance: entity.id,
+                        component: entity.id,
+                        producer: entity.id,
+                        pose: Default::default(),
+                        bounds: shape.bounds,
+                        topology: shape.topology.clone(),
+                    }),
+                );
+            }
+        }
         let members = model::assembly_member_instances(document).map_err(|e| error(None, e))?;
         bodies.retain(|body, _| !definitions.contains(body));
         occurrences.retain(|instance, _| !members.contains(instance));

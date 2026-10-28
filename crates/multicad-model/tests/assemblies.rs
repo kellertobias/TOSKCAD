@@ -693,3 +693,80 @@ fn nested_leaf_geometry_preserves_instance_owned_nonuniform_scale() {
         144.,
     );
 }
+#[test]
+fn legacy_unplaced_assembly_roots_keep_one_physical_aggregate_and_source_member_paths() {
+    let mut s = Session::new(Document::new("Legacy physical assembly").unwrap()).unwrap();
+    let part = PrimitiveRequest::new(
+        "Stock",
+        PrimitiveParameters::Box {
+            size: [length(2.), length(3.), length(4.)],
+            frame: Default::default(),
+        },
+    );
+    s.commit(prepare_primitive(&s, 0, actor(), &part).unwrap().prepared)
+        .unwrap();
+    let member = ComponentPlacementRequest::new(
+        part.body,
+        NumericTransform {
+            translation: [length(20.), length(0.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let p = prepare_place_component(&s, s.revision(), actor(), &member).unwrap();
+    commit(&mut s, p);
+    let assembly = Entity::new(
+        "Legacy assembly",
+        EntityData::Assembly {
+            instances: vec![member.instance],
+        },
+    );
+    let id = assembly.id;
+    let empty = Entity::new(
+        "Organization only",
+        EntityData::Assembly { instances: vec![] },
+    );
+    s.apply(Request {
+        expected_revision: s.revision(),
+        actor: actor(),
+        label: "Legacy component records".into(),
+        edits: vec![Mutation::Insert(assembly), Mutation::Insert(empty)],
+    })
+    .unwrap();
+    let native = compile(&s);
+    assert_eq!(native.snapshot().occurrences.len(), 1);
+    assert!(native.snapshot().occurrences.contains_key(&id));
+    assert!(!native.snapshot().occurrences.contains_key(&member.instance));
+    assert_eq!(native.snapshot().leaf_occurrences.len(), 2);
+    let path = OccurrencePath {
+        root: id,
+        members: vec![member.instance],
+    };
+    near(
+        native.leaf_solid(&path).unwrap().bounds().unwrap().min[0],
+        20.,
+    );
+    let source = OccurrencePath {
+        root: member.instance,
+        members: vec![],
+    };
+    near(
+        native.leaf_solid(&source).unwrap().volume_mm3().unwrap(),
+        24.,
+    );
+    assert!(!native.snapshot().leaf_occurrences.contains_key(&source));
+    let requested = multicad_core::exchange::resolve_parts(
+        s.document(),
+        &multicad_core::exchange::Scope {
+            root: multicad_core::exchange::ScopeRoot::Assembly { assembly: id },
+            tags: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        requested[0].reference.occurrence_path,
+        vec![member.instance]
+    );
+    assert_eq!(requested[0].reference.root_assembly, Some(id));
+    let loaded = reopen(&s);
+    assert_eq!(compile(&loaded).snapshot().leaf_occurrences.len(), 2);
+}
