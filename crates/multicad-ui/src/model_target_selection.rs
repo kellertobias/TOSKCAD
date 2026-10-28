@@ -72,6 +72,7 @@ impl SketchEditor {
         self.model.active()
             || self.assembly.active()
             || self.transfer.active()
+            || self.symbols.dirty()
             || self.acquisition.is_some()
     }
     pub fn awaiting_model_targets(&self) -> bool {

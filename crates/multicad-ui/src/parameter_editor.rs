@@ -90,12 +90,16 @@ impl ParameterEditor {
         value
     }
     pub fn reload(&mut self, session: &Session) {
+        let symbol_owned =
+            multicad_core::symbols::owned_entities(session.document()).unwrap_or_default();
         let mut ordered = Vec::new();
         if let Some(e)=session.document().entities().find(|e|matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==ORDER_TYPE)) && let EntityData::Extension{definition,..}=&e.data {ordered=serde_json::from_value::<Vec<EntityId>>(definition.data.clone()).unwrap_or_default();}
         let mut entities: Vec<_> = session
             .document()
             .entities()
-            .filter(|e| matches!(e.data, EntityData::Parameter { .. }))
+            .filter(|e| {
+                matches!(e.data, EntityData::Parameter { .. }) && !symbol_owned.contains(&e.id)
+            })
             .collect();
         entities.sort_by_key(|e| {
             ordered
@@ -169,6 +173,8 @@ impl ParameterEditor {
         }
         let mut edits = Vec::new();
         let mut present = BTreeSet::new();
+        let symbol_owned = multicad_core::symbols::owned_entities(session.document())
+            .map_err(CommandError::from)?;
         for row in self.rows.iter().filter(authored) {
             multicad_core::parameters::validate_input(&row.expression).map_err(|mut e| {
                 e.entity = Some(row.id);
@@ -187,7 +193,7 @@ impl ParameterEditor {
             .entities()
             .filter(|e| matches!(e.data, EntityData::Parameter { .. }))
         {
-            if !present.contains(&entity.id) {
+            if !present.contains(&entity.id) && !symbol_owned.contains(&entity.id) {
                 edits.push(Mutation::Remove(entity.id));
             }
         }

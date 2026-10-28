@@ -6,6 +6,7 @@ mod closing;
 mod external_reference_tests;
 mod files;
 mod native_picker;
+mod symbol_files;
 mod welcome;
 #[cfg(test)]
 use crate::sketch_editor::DrawTool;
@@ -99,6 +100,8 @@ enum FileAction {
     Save,
     Open,
     Import,
+    SymbolOpen,
+    SymbolSave(EntityId),
 }
 struct CommandRecord {
     input: String,
@@ -251,6 +254,7 @@ impl Application {
             project.sketch.set_assembly_backend(factory());
             project.sketch.set_transfer_backend(factory());
             project.sketch.set_external_backend(factory());
+            project.sketch.set_symbol_backend(factory());
         }
         self.model_backends = Some(factory);
     }
@@ -602,6 +606,7 @@ impl Application {
                 self.message = "Parameter committed through shared command API".into();
             }
             Command::Mode(mode) => {
+                self.current_mut().sketch.close_symbol_browser();
                 if !matches!(mode, Mode::Sketch | Mode::Model)
                     && self.current().sketch.measurement.active()
                 {
@@ -803,6 +808,22 @@ impl Application {
                 self.message =
                     "Materials and stock library · changes apply through one undoable transaction"
                         .into();
+            }
+            Command::Extension("symbol" | "library") => {
+                if self.current().editor.dirty() {
+                    return Err("Apply or discard parameter edits before opening symbols".into());
+                }
+                let tool = if command == Command::Extension("symbol") {
+                    crate::symbols::SymbolTool::Create
+                } else {
+                    crate::symbols::SymbolTool::Library
+                };
+                let p = self.current_mut();
+                p.sketch
+                    .begin_symbol(tool, &p.session, &p.resources, &p.scene, channel)?;
+                self.mode = Mode::Model;
+                self.message =
+                    "Symbols · embedded definitions and explicit library revisions".into();
             }
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
@@ -1129,6 +1150,11 @@ impl Application {
                 self.mode == Mode::Sketch && self.current().sketch.editing && !pending()
             }
             Command::Extension("materials") => !pending(),
+            Command::Extension("symbol" | "library") => {
+                !pending()
+                    && !self.current().sketch.symbol_active()
+                    && self.current().sketch.has_symbol_backend()
+            }
             Command::Extension(_) => false,
             _ => true,
         }
@@ -1484,7 +1510,7 @@ impl Application {
                             self.history_open = true;
                         }
                         if icons::labeled_button(ui,Icon::Measure,"Measure").on_hover_text("Inspect exact current faces, edges or points; click again to close Measure").clicked(){self.execute(Command::Measure,&[],Channel::Ui);}
-                        ui.add_enabled_ui(false,|ui|{icons::labeled_button(ui,Icon::Library,"Library");});
+                        if ui.add_enabled_ui(self.enabled(Command::Extension("library")),|ui|icons::labeled_button(ui,Icon::Library,"Library")).inner.on_hover_text("Browse pinned symbols, place copies or review an explicit library update").clicked(){self.execute(Command::Extension("library"),&[],Channel::Ui);}
                     });
                 });
             });
@@ -1871,6 +1897,9 @@ impl Application {
                 if !project.sketch.has_external_backend() {
                     project.sketch.set_external_backend(factory());
                 }
+                if !project.sketch.has_symbol_backend() {
+                    project.sketch.set_symbol_backend(factory());
+                }
             }
         }
         if let Some(factory) = &self.external_queries {
@@ -1997,6 +2026,7 @@ impl Application {
                     }
                 }
             });
+        self.poll_symbol_actions();
         self.file_windows(&ctx);
         if self.history_open {
             egui::Window::new("Command and MCP history").open(&mut self.history_open).show(&ctx,|ui|{ui.label("External MCP transport is not connected. UI and command-line actions use the shared transaction API.");for entry in self.projects[self.active].session.activity(){ui.label(format!("r{} · {:?} · {} · {}",entry.change.revision,entry.actor.channel,entry.actor.id,entry.label));}});

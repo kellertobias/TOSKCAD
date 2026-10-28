@@ -57,8 +57,8 @@ impl Application {
         let request = PickerRequest {
             id: self.picker_generation,
             kind: match action {
-                FileAction::Open => Kind::OpenProject,
-                FileAction::Save => Kind::SaveProject,
+                FileAction::Open | FileAction::SymbolOpen => Kind::OpenProject,
+                FileAction::Save | FileAction::SymbolSave(_) => Kind::SaveProject,
                 FileAction::Import => Kind::ImportSource,
             },
             directory: self
@@ -67,7 +67,11 @@ impl Application {
                 .as_ref()
                 .and_then(|p| p.parent())
                 .map(|p| p.to_path_buf()),
-            suggested_name: matches!(action, FileAction::Save).then_some(suggested),
+            suggested_name: match action {
+                FileAction::SymbolSave(id) => Some(self.symbol_filename(id)?),
+                FileAction::Save => Some(suggested),
+                _ => None,
+            },
         };
         self.file_picker
             .as_mut()
@@ -96,7 +100,7 @@ impl Application {
         let valid = self
             .file_action
             .is_some_and(|action| action == scope.action)
-            && (scope.action != FileAction::Save
+            && (matches!(scope.action, FileAction::Open | FileAction::Import)
                 || (self.current().local_id == scope.local
                     && self
                         .current()
@@ -120,6 +124,8 @@ impl Application {
                     FileAction::Open => self.load_path(path),
                     FileAction::Import => self.submit_picker_import(path),
                     FileAction::Save => self.save_to(path),
+                    FileAction::SymbolOpen => self.load_symbol_library(path),
+                    FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
                 }
             }
             Ok(None) => {

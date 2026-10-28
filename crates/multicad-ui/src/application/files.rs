@@ -3,6 +3,9 @@
 use super::*;
 use crate::storage::{FileRequest, FileResult, SaveMode, StorageError};
 use multicad_core::project_file::RecoveryInfo;
+#[cfg(test)]
+#[path = "symbol_file_tests.rs"]
+mod symbol_tests;
 
 pub(super) enum PendingFile {
     Save {
@@ -18,6 +21,12 @@ pub(super) enum PendingFile {
     Restore {
         expected: Option<RecoveryInfo>,
     },
+    SymbolOpen {
+        local: EntityId,
+        guard: multicad_core::commands::Prepared,
+        resources: ProjectResources,
+    },
+    SymbolSave,
     Discover,
     Snapshot {
         local: EntityId,
@@ -173,6 +182,8 @@ impl Application {
             FileAction::Open => self.load_path(path),
             FileAction::Import => self.submit_load(path, true),
             FileAction::Save => self.save_to(path),
+            FileAction::SymbolOpen => self.load_symbol_library(path),
+            FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
         };
         if let Err(error) = result {
             self.message = error;
@@ -207,6 +218,47 @@ impl Application {
     }
     fn accept_file_reply(&mut self, pending: PendingFile, reply: FileResult) -> Result<(), String> {
         match (pending, reply) {
+            (
+                PendingFile::SymbolOpen {
+                    local,
+                    guard,
+                    resources,
+                },
+                FileResult::Loaded(result),
+            ) => {
+                let loaded = result.map_err(|e| e.to_string())?;
+                let p = self
+                    .projects
+                    .iter_mut()
+                    .find(|p| p.local_id == local)
+                    .ok_or("The symbol library's target project was closed")?;
+                p.session
+                    .validate_preview(&guard)
+                    .map_err(|e| e.to_string())?;
+                if p.resources != resources {
+                    return Err("Project resources changed while loading the symbol library".into());
+                }
+                let definitions = multicad_core::symbols::definitions(&loaded.file.document)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|(_, d)| d)
+                    .collect::<Vec<_>>();
+                if definitions.is_empty() {
+                    return Err("This project contains no authored symbol definitions".into());
+                }
+                p.sketch.set_symbol_library(definitions)?;
+                self.file_action = None;
+                self.file_document = None;
+                self.message="Library loaded · select a definition and explicitly import or review its update".into();
+                self.message_error = false;
+            }
+            (PendingFile::SymbolSave, FileResult::Saved(result)) => {
+                result.map_err(|e|match e { StorageError::AlreadyExists(_)=>"A library file already exists at this path. Choose a new revision filename to preserve it.".into(),other=>other.to_string()})?;
+                self.file_action = None;
+                self.file_document = None;
+                self.message = "Pinned symbol library saved · project save state unchanged".into();
+                self.message_error = false;
+            }
             (
                 PendingFile::Save {
                     local,

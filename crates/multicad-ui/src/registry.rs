@@ -345,6 +345,7 @@ impl Default for Registry {
         }
         for (id, label, icon) in [
             ("symbol", "Create symbol", Icon::Library),
+            ("library", "Symbol library", Icon::Library),
             ("panel", "Panel", Icon::Box),
             ("joint", "Finger / miter joint", Icon::Link),
             ("drill", "Drill / pocket", Icon::Cut),

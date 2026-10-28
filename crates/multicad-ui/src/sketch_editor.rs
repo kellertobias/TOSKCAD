@@ -35,6 +35,8 @@ mod model_target_selection;
 #[cfg(test)]
 #[path = "sketch_scale_host_tests.rs"]
 mod scale_host_tests;
+#[path = "sketch_symbol_host.rs"]
+mod symbol_host;
 #[path = "sketch_transfer_host.rs"]
 mod transfer_host;
 #[cfg(test)]
@@ -141,6 +143,7 @@ pub struct SketchEditor {
     operation_report: Option<multicad_core::sketch_trim::TrimReport>,
     model: crate::modeling::ModelToolController,
     assembly: crate::assembly::AssemblyController,
+    symbols: crate::symbols::SymbolController,
     assembly_anchor: Option<assembly_host::PendingAnchor>,
     assembly_presentation: Option<assembly_host::PresentationCache>,
     assembly_pick_view: Option<assembly_host::AnchorView>,
@@ -219,6 +222,7 @@ impl Default for SketchEditor {
             operation_report: None,
             model: Default::default(),
             assembly: Default::default(),
+            symbols: Default::default(),
             assembly_anchor: None,
             assembly_presentation: None,
             assembly_pick_view: None,
@@ -485,17 +489,24 @@ impl SketchEditor {
         self.model.poll(session, resources);
         self.assembly.poll(session, resources);
         self.transfer.poll(session, resources);
+        self.symbols.poll(session, resources);
         let external_pending = self.poll_external(session, resources);
         self.model.pending()
             || self.assembly.pending()
             || self.transfer.pending()
+            || self.symbols.pending()
             || external_pending
     }
     pub fn model_active(&self) -> bool {
-        self.model.active() || self.assembly.active() || self.transfer.active()
+        self.model.active()
+            || self.assembly.active()
+            || self.transfer.active()
+            || self.symbols.active()
     }
     pub fn model_label(&self) -> &'static str {
-        if self.transfer.active() {
+        if self.symbols.active() {
+            self.symbols.label()
+        } else if self.transfer.active() {
             self.transfer.label()
         } else if self.assembly.active() {
             self.assembly.label()
@@ -576,6 +587,8 @@ impl SketchEditor {
     ) -> bool {
         self.primitive_ready()
             && !self.editing
+            && multicad_core::symbols::owned_entities(session.document())
+                .is_ok_and(|ids| !ids.contains(&feature))
             && (crate::modeling::ModelToolController::editable(session.document(), feature)
                 || crate::transfer::TransferController::editable(session.document(), feature))
     }
@@ -767,7 +780,9 @@ impl SketchEditor {
         session: &Session,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> bool {
-        if self.transfer.active() {
+        if self.symbols.active() {
+            self.symbols.can_apply(session, resources)
+        } else if self.transfer.active() {
             self.transfer.can_apply(session, resources)
         } else if self.assembly.active() {
             self.assembly.can_apply(session, resources)
@@ -850,7 +865,9 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
-        if self.transfer.active() {
+        if self.symbols.active() {
+            self.symbols.preview(session, resources, channel)
+        } else if self.transfer.active() {
             self.transfer.preview(session, resources, channel)
         } else if self.assembly.active() {
             self.assembly.preview(session, resources, channel)
@@ -863,6 +880,11 @@ impl SketchEditor {
         session: &mut Session,
         resources: &multicad_core::project_file::ProjectResources,
     ) -> Result<(), String> {
+        if self.symbols.active() {
+            let outcome = self.symbols.apply(session, resources)?;
+            self.accept_symbol_outcome(outcome);
+            return Ok(());
+        }
         if self.transfer.active() {
             let outcome = self.transfer.apply(session, resources)?;
             self.accept_transfer_outcome(outcome);
@@ -896,6 +918,7 @@ impl SketchEditor {
     }
     pub fn cancel_model(&mut self) {
         self.acquisition = None;
+        self.symbols.cancel();
         self.transfer.cancel();
         self.assembly.cancel();
         self.assembly_anchor = None;
@@ -967,6 +990,7 @@ impl SketchEditor {
             || self.model.active()
             || self.assembly.dirty()
             || self.transfer.dirty()
+            || self.symbols.dirty()
             || self.acquisition.is_some()
             || self.external.active()
             || self.trim_worker.pending()
@@ -977,6 +1001,7 @@ impl SketchEditor {
             return;
         }
         self.acquisition = None;
+        self.symbols.cancel();
         self.transfer.cancel();
         self.assembly.cancel();
         self.assembly_anchor = None;
@@ -1453,6 +1478,12 @@ impl SketchEditor {
         }
     }
     pub fn open(&mut self, doc: &Document, id: EntityId) -> Result<(), String> {
+        if multicad_core::symbols::owned_entities(doc)
+            .map_err(|e| e.to_string())?
+            .contains(&id)
+        {
+            return Err("This sketch is generated by a pinned symbol. Edit the symbol's exposed parameters or author a new library revision.".into());
+        }
         if matches!(doc.get(id).map(|e|&e.data),Some(EntityData::Sketch{definition,..}) if definition.type_id==multicad_core::constraint_sketch::source::TYPE)
         {
             Source::read_for_evaluation(doc, id, 0, None).map_err(|e| e.to_string())?;
@@ -1462,6 +1493,12 @@ impl SketchEditor {
         self.activate_sketch(id)
     }
     pub fn open_at(&mut self, doc: &Document, id: EntityId, revision: u64) -> Result<(), String> {
+        if multicad_core::symbols::owned_entities(doc)
+            .map_err(|e| e.to_string())?
+            .contains(&id)
+        {
+            return Err("This sketch is generated by a pinned symbol. Edit the symbol's exposed parameters or author a new library revision.".into());
+        }
         if self.tree_selection.len() == 1
             && let Some(instance) = self.tree_selection.first().filter(|id| {
                 matches!(
@@ -1969,10 +2006,12 @@ impl SketchEditor {
         self.model.poll(session, resources);
         self.assembly.poll(session, resources);
         self.transfer.poll(session, resources);
+        self.symbols.poll(session, resources);
         if feed.is_current(session.document().id(), session.revision()) {
             self.model.canonical_ready(session);
             self.assembly.canonical_ready(session);
             self.transfer.canonical_ready(session);
+            self.symbols.canonical_ready(session);
             if let Some(scene) = feed.visible() {
                 self.model.refresh_source_context(session, resources, scene);
             }
@@ -1987,7 +2026,11 @@ impl SketchEditor {
         {
             self.message = error;
         }
-        if self.model.pending() || self.assembly.pending() || self.transfer.pending() {
+        if self.model.pending()
+            || self.assembly.pending()
+            || self.transfer.pending()
+            || self.symbols.pending()
+        {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
@@ -2163,6 +2206,7 @@ impl SketchEditor {
                 ui.separator();
                 use crate::inspector_actions::Owner;
                 let owner=if self.measurement.active(){None}
+                    else if self.symbols.active(){Some(Owner::Symbols)}
                     else if self.transfer.active(){Some(Owner::Transfer)}
                     else if self.assembly.active(){Some(Owner::Assembly)}
                     else if self.model.active(){Some(Owner::Model)}
@@ -2178,6 +2222,11 @@ impl SketchEditor {
                 let accent=if sketch_mode{crate::registry::Mode::Sketch.color()}else{crate::registry::Mode::Model.color()};
                 crate::inspector_actions::scope(ui,owner,accent,|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
+                        if self.symbols.active(){
+                            if let Some(outcome)=self.symbols.show(ui,session,resources,true){self.accept_symbol_outcome(outcome);}
+                            if self.symbols.pending(){ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));}
+                            return;
+                        }
                         if self.target_inspector(ui, session, resources, feed) { return; }
                         if self.transfer.active() {
                             match self.transfer.show(ui,session,resources) {
@@ -2221,6 +2270,8 @@ impl SketchEditor {
                         if hierarchy_tool {return;}
                         self.assembly_edit_controls(ui,session,resources,feed);
                         if self.assembly.active(){return;}
+                        self.symbol_edit_controls(ui,session,resources,feed);
+                        if self.symbols.active(){return;}
                         if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
                         else if feed.refining() {ui.small("Refining display…");}
                         else if feed.pending() {ui.small("Rebuilding model…");}
@@ -2472,6 +2523,14 @@ impl SketchEditor {
         if !self.measurement.active()
             && self.assembly.anchor_pick().is_none()
             && let Some(candidate) = self.assembly.display_scene(session, resources)
+        {
+            scene = Some(candidate);
+            current = false;
+            model_view = true;
+            assembly_view = true;
+        }
+        if !self.measurement.active()
+            && let Some(candidate) = self.symbols.display_scene(session, resources)
         {
             scene = Some(candidate);
             current = false;
