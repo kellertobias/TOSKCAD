@@ -304,10 +304,10 @@ pub enum CurvePointLocation {
     Boundary,
     Inside,
 }
-struct Checked {
-    frame: ffi::Frame3,
-    edges: Vec<ffi::CurvedEdgeData>,
-    offsets: Vec<u32>,
+pub(crate) struct Checked {
+    pub(crate) frame: ffi::Frame3,
+    pub(crate) edges: Vec<ffi::CurvedEdgeData>,
+    pub(crate) offsets: Vec<u32>,
 }
 impl CurvedProfile {
     pub(crate) fn signed_area_mm2(&self, policy: GeometryPolicy) -> Result<f64, GeometryError> {
@@ -324,7 +324,7 @@ impl CurvedProfile {
         }
         Ok(area)
     }
-    fn checked(&self, policy: GeometryPolicy) -> Result<Checked, GeometryError> {
+    pub(crate) fn checked(&self, policy: GeometryPolicy) -> Result<Checked, GeometryError> {
         policy.validate()?;
         let frame = self.frame.checked(policy)?;
         let count = self.outer.len() + self.holes.iter().map(Vec::len).sum::<usize>();

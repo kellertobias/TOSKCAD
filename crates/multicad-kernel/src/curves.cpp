@@ -7,6 +7,7 @@
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <GCE2d_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
@@ -24,6 +25,7 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <cmath>
+#include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Pln.hxx>
 #include <stdexcept>
@@ -263,6 +265,30 @@ FaceBuild build(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
   result.face = face.Face();
   return result;
 }
+template <class Sweep>
+std::unique_ptr<Shape> sweepShape(Sweep &sweep, const FaceBuild &face,
+                                  bool caps) {
+  if (!sweep.IsDone() || sweep.Shape().IsNull() ||
+      !BRepCheck_Analyzer(sweep.Shape()).IsValid())
+    throw std::runtime_error("Exact profile sweep is invalid");
+  auto result = std::make_unique<Shape>(Shape{sweep.Shape(), {}, {}});
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(result->value, TopAbs_FACE, faces);
+  auto seed = [&](const TopoDS_Shape &shape, uint8_t role, uint32_t source) {
+    const auto index = faces.FindIndex(shape);
+    if (index > 0)
+      result->seeds.push_back(
+          NativeSeed{static_cast<uint32_t>(index - 1), source, role});
+  };
+  if (caps) {
+    seed(sweep.FirstShape(), 0, 0);
+    seed(sweep.LastShape(), 1, 0);
+  }
+  for (const auto &source : face.sources)
+    for (const auto &generated : sweep.Generated(source.first))
+      seed(generated, 2, source.second);
+  return result;
+}
 } // namespace
 CurveSampleData curve_evaluate(const CurvedEdgeData &edge, double parameter) {
   return guarded([&] {
@@ -335,24 +361,22 @@ curved_profile_extrude_vector(const Frame3 &f,
     auto face = build(f, edges, offsets, tolerance);
     BRepPrimAPI_MakePrism prism(
         face.face, gp_Vec(displacement.x, displacement.y, displacement.z));
-    if (!prism.IsDone() || prism.Shape().IsNull() ||
-        !BRepCheck_Analyzer(prism.Shape()).IsValid())
-      throw std::runtime_error("Exact curved prism is invalid");
-    auto result = std::make_unique<Shape>(Shape{prism.Shape(), {}, {}});
-    TopTools_IndexedMapOfShape faces;
-    TopExp::MapShapes(result->value, TopAbs_FACE, faces);
-    auto seed = [&](const TopoDS_Shape &shape, uint8_t role, uint32_t source) {
-      const auto index = faces.FindIndex(shape);
-      if (index > 0)
-        result->seeds.push_back(
-            NativeSeed{static_cast<uint32_t>(index - 1), source, role});
-    };
-    seed(prism.FirstShape(), 0, 0);
-    seed(prism.LastShape(), 1, 0);
-    for (const auto &source : face.sources)
-      for (const auto &generated : prism.Generated(source.first))
-        seed(generated, 2, source.second);
-    return result;
+    return sweepShape(prism, face, true);
+  });
+}
+std::unique_ptr<Shape>
+curved_profile_revolve(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
+                       rust::Slice<const uint32_t> offsets, double tolerance,
+                       const Point3 &origin, const Point3 &direction,
+                       double angle) {
+  return guarded([&] {
+    auto face = build(f, edges, offsets, tolerance);
+    const double sign = angle < 0. ? -1. : 1.;
+    gp_Ax1 axis(
+        gp_Pnt(origin.x, origin.y, origin.z),
+        gp_Dir(sign * direction.x, sign * direction.y, sign * direction.z));
+    BRepPrimAPI_MakeRevol sweep(face.face, axis, std::abs(angle), true);
+    return sweepShape(sweep, face, std::abs(angle) != 2. * std::acos(-1.));
   });
 }
 } // namespace multicad::kernel

@@ -22,4 +22,9 @@ std::unique_ptr<Shape>
 curved_profile_extrude_vector(const Frame3 &, rust::Slice<const CurvedEdgeData>,
                               rust::Slice<const uint32_t>, double tolerance,
                               const Point3 &displacement);
+std::unique_ptr<Shape>
+curved_profile_revolve(const Frame3 &, rust::Slice<const CurvedEdgeData>,
+                       rust::Slice<const uint32_t>, double tolerance,
+                       const Point3 &axis_origin, const Point3 &axis_direction,
+                       double angle);
 } // namespace multicad::kernel

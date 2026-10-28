@@ -3,7 +3,7 @@
 use crate::{
     BooleanOperation, Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, Face,
     GeometryError, GeometryErrorKind, GeometryPolicy, Mesh, MeshOptions, PlaneFrame, Profile,
-    RigidTransform, Solid,
+    RevolutionAxis, RigidTransform, Solid,
 };
 use multicad_core::{
     document::EntityId,
@@ -57,6 +57,13 @@ pub enum GeometryOperation {
         feature: EntityId,
         curve_origins: Vec<Origin>,
     },
+    NamedRevolve {
+        profile: CurvedProfile,
+        axis: RevolutionAxis,
+        angle_rad: f64,
+        feature: EntityId,
+        curve_origins: Vec<Origin>,
+    },
     Transform {
         source: usize,
         placement: RigidTransform,
@@ -106,6 +113,11 @@ impl GeometryProgram {
                     profile,
                     curve_origins,
                     ..
+                }
+                | GeometryOperation::NamedRevolve {
+                    profile,
+                    curve_origins,
+                    ..
                 } => {
                     let count = profile
                         .outer
@@ -130,7 +142,7 @@ impl GeometryProgram {
                     {
                         return Err(error(
                             GeometryErrorKind::Limit,
-                            "Vector profile exceeds edge, hole, pole or provenance budget",
+                            "Curved profile exceeds edge, hole, pole or provenance budget",
                         ));
                     }
                     edges = edges.saturating_add(count);
@@ -718,6 +730,20 @@ fn compute(
             } => Some(Solid::extrude_curved_profile_vector_named(
                 profile,
                 *displacement_mm,
+                *feature,
+                curve_origins,
+                program.policy,
+            )?),
+            GeometryOperation::NamedRevolve {
+                profile,
+                axis,
+                angle_rad,
+                feature,
+                curve_origins,
+            } => Some(Solid::revolve_curved_profile_named(
+                profile,
+                *axis,
+                *angle_rad,
                 *feature,
                 curve_origins,
                 program.policy,

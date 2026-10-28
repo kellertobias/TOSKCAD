@@ -173,6 +173,15 @@ mod ffi {
             tolerance: f64,
             displacement: &Point3,
         ) -> Result<UniquePtr<Shape>>;
+        fn curved_profile_revolve(
+            frame: &Frame3,
+            edges: &[CurvedEdgeData],
+            offsets: &[u32],
+            tolerance: f64,
+            axis_origin: &Point3,
+            axis_direction: &Point3,
+            angle: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn tessellate(
             shape: &Shape,
             deflection: f64,
@@ -192,7 +201,9 @@ mod curves;
 mod sketch_queries;
 pub use sketch_queries::NativeRegionQueries;
 mod provenance;
+mod revolve;
 pub use curves::*;
+pub use revolve::RevolutionAxis;
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")
