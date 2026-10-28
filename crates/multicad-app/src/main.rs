@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod files;
+mod modeling;
 mod self_test;
 
 use multicad_core::BuildInfo;
@@ -39,10 +40,10 @@ fn main() -> ExitCode {
     };
     let build = BuildInfo::current();
     let result = match action {
-        Action::Run => run_application(),
+        Action::Run => run_application().inspect_err(|error| record_startup_error(error)),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nIncludes Parameters and initial datum Sketch tools. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Solid modeling and MCP server remain under development.",
+                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nIncludes Parameters, constrained Sketch and initial New body extrusion. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Advanced modeling, manufacturing exports and MCP server remain under development.",
                 build.product, build.version
             );
             Ok(())
@@ -53,7 +54,7 @@ fn main() -> ExitCode {
         }
         Action::Diagnostics => {
             println!(
-                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters and datum Sketch starter\nNative project format: versioned .multicad container; atomic saves and explicit recovery copies\nMCP server: not implemented\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
+                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters; constrained Sketch; initial New body extrusion\nNative project format: versioned .multicad container; atomic saves and explicit recovery copies\nMCP server: not implemented\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
                 build.product,
                 build.version,
                 build.target_os,
@@ -73,11 +74,30 @@ fn main() -> ExitCode {
         }
     }
 }
+/// Finder launches have no attached terminal. Retain a private temporary
+/// diagnostic so startup failures remain inspectable instead of disappearing.
+fn record_startup_error(error: &str) {
+    use std::io::Write;
+    if let Ok(mut log) = tempfile::Builder::new()
+        .prefix("multicad-startup-")
+        .suffix(".log")
+        .tempfile()
+        && writeln!(log, "{error}").is_ok()
+    {
+        let _ = log.keep();
+    }
+}
 fn run_application() -> Result<(), String> {
     let mut app =
         multicad_ui::application::Application::new(Box::new(files::ProjectStore::default()))?;
     app.set_sketch_queries(std::sync::Arc::new(|| {
         Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
     }));
+    let models: multicad_ui::viewport::BackendFactory =
+        std::sync::Arc::new(|| Box::new(modeling::Backend::new()));
+    app.set_scene_backends(std::sync::Arc::clone(&models));
+    // The tool controller uses its own worker and publication lane so a
+    // candidate can never replace canonical geometry under the same revision.
+    app.set_model_backends(models);
     multicad_ui::launch_with(Box::new(move |_| Ok(Box::new(app))))
 }

@@ -1,0 +1,224 @@
+//! Production composition: exact native evaluation to immutable UI scenes.
+use multicad_core::document::{Document, EntityData};
+use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
+use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
+use std::sync::Arc;
+#[cfg(test)]
+mod tests;
+
+pub struct Backend {
+    runtime: Result<Runtime<Arc<viewport::Scene>>, String>,
+    expected: Option<(u64, SceneStamp)>,
+}
+impl Backend {
+    pub fn new() -> Self {
+        Self {
+            runtime: Runtime::with_publisher(Compiler::default(), scene),
+            expected: None,
+        }
+    }
+}
+impl SceneBackend for Backend {
+    fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
+        if stamp.document != document.id() {
+            return Err("Model scene request belongs to another document".into());
+        }
+        let runtime = self.runtime.as_mut().map_err(|e| e.clone())?;
+        let generation = runtime.request_tagged(document, stamp.revision, stamp.generation)?;
+        self.expected = Some((generation, stamp));
+        Ok(())
+    }
+    fn poll(&mut self) -> Option<SceneReply> {
+        let (expected, stamp) = self.expected?;
+        let reply = self.runtime.as_mut().ok()?.poll()?;
+        if reply.generation != expected {
+            return None;
+        }
+        self.expected = None;
+        let result = reply.result.map_err(|e| e.to_string()).and_then(|scene| {
+            if scene.stamp() != stamp {
+                return Err("Native model publication stamp does not match its request".into());
+            }
+            Ok(scene)
+        });
+        Some(SceneReply { stamp, result })
+    }
+}
+fn scene(
+    document: &Document,
+    model: &ModelSnapshot,
+    generation: u64,
+) -> Result<Arc<viewport::Scene>, ModelError> {
+    let invalid = |message: String| ModelError {
+        entity: None,
+        message,
+    };
+    // Placement support must preserve canonical body and occurrence identities;
+    // refusing it here prevents an unplaced instance from appearing correct.
+    if document
+        .entities()
+        .any(|e| matches!(e.data, EntityData::Instance { .. }))
+    {
+        return Err(invalid(
+            "Assembly instance placement is not yet supported by the production model provider"
+                .into(),
+        ));
+    }
+    let geometries = model
+        .shapes
+        .iter()
+        .map(|(id, shape)| {
+            let mesh = &shape.mesh;
+            let geometry = viewport::Geometry::new(
+                *id,
+                mesh.vertices.as_chunks::<3>().0.to_vec(),
+                mesh.indices.clone(),
+                mesh.face_indices.clone(),
+                shape.topology.elements.clone(),
+            )?
+            .with_topology_display(
+                shape
+                    .edges
+                    .iter()
+                    .map(|edge| viewport::DisplayEdge {
+                        index: edge.index,
+                        points_mm: edge.points_mm.clone(),
+                    })
+                    .collect(),
+                shape
+                    .vertices
+                    .iter()
+                    .map(|point| viewport::DisplayPoint {
+                        index: point.index,
+                        position_mm: point.position_mm,
+                    })
+                    .collect(),
+                0.1,
+            )?;
+            Ok(Arc::new(geometry))
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(invalid)?;
+    let instances = model
+        .bodies
+        .iter()
+        .map(|(body, producer)| {
+            let color = document
+                .get(*body)
+                .and_then(|entity| match entity.data {
+                    EntityData::Part { material, .. } => material,
+                    _ => None,
+                })
+                .and_then(|id| document.get(id))
+                .and_then(|entity| match entity.data {
+                    EntityData::Material { color_rgba, .. } => Some(color_rgba),
+                    _ => None,
+                })
+                .unwrap_or([137, 174, 199, 255]);
+            viewport::Instance {
+                id: *body,
+                geometry: *producer,
+                transform: Default::default(),
+                color,
+            }
+        })
+        .collect();
+    let stamp = SceneStamp {
+        document: model.stamp.document,
+        revision: model.stamp.revision,
+        generation,
+    };
+    viewport::Scene::new(stamp, geometries, instances)
+        .map(Arc::new)
+        .map_err(invalid)
+}
+
+/// Packaged-runtime check of the canonical source → native model → display
+/// adapter path. The resulting editable project is also usable for UI review.
+pub fn smoke(directory: &std::path::Path) -> Result<(), String> {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        constraint_sketch::source::Source,
+        document::Document,
+        model::{self, ExtrudeRequest},
+        project_file::{self, ProjectFile},
+        sketch::Datum,
+        sketch_regions,
+    };
+    let actor = Actor::local(Channel::CommandLine);
+    let (sketch, edits) =
+        Source::create(Datum::Xy, "Shared profiles").map_err(|e| e.to_string())?;
+    let mut document = Document::new("Parametric solids review")
+        .map_err(|e| e.to_string())?
+        .edited(&edits)
+        .map_err(|e| e.to_string())?;
+    let mut source = Source::read(&document, sketch)
+        .map_err(|e| e.to_string())?
+        .0;
+    source
+        .add_rectangle([0., 0.], [80., 60.])
+        .map_err(|e| e.to_string())?;
+    source
+        .add_rectangle([100., 0.], [140., 40.])
+        .map_err(|e| e.to_string())?;
+    document = document
+        .edited(
+            &source
+                .replace(&document, sketch)
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let regions = sketch_regions::extract(&source);
+    if !regions.diagnostics.is_empty() || regions.regions.len() != 2 {
+        return Err("Canonical smoke profiles did not close".into());
+    }
+    let mut session = Session::new(document).map_err(|e| e.to_string())?;
+    let request = ExtrudeRequest::new(
+        sketch,
+        regions.regions.iter().map(|r| r.intent()).collect(),
+        Default::default(),
+    );
+    let prepared =
+        model::prepare_extrude(&session, 0, actor, &request).map_err(|e| e.to_string())?;
+    let exact = Compiler::default()
+        .compile(prepared.prepared.document(), 0)
+        .map_err(|e| e.to_string())?;
+    if exact.snapshot().bodies.len() != 2
+        || (exact
+            .snapshot()
+            .shapes
+            .values()
+            .map(|s| s.volume_mm3)
+            .sum::<f64>()
+            - 64000.)
+            .abs()
+            > 1e-5
+    {
+        return Err("Canonical native model volume/identity smoke check failed".into());
+    }
+    // The same exact candidate is committed only after native validation.
+    session
+        .commit(prepared.prepared)
+        .map_err(|e| e.to_string())?;
+    let exact = Compiler::default()
+        .compile(session.document(), session.revision())
+        .map_err(|e| e.to_string())?;
+    let display = scene(session.document(), exact.snapshot(), 1).map_err(|e| e.to_string())?;
+    if display.reference_instances().len() != 2 {
+        return Err("Native model display lost a Part".into());
+    }
+    for (index, producer) in exact.snapshot().bodies.values().enumerate() {
+        exact
+            .solid(*producer)
+            .ok_or("Model lost an exact producer")?
+            .write_step(&directory.join(format!("parametric-body-{}.step", index + 1)))
+            .map_err(|e| e.to_string())?;
+    }
+    let project = ProjectFile::new(session.document().clone())?;
+    let mut bytes = Vec::new();
+    project_file::write(&project, &mut bytes, Default::default())?;
+    std::fs::write(directory.join("parametric-solids.multicad"), bytes)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(directory.join("parametric-solids.txt"),"Canonical shared sketch; two independent native B-reps; checked preview/commit; viewport adapter; editable project and exact STEP bodies: passed\n").map_err(|e|e.to_string())?;
+    Ok(())
+}

@@ -31,6 +31,7 @@ pub fn run(directory: &Path) -> Result<(), Error> {
         directory.join("native-smoke.txt"),
         "OCCT 7.9.3; constrained rectangle; valid solid; Boolean cut; tessellation; STEP round-trip: passed\n",
     )?;
+    crate::modeling::smoke(directory).map_err(|e| -> Error { e.into() })?;
     println!("Native runtime smoke check passed");
     Ok(())
 }
