@@ -33,8 +33,15 @@ pub struct ShapeSnapshot {
     pub edges: Vec<DisplayEdge>,
     pub vertices: Vec<DisplayVertex>,
 }
+/// Source inspection is deliberately incomplete and cannot authorize a full-model operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvaluationScope {
+    Full,
+    Sources(Vec<EntityId>),
+}
 #[derive(Clone, Debug)]
 pub struct ModelSnapshot {
+    pub scope: EvaluationScope,
     pub stamp: ModelStamp,
     /// Includes upstream producers needed by attached sketches and repair.
     pub shapes: BTreeMap<EntityId, Arc<ShapeSnapshot>>,
@@ -178,6 +185,36 @@ impl Compiler {
         revision: u64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
+        self.compile_scoped(document, revision, None, interrupt)
+    }
+    /// Evaluate only explicitly selected current source roots and their dependencies.
+    /// The stamp still covers the complete canonical document. The result is an
+    /// incomplete inspection model, never a substitute for a full Apply/export.
+    pub fn compile_sources(
+        &self,
+        document: &Document,
+        revision: u64,
+        roots: &[EntityId],
+    ) -> Result<Model, ModelError> {
+        self.compile_sources_interruptible(document, revision, roots, None)
+    }
+    pub fn compile_sources_interruptible(
+        &self,
+        document: &Document,
+        revision: u64,
+        roots: &[EntityId],
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
+        let roots = validate_source_roots(document, roots)?;
+        self.compile_scoped(document, revision, Some(roots), interrupt)
+    }
+    fn compile_scoped(
+        &self,
+        document: &Document,
+        revision: u64,
+        roots: Option<Vec<EntityId>>,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
         checkpoint(interrupt)?;
         document.validate().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
@@ -192,10 +229,12 @@ impl Compiler {
         for entity in document.entities() {
             if let EntityData::Part { features, .. } = &entity.data {
                 for feature in features {
-                    if !matches!(
-                        document.get(*feature).map(|e| &e.data),
-                        Some(EntityData::Feature { .. })
-                    ) {
+                    if roots.is_none()
+                        && !matches!(
+                            document.get(*feature).map(|e| &e.data),
+                            Some(EntityData::Feature { .. })
+                        )
+                    {
                         return Err(error(
                             Some(entity.id),
                             format!(
@@ -220,19 +259,35 @@ impl Compiler {
         // Only model roots and their dependencies are executable. Unconsumed
         // sketches and opaque extensions do not prevent a document from opening.
         let mut needed = BTreeSet::new();
-        let mut pending: Vec<_> = bodies.values().copied().collect();
-        pending.extend(
-            document
-                .entities()
-                .filter(|e| matches!(e.data, EntityData::Instance { .. }))
-                .map(|e| e.id),
-        );
+        let mut pending: Vec<_> = roots.clone().unwrap_or_else(|| {
+            bodies
+                .values()
+                .copied()
+                .chain(
+                    document
+                        .entities()
+                        .filter(|e| matches!(e.data, EntityData::Instance { .. }))
+                        .map(|e| e.id),
+                )
+                .collect()
+        });
         while let Some(id) = pending.pop() {
             if needed.insert(id) {
                 let entity = document
                     .get(id)
                     .ok_or_else(|| error(Some(id), "Missing model dependency"))?;
-                if matches!(entity.data, EntityData::Part { .. }) {
+                if let EntityData::Part { features, .. } = &entity.data {
+                    if features.iter().any(|id| {
+                        !matches!(
+                            document.get(*id).map(|e| &e.data),
+                            Some(EntityData::Feature { .. })
+                        )
+                    }) {
+                        return Err(error(
+                            Some(id),
+                            "Source body history contains a missing or invalid producer",
+                        ));
+                    }
                     if let Some(head) = bodies.get(&id) {
                         pending.push(*head);
                     }
@@ -258,6 +313,9 @@ impl Compiler {
                 .get(id)
                 .ok_or_else(|| error(Some(id), "Missing model source"))?;
             if matches!(entity.data, EntityData::Part { .. }) {
+                if roots.is_some() && !needed.contains(&id) {
+                    continue;
+                }
                 if let Some(head) = bodies.get(&id) {
                     let mut topology = topologies
                         .get(head)
@@ -560,6 +618,9 @@ impl Compiler {
         }
         checkpoint(interrupt)?;
         let references = references::inspect(document, revision, &topologies);
+        if roots.is_some() {
+            bodies.retain(|_, producer| shapes.contains_key(producer));
+        }
         let consumed_bodies = bodies
             .iter()
             .filter_map(|(body, producer)| {
@@ -574,6 +635,7 @@ impl Compiler {
             policy: self.policy,
             solids,
             snapshot: ModelSnapshot {
+                scope: roots.map_or(EvaluationScope::Full, EvaluationScope::Sources),
                 stamp,
                 shapes,
                 bodies,
@@ -585,4 +647,40 @@ impl Compiler {
             },
         })
     }
+}
+
+/// Explicit source queries are bounded and preserve identity rather than silently
+/// substituting the latest display geometry or guessing sibling producers.
+pub fn validate_source_roots(
+    document: &Document,
+    roots: &[EntityId],
+) -> Result<Vec<EntityId>, ModelError> {
+    let unique: BTreeSet<_> = roots.iter().copied().collect();
+    if roots.is_empty()
+        || roots.len() > 128
+        || unique.len() != roots.len()
+        || unique.iter().any(EntityId::is_nil)
+    {
+        return Err(error(
+            None,
+            "Source inspection requires 1..128 unique non-nil roots",
+        ));
+    }
+    for id in &unique {
+        if !matches!(
+            document.get(*id).map(|e| &e.data),
+            Some(
+                EntityData::Feature { .. }
+                    | EntityData::Part { .. }
+                    | EntityData::Instance { .. }
+                    | EntityData::Plane { .. }
+            )
+        ) {
+            return Err(error(
+                Some(*id),
+                "Source inspection roots must be Features, Parts, Instances or sketch Planes",
+            ));
+        }
+    }
+    Ok(unique.into_iter().collect())
 }

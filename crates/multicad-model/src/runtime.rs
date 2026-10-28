@@ -21,6 +21,7 @@ struct Job {
     revision: u64,
     tag: u64,
     options: EvaluationOptions,
+    sources: Option<Vec<multicad_core::document::EntityId>>,
 }
 struct Slots<T> {
     pending: Option<Job>,
@@ -133,11 +134,19 @@ impl<T: Send + 'static> Runtime<T> {
                         slots.pending.take().expect("pending job")
                     };
                     let superseded = || worker.latest.load(Ordering::Acquire) != job.generation;
-                    let result = compiler.compile_interruptible(
-                        &job.document,
-                        job.revision,
-                        Some(&superseded),
-                    );
+                    let result = match &job.sources {
+                        Some(roots) => compiler.compile_sources_interruptible(
+                            &job.document,
+                            job.revision,
+                            roots,
+                            Some(&superseded),
+                        ),
+                        None => compiler.compile_interruptible(
+                            &job.document,
+                            job.revision,
+                            Some(&superseded),
+                        ),
+                    };
                     if superseded() {
                         continue;
                     }
@@ -226,6 +235,32 @@ impl<T: Send + 'static> Runtime<T> {
         tag: u64,
         options: &EvaluationOptions,
     ) -> Result<u64, String> {
+        self.request_scoped(document, revision, tag, options, None)
+    }
+    pub fn request_sources(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        tag: u64,
+        roots: &[multicad_core::document::EntityId],
+    ) -> Result<u64, String> {
+        let roots = crate::validate_source_roots(document, roots).map_err(|e| e.to_string())?;
+        self.request_scoped(
+            document,
+            revision,
+            tag,
+            &EvaluationOptions::default(),
+            Some(roots),
+        )
+    }
+    fn request_scoped(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        tag: u64,
+        options: &EvaluationOptions,
+        sources: Option<Vec<multicad_core::document::EntityId>>,
+    ) -> Result<u64, String> {
         options.validate().map_err(|error| error.to_string())?;
         let mut slots = self
             .shared
@@ -248,6 +283,7 @@ impl<T: Send + 'static> Runtime<T> {
             revision,
             tag,
             options: options.clone(),
+            sources,
         });
         slots.reply = None;
         self.shared.wake.notify_one();

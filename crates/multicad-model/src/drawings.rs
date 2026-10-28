@@ -197,6 +197,12 @@ impl Model {
         view: &DrawingView,
         providers: &DrawingProviders,
     ) -> Result<ViewEvaluation, ModelError> {
+        if self.snapshot().scope != crate::EvaluationScope::Full {
+            return Err(error(
+                Some(view.id),
+                "A source-only inspection model cannot generate drawings",
+            ));
+        }
         view.validate().map_err(|e| error(Some(view.id), e))?;
         let stamp = self.snapshot().stamp;
         if stamp.document != document.id()
@@ -314,6 +320,12 @@ impl Model {
         providers: &DrawingProviders,
         budget: DrawingBudget,
     ) -> Result<DrawingEvaluation, ModelError> {
+        if self.snapshot().scope != crate::EvaluationScope::Full {
+            return Err(error(
+                None,
+                "A source-only inspection model cannot generate drawings",
+            ));
+        }
         let maximum = DrawingBudget::default();
         if budget.views == 0
             || budget.views > maximum.views

@@ -47,6 +47,12 @@ impl Model {
     ) -> Result<CutTargetSelection, ModelError> {
         checkpoint(interrupt)?;
         let snapshot = self.snapshot();
+        if snapshot.scope != crate::EvaluationScope::Full {
+            return Err(error(
+                None,
+                "A source-only inspection model cannot discover cut targets",
+            ));
+        }
         if snapshot.stamp.document != document.id()
             || snapshot.stamp.revision != revision
             || snapshot.stamp.source_hash
