@@ -100,6 +100,11 @@ fn copy_base(
     ids: &mut BTreeSet<EntityId>,
     edits: &mut Vec<Mutation>,
 ) -> Result<(EntityId, Placement, PlacementBase), CommandError> {
+    if crate::model::joint_driver(document, instance)?.is_some() {
+        return Err(error(
+            "Use Place component to copy relationship-controlled geometry, then create or edit its own joint",
+        ));
+    }
     let Some(EntityData::Instance {
         component,
         placement,
@@ -299,6 +304,11 @@ pub fn prepare_instance_moves(
             return Err(error("Choose an existing Instance"));
         };
         part_component(document, *component)?;
+        if crate::model::joint_driver(document, request.instance)?.is_some() {
+            return Err(error(
+                "Edit this Instance's joint values instead of adding a free placement after its relationship",
+            ));
+        }
         let base = match *placement_source {
             Some(driver) => {
                 check_next_driver(document, driver, request.instance)?;

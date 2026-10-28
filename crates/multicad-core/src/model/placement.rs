@@ -132,12 +132,17 @@ pub(super) fn header(data: &EntityData) -> Result<(EntityId, PlacementBase), Doc
             let s = super::InstanceAlignmentDefinition::from_definition(definition)?;
             Ok((s.owner, s.base))
         }
+        super::JOINT_TYPE => {
+            let s = super::JointDefinition::from_definition(definition)?;
+            Ok((s.owner, s.base))
+        }
         _ => Err(invalid("Unsupported instance placement driver")),
     }
 }
 #[derive(Clone)]
 pub(super) enum Driver {
     Numeric(InstancePlacementDefinition),
+    Joint(Box<super::JointDefinition>, Vec<super::AlignmentInput>),
     Alignment(
         super::InstanceAlignmentDefinition,
         Vec<super::AlignmentInput>,
@@ -153,6 +158,10 @@ impl Driver {
         };
         match definition.type_id.as_str() {
             INSTANCE_PLACEMENT_TYPE => Ok(Self::Numeric(read_instance_placement(document, id)?)),
+            super::JOINT_TYPE => {
+                let (s, r) = super::read_joint(document, id)?;
+                Ok(Self::Joint(Box::new(s), r))
+            }
             super::INSTANCE_ALIGNMENT_TYPE => {
                 let (s, r) = super::read_instance_alignment(document, id)?;
                 Ok(Self::Alignment(s, r))
@@ -163,24 +172,42 @@ impl Driver {
     pub(super) fn owner(&self) -> EntityId {
         match self {
             Self::Numeric(s) => s.owner,
+            Self::Joint(s, _) => s.owner,
             Self::Alignment(s, _) => s.owner,
         }
     }
     pub(super) fn base(&self) -> PlacementBase {
         match self {
             Self::Numeric(s) => s.base.clone(),
+            Self::Joint(s, _) => s.base.clone(),
             Self::Alignment(s, _) => s.base.clone(),
         }
     }
     pub(super) fn set_base(&mut self, base: PlacementBase) {
         match self {
             Self::Numeric(s) => s.base = base,
+            Self::Joint(s, _) => s.base = base,
             Self::Alignment(s, _) => s.base = base,
         }
     }
     pub(super) fn copy_owner(&mut self, owner: EntityId) {
         match self {
             Self::Numeric(s) => s.owner = owner,
+            Self::Joint(s, refs) => {
+                s.owner = owner;
+                for input in refs {
+                    let old = input.intent.id;
+                    let new = EntityId::new();
+                    input.intent.id = new;
+                    for anchor in [&mut s.parameters.moving, &mut s.parameters.target] {
+                        if let super::JointAnchor::Geometry { reference } = anchor
+                            && *reference == old
+                        {
+                            *reference = new;
+                        }
+                    }
+                }
+            }
             Self::Alignment(s, refs) => {
                 s.owner = owner;
                 for input in refs {
@@ -201,6 +228,7 @@ impl Driver {
     pub(super) fn entity(&self, id: EntityId) -> Result<crate::document::Entity, DocumentError> {
         let (definition, inputs) = match self {
             Self::Numeric(s) => (s.definition()?, s.inputs()?),
+            Self::Joint(s, r) => (s.definition()?, s.inputs(r)?),
             Self::Alignment(s, r) => (s.definition()?, s.inputs(r)?),
         };
         let mut e = crate::document::Entity::new(
@@ -288,6 +316,9 @@ pub fn resolve_placement_base_with_snapshots(
     controls.into_iter().rev().try_fold(base, |pose, control| {
         let delta = match control {
             Driver::Numeric(s) => s.parameters.resolve(parameters)?,
+            Driver::Joint(s, r) => {
+                super::resolve_joint(document, revision, parameters, &s, &r, snapshots, pose)?
+            }
             Driver::Alignment(s, r) => super::resolve_alignment(
                 document,
                 revision,
@@ -327,8 +358,12 @@ pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError
     for entity in document.entities() {
         match &entity.data {
             EntityData::Extension { definition, .. }
-                if [INSTANCE_PLACEMENT_TYPE, super::INSTANCE_ALIGNMENT_TYPE]
-                    .contains(&definition.type_id.as_str()) =>
+                if [
+                    INSTANCE_PLACEMENT_TYPE,
+                    super::INSTANCE_ALIGNMENT_TYPE,
+                    super::JOINT_TYPE,
+                ]
+                .contains(&definition.type_id.as_str()) =>
             {
                 Driver::read(document, entity.id)?;
             }

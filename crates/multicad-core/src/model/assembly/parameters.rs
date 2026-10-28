@@ -56,7 +56,7 @@ impl JointKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum JointAnchor {
-    Frame { frame: PrimitiveFrame },
+    Frame { frame: Box<PrimitiveFrame> },
     Geometry { reference: EntityId },
 }
 impl Default for JointAnchor {

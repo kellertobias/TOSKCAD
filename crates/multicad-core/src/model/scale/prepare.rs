@@ -96,6 +96,11 @@ fn clone_drivers(
     }
     for (id, mut driver) in chain {
         match &mut driver {
+            Driver::Joint(_, _) => {
+                return Err(error(
+                    "Scaling a joint-controlled Instance is unsupported; scale its component before authoring the relationship",
+                ));
+            }
             Driver::Numeric(source) => source.owner = owner,
             Driver::Alignment(source, inputs) => {
                 source.owner = owner;
