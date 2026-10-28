@@ -3,6 +3,7 @@ pub mod camera;
 pub mod controls;
 pub mod drawings;
 pub mod icons;
+pub mod materials;
 pub mod model_tree;
 pub mod modeling;
 pub mod navigation;

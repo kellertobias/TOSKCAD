@@ -321,3 +321,98 @@ fn production_scene_retains_consumed_tool_history_with_source_bound_metadata() {
     assert!(scene.geometry_snapshot(tool.feature).is_some());
     assert!(scene.geometry_snapshot(target.feature).is_some());
 }
+
+#[test]
+fn native_scene_uses_reusable_appearance_without_changing_exact_stock_geometry() {
+    use multicad_core::{
+        document::{Entity, EntityData, EntityId, Mutation},
+        materials::*,
+        project_file::{self, ProjectFile},
+    };
+    let (mut session, request) = box_session();
+    let material = Entity::new(
+        "Steel",
+        EntityData::Material {
+            density_kg_m3: Some(7850.),
+            color_rgba: [50, 60, 70, 255],
+            section_hatch: None,
+        },
+    );
+    let appearance = LibraryDefinition::Appearance(Appearance {
+        color_rgba: [170, 80, 30, 255],
+        roughness: 0.4,
+        metallic: 0.8,
+    })
+    .entity(EntityId::new(), "Painted steel")
+    .unwrap();
+    let hatch = LibraryDefinition::Hatch(HatchStyle {
+        pattern: HatchPattern::Cross,
+        ..Default::default()
+    })
+    .entity(EntityId::new(), "Steel section")
+    .unwrap();
+    let p = prepare_library(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        &[material.clone(), appearance.clone(), hatch.clone()],
+    )
+    .unwrap();
+    session.commit(p).unwrap();
+    let assignment = Assignment {
+        material: Some(material.id),
+        stock: None,
+        appearance: Some(appearance.id),
+        hatch: Some(hatch.id),
+    };
+    let p = prepare_assignment(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        &[request.body],
+        &assignment,
+    )
+    .unwrap();
+    session.commit(p).unwrap();
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let document = opened.project.document;
+    let model = Compiler::default()
+        .compile(&document, session.revision())
+        .unwrap();
+    let solid = &model.snapshot().shapes[&request.feature];
+    assert!((solid.volume_mm3 - 6000.).abs() < 1e-6);
+    assert_eq!(solid.solid_count, 1);
+    let current = scene(&document, model.snapshot(), 10).unwrap();
+    assert_eq!(current.reference_instances()[0].color, [170, 80, 30, 255]);
+    assert_eq!(
+        resolve(&document, request.body)
+            .unwrap()
+            .hatch
+            .unwrap()
+            .pattern,
+        HatchPattern::Cross
+    );
+    let broken = document.edited(&[Mutation::Remove(appearance.id)]).unwrap();
+    let native = Compiler::default()
+        .compile(&broken, session.revision() + 1)
+        .unwrap();
+    assert!((native.snapshot().shapes[&request.feature].volume_mm3 - 6000.).abs() < 1e-6);
+    let error = scene(&broken, native.snapshot(), 11)
+        .err()
+        .expect("broken appearance must fail publication");
+    assert!(error.message.contains("Missing appearance"));
+    // No replacement color or geometry is fabricated for a broken assignment.
+    assert_eq!(current.reference_instances()[0].color, [170, 80, 30, 255]);
+}

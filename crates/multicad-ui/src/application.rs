@@ -438,6 +438,17 @@ impl Application {
                 self.discover_recoveries()?;
             }
             Command::RecoverySnapshot => self.snapshot_now(self.active)?,
+            Command::Extension("materials") => {
+                let p = self.current_mut();
+                if p.editor.dirty() {
+                    return Err("Apply or discard parameter edits before opening materials".into());
+                }
+                p.sketch.open_materials(&p.session)?;
+                self.mode = Mode::Model;
+                self.message =
+                    "Materials and stock library · changes apply through one undoable transaction"
+                        .into();
+            }
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
@@ -679,6 +690,7 @@ impl Application {
             | Command::Delete => {
                 self.mode == Mode::Sketch && self.current().sketch.editing && !pending()
             }
+            Command::Extension("materials") => !pending(),
             Command::Extension(_) => false,
             _ => true,
         }

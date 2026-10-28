@@ -96,6 +96,7 @@ pub struct SketchEditor {
     operations: crate::sketch_operations::Panel,
     operation_error: Option<String>,
     model: crate::modeling::ModelToolController,
+    materials: crate::materials::MaterialsEditor,
     fitted_model_document: Option<EntityId>,
     tree: crate::model_tree::ModelTree,
     tree_selection: std::collections::BTreeSet<EntityId>,
@@ -157,6 +158,7 @@ impl Default for SketchEditor {
             operations: Default::default(),
             operation_error: None,
             model: Default::default(),
+            materials: Default::default(),
             fitted_model_document: None,
             tree: Default::default(),
             tree_selection: Default::default(),
@@ -196,6 +198,16 @@ fn commit(
         .map_err(|e| e.to_string())
 }
 impl SketchEditor {
+    pub fn open_materials(&mut self, session: &Session) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before opening materials".into());
+        }
+        if self.editing {
+            self.finish()?;
+        }
+        self.materials.open(session);
+        Ok(())
+    }
     pub fn has_query_factory(&self) -> bool {
         self.sketch_evaluation.has_query_factory()
     }
@@ -679,6 +691,9 @@ impl SketchEditor {
         self.clear_drawing_progress();
     }
     pub fn has_pending_edits(&self) -> bool {
+        if self.materials.pending() {
+            return true;
+        }
         self.preview.is_some()
             || self.constraints.dirty()
             || self.repair.has_pending()
@@ -686,6 +701,7 @@ impl SketchEditor {
             || self.model.active()
     }
     pub fn cancel(&mut self) {
+        self.materials.cancel();
         if self.model.active() {
             self.message = "Modeling cancelled · document unchanged".into();
         }
@@ -1757,6 +1773,7 @@ impl SketchEditor {
                 self.tool = None;
             }
         }
+        self.materials.show(ui.ctx(), session);
         self.poll_profile_pick(session.document(), session.revision());
         if self.pending_profile_pick.is_some() || !self.queued_profile_clicks.is_empty() {
             ui.ctx()
@@ -1835,6 +1852,13 @@ impl SketchEditor {
                             if self.model.active() {return;}
                         }
                         self.solid.inspector(ui,session.document());
+                        if !sketch_mode && !self.editing {
+                            let mut selection=self.tree_selection.clone();
+                            selection.extend(self.solid.selected_ids());
+                            let selection:Vec<_>=selection.into_iter().collect();
+                            let enabled=self.preview.is_none() && !self.constraints.dirty() && !self.repair.has_pending();
+                            self.materials.inspector(ui,session,&selection,enabled);
+                        }
                         if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() && self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision())) {
                             self.fit_requested=true;
                         }

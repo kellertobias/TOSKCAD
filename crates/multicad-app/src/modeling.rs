@@ -121,30 +121,25 @@ fn scene(
         })
         .collect::<Result<Vec<_>, String>>()
         .map_err(invalid)?;
+    let materials =
+        multicad_core::materials::Resolver::new(document).map_err(|e| invalid(e.to_string()))?;
     let instances = model
         .bodies
         .iter()
         .map(|(body, producer)| {
-            let color = document
-                .get(*body)
-                .and_then(|entity| match entity.data {
-                    EntityData::Part { material, .. } => material,
-                    _ => None,
-                })
-                .and_then(|id| document.get(id))
-                .and_then(|entity| match entity.data {
-                    EntityData::Material { color_rgba, .. } => Some(color_rgba),
-                    _ => None,
-                })
-                .unwrap_or([137, 174, 199, 255]);
-            viewport::Instance {
+            let color = materials
+                .resolve(*body)
+                .map_err(|error| invalid(error.to_string()))?
+                .appearance
+                .color_rgba;
+            Ok(viewport::Instance {
                 id: *body,
                 geometry: *producer,
                 transform: Default::default(),
                 color,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, ModelError>>()?;
     let stamp = SceneStamp {
         document: model.stamp.document,
         revision: model.stamp.revision,
