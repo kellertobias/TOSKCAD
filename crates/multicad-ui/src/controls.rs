@@ -216,6 +216,16 @@ mod tests {
     }
 }
 
+/// Reserve input before drawing background controls. A modal area's input
+/// layer is effective on its following frame, so pending confirmations must
+/// also disable the background on their very first frame. Modal areas create
+/// their own enabled UI and remain usable.
+pub fn block_modal_background(ui: &mut egui::Ui, pending: bool) {
+    if pending {
+        ui.disable();
+    }
+}
+
 /// Consistent centered confirmations; floating tool palettes remain independent.
 pub fn modal<R>(
     ctx: &egui::Context,
@@ -332,5 +342,68 @@ mod modal_tests {
             },
         )
         .drop_without_applying_deltas();
+    }
+}
+
+#[cfg(test)]
+mod modal_first_frame_tests {
+    use super::*;
+    #[test]
+    fn pending_modal_blocks_a_click_already_pressed_before_its_first_frame() {
+        let ctx = egui::Context::default();
+        let point = Pos2::new(50., 50.);
+        let mut clicks = 0;
+        for frame in 0..5 {
+            let events = match frame {
+                2 => vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+                3 => vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+                _ => vec![],
+            };
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        Pos2::ZERO,
+                        Vec2::new(1200., 800.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    block_modal_background(ui, frame >= 3);
+                    let response = ui.put(
+                        egui::Rect::from_min_size(Pos2::new(20., 20.), Vec2::new(100., 80.)),
+                        egui::Button::new("Underlying action"),
+                    );
+                    clicks += usize::from(response.clicked());
+                    if frame >= 3 {
+                        modal(&ctx, "first-modal", "Confirm", |ui| {
+                            assert!(
+                                ui.is_sizing_pass() || ui.is_enabled(),
+                                "The modal must remain usable while its background is disabled"
+                            );
+                            ui.button("Cancel")
+                        });
+                    }
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(
+            clicks, 0,
+            "The pending confirmation must own a released background click immediately"
+        );
     }
 }

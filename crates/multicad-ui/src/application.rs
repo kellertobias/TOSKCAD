@@ -1665,6 +1665,10 @@ impl Application {
         self.poll_files();
         self.poll_recents(&ctx);
         self.handle_close_request(&ctx);
+        controls::block_modal_background(
+            ui,
+            self.close_confirm || self.file_action.is_some() || self.replacement.is_some(),
+        );
         if self.welcome {
             self.show_welcome(ui);
             return;
@@ -3314,3 +3318,79 @@ mod export_tests;
 
 #[cfg(test)]
 mod measurement_tests;
+
+#[cfg(test)]
+mod modal_input_tests {
+    use super::*;
+    #[test]
+    fn native_close_request_blocks_a_workspace_click_released_on_its_first_confirmation_frame() {
+        struct Storage;
+        impl DocumentStorage for Storage {
+            fn save(&mut self, _: &std::path::Path, _: &Document) -> Result<(), String> {
+                Ok(())
+            }
+            fn load(&mut self, _: &std::path::Path) -> Result<Document, String> {
+                Err("unused".into())
+            }
+        }
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1360., 860.));
+        let input = || egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        for _ in 0..4 {
+            ctx.run_ui(input(), |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        }
+        let output = ctx.run_ui(input(), |ui| app.show(ui));
+        let model = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Model" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Model tab");
+        output.drop_without_applying_deltas();
+        let mut press = input();
+        press.events = vec![
+            egui::Event::PointerMoved(model),
+            egui::Event::PointerButton {
+                pos: model,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ];
+        ctx.run_ui(press, |ui| app.show(ui))
+            .drop_without_applying_deltas();
+        let mut release = input();
+        release.events = vec![egui::Event::PointerButton {
+            pos: model,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }];
+        release
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        ctx.run_ui(release, |ui| app.show(ui))
+            .drop_without_applying_deltas();
+        assert!(app.close_confirm);
+        assert_eq!(
+            app.mode,
+            Mode::Parameters,
+            "Native Close must acquire input before the workspace header processes a pending click"
+        );
+        assert_eq!(app.projects.len(), 1);
+        assert_eq!(app.current().session.revision(), 0);
+    }
+}

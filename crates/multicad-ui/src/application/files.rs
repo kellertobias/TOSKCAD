@@ -454,6 +454,7 @@ impl Application {
             let mut open = true;
             let mut restore = None;
             egui::Window::new("Recover projects").open(&mut open).show(ctx,|ui| {
+                crate::controls::block_modal_background(ui,self.close_confirm || self.file_action.is_some() || self.replacement.is_some());
                 ui.label("Restore opens an unsaved copy. Your original project and recovery snapshot remain unchanged.");
                 if ui.add_enabled(!self.file_busy(),egui::Button::new("Refresh snapshots")).clicked() && let Err(error)=self.discover_recoveries() {self.message=error;self.message_error=true;}
                 for diagnostic in &self.recoveries.diagnostics {ui.colored_label(Color32::GRAY,diagnostic);}
