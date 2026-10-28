@@ -99,6 +99,7 @@ impl InspectionPanel {
         self.expected = None;
         self.report = None;
         self.pending = false;
+        self.error = None;
     }
     pub fn request(&mut self, session: &Session) -> Result<(), String> {
         self.invalidate();
@@ -532,3 +533,7 @@ fn show_pairs(ui: &mut egui::Ui, document: &Document, report: &PairReport) {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "inspection_native_tests.rs"]
+mod native_tests;

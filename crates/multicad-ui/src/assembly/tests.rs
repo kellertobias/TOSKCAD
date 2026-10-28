@@ -307,3 +307,27 @@ fn all_tool_forms_use_fixed_actions_at_narrow_short_inspector_without_source_edi
         c.cancel();
     }
 }
+
+#[test]
+fn rejected_stale_selection_does_not_leave_a_half_open_relationship_tool() {
+    let (session, _, _) = source();
+    let mut c = controller();
+    let before = session.document().clone();
+    assert!(
+        c.begin(
+            AssemblyTool::Relationship,
+            &session,
+            &Default::default(),
+            None,
+            AssemblySelection {
+                instances: vec![EntityId::new()],
+                ..Default::default()
+            },
+            Channel::Ui
+        )
+        .is_err()
+    );
+    assert!(!c.active());
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), 2);
+}

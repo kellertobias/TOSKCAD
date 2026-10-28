@@ -155,7 +155,10 @@ impl AssemblyController {
                     })
             })
             .cloned();
-        self.preserve_placement(session)?;
+        if let Err(error) = self.preserve_placement(session) {
+            self.cancel();
+            return Err(error);
+        }
         Ok(())
     }
     fn current(&self, session: &Session, resources: &ProjectResources) -> Result<(), String> {
@@ -207,6 +210,8 @@ impl AssemblyController {
         if let Err(error) = &result {
             self.error = Some(error.clone());
             self.candidate = None;
+        } else {
+            self.error = None;
         }
         result
     }
