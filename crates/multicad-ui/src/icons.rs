@@ -42,6 +42,7 @@ pub enum Icon {
     Motion,
     Interference,
     Explode,
+    Transfer,
     Cut,
     Split,
     Edge,
@@ -442,6 +443,16 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             circle(12., 12., 3.);
             line([12., 3.], [12., 7.]);
             line([12., 17.], [12., 21.]);
+        }
+        Icon::Transfer => {
+            rect(3., 2., 18., 6.);
+            rect(3., 16., 18., 6.);
+            for x in [8., 16.] {
+                circle(x, 5., 1.4);
+                circle(x, 19., 1.4);
+                line([x, 10.], [x, 14.]);
+                path(&[[x - 1.5, 12.5], [x, 14.], [x + 1.5, 12.5]]);
+            }
         }
         Icon::Motion => {
             rect(3., 10., 6., 7.);
