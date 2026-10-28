@@ -53,10 +53,15 @@ pub fn prepare_library(
         label: "Edit material library".into(),
         edits,
     })?;
-    if let Some(d) = diagnostics(preview.document())?
-        .into_iter()
-        .find(|d| ids.contains(&d.owner) && d.kind != DiagnosticKind::DefinitionChanged)
-    {
+    if let Some(d) = diagnostics(preview.document())?.into_iter().find(|d| {
+        ids.contains(&d.owner)
+            && matches!(
+                d.kind,
+                DiagnosticKind::Missing
+                    | DiagnosticKind::WrongKind
+                    | DiagnosticKind::MaterialMismatch
+            )
+    }) {
         return Err(DocumentError::Invalid(d.message).into());
     }
     Ok(preview)

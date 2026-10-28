@@ -488,3 +488,194 @@ fn explicit_part_overrides_do_not_depend_on_broken_unused_material_defaults() {
     assert_eq!(effective.hatch.unwrap().pattern, HatchPattern::Cross);
     assert!(resolve(f.s.document(), f.parts[1]).is_err());
 }
+
+#[test]
+fn metadata_changes_invalidate_owner_parts_and_drawing_consumers_without_dependency_cycles() {
+    use multicad_core::document::{Definition, Link};
+    let mut f = Fixture::new();
+    f.assign();
+    let drawing = Entity::new(
+        "Cabinet drawing",
+        EntityData::Drawing {
+            definition: Definition {
+                type_id: "fixture.drawing".into(),
+                schema_version: 1,
+                data: serde_json::json!({}),
+            },
+            inputs: f
+                .parts
+                .iter()
+                .map(|id| Link::new(*id, "view_source"))
+                .collect(),
+        },
+    );
+    commit(&mut f.s, vec![Mutation::Insert(drawing.clone())]);
+    for mut changed in [f.appearance.clone(), f.hatch.clone()] {
+        if let Some(mut definition) = read(&changed).unwrap() {
+            match &mut definition {
+                LibraryDefinition::Appearance(a) => a.roughness = 0.3,
+                LibraryDefinition::Hatch(h) => h.angle_deg = 60.,
+                _ => unreachable!(),
+            };
+            changed = definition.entity(changed.id, changed.name).unwrap();
+        }
+        let change =
+            f.s.apply(Request {
+                expected_revision: f.s.revision(),
+                actor: actor(),
+                label: "Change section/appearance".into(),
+                edits: vec![Mutation::Replace(changed.clone())],
+            })
+            .unwrap();
+        for id in [f.material.id, f.parts[0], f.parts[1], drawing.id] {
+            assert!(
+                change.invalidated.contains(&id),
+                "metadata did not reach {id}"
+            );
+        }
+        let canonical = f.s.document().affected([changed.id]).unwrap();
+        assert!(canonical.contains(&f.style.id));
+        assert!(!canonical.contains(&f.material.id));
+        assert!(!canonical.contains(&drawing.id));
+        assert_eq!(
+            f.s.document().topological_order().unwrap().len(),
+            f.s.document().entities().count()
+        );
+    }
+    let missing =
+        f.s.document()
+            .edited(&[Mutation::Remove(f.material.id)])
+            .unwrap();
+    assert!(
+        missing
+            .invalidated([f.appearance.id])
+            .unwrap()
+            .contains(&drawing.id)
+    );
+}
+#[test]
+fn removing_or_reassigning_associations_invalidates_old_and_new_owners() {
+    use multicad_core::document::{Definition, Link};
+    let mut f = Fixture::new();
+    let properties = LibraryDefinition::PartProperties(PartProperties {
+        part: f.parts[0],
+        material: None,
+        stock: None,
+        appearance: None,
+        hatch: None,
+    })
+    .entity(EntityId::new(), "Properties")
+    .unwrap();
+    let drawings: Vec<_> = f
+        .parts
+        .iter()
+        .map(|part| {
+            Entity::new(
+                "Part drawing",
+                EntityData::Drawing {
+                    definition: Definition {
+                        type_id: "fixture.drawing".into(),
+                        schema_version: 1,
+                        data: serde_json::json!({}),
+                    },
+                    inputs: vec![Link::new(*part, "source")],
+                },
+            )
+        })
+        .collect();
+    let mut edits = vec![Mutation::Insert(properties.clone())];
+    edits.extend(drawings.iter().cloned().map(Mutation::Insert));
+    commit(&mut f.s, edits);
+    let LibraryDefinition::PartProperties(mut p) = read(&properties).unwrap().unwrap() else {
+        unreachable!()
+    };
+    p.part = f.parts[1];
+    let moved = LibraryDefinition::PartProperties(p)
+        .entity(properties.id, "Properties")
+        .unwrap();
+    let change =
+        f.s.apply(Request {
+            expected_revision: f.s.revision(),
+            actor: actor(),
+            label: "Reassign owner".into(),
+            edits: vec![Mutation::Replace(moved)],
+        })
+        .unwrap();
+    for id in f.parts.iter().copied().chain(drawings.iter().map(|d| d.id)) {
+        assert!(
+            change.invalidated.contains(&id),
+            "old/new owner missing {id}"
+        );
+    }
+    let change =
+        f.s.apply(Request {
+            expected_revision: f.s.revision(),
+            actor: actor(),
+            label: "Remove properties".into(),
+            edits: vec![Mutation::Remove(properties.id)],
+        })
+        .unwrap();
+    assert!(change.invalidated.contains(&f.parts[1]));
+    assert!(change.invalidated.contains(&drawings[1].id));
+}
+
+#[test]
+fn inline_and_unknown_legacy_hatches_are_versioned_or_diagnosed_without_erasing_source() {
+    use multicad_core::document::Definition;
+    let mut f = Fixture::new();
+    let inline = Definition {
+        type_id: "materials.hatch.inline".into(),
+        schema_version: 1,
+        data: serde_json::to_value(HatchStyle::default()).unwrap(),
+    };
+    let mut material = f.material.clone();
+    if let EntityData::Material { section_hatch, .. } = &mut material.data {
+        *section_hatch = Some(inline.clone());
+    }
+    library(&mut f.s, std::slice::from_ref(&material));
+    let assignment = Assignment {
+        material: Some(material.id),
+        stock: None,
+        appearance: None,
+        hatch: None,
+    };
+    let mut bare = f.s.document().clone();
+    for entity in f.s.document().entities() {
+        if read(entity).unwrap().is_some() {
+            bare.remove(entity.id).unwrap();
+        }
+    }
+    assert!(
+        ProjectFile::new(bare.clone())
+            .unwrap()
+            .capabilities()
+            .contains(CAPABILITY)
+    );
+    let mut session = Session::new(bare).unwrap();
+    let p = prepare_assignment(&session, 0, actor(), &f.parts[..1], &assignment).unwrap();
+    session.commit(p).unwrap();
+    assert_eq!(
+        resolve(session.document(), f.parts[0]).unwrap().hatch,
+        Some(HatchStyle::default())
+    );
+    let mut unsupported = material.clone();
+    if let EntityData::Material { section_hatch, .. } = &mut unsupported.data {
+        *section_hatch = Some(Definition {
+            type_id: "external.hatch".into(),
+            schema_version: 1,
+            data: serde_json::json!({"preserved":true}),
+        });
+    }
+    let doc = session
+        .document()
+        .edited(&[Mutation::Replace(unsupported.clone())])
+        .unwrap();
+    assert_eq!(doc.get(unsupported.id).unwrap(), &unsupported);
+    assert!(
+        diagnostics(&doc)
+            .unwrap()
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::UnsupportedLegacyHatch)
+    );
+    assert!(resolve(&doc, f.parts[0]).is_err());
+}

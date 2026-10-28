@@ -148,6 +148,11 @@ impl Document {
                 }
             }
         }
+        if containment {
+            for (owner, association) in crate::materials::invalidation_edges(self)? {
+                reverse.entry(association).or_default().insert(owner);
+            }
+        }
         let mut affected: BTreeSet<_> = sources.into_iter().collect();
         let mut pending = affected.clone();
         while let Some(id) = pending.pop_first() {

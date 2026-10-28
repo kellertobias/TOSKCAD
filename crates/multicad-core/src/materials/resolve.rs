@@ -157,6 +157,25 @@ pub fn diagnostics(document: &Document) -> Result<Vec<Diagnostic>, DocumentError
             }
         }
     }
+    for entity in document.entities() {
+        if let EntityData::Material {
+            section_hatch: Some(hatch),
+            ..
+        } = &entity.data
+            && hatch.type_id != "materials.hatch.inline"
+        {
+            output.push(problem(
+                entity.id,
+                entity.id,
+                "hatch",
+                DiagnosticKind::UnsupportedLegacyHatch,
+                format!(
+                    "Material {} uses unsupported section hatch {}",
+                    entity.name, hatch.type_id
+                ),
+            ));
+        }
+    }
     // Legacy Part.material references are also visible in this single report.
     for e in document.entities() {
         if let EntityData::Part {

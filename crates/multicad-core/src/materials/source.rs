@@ -309,12 +309,28 @@ fn is_type(id: &str) -> bool {
 }
 pub fn required_capability(document: &Document) -> bool {
     document.entities().any(
-        |e| matches!(&e.data,EntityData::Extension{definition,..} if is_type(&definition.type_id)),
+        |e| matches!(&e.data,EntityData::Extension{definition,..} if is_type(&definition.type_id))
+            || matches!(&e.data,EntityData::Material{section_hatch:Some(h),..} if h.type_id=="materials.hatch.inline"),
     )
 }
 pub fn validate(document: &Document) -> Result<(), DocumentError> {
     let mut owners = BTreeSet::new();
     for entity in document.entities() {
+        if let EntityData::Material {
+            section_hatch: Some(hatch),
+            ..
+        } = &entity.data
+            && hatch.type_id == "materials.hatch.inline"
+        {
+            if hatch.schema_version != 1 {
+                return Err(DocumentError::Invalid(
+                    "Unsupported inline section hatch schema".into(),
+                ));
+            }
+            let style: HatchStyle = serde_json::from_value(hatch.data.clone())
+                .map_err(|e| DocumentError::Invalid(e.to_string()))?;
+            LibraryDefinition::Hatch(style).validate()?;
+        }
         let owner = match read(entity)? {
             Some(LibraryDefinition::MaterialStyle(s)) => Some((0, s.material)),
             Some(LibraryDefinition::PartProperties(s)) => Some((1, s.part)),
@@ -330,4 +346,23 @@ pub fn validate(document: &Document) -> Result<(), DocumentError> {
         }
     }
     Ok(())
+}
+
+/// Metadata ownership participates in cache invalidation only. These reverse
+/// owner links are excluded from canonical dependencies and topological ordering.
+pub(crate) fn invalidation_edges(
+    document: &Document,
+) -> Result<Vec<(EntityId, EntityId)>, DocumentError> {
+    let mut edges = Vec::new();
+    for entity in document.entities() {
+        let owner = match read(entity)? {
+            Some(LibraryDefinition::MaterialStyle(style)) => Some(style.material),
+            Some(LibraryDefinition::PartProperties(properties)) => Some(properties.part),
+            _ => None,
+        };
+        if let Some(owner) = owner {
+            edges.push((owner, entity.id));
+        }
+    }
+    Ok(edges)
 }
