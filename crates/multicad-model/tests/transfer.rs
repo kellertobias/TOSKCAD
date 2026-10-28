@@ -536,3 +536,51 @@ fn valid_empty_face_pattern_removes_no_material_and_never_rebinds_old_hole_walls
     ));
     assert_eq!(f.s.document().get(f.rail.body).unwrap().id, f.rail.body);
 }
+#[test]
+fn source_outer_boundary_is_an_exact_editable_cutout_with_per_material_clearance() {
+    let mut f = fixture();
+    let face = f.request.source.selection.captures()[0];
+    f.request.source.selection = TransferSelection::FaceBoundary { face };
+    for target in &mut f.request.targets {
+        target.parameters.diameter = None;
+    }
+    let source = f.s.document().get(f.rail.body).unwrap().clone();
+    let p = prepare_transfer(&f.s, f.s.revision(), actor(), &f.request).unwrap();
+    commit(&mut f.s, p);
+    let m = compile(&f.s);
+    for (target, (height, depth, area)) in f.request.targets.iter().zip([
+        (18., 12., 120. * 20.),
+        (8., 8., 120.2 * 20.2),
+        (2., 2., 120. * 20.),
+    ]) {
+        assert_eq!(m.snapshot().transfer_counts[&target.feature], 1);
+        near(
+            m.solid(target.input.body).unwrap().volume_mm3().unwrap(),
+            130. * 30. * height - area * depth,
+        );
+        assert_eq!(
+            m.solid(target.input.body).unwrap().solid_count().unwrap(),
+            1
+        );
+    }
+    assert_eq!(f.s.document().get(f.rail.body), Some(&source));
+    let loaded = reopen(&f.s);
+    assert_eq!(
+        compile(&loaded).snapshot().transfer_counts,
+        m.snapshot().transfer_counts
+    );
+    let mut edit = TransferRequest::existing(f.s.document(), f.request.group).unwrap();
+    edit.targets[0].parameters.clearance = length(0.5);
+    let p = prepare_transfer_edit(&f.s, f.s.revision(), actor(), &edit).unwrap();
+    let preview = Compiler::default()
+        .compile(p.prepared.document(), f.s.revision())
+        .unwrap();
+    near(
+        preview
+            .solid(edit.targets[0].input.body)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        130. * 30. * 18. - 120.5 * 20.5 * 12.,
+    );
+}
