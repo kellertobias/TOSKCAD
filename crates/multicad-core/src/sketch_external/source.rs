@@ -214,7 +214,7 @@ pub fn bindings(document: &Document, sketch: EntityId) -> Result<Vec<Binding>, D
     };
     inputs
         .iter()
-        .filter(|link| link.role == ROLE)
+        .filter(|link| link.role == ROLE && !super::is_occurrence_reference(document, link.target))
         .map(|link| read(document, link.target))
         .collect()
 }
@@ -257,7 +257,11 @@ pub fn validate(document: &Document) -> Result<(), DocumentError> {
     for entity in document.entities() {
         if matches!(&entity.data,EntityData::Extension{definition,..}if definition.type_id==TYPE_ID)
         {
-            read(document, entity.id)?;
+            if super::is_occurrence_reference(document, entity.id) {
+                super::read_occurrence(document, entity.id)?;
+            } else {
+                read(document, entity.id)?;
+            }
         }
     }
     for entity in document.entities() {
@@ -303,6 +307,35 @@ pub fn validate(document: &Document) -> Result<(), DocumentError> {
                 ));
             }
             if document.get(link.target).is_none() {
+                continue;
+            }
+            if super::is_occurrence_reference(document, link.target) {
+                let request = super::read_occurrence(document, link.target)?;
+                if request.query.sketch != entity.id
+                    || !super::occurrence_source::matching(&request, &source)
+                {
+                    return Err(invalid(
+                        "Protected occurrence output or owning sketch changed",
+                    ));
+                }
+                for id in request.output.all() {
+                    if !outputs.insert(id)
+                        || document.get(id).is_some()
+                        || id == document.id()
+                        || occurrences.get(&id).copied().unwrap_or(0) > 1
+                    {
+                        return Err(invalid(
+                            "Occurrence output identity collides with canonical source",
+                        ));
+                    }
+                }
+                for lock in &request.output.locks {
+                    if !all.insert(*lock) || occurrences.contains_key(lock) {
+                        return Err(invalid(
+                            "Occurrence native solver locks cannot appear in canonical source",
+                        ));
+                    }
+                }
                 continue;
             }
             let binding = read(document, link.target)?;
@@ -351,6 +384,20 @@ pub fn validate(document: &Document) -> Result<(), DocumentError> {
         if matches!(&entity.data,EntityData::Extension{definition,..}if definition.type_id==TYPE_ID)
             && !owned.contains(&entity.id)
         {
+            if super::is_occurrence_reference(document, entity.id) {
+                let request = super::read_occurrence(document, entity.id)?;
+                if request
+                    .output
+                    .all()
+                    .iter()
+                    .any(|id| occurrences.contains_key(id))
+                {
+                    return Err(invalid(
+                        "Occurrence owner link was removed while protected output remains",
+                    ));
+                }
+                continue;
+            }
             let binding = read(document, entity.id)?;
             if binding
                 .definition
@@ -387,6 +434,19 @@ pub fn validate_source_edit(
         return Ok(());
     }
     let old = Source::from_definition(definition)?;
+    for request in super::occurrence_bindings(document, sketch)? {
+        if request.output.points.iter().any(|id| {
+            old.sketch.points.iter().find(|p| p.id == *id)
+                != next.sketch.points.iter().find(|p| p.id == *id)
+        }) || request.output.curve.is_some_and(|id| {
+            old.sketch.curves.iter().find(|c| c.id == id)
+                != next.sketch.curves.iter().find(|c| c.id == id)
+        }) {
+            return Err(invalid(
+                "Occurrence external output is read-only; edit its source or explicitly repair/remove the reference",
+            ));
+        }
+    }
     for binding in bindings(document, sketch)? {
         for id in binding.definition.output.points() {
             if old.sketch.points.iter().find(|p| p.id == id)

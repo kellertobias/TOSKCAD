@@ -27,7 +27,11 @@ pub fn dependency_hash(
         let entity = document.get(id);
         if let Some(entity) = entity {
             pending.extend(document.evaluation_dependencies(id)?);
-            if let Some(projection) = crate::model::transfer_pose_projection(document, entity.id)? {
+            if let Some(projection) = crate::model::transfer_pose_projection(document, entity.id)?
+                .or(crate::sketch_external::external_pose_projection(
+                    document, entity.id,
+                )?)
+            {
                 pose_fingerprints.insert(id, projection.fingerprint);
             }
         }

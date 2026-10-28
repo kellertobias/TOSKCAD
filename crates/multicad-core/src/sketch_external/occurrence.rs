@@ -252,6 +252,7 @@ pub struct ExternalCatalog {
     pub source_hash: ContentHash,
     pub query_hash: ContentHash,
     pub query: ExternalQuery,
+    /// Receiving component occurrence-to-world pose only; excludes the local sketch plane frame.
     pub sketch_world_pose: RigidPose,
     pub results: Vec<ExternalChoice>,
     pub coincident: bool,

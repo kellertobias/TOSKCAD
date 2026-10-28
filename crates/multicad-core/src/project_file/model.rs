@@ -163,7 +163,7 @@ impl CacheKey {
         dependencies.insert(
             "multicad.core.semantics".into(),
             ContentHash::of(
-                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1;constrained_sketch.4;sketch.external.1;inspection.measurement.1",
+                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1;constrained_sketch.4;sketch.external.1;sketch.external.2;inspection.measurement.1",
             ),
         );
         Ok(Self {
@@ -325,6 +325,13 @@ impl ProjectFile {
             required.insert(crate::sketch_external::CAPABILITY.into());
         }
         required.extend(crate::model::required_capabilities(&self.document));
+        if self
+            .document
+            .entities()
+            .any(|e| crate::sketch_external::is_occurrence_reference(&self.document, e.id))
+        {
+            required.insert(crate::sketch_external::OCCURRENCE_CAPABILITY.into());
+        }
         if crate::exchange::required_capability(&self.document) {
             required.insert(crate::exchange::CAPABILITY.into());
         }
@@ -409,6 +416,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::inspection::CAPABILITY.into(),
         crate::constraint_sketch::source::V4_CAPABILITY.into(),
         crate::sketch_external::CAPABILITY.into(),
+        crate::sketch_external::OCCURRENCE_CAPABILITY.into(),
         crate::exchange::CAPABILITY.into(),
         crate::exchange::PLANAR_CAPABILITY.into(),
         crate::model::CAPABILITY.into(),

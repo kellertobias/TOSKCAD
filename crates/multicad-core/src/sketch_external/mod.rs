@@ -3,10 +3,14 @@
 //! hashes reject reports reused after source edits; they do not authenticate an
 //! arbitrary caller's fabricated topology map.
 mod capture;
+mod context;
 mod geometry;
 mod occurrence;
+mod occurrence_source;
 mod source;
 pub use capture::*;
+pub use context::*;
 pub use geometry::*;
 pub use occurrence::*;
+pub use occurrence_source::*;
 pub use source::*;

@@ -431,7 +431,17 @@ pub fn inspect(
         revision,
         entries,
         external_results: BTreeMap::new(),
-        external_errors: BTreeMap::new(),
+        external_errors: document
+            .entities()
+            .filter(|e| crate::sketch_external::is_occurrence_reference(document, e.id))
+            .map(|e| {
+                (
+                    e.id,
+                    "Occurrence sketch reference requires a current exact native result receipt"
+                        .into(),
+                )
+            })
+            .collect(),
     }
 }
 /// Authored datum coordinates are never a fallback for unresolved attachments.

@@ -178,6 +178,54 @@ pub fn resolve_transfer_relative_pose(
     };
     resolve(a)?.then(resolve(b)?.inverse()?)
 }
+/// Resolve an explicitly named leaf occurrence without aggregate geometry.
+pub fn resolve_occurrence_pose(
+    document: &Document,
+    path: &OccurrencePath,
+    component: EntityId,
+    parameters: &EvaluatedParameters,
+    revision: u64,
+    snapshots: &BTreeMap<EntityId, TopologySnapshot>,
+) -> Result<RigidPose, DocumentError> {
+    validate_transfer_path(document, path, component)?
+        .into_iter()
+        .try_fold(RigidPose::default(), |parent, id| {
+            model::resolve_instance_pose_with_snapshots(
+                document, id, parameters, revision, snapshots,
+            )?
+            .then(parent)
+        })
+}
+/// Source-to-consumer placement, cancelling an identical canonical prefix before
+/// evaluating any matrices. None denotes a world-coordinate consumer frame.
+pub fn resolve_occurrence_relative_pose(
+    document: &Document,
+    source: (&OccurrencePath, EntityId),
+    target: Option<(&OccurrencePath, EntityId)>,
+    parameters: &EvaluatedParameters,
+    revision: u64,
+    snapshots: &BTreeMap<EntityId, TopologySnapshot>,
+) -> Result<RigidPose, DocumentError> {
+    let a = validate_transfer_path(document, source.0, source.1)?;
+    let b = target
+        .map(|(path, component)| validate_transfer_path(document, path, component))
+        .transpose()?
+        .unwrap_or_default();
+    let (a, b) = suffixes(
+        &a,
+        &b,
+        target.is_some_and(|(path, _)| path.root == source.0.root),
+    );
+    let resolve = |steps: &[EntityId]| {
+        steps.iter().try_fold(RigidPose::default(), |parent, id| {
+            model::resolve_instance_pose_with_snapshots(
+                document, *id, parameters, revision, snapshots,
+            )?
+            .then(parent)
+        })
+    };
+    resolve(a)?.then(resolve(b)?.inverse()?)
+}
 enum Job {
     Instance(EntityId),
     Driver(EntityId),
@@ -310,6 +358,44 @@ impl Collector<'_> {
         }
         Ok(())
     }
+}
+/// Reusable pose-only projection for occurrence-aware consumers. Canonical path
+/// structure remains fingerprinted even when an upstream edit breaks a path.
+/// Geometry suppliers come only from the diverging current driver chains.
+pub fn occurrence_pose_projection(
+    document: &Document,
+    source: &OccurrencePath,
+    target: Option<&OccurrencePath>,
+) -> Result<TransferPoseProjection, DocumentError> {
+    let mut collector = Collector {
+        document,
+        geometry: BTreeSet::new(),
+        poses: BTreeMap::new(),
+        structure: BTreeMap::new(),
+        instances: BTreeSet::new(),
+        drivers: BTreeSet::new(),
+        pending: vec![],
+    };
+    for path in std::iter::once(source).chain(target) {
+        for id in std::iter::once(path.root).chain(path.members.iter().copied()) {
+            collector.structural(id)?;
+        }
+    }
+    let a = raw_steps(document, source);
+    let b = target
+        .map(|path| raw_steps(document, path))
+        .unwrap_or_default();
+    let (a, b) = suffixes(&a, &b, target.is_some_and(|path| path.root == source.root));
+    collector
+        .pending
+        .extend(a.iter().chain(b).copied().map(Job::Instance));
+    collector.run()?;
+    let bytes = serde_json::to_vec(&(collector.structure, collector.poses))
+        .map_err(|e| invalid(e.to_string()))?;
+    Ok(TransferPoseProjection {
+        geometry_dependencies: collector.geometry,
+        fingerprint: ContentHash::of(&bytes),
+    })
 }
 /// Stored typed group/links are checked before deferring anything. Missing or
 /// replaced occurrence paths remain fingerprinted and fail native binding, not

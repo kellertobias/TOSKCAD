@@ -166,7 +166,8 @@ pub fn apply_to_solver(
     solver: &mut Sketch,
 ) -> Result<BTreeSet<EntityId>, DocumentError> {
     let bindings = super::bindings(document, sketch)?;
-    if bindings.is_empty() {
+    let occurrences = super::occurrence_bindings(document, sketch)?;
+    if bindings.is_empty() && occurrences.is_empty() {
         return Ok(BTreeSet::new());
     }
     let report=report.ok_or_else(||invalid("External sketch geometry requires a current native reference report; authored guesses are unavailable"))?;
@@ -180,6 +181,9 @@ pub fn apply_to_solver(
             solver.constraints.push(constraint);
         }
     }
+    ids.extend(super::occurrence_source::apply_occurrences(
+        document, revision, sketch, frame, report, solver,
+    )?);
     if solver.constraints.len() > 1024 {
         return Err(invalid(
             "External reference locks exceed the sketch solver constraint budget",

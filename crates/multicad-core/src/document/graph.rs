@@ -50,6 +50,9 @@ impl Document {
         &self,
         id: EntityId,
     ) -> Result<BTreeSet<EntityId>, DocumentError> {
+        if let Some(deps) = crate::sketch_external::external_evaluation_dependencies(self, id)? {
+            return Ok(deps);
+        }
         crate::model::transfer_evaluation_dependencies(self, id)
     }
     fn edges(&self) -> Result<BTreeMap<EntityId, BTreeSet<EntityId>>, DocumentError> {
