@@ -35,6 +35,7 @@ pub struct Project {
     pub session: Session,
     pub editor: ParameterEditor,
     pub sketch: SketchEditor,
+    pub drawings: crate::drawings::DrawingEditor,
     pub path: Option<PathBuf>,
     pub scene: crate::viewport::SceneFeed,
 }
@@ -53,6 +54,7 @@ impl Project {
             session,
             editor,
             sketch: SketchEditor::default(),
+            drawings: Default::default(),
             path: None,
             scene: Default::default(),
         })
@@ -61,7 +63,10 @@ impl Project {
         ProjectFile::with_resources(self.session.document().clone(), self.resources.clone())
     }
     fn dirty(&self) -> bool {
-        self.session.dirty() || self.editor.dirty() || self.sketch.has_pending_edits()
+        self.session.dirty() || self.pending_edits()
+    }
+    fn pending_edits(&self) -> bool {
+        self.editor.dirty() || self.sketch.has_pending_edits() || self.drawings.dirty()
     }
     fn title(&self) -> String {
         self.path
@@ -197,7 +202,25 @@ impl Application {
     pub fn current_mut(&mut self) -> &mut Project {
         &mut self.projects[self.active]
     }
+    fn drawing_blocks(&self, command: Command) -> bool {
+        self.current().drawings.dirty()
+            && matches!(
+                command,
+                Command::Parameter
+                    | Command::NewSketch
+                    | Command::Draw(_)
+                    | Command::SketchOperation(_)
+                    | Command::Construction
+                    | Command::Dimension
+                    | Command::FinishSketch
+                    | Command::Delete
+                    | Command::Modeling(_)
+            )
+    }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        if self.drawing_blocks(command) {
+            return Err("Apply or discard the drawing page edits first".into());
+        }
         if !self.current().editor.dirty() {
             let project = self.current_mut();
             project.editor.reload(&project.session);
@@ -234,6 +257,22 @@ impl Application {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
+            Command::Drawing(tool) => {
+                if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
+                    return Err(
+                        "Apply or discard the other pending edits before changing drawings".into(),
+                    );
+                }
+                let p = self.current_mut();
+                p.drawings.invoke(&mut p.session, tool, channel)?;
+                self.mode = Mode::Drawings;
+                self.tab = 0;
+                self.message = format!(
+                    "{} · revision {}",
+                    tool.label(),
+                    self.current().session.revision()
+                );
+            }
             Command::KeyboardShortcuts => self.shortcut_help = true,
             Command::Parameter => {
                 if args.is_empty() && channel == Channel::Ui {
@@ -273,6 +312,16 @@ impl Application {
                 self.tab = 0;
             }
             Command::Apply => {
+                if self.mode == Mode::Drawings {
+                    let p = self.current_mut();
+                    p.drawings.invoke(
+                        &mut p.session,
+                        crate::drawings::DrawingTool::Apply,
+                        channel,
+                    )?;
+                    self.message = "Drawing page applied".into();
+                    return Ok(());
+                }
                 let p = self.current_mut();
                 if p.sketch.model_active() {
                     let label = p.sketch.model_label();
@@ -290,6 +339,16 @@ impl Application {
                 );
             }
             Command::Discard => {
+                if self.mode == Mode::Drawings {
+                    let p = self.current_mut();
+                    p.drawings.invoke(
+                        &mut p.session,
+                        crate::drawings::DrawingTool::Discard,
+                        channel,
+                    )?;
+                    self.message = "Drawing page edits discarded".into();
+                    return Ok(());
+                }
                 let p = self.current_mut();
                 if p.sketch.model_active() {
                     p.sketch.cancel_model();
@@ -316,7 +375,7 @@ impl Application {
                 self.message = "Validated parameter preview; committed document unchanged".into();
             }
             Command::Undo | Command::Redo => {
-                if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
+                if self.current().pending_edits() {
                     return Err("Apply or cancel pending edits before Undo/Redo".into());
                 }
                 let p = self.current_mut();
@@ -345,7 +404,7 @@ impl Application {
                     .map_err(|e| e.to_string())?;
             }
             Command::Save | Command::SaveAs => {
-                if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
+                if self.current().pending_edits() {
                     return Err("Apply or cancel pending edits before saving".into());
                 }
                 if command == Command::Save
@@ -383,7 +442,7 @@ impl Application {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
             Command::NewSketch => {
-                if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
+                if self.current().pending_edits() {
                     return Err("Apply or discard pending edits before creating a sketch".into());
                 }
                 if args.is_empty() {
@@ -554,13 +613,24 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
-        let pending = || self.current().editor.dirty() || self.current().sketch.has_pending_edits();
+        if self.drawing_blocks(command) {
+            return false;
+        }
+        let pending = || self.current().pending_edits();
         match command {
             Command::Apply if self.current().sketch.model_active() => self
                 .current()
                 .sketch
                 .model_can_apply(&self.current().session, &self.current().resources),
             Command::Discard | Command::Preview if self.current().sketch.model_active() => true,
+            Command::Drawing(tool) => {
+                !self.current().editor.dirty()
+                    && !self.current().sketch.has_pending_edits()
+                    && self.current().drawings.enabled(tool)
+            }
+            Command::Apply | Command::Discard if self.mode == Mode::Drawings => {
+                self.current().drawings.dirty()
+            }
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
             Command::Modeling(tool) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
@@ -1343,6 +1413,15 @@ impl Application {
                             bottom: 8,
                         })
                         .show(ui, |ui| p.editor.show(ui, &p.session));
+                } else if self.mode == Mode::Drawings {
+                    let p = self.current_mut();
+                    let before = p.session.revision();
+                    p.drawings.show(ui, &mut p.session);
+                    if p.session.revision() != before {
+                        self.message = "Drawing source updated · one undoable edit".into();
+                        self.message_error = false;
+                        ctx.request_repaint();
+                    }
                 } else {
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
@@ -1417,6 +1496,43 @@ mod tests {
     use super::*;
     use std::path::Path;
     struct MemoryStorage;
+    #[test]
+    fn page_drafts_guard_save_history_modeling_and_close_until_explicit_discard() {
+        use crate::drawings::DrawingTool;
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(
+            Command::Drawing(DrawingTool::AddPage),
+            &[],
+            Channel::CommandLine,
+        )
+        .unwrap();
+        assert_eq!(app.mode, Mode::Drawings);
+        app.invoke(Command::Drawing(DrawingTool::Text), &[], Channel::Ui)
+            .unwrap();
+        assert!(app.current().drawings.dirty());
+        assert!(app.current().dirty());
+        assert!(app.should_defer_close());
+        for command in [
+            Command::Save,
+            Command::Undo,
+            Command::NewSketch,
+            Command::Modeling(crate::modeling::ModelingTool::Box),
+        ] {
+            assert!(!app.enabled(command));
+            assert!(app.invoke(command, &[], Channel::Ui).is_err());
+        }
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert!(!app.current().drawings.dirty());
+        assert!(app.enabled(Command::Save));
+        assert!(
+            app.invoke(
+                Command::Drawing(DrawingTool::AddPage),
+                &["unexpected"],
+                Channel::CommandLine
+            )
+            .is_err()
+        );
+    }
     impl DocumentStorage for MemoryStorage {
         fn save(&mut self, _: &Path, _: &Document) -> Result<(), String> {
             Ok(())
@@ -2081,7 +2197,25 @@ mod tests {
             &mut app,
             vec![key_event(egui::Key::ArrowUp, egui::Modifiers::NONE)],
         );
-        assert_eq!(app.find_index, 2); // Wrap to New Sketch, never spawn a process.
+        let available: Vec<_> = app
+            .registry
+            .search("new")
+            .into_iter()
+            .filter(|tool| app.enabled(tool.action))
+            .map(|tool| tool.action)
+            .collect();
+        assert_eq!(app.find_index, available.len() - 1);
+        let sketch_index = available
+            .iter()
+            .position(|action| *action == Command::NewSketch)
+            .unwrap();
+        while app.find_index != sketch_index {
+            shortcut_frame(
+                &ctx,
+                &mut app,
+                vec![key_event(egui::Key::ArrowDown, egui::Modifiers::NONE)],
+            );
+        }
         shortcut_frame(
             &ctx,
             &mut app,

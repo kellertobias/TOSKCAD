@@ -73,7 +73,7 @@ impl Application {
     }
     pub(super) fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
         let p = self.current();
-        if p.editor.dirty() || p.sketch.has_pending_edits() {
+        if p.pending_edits() {
             return Err("Apply or cancel pending edits before saving".into());
         }
         if self.file_busy() {
@@ -462,8 +462,7 @@ impl Application {
                         "The destination or active document changed. Start Save As again.".into();
                     self.message_error = true;
                     self.replacement = None;
-                } else if self.current().editor.dirty() || self.current().sketch.has_pending_edits()
-                {
+                } else if self.current().pending_edits() {
                     self.message = "Apply or cancel pending edits before replacing".into();
                     self.message_error = true;
                 } else if let Err(error) = self.submit_save(path, SaveMode::Replace(stamp)) {

@@ -22,13 +22,7 @@ impl Application {
             .iter()
             .enumerate()
             .filter(|(_, p)| p.dirty())
-            .map(|(index, p)| {
-                (
-                    index,
-                    p.title(),
-                    p.editor.dirty() || p.sketch.has_pending_edits(),
-                )
-            })
+            .map(|(index, p)| (index, p.title(), p.pending_edits()))
             .collect();
         let busy = !self.pending_files.is_empty();
         egui::Window::new("Unsaved documents").collapsible(false).show(ctx,|ui| {
@@ -38,11 +32,11 @@ impl Application {
             for (index,name,draft) in &dirty {
                 if ui.selectable_label(self.active==*index,format!("{}{}",name,if *draft {" · unapplied edits"} else {""})).on_hover_text("Select this document before saving or reviewing its edits").clicked() {
                     self.active = *index;
-                    self.mode=Mode::Parameters;
+                    self.mode=if self.current().drawings.dirty(){Mode::Drawings}else{Mode::Parameters};
                     self.tab=0;
                 }
             }
-            if self.current().editor.dirty() || self.current().sketch.has_pending_edits() { ui.label("Apply or discard this document's pending edits before saving."); }
+            if self.current().pending_edits() { ui.label("Apply or discard this document's pending edits before saving."); }
             ui.horizontal(|ui| {
                 if ui.button("Cancel").on_hover_text("Keep all documents open").clicked() {self.close_confirm=false;}
                 let selected_unsaved = dirty.iter().any(|(index, _, _)| *index == self.active);

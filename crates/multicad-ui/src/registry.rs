@@ -63,6 +63,7 @@ pub enum Command {
     Dimension,
     FinishSketch,
     FinishCurve,
+    Drawing(crate::drawings::DrawingTool),
     Delete,
     Mode(Mode),
     Extension(&'static str),
@@ -287,6 +288,15 @@ impl Default for Registry {
                 },
             });
         }
+        for tool in crate::drawings::DrawingTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::Drawing(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for (id, label, icon) in [
             ("edge", "Fillet / chamfer", Icon::Edge),
             ("move", "Move / rotate", Icon::Link),
@@ -313,8 +323,6 @@ impl Default for Registry {
             ("door", "Door", Icon::Page),
             ("window-tool", "Window", Icon::Page),
             ("stairs", "Stairs", Icon::Edge),
-            ("sheet-page", "Add page", Icon::New),
-            ("page-setup", "Page setup", Icon::Settings),
             ("projection", "Projection / section", Icon::Page),
             ("text", "Text / leader", Icon::Sketch),
             ("export-set", "Tag export set", Icon::Library),
@@ -399,8 +407,22 @@ impl Default for Registry {
             Workspace {
                 mode: Mode::Drawings,
                 tabs: vec![
-                    tab("Common", &["sheet-page", "page-setup", "projection"]),
-                    tab("Annotate", &["dimension", "text"]),
+                    tab(
+                        "Common",
+                        &[
+                            "drawing-new",
+                            "sheet-page",
+                            "page-duplicate",
+                            "page-remove",
+                            "page-earlier",
+                            "page-later",
+                            "page-setup",
+                            "page-apply",
+                            "page-discard",
+                            "projection",
+                        ],
+                    ),
+                    tab("Annotate", &["drawing-note", "dimension", "text"]),
                 ],
             },
             Workspace {
@@ -536,6 +558,35 @@ mod tests {
         assert_eq!(
             registry.parse_line("rect 0 0 1 1").unwrap().0,
             Command::Draw(DrawTool::Rectangle)
+        );
+    }
+    #[test]
+    fn drawing_page_tools_share_the_catalog_across_ribbon_and_command_entry() {
+        let registry = Registry::default();
+        for tool in crate::drawings::DrawingTool::ALL {
+            let registered = registry.tool(tool.id()).unwrap();
+            assert_eq!(registered.action, Command::Drawing(tool));
+            assert_eq!(registered.label, tool.label());
+            assert!(
+                registry
+                    .workspace(Mode::Drawings)
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.tools.contains(&tool.id()))
+            );
+            for alias in tool.aliases() {
+                assert_eq!(
+                    registry.parse_line(alias).unwrap().0,
+                    Command::Drawing(tool)
+                );
+            }
+        }
+        assert!(
+            matches!(
+                registry.tool("projection").unwrap().action,
+                Command::Extension(_)
+            ),
+            "Page creation must not pretend to produce linked model views"
         );
     }
     #[test]
