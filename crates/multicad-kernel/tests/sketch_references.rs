@@ -554,3 +554,181 @@ fn independent_native_section_owners_can_query_concurrently() {
         }
     });
 }
+
+#[test]
+fn native_trimmed_circular_fragments_keep_finite_source_parameters_across_the_circle_seam() {
+    let cylinder = Solid::cylinder(Default::default(), 5., 3., p()).unwrap();
+    let clip = Solid::box_solid([5., 12., 5.], p())
+        .unwrap()
+        .transformed(RigidTransform {
+            translation_mm: [2., -6., -1.],
+            ..Default::default()
+        })
+        .unwrap();
+    let clipped = cylinder
+        .boolean(&clip, BooleanOperation::Intersect, p())
+        .unwrap()
+        .unwrap();
+    let snapshot = clipped.topology_snapshot(EntityId::new(), 0).unwrap();
+    let mut contacts = vec![];
+    for key in snapshot
+        .elements
+        .iter()
+        .filter(|e| e.key.kind == TopologyKind::Edge)
+        .map(|e| e.key)
+    {
+        let Ok(projected) = clipped.sketch_reference_geometry(
+            BRepSelection::Edge(key.ordinal),
+            xy(0.),
+            SketchReferenceMethod::Coplanar,
+            p(),
+        ) else {
+            continue;
+        };
+        if !matches!(
+            projected.results[0].geometry,
+            SketchReferenceGeometry::Curve(CurvedEdge2d::Arc { .. })
+        ) {
+            continue;
+        }
+        let domain = projected.results[0].source_interval.unwrap();
+        let hits = query(
+            &clipped,
+            BRepSelection::Edge(key.ordinal),
+            vertical_x(4.),
+            SketchReferenceMethod::Intersect,
+        );
+        for result in &hits.results {
+            assert_eq!(result.source_interval, Some(domain));
+            let at = result.source_parameter.unwrap();
+            assert!(at >= domain[0] && at <= domain[1]);
+        }
+        contacts.extend(points(&hits));
+    }
+    contacts.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    assert_eq!(contacts.len(), 2);
+    near(contacts[0][0], -3.);
+    near(contacts[1][0], 3.);
+}
+
+#[test]
+fn singular_conic_collapsed_and_closed_retraced_spline_projections_fail_but_open_line_locus_survives()
+ {
+    let cylinder = Solid::cylinder(Default::default(), 5., 3., p()).unwrap();
+    let circle = edge_matching(&cylinder, xy(0.), |g| {
+        matches!(
+            g,
+            SketchReferenceGeometry::Curve(CurvedEdge2d::Circle { .. })
+        )
+    });
+    let failure = cylinder
+        .sketch_reference_geometry(
+            BRepSelection::Edge(circle),
+            vertical_x(0.),
+            SketchReferenceMethod::Project,
+            p(),
+        )
+        .unwrap_err();
+    assert!(failure.message.contains("singular"));
+    let curved = spline_solid(arch(None));
+    let edge = spline_edge(&curved);
+    let failure = curved
+        .sketch_reference_geometry(
+            BRepSelection::Edge(edge),
+            vertical_x(0.),
+            SketchReferenceMethod::Project,
+            p(),
+        )
+        .unwrap_err();
+    assert!(failure.message.contains("retraces"));
+    let profile = CurvedProfile {
+        frame: Default::default(),
+        outer: vec![
+            CurvedEdge2d::BSpline(BSpline2d {
+                degree: 2,
+                poles: vec![[0., 0.], [5., 0.], [10., 0.]],
+                knots: vec![0., 1.],
+                multiplicities: vec![3, 3],
+                weights: None,
+            }),
+            CurvedEdge2d::Line {
+                a: [10., 0.],
+                b: [10., 5.],
+            },
+            CurvedEdge2d::Line {
+                a: [10., 5.],
+                b: [0., 5.],
+            },
+            CurvedEdge2d::Line {
+                a: [0., 5.],
+                b: [0., 0.],
+            },
+        ],
+        holes: vec![],
+    };
+    let solid = Solid::extrude_curved_profile(&profile, 3., p()).unwrap();
+    let edge = spline_edge(&solid);
+    let collapsed = solid
+        .sketch_reference_geometry(
+            BRepSelection::Edge(edge),
+            vertical_x(0.),
+            SketchReferenceMethod::Project,
+            p(),
+        )
+        .unwrap_err();
+    assert!(collapsed.message.contains("collapses"));
+    let supported = query(
+        &solid,
+        BRepSelection::Edge(edge),
+        vertical_y(0.),
+        SketchReferenceMethod::Project,
+    );
+    let SketchReferenceGeometry::Curve(CurvedEdge2d::BSpline(line)) =
+        &supported.results[0].geometry
+    else {
+        panic!()
+    };
+    assert_eq!(line.poles, vec![[0., 0.], [5., 0.], [10., 0.]]);
+    near(solid.volume_mm3().unwrap(), 150.);
+}
+
+#[test]
+fn finite_cylinder_face_marks_proven_tangent_line_and_distinguishes_two_inside_from_empty_outside()
+{
+    let cylinder = Solid::cylinder(Default::default(), 5., 10., p()).unwrap();
+    let side = cylinder
+        .faces()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.plane.is_none())
+        .unwrap()
+        .index;
+    let tangent = query(
+        &cylinder,
+        BRepSelection::Face(side),
+        vertical_x(5.),
+        SketchReferenceMethod::Intersect,
+    );
+    assert_eq!(tangent.results.len(), 1);
+    assert!(tangent.results[0].tangent);
+    assert!(matches!(
+        tangent.results[0].geometry,
+        SketchReferenceGeometry::Curve(CurvedEdge2d::Line { .. })
+    ));
+    let crossing = query(
+        &cylinder,
+        BRepSelection::Face(side),
+        vertical_x(4.),
+        SketchReferenceMethod::Intersect,
+    );
+    assert_eq!(crossing.results.len(), 2);
+    assert!(crossing.results.iter().all(|c| !c.tangent));
+    let empty = query(
+        &cylinder,
+        BRepSelection::Face(side),
+        vertical_x(5.001),
+        SketchReferenceMethod::Intersect,
+    );
+    assert!(empty.results.is_empty());
+    near(cylinder.volume_mm3().unwrap(), 250. * std::f64::consts::PI);
+}

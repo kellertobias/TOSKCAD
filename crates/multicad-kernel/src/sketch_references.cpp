@@ -10,6 +10,8 @@
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_TrimmedCurve.hxx>
+#include <gp_Elips.hxx>
+#include <gp_Sphere.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -66,7 +68,7 @@ struct Query {
     return c;
   }
   Handle(Geom_BSplineCurve) rational(const Handle(Geom_Curve)&curve,double first,double last){
-    Handle(Geom_TrimmedCurve) trimmed=new Geom_TrimmedCurve(curve,first,last);
+    Handle(Geom_TrimmedCurve) trimmed=new Geom_TrimmedCurve(curve,first,last,true,false);
     auto spline=GeomConvert::CurveToBSplineCurve(trimmed);
     spline=Handle(Geom_BSplineCurve)::DownCast(spline->Copy());
     if(spline->IsPeriodic())spline->SetNotPeriodic();
@@ -102,7 +104,18 @@ struct Query {
       out.curve.clockwise=normal.Dot(gp_Vec(a.Circle().Axis().Direction()))<0.;
       out.curve.kind=std::abs(last-first-tau)<=1e-9?3:2;
     } else {
+      if((a.GetType()==GeomAbs_Circle&&std::abs(normal.Dot(gp_Vec(a.Circle().Axis().Direction())))<=1e-12)||
+         (a.GetType()==GeomAbs_Ellipse&&std::abs(normal.Dot(gp_Vec(a.Ellipse().Axis().Direction())))<=1e-12))
+        throw std::runtime_error("Edge-on conic projection is singular; a retraced line is not published as a closed reference spline");
       const auto spline=rational(c,first,last);out.curve.kind=1;out.curve.spline.degree=spline->Degree();
+      const auto anchor=local(spline->Pole(1));Point3 farthest=anchor;double extent=0.;
+      for(int i=2;i<=spline->NbPoles();++i){const auto pole=local(spline->Pole(i));const auto distance=std::hypot(pole.x-anchor.x,pole.y-anchor.y);if(distance>extent){extent=distance;farthest=pole;}}
+      if(extent<=tolerance)throw std::runtime_error("Projected spline control polygon collapses within modeling tolerance; no degenerate reference is published");
+      if(std::hypot(out.curve.a.x-out.curve.b.x,out.curve.a.y-out.curve.b.y)<=tolerance){
+        bool collinear=true;
+        for(int i=1;i<=spline->NbPoles();++i){const auto pole=local(spline->Pole(i));if(std::abs((farthest.x-anchor.x)*(pole.y-anchor.y)-(farthest.y-anchor.y)*(pole.x-anchor.x))/extent>tolerance)collinear=false;}
+        if(collinear)throw std::runtime_error("Closed projected spline retraces one line; choose a non-singular projection plane");
+      }
       for(int i=1;i<=spline->NbPoles();++i){const auto pole=local(spline->Pole(i));out.curve.spline.poles.push_back(pole.x);out.curve.spline.poles.push_back(pole.y);if(spline->IsRational())out.curve.spline.weights.push_back(spline->Weight(i));}
       for(int i=1;i<=spline->NbKnots();++i){out.curve.spline.knots.push_back(spline->Knot(i));out.curve.spline.multiplicities.push_back(spline->Multiplicity(i));}
     }
@@ -111,7 +124,7 @@ struct Query {
   void edge_intersections(const TopoDS_Edge &edge,uint32_t index){
     double first,last;const auto c=finite_curve(edge,first,last);
     if(coplanar(c,first,last)){result.coincident=true;return;}
-    Handle(Geom_Curve) finite=new Geom_TrimmedCurve(c,first,last);
+    Handle(Geom_Curve) finite=new Geom_TrimmedCurve(c,first,last,true,false);
     GeomAPI_IntCS hits(finite,new Geom_Plane(plane));
     if(!hits.IsDone())throw std::runtime_error("Native finite curve/plane intersection failed");
     if(hits.NbSegments()) {result.coincident=true;return;}
@@ -144,16 +157,31 @@ struct Query {
     const BRepAdaptor_Surface s(face);
     return s.GetType()==GeomAbs_Plane&&normal.Crossed(gp_Vec(s.Plane().Axis().Direction())).Magnitude()<=1e-14&&s.Plane().Distance(p(frame.origin))<=tolerance;
   }
+  bool analytic_tangent(const TopoDS_Face &face){
+    const BRepAdaptor_Surface surface(face);
+    if(surface.GetType()==GeomAbs_Cylinder){
+      const auto cylinder=surface.Cylinder();
+      return std::abs(normal.Dot(gp_Vec(cylinder.Axis().Direction())))<=1e-12&&
+        std::abs(plane.Distance(cylinder.Location())-cylinder.Radius())<=tolerance;
+    }
+    if(surface.GetType()==GeomAbs_Sphere){
+      const auto sphere=surface.Sphere();
+      return std::abs(plane.Distance(sphere.Location())-sphere.Radius())<=tolerance;
+    }
+    // No general spline-surface tangency classifier is installed. A false
+    // result here must not be advertised as a proof for every surface family.
+    return false;
+  }
   void section(const TopoDS_Shape &selected,int selectedFace){
     if(selectedFace>=0&&coincident_face(TopoDS::Face(selected))){result.coincident=true;return;}
     BRepAlgoAPI_Section op(selected,plane,false);
     op.SetNonDestructive(true);op.SetRunParallel(false);op.SetFuzzyValue(0.);op.Approximation(false);op.Build();
     if(!op.IsDone()||op.HasErrors())throw std::runtime_error("Native finite B-rep/plane section failed");
     auto supports=[&](SketchReferenceData &out,const TopoDS_Shape &produced){
-      if(selectedFace>=0)support(out,0,selectedFace);
+      if(selectedFace>=0){support(out,0,selectedFace);out.tangent=out.tangent||analytic_tangent(TopoDS::Face(selected));}
       support_shape(out,produced);
       if(produced.ShapeType()==TopAbs_EDGE){
-        TopoDS_Shape ancestor;if(op.HasAncestorFaceOn1(produced,ancestor))support_shape(out,ancestor);
+        TopoDS_Shape ancestor;if(op.HasAncestorFaceOn1(produced,ancestor)){support_shape(out,ancestor);out.tangent=out.tangent||analytic_tangent(TopoDS::Face(ancestor));}
         TopTools_IndexedMapOfShape endpoints;TopExp::MapShapes(produced,TopAbs_VERTEX,endpoints);
         // Source edge -> generated section endpoint is exact Boolean history,
         // not a nearest-boundary test. It distinguishes hole-split sections.

@@ -25,6 +25,9 @@ pub struct SketchReferenceResult {
     pub source_parameter: Option<f64>,
     /// Native source interval; rational conversion may reparameterize output.
     pub source_interval: Option<[f64; 2]>,
+    /// Proven edge/plane point tangency, isolated section touch, or analytic
+    /// cylinder/sphere section tangency. False does not certify arbitrary
+    /// spline-surface transversality; that general classifier is unavailable.
     pub tangent: bool,
     pub crossing: Option<i8>,
 }
