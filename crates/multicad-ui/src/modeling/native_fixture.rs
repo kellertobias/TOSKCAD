@@ -64,6 +64,25 @@ pub(crate) fn scene(
                 color: [128, 154, 204, 255],
             });
         }
+        let mut native_bounds: std::collections::BTreeMap<_, _> = model
+            .shapes
+            .iter()
+            .map(|(id, shape)| (*id, [shape.bounds.min, shape.bounds.max]))
+            .collect();
+        for (body, producer) in &model.body_sources {
+            let bounds = model
+                .shapes
+                .get(producer)
+                .ok_or("Native Part bounds have no current producer")?
+                .bounds;
+            native_bounds.insert(*body, [bounds.min, bounds.max]);
+        }
+        for occurrence in model.occurrences.values() {
+            native_bounds.insert(
+                occurrence.instance,
+                [occurrence.bounds.min, occurrence.bounds.max],
+            );
+        }
         Scene::new(
             SceneStamp {
                 document: model.stamp.document,
@@ -78,7 +97,8 @@ pub(crate) fn scene(
             source_hash: model.stamp.source_hash,
             consumed_bodies: model.consumed_bodies.clone(),
             cut_targets: model.cut_targets.clone(),
-        }))
+        }))?
+        .with_native_bounds(model.stamp.source_hash, native_bounds)
     };
     make().map(Arc::new).map_err(|message| ModelError {
         entity: None,

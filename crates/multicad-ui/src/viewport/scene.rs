@@ -463,6 +463,11 @@ pub struct Scene {
     reference_aliases: Arc<BTreeMap<EntityId, EntityId>>,
     world_bounds: Option<[Point; 2]>,
     model_evaluation: Option<Arc<multicad_core::model::ModelEvaluationInfo>>,
+    native_bounds: Option<Arc<NativeBounds>>,
+}
+struct NativeBounds {
+    source: multicad_core::project_file::ContentHash,
+    entities: BTreeMap<EntityId, [Point; 2]>,
 }
 #[derive(Clone)]
 pub struct Hit {
@@ -526,6 +531,7 @@ impl Scene {
             instances,
             world_bounds,
             model_evaluation: None,
+            native_bounds: None,
         })
     }
     /// Attach immutable results from this exact source evaluation. Structural
@@ -572,6 +578,62 @@ impl Scene {
         }
         self.reference_aliases = Arc::new(aliases);
         Ok(self)
+    }
+    /// Exact world-axis bounds copied from the native model snapshot. They are
+    /// separate from tessellation bounds and require the same source receipt.
+    pub fn with_native_bounds(
+        mut self,
+        source: multicad_core::project_file::ContentHash,
+        entities: BTreeMap<EntityId, [Point; 2]>,
+    ) -> Result<Self, String> {
+        if self
+            .model_evaluation
+            .as_ref()
+            .is_none_or(|info| info.source_hash != source)
+        {
+            return Err("Native bounds require matching source-bound model metadata".into());
+        }
+        let known: BTreeSet<_> = self
+            .geometries
+            .keys()
+            .chain(self.reference_aliases.keys())
+            .copied()
+            .chain(self.reference_instances.iter().map(|i| i.id))
+            .collect();
+        if entities.len() > 204_096
+            || entities.iter().any(|(id, bounds)| {
+                id.is_nil()
+                    || !known.contains(id)
+                    || bounds
+                        .iter()
+                        .flatten()
+                        .any(|v| !v.is_finite() || v.abs() > 1e9)
+                    || bounds[0]
+                        .into_iter()
+                        .zip(bounds[1])
+                        .any(|(min, max)| min > max)
+            })
+        {
+            return Err("Native bounds contain an invalid source identity or finite extent".into());
+        }
+        if self
+            .reference_instances
+            .iter()
+            .any(|i| !entities.contains_key(&i.id))
+        {
+            return Err("Native bounds omitted an evaluated occurrence".into());
+        }
+        self.native_bounds = Some(Arc::new(NativeBounds { source, entities }));
+        Ok(self)
+    }
+    /// Callers still verify this Scene's source hash and document/revision.
+    /// Source-inspection views never authorize placement defaults.
+    pub fn native_instance_bounds(&self, id: EntityId) -> Option<[Point; 2]> {
+        let bounds = self.native_bounds.as_ref()?;
+        if !self.is_full_model() || self.model_evaluation.as_ref()?.source_hash != bounds.source {
+            return None;
+        }
+        bounds.entities.get(&id).copied()
     }
     /// Explicit incomplete evaluation scope. Hash equality alone never makes a
     /// source-inspection result a successful full-model candidate.
@@ -630,6 +692,7 @@ impl Scene {
         view.reference_instances = self.reference_instances.clone();
         view.reference_aliases = self.reference_aliases.clone();
         view.model_evaluation = self.model_evaluation.clone();
+        view.native_bounds = self.native_bounds.clone();
         view.scope = self.scope.clone();
         Ok(Arc::new(view))
     }

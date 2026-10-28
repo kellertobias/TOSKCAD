@@ -183,6 +183,25 @@ fn scene(
         revision: model.stamp.revision,
         generation,
     };
+    let mut native_bounds: std::collections::BTreeMap<_, _> = model
+        .shapes
+        .iter()
+        .map(|(id, shape)| (*id, [shape.bounds.min, shape.bounds.max]))
+        .collect();
+    for (body, producer) in &model.body_sources {
+        let bounds = model
+            .shapes
+            .get(producer)
+            .ok_or_else(|| invalid("Native Part bounds have no current producer".into()))?
+            .bounds;
+        native_bounds.insert(*body, [bounds.min, bounds.max]);
+    }
+    for occurrence in model.occurrences.values() {
+        native_bounds.insert(
+            occurrence.instance,
+            [occurrence.bounds.min, occurrence.bounds.max],
+        );
+    }
     viewport::Scene::new(stamp, geometries, instances)
         .and_then(|scene| match &model.scope {
             multicad_model::EvaluationScope::Full => Ok(scene),
@@ -198,6 +217,7 @@ fn scene(
                 cut_targets: model.cut_targets.clone(),
             }))
         })
+        .and_then(|scene| scene.with_native_bounds(model.stamp.source_hash, native_bounds))
         .map(Arc::new)
         .map_err(invalid)
 }

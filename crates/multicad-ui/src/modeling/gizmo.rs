@@ -366,10 +366,9 @@ impl Interaction {
         if self.drag.is_some() && !down && !pressed && !released {
             return Err("The pointer gesture was interrupted; the placement was cancelled".into());
         }
-        let draw_origin = self
-            .drag
-            .as_ref()
-            .map_or(values.origin(), |d| d.values.origin());
+        // Paint at the current numeric pivot while solving every pointer delta
+        // against the frozen start frame, so translation cannot accumulate.
+        let draw_origin = values.origin();
         let draw_basis = self.drag.as_ref().map_or(input.basis, |d| d.basis);
         let geometry = shapes(input.camera, input.rect, draw_origin, draw_basis);
         let hovered = pointer.filter(|p| input.rect.contains(*p)).and_then(|p| {

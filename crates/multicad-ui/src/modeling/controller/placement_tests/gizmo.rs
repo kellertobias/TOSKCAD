@@ -179,6 +179,13 @@ fn begin(
         Channel::Ui,
     )
     .unwrap();
+    // These transaction regressions explicitly use the world origin as pivot;
+    // the separate default-pivot test covers the native selection-bound center.
+    if let Some(ModelForm::Placement(panel)) = &mut c.form {
+        panel
+            .set_drag_parameters(&NumericTransform::default())
+            .unwrap();
+    }
     (c, gate)
 }
 fn close(actual: [f64; 3], expected: [f64; 3]) {

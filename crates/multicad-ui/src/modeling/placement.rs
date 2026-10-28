@@ -2,6 +2,8 @@
 //! modeling candidate lane; these controls never alter display geometry.
 mod command;
 #[cfg(test)]
+mod native_bounds_tests;
+#[cfg(test)]
 mod tests;
 use super::{
     FormStamp, PreviewState,
@@ -82,7 +84,22 @@ impl PlacementPanel {
         {
             return Err("Placement requires a current source-bound native model".into());
         }
-        let parameters = NumericTransform::default();
+        let mut parameters = NumericTransform::default();
+        if let Some(bounds) = selected
+            .iter()
+            .map(|id| scene.native_instance_bounds(*id))
+            .collect::<Option<Vec<_>>>()
+        {
+            let center = std::array::from_fn(|i| {
+                let min = bounds.iter().map(|b| b[0][i]).fold(f64::INFINITY, f64::min);
+                let max = bounds
+                    .iter()
+                    .map(|b| b[1][i])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                model::length(min + (max - min) * 0.5)
+            });
+            parameters.pivot = center;
+        }
         let (command, targets) = Self::commands(document, scene, selected, mode, &parameters)?;
         let other = if mode == PlacementMode::Move {
             PlacementMode::Copy
