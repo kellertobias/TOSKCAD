@@ -407,7 +407,11 @@ impl Form {
                         &mut request.parameters.limits,
                     );
                 } else {
-                    ui.small(format!("Limits: {:?}", request.parameters.limits));
+                    for line in
+                        widgets::limit_labels(request.parameters.kind, &request.parameters.limits)
+                    {
+                        ui.small(line);
+                    }
                 }
             }
             Operation::Pose(request) => {

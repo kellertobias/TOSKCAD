@@ -239,6 +239,11 @@ fn assembly_host_selected_instance_edits_the_saved_joint_and_fixed_footer_applie
     h.click("Apply");
     assert_eq!(h.session.revision(), revision + 1);
     assert!(!h.editor.model_active());
+    assert_eq!(h.editor.tree_selection, BTreeSet::from([h.instance]));
+    assert_eq!(
+        h.editor.assembly_edit_actions(h.session.document()),
+        vec![(h.joint, "Edit relationship")]
+    );
     assert_eq!(h.session.document().get(h.part), source.get(h.part));
     assert!(model::read_joint(h.session.document(), h.joint).is_ok());
     h.session

@@ -109,7 +109,9 @@ impl Walk<'_> {
         path: OccurrencePath,
         pose: RigidPose,
     ) -> Result<(), String> {
-        if path.members.len() > 32 || self.expected.len() >= 4096 || !self.visited.insert(component)
+        if path.members.len() > 32
+            || self.expected.len() >= model::MAX_ASSEMBLY_LEAVES
+            || !self.visited.insert(component)
         {
             return Err(
                 "Assembly component graph contains a cycle or exceeds its leaf/depth budget".into(),

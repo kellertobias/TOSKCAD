@@ -257,3 +257,80 @@ pub(super) fn choose(
         });
     changed
 }
+
+pub(super) fn limit_labels(kind: JointKind, limits: &JointLimits) -> Vec<String> {
+    let text = |value: &Dimension, unit| {
+        DimensionField::from_dimension(value, unit)
+            .map(|field| field.text)
+            .unwrap_or_else(|_| "Invalid limit".into())
+    };
+    let mut lines = vec![];
+    for (coordinate, name, unit, limit) in [
+        (
+            JointCoordinate::X,
+            "Local X",
+            "mm",
+            limits.translation[0].as_ref(),
+        ),
+        (
+            JointCoordinate::Y,
+            "Local Y",
+            "mm",
+            limits.translation[1].as_ref(),
+        ),
+        (
+            JointCoordinate::Z,
+            "Local Z",
+            "mm",
+            limits.translation[2].as_ref(),
+        ),
+        (
+            JointCoordinate::Rotation,
+            "About local Z",
+            "deg",
+            limits.rotation.as_ref(),
+        ),
+    ] {
+        if kind.allows(coordinate) {
+            lines.push(match limit {
+                Some(limit) => format!(
+                    "{name} limit: {} to {} {unit}",
+                    text(&limit.min, unit),
+                    text(&limit.max, unit)
+                ),
+                None => format!("{name}: no travel limit"),
+            });
+        }
+    }
+    if lines.is_empty() {
+        lines.push("Fixed relationship: no motion coordinates".into());
+    }
+    lines
+}
+
+#[cfg(test)]
+mod limit_text_tests {
+    use super::*;
+    #[test]
+    fn motion_limits_use_user_units_and_only_available_coordinates() {
+        let limits = JointLimits {
+            rotation: Some(JointLimit {
+                min: multicad_core::model::angle(0.),
+                max: multicad_core::model::angle(90.),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            limit_labels(JointKind::Revolute, &limits),
+            vec!["About local Z limit: 0 to 90 deg"]
+        );
+        assert_eq!(
+            limit_labels(JointKind::Slider, &limits),
+            vec!["Local Z: no travel limit"]
+        );
+        assert_eq!(
+            limit_labels(JointKind::Fixed, &limits),
+            vec!["Fixed relationship: no motion coordinates"]
+        );
+    }
+}

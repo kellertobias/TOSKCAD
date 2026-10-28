@@ -225,14 +225,18 @@ impl AssemblyController {
         let form = self.form.as_mut().ok_or("No assembly tool is active")?;
         form.pick = None;
         let prepared = form.prepare(session, Actor::local(channel))?;
-        let selected = prepared
-            .instances
-            .iter()
-            .chain(&prepared.assemblies)
-            .chain(&prepared.joints)
-            .copied()
-            .chain(prepared.pose)
-            .collect();
+        // Select the user's result, rather than also selecting its implementation
+        // drivers and every contained member. Single-selection Inspector actions
+        // must remain available immediately after Apply.
+        let selected = if let Some(pose) = prepared.pose {
+            vec![pose]
+        } else if !prepared.assemblies.is_empty() {
+            prepared.assemblies.clone()
+        } else if !prepared.instances.is_empty() {
+            prepared.instances.clone()
+        } else {
+            prepared.joints.clone()
+        };
         let source = ContentHash::document(prepared.prepared.document())?;
         self.generation = self
             .generation
