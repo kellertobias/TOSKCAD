@@ -724,8 +724,9 @@ impl SketchEditor {
     ) -> Result<(), String> {
         let label = self.model.label();
         let instances = self.model.candidate_instances();
+        let fit = !self.model.placement_active();
         let outputs = self.model.apply(session, resources)?;
-        self.accept_model_outputs(outputs, label);
+        self.accept_model_outputs(outputs, label, fit);
         self.tree_selection.extend(instances);
         Ok(())
     }
@@ -733,12 +734,13 @@ impl SketchEditor {
         &mut self,
         outputs: Vec<multicad_core::model::CreatedBody>,
         label: &str,
+        fit: bool,
     ) {
         self.acquisition = None;
         self.tree_selection = outputs.into_iter().map(|output| output.body).collect();
         self.selected = None;
         self.solid.clear();
-        self.fit_requested = true;
+        self.fit_requested |= fit;
         self.message = format!("{label} applied · one undoable source edit");
     }
     pub fn cancel_model(&mut self) {
@@ -1958,9 +1960,10 @@ impl SketchEditor {
                         if self.target_inspector(ui, session, resources, feed) { return; }
                         if self.model.active() {
                             let label=self.model.label();
+                            let fit = !self.model.placement_active();
                             match self.model.show(ui,session,resources) {
-                                Ok(Some(crate::modeling::ModelToolOutcome::Applied(outputs)))=>self.accept_model_outputs(outputs,label),
-                                Ok(Some(crate::modeling::ModelToolOutcome::Placed{parts,instances}))=>{self.accept_model_outputs(parts,label);self.tree_selection.extend(instances);},
+                                Ok(Some(crate::modeling::ModelToolOutcome::Applied(outputs)))=>self.accept_model_outputs(outputs,label,fit),
+                                Ok(Some(crate::modeling::ModelToolOutcome::Placed{parts,instances}))=>{self.accept_model_outputs(parts,label,fit);self.tree_selection.extend(instances);},
                                 Ok(Some(crate::modeling::ModelToolOutcome::Cancelled))=>{self.acquisition=None;self.message="Modeling cancelled · document unchanged".into();},
                                 Err(error)=>self.message=error,
                                 Ok(None)=>{}
@@ -2612,6 +2615,8 @@ impl SketchEditor {
                             camera: self.camera,
                             rect,
                             basis,
+                            start_allowed: response.hovered()
+                                || response.dragged_by(egui::PointerButton::Primary),
                         },
                     ),
                     Err(error) => {
@@ -2624,13 +2629,13 @@ impl SketchEditor {
                         owned = result.input_owned;
                         match result.outcome {
                             Some(crate::modeling::ModelToolOutcome::Applied(parts)) => {
-                                self.accept_model_outputs(parts, "Move / Copy")
+                                self.accept_model_outputs(parts, "Move / Copy", false)
                             }
                             Some(crate::modeling::ModelToolOutcome::Placed {
                                 parts,
                                 instances,
                             }) => {
-                                self.accept_model_outputs(parts, "Move / Copy");
+                                self.accept_model_outputs(parts, "Move / Copy", false);
                                 self.tree_selection.extend(instances);
                             }
                             Some(crate::modeling::ModelToolOutcome::Cancelled) => {
