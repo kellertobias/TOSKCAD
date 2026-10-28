@@ -93,7 +93,51 @@ fn executable(source: &ExtrudeDefinition, session: &Session) -> Result<(), Comma
             source.targets.iter().map(|t| t.body).collect(),
         ));
     }
-    source.parameters.resolve(session.parameters())?;
+    source.parameters.resolve_controls(session.parameters())?;
+    Ok(())
+}
+fn termination_inputs(
+    document: &Document,
+    source: &ExtrudeDefinition,
+    inputs: &[crate::document::Link],
+) -> Result<(), CommandError> {
+    for end in source.parameters.terminations() {
+        match end {
+            Termination::Distance { .. } => {}
+            Termination::ToPlane { plane, .. } => {
+                if !matches!(
+                    document.get(*plane).map(|e| &e.data),
+                    Some(EntityData::Plane { .. })
+                ) {
+                    return Err(error("Choose an existing termination Plane", vec![*plane]));
+                }
+            }
+            Termination::ToFace { reference, .. } => {
+                let link = inputs
+                    .iter()
+                    .find(|link| {
+                        link.geometry
+                            .as_ref()
+                            .is_some_and(|intent| intent.id == *reference)
+                    })
+                    .ok_or_else(|| {
+                        error("A termination face input is missing", vec![*reference])
+                    })?;
+                if !matches!(
+                    document.get(link.target).map(|e| &e.data),
+                    Some(EntityData::Feature {
+                        suppressed: false,
+                        ..
+                    })
+                ) {
+                    return Err(error(
+                        "Choose an existing, unsuppressed termination face producer",
+                        vec![link.target],
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 fn authored_curves(
@@ -178,6 +222,7 @@ pub fn prepare_extrude(
         };
         executable(&source, session)?;
         let inputs = source.inputs(&request.faces)?;
+        termination_inputs(session.document(), &source, &inputs)?;
         let mut feature = Entity::new(
             format!("{} extrusion", output.name),
             EntityData::Feature {
@@ -222,6 +267,47 @@ pub fn prepare_extrude_edit(
     revision(session, expected_revision)?;
     let mut source = read_extrude(session.document(), feature)?;
     source.parameters = parameters.clone();
+    let wanted = source.face_references();
+    let EntityData::Feature { inputs, .. } =
+        &session.document().get(feature).expect("read source").data
+    else {
+        unreachable!()
+    };
+    let faces: Vec<_> = inputs
+        .iter()
+        .filter_map(|link| {
+            link.geometry
+                .as_ref()
+                .filter(|intent| wanted.contains(&intent.id))
+                .map(|intent| FaceInput {
+                    source: link.target,
+                    intent: intent.clone(),
+                })
+        })
+        .collect();
+    prepare_extrude_edit_with_faces(
+        session,
+        expected_revision,
+        actor,
+        feature,
+        parameters,
+        &faces,
+    )
+}
+/// Explicitly replace termination face inputs. Ordinary edits retain the
+/// current link-owned selectors; callers supply fresh captures through this
+/// path when changing or repairing the selected target.
+pub fn prepare_extrude_edit_with_faces(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    feature: EntityId,
+    parameters: &ExtrudeParameters,
+    faces: &[FaceInput],
+) -> Result<ModelPrepared, CommandError> {
+    revision(session, expected_revision)?;
+    let mut source = read_extrude(session.document(), feature)?;
+    source.parameters = parameters.clone();
     executable(&source, session)?;
     let mut entity = session
         .document()
@@ -235,7 +321,8 @@ pub fn prepare_extrude_edit(
         unreachable!()
     };
     *definition = source.definition()?;
-    *inputs = source.inputs(&[])?;
+    *inputs = source.inputs(faces)?;
+    termination_inputs(session.document(), &source, inputs)?;
     let prepared = session.prepare(Request {
         expected_revision,
         actor,

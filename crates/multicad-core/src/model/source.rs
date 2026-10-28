@@ -112,12 +112,15 @@ pub enum Termination {
     },
     ToPlane {
         plane: EntityId,
+        /// Signed movement of the end plane along its own normal, in the
+        /// supplied length unit; independent of the start-plane offset.
         offset: Dimension,
     },
     /// The sole canonical intent/source live on Feature.inputs. Repairing that
     /// link therefore cannot leave a duplicated payload selector stale.
     ToFace {
         reference: EntityId,
+        /// Signed movement along the resolved target face frame's normal.
         offset: Dimension,
     },
 }
@@ -179,6 +182,44 @@ pub struct ResolvedExtrude {
     pub forward_mm: f64,
     pub backward_mm: f64,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResolvedTermination {
+    Distance { distance_mm: f64 },
+    ToPlane { plane: EntityId, offset_mm: f64 },
+    ToFace { reference: EntityId, offset_mm: f64 },
+}
+impl ResolvedTermination {
+    fn distance(&self) -> Result<f64, DocumentError> {
+        match self {
+            Self::Distance { distance_mm } => Ok(*distance_mm),
+            _ => Err(invalid(
+                "Associative termination requires current native geometry; it has no resolved distance",
+            )),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResolvedExtent {
+    OneSided {
+        end: ResolvedTermination,
+    },
+    TwoSided {
+        forward: ResolvedTermination,
+        backward: ResolvedTermination,
+    },
+    Symmetric {
+        total_mm: f64,
+    },
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedExtrudeControls {
+    pub direction: [f64; 3],
+    /// Offset along the sketch normal, independently of the sweep direction.
+    pub start_offset_mm: f64,
+    /// Nonzero taper remains unsupported and is rejected during resolution.
+    pub taper_rad: f64,
+    pub extent: ResolvedExtent,
+}
 pub(super) fn check_dimension(value: &Dimension, unit: Unit) -> Result<(), DocumentError> {
     if Unit::parse(value.unit()).is_none_or(|u| u.dimension() != unit.dimension()) {
         return Err(invalid(format!(
@@ -216,19 +257,31 @@ impl Termination {
             _ => Ok(()),
         }
     }
-    fn distance(&self, parameters: &EvaluatedParameters) -> Result<f64, DocumentError> {
-        let Self::Distance { distance } = self else {
-            return Err(invalid(
-                "Associative plane/face termination is not supported by this model preparation yet",
-            ));
-        };
-        let value = distance
+    pub fn resolve(
+        &self,
+        parameters: &EvaluatedParameters,
+    ) -> Result<ResolvedTermination, DocumentError> {
+        self.validate()?;
+        let value = self
+            .dimension()
             .value_in(Unit::Millimeter, Some(parameters))
             .map_err(invalid)?;
-        if value <= 0. {
-            return Err(invalid("Extrusion distance must be positive"));
-        }
-        Ok(value)
+        Ok(match self {
+            Self::Distance { .. } => {
+                if value <= 0. {
+                    return Err(invalid("Extrusion distance must be positive"));
+                }
+                ResolvedTermination::Distance { distance_mm: value }
+            }
+            Self::ToPlane { plane, .. } => ResolvedTermination::ToPlane {
+                plane: *plane,
+                offset_mm: value,
+            },
+            Self::ToFace { reference, .. } => ResolvedTermination::ToFace {
+                reference: *reference,
+                offset_mm: value,
+            },
+        })
     }
 }
 impl ExtrudeParameters {
@@ -249,7 +302,7 @@ impl ExtrudeParameters {
         }
         result
     }
-    fn terminations(&self) -> Vec<&Termination> {
+    pub(super) fn terminations(&self) -> Vec<&Termination> {
         match &self.extent {
             Extent::OneSided { end } => vec![end],
             Extent::TwoSided { forward, backward } => vec![forward, backward],
@@ -273,12 +326,12 @@ impl ExtrudeParameters {
         }
         Ok(())
     }
-    /// Resolve the currently executable distance-only, untapered contract.
-    /// Canonical source validation is intentionally broader and source-neutral.
-    pub fn resolve(
+    /// Resolve typed control values without guessing a distance to a plane or
+    /// face. Exact termination remains the native evaluator's responsibility.
+    pub fn resolve_controls(
         &self,
         parameters: &EvaluatedParameters,
-    ) -> Result<ResolvedExtrude, DocumentError> {
+    ) -> Result<ResolvedExtrudeControls, DocumentError> {
         self.validate()?;
         let number = |d: &Dimension, u| d.value_in(u, Some(parameters)).map_err(invalid);
         let elevation = number(&self.direction.elevation, Unit::Radian)?;
@@ -288,7 +341,8 @@ impl ExtrudeParameters {
                 "Extrusion elevation must be between 0 and 180 degrees and cross the sketch plane",
             ));
         }
-        if number(&self.taper, Unit::Radian)? != 0. {
+        let taper_rad = number(&self.taper, Unit::Radian)?;
+        if taper_rad != 0. {
             return Err(invalid(
                 "Tapered extrusion is not supported by this model preparation yet",
             ));
@@ -299,12 +353,23 @@ impl ExtrudeParameters {
             elevation.cos() * azimuth.sin() * sign,
             elevation.sin() * sign,
         ];
-        let (forward_mm, backward_mm) = match &self.extent {
-            Extent::OneSided { end } => (end.distance(parameters)?, 0.),
-            Extent::TwoSided { forward, backward } => (
-                forward.distance(parameters)?,
-                backward.distance(parameters)?,
-            ),
+        let extent = match &self.extent {
+            Extent::OneSided { end } => ResolvedExtent::OneSided {
+                end: end.resolve(parameters)?,
+            },
+            Extent::TwoSided { forward, backward } => {
+                let forward = forward.resolve(parameters)?;
+                let backward = backward.resolve(parameters)?;
+                if let (
+                    ResolvedTermination::Distance { distance_mm: a },
+                    ResolvedTermination::Distance { distance_mm: b },
+                ) = (&forward, &backward)
+                    && a + b > 1e9
+                {
+                    return Err(invalid("Extrusion span exceeds the model distance limit"));
+                }
+                ResolvedExtent::TwoSided { forward, backward }
+            }
             Extent::Symmetric { total } => {
                 let total = number(total, Unit::Millimeter)?;
                 if total <= 0. {
@@ -312,15 +377,33 @@ impl ExtrudeParameters {
                         "Symmetric extrusion total distance must be positive",
                     ));
                 }
-                (total / 2., total / 2.)
+                ResolvedExtent::Symmetric { total_mm: total }
             }
         };
-        if forward_mm + backward_mm > 1e9 {
-            return Err(invalid("Extrusion span exceeds the model distance limit"));
-        }
-        Ok(ResolvedExtrude {
+        Ok(ResolvedExtrudeControls {
             direction,
             start_offset_mm: number(&self.start_offset, Unit::Millimeter)?,
+            taper_rad,
+            extent,
+        })
+    }
+    /// Compatibility helper for callers requiring a numeric distance sweep.
+    /// An associative target never becomes a fabricated numeric fallback.
+    pub fn resolve(
+        &self,
+        parameters: &EvaluatedParameters,
+    ) -> Result<ResolvedExtrude, DocumentError> {
+        let controls = self.resolve_controls(parameters)?;
+        let (forward_mm, backward_mm) = match &controls.extent {
+            ResolvedExtent::OneSided { end } => (end.distance()?, 0.),
+            ResolvedExtent::TwoSided { forward, backward } => {
+                (forward.distance()?, backward.distance()?)
+            }
+            ResolvedExtent::Symmetric { total_mm } => (total_mm / 2., total_mm / 2.),
+        };
+        Ok(ResolvedExtrude {
+            direction: controls.direction,
+            start_offset_mm: controls.start_offset_mm,
             forward_mm,
             backward_mm,
         })
@@ -396,7 +479,7 @@ impl ExtrudeDefinition {
         source.validate()?;
         Ok(source)
     }
-    fn face_references(&self) -> BTreeSet<EntityId> {
+    pub(super) fn face_references(&self) -> BTreeSet<EntityId> {
         self.parameters
             .terminations()
             .into_iter()
