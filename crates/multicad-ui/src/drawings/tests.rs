@@ -524,4 +524,5 @@ fn asynchronous_drawing_completion_requests_a_frame_to_refresh_inspector_and_rib
             .repaint_delay
             .is_zero()
     );
+    output.drop_without_applying_deltas();
 }
