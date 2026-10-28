@@ -1,3 +1,6 @@
+//! Closed profile sweeps and ordered lofts with authored curve identities.
+//! Native compatibility guessing, profile relocation and implicit correction
+//! are disabled; unsupported holes/path/correspondence remain explicit errors.
 use crate::{CurvedProfile, GeometryError, GeometryErrorKind, GeometryPolicy, Solid, ffi};
 use multicad_core::{
     document::EntityId,
@@ -48,6 +51,9 @@ fn origins_valid(feature: EntityId, origins: &[Origin]) -> Result<(), GeometryEr
     Ok(())
 }
 impl Solid {
+    /// Sweep one outer wire along an open world-space polyline. The profile
+    /// starts in its given plane, normal to the first path segment. Every path
+    /// segment has a stable supplied origin; corners use native right transitions.
     pub fn sweep_polyline_named(
         profile: &CurvedProfile,
         path_mm: &[[f64; 3]],
@@ -142,6 +148,8 @@ impl Solid {
         result.name_advanced_profile(feature, &origins)?;
         Ok(result)
     }
+    /// Loft 2..16 closed sections in supplied order, keeping their edge order
+    /// and winding. Matching edge kinds/counts define explicit correspondence.
     pub fn loft_profiles_named(
         profiles: &[CurvedProfile],
         feature: EntityId,

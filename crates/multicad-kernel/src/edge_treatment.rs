@@ -28,7 +28,9 @@ pub struct SidedTreatmentEdge {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SidedChamfer {
+    /// First distance is measured on the explicitly selected reference face.
     Distances { first_mm: f64, second_mm: f64 },
+    /// Distance is measured on that face; angle is between it and the chamfer.
     DistanceAngle { distance_mm: f64, angle_rad: f64 },
 }
 

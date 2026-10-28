@@ -64,6 +64,32 @@ fn asymmetric_chamfer_uses_the_explicit_face_and_distance_angle() {
         )
         .unwrap();
     near(angled.volume_mm3().unwrap(), 72000. - 60.);
+    let angle = std::f64::consts::FRAC_PI_6;
+    let angled = source
+        .chamfer_edges_sided_named(
+            std::slice::from_ref(&selection),
+            SidedChamfer::DistanceAngle {
+                distance_mm: 2.,
+                angle_rad: angle,
+            },
+            feature,
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+    near(
+        angled.volume_mm3().unwrap(),
+        72000. - 0.5 * 2. * (2. * angle.tan()) * 30.,
+    );
+    let snapshot = angled.topology_snapshot(feature, 0).unwrap();
+    let face = snapshot
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face && e.origins.contains(&selection.edge.origin))
+        .unwrap();
+    let Some(AnalyticGeometry::Plane { frame }) = face.geometry else {
+        panic!("angled chamfer lost its exact plane")
+    };
+    near(frame.normal()[0].abs(), angle.cos());
     selection.reference_face = side(&source, owner, [1., 0., 0.]);
     assert!(
         source
