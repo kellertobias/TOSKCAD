@@ -109,18 +109,24 @@ pub(crate) fn scene(
         if !scene.is_full_model() {
             return Ok(scene);
         }
-        scene.with_assembly_evaluation(Arc::new(multicad_core::model::AssemblyEvaluationInfo {
+        let scene = scene.with_assembly_evaluation(Arc::new(
+            multicad_core::model::AssemblyEvaluationInfo {
+                source_hash: model.stamp.source_hash,
+                leaves: model
+                    .leaf_occurrences
+                    .values()
+                    .map(|leaf| multicad_core::model::AssemblyLeafReceipt {
+                        path: leaf.path.clone(),
+                        component: leaf.component,
+                        producer: leaf.producer,
+                        pose: leaf.pose,
+                    })
+                    .collect(),
+            },
+        ))?;
+        scene.with_transfer_evaluation(Arc::new(multicad_core::model::TransferEvaluationInfo {
             source_hash: model.stamp.source_hash,
-            leaves: model
-                .leaf_occurrences
-                .values()
-                .map(|leaf| multicad_core::model::AssemblyLeafReceipt {
-                    path: leaf.path.clone(),
-                    component: leaf.component,
-                    producer: leaf.producer,
-                    pose: leaf.pose,
-                })
-                .collect(),
+            counts: model.transfer_counts.clone(),
         }))
     };
     make().map(Arc::new).map_err(|message| ModelError {

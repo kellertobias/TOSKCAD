@@ -247,6 +247,15 @@ fn scene(
                     .collect(),
             }))
         })
+        .and_then(|scene| {
+            if !scene.is_full_model() {
+                return Ok(scene);
+            }
+            scene.with_transfer_evaluation(Arc::new(multicad_core::model::TransferEvaluationInfo {
+                source_hash: model.stamp.source_hash,
+                counts: model.transfer_counts.clone(),
+            }))
+        })
         .and_then(|scene| scene.with_native_bounds(model.stamp.source_hash, native_bounds))
         .map(Arc::new)
         .map_err(invalid)

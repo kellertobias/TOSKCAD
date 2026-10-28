@@ -70,6 +70,7 @@ fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipt
         .compile(session.document(), session.revision())
         .unwrap();
     let scene = scene(session.document(), native.snapshot(), 7).unwrap();
+    assert!(scene.transfer_evaluation().unwrap().counts.is_empty());
     assert_eq!(scene.instances().len(), 1);
     assert_eq!(scene.instances()[0].id, placed.instance);
     let info = scene.assembly_evaluation().unwrap();
@@ -122,6 +123,7 @@ fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipt
     );
     assert!(!exploded.is_full_model());
     assert!(exploded.assembly_evaluation().is_none());
+    assert!(exploded.transfer_evaluation().is_none());
     assert!(exploded.model_evaluation().is_none());
     assert_eq!(scene.instances().len(), 1);
     assert_eq!(session.document(), &original);
