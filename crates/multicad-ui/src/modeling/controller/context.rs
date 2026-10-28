@@ -27,6 +27,9 @@ impl ModelToolController {
         if let Some(panel) = self.form.as_mut().and_then(ModelForm::extrusion_mut) {
             panel.set_picking_available(self.context_valid);
         }
+        if let Some(ModelForm::Advanced(panel)) = &mut self.form {
+            panel.set_picking_available(self.context_valid);
+        }
         if let Some(ModelForm::EdgeTreatment(panel)) = &mut self.form {
             panel.set_picking_available(self.context_valid);
         }
@@ -37,6 +40,9 @@ impl ModelToolController {
             "{reason}. Edit the saved source controls and Preview the complete model before Apply. New native target choices and viewer picking are unavailable."
         ));
         if let Some(panel) = self.form.as_mut().and_then(ModelForm::extrusion_mut) {
+            panel.set_picking_available(false);
+        }
+        if let Some(ModelForm::Advanced(panel)) = &mut self.form {
             panel.set_picking_available(false);
         }
         if let Some(ModelForm::EdgeTreatment(panel)) = &mut self.form {

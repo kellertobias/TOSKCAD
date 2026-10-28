@@ -1,6 +1,7 @@
 //! A candidate evaluation lane, separate from canonical display publication.
 use super::{
     ExtrudeCapabilities, ExtrudePanel, FormStamp, ModelRequest, ModelingTool, PreviewState,
+    advanced::AdvancedPanel,
     alignment_panel::AlignmentPanel,
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
@@ -77,6 +78,7 @@ struct Handoff {
 #[derive(Default)]
 pub struct ModelToolController {
     form: Option<ModelForm>,
+    advanced_context: Option<advanced::AdvancedContext>,
     backend: Option<Box<dyn SceneBackend>>,
     scope: Option<Scope>,
     candidate: Option<Candidate>,
@@ -145,7 +147,8 @@ impl ModelToolController {
             return false;
         }
 
-        if super::EdgeTreatmentCommand::editable(document, feature)
+        if super::AdvancedCommand::editable(document, feature)
+            || super::EdgeTreatmentCommand::editable(document, feature)
             || super::ScaleCommand::editable(document, feature)
             || super::PlacementCommand::editable(document, feature)
             || multicad_core::model::read_alignment(document, feature).is_ok()
@@ -179,6 +182,18 @@ impl ModelToolController {
                 channel,
                 ModelForm::Alignment(Box::new(panel)),
             )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
+        }
+        if super::AdvancedCommand::editable(document, feature) {
+            let panel = AdvancedPanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Advanced(Box::new(panel)),
+            )?;
+            self.seed_advanced_context(session);
             self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
             return Ok(());
         }
@@ -592,6 +607,7 @@ impl ModelToolController {
         channel: Channel,
     ) -> Result<(), String> {
         self.stop_edge_treatment_picking();
+        self.stop_advanced_picking();
         self.invalidate();
         let result: Result<(), String> = (|| {
             self.current(session, resources, true)?;
@@ -617,6 +633,7 @@ impl ModelToolController {
         request: &ModelRequest,
     ) -> Result<(), String> {
         self.stop_edge_treatment_picking();
+        self.stop_advanced_picking();
         if matches!(
             self.scope.as_ref().map(|scope| scope.execution),
             Some(Execution::Create)
@@ -718,6 +735,7 @@ impl ModelToolController {
                     | ModelRequest::Placement(_)
                     | ModelRequest::Scale(_)
                     | ModelRequest::EdgeTreatment(_)
+                    | ModelRequest::Advanced(_)
                     | ModelRequest::Alignment(_)
             ) || !matches!(execution, Execution::Create),
         });
@@ -1048,3 +1066,5 @@ mod placement_tests;
 
 #[cfg(test)]
 mod scale_tests;
+
+mod advanced;

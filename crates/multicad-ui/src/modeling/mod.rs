@@ -1,5 +1,6 @@
 //! Reusable modeling forms. Native geometry and document commits belong to the
 //! composition root; painting a form never changes the canonical document.
+mod advanced;
 mod alignment_panel;
 mod body_choices;
 mod boolean;
@@ -26,6 +27,7 @@ mod scaling;
 mod split;
 mod termination;
 
+pub use advanced::{AdvancedCommand, AdvancedKind, AdvancedSelection};
 pub use alignment_panel::AlignmentCommand;
 pub use controller::PlacementViewportResult;
 pub use controller::{ModelToolController, ModelToolOutcome};
