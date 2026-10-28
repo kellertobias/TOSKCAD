@@ -3108,10 +3108,11 @@ mod tests {
         );
         app.set_model_backends(factory);
         assert!(app.current().sketch.has_model_backend());
+        assert!(app.current().sketch.has_assembly_backend());
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            3,
-            "Canonical display, modeling candidates and reference recovery need separate workers"
+            4,
+            "Canonical display, modeling, assembly candidates and reference recovery need separate workers"
         );
         app.mode = Mode::Model;
         for command in [
@@ -3131,13 +3132,24 @@ mod tests {
         );
         assert_eq!(app.current().session.document(), &before);
         assert_eq!(app.current().session.revision(), 0);
+        for tool in crate::assembly::AssemblyTool::ALL {
+            let command = Command::Assembly(tool);
+            assert!(app.enabled(command));
+            app.invoke(command, &[], Channel::CommandLine).unwrap();
+            assert!(app.current().sketch.model_active());
+            assert_eq!(app.current().sketch.has_pending_edits(), tool.authoring());
+            assert!(!app.enabled(Command::Parameter));
+            app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+            assert_eq!(app.current().session.document(), &before);
+        }
         app.invoke(Command::New, &[], Channel::Ui).unwrap();
         let context = egui::Context::default();
         shortcut_frame(&context, &mut app, vec![]);
         assert!(app.current().sketch.has_model_backend());
+        assert!(app.current().sketch.has_assembly_backend());
         assert!(app.projects[0].scene.has_backend());
         assert!(app.current().scene.has_backend());
-        assert_eq!(calls.load(Ordering::SeqCst), 6);
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
     }
     #[test]
     fn primitive_starts_without_sketch_and_inspector_cancel_updates_status_without_editing_source()

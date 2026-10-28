@@ -285,3 +285,111 @@ fn assembly_host_explode_is_cached_source_neutral_and_cannot_authorize_geometry_
             .is_none()
     );
 }
+
+#[test]
+fn assembly_host_nested_member_anchor_pick_uses_its_native_source_not_outer_copy_ids() {
+    let mut h = Host::new();
+    let definition = AssemblyRequest::new("Reusable module", vec![h.instance], vec![h.part]);
+    h.session
+        .commit(
+            prepare_assembly(
+                &h.session,
+                h.session.revision(),
+                Actor::local(Channel::Ui),
+                &definition,
+            )
+            .unwrap()
+            .prepared,
+        )
+        .unwrap();
+    let outer = ComponentPlacementRequest::new(
+        definition.assembly,
+        NumericTransform {
+            translation: [length(1000.), length(0.), length(0.)],
+            ..Default::default()
+        },
+    );
+    h.session
+        .commit(
+            prepare_place_component(
+                &h.session,
+                h.session.revision(),
+                Actor::local(Channel::Ui),
+                &outer,
+            )
+            .unwrap()
+            .prepared,
+        )
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while !h
+        .feed
+        .is_current(h.session.document().id(), h.session.revision())
+        && Instant::now() < until
+    {
+        h.feed.tick(h.session.document(), h.session.revision());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        h.feed
+            .is_current(h.session.document().id(), h.session.revision())
+    );
+    assert_eq!(h.feed.visible().unwrap().instances()[0].id, outer.instance);
+    let baseline = h.session.document().clone();
+    h.editor.tree_selection = BTreeSet::from([h.instance]);
+    h.click("Edit relationship");
+    h.click("Moving local anchor");
+    h.click("Pick face");
+    let source = h
+        .editor
+        .assembly_anchor_scene(&h.session, &h.feed)
+        .unwrap()
+        .unwrap();
+    assert!(!source.is_full_model());
+    assert!(source.model_evaluation().is_none());
+    assert_eq!(source.instances()[0].id, h.instance);
+    let rect = h.editor.viewport_rect.unwrap();
+    let pixel = h.editor.camera.project([75., 10., 10.], rect);
+    let pos = Pos2::new(pixel[0], pixel[1]);
+    assert_eq!(
+        source
+            .pick_screen_with(
+                h.editor.camera,
+                rect,
+                pos,
+                crate::viewport::PickOptions {
+                    filter: crate::viewport::PickFilter::Faces,
+                    include_hidden: false,
+                    section: None
+                }
+            )
+            .unwrap()
+            .instance,
+        h.instance
+    );
+    h.click_at(pos);
+    assert!(
+        h.editor.assembly.anchor_pick().is_none(),
+        "{}",
+        h.editor.message
+    );
+    h.click("Preview");
+    let until = Instant::now() + Duration::from_secs(5);
+    while !h.editor.model_can_apply(&h.session, &Default::default()) && Instant::now() < until {
+        h.frame(vec![]).drop_without_applying_deltas();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(h.editor.model_can_apply(&h.session, &Default::default()));
+    h.click("Apply");
+    let (saved, _) = model::read_joint(h.session.document(), h.joint).unwrap();
+    assert!(matches!(
+        saved.parameters.moving,
+        JointAnchor::Geometry { .. }
+    ));
+    assert_eq!(h.session.document().get(h.part), baseline.get(h.part));
+    assert_eq!(
+        h.session.document().get(outer.instance),
+        baseline.get(outer.instance)
+    );
+    assert_eq!(h.editor.tree_selection, BTreeSet::from([h.instance]));
+}

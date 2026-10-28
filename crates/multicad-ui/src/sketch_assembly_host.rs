@@ -11,6 +11,12 @@ pub(super) struct PresentationCache {
     offsets: BTreeMap<OccurrencePath, [f64; 3]>,
     view: Arc<Scene>,
 }
+pub(super) struct AnchorView {
+    canonical: Arc<Scene>,
+    instance: EntityId,
+    view: Arc<Scene>,
+    camera: Camera,
+}
 use multicad_core::{
     model::{AlignmentInput, OccurrencePath},
     project_file::{ContentHash, ProjectResources},
@@ -27,6 +33,79 @@ pub(super) struct PendingAnchor {
     source: ContentHash,
 }
 impl SketchEditor {
+    /// Definition members can be reused at several outer placements. Pick their
+    /// actual native component mesh in its authored placement, explicitly scoped
+    /// as source inspection, so an outer aggregate cannot masquerade as a member.
+    pub(super) fn assembly_anchor_scene(
+        &mut self,
+        session: &Session,
+        feed: &SceneFeed,
+    ) -> Result<Option<Arc<Scene>>, String> {
+        let Some(pick) = self.assembly.anchor_pick() else {
+            if let Some(previous) = self.assembly_pick_view.take() {
+                self.camera = previous.camera;
+                self.fit_requested = false;
+            }
+            return Ok(None);
+        };
+        let canonical = feed
+            .visible()
+            .filter(|_| feed.is_current(session.document().id(), session.revision()))
+            .ok_or("Wait for current native geometry before picking an anchor")?;
+        if !canonical.is_full_model() {
+            return Err("Anchor picking requires a current complete native model".into());
+        }
+        if let Some(cache) = &self.assembly_pick_view
+            && cache.instance == pick.instance
+            && Arc::ptr_eq(&cache.canonical, canonical)
+        {
+            return Ok(Some(cache.view.clone()));
+        }
+        let Some(EntityData::Instance { component, .. }) =
+            session.document().get(pick.instance).map(|e| &e.data)
+        else {
+            return Err("Choose a placed component for this anchor".into());
+        };
+        let isolated = canonical.isolated_source(*component)?;
+        let producer = isolated.instances()[0].geometry;
+        let geometry = isolated
+            .geometries()
+            .get(&producer)
+            .ok_or("Current component mesh is unavailable")?
+            .clone();
+        let pose = multicad_core::model::resolve_instance_pose_with_snapshots(
+            session.document(),
+            pick.instance,
+            session.parameters(),
+            session.revision(),
+            &canonical.reference_snapshots(),
+        )
+        .map_err(|e| e.to_string())?;
+        let view = Arc::new(
+            Scene::new(
+                canonical.stamp(),
+                vec![geometry],
+                vec![crate::viewport::Instance {
+                    id: pick.instance,
+                    geometry: producer,
+                    transform: crate::viewport::Transform::from_rigid_pose(pose)?,
+                    color: [145, 173, 195, 255],
+                }],
+            )?
+            .with_source_scope(vec![*component])?,
+        );
+        self.assembly_pick_view = Some(AnchorView {
+            camera: self
+                .assembly_pick_view
+                .as_ref()
+                .map_or(self.camera, |previous| previous.camera),
+            canonical: canonical.clone(),
+            instance: pick.instance,
+            view: view.clone(),
+        });
+        self.fit_requested = true;
+        Ok(Some(view))
+    }
     pub(super) fn assembly_exploded_scene(
         &mut self,
         session: &Session,
@@ -316,10 +395,14 @@ impl SketchEditor {
         if !scene.is_full_model() {
             return;
         }
+        let source_scene = match self.assembly_anchor_scene(session, feed) {
+            Ok(Some(scene)) => scene,
+            _ => return,
+        };
         let hovered = response
             .hover_pos()
             .and_then(|pointer| {
-                scene.pick_screen_with(
+                source_scene.pick_screen_with(
                     self.camera,
                     rect,
                     pointer,

@@ -126,6 +126,7 @@ pub struct SketchEditor {
     assembly: crate::assembly::AssemblyController,
     assembly_anchor: Option<assembly_host::PendingAnchor>,
     assembly_presentation: Option<assembly_host::PresentationCache>,
+    assembly_pick_view: Option<assembly_host::AnchorView>,
     acquisition: Option<model_target_selection::Acquisition>,
     advanced_context_stamp: Option<(Option<crate::sketch_evaluation::EvaluationStamp>, usize)>,
     materials: crate::materials::MaterialsEditor,
@@ -196,6 +197,7 @@ impl Default for SketchEditor {
             assembly: Default::default(),
             assembly_anchor: None,
             assembly_presentation: None,
+            assembly_pick_view: None,
             acquisition: None,
             advanced_context_stamp: None,
             materials: Default::default(),
@@ -2359,7 +2361,17 @@ impl SketchEditor {
         let mut model_view = false;
         let mut assembly_view = false;
         let mut exploded_view = false;
+        let mut anchor_view = false;
         self.solid.highlight_reference(None);
+        match self.assembly_anchor_scene(session, feed) {
+            Ok(Some(source)) => {
+                scene = Some(source);
+                current = false;
+                anchor_view = true;
+            }
+            Ok(None) => {}
+            Err(error) => self.message = error,
+        }
         if !self.measurement.active()
             && self.assembly.anchor_pick().is_none()
             && let Some(candidate) = self.assembly.display_scene(session, resources)
@@ -2493,6 +2505,15 @@ impl SketchEditor {
                 rect.left_top() + Vec2::new(14., 12.),
                 Align2::LEFT_TOP,
                 "Exploded display · inspection uses assembled geometry",
+                FontId::proportional(12.),
+                Color32::LIGHT_YELLOW,
+            );
+        }
+        if anchor_view && let Some(rect) = self.viewport_rect {
+            ui.painter().text(
+                rect.left_top() + Vec2::new(14., 12.),
+                Align2::LEFT_TOP,
+                "Relationship anchor · component source view",
                 FontId::proportional(12.),
                 Color32::LIGHT_YELLOW,
             );

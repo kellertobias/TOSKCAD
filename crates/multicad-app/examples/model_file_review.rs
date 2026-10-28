@@ -29,6 +29,10 @@ fn report(document: &Document) -> Result<serde_json::Value, Error> {
         .entities()
         .filter(|entity| matches!(entity.data, EntityData::Parameter { .. }))
         .collect::<Vec<_>>();
+    let leaf_occurrences=snapshot.leaf_occurrences.values().map(|leaf|->Result<serde_json::Value,Error>{
+        let solid=model.leaf_solid(&leaf.path).ok_or("Physical leaf has no exact native solid")?;
+        Ok(serde_json::json!({"path":leaf.path,"component":leaf.component,"producer":leaf.producer,"pose":leaf.pose,"bounds":{"min":leaf.bounds.min,"max":leaf.bounds.max},"volume_mm3":solid.volume_mm3()?,"solid_count":solid.solid_count()?}))
+    }).collect::<Result<Vec<_>,Error>>()?;
     let placement_drivers=document.entities().filter(|entity|matches!(&entity.data,EntityData::Extension{definition,..} if matches!(definition.type_id.as_str(),model::INSTANCE_PLACEMENT_TYPE|model::INSTANCE_ALIGNMENT_TYPE))).collect::<Vec<_>>();
     let producer_sources = document
         .entities()
@@ -70,7 +74,7 @@ fn report(document: &Document) -> Result<serde_json::Value, Error> {
         })
         .collect::<Result<Vec<_>, Error>>()?;
     Ok(
-        serde_json::json!({"document":document.id(),"source_hash":snapshot.stamp.source_hash,"bodies":bodies,"body_sources":snapshot.body_sources,"occurrences":occurrences,"parameters":parameters,"placement_drivers":placement_drivers,"producer_sources":producer_sources,"sketches":sketches,"consumed_bodies":snapshot.consumed_bodies,"references":snapshot.references,"references_resolved":snapshot.references.all_resolved(),"scope":"Saved canonical source regenerated with the production native model compiler and checked sketch solver. Occurrence bounds, volume and topology come from exact world B-reps; display meshes are not manufacturing input."}),
+        serde_json::json!({"document":document.id(),"source_hash":snapshot.stamp.source_hash,"bodies":bodies,"body_sources":snapshot.body_sources,"occurrences":occurrences,"leaf_occurrences":leaf_occurrences,"parameters":parameters,"placement_drivers":placement_drivers,"producer_sources":producer_sources,"sketches":sketches,"consumed_bodies":snapshot.consumed_bodies,"references":snapshot.references,"references_resolved":snapshot.references.all_resolved(),"scope":"Saved canonical source regenerated with the production native model compiler and checked sketch solver. Occurrence bounds, volume and topology come from exact world B-reps; display meshes are not manufacturing input."}),
     )
 }
 fn write_new(path: &Path, report: &serde_json::Value) -> Result<(), Error> {

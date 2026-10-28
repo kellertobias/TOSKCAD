@@ -645,8 +645,10 @@ impl AssemblyController {
         let form = self.form.as_mut().expect("active form");
         if form.tool == AssemblyTool::Explode {
             ui.small("Display only · separate physical Part occurrences, including nested members. Inspection uses assembled geometry.");
+            ui.label("Separation (mm)");
+            ui.spacing_mut().slider_width = (ui.available_width() - 64.).max(48.);
             if ui
-                .add(egui::Slider::new(&mut form.explode_mm, 0.0..=500.).text("Separation (mm)"))
+                .add(egui::Slider::new(&mut form.explode_mm, 0.0..=500.))
                 .changed()
             {
                 form.changed();
