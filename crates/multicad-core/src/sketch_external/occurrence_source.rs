@@ -265,6 +265,9 @@ pub(super) fn apply_occurrences(
 ) -> Result<BTreeSet<EntityId>, DocumentError> {
     let mut ids = BTreeSet::new();
     for request in occurrence_bindings(document, sketch)? {
+        // Deferred structural links stay repairable in stored source, but a
+        // reused receipt must still satisfy current occurrence/Part ownership.
+        validate_occurrence_query(document, &request.query)?;
         let id = request.query.reference;
         if let Some(error) = report.external_errors.get(&id) {
             return Err(source::invalid(format!(

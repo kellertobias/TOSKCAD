@@ -310,3 +310,101 @@ fn unrelated_broken_unconsumed_reference_blocks_native_capture_apply_without_sou
     assert_eq!(session.document(), &before);
     assert_eq!(session.revision(), revision);
 }
+#[test]
+fn same_revision_consumer_membership_change_cannot_reuse_old_native_receipt() {
+    let (mut session, sketch, mut query) = seed();
+    let mut source =
+        Source::read_for_evaluation(session.document(), sketch, session.revision(), None)
+            .unwrap()
+            .0;
+    source.add_rectangle([0., 0.], [100., 50.]).unwrap();
+    let edits = source.replace(session.document(), sketch).unwrap();
+    session
+        .apply(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Create receiving panel sketch".into(),
+            edits,
+        })
+        .unwrap();
+    let evaluated = multicad_solver::evaluate_document_sketch(
+        session.document(),
+        session.revision(),
+        sketch,
+        None,
+    )
+    .unwrap();
+    let region = evaluated.regions().unwrap().regions[0].intent();
+    let p = model::prepare_extrude(
+        &session,
+        session.revision(),
+        actor(),
+        &model::ExtrudeRequest::new(sketch, vec![region], Default::default()),
+    )
+    .unwrap();
+    let receiver = p.outputs[0].clone();
+    session.commit(p.prepared).unwrap();
+    query.sketch_context = Some(OccurrenceContext {
+        component: receiver.body,
+        path: OccurrencePath {
+            root: receiver.body,
+            members: vec![],
+        },
+    });
+    let compiler = Compiler::default();
+    let catalog = compiler
+        .query_external_catalog(session.document(), session.revision(), &query, None)
+        .unwrap();
+    let request = OccurrenceCaptureRequest::new(
+        &catalog,
+        &catalog.results[0].selector,
+        Behavior::ReferenceOnly,
+    )
+    .unwrap();
+    let p = compiler
+        .prepare_external_capture(&session.preparation_snapshot(), actor(), &request, None)
+        .unwrap();
+    session.commit(p.edit.preview.unwrap()).unwrap();
+    let native = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    assert!(
+        multicad_solver::evaluate_document_sketch(
+            session.document(),
+            session.revision(),
+            sketch,
+            Some(&native.snapshot().references)
+        )
+        .unwrap()
+        .solved()
+        .is_some()
+    );
+    let mut body = session.document().get(receiver.body).unwrap().clone();
+    let multicad_core::document::EntityData::Part { features, .. } = &mut body.data else {
+        panic!()
+    };
+    features.clear();
+    let changed = session
+        .document()
+        .edited(&[
+            multicad_core::document::Mutation::Replace(body),
+            multicad_core::document::Mutation::Remove(receiver.feature),
+        ])
+        .unwrap();
+    assert!(validate_occurrence_query(&changed, &request.query).is_err());
+    let error = multicad_solver::evaluate_document_sketch(
+        &changed,
+        session.revision(),
+        sketch,
+        Some(&native.snapshot().references),
+    )
+    .expect_err("same-revision old receipt must not authorize a no-longer-owned consumer frame");
+    assert!(error.message.contains("own"), "{error}");
+    assert!(
+        native
+            .snapshot()
+            .references
+            .external_results
+            .contains_key(&query.reference)
+    );
+}
