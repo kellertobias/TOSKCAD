@@ -34,8 +34,43 @@ fn report(document: &Document) -> Result<serde_json::Value, Error> {
         .entities()
         .filter(|entity| snapshot.shapes.contains_key(&entity.id))
         .collect::<Vec<_>>();
+    let context = multicad_solver::SketchEvaluationContext::new(document, 0)?;
+    let sketches = document
+        .entities()
+        .filter(|entity| {
+            matches!(&entity.data, EntityData::Sketch { definition, .. }
+                if definition.type_id == multicad_core::constraint_sketch::source::TYPE)
+        })
+        .map(|entity| -> Result<serde_json::Value, Error> {
+            let evaluated = context.evaluate(entity.id, Some(&snapshot.references), None)?;
+            let solved = evaluated
+                .solved()
+                .ok_or("Saved sketch has no current solved geometry")?;
+            let bindings = multicad_core::sketch_external::bindings(document, entity.id)?
+                .into_iter()
+                .map(|binding| {
+                    serde_json::json!({
+                        "reference": binding.reference,
+                        "source": binding.source,
+                        "intent": binding.intent,
+                        "definition": binding.definition,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let frame = evaluated.frame;
+            Ok(serde_json::json!({
+                "id": entity.id,
+                "name": entity.name,
+                "plane": evaluated.plane,
+                "frame": {"origin":frame.origin,"u":frame.u,"v":frame.v,"n":frame.n},
+                "canonical": evaluated.canonical(),
+                "solved": solved,
+                "external_bindings": bindings,
+            }))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     Ok(
-        serde_json::json!({"document":document.id(),"source_hash":snapshot.stamp.source_hash,"bodies":bodies,"body_sources":snapshot.body_sources,"occurrences":occurrences,"parameters":parameters,"placement_drivers":placement_drivers,"producer_sources":producer_sources,"consumed_bodies":snapshot.consumed_bodies,"references":snapshot.references,"references_resolved":snapshot.references.all_resolved(),"scope":"Saved canonical source regenerated with the production native model compiler. Occurrence bounds, volume and topology come from exact world B-reps; display meshes are not manufacturing input."}),
+        serde_json::json!({"document":document.id(),"source_hash":snapshot.stamp.source_hash,"bodies":bodies,"body_sources":snapshot.body_sources,"occurrences":occurrences,"parameters":parameters,"placement_drivers":placement_drivers,"producer_sources":producer_sources,"sketches":sketches,"consumed_bodies":snapshot.consumed_bodies,"references":snapshot.references,"references_resolved":snapshot.references.all_resolved(),"scope":"Saved canonical source regenerated with the production native model compiler and checked sketch solver. Occurrence bounds, volume and topology come from exact world B-reps; display meshes are not manufacturing input."}),
     )
 }
 fn write_new(path: &Path, report: &serde_json::Value) -> Result<(), Error> {
