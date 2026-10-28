@@ -250,6 +250,107 @@ impl Solid {
         result.finish_provenance(elements, &nodes)?;
         Ok(())
     }
+    /// Simultaneously relabel this feature's default start/end caps. Used for
+    /// the backward half of a two-sided sweep before exact union. Geometry and
+    /// attachment frames stay unchanged; foreign feature provenance is retained.
+    pub fn with_feature_cap_roles(
+        mut self,
+        feature: EntityId,
+        start: &str,
+        end: &str,
+    ) -> Result<Self, GeometryError> {
+        let invalid = |message: &str| GeometryError {
+            operation: "cap roles",
+            kind: GeometryErrorKind::Input,
+            message: message.into(),
+        };
+        if feature.is_nil()
+            || start.trim().is_empty()
+            || end.trim().is_empty()
+            || start.len() > 256
+            || end.len() > 256
+            || start == end
+        {
+            return Err(invalid(
+                "Cap roles need a non-nil feature and distinct nonblank names of at most 256 bytes",
+            ));
+        }
+        let old = [
+            Origin {
+                source: feature,
+                role: "cap.start".into(),
+            },
+            Origin {
+                source: feature,
+                role: "cap.end".into(),
+            },
+        ];
+        let mut found = [false; 2];
+        let faces = self.faces()?;
+        for element in &self.provenance {
+            for origin in element
+                .origins
+                .iter()
+                .chain(&element.boundary)
+                .chain(element.frames.iter().map(|f| &f.origin))
+            {
+                if origin.source == feature
+                    && !old.contains(origin)
+                    && (origin.role == start || origin.role == end)
+                {
+                    return Err(invalid(
+                        "Cap role collides with other provenance owned by this feature",
+                    ));
+                }
+            }
+            if element.key.kind != TopologyKind::Face {
+                continue;
+            }
+            for (i, cap) in old.iter().enumerate() {
+                if element.origins.contains(cap) {
+                    if !element.frames.iter().any(|frame| frame.origin == *cap)
+                        || !faces
+                            .iter()
+                            .any(|face| face.index == element.key.ordinal && face.plane.is_some())
+                    {
+                        return Err(invalid(
+                            "Cap origin also identifies non-cap or unanchored geometry; explicit repair is required",
+                        ));
+                    }
+                    found[i] = true;
+                }
+            }
+        }
+        if !found.into_iter().all(|present| present) {
+            return Err(invalid(
+                "Both owned start/end planar caps are required for a cap-role override",
+            ));
+        }
+        let remap = |origin: &Origin| {
+            if origin == &old[0] {
+                Origin {
+                    source: feature,
+                    role: start.into(),
+                }
+            } else if origin == &old[1] {
+                Origin {
+                    source: feature,
+                    role: end.into(),
+                }
+            } else {
+                origin.clone()
+            }
+        };
+        for element in &mut self.provenance {
+            element.origins = element.origins.iter().map(&remap).collect();
+            element.boundary = element.boundary.iter().map(&remap).collect();
+            for frame in &mut element.frames {
+                frame.origin = remap(&frame.origin);
+            }
+        }
+        self.topology_snapshot(feature, 0)?;
+        Ok(self)
+    }
     pub fn box_named(
         size_mm: [f64; 3],
         feature: EntityId,
