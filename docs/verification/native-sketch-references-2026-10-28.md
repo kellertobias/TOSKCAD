@@ -77,8 +77,16 @@ The production store, Compiler and checked sketch context in reader checkpoint
 and `artifacts/model-review/sketch-repair-native-report.json` from the saved
 containers. The reports retain canonical guesses separately from solved points,
 source provenance, reference diagnostics and exact native body measurements.
-A fresh interactive reopen of these two saved files was not performed; these
-independent native reads and recompilations establish their saved-source results.
+Both saved projects were subsequently reopened in fresh Sessions in macOS build
+`build-Fd6A5g`, source `e1ce67f`, executable SHA-256
+`2bb6d06193518d80feec245a6383e00ff74abc49214ae3405a173c1d86893c1d`.
+Top projection at Z10 reopened with its 40 mm line, Derived geometry link and
+native source available. The repaired Wall intersection at Z5 reopened with
+its replacement-wall reference, four 5/7/5/7 mm edges, one closed area and
+Fully constrained state. Its dependent Part remained in the regenerated model.
+The current integrated workspace checks passed 948 tests, zero failures and two
+existing ignored tests; formatting and strict all-target Clippy also passed.
+Logs are `/private/tmp/multicad-coalesced-drag-{fmt,clippy,tests}.log`.
 
 The current UI supports Feature sources in an identity target context.
 Arbitrary placed-occurrence projection remains unsupported. Intersections are
