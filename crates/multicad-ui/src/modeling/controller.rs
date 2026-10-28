@@ -476,6 +476,18 @@ impl ModelToolController {
             })
             .map(|handoff| handoff.scene.clone())
     }
+    /// The viewport may still show checked geometry after Apply while its
+    /// canonical revision rebuilds. Both views use solid bounds for camera Fit.
+    pub(crate) fn owns_display_scene(&self, scene: &Arc<Scene>) -> bool {
+        self.candidate
+            .as_ref()
+            .and_then(|candidate| candidate.scene.as_ref())
+            .is_some_and(|preview| Arc::ptr_eq(preview, scene))
+            || self
+                .handoff
+                .as_ref()
+                .is_some_and(|handoff| Arc::ptr_eq(&handoff.scene, scene))
+    }
     pub fn canonical_ready(&mut self, session: &Session) {
         if self.handoff.as_ref().is_some_and(|handoff| {
             handoff.document == session.document().id() && handoff.revision <= session.revision()

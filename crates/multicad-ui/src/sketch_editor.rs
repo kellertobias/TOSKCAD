@@ -2246,7 +2246,10 @@ impl SketchEditor {
             .or_else(|| self.constraints.preview_document())
             .unwrap_or(session.document());
         let mut points = vec![];
-        if self.selected.is_none()
+        let model_view = scene
+            .as_ref()
+            .is_some_and(|scene| self.model.owns_display_scene(scene));
+        if (model_view || self.selected.is_none())
             && let Some(scene) = &scene
             && let Some([low, high]) = self
                 .solid
@@ -2321,7 +2324,8 @@ impl SketchEditor {
                     for [a, b] in g.segments() {
                         let a = frame.point(a);
                         let b = frame.point(b);
-                        if self.solid.selected_id().is_none()
+                        if !model_view
+                            && self.solid.selected_id().is_none()
                             && self.selected.is_none_or(|id| id == e.id)
                         {
                             points.extend([a.map(|v| v as f32), b.map(|v| v as f32)]);
@@ -2861,6 +2865,209 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         mpsc,
     };
+
+    #[test]
+    fn fit_frames_native_revolve_preview_and_handoff_instead_of_the_selected_source_sketch() {
+        use crate::viewport::{
+            Geometry as DisplayGeometry, Instance, Scene, SceneBackend, SceneReply, SceneStamp,
+            Transform,
+        };
+        use multicad_core::{model, parameters, references::Origin};
+        use multicad_kernel::{
+            CurvedEdge2d, CurvedProfile, GeometryPolicy, MeshOptions, PlaneFrame, RevolutionAxis,
+            Solid,
+        };
+        struct RevolveBackend(Option<SceneReply>);
+        impl SceneBackend for RevolveBackend {
+            fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
+                let feature=document.entities().find(|entity|matches!(&entity.data,EntityData::Feature{definition,..} if definition.type_id==model::REVOLVE_TYPE)).unwrap();
+                let definition = model::read_revolve(document, feature.id).unwrap();
+                let (source, frame, _) = Source::read(document, definition.profile.sketch).unwrap();
+                let geometry = source.display_geometry().unwrap();
+                let edges = geometry
+                    .iter()
+                    .map(|geometry| match geometry {
+                        Geometry::Line { a, b, .. } => CurvedEdge2d::Line { a: *a, b: *b },
+                        _ => panic!("Straight profile fixture"),
+                    })
+                    .collect();
+                let origins = geometry
+                    .iter()
+                    .map(|geometry| Origin {
+                        source: geometry.id(),
+                        role: "curve".into(),
+                    })
+                    .collect::<Vec<_>>();
+                let resolved = definition
+                    .parameters
+                    .resolve(&parameters::evaluate(document).unwrap())
+                    .unwrap();
+                let solid = Solid::revolve_curved_profile_named(
+                    &CurvedProfile {
+                        frame: PlaneFrame {
+                            origin: frame.origin,
+                            u: frame.u,
+                            v: frame.v,
+                        },
+                        outer: edges,
+                        holes: vec![],
+                    },
+                    RevolutionAxis {
+                        origin_mm: frame.point(resolved.axis_origin_mm),
+                        direction: std::array::from_fn(|axis| {
+                            frame.u[axis] * resolved.axis_direction[0]
+                                + frame.v[axis] * resolved.axis_direction[1]
+                        }),
+                    },
+                    resolved.angle_rad,
+                    feature.id,
+                    &origins,
+                    GeometryPolicy::default(),
+                )
+                .unwrap();
+                let mesh = solid.mesh(MeshOptions::default()).unwrap();
+                let display = std::sync::Arc::new(
+                    DisplayGeometry::new(
+                        feature.id,
+                        mesh.vertices.as_chunks::<3>().0.to_vec(),
+                        mesh.indices,
+                        mesh.face_indices,
+                        solid
+                            .topology_snapshot(feature.id, stamp.revision)
+                            .unwrap()
+                            .elements,
+                    )
+                    .unwrap(),
+                );
+                self.0 = Some(SceneReply {
+                    stamp,
+                    result: Ok(std::sync::Arc::new(
+                        Scene::new(
+                            stamp,
+                            vec![display],
+                            vec![Instance {
+                                id: definition.output.body,
+                                geometry: feature.id,
+                                transform: Transform::default(),
+                                color: [137, 174, 199, 255],
+                            }],
+                        )
+                        .unwrap(),
+                    )),
+                });
+                Ok(())
+            }
+            fn poll(&mut self) -> Option<SceneReply> {
+                self.0.take()
+            }
+        }
+        let (sketch, edits) = Source::create(Datum::Xz, "Twenty millimeter lathe profile").unwrap();
+        let mut document = Document::new("Preview fit")
+            .unwrap()
+            .edited(&edits)
+            .unwrap();
+        let (mut source, _, plane) = Source::read(&document, sketch).unwrap();
+        let mut datum = document.get(plane).unwrap().clone();
+        let EntityData::Plane { origin_mm, .. } = &mut datum.data else {
+            panic!()
+        };
+        *origin_mm = [0., -100., 0.];
+        document.replace(datum).unwrap();
+        source.add_rectangle([10., 0.], [30., 20.]).unwrap();
+        document = document
+            .edited(&source.replace(&document, sketch).unwrap())
+            .unwrap();
+        let mut session = Session::new(document).unwrap();
+        let mut editor = SketchEditor::default();
+        editor.open_at(session.document(), sketch, 0).unwrap();
+        settle(&mut editor, &session);
+        let regions = editor
+            .sketch_evaluation
+            .current(sketch)
+            .unwrap()
+            .regions
+            .regions
+            .iter()
+            .map(|region| region.intent())
+            .collect();
+        editor.finish().unwrap();
+        editor.set_model_backend(Box::new(RevolveBackend(None)));
+        editor
+            .model
+            .begin_revolve(&session, &Default::default(), sketch, regions, Channel::Ui)
+            .unwrap();
+        editor
+            .preview_model(&session, &Default::default(), Channel::Ui)
+            .unwrap();
+        editor.poll_model(&session, &Default::default());
+        let scene = editor
+            .model
+            .display_scene(&session, &Default::default())
+            .unwrap();
+        let [low, high] = scene.world_bounds().unwrap();
+        assert!(
+            high[0] - low[0] > 58.,
+            "Native result must be larger than its 20mm source profile"
+        );
+        let context = egui::Context::default();
+        let check_fit = |editor: &mut SketchEditor,
+                         session: &mut Session,
+                         scene: std::sync::Arc<Scene>| {
+            for perspective in [false, true] {
+                editor.home_view();
+                editor.camera.perspective = perspective;
+                editor.request_fit();
+                context
+                    .run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                Pos2::ZERO,
+                                Vec2::new(1000., 700.),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| editor.canvas(ui, session, false, Some(scene.clone()), false),
+                    )
+                    .drop_without_applying_deltas();
+                let rect = editor.viewport_rect.unwrap();
+                for instance in scene.instances() {
+                    for point in scene.geometries()[&instance.geometry].vertices() {
+                        let pixel = editor.camera.project(
+                            instance.transform.point(*point).map(|value| value as f32),
+                            rect,
+                        );
+                        assert!(
+                            pixel[2] > 0.
+                                && rect.shrink(8.).contains(Pos2::new(pixel[0], pixel[1])),
+                            "Fit clipped a native preview vertex in perspective={perspective}: {pixel:?} in {rect:?}"
+                        );
+                    }
+                }
+                let [low, high] = scene.world_bounds().unwrap();
+                for axis in 0..3 {
+                    assert!(
+                        (editor.camera.target[axis] - (low[axis] + high[axis]) as f32 * 0.5).abs()
+                            < 1e-3,
+                        "Fit stayed centered on the source instead of the displayed solid"
+                    );
+                }
+            }
+        };
+        assert_eq!(editor.selected, Some(sketch));
+        check_fit(&mut editor, &mut session, scene.clone());
+        editor
+            .apply_model(&mut session, &Default::default())
+            .unwrap();
+        // A source-tree selection during the render-only handoff must not make
+        // Fit ignore the solid while canonical publication catches up.
+        editor.selected = Some(sketch);
+        let handoff = editor
+            .model
+            .display_scene(&session, &Default::default())
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&scene, &handoff));
+        check_fit(&mut editor, &mut session, handoff);
+    }
 
     #[test]
     fn extrusion_captures_checked_profiles_and_owns_the_existing_tool_gate() {
