@@ -1,4 +1,5 @@
 #include "bridge.hpp"
+#include "measure.hpp"
 #include "multicad-kernel/src/lib.rs.h"
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -360,8 +361,7 @@ rust::Vec<FaceInfo> faces(const Shape &s) {
     for (int index = 1; index <= map.Extent(); ++index) {
       auto face = TopoDS::Face(map(index));
       BRepAdaptor_Surface surface(face, true);
-      GProp_GProps p;
-      BRepGProp::SurfaceProperties(face, p);
+      const auto p = measured_face(face);
       FaceInfo info{static_cast<uint32_t>(index - 1), false, Point3{0, 0, 0}, Point3{0, 0, 0},
                     data(p.CentreOfMass()), p.Mass()};
       if (surface.GetType() == GeomAbs_Plane) {

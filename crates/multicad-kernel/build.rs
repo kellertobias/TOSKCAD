@@ -26,6 +26,7 @@ fn main() {
         "include/curves.hpp",
         "src/ruled.cpp",
         "include/ruled.hpp",
+        "include/measure.hpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

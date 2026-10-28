@@ -1,4 +1,5 @@
 #include "curves.hpp"
+#include "measure.hpp"
 #include "multicad-kernel/src/lib.rs.h"
 #include "ruled.hpp"
 #include <BRepAlgoAPI_Common.hxx>
@@ -327,8 +328,7 @@ double curved_profile_area(const Frame3 &f,
                            double tolerance) {
   return guarded([&] {
     auto result = build(f, edges, offsets, tolerance);
-    GProp_GProps area;
-    BRepGProp::SurfaceProperties(result.face, area);
+    const auto area = measured_face(result.face);
     return area.Mass();
   });
 }
@@ -338,8 +338,7 @@ double curved_profile_signed_area(const Frame3 &f,
                                   double tolerance) {
   return guarded([&] {
     auto result = build(f, edges, offsets, tolerance);
-    GProp_GProps area;
-    BRepGProp::SurfaceProperties(result.face, area);
+    const auto area = measured_face(result.face);
     return area.Mass() * result.outerSign;
   });
 }
