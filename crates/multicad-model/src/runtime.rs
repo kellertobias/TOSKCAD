@@ -81,6 +81,26 @@ impl<T: Send + 'static> Runtime<T> {
         compiler: Compiler,
         publish: impl Fn(&Document, &ModelSnapshot, u64) -> Result<T, ModelError> + Send + 'static,
     ) -> Result<Self, String> {
+        Self::with_model_and_snapshot(compiler, move |document, _, snapshot, tag| {
+            publish(document, snapshot, tag)
+        })
+    }
+    /// Run exact derived operations on the owning native thread. The callback
+    /// may borrow solids, but only its detached Send result crosses to polling.
+    pub fn with_model_publisher(
+        compiler: Compiler,
+        publish: impl Fn(&Document, &Model, u64) -> Result<T, ModelError> + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::with_model_and_snapshot(compiler, move |document, model, _, tag| {
+            publish(document, model, tag)
+        })
+    }
+    fn with_model_and_snapshot(
+        compiler: Compiler,
+        publish: impl Fn(&Document, &Model, &ModelSnapshot, u64) -> Result<T, ModelError>
+        + Send
+        + 'static,
+    ) -> Result<Self, String> {
         let shared = Arc::new(Shared {
             slots: Mutex::new(Slots::default()),
             wake: Condvar::new(),
@@ -159,6 +179,7 @@ impl<T: Send + 'static> Runtime<T> {
                         }
                         let snapshot = publish(
                             &job.document,
+                            &model,
                             queried.as_ref().unwrap_or_else(|| model.snapshot()),
                             job.tag,
                         )?;

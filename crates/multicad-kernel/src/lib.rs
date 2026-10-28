@@ -89,6 +89,30 @@ mod ffi {
         pub multiplicities: Vec<u32>,
         pub weights: Vec<f64>,
     }
+    pub struct DrawingOptionsData {
+        pub frame: Frame3,
+        pub section: bool,
+        pub section_offset: f64,
+        pub detail: bool,
+        pub detail_center: Point3,
+        pub detail_radius: f64,
+        pub tolerance: f64,
+        pub hidden: bool,
+        pub tangents: bool,
+        pub max_curves: u32,
+        pub max_points: u32,
+    }
+    pub struct DrawingCurveData {
+        pub source_index: u32,
+        pub role: u8,
+        pub kind: u8,
+        pub degree: u32,
+        pub periodic: bool,
+        pub data: Vec<f64>,
+        pub knots: Vec<f64>,
+        pub multiplicities: Vec<u32>,
+        pub preview: Vec<f64>,
+    }
     pub struct CurvedEdgeData {
         pub kind: u8,
         pub a: Point3,
@@ -116,7 +140,19 @@ mod ffi {
         include!("bridge.hpp");
         include!("curves.hpp");
         include!("analytic.hpp");
+        include!("drawing.hpp");
         type Shape;
+        type DrawingJob;
+        fn drawing_job(options: &DrawingOptionsData) -> Result<UniquePtr<DrawingJob>>;
+        fn drawing_add(
+            job: Pin<&mut DrawingJob>,
+            shape: &Shape,
+            hatch: bool,
+            cross: bool,
+            angle: f64,
+            spacing: f64,
+        ) -> Result<()>;
+        fn drawing_run(job: Pin<&mut DrawingJob>) -> Result<Vec<DrawingCurveData>>;
         fn extrude(width: f64, depth: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn cut(
             shape: &Shape,
@@ -228,6 +264,8 @@ pub struct Shape(cxx::UniquePtr<ffi::Shape>);
 pub type Error = Box<dyn std::error::Error>;
 mod geometry;
 pub use geometry::*;
+mod drawing;
+pub use drawing::*;
 mod worker;
 pub use worker::*;
 mod curves;

@@ -1,0 +1,315 @@
+//! Exact drawing generation consumes owned native model solids. External source
+//! producers register against the same view contract rather than a mesh path.
+use crate::{Model, ModelError, compiler::error};
+use multicad_core::{
+    document::{Document, EntityData, EntityId},
+    drawings::*,
+    materials::{self, HatchPattern},
+};
+use multicad_kernel::{DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, Solid};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub enum DrawingShape<'a> {
+    Borrowed(&'a Solid),
+    Owned(Solid),
+}
+impl DrawingShape<'_> {
+    fn solid(&self) -> &Solid {
+        match self {
+            Self::Borrowed(s) => s,
+            Self::Owned(s) => s,
+        }
+    }
+}
+pub struct DrawingBody<'a> {
+    pub identity: EntityId,
+    pub material_part: EntityId,
+    pub shape: DrawingShape<'a>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DrawingSourceKind {
+    Model,
+    FlatPattern,
+    Exploded,
+}
+pub trait DrawingSourceProvider {
+    fn resolve<'a>(
+        &self,
+        document: &Document,
+        model: &'a Model,
+        source: &ViewSource,
+    ) -> Result<Vec<DrawingBody<'a>>, ModelError>;
+}
+pub struct DrawingProviders {
+    providers: BTreeMap<DrawingSourceKind, Box<dyn DrawingSourceProvider>>,
+}
+impl Default for DrawingProviders {
+    fn default() -> Self {
+        Self {
+            providers: BTreeMap::from([(
+                DrawingSourceKind::Model,
+                Box::new(ModelDrawingSource) as Box<dyn DrawingSourceProvider>,
+            )]),
+        }
+    }
+}
+impl DrawingProviders {
+    pub fn register(
+        &mut self,
+        kind: DrawingSourceKind,
+        provider: Box<dyn DrawingSourceProvider>,
+    ) -> Result<(), String> {
+        if self.providers.contains_key(&kind) {
+            return Err("A drawing source provider is already registered".into());
+        }
+        self.providers.insert(kind, provider);
+        Ok(())
+    }
+    fn resolve<'a>(
+        &self,
+        document: &Document,
+        model: &'a Model,
+        source: &ViewSource,
+    ) -> Result<Vec<DrawingBody<'a>>, ModelError> {
+        let kind = match source {
+            ViewSource::Model { .. } => DrawingSourceKind::Model,
+            ViewSource::FlatPattern { .. } => DrawingSourceKind::FlatPattern,
+            ViewSource::Exploded { .. } => DrawingSourceKind::Exploded,
+        };
+        self.providers
+            .get(&kind)
+            .ok_or_else(|| {
+                error(
+                    None,
+                    format!("{kind:?} drawing source provider is unavailable"),
+                )
+            })?
+            .resolve(document, model, source)
+    }
+}
+struct ModelDrawingSource;
+impl DrawingSourceProvider for ModelDrawingSource {
+    fn resolve<'a>(
+        &self,
+        document: &Document,
+        model: &'a Model,
+        source: &ViewSource,
+    ) -> Result<Vec<DrawingBody<'a>>, ModelError> {
+        let ViewSource::Model { entities } = source else {
+            return Err(error(None, "Expected model drawing source"));
+        };
+        let hierarchy =
+            multicad_core::hierarchy::Index::new(document).map_err(|e| error(None, e))?;
+        let mut selected = BTreeSet::new();
+        let mut pending: Vec<_> = entities.iter().map(|id| (*id, true)).collect();
+        let mut containers = BTreeSet::new();
+        while let Some((id, explicit)) = pending.pop() {
+            let entity = document.get(id).ok_or_else(|| {
+                error(
+                    Some(id),
+                    "Drawing source is missing; repair the source selection",
+                )
+            })?;
+            match entity.data {
+                EntityData::Part { .. } => {
+                    if model.snapshot().consumed_bodies.contains(&id) {
+                        if explicit {
+                            return Err(error(
+                                Some(id),
+                                "Selected Part is consumed by a later operation",
+                            ));
+                        }
+                    } else {
+                        selected.insert(id);
+                    }
+                }
+                EntityData::Instance { .. } => {
+                    selected.insert(id);
+                }
+                EntityData::Assembly { .. } | EntityData::Group { .. } => {
+                    if containers.insert(id) {
+                        pending.extend(
+                            hierarchy
+                                .children(Some(id))
+                                .map_err(|e| error(Some(id), e))?
+                                .into_iter()
+                                .map(|id| (id, false)),
+                        );
+                    }
+                }
+                _ if explicit => {
+                    return Err(error(
+                        Some(id),
+                        "Choose Parts, placed Parts, components or groups as drawing sources",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if selected.is_empty() {
+            return Err(error(None, "Drawing source contains no final solid Parts"));
+        }
+        selected
+            .into_iter()
+            .map(|id| {
+                let (producer, part) =
+                    if let Some(occurrence) = model.snapshot().occurrences.get(&id) {
+                        (id, occurrence.component)
+                    } else {
+                        (
+                            *model.snapshot().bodies.get(&id).ok_or_else(|| {
+                                error(Some(id), "Drawing Part has no current native solid")
+                            })?,
+                            id,
+                        )
+                    };
+                Ok(DrawingBody {
+                    identity: id,
+                    material_part: part,
+                    shape: DrawingShape::Borrowed(model.solid(producer).ok_or_else(|| {
+                        error(Some(producer), "Drawing source solid is unavailable")
+                    })?),
+                })
+            })
+            .collect()
+    }
+}
+impl Model {
+    pub fn drawing_view(
+        &self,
+        document: &Document,
+        revision: u64,
+        view: &DrawingView,
+        providers: &DrawingProviders,
+    ) -> Result<ViewEvaluation, ModelError> {
+        view.validate().map_err(|e| error(Some(view.id), e))?;
+        let stamp = self.snapshot().stamp;
+        if stamp.document != document.id()
+            || stamp.revision != revision
+            || stamp.source_hash
+                != multicad_core::project_file::ContentHash::document(document)
+                    .map_err(|e| error(Some(view.id), e))?
+        {
+            return Err(error(
+                Some(view.id),
+                "Native model is stale for drawing generation",
+            ));
+        }
+        let bodies = providers.resolve(document, self, &view.source)?;
+        let resolver = materials::Resolver::new(document).map_err(|e| error(Some(view.id), e))?;
+        let properties: Vec<_> = bodies
+            .iter()
+            .map(|body| {
+                resolver
+                    .resolve(body.material_part)
+                    .map_err(|e| error(Some(body.material_part), e))
+            })
+            .collect::<Result<_, _>>()?;
+        let scale = view.scale.numerator as f64 / view.scale.denominator as f64;
+        let inputs: Vec<_> = bodies
+            .iter()
+            .zip(&properties)
+            .map(|(body, props)| DrawingSolid {
+                solid: body.shape.solid(),
+                hatch: props
+                    .hatch
+                    .as_ref()
+                    .filter(|h| h.pattern != HatchPattern::None)
+                    .map(|h| DrawingHatch {
+                        angle_rad: h.angle_deg.to_radians(),
+                        spacing_mm: h.spacing_mm / scale,
+                        cross: h.pattern == HatchPattern::Cross,
+                    }),
+            })
+            .collect();
+        let options = DrawingProjection {
+            frame: PlaneFrame {
+                origin: view.frame.origin_mm,
+                u: view.frame.u,
+                v: view.frame.v,
+            },
+            section_offset_mm: match view.kind {
+                ViewKind::Section { offset_mm } => Some(offset_mm),
+                _ => None,
+            },
+            detail: match view.kind {
+                ViewKind::Detail {
+                    center_mm,
+                    radius_mm,
+                } => Some((center_mm, radius_mm)),
+                _ => None,
+            },
+            hidden_lines: view.hidden_lines,
+            tangent_edges: view.tangent_edges,
+            chord_tolerance_mm: view.paper_chord_tolerance_mm / scale,
+            ..Default::default()
+        };
+        // The kernel validates its own approximation interval. A scale demanding
+        // more precision than the native contract supports fails explicitly.
+        let output = multicad_kernel::project_drawing(&inputs, options)
+            .map_err(|e| error(Some(view.id), e))?;
+        if output.is_empty() {
+            return Err(error(
+                Some(view.id),
+                "View has no projected edges in its section/detail region",
+            ));
+        }
+        let vectors = output
+            .into_iter()
+            .map(|v| {
+                let body = &bodies[v.source_index];
+                DrawingVector {
+                    source: body.identity,
+                    material_part: body.material_part,
+                    role: v.role,
+                    line_width_mm: if v.role == VectorRole::Hatch {
+                        properties[v.source_index]
+                            .hatch
+                            .as_ref()
+                            .map(|h| h.line_width_mm)
+                            .unwrap_or(0.18)
+                    } else if v.role == VectorRole::Section {
+                        0.5
+                    } else {
+                        0.25
+                    },
+                    curve: v.curve,
+                    preview_mm: v.preview_mm,
+                }
+            })
+            .collect();
+        let warnings = properties
+            .iter()
+            .flat_map(|p| p.diagnostics.iter().map(|d| d.message.clone()))
+            .collect();
+        Ok(ViewEvaluation::Ready { vectors, warnings })
+    }
+    pub fn drawings(
+        &self,
+        document: &Document,
+        revision: u64,
+        providers: &DrawingProviders,
+    ) -> Result<DrawingEvaluation, ModelError> {
+        let mut views = BTreeMap::new();
+        for id in books(document) {
+            let book = read(document, id).map_err(|e| error(Some(id), e))?;
+            for view in book.pages.iter().flat_map(|p| &p.views) {
+                let evaluation = self
+                    .drawing_view(document, revision, view, providers)
+                    .unwrap_or_else(|e| ViewEvaluation::Unresolved {
+                        message: e.to_string(),
+                    });
+                views.insert(view.id, evaluation);
+            }
+        }
+        Ok(DrawingEvaluation {
+            stamp: DrawingStamp {
+                document: document.id(),
+                revision,
+                source_hash: multicad_core::project_file::ContentHash::document(document)
+                    .map_err(|e| error(None, e))?,
+            },
+            views,
+        })
+    }
+}
