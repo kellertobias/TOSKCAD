@@ -132,8 +132,9 @@ pub fn prepare_assignment(
         label: "Assign part properties".into(),
         edits,
     })?;
+    let resolver = Resolver::new(preview.document())?;
     for part in parts {
-        resolve(preview.document(), *part)?;
+        resolver.resolve(*part)?;
     }
     Ok(preview)
 }
@@ -149,7 +150,7 @@ pub enum TagEdit {
     Remove(BTreeSet<String>),
     Replace(BTreeSet<String>),
 }
-/// Tags are trimmed, case-sensitive UTF-8 tokens (1–128 bytes). Query matching is
+/// Tags must be trimmed, case-sensitive UTF-8 tokens (1–128 bytes). Query matching is
 /// exact; no substring, case folding, names, visibility or implicit hierarchy.
 pub fn checked_tags(tags: &BTreeSet<String>) -> Result<(), DocumentError> {
     if tags.len() > 256

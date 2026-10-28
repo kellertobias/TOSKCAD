@@ -13,7 +13,7 @@ pub struct Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         Self {
-            color_rgba: [150, 170, 190, 255],
+            color_rgba: [137, 174, 199, 255],
             roughness: 0.6,
             metallic: 0.0,
         }

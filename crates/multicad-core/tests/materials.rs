@@ -373,3 +373,118 @@ fn definition_links_cannot_diverge_from_source_and_legacy_documents_stay_unchang
     );
     library(&mut f.s, &[renamed]);
 }
+
+#[test]
+fn every_stock_family_is_reusable_and_changed_material_requires_acknowledgement() {
+    let mut f = Fixture::new();
+    f.assign();
+    let specs = [
+        StockKind::Sheet {
+            thickness_mm: 1.5,
+            length_mm: 2000.,
+            width_mm: 1000.,
+            inside_bend_radius_mm: 2.,
+            k_factor: 0.42,
+        },
+        StockKind::Profile {
+            designation: "RHS 30×20×2".into(),
+            length_mm: 6000.,
+            width_mm: 30.,
+            height_mm: 20.,
+            wall_mm: Some(2.),
+        },
+        StockKind::Print {
+            process: "Resin".into(),
+            nozzle_mm: None,
+            layer_height_mm: 0.05,
+        },
+    ];
+    for specification in specs {
+        let entry = LibraryDefinition::Stock(Stock {
+            material: f.material.id,
+            specification: specification.clone(),
+        })
+        .entity(EntityId::new(), "Reusable stock")
+        .unwrap();
+        library(&mut f.s, std::slice::from_ref(&entry));
+        let assignment = Assignment {
+            stock: Some(entry.id),
+            ..f.assignment()
+        };
+        let p = prepare_assignment(&f.s, f.s.revision(), actor(), &f.parts, &assignment).unwrap();
+        f.s.commit(p).unwrap();
+        let resolver = Resolver::new(f.s.document()).unwrap();
+        for part in &f.parts {
+            assert_eq!(
+                resolver
+                    .resolve(*part)
+                    .unwrap()
+                    .stock
+                    .unwrap()
+                    .1
+                    .specification,
+                specification
+            );
+        }
+    }
+    let mut material = f.material.clone();
+    if let EntityData::Material { density_kg_m3, .. } = &mut material.data {
+        *density_kg_m3 = Some(710.);
+    }
+    library(&mut f.s, &[material]);
+    assert!(
+        diagnostics(f.s.document())
+            .unwrap()
+            .iter()
+            .any(|d| d.target == f.material.id && d.kind == DiagnosticKind::DefinitionChanged)
+    );
+    let assignment = Assignment::from_part(f.s.document(), f.parts[0]).unwrap();
+    let p = prepare_assignment(&f.s, f.s.revision(), actor(), &f.parts, &assignment).unwrap();
+    f.s.commit(p).unwrap();
+    assert!(
+        !diagnostics(f.s.document())
+            .unwrap()
+            .iter()
+            .any(|d| d.target == f.material.id && d.kind == DiagnosticKind::DefinitionChanged)
+    );
+}
+
+#[test]
+fn explicit_part_overrides_do_not_depend_on_broken_unused_material_defaults() {
+    let mut f = Fixture::new();
+    f.assign();
+    let appearance = LibraryDefinition::Appearance(Appearance::default())
+        .entity(EntityId::new(), "Override appearance")
+        .unwrap();
+    let hatch = LibraryDefinition::Hatch(HatchStyle {
+        pattern: HatchPattern::Cross,
+        ..Default::default()
+    })
+    .entity(EntityId::new(), "Override hatch")
+    .unwrap();
+    library(&mut f.s, &[appearance.clone(), hatch.clone()]);
+    let assignment = Assignment {
+        appearance: Some(appearance.id),
+        hatch: Some(hatch.id),
+        ..f.assignment()
+    };
+    let p = prepare_assignment(&f.s, f.s.revision(), actor(), &f.parts[..1], &assignment).unwrap();
+    f.s.commit(p).unwrap();
+    commit(
+        &mut f.s,
+        vec![
+            Mutation::Remove(f.appearance.id),
+            Mutation::Remove(f.hatch.id),
+        ],
+    );
+    assert!(
+        diagnostics(f.s.document())
+            .unwrap()
+            .iter()
+            .any(|d| d.owner == f.style.id && d.kind == DiagnosticKind::Missing)
+    );
+    let effective = resolve(f.s.document(), f.parts[0]).unwrap();
+    assert_eq!(effective.appearance, Appearance::default());
+    assert_eq!(effective.hatch.unwrap().pattern, HatchPattern::Cross);
+    assert!(resolve(f.s.document(), f.parts[1]).is_err());
+}
