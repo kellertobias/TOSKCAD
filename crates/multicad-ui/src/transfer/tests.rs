@@ -876,3 +876,154 @@ fn broken_full_model_can_reselect_a_current_native_source_and_repair_same_featur
             < 1e-5
     );
 }
+
+#[test]
+fn retained_consumed_boolean_definition_is_not_a_physical_leaf_but_its_placed_copy_is() {
+    let mut f = fixture();
+    let block = PrimitiveRequest::new(
+        "Boolean stock",
+        PrimitiveParameters::Box {
+            size: [length(10.), length(10.), length(10.)],
+            frame: PrimitiveFrame {
+                origin: [length(100.), length(0.), length(0.)],
+                ..Default::default()
+            },
+        },
+    );
+    let cutter = PrimitiveRequest::new(
+        "Retained Boolean drill",
+        PrimitiveParameters::Cylinder {
+            radius: length(1.),
+            height: length(10.),
+            frame: PrimitiveFrame {
+                origin: [length(105.), length(5.), length(0.)],
+                ..Default::default()
+            },
+        },
+    );
+    for request in [&block, &cutter] {
+        f.session
+            .commit(
+                model::prepare_primitive(&f.session, f.session.revision(), actor(), request)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+    }
+    let cut = model::BooleanRequest::new(
+        model::Operation::Cut,
+        model::BodyInput {
+            body: block.body,
+            producer: block.feature,
+        },
+        vec![model::BodyInput {
+            body: cutter.body,
+            producer: cutter.feature,
+        }],
+    );
+    f.session
+        .commit(
+            model::prepare_boolean(&f.session, f.session.revision(), actor(), &cut)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let mut copy = model::ComponentPlacementRequest::new(cutter.body, Default::default());
+    copy.parameters.translation = [length(50.), length(0.), length(0.)];
+    f.session
+        .commit(
+            model::prepare_place_component(&f.session, f.session.revision(), actor(), &copy)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let original = Compiler::default()
+        .compile(f.session.document(), f.session.revision())
+        .unwrap();
+    f.scene = native_fixture::scene(f.session.document(), original.snapshot(), 1).unwrap();
+    assert!(
+        f.scene
+            .model_evaluation()
+            .unwrap()
+            .consumed_bodies
+            .contains(&cutter.body)
+    );
+    assert_eq!(
+        model::transfer_occurrence_catalog(f.session.document())
+            .unwrap()
+            .len(),
+        5
+    );
+    assert_eq!(f.scene.assembly_evaluation().unwrap().leaves.len(), 4);
+    let mut c = native_controller(&f);
+    finish_inputs(&mut c, &f);
+    let preview = full_preview(&mut c, &f.session);
+    assert!(
+        preview
+            .assembly_evaluation()
+            .unwrap()
+            .leaves
+            .iter()
+            .any(|leaf| leaf.path.root == copy.instance && leaf.component == cutter.body)
+    );
+    assert!(
+        !preview
+            .assembly_evaluation()
+            .unwrap()
+            .leaves
+            .iter()
+            .any(|leaf| leaf.path.root == cutter.body)
+    );
+    let candidate = c.candidate.as_ref().unwrap();
+    let native = Compiler::default()
+        .compile(candidate.prepared.document(), f.session.revision())
+        .unwrap();
+    let omitted_copy = rebuilt(&preview, &native, true, Some(copy.instance));
+    assert!(
+        super::super::proof::validate(
+            candidate.prepared.document(),
+            &omitted_copy,
+            &candidate.outputs
+        )
+        .unwrap_err()
+        .contains("physical Part occurrence")
+    );
+    let phantom = EntityId::new();
+    let mut instances = preview.reference_instances().to_vec();
+    instances.push(crate::viewport::Instance {
+        id: phantom,
+        geometry: cutter.feature,
+        transform: Default::default(),
+        color: [140, 160, 180, 255],
+    });
+    let mut receipt = native.assembly_evaluation();
+    receipt.leaves.push(model::AssemblyLeafReceipt {
+        path: path(phantom),
+        component: cutter.body,
+        producer: cutter.feature,
+        pose: Default::default(),
+    });
+    let extra = Scene::new(
+        preview.stamp(),
+        preview.geometries().values().cloned().collect(),
+        instances,
+    )
+    .unwrap()
+    .with_reference_aliases(native.snapshot().body_sources.clone())
+    .unwrap()
+    .with_model_evaluation(preview.model_evaluation().unwrap().clone())
+    .unwrap()
+    .with_assembly_evaluation(Arc::new(receipt))
+    .unwrap()
+    .with_transfer_evaluation(Arc::new(native.snapshot().transfer_evaluation()))
+    .unwrap();
+    assert!(
+        super::super::proof::validate(candidate.prepared.document(), &extra, &candidate.outputs)
+            .unwrap_err()
+            .contains("physical Part occurrence")
+    );
+    let before = f.session.document().clone();
+    c.apply(&mut f.session, &Default::default()).unwrap();
+    f.session.undo(f.session.revision(), actor()).unwrap();
+    assert_eq!(f.session.document(), &before);
+}

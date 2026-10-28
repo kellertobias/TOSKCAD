@@ -40,6 +40,17 @@ pub(super) fn validate(
     let expected = multicad_core::model::transfer_occurrence_catalog(document)
         .map_err(|e| e.to_string())?
         .into_iter()
+        // Retained Boolean tools remain authored/referenceable definitions.
+        // Their placed copies are still physical; only the standalone body is consumed.
+        .filter(|item| {
+            !(item.path.root == item.component
+                && item.path.members.is_empty()
+                && scene
+                    .model_evaluation()
+                    .expect("checked native metadata")
+                    .consumed_bodies
+                    .contains(&item.component))
+        })
         .map(|item| (item.path, (item.component, item.producer)))
         .collect::<std::collections::BTreeMap<_, _>>();
     let actual = assembly
