@@ -3,10 +3,11 @@ use multicad_core::{
     model::{self, Operation},
     project_file::ContentHash,
     references::{self, Origin, ReferenceReport, TopologySnapshot},
+    sketch_regions::{Extraction, RegionIntent},
 };
 use multicad_kernel::{
-    Bounds, DisplayEdge, DisplayVertex, GeometryPolicy, Mesh, MeshOptions, NativeRegionQueries,
-    PlaneFrame, Solid,
+    Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, GeometryPolicy, Mesh,
+    MeshOptions, NativeRegionQueries, PlaneFrame, RevolutionAxis, Solid,
 };
 use multicad_solver::SketchEvaluationContext;
 use std::{
@@ -66,6 +67,66 @@ fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ModelError> {
         Err(error(None, "Model evaluation superseded"))
     } else {
         Ok(())
+    }
+}
+
+struct Profiles<'a> {
+    context: &'a SketchEvaluationContext<'a>,
+    queries: NativeRegionQueries,
+    cache: BTreeMap<EntityId, (multicad_core::sketch::Frame, Extraction)>,
+}
+impl Profiles<'_> {
+    fn get(
+        &mut self,
+        sketch: EntityId,
+        intent: &RegionIntent,
+        feature: EntityId,
+        topologies: &BTreeMap<EntityId, TopologySnapshot>,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<(CurvedProfile, Vec<Origin>), ModelError> {
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.cache.entry(sketch) {
+            let report = references::inspect(
+                self.context.document(),
+                self.context.stamp().revision,
+                topologies,
+            );
+            let evaluated = self
+                .context
+                .evaluate(sketch, Some(&report), interrupt)
+                .map_err(|e| error(e.source, e))?;
+            let regions = evaluated
+                .regions_with_queries_and_interrupt(&self.queries, interrupt)
+                .map_err(|e| error(e.source, e))?;
+            entry.insert((evaluated.frame, regions));
+        }
+        let (frame, regions) = &self.cache[&sketch];
+        let region = regions.resolve(intent).ok_or_else(|| {
+            error(
+                Some(feature),
+                "Selected profile changed or is no longer closed; reselect its boundary and holes",
+            )
+        })?;
+        let origins = region
+            .outer
+            .edges
+            .iter()
+            .chain(region.holes.iter().flat_map(|h| &h.edges))
+            .map(|edge| Origin {
+                source: edge.authored,
+                role: "profile.edge".into(),
+            })
+            .collect();
+        Ok((
+            NativeRegionQueries::profile(
+                region,
+                PlaneFrame {
+                    origin: frame.origin,
+                    u: frame.u,
+                    v: frame.v,
+                },
+            ),
+            origins,
+        ))
     }
 }
 
@@ -139,11 +200,14 @@ impl Compiler {
                 pending.extend(entity.references().into_iter().map(|link| link.target));
             }
         }
-        let queries = NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?;
+        let mut profiles = Profiles {
+            context: &context,
+            queries: NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?,
+            cache: BTreeMap::new(),
+        };
         let mut solids = BTreeMap::new();
         let mut shapes = BTreeMap::new();
         let mut topologies = BTreeMap::new();
-        let mut sketches = BTreeMap::new();
         let mut triangles = 0usize;
         for id in document.topological_order().map_err(|e| error(None, e))? {
             if !needed.contains(&id) {
@@ -186,48 +250,120 @@ impl Compiler {
                         .parameters
                         .resolve(context.parameters())
                         .map_err(|e| error(Some(id), e))?;
-                    let sketch = source.profile.sketch;
-                    if let std::collections::btree_map::Entry::Vacant(entry) =
-                        sketches.entry(sketch)
-                    {
-                        let report = references::inspect(document, revision, &topologies);
-                        let evaluated = context
-                            .evaluate(sketch, Some(&report), interrupt)
-                            .map_err(|e| error(e.source, e))?;
-                        let regions = evaluated
-                            .regions_with_queries_and_interrupt(&queries, interrupt)
-                            .map_err(|e| error(e.source, e))?;
-                        entry.insert((evaluated.frame, regions));
-                    }
-                    let (frame, regions) = &sketches[&sketch];
-                    let region = regions.resolve(&source.profile.region).ok_or_else(||error(Some(id),"Selected profile changed or is no longer closed; reselect its boundary and holes"))?;
-                    let direction = frame.vector(extent.direction);
-                    let origin = std::array::from_fn(|i| {
-                        frame.origin[i] + frame.n[i] * extent.start_offset_mm
+                    let (mut profile, origins) = profiles.get(
+                        source.profile.sketch,
+                        &source.profile.region,
+                        id,
+                        &topologies,
+                        interrupt,
+                    )?;
+                    let frame = profile.frame;
+                    let normal = frame.normal();
+                    let direction: [f64; 3] = std::array::from_fn(|i| {
+                        frame.u[i] * extent.direction[0]
+                            + frame.v[i] * extent.direction[1]
+                            + normal[i] * extent.direction[2]
+                    });
+                    profile.frame.origin = std::array::from_fn(|i| {
+                        frame.origin[i] + normal[i] * extent.start_offset_mm
                             - direction[i] * extent.backward_mm
                     });
-                    let profile = NativeRegionQueries::profile(
-                        region,
-                        PlaneFrame {
-                            origin,
-                            u: frame.u,
-                            v: frame.v,
-                        },
-                    );
-                    let origins: Vec<_> = region
-                        .outer
-                        .edges
-                        .iter()
-                        .chain(region.holes.iter().flat_map(|h| &h.edges))
-                        .map(|edge| Origin {
-                            source: edge.authored,
-                            role: "profile.edge".into(),
-                        })
-                        .collect();
                     let sweep = direction.map(|n| n * (extent.forward_mm + extent.backward_mm));
                     Solid::extrude_curved_profile_vector_named(
                         &profile,
                         sweep,
+                        id,
+                        &origins,
+                        self.policy,
+                    )
+                    .map_err(|e| error(Some(id), e))?
+                }
+                (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA) => {
+                    let source =
+                        model::read_primitive(document, id).map_err(|e| error(Some(id), e))?;
+                    let (frame, outer, height) = match source
+                        .parameters
+                        .resolve(context.parameters())
+                        .map_err(|e| error(Some(id), e))?
+                    {
+                        model::ResolvedPrimitive::Box {
+                            size_mm: [width, depth, height],
+                            frame,
+                        } => {
+                            let points = [[0., 0.], [width, 0.], [width, depth], [0., depth]];
+                            (
+                                frame,
+                                (0..4)
+                                    .map(|i| CurvedEdge2d::Line {
+                                        a: points[i],
+                                        b: points[(i + 1) % 4],
+                                    })
+                                    .collect(),
+                                height,
+                            )
+                        }
+                        model::ResolvedPrimitive::Cylinder {
+                            radius_mm,
+                            height_mm,
+                            frame,
+                        } => (
+                            frame,
+                            vec![CurvedEdge2d::Circle {
+                                center: [0., 0.],
+                                radius_mm,
+                            }],
+                            height_mm,
+                        ),
+                    };
+                    let origins: Vec<_> = (0..outer.len())
+                        .map(|i| Origin {
+                            source: id,
+                            role: format!("primitive.edge.{i}"),
+                        })
+                        .collect();
+                    let profile = CurvedProfile {
+                        frame: PlaneFrame {
+                            origin: frame.origin,
+                            u: frame.u,
+                            v: frame.v,
+                        },
+                        outer,
+                        holes: vec![],
+                    };
+                    Solid::extrude_curved_profile_vector_named(
+                        &profile,
+                        frame.n.map(|n| n * height),
+                        id,
+                        &origins,
+                        self.policy,
+                    )
+                    .map_err(|e| error(Some(id), e))?
+                }
+                (model::REVOLVE_TYPE, model::REVOLVE_SCHEMA) => {
+                    let source =
+                        model::read_revolve(document, id).map_err(|e| error(Some(id), e))?;
+                    let resolved = source
+                        .parameters
+                        .resolve(context.parameters())
+                        .map_err(|e| error(Some(id), e))?;
+                    let (profile, origins) = profiles.get(
+                        source.profile.sketch,
+                        &source.profile.region,
+                        id,
+                        &topologies,
+                        interrupt,
+                    )?;
+                    let axis = RevolutionAxis {
+                        origin_mm: profile.frame.point(resolved.axis_origin_mm),
+                        direction: std::array::from_fn(|i| {
+                            profile.frame.u[i] * resolved.axis_direction[0]
+                                + profile.frame.v[i] * resolved.axis_direction[1]
+                        }),
+                    };
+                    Solid::revolve_curved_profile_named(
+                        &profile,
+                        axis,
+                        resolved.angle_rad,
                         id,
                         &origins,
                         self.policy,
