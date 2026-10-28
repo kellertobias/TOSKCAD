@@ -322,6 +322,9 @@ impl ProjectFile {
         if crate::drawings::required_capability(&self.document) {
             required.insert(crate::drawings::CAPABILITY.into());
         }
+        if crate::materials::required_capability(&self.document) {
+            required.insert(crate::materials::CAPABILITY.into());
+        }
         required
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -379,6 +382,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::hierarchy::CAPABILITY.into(),
         crate::constraint_sketch::source::V2_CAPABILITY.into(),
         crate::constraint_sketch::source::V3_CAPABILITY.into(),
+        crate::materials::CAPABILITY.into(),
         crate::model::CAPABILITY.into(),
         crate::model::PRIMITIVE_CAPABILITY.into(),
         crate::model::REVOLVE_CAPABILITY.into(),

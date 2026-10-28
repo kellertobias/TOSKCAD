@@ -186,6 +186,7 @@ impl Document {
         crate::constraint_sketch::source::validate(self)?;
         crate::model::validate(self)?;
         crate::drawings::validate(self)?;
+        crate::materials::validate(self)?;
         Ok(())
     }
 }

@@ -8,6 +8,7 @@ pub mod constraint_sketch;
 pub mod document;
 pub mod drawings;
 pub mod hierarchy;
+pub mod materials;
 pub mod model;
 pub mod parameters;
 pub mod project_file;
