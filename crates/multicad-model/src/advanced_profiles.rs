@@ -87,6 +87,12 @@ impl Profiles<'_> {
                         "An authored sweep path curve disappeared; select the ordered path again",
                     )
                 })?;
+            if curve.construction {
+                return Err(error(
+                    Some(feature),
+                    "Sweep path contains a construction curve; choose authored non-construction lines or restore the path curve",
+                ));
+            }
             let CurveKind::Line { start, end } = curve.kind else {
                 return Err(error(
                     Some(feature),

@@ -124,6 +124,61 @@ fn sweep_rebuilds_solved_profile_and_ordered_path_without_display_geometry() {
     assert_eq!(source.path, request.path);
 }
 #[test]
+fn an_existing_sweep_rejects_a_path_changed_to_construction_without_source_mutation() {
+    let (mut session, _) = fixture();
+    let (profile, _) = circle(&mut session, "Sweep profile", 0., 2., false);
+    let path = path(&mut session);
+    let request = AdvancedRequest::new_body(
+        "Swept stock",
+        AdvancedParameters::Sweep(Default::default()),
+        vec![profile],
+        Some(path.clone()),
+    );
+    commit(&mut session, &request);
+    let before = session.document().clone();
+    let revision = session.revision();
+    let EntityData::Sketch { definition, .. } = &before.get(path.sketch).unwrap().data else {
+        panic!()
+    };
+    let mut source = Source::from_definition(definition).unwrap();
+    source
+        .sketch
+        .curves
+        .iter_mut()
+        .find(|curve| curve.id == path.curves[0])
+        .unwrap()
+        .construction = true;
+    let mut entity = before.get(path.sketch).unwrap().clone();
+    let EntityData::Sketch { definition, .. } = &mut entity.data else {
+        panic!()
+    };
+    *definition = source.definition().unwrap();
+    let candidate = before.edited(&[Mutation::Replace(entity)]).unwrap();
+    assert_eq!(
+        model::read_advanced(&candidate, request.feature)
+            .unwrap()
+            .0
+            .path,
+        Some(path)
+    );
+    let failure = multicad_model::Compiler::default()
+        .compile(&candidate, revision)
+        .err()
+        .unwrap();
+    assert_eq!(failure.entity, Some(request.feature));
+    assert!(failure.message.contains("construction curve"));
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), revision);
+    near(
+        compile(&session)
+            .solid(request.body)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        PI * 4. * 40.,
+    );
+}
+#[test]
 fn loft_uses_explicit_section_seams_and_current_bound_section_geometry() {
     let (mut session, _) = fixture();
     let (first, a) = circle(&mut session, "Loft start", 0., 2., true);
