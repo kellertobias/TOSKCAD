@@ -89,6 +89,25 @@ mod ffi {
         pub multiplicities: Vec<u32>,
         pub weights: Vec<f64>,
     }
+    pub struct DistanceOptionsData {
+        pub a_kind: u8,
+        pub a_index: u32,
+        pub b_kind: u8,
+        pub b_index: u32,
+        pub tolerance: f64,
+        pub maximum: u32,
+    }
+    pub struct DistanceWitnessData {
+        pub a: Point3,
+        pub b: Point3,
+    }
+    pub struct DistanceData {
+        pub distance: f64,
+        pub total_solutions: u32,
+        pub inner: bool,
+        pub complete: bool,
+        pub witnesses: Vec<DistanceWitnessData>,
+    }
     pub struct DrawingOptionsData {
         pub frame: Frame3,
         pub section: bool,
@@ -141,6 +160,12 @@ mod ffi {
         include!("curves.hpp");
         include!("analytic.hpp");
         include!("drawing.hpp");
+        include!("distance.hpp");
+        fn minimum_distance(
+            a: &Shape,
+            b: &Shape,
+            options: &DistanceOptionsData,
+        ) -> Result<DistanceData>;
         type Shape;
         type DrawingJob;
         fn drawing_job(options: &DrawingOptionsData) -> Result<UniquePtr<DrawingJob>>;
@@ -262,6 +287,8 @@ mod ffi {
 pub use ffi::Mesh;
 pub struct Shape(cxx::UniquePtr<ffi::Shape>);
 pub type Error = Box<dyn std::error::Error>;
+mod distance;
+pub use distance::{BRepSelection, DistanceWitness, MinimumDistance};
 mod geometry;
 pub use geometry::*;
 mod drawing;

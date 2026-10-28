@@ -584,6 +584,24 @@ impl Solid {
             max: xyz(b.max),
         })
     }
+    /// Measures the actual selected finite subshapes. Native handles remain on
+    /// their owner thread; no display tessellation participates.
+    pub fn minimum_distance(
+        &self,
+        a: crate::BRepSelection,
+        other: &Self,
+        b: crate::BRepSelection,
+    ) -> Result<crate::MinimumDistance, GeometryError> {
+        crate::distance::measure(
+            self,
+            a,
+            other,
+            b,
+            self.policy
+                .linear_tolerance_mm
+                .max(other.policy.linear_tolerance_mm),
+        )
+    }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
         ffi::faces(&self.native.0)
             .map_err(|e| native("faces", e))
