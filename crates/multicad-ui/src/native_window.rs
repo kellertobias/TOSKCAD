@@ -51,7 +51,7 @@ pub(crate) fn guard_application_quit(frame: &eframe::Frame) -> Result<(), String
     })();
     if let Err(error) = &result {
         if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!("MultiCAD native close protection failed: {error}");
+            eprintln!("ToskCAD native close protection failed: {error}");
         }
     } else {
         LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);

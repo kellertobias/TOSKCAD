@@ -124,7 +124,7 @@ fn stamp(file: &mut File) -> Result<FileStamp, StorageError> {
     file.read_exact(&mut header)?;
     if &header[..8] != b"MCADPRJ\0" {
         return Err(StorageError::Message(
-            "This is not a native MultiCAD project. Use Import source snapshot for JSON.".into(),
+            "This is not a native ToskCAD project. Use Import source snapshot for JSON.".into(),
         ));
     }
     Ok(FileStamp {

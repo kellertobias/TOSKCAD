@@ -240,7 +240,7 @@ fn envelope(
     let header = bytes(reader, HEADER_BYTES, limits.maximum_file_bytes)?;
     if &header[..8] != MAGIC {
         return Err(
-            "This is not a native MultiCAD project. Use Import source snapshot for legacy JSON."
+            "This is not a native ToskCAD project. Use Import source snapshot for legacy JSON."
                 .into(),
         );
     }

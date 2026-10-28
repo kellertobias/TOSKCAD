@@ -1896,7 +1896,7 @@ impl eframe::App for Application {
             if let Err(error) = crate::native_window::guard_application_quit(_frame) {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.heading("Native close protection unavailable");
-                    ui.label("MultiCAD cannot protect unsaved documents from macOS Quit. Editing is unavailable until this window can be protected.");
+                    ui.label("ToskCAD cannot protect unsaved documents from macOS Quit. Editing is unavailable until this window can be protected.");
                     ui.label(error);
                     if ui.button("Close window").on_hover_text("Close this window without entering the editor").clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

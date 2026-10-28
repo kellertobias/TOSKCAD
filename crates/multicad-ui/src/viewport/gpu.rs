@@ -71,7 +71,7 @@ fn words(bytes: &mut Vec<u8>, values: impl IntoIterator<Item = u32>) {
 impl Renderer {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("MultiCAD solids"),
+            label: Some("ToskCAD solids"),
             source: wgpu::ShaderSource::Wgsl(include_str!("solid.wgsl").into()),
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
