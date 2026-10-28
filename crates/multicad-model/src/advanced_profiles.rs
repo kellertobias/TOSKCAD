@@ -10,6 +10,7 @@ impl Profiles<'_> {
         &mut self,
         source: &AdvancedDefinition,
         feature: EntityId,
+        solids: &BTreeMap<EntityId, Solid>,
         topologies: &BTreeMap<EntityId, TopologySnapshot>,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ProfileInputs, ModelError> {
@@ -20,6 +21,7 @@ impl Profiles<'_> {
                 selection.sketch,
                 &selection.region,
                 feature,
+                solids,
                 topologies,
                 interrupt,
             )?;
@@ -49,7 +51,7 @@ impl Profiles<'_> {
             prepared.sections.push((profile, origins));
         }
         if let Some(path) = &source.path {
-            prepared.path = Some(self.advanced_path(path, feature, topologies, interrupt)?);
+            prepared.path = Some(self.advanced_path(path, feature, solids, topologies, interrupt)?);
         }
         Ok(prepared)
     }
@@ -57,14 +59,25 @@ impl Profiles<'_> {
         &self,
         path: &SketchPathSource,
         feature: EntityId,
+        solids: &BTreeMap<EntityId, Solid>,
         topologies: &BTreeMap<EntityId, TopologySnapshot>,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Path, ModelError> {
-        let report = references::inspect(
+        let mut report = references::inspect(
             self.context.document(),
             self.context.stamp().revision,
             topologies,
         );
+        crate::external::Sources {
+            document: self.context.document(),
+            revision: self.context.stamp().revision,
+            parameters: self.context.parameters(),
+            body_heads: self.body_heads,
+            solids,
+            topologies,
+            policy: self.policy,
+        }
+        .populate(&mut report, Some(path.sketch), interrupt)?;
         let evaluated = self
             .context
             .evaluate(path.sketch, Some(&report), interrupt)

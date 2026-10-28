@@ -104,6 +104,8 @@ fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ModelError> {
 struct Profiles<'a> {
     context: &'a SketchEvaluationContext<'a>,
     queries: NativeRegionQueries,
+    body_heads: &'a BTreeMap<EntityId, EntityId>,
+    policy: GeometryPolicy,
     cache: BTreeMap<EntityId, (multicad_core::sketch::Frame, Extraction)>,
 }
 impl Profiles<'_> {
@@ -112,15 +114,26 @@ impl Profiles<'_> {
         sketch: EntityId,
         intent: &RegionIntent,
         feature: EntityId,
+        solids: &BTreeMap<EntityId, Solid>,
         topologies: &BTreeMap<EntityId, TopologySnapshot>,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<(CurvedProfile, Vec<Origin>), ModelError> {
         if let std::collections::btree_map::Entry::Vacant(entry) = self.cache.entry(sketch) {
-            let report = references::inspect(
+            let mut report = references::inspect(
                 self.context.document(),
                 self.context.stamp().revision,
                 topologies,
             );
+            crate::external::Sources {
+                document: self.context.document(),
+                revision: self.context.stamp().revision,
+                parameters: self.context.parameters(),
+                body_heads: self.body_heads,
+                solids,
+                topologies,
+                policy: self.policy,
+            }
+            .populate(&mut report, Some(sketch), interrupt)?;
             let evaluated = self
                 .context
                 .evaluate(sketch, Some(&report), interrupt)
@@ -165,7 +178,7 @@ impl Profiles<'_> {
 /// The kernel's !Send/!Sync ownership also applies to this container.
 pub struct Model {
     pub(crate) policy: GeometryPolicy,
-    solids: BTreeMap<EntityId, Solid>,
+    pub(crate) solids: BTreeMap<EntityId, Solid>,
     snapshot: ModelSnapshot,
     leaves: crate::assemblies::LeafStore,
 }
@@ -348,6 +361,8 @@ impl Compiler {
         let mut profiles = Profiles {
             context: &context,
             queries: NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?,
+            body_heads: &bodies,
+            policy: self.policy,
             cache: BTreeMap::new(),
         };
         let mut solids: BTreeMap<EntityId, Solid> = BTreeMap::new();
@@ -484,6 +499,7 @@ impl Compiler {
                         source.profile.sketch,
                         &source.profile.region,
                         id,
+                        &solids,
                         &topologies,
                         interrupt,
                     )?;
@@ -570,6 +586,7 @@ impl Compiler {
                         source.profile.sketch,
                         &source.profile.region,
                         id,
+                        &solids,
                         &topologies,
                         interrupt,
                     )?;
@@ -670,7 +687,8 @@ impl Compiler {
                 (model::ADVANCED_TYPE, model::ADVANCED_SCHEMA) => {
                     let (source, captures) =
                         model::read_advanced(document, id).map_err(|e| error(Some(id), e))?;
-                    let selected = profiles.advanced(&source, id, &topologies, interrupt)?;
+                    let selected =
+                        profiles.advanced(&source, id, &solids, &topologies, interrupt)?;
                     crate::advanced::build(
                         crate::advanced::Inputs {
                             revision,
@@ -784,7 +802,22 @@ impl Compiler {
             solids.insert(id, solid);
         }
         checkpoint(interrupt)?;
-        let references = references::inspect(document, revision, &topologies);
+        let mut references = references::inspect(document, revision, &topologies);
+        crate::external::complete_report(
+            self,
+            &crate::external::Sources {
+                document,
+                revision,
+                parameters: context.parameters(),
+                body_heads: &bodies,
+                solids: &solids,
+                topologies: &topologies,
+                policy: self.policy,
+            },
+            &mut references,
+            roots.is_none(),
+            interrupt,
+        )?;
         if roots.is_some() {
             bodies.retain(|_, producer| shapes.contains_key(producer));
         }

@@ -227,6 +227,16 @@ pub fn required_capability(document: &Document) -> bool {
     )
 }
 pub fn validate(document: &Document) -> Result<(), DocumentError> {
+    if document
+        .entities()
+        .filter(|e| super::is_occurrence_reference(document, e.id))
+        .count()
+        > super::MAX_OCCURRENCE_BINDINGS
+    {
+        return Err(invalid(
+            "Occurrence sketch reference count exceeds its 4096-binding budget",
+        ));
+    }
     if !document.entities().any(|entity| match &entity.data {
         EntityData::Extension { definition, .. } => definition.type_id == TYPE_ID,
         EntityData::Sketch { inputs, .. } => inputs.iter().any(|link| link.role == ROLE),

@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 pub const OCCURRENCE_SCHEMA: u32 = 2;
 pub const OCCURRENCE_CAPABILITY: &str = "sketch.external.2";
 pub const MAX_EXTERNAL_RESULTS: usize = 256;
+pub const MAX_OCCURRENCE_BINDINGS: usize = 4096;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OccurrenceSource {
@@ -299,18 +300,53 @@ pub fn select_external_choice<'a>(
     selector: &ResultSelector,
 ) -> Result<&'a ExternalChoice, DocumentError> {
     catalog.validate()?;
+    select_external_result(
+        &catalog.results,
+        catalog.coincident,
+        catalog.query.method,
+        selector,
+    )
+}
+/// Geometry-only matching for the model's dependency-ordered local evaluation.
+/// This carries no claim about an absolute consumer display pose.
+pub fn select_external_result<'a>(
+    results: &'a [ExternalChoice],
+    coincident: bool,
+    method: QueryMethod,
+    selector: &ResultSelector,
+) -> Result<&'a ExternalChoice, DocumentError> {
     selector.validate()?;
-    if selector.expected_count != catalog.results.len() {
+    if results.len() > MAX_EXTERNAL_RESULTS || selector.expected_count != results.len() {
         return Err(invalid(
             "External intersection count changed; explicitly repair the saved result selection",
         ));
     }
-    let candidates = catalog
-        .results
+    for (index, c) in results.iter().enumerate() {
+        c.selector.validate()?;
+        c.geometry.validate()?;
+        if c.source_parameter
+            .is_some_and(|p| !p.is_finite() || p.abs() > 1e9)
+            || c.source_interval
+                .is_some_and(|r| r.iter().any(|x| !x.is_finite() || x.abs() > 1e9) || r[0] >= r[1])
+            || c.selector.family != c.geometry.family()
+            || c.selector.expected_count != results.len()
+            || results[..index]
+                .iter()
+                .any(|old| old.selector == c.selector)
+        {
+            return Err(invalid(
+                "External result set has invalid or duplicate semantic choices",
+            ));
+        }
+    }
+    let candidates = results
         .iter()
         .filter(|choice| {
             if choice.tangent
-                || choice.selector.support != selector.support
+                || !selector
+                    .support
+                    .iter()
+                    .all(|saved| choice.selector.support.contains(saved))
                 || choice.selector.family != selector.family
             {
                 return false;
@@ -329,15 +365,14 @@ pub fn select_external_choice<'a>(
             }
         })
         .collect::<Vec<_>>();
-    if candidates.len() != 1
-        || (catalog.coincident && catalog.query.method == QueryMethod::Intersect)
-    {
+    if candidates.len() != 1 || (coincident && method == QueryMethod::Intersect) {
         return Err(invalid(
             "Saved external support/branch is missing, tangent or ambiguous; explicitly repair without nearest-result rebinding",
         ));
     }
     Ok(candidates[0])
 }
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalOutputIds {
@@ -489,5 +524,54 @@ mod tests {
         let mut bad = selector;
         bad.branch.as_mut().unwrap().crossing = Some(0);
         assert!(bad.validate().is_err());
+    }
+    #[test]
+    fn persistent_support_accepts_added_ancestry_but_never_two_descendants_or_removed_origins() {
+        let a = Origin {
+            source: EntityId::new(),
+            role: "original".into(),
+        };
+        let b = Origin {
+            source: EntityId::new(),
+            role: "descendant-a".into(),
+        };
+        let c = Origin {
+            source: EntityId::new(),
+            role: "descendant-b".into(),
+        };
+        let saved = ResultSelector {
+            support: vec![a.clone()],
+            family: ExternalGeometryFamily::Line,
+            branch: None,
+            expected_count: 1,
+        };
+        let choice = |extra: Origin, count| {
+            let mut support = vec![a.clone(), extra];
+            support.sort();
+            ExternalChoice {
+                selector: ResultSelector {
+                    support,
+                    family: ExternalGeometryFamily::Line,
+                    branch: None,
+                    expected_count: count,
+                },
+                geometry: ExternalGeometry::Line {
+                    a_mm: [0., 0.],
+                    b_mm: [10., 0.],
+                },
+                source_parameter: None,
+                source_interval: None,
+                tangent: false,
+            }
+        };
+        let current = vec![choice(b.clone(), 1)];
+        assert!(select_external_result(&current, false, QueryMethod::Coplanar, &saved).is_ok());
+        let current = vec![choice(b.clone(), 2), choice(c.clone(), 2)];
+        let mut multiple = saved.clone();
+        multiple.expected_count = 2;
+        assert!(select_external_result(&current, false, QueryMethod::Coplanar, &multiple).is_err());
+        let mut removed = choice(c, 1);
+        removed.selector.support = vec![b];
+        assert!(select_external_result(&[removed], false, QueryMethod::Coplanar, &saved).is_err());
     }
 }
