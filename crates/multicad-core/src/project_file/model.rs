@@ -318,6 +318,7 @@ impl ProjectFile {
         if crate::constraint_sketch::source::requires_v3(&self.document) {
             required.insert(crate::constraint_sketch::source::V3_CAPABILITY.into());
         }
+        required.extend(crate::model::required_capabilities(&self.document));
         required
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -374,5 +375,6 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::hierarchy::CAPABILITY.into(),
         crate::constraint_sketch::source::V2_CAPABILITY.into(),
         crate::constraint_sketch::source::V3_CAPABILITY.into(),
+        crate::model::CAPABILITY.into(),
     ])
 }

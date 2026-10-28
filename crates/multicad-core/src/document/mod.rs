@@ -184,6 +184,7 @@ impl Document {
             .map_err(|error| DocumentError::Invalid(error.to_string()))?;
         crate::sketch::validate(self)?;
         crate::constraint_sketch::source::validate(self)?;
+        crate::model::validate(self)?;
         Ok(())
     }
 }
