@@ -496,6 +496,29 @@ impl ModelTree {
         selected: &BTreeSet<EntityId>,
         options: TreeOptions,
     ) -> TreeEvents {
+        self.show_internal(ui, session, selected, options, false)
+    }
+    /// Select targets for a host-owned tool without changing the document or
+    /// opening tree tools. The caller validates compatibility before accepting
+    /// the selection. Shift and Cmd/Ctrl toggle individual entries here.
+    pub fn show_targets(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        selected: &BTreeSet<EntityId>,
+        options: TreeOptions,
+    ) -> TreeEvents {
+        self.show_internal(ui, session, selected, options, true)
+    }
+    fn show_internal(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        selected: &BTreeSet<EntityId>,
+        options: TreeOptions,
+        targets_only: bool,
+    ) -> TreeEvents {
+        let mutations_enabled = options.enabled && !targets_only;
         if let Err(error) = self.ensure_view(session) {
             return TreeEvents {
                 error: Some(error),
@@ -511,7 +534,7 @@ impl ModelTree {
         ui.horizontal(|ui| {
             ui.strong("Model");
             let response = ui
-                .add_enabled_ui(options.enabled, |ui| {
+                .add_enabled_ui(mutations_enabled, |ui| {
                     icons::compact_button(ui, Icon::New, "Create component or group")
                 })
                 .inner;
@@ -521,7 +544,7 @@ impl ModelTree {
                     (ContainerKind::Group, "New group"),
                 ] {
                     if ui
-                        .add_enabled(options.enabled, egui::Button::new(label))
+                        .add_enabled(mutations_enabled, egui::Button::new(label))
                         .clicked()
                     {
                         create = Some((kind, session.document().hierarchy().active_component));
@@ -589,20 +612,22 @@ impl ModelTree {
                             let color = if row.effective_visible { ui.visuals().text_color() } else { Color32::GRAY };
                             let response = flat_row_label(ui, width, &label, options.enabled && row.available, selected.contains(&row.id), color);
                             let role = if row.history_of.is_some() { "Feature used by body (reference only)" } else { row.kind.label() };
-                            response.clone().on_hover_text(format!("{}\nOwning component: {}\nCmd/Ctrl-click toggles; Shift-click selects a range", role, row.owner));
+                            let selection_hint = if targets_only { "Shift or Cmd/Ctrl-click toggles one target" } else { "Cmd/Ctrl-click toggles; Shift-click selects a range" };
+                            response.clone().on_hover_text(format!("{}\nOwning component: {}\n{}", role, row.owner, selection_hint));
                             if response.clicked() || icon.clicked() {
                                 let modifiers = crate::selection_input::click_modifiers(ui, if response.clicked() { &response } else { &icon });
-                                let mut next = if modifiers.command { selected.clone() } else { BTreeSet::new() };
-                                if modifiers.shift && let Some(start) = self.anchor.and_then(|id| rows.iter().position(|row| row.key == id)) {
+                                let toggle_one = modifiers.command || (targets_only && modifiers.shift);
+                                let mut next = if toggle_one { selected.clone() } else { BTreeSet::new() };
+                                if !targets_only && modifiers.shift && let Some(start) = self.anchor.and_then(|id| rows.iter().position(|row| row.key == id)) {
                                     next.extend(rows[start.min(row_index)..=start.max(row_index)].iter().filter(|row| row.available).map(|row| row.id));
-                                } else if !modifiers.command || !next.remove(&row.id) {
+                                } else if !toggle_one || !next.remove(&row.id) {
                                     next.insert(row.id);
                                 }
                                 self.selected_references.retain(|id| next.contains(id));
-                                if !modifiers.command {
+                                if !toggle_one {
                                     self.selected_references.clear();
                                 }
-                                if modifiers.shift && let Some(start) = self.anchor.and_then(|key| rows.iter().position(|row| row.key == key)) {
+                                if !targets_only && modifiers.shift && let Some(start) = self.anchor.and_then(|key| rows.iter().position(|row| row.key == key)) {
                                     self.selected_references.extend(rows[start.min(row_index)..=start.max(row_index)].iter().filter(|row| row.available && row.history_of.is_some()).map(|row| row.id));
                                 } else if row.history_of.is_some() && next.contains(&row.id) {
                                     self.selected_references.insert(row.id);
@@ -613,7 +638,7 @@ impl ModelTree {
                                 self.history_selection = row.history_of.map(|body| (row.id, body));
                                 events.selection = Some(next);
                             }
-                            if response.double_clicked() && options.enabled {
+                            if response.double_clicked() && mutations_enabled {
                                 if row.kind == NodeKind::Sketch && options.allow_open_sketch {
                                     events.open_sketch = Some(row.id);
                                 } else if matches!(row.kind, NodeKind::Component | NodeKind::Root) {
@@ -624,7 +649,7 @@ impl ModelTree {
                                 ui.add_space(trailing);
                             } else {
                             let mut visible = row.local_visible;
-                            let visibility = ui.add_enabled(options.enabled && !matches!(row.kind, NodeKind::Plane | NodeKind::Feature),
+                            let visibility = ui.add_enabled(mutations_enabled && !matches!(row.kind, NodeKind::Plane | NodeKind::Feature),
                                 egui::Checkbox::new(&mut visible, "").indeterminate(row.local_visible && !row.effective_visible));
                             let hint = if matches!(row.kind, NodeKind::Plane | NodeKind::Feature) {
                                 "This source is evaluated through its sketch or body; standalone visibility is unavailable"
@@ -643,7 +668,7 @@ impl ModelTree {
                                     ui.small("History is a reference, not container ownership. Inspect its source to edit membership.");
                                     return;
                                 }
-                                ui.add_enabled_ui(options.enabled && row.available, |ui| {
+                                ui.add_enabled_ui(mutations_enabled && row.available, |ui| {
                                     if matches!(row.kind, NodeKind::Root | NodeKind::Component)
                                         && ui.button("Activate modeling scope").clicked() {
                                         action = Some(Action::SetActive { component: if row.kind == NodeKind::Root { None } else { Some(row.id) } });
@@ -1273,6 +1298,179 @@ mod tests {
         assert!(!selected.contains(&component));
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), 0);
+    }
+    struct TargetTreeHarness {
+        context: egui::Context,
+        tree: ModelTree,
+        session: Session,
+        selected: BTreeSet<EntityId>,
+        options: TreeOptions,
+    }
+    impl TargetTreeHarness {
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            let before = self.session.document().clone();
+            let revision = self.session.revision();
+            let output = self.context.run_ui(
+                egui::RawInput {
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(340., 480.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let event =
+                        self.tree
+                            .show_targets(ui, &mut self.session, &self.selected, self.options);
+                    if let Some(next) = event.selection {
+                        self.selected = next;
+                    }
+                    assert!(event.change.is_none());
+                    assert!(event.open_sketch.is_none());
+                    assert!(event.error.is_none());
+                },
+            );
+            assert_eq!(self.session.document(), &before);
+            assert_eq!(self.session.revision(), revision);
+            output
+        }
+        fn click(
+            &mut self,
+            pos: egui::Pos2,
+            modifiers: egui::Modifiers,
+            button: egui::PointerButton,
+        ) {
+            for pressed in [true, false] {
+                self.frame(vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        modifiers,
+                    },
+                    egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+                ])
+                .drop_without_applying_deltas();
+            }
+        }
+        fn bounds(&mut self, label: &str) -> egui::Rect {
+            self.frame(vec![]).drop_without_applying_deltas();
+            let output = self.frame(vec![]);
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .and_then(|(_, node)| node.bounds())
+                .unwrap();
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            output.drop_without_applying_deltas();
+            rect
+        }
+    }
+    fn target_tree() -> (TargetTreeHarness, EntityId, EntityId, EntityId) {
+        let (session, component, group, body) = fixture();
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        (
+            TargetTreeHarness {
+                context,
+                tree: ModelTree::default(),
+                session,
+                selected: BTreeSet::new(),
+                options: TreeOptions::default(),
+            },
+            component,
+            group,
+            body,
+        )
+    }
+    #[test]
+    fn target_tree_shift_toggles_individual_rows_without_selecting_the_range() {
+        let (mut h, component, group, body) = target_tree();
+        let component_pos = h.bounds("Cabinet · active").center();
+        let body_pos = h.bounds("Side").center();
+        h.click(
+            component_pos,
+            egui::Modifiers::NONE,
+            egui::PointerButton::Primary,
+        );
+        assert_eq!(h.selected, BTreeSet::from([component]));
+        h.click(
+            body_pos,
+            egui::Modifiers::SHIFT,
+            egui::PointerButton::Primary,
+        );
+        assert_eq!(h.selected, BTreeSet::from([component, body]));
+        assert!(!h.selected.contains(&group));
+        h.click(
+            component_pos,
+            egui::Modifiers::SHIFT,
+            egui::PointerButton::Primary,
+        );
+        assert_eq!(h.selected, BTreeSet::from([body]));
+        h.click(
+            body_pos,
+            egui::Modifiers::COMMAND,
+            egui::PointerButton::Primary,
+        );
+        assert!(h.selected.is_empty());
+        h.options.enabled = false;
+        h.click(
+            body_pos,
+            egui::Modifiers::NONE,
+            egui::PointerButton::Primary,
+        );
+        assert!(h.selected.is_empty());
+        assert!(!h.tree.tool_active());
+    }
+    #[test]
+    fn target_tree_pointer_actions_cannot_change_scope_visibility_or_create_tools() {
+        let (mut h, component, _, _) = target_tree();
+        let root = h.bounds("Workshop").center();
+        // A normal tree double-click activates the root; acquisition must retain
+        // the exact prior component scope even when the same gesture is used.
+        for _ in 0..2 {
+            h.click(root, egui::Modifiers::NONE, egui::PointerButton::Primary);
+        }
+        assert_eq!(
+            h.session.document().hierarchy().active_component,
+            Some(component)
+        );
+        let create = h.bounds("Create component or group").center();
+        h.click(create, egui::Modifiers::NONE, egui::PointerButton::Primary);
+        assert!(!h.tree.tool_active());
+        let body = h.bounds("Side");
+        // The visibility control immediately follows this bounded row label.
+        h.click(
+            egui::pos2(body.right() + 12., body.center().y),
+            egui::Modifiers::NONE,
+            egui::PointerButton::Primary,
+        );
+        assert!(h.session.document().hierarchy().hidden.is_empty());
+        h.click(root, egui::Modifiers::NONE, egui::PointerButton::Secondary);
+        let activate = h.bounds("Activate modeling scope").center();
+        h.click(
+            activate,
+            egui::Modifiers::NONE,
+            egui::PointerButton::Primary,
+        );
+        assert_eq!(
+            h.session.document().hierarchy().active_component,
+            Some(component)
+        );
+        assert!(!h.tree.tool_active());
+        assert_eq!(h.session.revision(), 0);
     }
     #[test]
     fn body_history_is_ordered_reference_paths_and_aux_sources_are_local_only() {
