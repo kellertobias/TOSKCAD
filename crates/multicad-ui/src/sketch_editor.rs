@@ -95,6 +95,8 @@ pub struct SketchEditor {
     profiles: crate::sketch_selection::ProfileSelection,
     operations: crate::sketch_operations::Panel,
     operation_error: Option<String>,
+    model: crate::modeling::ModelToolController,
+    fitted_model_document: Option<EntityId>,
     tree: crate::model_tree::ModelTree,
     tree_selection: std::collections::BTreeSet<EntityId>,
     visibility: crate::viewport::VisibilityFilter,
@@ -154,6 +156,8 @@ impl Default for SketchEditor {
             profiles: Default::default(),
             operations: Default::default(),
             operation_error: None,
+            model: Default::default(),
+            fitted_model_document: None,
             tree: Default::default(),
             tree_selection: Default::default(),
             visibility: Default::default(),
@@ -367,6 +371,82 @@ impl SketchEditor {
         }
         Ok((id, self.profiles.selected().to_vec()))
     }
+    pub fn set_model_backend(&mut self, backend: Box<dyn crate::viewport::SceneBackend>) {
+        self.model.set_backend(backend);
+    }
+    pub fn has_model_backend(&self) -> bool {
+        self.model.has_backend()
+    }
+    pub fn poll_model(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) -> bool {
+        self.model.poll(session, resources);
+        self.model.pending()
+    }
+    pub fn model_active(&self) -> bool {
+        self.model.active()
+    }
+    pub fn model_can_apply(
+        &self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) -> bool {
+        self.model.can_apply(session, resources)
+    }
+    pub fn extrusion_ready(&self, document: &Document, revision: u64) -> bool {
+        self.model.has_backend()
+            && !self.has_pending_edits()
+            && !self.picking
+            && self.selected_profiles(document, revision).is_ok()
+    }
+    pub fn begin_extrude(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.model.has_backend() {
+            return Err("The native modeling preview provider is unavailable".into());
+        }
+        if self.has_pending_edits() || self.picking {
+            return Err("Apply or cancel pending edits before extruding".into());
+        }
+        let (sketch, profiles) = self.selected_profiles(session.document(), session.revision())?;
+        self.finish()?;
+        self.model
+            .begin(session, resources, sketch, profiles, channel)?;
+        self.message = "Extrude · choose distance and direction, then Preview".into();
+        Ok(())
+    }
+    pub fn preview_model(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.model.preview(session, resources, channel)
+    }
+    pub fn apply_model(
+        &mut self,
+        session: &mut Session,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) -> Result<(), String> {
+        let outputs = self.model.apply(session, resources)?;
+        self.accept_model_outputs(outputs);
+        Ok(())
+    }
+    fn accept_model_outputs(&mut self, outputs: Vec<multicad_core::model::CreatedBody>) {
+        self.tree_selection = outputs.into_iter().map(|output| output.body).collect();
+        self.selected = None;
+        self.solid.clear();
+        self.fit_requested = true;
+        self.message = "Extrusion applied · one undoable source edit".into();
+    }
+    pub fn cancel_model(&mut self) {
+        self.model.cancel();
+    }
     pub fn set_display_style(&mut self, style: DisplayStyle) {
         self.style = style;
     }
@@ -380,6 +460,10 @@ impl SketchEditor {
         };
     }
     pub fn toggle_transform(&mut self) {
+        if self.model.active() {
+            self.message = "Apply or cancel Extrude before transforming".into();
+            return;
+        }
         if self.selected.is_none() {
             self.moving = false;
             self.message = "Select a sketch to transform.".into();
@@ -400,8 +484,10 @@ impl SketchEditor {
             || self.constraints.dirty()
             || self.repair.has_pending()
             || self.tree.tool_active()
+            || self.model.active()
     }
     pub fn cancel(&mut self) {
+        self.model.cancel();
         self.operations.cancel();
         self.tree.cancel_tool();
         self.repair.cancel();
@@ -1331,6 +1417,24 @@ impl SketchEditor {
         sketch_mode: bool,
         feed: &mut crate::viewport::SceneFeed,
     ) {
+        self.show_project(ui, session, sketch_mode, feed, &Default::default());
+    }
+    pub fn show_project(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &mut Session,
+        sketch_mode: bool,
+        feed: &mut crate::viewport::SceneFeed,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) {
+        self.model.poll(session, resources);
+        if feed.is_current(session.document().id(), session.revision()) {
+            self.model.canonical_ready(session);
+        }
+        if self.model.pending() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
         if self
             .creation_evaluation
             .as_ref()
@@ -1489,6 +1593,15 @@ impl SketchEditor {
                 egui::ScrollArea::vertical()
                     .id_salt("sketch-inspector-content")
                     .show(ui, |ui| {
+                        if self.model.active() {
+                            match self.model.show(ui,session,resources) {
+                                Ok(Some(outputs))=>self.accept_model_outputs(outputs),
+                                Err(error)=>self.message=error,
+                                Ok(None)=>{}
+                            }
+                            if self.model.pending() {ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));}
+                            return;
+                        }
                         if let Some(error)=&self.visibility_error {ui.colored_label(Color32::LIGHT_YELLOW,error);}
                         let hierarchy_tool=self.tree.tool_active();
                         if self.tree.tool_active() || !self.editing {
@@ -1691,8 +1804,15 @@ impl SketchEditor {
         self.refresh_overlay_visibility(session.document(), session.revision());
         let mut current = feed.is_current(session.document().id(), session.revision());
         let mut repair_view = false;
+        let mut model_view = false;
         self.solid.highlight_reference(None);
-        if self.repair.viewing_candidates()
+        if let Some(candidate) = self.model.display_scene(session, resources) {
+            scene = Some(candidate);
+            current = false;
+            model_view = true;
+        }
+        if !model_view
+            && self.repair.viewing_candidates()
             && let Some(evaluation) = feed.references()
             && evaluation.stamp.revision == session.revision()
             && let Some((source, key)) = self.repair.highlight()
@@ -1718,6 +1838,14 @@ impl SketchEditor {
                 },
             }));
         }
+        if self.fitted_model_document != Some(session.document().id())
+            && scene
+                .as_ref()
+                .is_some_and(|scene| scene.world_bounds().is_some())
+        {
+            self.fit_requested = true;
+            self.fitted_model_document = Some(session.document().id());
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
             .show(ui, |ui| {
@@ -1732,7 +1860,20 @@ impl SketchEditor {
                 Color32::LIGHT_YELLOW,
             );
         }
+        if model_view
+            && self.model.active()
+            && let Some(rect) = self.viewport_rect
+        {
+            ui.painter().text(
+                rect.left_top() + Vec2::new(14., 12.),
+                Align2::LEFT_TOP,
+                "Extrusion preview · not applied",
+                FontId::proportional(12.),
+                Color32::LIGHT_YELLOW,
+            );
+        }
         if let (Some(scene), Some(rect)) = (&scene, self.viewport_rect)
+            && !model_view
             && let Some(bounds) = scene.world_bounds()
             && let Some(quality) =
                 crate::viewport::DisplayQuality::for_view(self.camera, rect, bounds)
@@ -2463,7 +2604,7 @@ impl SketchEditor {
                         self.solid
                             .section
                             .control(ui, scene.as_ref().and_then(|s| s.world_bounds()));
-                        let transform = ui.add_enabled_ui(self.selected.is_some(),|ui|icons::compact_button(
+                        let transform = ui.add_enabled_ui(self.selected.is_some() && !self.model.active(),|ui|icons::compact_button(
                             ui,
                             Icon::Transform,
                             &format!(
@@ -2497,9 +2638,10 @@ impl SketchEditor {
                 if actions.fit || self.fit_requested {
                     self.fit_requested = false;
                     self.camera.fit(&points, rect);
+                    ui.ctx().request_repaint();
                 }
             });
-        if self.constraints.dirty() && moving {
+        if (self.constraints.dirty() || self.model.active()) && moving {
             moving = false;
             self.message = "Apply or discard constraint edits before transforming".into();
         }
@@ -2611,6 +2753,90 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         mpsc,
     };
+
+    #[test]
+    fn extrusion_captures_checked_profiles_and_owns_the_existing_tool_gate() {
+        struct UnavailableReplyBackend;
+        impl crate::viewport::SceneBackend for UnavailableReplyBackend {
+            fn request(
+                &mut self,
+                _: &Document,
+                _: crate::viewport::SceneStamp,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            fn poll(&mut self) -> Option<crate::viewport::SceneReply> {
+                None
+            }
+        }
+        let mut harness = ProfileHarness::new();
+        let sketch = harness.editor.selected.unwrap();
+        let before = harness.session.document().clone();
+        let revision = harness.session.revision();
+        let presentation = harness.editor.sketch_evaluation.current(sketch).unwrap();
+        let profiles = presentation
+            .regions
+            .regions
+            .iter()
+            .map(|region| region.intent())
+            .collect::<Vec<_>>();
+        harness
+            .editor
+            .profiles
+            .reconcile(sketch, &presentation.regions);
+        for profile in &profiles {
+            harness.editor.profiles.choose(profile.clone(), true);
+        }
+        assert!(
+            harness
+                .editor
+                .begin_extrude(&harness.session, &Default::default(), Channel::Ui)
+                .unwrap_err()
+                .contains("unavailable")
+        );
+        assert!(harness.editor.editing);
+        harness
+            .editor
+            .set_model_backend(Box::new(UnavailableReplyBackend));
+        assert!(
+            harness
+                .editor
+                .extrusion_ready(harness.session.document(), revision)
+        );
+        harness
+            .editor
+            .begin_extrude(&harness.session, &Default::default(), Channel::Ui)
+            .unwrap();
+        assert!(harness.editor.model_active());
+        assert!(!harness.editor.editing);
+        assert!(harness.editor.has_pending_edits());
+        assert_eq!(
+            harness
+                .editor
+                .selected_profiles(harness.session.document(), revision)
+                .unwrap(),
+            (sketch, profiles)
+        );
+        assert!(harness.editor.finish().is_err());
+        assert!(harness.editor.set_tool(DrawTool::Line).is_err());
+        harness.editor.toggle_transform();
+        assert!(!harness.editor.moving);
+        assert!(
+            harness
+                .editor
+                .apply_model(&mut harness.session, &Default::default())
+                .is_err()
+        );
+        harness
+            .editor
+            .preview_model(&harness.session, &Default::default(), Channel::CommandLine)
+            .unwrap();
+        assert!(harness.editor.model.pending());
+        harness.editor.cancel();
+        assert!(!harness.editor.has_pending_edits());
+        assert_eq!(harness.session.document(), &before);
+        assert_eq!(harness.session.revision(), revision);
+    }
 
     struct ProfileGate {
         block_next: AtomicBool,

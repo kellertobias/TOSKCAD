@@ -1,8 +1,10 @@
 //! Reusable modeling forms. Native geometry and document commits belong to the
 //! composition root; painting a form never changes the canonical document.
+mod controller;
 mod dimension;
 mod extrude;
 
+pub use controller::ModelToolController;
 pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
 use multicad_core::document::EntityId;
 

@@ -1,5 +1,7 @@
 //! Declarative workspace/ribbon catalog shared by buttons and command entry.
-use crate::{icons::Icon, sketch_editor::DrawTool, sketch_operations::OperationTool};
+use crate::{
+    icons::Icon, modeling::ModelingTool, sketch_editor::DrawTool, sketch_operations::OperationTool,
+};
 use eframe::egui::Color32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
@@ -56,6 +58,7 @@ pub enum Command {
     NewSketch,
     Draw(DrawTool),
     SketchOperation(OperationTool),
+    Modeling(ModelingTool),
     Construction,
     Dimension,
     FinishSketch,
@@ -260,6 +263,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for tool in ModelingTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::Modeling(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for mode in Mode::ALL {
             registry.tools.push(Tool {
                 id: mode.title(),
@@ -276,7 +288,6 @@ impl Default for Registry {
             });
         }
         for (id, label, icon) in [
-            ("extrude", "Extrude", Icon::Box),
             ("revolve", "Revolve", Icon::Box),
             ("boolean", "Boolean", Icon::Cut),
             ("edge", "Fillet / chamfer", Icon::Edge),
@@ -558,5 +569,24 @@ mod tests {
             registry.resolve("move").unwrap().action,
             Command::Extension("move")
         );
+    }
+    #[test]
+    fn extrusion_ribbon_and_aliases_use_the_shared_modeling_tool_catalog() {
+        let registry = Registry::default();
+        let tool = ModelingTool::Extrude;
+        let registered = registry.tool(tool.id()).unwrap();
+        assert_eq!(registered.action, Command::Modeling(tool));
+        assert_eq!(registered.label, tool.label());
+        assert!(
+            registry.workspace(Mode::Model).tabs[0]
+                .tools
+                .contains(&tool.id())
+        );
+        for alias in tool.aliases() {
+            assert_eq!(
+                registry.resolve(alias).unwrap().action,
+                Command::Modeling(tool)
+            );
+        }
     }
 }

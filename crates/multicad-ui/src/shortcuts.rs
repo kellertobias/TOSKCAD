@@ -437,8 +437,10 @@ impl ShortcutMap {
         add(
             Scope::Mode(Mode::Model),
             Chord::plain(Key::E),
-            Command(crate::registry::Command::Extension("extrude")),
-            "Extrude (when available)",
+            Command(crate::registry::Command::Modeling(
+                crate::modeling::ModelingTool::Extrude,
+            )),
+            "Extrude selected profiles",
             false,
         );
         add(
@@ -602,11 +604,17 @@ mod tests {
             map.resolve(Key::E, Modifiers::NONE, &c).unwrap().action,
             binding.action
         );
-        assert!(map.hint(Command::Extension("extrude"), &c).is_none());
+        assert!(
+            map.hint(
+                Command::Modeling(crate::modeling::ModelingTool::Extrude),
+                &c
+            )
+            .is_none()
+        );
         c.workspace = "Common";
         assert_eq!(
             map.resolve(Key::E, Modifiers::NONE, &c).unwrap().action,
-            Action::Command(Command::Extension("extrude"))
+            Action::Command(Command::Modeling(crate::modeling::ModelingTool::Extrude))
         );
         assert!(
             map.bind(Binding {

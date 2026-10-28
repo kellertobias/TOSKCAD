@@ -114,6 +114,7 @@ pub struct Application {
     focus_command: bool,
     text_input_was_focused: bool,
     scene_backends: Option<crate::viewport::BackendFactory>,
+    model_backends: Option<crate::viewport::BackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
 }
 impl Application {
@@ -152,6 +153,7 @@ impl Application {
             focus_command: false,
             text_input_was_focused: false,
             scene_backends: None,
+            model_backends: None,
             sketch_queries: None,
         };
         app.discover_recoveries()?;
@@ -178,6 +180,14 @@ impl Application {
         }
         self.scene_backends = Some(factory);
     }
+    /// Separate workers evaluate uncommitted candidates. Canonical scene
+    /// publication never receives a prepared modeling document.
+    pub fn set_model_backends(&mut self, factory: crate::viewport::BackendFactory) {
+        for project in &mut self.projects {
+            project.sketch.set_model_backend(factory());
+        }
+        self.model_backends = Some(factory);
+    }
     pub fn set_sketch_queries(&mut self, factory: crate::sketch_evaluation::RegionQueryFactory) {
         for project in &mut self.projects {
             project.sketch.set_query_factory(factory.clone());
@@ -196,6 +206,22 @@ impl Application {
             && !args.is_empty()
         {
             return Err(tool.usage());
+        }
+        if let Command::Modeling(tool) = command
+            && !args.is_empty()
+        {
+            return Err(tool.usage().into());
+        }
+        if self.current().sketch.model_active()
+            && matches!(
+                command,
+                Command::Parameter
+                    | Command::Mode(
+                        Mode::Parameters | Mode::Sketch | Mode::Drawings | Mode::Export
+                    )
+            )
+        {
+            return Err("Apply or cancel Extrude before changing workspace or parameters".into());
         }
         if !args.is_empty()
             && !matches!(
@@ -246,6 +272,12 @@ impl Application {
             }
             Command::Apply => {
                 let p = self.current_mut();
+                if p.sketch.model_active() {
+                    p.sketch.apply_model(&mut p.session, &p.resources)?;
+                    p.editor.reload(&p.session);
+                    self.message = "Extrusion applied · one undoable source edit".into();
+                    return Ok(());
+                }
                 p.editor
                     .apply(&mut p.session, channel)
                     .map_err(|e| p.editor.error_text(&e))?;
@@ -256,11 +288,21 @@ impl Application {
             }
             Command::Discard => {
                 let p = self.current_mut();
+                if p.sketch.model_active() {
+                    p.sketch.cancel_model();
+                    self.message = "Unapplied extrusion discarded".into();
+                    return Ok(());
+                }
                 p.editor.reload(&p.session);
                 self.message = "Unapplied parameter edits discarded".into();
             }
             Command::Preview => {
                 let p = self.current_mut();
+                if p.sketch.model_active() {
+                    p.sketch.preview_model(&p.session, &p.resources, channel)?;
+                    self.message = "Building native extrusion preview · document unchanged".into();
+                    return Ok(());
+                }
                 p.editor.refresh_preview(&p.session);
                 if let Some(error) = &p.editor.error {
                     return Err(p.editor.error_text(error));
@@ -428,6 +470,23 @@ impl Application {
                     tool.label()
                 );
             }
+            Command::Modeling(crate::modeling::ModelingTool::Extrude) => {
+                if self.current().editor.dirty() {
+                    return Err("Apply or discard parameter edits before extruding".into());
+                }
+                if !matches!(self.mode, Mode::Sketch | Mode::Model) {
+                    return Err(
+                        "Select closed sketch areas in Sketch or Model before extruding".into(),
+                    );
+                }
+                let project = self.current_mut();
+                project
+                    .sketch
+                    .begin_extrude(&project.session, &project.resources, channel)?;
+                self.mode = Mode::Model;
+                self.tab = 0;
+                self.message = "Extrude · choose controls in the Inspector, then Preview".into();
+            }
             Command::Delete => {
                 let p = self.current_mut();
                 p.sketch.delete(&mut p.session, channel)?;
@@ -450,7 +509,8 @@ impl Application {
             if matches!(
                 command,
                 Command::Apply | Command::Preview | Command::Parameter
-            ) {
+            ) && !self.current().sketch.model_active()
+            {
                 let p = self.current_mut();
                 p.editor.refresh_preview(&p.session);
             }
@@ -459,7 +519,22 @@ impl Application {
     fn enabled(&self, command: Command) -> bool {
         let pending = || self.current().editor.dirty() || self.current().sketch.has_pending_edits();
         match command {
+            Command::Apply if self.current().sketch.model_active() => self
+                .current()
+                .sketch
+                .model_can_apply(&self.current().session, &self.current().resources),
+            Command::Discard | Command::Preview if self.current().sketch.model_active() => true,
             Command::Apply | Command::Discard | Command::Preview => self.current().editor.dirty(),
+            Command::Modeling(_) => {
+                matches!(self.mode, Mode::Sketch | Mode::Model)
+                    && !self.current().editor.dirty()
+                    && self.current().sketch.extrusion_ready(
+                        self.current().session.document(),
+                        self.current().session.revision(),
+                    )
+            }
+            Command::Mode(mode) if self.current().sketch.model_active() => mode == Mode::Model,
+            Command::Parameter if self.current().sketch.model_active() => false,
             Command::Undo => self.current().session.can_undo() && !pending(),
             Command::Redo => self.current().session.can_redo() && !pending(),
             Command::Save | Command::SaveAs | Command::RecoverySnapshot => {
@@ -1153,6 +1228,13 @@ impl Application {
                 }
             }
         }
+        if let Some(factory) = &self.model_backends {
+            for project in &mut self.projects {
+                if !project.sketch.has_model_backend() {
+                    project.sketch.set_model_backend(factory());
+                }
+            }
+        }
         {
             let project = self.current_mut();
             project.scene.tick_project(
@@ -1162,6 +1244,12 @@ impl Application {
                 ctx.input(|i| i.time),
             );
             if project.scene.pending() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+            if project
+                .sketch
+                .poll_model(&project.session, &project.resources)
+            {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
         }
@@ -1207,7 +1295,13 @@ impl Application {
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
                     let before = p.session.revision();
-                    p.sketch.show(ui, &mut p.session, sketch_mode, &mut p.scene);
+                    p.sketch.show_project(
+                        ui,
+                        &mut p.session,
+                        sketch_mode,
+                        &mut p.scene,
+                        &p.resources,
+                    );
                     if let Some(delay) = p.scene.quality_wakeup(ctx.input(|i| i.time)) {
                         ctx.request_repaint_after(delay);
                     }
@@ -2304,5 +2398,63 @@ mod tests {
         }
         assert_eq!(app.current().session.document(), &before);
         assert_eq!(app.current().session.revision(), 0);
+    }
+    #[test]
+    fn modeling_factory_is_explicit_and_extrusion_without_current_profiles_is_source_neutral() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct NoModel;
+        impl crate::viewport::SceneBackend for NoModel {
+            fn request(
+                &mut self,
+                _: &Document,
+                _: crate::viewport::SceneStamp,
+            ) -> Result<(), String> {
+                Err("No native geometry in this test".into())
+            }
+            fn poll(&mut self) -> Option<crate::viewport::SceneReply> {
+                None
+            }
+        }
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let command = Command::Modeling(crate::modeling::ModelingTool::Extrude);
+        let before = app.current().session.document().clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let factory_calls = calls.clone();
+        let factory: crate::viewport::BackendFactory = Arc::new(move || {
+            factory_calls.fetch_add(1, Ordering::SeqCst);
+            Box::new(NoModel)
+        });
+        app.set_scene_backends(factory.clone());
+        assert!(
+            !app.current().sketch.has_model_backend(),
+            "Canonical providers alone never enable native modeling"
+        );
+        app.set_model_backends(factory);
+        assert!(app.current().sketch.has_model_backend());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "The two lanes need separate worker instances"
+        );
+        app.mode = Mode::Model;
+        assert!(!app.enabled(command));
+        assert!(app.invoke(command, &[], Channel::Ui).is_err());
+        assert!(
+            app.invoke(command, &["100"], Channel::CommandLine)
+                .unwrap_err()
+                .starts_with("Usage:")
+        );
+        assert_eq!(app.current().session.document(), &before);
+        assert_eq!(app.current().session.revision(), 0);
+        app.invoke(Command::New, &[], Channel::Ui).unwrap();
+        let context = egui::Context::default();
+        shortcut_frame(&context, &mut app, vec![]);
+        assert!(app.current().sketch.has_model_backend());
+        assert!(app.projects[0].scene.has_backend());
+        assert!(app.current().scene.has_backend());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
     }
 }
