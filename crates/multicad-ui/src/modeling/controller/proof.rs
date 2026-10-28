@@ -59,6 +59,8 @@ impl SceneProof {
                 bodies,
                 removed,
             } => {
+                let definitions = multicad_core::model::assembly_definition_parts(document)
+                    .map_err(|e| e.to_string())?;
                 let info = scene
                     .model_evaluation()
                     .ok_or("Editing requires a source-bound native evaluation")?;
@@ -91,9 +93,11 @@ impl SceneProof {
                         });
                         head.is_some_and(|head| {
                             nonempty(scene, head)
-                                && scene.reference_instances().iter().any(|instance| {
-                                    instance.id == *body && instance.geometry == head
-                                })
+                                && ((definitions.contains(body)
+                                    && scene.source_producer(*body) == Some(head))
+                                    || scene.reference_instances().iter().any(|instance| {
+                                        instance.id == *body && instance.geometry == head
+                                    }))
                         })
                     };
                     if !valid {
@@ -147,12 +151,23 @@ fn producer(
 /// Every canonical occurrence must be represented by its actual current
 /// component producer and evaluated pose. Instance IDs are never Part outputs.
 pub(super) fn placements(document: &Document, revision: u64, scene: &Scene) -> Result<(), String> {
+    let members =
+        multicad_core::model::assembly_member_instances(document).map_err(|e| e.to_string())?;
+    if document
+        .entities()
+        .any(|e| matches!(&e.data,EntityData::Assembly{instances} if !instances.is_empty()))
+    {
+        crate::assembly::validate_scene(document, revision, scene)?;
+    }
     let snapshots = scene.reference_snapshots();
     let parameters = multicad_core::parameters::evaluate(document).map_err(|e| e.to_string())?;
     for entity in document.entities() {
         let EntityData::Instance { component, .. } = entity.data else {
             continue;
         };
+        if members.contains(&entity.id) {
+            continue;
+        }
         let pose = multicad_core::model::resolve_instance_pose_with_snapshots(
             document,
             entity.id,
@@ -161,29 +176,33 @@ pub(super) fn placements(document: &Document, revision: u64, scene: &Scene) -> R
             &snapshots,
         )
         .map_err(|e| e.to_string())?;
-        let Some(EntityData::Part { features, .. }) = document.get(component).map(|e| &e.data)
-        else {
-            return Err("Placement preview requires a supported Part component".into());
+        let producer = match document.get(component).map(|e| &e.data) {
+            Some(EntityData::Assembly { instances }) if !instances.is_empty() => component,
+            Some(EntityData::Part { features, .. }) => *features
+                .iter()
+                .rev()
+                .find(|id| {
+                    matches!(
+                        document.get(**id).map(|e| &e.data),
+                        Some(EntityData::Feature {
+                            suppressed: false,
+                            ..
+                        })
+                    )
+                })
+                .ok_or("Placed component has no active producer")?,
+            _ => {
+                return Err(
+                    "Placement preview requires a Part or reusable Assembly component".into(),
+                );
+            }
         };
-        let producer = features
-            .iter()
-            .rev()
-            .find(|id| {
-                matches!(
-                    document.get(**id).map(|e| &e.data),
-                    Some(EntityData::Feature {
-                        suppressed: false,
-                        ..
-                    })
-                )
-            })
-            .ok_or("Placed component has no active producer")?;
         let instance = scene
             .reference_instances()
             .iter()
             .find(|i| i.id == entity.id)
             .ok_or("Native preview omitted a placed Instance")?;
-        if instance.geometry != *producer || !nonempty(scene, *producer) {
+        if instance.geometry != producer || !nonempty(scene, producer) {
             return Err("Native preview returned the wrong placed component producer".into());
         }
         let actual = instance.transform;

@@ -5,6 +5,7 @@ mod forms;
 mod inspection;
 pub use inspection::{AssemblyInspectionBackend, AssemblyInspectionBackendFactory};
 mod proof;
+pub(crate) use proof::validate as validate_scene;
 mod widgets;
 use crate::icons::Icon;
 pub use controller::AssemblyController;

@@ -99,8 +99,12 @@ pub fn object_gizmo_basis(
     Ok(ObjectGizmoBasis { primary, basis })
 }
 fn active_producer(document: &Document, body: EntityId) -> Result<EntityId, String> {
+    if matches!(document.get(body).map(|e|&e.data),Some(EntityData::Assembly{instances}) if !instances.is_empty())
+    {
+        return Ok(body);
+    }
     let Some(EntityData::Part { features, .. }) = document.get(body).map(|e| &e.data) else {
-        return Err("Object coordinates currently require a Part component".into());
+        return Err("Object coordinates require a Part or reusable Assembly component".into());
     };
     features
         .iter()

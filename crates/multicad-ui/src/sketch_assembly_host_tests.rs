@@ -306,6 +306,7 @@ fn assembly_host_nested_member_anchor_pick_uses_its_native_source_not_outer_copy
         definition.assembly,
         NumericTransform {
             translation: [length(1000.), length(0.), length(0.)],
+            angle: angle(30.),
             ..Default::default()
         },
     );
@@ -335,7 +336,68 @@ fn assembly_host_nested_member_anchor_pick_uses_its_native_source_not_outer_copy
             .is_current(h.session.document().id(), h.session.revision())
     );
     assert_eq!(h.feed.visible().unwrap().instances()[0].id, outer.instance);
+    let basis = crate::modeling::object_gizmo_basis(
+        h.session.document(),
+        h.session.revision(),
+        h.feed.visible().unwrap(),
+        &BTreeSet::from([outer.instance]),
+    )
+    .unwrap();
+    assert!((basis.basis.axes[0][0] - 30_f64.to_radians().cos()).abs() < 1e-10);
+    assert!((basis.basis.axes[0][1] - 0.5).abs() < 1e-10);
     let baseline = h.session.document().clone();
+    for mode in [
+        crate::modeling::PlacementMode::Move,
+        crate::modeling::PlacementMode::Copy,
+    ] {
+        h.editor.tree_selection = BTreeSet::from([outer.instance]);
+        h.editor
+            .begin_placement(&h.session, &Default::default(), &h.feed, mode, Channel::Ui)
+            .unwrap();
+        h.editor
+            .preview_model(&h.session, &Default::default(), Channel::Ui)
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !h.editor.model_can_apply(&h.session, &Default::default()) && Instant::now() < until {
+            h.editor.poll_model(&h.session, &Default::default());
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            h.editor.model_can_apply(&h.session, &Default::default()),
+            "{:?}",
+            h.editor.model.error()
+        );
+        h.editor.cancel_model();
+        assert_eq!(h.session.document(), &baseline);
+    }
+    let EntityData::Part { features, .. } = &h.session.document().get(h.part).unwrap().data else {
+        panic!()
+    };
+    let feature = features[0];
+    h.editor
+        .begin_feature_edit(
+            &h.session,
+            &Default::default(),
+            &h.feed,
+            feature,
+            Channel::Ui,
+        )
+        .unwrap();
+    h.editor
+        .preview_model(&h.session, &Default::default(), Channel::Ui)
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while !h.editor.model_can_apply(&h.session, &Default::default()) && Instant::now() < until {
+        h.editor.poll_model(&h.session, &Default::default());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        h.editor.model_can_apply(&h.session, &Default::default()),
+        "{:?}",
+        h.editor.model.error()
+    );
+    h.editor.cancel_model();
+    assert_eq!(h.session.document(), &baseline);
     h.editor.tree_selection = BTreeSet::from([outer.instance]);
     assert_eq!(
         h.editor.assembly_edit_actions(h.session.document()),

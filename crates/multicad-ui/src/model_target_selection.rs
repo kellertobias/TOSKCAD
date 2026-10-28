@@ -707,6 +707,39 @@ mod tests {
         assert_eq!(session.revision(), revision);
     }
     #[test]
+    fn fit_retains_the_selected_native_target_after_transform_takes_ownership() {
+        let (mut session, mut feed, mut editor, ids) = fixture();
+        editor.tree_selection = BTreeSet::from([ids[0]]);
+        editor
+            .activate_model_tool(
+                &session,
+                &Default::default(),
+                &feed,
+                ModelingTool::Move,
+                Channel::Ui,
+            )
+            .unwrap();
+        assert!(editor.model.placement_active());
+        editor.solid.clear();
+        editor.request_fit();
+        let ctx = egui::Context::default();
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1360., 860.))),
+                ..Default::default()
+            },
+            |ui| editor.show_project(ui, &mut session, false, &mut feed, &Default::default()),
+        )
+        .drop_without_applying_deltas();
+        for axis in 0..3 {
+            assert!(
+                (editor.camera.target[axis] - 15.).abs() < 1e-4,
+                "{:?}",
+                editor.camera.target
+            );
+        }
+    }
+    #[test]
     fn delayed_native_readiness_cannot_start_placement_while_measure_owns_input() {
         let (mut session, mut feed, mut editor, ids) = fixture();
         editor.tree_selection = BTreeSet::from([ids[0]]);

@@ -8,7 +8,7 @@ use multicad_core::{
 use std::collections::{BTreeMap, BTreeSet};
 /// Compare native leaf coverage against the authored component graph. Source
 /// traversal defines expectations; only the native receipt supplies results.
-pub(super) fn validate(document: &Document, revision: u64, scene: &Scene) -> Result<(), String> {
+pub(crate) fn validate(document: &Document, revision: u64, scene: &Scene) -> Result<(), String> {
     let receipt = scene
         .assembly_evaluation()
         .ok_or("Assembly Apply requires a native leaf-occurrence receipt")?;

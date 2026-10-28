@@ -2107,7 +2107,6 @@ impl SketchEditor {
                     else if self.repair.has_pending(){Some(Owner::Repair)}
                     else if self.external.active(){Some(Owner::External)}
                     else if self.constraints.dirty(){Some(Owner::Constraints)}
-                    else if self.materials.parts.dirty(){Some(Owner::Properties)}
                     else if self.picking{Some(Owner::Plane)}
                     else if self.moving{Some(Owner::Move)}
                     else if self.operations.tool().is_some(){Some(Owner::Operation)}
@@ -3023,6 +3022,22 @@ impl SketchEditor {
             && let Some([low, high]) = self
                 .solid
                 .selected_bounds(scene)
+                .or_else(|| {
+                    let mut bounds: Option<[[f64; 3]; 2]> = None;
+                    for id in &self.tree_selection {
+                        if let Some(selected) = scene.instance_bounds(*id) {
+                            if let Some(current) = &mut bounds {
+                                for axis in 0..3 {
+                                    current[0][axis] = current[0][axis].min(selected[0][axis]);
+                                    current[1][axis] = current[1][axis].max(selected[1][axis]);
+                                }
+                            } else {
+                                bounds = Some(selected);
+                            }
+                        }
+                    }
+                    bounds
+                })
                 .or_else(|| scene.world_bounds())
         {
             for corner in 0..8 {
