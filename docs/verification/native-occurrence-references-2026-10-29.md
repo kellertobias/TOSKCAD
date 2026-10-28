@@ -26,7 +26,7 @@ OCCT `sprintf` deprecation remains outside the Rust lint scope.
 | Bundle | Executable SHA-256 | Evidence |
 | --- | --- | --- |
 | `artifacts/development/build-9wss3z/MultiCAD.app` | `9ed750074f810afd01119f942d936479764afd14d5098b833189ad484e95925d` | Actual native pointer capture, Cancel, Apply, Undo/Redo, face section and Save As |
-| `artifacts/development/build-5ZEsOm/MultiCAD.app` | `fcf21aa32e44532be460bc6cc7e2885abcb915cdb6fe6ccb0cfc6965d285e0af` | Final integrated build; automated checks passed, interactive repetition pending launch confirmation |
+| `artifacts/development/build-5ZEsOm/MultiCAD.app` | `fcf21aa32e44532be460bc6cc7e2885abcb915cdb6fe6ccb0cfc6965d285e0af` | Final integrated build; fresh reopen, explicit native repair preview and Cancel |
 
 The first bundle contains production through `39df611`. The final bundle includes
 subsequent context guards, source-ownership revalidation and clearer occurrence
@@ -82,6 +82,15 @@ paths and native ancestry. Both references resolve to lines from (0, 0) to
 (30, 0) mm in their respective local sketch planes. The source remains one exact
 solid, bounded by (0, 0, 0) and (30, 20, 10) mm, with volume approximately
 6,000 mm³. The review app was closed through native controls.
+
+After specific launch approval, the final bundle reopened the combined saved
+project in Sketch mode. The top sketch retained one 30 mm element and reported
+the current native occurrence result. Repair reference required a fresh exact
+query and explicit result selection. Preview displayed the source Part, world
+context and checked reference transaction, then enabled Apply. Cancel restored
+the fully constrained sketch, disabled Undo and removed the pending transaction.
+This verification preview was discarded. The final review instance was quit
+through native controls.
 
 The no-overwrite `occurrence_reference_review` generator also produced twelve
 editable projects and `manifest.json` under
