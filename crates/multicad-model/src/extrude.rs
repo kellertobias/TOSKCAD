@@ -99,17 +99,10 @@ impl Extrusion<'_> {
                 let (origin, normal) = face.plane.ok_or_else(|| {
                     self.failure("Select a planar termination face; this face is curved")
                 })?;
-                let semantic = frame.or_else(|| {
-                    self.topologies
-                        .get(&link.target)?
-                        .elements
-                        .iter()
-                        .find(|element| element.key == key)?
-                        .frames
-                        .first()
-                        .map(|anchored| anchored.frame)
-                });
-                let target = if let Some(frame) = semantic {
+                // Signed face offsets follow the current native OUTWARD
+                // normal. Multiple inherited semantic frames must never choose
+                // the offset side through UUID/insertion ordering.
+                let target = if let Some(frame) = frame {
                     frame.validate().map_err(|e| self.failure(e))?;
                     if dot(frame.normal(), normal).abs() < 1. - 1e-8
                         || dot(
@@ -124,12 +117,16 @@ impl Extrusion<'_> {
                     PlaneFrame {
                         origin: frame.origin_mm,
                         u: frame.u,
-                        v: frame.v,
+                        v: if dot(frame.normal(), normal) < 0. {
+                            frame.v.map(|n| -n)
+                        } else {
+                            frame.v
+                        },
                     }
                 } else {
                     // This is the current native support plane of the resolved
                     // face, not a saved datum or nearest-face replacement. Roll
-                    // follows the profile basis when no semantic frame exists.
+                    // follows the profile basis without an explicit attachment.
                     let mut u = std::array::from_fn(|i| {
                         profile.frame.u[i] - normal[i] * dot(profile.frame.u, normal)
                     });
@@ -146,8 +143,16 @@ impl Extrusion<'_> {
                         );
                     }
                     let u = u.map(|n| n / length);
+                    let height = dot(
+                        std::array::from_fn(|i| profile.frame.origin[i] - origin[i]),
+                        normal,
+                    );
                     PlaneFrame {
-                        origin,
+                        // This deterministic projection also avoids adopting an
+                        // arbitrary native surface-parameter origin as intent.
+                        origin: std::array::from_fn(|i| {
+                            profile.frame.origin[i] - normal[i] * height
+                        }),
                         u,
                         v: cross(normal, u),
                     }

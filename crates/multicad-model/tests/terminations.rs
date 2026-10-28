@@ -3,10 +3,11 @@ use multicad_core::{
     constraint_sketch::source::Source,
     document::{Document, Entity, EntityData, EntityId, Mutation},
     model::{
-        self, Direction, Extent, ExtrudeParameters, ExtrudeRequest, FaceInput, PrimitiveParameters,
-        PrimitiveRequest, Termination, angle, length,
+        self, BodyInput, BooleanRequest, Direction, Extent, ExtrudeParameters, ExtrudeRequest,
+        FaceInput, Operation, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, Termination,
+        angle, length,
     },
-    references::{GeometryIntent, Origin, TopologyKind},
+    references::{Attachment, GeometryIntent, Origin, TopologyKind},
     sketch::Datum,
     sketch_regions,
 };
@@ -399,4 +400,144 @@ fn genuine_curved_face_is_rejected_as_a_planar_termination_target() {
     assert_eq!(error.entity, Some(f.request.outputs[0].feature));
     assert!(error.message.contains("curved"));
     assert_eq!(f.session.document(), &original);
+}
+#[test]
+fn signed_face_offset_uses_native_outward_normal_with_opposing_inherited_frames() {
+    for negative_first in [false, true] {
+        let mut f = Fixture::new();
+        let ids = [
+            EntityId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
+            EntityId::parse("00000000-0000-4000-8000-000000000020").unwrap(),
+        ];
+        let mut positive = PrimitiveRequest::new(
+            "Positive-frame box",
+            PrimitiveParameters::Box {
+                size: [length(10.), length(6.), length(10.)],
+                frame: Default::default(),
+            },
+        );
+        let mut negative = PrimitiveRequest::new(
+            "Negative-frame same box",
+            PrimitiveParameters::Box {
+                size: [length(10.), length(6.), length(10.)],
+                frame: PrimitiveFrame {
+                    origin: [length(0.), length(6.), length(10.)],
+                    u: [1., 0., 0.],
+                    v: [0., -1., 0.],
+                },
+            },
+        );
+        positive.feature = ids[usize::from(negative_first)];
+        negative.feature = ids[usize::from(!negative_first)];
+        for request in [&positive, &negative] {
+            let prepared =
+                model::prepare_primitive(&f.session, f.session.revision(), actor(), request)
+                    .unwrap();
+            f.session.commit(prepared.prepared).unwrap();
+        }
+        let boolean = BooleanRequest::new(
+            Operation::Join,
+            BodyInput {
+                body: positive.body,
+                producer: positive.feature,
+            },
+            vec![BodyInput {
+                body: negative.body,
+                producer: negative.feature,
+            }],
+        );
+        let prepared =
+            model::prepare_boolean(&f.session, f.session.revision(), actor(), &boolean).unwrap();
+        f.session.commit(prepared.prepared).unwrap();
+        let initial = f.compile();
+        let solid = initial.solid(boolean.feature).unwrap();
+        let face = solid
+            .faces()
+            .unwrap()
+            .into_iter()
+            .find(|face| {
+                face.plane
+                    .is_some_and(|(p, n)| (p[2] - 10.).abs() < 1e-6 && n[2] > 0.99)
+            })
+            .expect("Native outward top cap");
+        let topology = &initial.snapshot().shapes[&boolean.feature].topology;
+        let element = topology
+            .elements
+            .iter()
+            .find(|e| e.key.kind == TopologyKind::Face && e.key.ordinal == face.index)
+            .unwrap();
+        assert!(
+            element
+                .frames
+                .iter()
+                .any(|frame| frame.frame.normal()[2] > 0.99)
+        );
+        let opposite = element
+            .frames
+            .iter()
+            .find(|frame| frame.frame.normal()[2] < -0.99)
+            .expect("Coincident Boolean inherited the opposite generator frame");
+        assert_eq!(
+            element.frames[0].frame.normal()[2] < 0.,
+            negative_first,
+            "The fixture did not reverse the stored frame ordering"
+        );
+        let captured = GeometryIntent::capture(topology, element.key).unwrap();
+        let original_sketch = f.session.document().get(f.request.sketch).unwrap().clone();
+        let mut created = false;
+        for anchored in [false, true] {
+            for offset in [-2., 2.] {
+                let mut intent = captured.clone();
+                if anchored {
+                    intent.attachment = Some(Attachment {
+                        anchor: opposite.origin.clone(),
+                        offset_mm: [0.; 3],
+                        angle_rad: 0.,
+                    });
+                }
+                let faces = [FaceInput {
+                    source: boolean.feature,
+                    intent,
+                }];
+                let parameters = ExtrudeParameters {
+                    extent: Extent::OneSided {
+                        end: Termination::ToFace {
+                            reference: captured.id,
+                            offset: length(offset),
+                        },
+                    },
+                    ..Default::default()
+                };
+                if created {
+                    let prepared = model::prepare_extrude_edit_with_faces(
+                        &f.session,
+                        f.session.revision(),
+                        actor(),
+                        f.request.outputs[0].feature,
+                        &parameters,
+                        &faces,
+                    )
+                    .unwrap();
+                    f.session.commit(prepared.prepared).unwrap();
+                } else {
+                    f.request.parameters = parameters;
+                    f.request.faces = faces.to_vec();
+                    f.commit();
+                    created = true;
+                }
+                let original = f.session.document().clone();
+                let current = f.compile();
+                let shape = f.shape(&current);
+                near(shape.volume_mm3, 60. * (10. + offset));
+                near(shape.bounds.max[2], 10. + offset);
+                let end = cap(shape, "cap.end");
+                for frame in &end.frames {
+                    assert!(frame.frame.normal()[2] > 0.99);
+                    near(frame.frame.origin_mm[2], 10. + offset);
+                }
+                assert_eq!(f.session.document(), &original);
+                assert_eq!(original.get(f.request.sketch).unwrap(), &original_sketch);
+            }
+        }
+    }
 }

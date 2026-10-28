@@ -120,7 +120,8 @@ pub enum Termination {
     /// link therefore cannot leave a duplicated payload selector stale.
     ToFace {
         reference: EntityId,
-        /// Signed movement along the resolved target face frame's normal.
+        /// Signed movement along the current native outward normal of the
+        /// selected face. An attachment anchor changes origin/roll, not sign.
         offset: Dimension,
     },
 }
