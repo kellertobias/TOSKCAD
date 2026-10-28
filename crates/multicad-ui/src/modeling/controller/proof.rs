@@ -143,3 +143,67 @@ fn producer(
     }
     Ok(())
 }
+
+/// Every canonical occurrence must be represented by its actual current
+/// component producer and evaluated pose. Instance IDs are never Part outputs.
+pub(super) fn placements(document: &Document, revision: u64, scene: &Scene) -> Result<(), String> {
+    let snapshots = scene.reference_snapshots();
+    let parameters = multicad_core::parameters::evaluate(document).map_err(|e| e.to_string())?;
+    for entity in document.entities() {
+        let EntityData::Instance { component, .. } = entity.data else {
+            continue;
+        };
+        let pose = multicad_core::model::resolve_instance_pose_with_snapshots(
+            document,
+            entity.id,
+            &parameters,
+            revision,
+            &snapshots,
+        )
+        .map_err(|e| e.to_string())?;
+        let Some(EntityData::Part { features, .. }) = document.get(component).map(|e| &e.data)
+        else {
+            return Err("Placement preview requires a supported Part component".into());
+        };
+        let producer = features
+            .iter()
+            .rev()
+            .find(|id| {
+                matches!(
+                    document.get(**id).map(|e| &e.data),
+                    Some(EntityData::Feature {
+                        suppressed: false,
+                        ..
+                    })
+                )
+            })
+            .ok_or("Placed component has no active producer")?;
+        let instance = scene
+            .reference_instances()
+            .iter()
+            .find(|i| i.id == entity.id)
+            .ok_or("Native preview omitted a placed Instance")?;
+        if instance.geometry != *producer || !nonempty(scene, *producer) {
+            return Err("Native preview returned the wrong placed component producer".into());
+        }
+        let actual = instance.transform;
+        if actual
+            .point([0.; 3])
+            .iter()
+            .zip(pose.translation_mm)
+            .any(|(a, b)| (a - b).abs() > 1e-8)
+            || [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
+                .into_iter()
+                .any(|axis| {
+                    actual
+                        .vector(axis)
+                        .iter()
+                        .zip(pose.vector(axis))
+                        .any(|(a, b)| (a - b).abs() > 1e-9)
+                })
+        {
+            return Err("Native preview returned an incorrect Instance pose".into());
+        }
+    }
+    Ok(())
+}

@@ -734,6 +734,25 @@ impl Application {
                         &project.scene,
                         channel,
                     )?,
+                    crate::modeling::ModelingTool::Align => project.sketch.begin_alignment(
+                        &project.session,
+                        &project.resources,
+                        &project.scene,
+                        channel,
+                    )?,
+                    crate::modeling::ModelingTool::Move | crate::modeling::ModelingTool::Copy => {
+                        project.sketch.begin_placement(
+                            &project.session,
+                            &project.resources,
+                            &project.scene,
+                            if tool == crate::modeling::ModelingTool::Move {
+                                crate::modeling::PlacementMode::Move
+                            } else {
+                                crate::modeling::PlacementMode::Copy
+                            },
+                            channel,
+                        )?
+                    }
                     crate::modeling::ModelingTool::Box
                     | crate::modeling::ModelingTool::Cylinder => project.sketch.begin_primitive(
                         &project.session,
@@ -854,6 +873,15 @@ impl Application {
                                 self.current().session.revision(),
                             )
                         }
+                        crate::modeling::ModelingTool::Align => self
+                            .current()
+                            .sketch
+                            .alignment_ready(&self.current().session, &self.current().scene),
+                        crate::modeling::ModelingTool::Move
+                        | crate::modeling::ModelingTool::Copy => self
+                            .current()
+                            .sketch
+                            .placement_ready(&self.current().session, &self.current().scene),
                         crate::modeling::ModelingTool::Boolean => self
                             .current()
                             .sketch

@@ -1,5 +1,6 @@
 //! Reusable modeling forms. Native geometry and document commits belong to the
 //! composition root; painting a form never changes the canonical document.
+mod alignment_panel;
 mod body_choices;
 mod boolean;
 mod boolean_edit;
@@ -12,15 +13,20 @@ mod group_edit;
 #[cfg(test)]
 mod group_fixture;
 mod names;
+#[cfg(test)]
+mod native_fixture;
+mod placement;
 mod primitive;
 mod revolve;
 mod split;
 mod termination;
 
+pub use alignment_panel::AlignmentCommand;
 pub use controller::{ModelToolController, ModelToolOutcome};
 pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
 pub use form::ModelRequest;
 use multicad_core::document::EntityId;
+pub use placement::{PlacementCommand, PlacementMode};
 pub use termination::TerminationViewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,15 +37,21 @@ pub enum ModelingTool {
     Revolve,
     Boolean,
     Split,
+    Move,
+    Copy,
+    Align,
 }
 impl ModelingTool {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::Box,
         Self::Cylinder,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
         Self::Split,
+        Self::Move,
+        Self::Copy,
+        Self::Align,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -49,6 +61,9 @@ impl ModelingTool {
             Self::Revolve => "revolve",
             Self::Boolean => "boolean",
             Self::Split => "split",
+            Self::Move => "move",
+            Self::Copy => "placed-copy",
+            Self::Align => "align",
         }
     }
     pub fn label(self) -> &'static str {
@@ -59,6 +74,9 @@ impl ModelingTool {
             Self::Revolve => "Revolve",
             Self::Boolean => "Boolean",
             Self::Split => "Split",
+            Self::Move => "Move / rotate",
+            Self::Copy => "Placed copy",
+            Self::Align => "Align",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -69,6 +87,9 @@ impl ModelingTool {
             Self::Revolve => crate::icons::Icon::Rotate,
             Self::Boolean => crate::icons::Icon::Cut,
             Self::Split => crate::icons::Icon::Split,
+            Self::Move => crate::icons::Icon::Transform,
+            Self::Copy => crate::icons::Icon::LinearPattern,
+            Self::Align => crate::icons::Icon::Link,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -79,10 +100,19 @@ impl ModelingTool {
             Self::Revolve => &["rev", "lathe"],
             Self::Boolean => &["combine", "body-operation"],
             Self::Split => &["split-body", "inside-outside"],
+            Self::Move => &["place", "move-body", "rotate-body"],
+            Self::Copy => &["copy-body", "instance-copy"],
+            Self::Align => &["align-body", "mate", "align-part"],
         }
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::Align => {
+                "Usage: align-body (select one moving object, choose source and target anchors, then Preview and Apply)"
+            }
+            Self::Move | Self::Copy => {
+                "Usage: place / placed-copy (select Parts or Instances, set world translation and pivot/axis, then Preview and Apply)"
+            }
             Self::Extrude => {
                 "Usage: extrude (select closed sketch areas, open the controls, then Preview and Apply)"
             }
@@ -103,6 +133,12 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::Align => {
+                "Select one current native Part or Instance. Anchors need exact named face frames, line/circle/plane axes, vertices or explicit datums."
+            }
+            Self::Move | Self::Copy => {
+                "Select 1–128 current native Parts or Instances and finish pending edits. Placement changes use one native-validated transaction."
+            }
             Self::Extrude | Self::Revolve => {
                 "Select current closed areas in a sketch and finish pending edits. Native modeling must be available."
             }

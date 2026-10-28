@@ -319,7 +319,6 @@ impl Default for Registry {
         }
         for (id, label, icon) in [
             ("edge", "Fillet / chamfer", Icon::Edge),
-            ("move", "Move / rotate", Icon::Link),
             ("symbol", "Create symbol", Icon::Library),
             ("panel", "Panel", Icon::Box),
             ("joint", "Finger / miter joint", Icon::Link),
@@ -335,7 +334,6 @@ impl Default for Registry {
             ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
             ("transfer", "Transfer rail holes", Icon::Link),
-            ("align", "Align / offset", Icon::Measure),
             ("support", "Thin support", Icon::Box),
             ("tab", "Breakaway tab", Icon::Edge),
             ("materials", "Materials", Icon::Library),
@@ -413,13 +411,15 @@ impl Default for Registry {
             Workspace {
                 mode: Mode::Model,
                 tabs: vec![
-                    tab(
-                        "Common",
-                        &[
-                            "box", "cylinder", "extrude", "revolve", "boolean", "split", "edge",
-                            "move", "symbol",
-                        ],
-                    ),
+                    RibbonTab {
+                        title: "Common",
+                        tools: ModelingTool::ALL
+                            .into_iter()
+                            .map(ModelingTool::id)
+                            .chain(["edge", "symbol"])
+                            .collect(),
+                        requires_active_sketch: false,
+                    },
                     tab("Wood", &["panel", "drill", "joint", "cut-list"]),
                     tab(
                         "Sheet metal",
@@ -682,7 +682,7 @@ mod tests {
         }
         assert_eq!(
             registry.resolve("move").unwrap().action,
-            Command::Extension("move")
+            Command::Modeling(ModelingTool::Move)
         );
     }
     #[test]

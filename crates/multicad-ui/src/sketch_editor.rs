@@ -436,6 +436,10 @@ impl SketchEditor {
         let id = *self.tree_selection.first()?;
         match &document.get(id)?.data {
             EntityData::Feature { .. } => Some((id, false)),
+            EntityData::Instance {
+                placement_source: Some(driver),
+                ..
+            } => Some((*driver, true)),
             EntityData::Part { features, .. } => features
                 .iter()
                 .rev()
@@ -487,6 +491,70 @@ impl SketchEditor {
             );
         }
         self.message = "Edit feature · change controls, then Preview the downstream model".into();
+        Ok(())
+    }
+    pub fn placement_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
+        self.primitive_ready()
+            && !self.editing
+            && feed.is_current(session.document().id(), session.revision())
+            && feed.visible().is_some_and(|scene| {
+                crate::modeling::ModelToolController::placement_available(
+                    session.document(),
+                    session.revision(),
+                    scene,
+                    &self.tree_selection,
+                )
+            })
+    }
+    pub fn begin_placement(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        feed: &crate::viewport::SceneFeed,
+        mode: crate::modeling::PlacementMode,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.placement_ready(session, feed) {
+            return Err("Select current native Parts or Instances and finish pending edits before placing them".into());
+        }
+        let scene = feed
+            .visible()
+            .cloned()
+            .ok_or("Wait for the current native model")?;
+        let selected = self.tree_selection.clone();
+        self.finish()?;
+        self.model
+            .begin_placement(session, resources, &scene, &selected, mode, channel)?;
+        self.message =
+            "Placement · explicit pivot/axis and translation, then Preview and Apply".into();
+        Ok(())
+    }
+    pub fn alignment_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
+        self.tree_selection.len() == 1 && self.placement_ready(session, feed)
+    }
+    pub fn begin_alignment(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        feed: &crate::viewport::SceneFeed,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.alignment_ready(session, feed) {
+            return Err(
+                "Select one current Part or Instance to align and finish pending edits".into(),
+            );
+        }
+        let scene = feed
+            .visible()
+            .cloned()
+            .ok_or("Wait for current native geometry")?;
+        let selected = self.tree_selection.clone();
+        self.finish()?;
+        self.model
+            .begin_alignment(session, resources, &scene, &selected, channel)?;
+        self.message =
+            "Alignment · choose persistent source and target anchors in the Inspector and viewer"
+                .into();
         Ok(())
     }
     pub fn boolean_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
@@ -643,8 +711,10 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
     ) -> Result<(), String> {
         let label = self.model.label();
+        let instances = self.model.candidate_instances();
         let outputs = self.model.apply(session, resources)?;
         self.accept_model_outputs(outputs, label);
+        self.tree_selection.extend(instances);
         Ok(())
     }
     fn accept_model_outputs(
@@ -1847,6 +1917,7 @@ impl SketchEditor {
                             let label=self.model.label();
                             match self.model.show(ui,session,resources) {
                                 Ok(Some(crate::modeling::ModelToolOutcome::Applied(outputs)))=>self.accept_model_outputs(outputs,label),
+                                Ok(Some(crate::modeling::ModelToolOutcome::Placed{parts,instances}))=>{self.accept_model_outputs(parts,label);self.tree_selection.extend(instances);},
                                 Ok(Some(crate::modeling::ModelToolOutcome::Cancelled))=>self.message="Modeling cancelled · document unchanged".into(),
                                 Err(error)=>self.message=error,
                                 Ok(None)=>{}
@@ -2077,6 +2148,7 @@ impl SketchEditor {
         let mut model_view = false;
         self.solid.highlight_reference(None);
         if !self.model.termination_picking()
+            && !self.model.alignment_picking()
             && let Some(candidate) = self.model.display_scene(session, resources)
         {
             scene = Some(candidate);
@@ -2365,6 +2437,27 @@ impl SketchEditor {
                 self.message =
                     "Extrusion end selected · Preview validates its exact current geometry".into();
             }
+        }
+        if self.model.alignment_picking() {
+            if self.model.alignment_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            ) {
+                self.message =
+                    "Alignment anchor selected · Preview validates the exact current references"
+                        .into();
+            }
+            self.solid
+                .highlight_reference(self.model.alignment_highlight());
         }
         if self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {

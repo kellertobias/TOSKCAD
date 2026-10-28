@@ -1,12 +1,14 @@
 //! A candidate evaluation lane, separate from canonical display publication.
 use super::{
     ExtrudeCapabilities, ExtrudePanel, FormStamp, ModelRequest, ModelingTool, PreviewState,
+    alignment_panel::AlignmentPanel,
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
     extrude_operation::{BooleanIdentities, CutDiscovery, OperationControls},
     form::{ModelEvent, ModelForm, ToolProof},
     group_edit::GroupEditPanel,
     names::GeneratedNames,
+    placement::PlacementPanel,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
     split::SplitPanel,
@@ -50,6 +52,8 @@ struct Candidate {
     form: FormStamp,
     stamp: SceneStamp,
     outputs: Vec<CreatedBody>,
+    instances: Vec<EntityId>,
+    placement: bool,
     tools: Vec<ToolProof>,
     proof: SceneProof,
     pending: bool,
@@ -86,6 +90,10 @@ pub struct ModelToolController {
 }
 pub enum ModelToolOutcome {
     Applied(Vec<CreatedBody>),
+    Placed {
+        parts: Vec<CreatedBody>,
+        instances: Vec<EntityId>,
+    },
     Cancelled,
 }
 impl ModelToolController {
@@ -118,6 +126,24 @@ impl ModelToolController {
         })
     }
     pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
+        if !matches!(
+            document.get(feature).map(|entity| &entity.data),
+            Some(
+                EntityData::Feature {
+                    suppressed: false,
+                    ..
+                } | EntityData::Extension { .. }
+            )
+        ) {
+            return false;
+        }
+
+        if super::PlacementCommand::editable(document, feature)
+            || multicad_core::model::read_alignment(document, feature).is_ok()
+            || multicad_core::model::read_instance_alignment(document, feature).is_ok()
+        {
+            return true;
+        }
         matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE))
     }
     pub fn begin_existing(
@@ -129,6 +155,35 @@ impl ModelToolController {
     ) -> Result<(), String> {
         use multicad_core::model;
         let document = session.document();
+        if !Self::editable(document, feature) {
+            return Err(
+                "Choose a supported, unsuppressed applied feature or owned placement driver".into(),
+            );
+        }
+        if multicad_core::model::read_alignment(document, feature).is_ok()
+            || multicad_core::model::read_instance_alignment(document, feature).is_ok()
+        {
+            let panel = AlignmentPanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Alignment(Box::new(panel)),
+            )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
+        }
+        if super::PlacementCommand::editable(document, feature) {
+            let panel = PlacementPanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Placement(Box::new(panel)),
+            )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
+        }
         if !Self::editable(document, feature) {
             return Err("Choose a supported, unsuppressed applied model feature".into());
         }
@@ -322,6 +377,84 @@ impl ModelToolController {
         self.context_attempt = None;
         self.context_notice = None;
         Ok(())
+    }
+    pub fn placement_available(
+        document: &multicad_core::document::Document,
+        revision: u64,
+        scene: &Scene,
+        selected: &std::collections::BTreeSet<EntityId>,
+    ) -> bool {
+        super::placement::available(document, revision, scene, selected)
+    }
+    pub fn begin_placement(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: &Scene,
+        selected: &std::collections::BTreeSet<EntityId>,
+        mode: super::PlacementMode,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let panel = PlacementPanel::new(
+            session.document(),
+            session.revision(),
+            scene,
+            selected,
+            mode,
+        )?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Placement(Box::new(panel)),
+        )
+    }
+    pub fn begin_alignment(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: &Scene,
+        selected: &std::collections::BTreeSet<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let panel = AlignmentPanel::new(session.document(), session.revision(), scene, selected)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Alignment(Box::new(panel)),
+        )
+    }
+    pub fn alignment_picking(&self) -> bool {
+        matches!(&self.form,Some(ModelForm::Alignment(panel)) if panel.picking())
+    }
+    pub fn alignment_highlight(&self) -> Option<crate::viewport::Selection> {
+        match &self.form {
+            Some(ModelForm::Alignment(panel)) => panel.highlight(),
+            _ => None,
+        }
+    }
+    pub fn alignment_viewport(
+        &mut self,
+        session: &Session,
+        view: super::TerminationViewport<'_>,
+    ) -> bool {
+        let Some(scope) = &self.scope else {
+            return false;
+        };
+        if session.validate_preview(&scope.session).is_err() {
+            return false;
+        }
+        let changed = match self.form.as_mut() {
+            Some(ModelForm::Alignment(panel)) => {
+                panel.viewport(session.document(), session.revision(), scope.source, view)
+            }
+            _ => false,
+        };
+        if changed {
+            self.invalidate();
+        }
+        changed
     }
     pub fn boolean_available(
         document: &multicad_core::document::Document,
@@ -524,13 +657,25 @@ impl ModelToolController {
             form,
             stamp,
             outputs: prepared.outputs,
+            instances: match request {
+                ModelRequest::Placement(command) => command.instances(),
+                ModelRequest::Alignment(command) => command.instances(),
+                _ => vec![],
+            },
+            placement: matches!(
+                request,
+                ModelRequest::Placement(_) | ModelRequest::Alignment(_)
+            ),
             tools,
             proof,
             pending: true,
             scene: None,
             requires_info: matches!(
                 request,
-                ModelRequest::ExtrudeBoolean(_) | ModelRequest::Split(_)
+                ModelRequest::ExtrudeBoolean(_)
+                    | ModelRequest::Split(_)
+                    | ModelRequest::Placement(_)
+                    | ModelRequest::Alignment(_)
             ) || !matches!(execution, Execution::Create),
         });
         self.error = None;
@@ -601,6 +746,13 @@ impl ModelToolController {
                     &scene,
                     &candidate.outputs,
                 )?;
+                if candidate.placement {
+                    proof::placements(
+                        candidate.prepared.document(),
+                        candidate.stamp.revision,
+                        &scene,
+                    )?;
+                }
                 for proof in &candidate.tools {
                     let tool = &proof.input;
                     let present = scene.reference_instances().iter().any(|instance| {
@@ -645,6 +797,12 @@ impl ModelToolController {
                     && self.stamp() == Some(candidate.form)
                     && session.validate_preview(&candidate.prepared).is_ok()
             })
+    }
+    pub fn candidate_instances(&self) -> Vec<EntityId> {
+        self.candidate
+            .as_ref()
+            .map(|candidate| candidate.instances.clone())
+            .unwrap_or_default()
     }
     pub fn apply(
         &mut self,
@@ -797,9 +955,20 @@ impl ModelToolController {
                 self.submit(session, resources, Channel::Ui, stamp, &request)
                     .map(|()| None)
             }
-            Some(ModelEvent::Apply) => self
-                .apply(session, resources)
-                .map(|outputs| Some(ModelToolOutcome::Applied(outputs))),
+            Some(ModelEvent::Apply) => {
+                let instances = self
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| candidate.instances.clone())
+                    .unwrap_or_default();
+                self.apply(session, resources).map(|parts| {
+                    Some(if instances.is_empty() {
+                        ModelToolOutcome::Applied(parts)
+                    } else {
+                        ModelToolOutcome::Placed { parts, instances }
+                    })
+                })
+            }
             Some(ModelEvent::Cancel) => {
                 self.cancel();
                 Ok(Some(ModelToolOutcome::Cancelled))
@@ -821,3 +990,6 @@ mod proof;
 mod termination;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod placement_tests;

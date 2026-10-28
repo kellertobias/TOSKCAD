@@ -1848,6 +1848,7 @@ dependencies = [
  "eframe",
  "multicad-core",
  "multicad-kernel",
+ "multicad-model",
  "multicad-solver",
  "naga",
  "raw-window-handle",

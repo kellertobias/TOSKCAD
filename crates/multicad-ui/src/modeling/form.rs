@@ -1,8 +1,10 @@
 use super::{
     ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel, FormStamp, PreviewState,
+    alignment_panel::AlignmentPanel,
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
     group_edit::GroupEditPanel,
+    placement::PlacementPanel,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
     split::{SplitEvent, SplitPanel},
@@ -28,6 +30,8 @@ pub enum ModelRequest {
     Split(Box<model::SplitRequest>),
     ExtrudeGroupEdit(Box<model::ExtrudeGroupEdit>),
     GroupedExtrude(Box<model::GroupedExtrudeRequest>),
+    Placement(Box<super::PlacementCommand>),
+    Alignment(Box<super::AlignmentCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -41,6 +45,18 @@ impl ModelRequest {
         feature: multicad_core::document::EntityId,
     ) -> Result<ModelPrepared, String> {
         match self {
+            Self::Placement(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Placement edit changed its saved producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Alignment(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Alignment edit changed its saved producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Extrude(request) => model::prepare_extrude_edit_with_faces(
                 session,
                 session.revision(),
@@ -83,6 +99,18 @@ impl ModelRequest {
     }
     pub(super) fn prepare(&self, session: &Session, actor: Actor) -> Result<ModelPrepared, String> {
         match self {
+            Self::Placement(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved placement before editing its source".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Alignment(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved alignment before editing its source".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Extrude(request) => {
                 model::prepare_extrude(session, session.revision(), actor, request)
             }
@@ -185,6 +213,8 @@ pub(super) enum ModelForm {
     BooleanEdit(Box<BooleanEditPanel>),
     Split(Box<SplitPanel>),
     ExtrudeGroup(Box<GroupEditPanel>),
+    Placement(Box<PlacementPanel>),
+    Alignment(Box<AlignmentPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -196,6 +226,8 @@ impl ModelForm {
             Self::BooleanEdit(panel) => panel.stamp(),
             Self::Split(panel) => panel.stamp(),
             Self::ExtrudeGroup(panel) => panel.stamp(),
+            Self::Placement(panel) => panel.stamp(),
+            Self::Alignment(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -207,6 +239,8 @@ impl ModelForm {
             Self::BooleanEdit(_) => "Boolean",
             Self::Split(_) => "Split",
             Self::ExtrudeGroup(_) => "Extrusion operation",
+            Self::Placement(panel) => panel.label(),
+            Self::Alignment(_) => "Referenced alignment",
         }
     }
     pub fn request(
@@ -215,6 +249,12 @@ impl ModelForm {
         capabilities: ExtrudeCapabilities,
     ) -> Result<ModelRequest, String> {
         match self {
+            Self::Alignment(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Alignment(Box::new(command))),
+            Self::Placement(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Placement(Box::new(command))),
             Self::Extrude(panel) => panel
                 .request(document, capabilities)
                 .map(|request| ModelRequest::Extrude(Box::new(request))),
@@ -273,6 +313,8 @@ impl ModelForm {
                     SplitEvent::Cancel => ModelEvent::Cancel,
                 }),
             Self::ExtrudeGroup(panel) => panel.show(ui, document, capabilities, preview),
+            Self::Placement(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Alignment(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {
