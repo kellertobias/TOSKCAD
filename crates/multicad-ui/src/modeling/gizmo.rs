@@ -341,7 +341,7 @@ impl Interaction {
                     .into(),
             );
         }
-        let (pointer, pressed, released, down, alt) = ui.input(|i| {
+        let (pointer, press, pressed, released, down, alt, motion) = ui.input(|i| {
             // Mouse-up may precede an Option/Alt key-up in the same frame.
             // The copy intent belongs to the gesture's pointer event.
             let alt = i
@@ -357,12 +357,45 @@ impl Interaction {
                     _ => None,
                 })
                 .unwrap_or(i.modifiers.alt);
+            let press = i
+                .events
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, event)| match event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        ..
+                    } => Some((index, *pos)),
+                    _ => None,
+                });
+            // Input can contain an entire drag between rendered frames. Keep
+            // its original down position and ordered motion/rotation samples.
+            let motion = i
+                .events
+                .iter()
+                .skip(press.map_or(0, |(index, _)| index + 1))
+                .filter_map(|event| match event {
+                    egui::Event::PointerMoved(pos)
+                    | egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        ..
+                    } => Some(*pos),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             (
                 i.pointer.interact_pos(),
+                press.map(|(_, pos)| pos),
                 i.pointer.primary_pressed(),
                 i.pointer.primary_released(),
                 i.pointer.primary_down(),
                 alt,
+                motion,
             )
         });
         let values = Values::read(source, parameters)?;
@@ -374,7 +407,12 @@ impl Interaction {
         let draw_origin = values.origin();
         let draw_basis = self.drag.as_ref().map_or(input.basis, |d| d.basis);
         let geometry = shapes(input.camera, input.rect, draw_origin, draw_basis);
-        let hovered = pointer
+        let hit_pointer = if self.drag.is_none() && pressed {
+            press.or(pointer)
+        } else {
+            pointer
+        };
+        let hovered = hit_pointer
             .filter(|p| input.rect.contains(*p) && (input.start_allowed || self.drag.is_some()))
             .and_then(|p| {
                 geometry
@@ -388,7 +426,7 @@ impl Interaction {
         if self.drag.is_none()
             && input.start_allowed
             && pressed
-            && let (Some(handle), Some(pointer)) = (hovered, pointer)
+            && let (Some(handle), Some(pointer)) = (hovered, press.or(pointer))
         {
             self.drag = Some(Drag::new(handle, source, parameters, input, pointer)?);
             started = true;
@@ -447,10 +485,19 @@ impl Interaction {
             }
         }
         let mut changed = None;
-        if let (Some(drag), Some(pointer)) = (&mut self.drag, pointer)
+        if let Some(drag) = &mut self.drag
             && (down || released)
         {
-            changed = drag.update(pointer, parameters)?;
+            let points = if motion.is_empty() {
+                pointer.into_iter().collect()
+            } else {
+                motion
+            };
+            for point in points {
+                if let Some(next) = drag.update(point, parameters)? {
+                    changed = Some(next);
+                }
+            }
         }
         let moved = self.drag.as_ref().is_some_and(|d| d.changed);
         let owned = self.drag.is_some();

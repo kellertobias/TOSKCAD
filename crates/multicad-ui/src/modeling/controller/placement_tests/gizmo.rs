@@ -670,3 +670,247 @@ fn overlay_pointer_ownership_blocks_new_drags_but_does_not_drop_a_captured_nativ
         [10., 0., 0.],
     );
 }
+
+#[test]
+fn native_top_view_vertical_axis_drag_uses_real_canvas_ownership_at_high_dpi() {
+    for basis in [
+        GizmoBasis::default(),
+        GizmoBasis {
+            axes: [[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]],
+        },
+    ] {
+        for coalesced in [false, true] {
+            top_view_host_drag(basis, coalesced);
+        }
+    }
+}
+fn top_view_host_drag(basis: GizmoBasis, coalesced: bool) {
+    let (mut s, a, _, _) = fixture();
+    let scene = canonical(&s);
+    let (mut c, _) = begin(&s, &scene, BTreeSet::from([a.body]), false);
+    let control = NumericTransform {
+        pivot: [length(368.7709761368), length(20.), length(31.)],
+        ..Default::default()
+    };
+    if let Some(ModelForm::Placement(panel)) = &mut c.form {
+        panel.set_drag_parameters(&control).unwrap();
+    }
+    let camera = Camera {
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        scale: 1.3374,
+        target: [196.99215, 30., 18.5],
+        perspective: false,
+    };
+    let rect = Rect::from_min_max(Pos2::new(225., 180.5), Pos2::new(1110., 825.));
+    let ctx = Context::default();
+    ctx.set_pixels_per_point(2.);
+    let mut frame = |events: Vec<Event>| {
+        let mut result = None;
+        let mut hovered = false;
+        let mut dragged = false;
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1360., 860.))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                hovered = response.hovered();
+                dragged = response.dragged_by(PointerButton::Primary);
+                result = Some(c.placement_viewport(
+                    ui,
+                    &mut s,
+                    &Default::default(),
+                    PlacementViewport {
+                        scene: Some(&scene),
+                        camera,
+                        rect,
+                        basis,
+                        start_allowed: hovered || dragged,
+                    },
+                ));
+            },
+        )
+        .drop_without_applying_deltas();
+        (result.unwrap(), hovered, dragged)
+    };
+    let start = Pos2::new(897., 567.5);
+    let end = Pos2::new(897., 645.);
+    frame(vec![]).0.unwrap();
+    for _ in 0..180 {
+        frame(vec![Event::PointerMoved(start)]).0.unwrap();
+    }
+    let press = Event::PointerButton {
+        pos: start,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    };
+    let release = Event::PointerButton {
+        pos: end,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    };
+    let events = if coalesced {
+        vec![press, Event::PointerMoved(end), release.clone()]
+    } else {
+        vec![press]
+    };
+    let (pressed, hovered, dragged) = frame(events);
+    assert!(
+        pressed.unwrap().input_owned,
+        "hovered={hovered}, dragged={dragged}"
+    );
+    if !coalesced {
+        assert!(frame(vec![Event::PointerMoved(end)]).0.unwrap().input_owned);
+        assert!(frame(vec![release]).0.unwrap().input_owned);
+    }
+    let until = Instant::now() + Duration::from_secs(4);
+    let output = loop {
+        if let Some(outcome) = frame(vec![]).0.unwrap().outcome {
+            break outcome;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let ModelToolOutcome::Applied(parts) = output else {
+        panic!()
+    };
+    let native = Compiler::default()
+        .compile(s.document(), s.revision())
+        .unwrap();
+    close(
+        native.snapshot().shapes[&parts[0].feature].bounds.min,
+        [0., 77.5 / 1.3374, 0.],
+    );
+}
+
+#[test]
+fn native_top_view_vertical_drag_can_start_and_release_in_one_render_frame() {
+    let (mut s, a, _, _) = fixture();
+    let original = s.document().clone();
+    let scene = canonical(&s);
+    let (mut c, _) = begin(&s, &scene, BTreeSet::from([a.body]), false);
+    let mut h = Harness::new(scene);
+    h.camera.yaw = 0.;
+    h.camera.pitch = std::f32::consts::FRAC_PI_2;
+    let start = h.point([0., 19.5, 0.]);
+    let end = h.point([0., 39., 0.]);
+    h.frame(
+        &mut c,
+        &mut s,
+        vec![Event::PointerMoved(start)],
+        Modifiers::NONE,
+    )
+    .unwrap();
+    let result = h
+        .frame(
+            &mut c,
+            &mut s,
+            vec![
+                Event::PointerButton {
+                    pos: start,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+                Event::PointerMoved(end),
+                Event::PointerButton {
+                    pos: end,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+            Modifiers::NONE,
+        )
+        .unwrap();
+    assert!(
+        result.input_owned,
+        "A coalesced pointer gesture lost its original press position"
+    );
+    let ModelToolOutcome::Applied(parts) = h.finish(&mut c, &mut s) else {
+        panic!()
+    };
+    let native = Compiler::default()
+        .compile(s.document(), s.revision())
+        .unwrap();
+    close(
+        native.snapshot().shapes[&parts[0].feature].bounds.min,
+        [0., 19.5, 0.],
+    );
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &original);
+}
+
+#[test]
+fn coalesced_rotation_samples_preserve_winding_and_commit_once() {
+    let (mut s, a, _, _) = fixture();
+    let original = s.document().clone();
+    let revision = s.revision();
+    let scene = canonical(&s);
+    let (mut c, _) = begin(&s, &scene, BTreeSet::from([a.body]), false);
+    let mut h = Harness::new(scene);
+    h.camera.yaw = 0.;
+    h.camera.pitch = std::f32::consts::FRAC_PI_2;
+    let radius = 82. / 4. * 0.74;
+    let point = |angle: f64| {
+        let angle = angle.to_radians();
+        h.point([radius * angle.cos(), radius * angle.sin(), 0.])
+    };
+    let start = point(45.);
+    let end = point(495.);
+    h.frame(
+        &mut c,
+        &mut s,
+        vec![Event::PointerMoved(start)],
+        Modifiers::NONE,
+    )
+    .unwrap();
+    let mut events = vec![Event::PointerButton {
+        pos: start,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    }];
+    events.extend([135., 225., 315., 405., 495.].map(|angle| Event::PointerMoved(point(angle))));
+    events.push(Event::PointerButton {
+        pos: end,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    assert!(
+        h.frame(&mut c, &mut s, events, Modifiers::NONE)
+            .unwrap()
+            .input_owned
+    );
+    let ModelToolOutcome::Applied(parts) = h.finish(&mut c, &mut s) else {
+        panic!()
+    };
+    assert_eq!(s.revision(), revision + 1);
+    let source = model::read_transform(s.document(), parts[0].feature).unwrap();
+    let multicad_core::constraint_sketch::Dimension::Literal { value, unit } =
+        source.parameters.angle
+    else {
+        panic!()
+    };
+    assert_eq!(unit, "deg");
+    assert!((value - 450.).abs() < 1e-5, "{value}");
+    let native = Compiler::default()
+        .compile(s.document(), s.revision())
+        .unwrap();
+    close(
+        native.snapshot().shapes[&parts[0].feature].bounds.min,
+        [-3., 0., 0.],
+    );
+    close(
+        native.snapshot().shapes[&parts[0].feature].bounds.max,
+        [0., 2., 4.],
+    );
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &original);
+}
