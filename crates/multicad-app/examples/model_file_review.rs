@@ -61,6 +61,8 @@ fn report(document: &Document) -> Result<serde_json::Value, Error> {
                     })
                 })
                 .collect::<Vec<_>>();
+            let occurrence_bindings =
+                multicad_core::sketch_external::occurrence_bindings(document, entity.id)?;
             let frame = evaluated.frame;
             Ok(serde_json::json!({
                 "id": entity.id,
@@ -70,6 +72,7 @@ fn report(document: &Document) -> Result<serde_json::Value, Error> {
                 "canonical": evaluated.canonical(),
                 "solved": solved,
                 "external_bindings": bindings,
+                "occurrence_bindings": occurrence_bindings,
             }))
         })
         .collect::<Result<Vec<_>, Error>>()?;
