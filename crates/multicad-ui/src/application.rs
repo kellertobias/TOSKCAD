@@ -205,6 +205,7 @@ impl Application {
     pub fn set_model_backends(&mut self, factory: crate::viewport::BackendFactory) {
         for project in &mut self.projects {
             project.sketch.set_model_backend(factory());
+            project.sketch.set_external_backend(factory());
         }
         self.model_backends = Some(factory);
     }
@@ -508,7 +509,8 @@ impl Application {
                 }
                 if self.current().sketch.external_active() {
                     let p = self.current_mut();
-                    p.sketch.preview_external(&p.session, channel)?;
+                    p.sketch
+                        .preview_external(&p.session, &p.resources, channel)?;
                     self.message = "Checked external reference preview · source unchanged".into();
                     return Ok(());
                 }
@@ -1592,6 +1594,9 @@ impl Application {
             for project in &mut self.projects {
                 if !project.sketch.has_model_backend() {
                     project.sketch.set_model_backend(factory());
+                }
+                if !project.sketch.has_external_backend() {
+                    project.sketch.set_external_backend(factory());
                 }
             }
         }
@@ -2875,8 +2880,8 @@ mod tests {
         assert!(app.current().sketch.has_model_backend());
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            2,
-            "The two lanes need separate worker instances"
+            3,
+            "Canonical display, modeling candidates and reference recovery need separate workers"
         );
         app.mode = Mode::Model;
         assert!(!app.enabled(command));
@@ -2894,7 +2899,7 @@ mod tests {
         assert!(app.current().sketch.has_model_backend());
         assert!(app.projects[0].scene.has_backend());
         assert!(app.current().scene.has_backend());
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
     }
     #[test]
     fn primitive_starts_without_sketch_and_inspector_cancel_updates_status_without_editing_source()

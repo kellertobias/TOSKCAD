@@ -581,6 +581,11 @@ impl ModelToolController {
                     return Err("Modeling candidate changed; preview it again".into());
                 }
                 let scene = reply.result?;
+                if !scene.is_full_model() {
+                    return Err(
+                        "A source-only inspection scene cannot authorize modeling Apply".into(),
+                    );
+                }
                 if scene.stamp() != candidate.stamp {
                     return Err("Native preview returned the wrong scene scope".into());
                 }

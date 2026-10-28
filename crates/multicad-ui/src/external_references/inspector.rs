@@ -17,6 +17,7 @@ impl Controller {
         sketch: EntityId,
         report: Option<&ReferenceReport>,
         enabled: bool,
+        resources: &multicad_core::project_file::ProjectResources,
     ) -> Option<Proposal> {
         controls::inspector_layout(ui);
         ui.separator();
@@ -26,6 +27,7 @@ impl Controller {
             let ready = self.ready();
             let mut preview = false;
             let mut cancel = false;
+            let mut load_source = None;
             ui.add_enabled_ui(enabled,|ui|{let active=self.active.as_mut().expect("active");
     ui.label(match active.purpose{Purpose::Capture=>"Select source geometry",Purpose::Repair(_)=>"Select replacement geometry"});
     let old=active.method;
@@ -33,10 +35,13 @@ impl Controller {
     if old!=active.method{active.selected=None;active.request=None;self.error=None;}
     ui.add_enabled_ui(matches!(active.purpose,Purpose::Capture),|ui|{controls::inspector_combo(ui,"external-behavior").selected_text(behavior_label(active.behavior)).show_ui(ui,|ui|{ui.selectable_value(&mut active.behavior,Behavior::ReferenceOnly,"Reference only");ui.selectable_value(&mut active.behavior,Behavior::Derived,"Derived geometry");}).response.on_hover_text("Reference curves are construction aids. Derived curves can form solid profiles. Both remain linked to their source");});
     if active.method==Method::Coplanar{controls::inspector_combo(ui,"external-filter").selected_text(active.filter.label()).show_ui(ui,|ui|{for filter in [PickFilter::Edges,PickFilter::Vertices]{if ui.selectable_value(&mut active.filter,filter,filter.label()).changed(){active.selected=None;active.request=None;}}});}
-    ui.checkbox(&mut active.include_hidden,"Pick occluded edges / vertices").on_hover_text("Allow exact geometry behind other visible faces. Document-hidden objects remain excluded");
+    ui.checkbox(&mut active.include_hidden,"Pick occluded edges / vertices").on_hover_text("Allow exact geometry behind other visible faces. Explicit source inspection can display a retained source definition");
     let mut inspect=active.inspected_source;
-    controls::inspector_combo(ui,"external-inspected-source").selected_text(inspect.and_then(|id|session.document().get(id)).map_or("All visible bodies",|entity|entity.name.as_str())).show_ui(ui,|ui|{ui.selectable_value(&mut inspect,None,"All visible bodies");if let Some(context)=&self.context{for source in context.snapshots.keys(){if let Some(entity)=session.document().get(*source)&&matches!(entity.data,EntityData::Feature{..}){ui.selectable_value(&mut inspect,Some(*source),&entity.name);}}}}).response.on_hover_text("Temporarily inspect a current native source, including retained upstream feature geometry");
+    controls::inspector_combo(ui,"external-inspected-source").selected_text(inspect.and_then(|id|session.document().get(id)).map_or("All visible bodies",|entity|entity.name.as_str())).show_ui(ui,|ui|{ui.selectable_value(&mut inspect,None,"All visible bodies");for entity in session.document().entities(){if matches!(entity.data,EntityData::Feature{..})&&(matches!(active.purpose,Purpose::Repair(_))||self.context.as_ref().is_some_and(|context|context.snapshots.contains_key(&entity.id))){ui.selectable_value(&mut inspect,Some(entity.id),&entity.name);}}}).response.on_hover_text("Temporarily inspect a current native source, including retained upstream feature geometry");
     if inspect!=active.inspected_source{active.inspected_source=inspect;active.selected=None;active.request=None;}
+    if matches!(active.purpose,Purpose::Repair(_))&&self.native.backend.is_some()&&ui.add_enabled(inspect.is_some()&&!self.native.pending(),egui::Button::new("Load selected source geometry")).on_hover_text("Evaluate only this source, the sketch plane and other required reference sources while the downstream model is broken").clicked(){load_source=inspect;}
+    if self.native.pending(){ui.small("Evaluating current reference sources…");}
+    if self.context.as_ref().and_then(|c|c.scene.as_ref()).is_some_and(|scene|!scene.is_full_model()){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Reference source view · incomplete model");}
     if let Some(hit)=&active.selected{ui.label(format!("Selected: {}",session.document().get(hit.geometry).map_or("Source",|entity|entity.name.as_str())));ui.small(format!("{:?} · exact current native geometry",hit.key.kind));}else{ui.small("Click a native edge or vertex in the viewport. Source stays unchanged until Preview and Apply.");}
     if active.method==Method::Intersect{ui.small("Finite straight edges only. Face boundaries and ambiguous circular/spline intersections are unsupported.");}
     preview=ui.add_enabled(ready&&active.selected.is_some(),egui::Button::new("Preview reference")).on_hover_text("Resolve the persistent source intent and solve the complete consumer sketch without modifying source").clicked();
@@ -47,6 +52,10 @@ impl Controller {
             }
             if cancel {
                 self.cancel();
+            } else if let Some(source) = load_source {
+                if let Err(error) = self.request_source(session, source, resources) {
+                    self.error = Some(error);
+                }
             } else if preview {
                 match self.prepare(session, multicad_core::commands::Channel::Ui) {
                     Ok(proposal) => action = Some(proposal),
@@ -110,7 +119,7 @@ impl Controller {
       controls::inspector_combo(ui,"existing-external-behavior").selected_text(behavior_label(behavior)).show_ui(ui,|ui|{ui.selectable_value(&mut behavior,Behavior::ReferenceOnly,"Reference only");ui.selectable_value(&mut behavior,Behavior::Derived,"Derived geometry");});
       if behavior!=binding.definition.behavior{match self.behavior(session,binding.reference,behavior){Ok(proposal)=>action=Some(proposal),Err(error)=>self.error=Some(error)}}
       ui.horizontal_wrapped(|ui|{
-       if ui.add_enabled(self.ready(),egui::Button::new("Repair reference")).on_hover_text("Choose a current named source and solve the consumer before Apply").clicked()&&let Err(error)=self.begin_repair(session,binding.reference){self.error=Some(error);}
+       if ui.add_enabled(self.can_start_repair(session),egui::Button::new("Repair reference")).on_hover_text("Choose a current named source and solve the consumer before Apply").clicked()&&let Err(error)=self.begin_repair(session,binding.reference){self.error=Some(error);}
        if ui.button("Remove reference").on_hover_text("Remove the reference and its output atomically. Dependent geometry or constraints must be removed explicitly first").clicked(){match self.remove(session,binding.reference){Ok(proposal)=>action=Some(proposal),Err(error)=>self.error=Some(error)}}
       });
      }));

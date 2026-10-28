@@ -332,7 +332,87 @@ fn generate(directory: &Path) -> Result<Vec<serde_json::Value>, Error> {
         &session,
         &directory.join("intersection-width40.multicad"),
     )?);
-    let report = serde_json::json!({"scope":"Genuine production OCCT compiler; exact checked source references; byte-roundtripped native containers; no native GUI acceptance implied","source":base,"projection_sketch":top,"intersection_sketch":cross,"fixtures":reports});
+    let replacement = PrimitiveRequest::new("Repair replacement wall", parameters(50.));
+    let edit = model::prepare_primitive(&session, session.revision(), actor(), &replacement)?;
+    session.commit(edit.prepared)?;
+    let edit = model::prepare_primitive_edit(
+        &session,
+        session.revision(),
+        actor(),
+        base.feature,
+        &PrimitiveParameters::Box {
+            size: [model::length(40.), model::length(20.), model::length(2.)],
+            frame: Default::default(),
+        },
+    )?;
+    session.commit(edit.prepared)?;
+    let failure = Compiler::default()
+        .compile(session.document(), session.revision())
+        .err()
+        .ok_or("Broken finite intersection unexpectedly rebuilt")?
+        .to_string();
+    let EntityData::Sketch { plane, .. } =
+        session.document().get(cross).ok_or("Sketch missing")?.data
+    else {
+        return Err("Not a sketch".into());
+    };
+    let partial = Compiler::default().compile_sources(
+        session.document(),
+        session.revision(),
+        &[replacement.feature, plane],
+    )?;
+    let path = directory.join("repair-broken.multicad");
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(session.document().clone())?,
+        &mut bytes,
+        Default::default(),
+    )?;
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )?;
+    if reopened.project.document != *session.document() {
+        return Err("Broken source container changed on reopen".into());
+    }
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(&bytes)?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(&path)?;
+    reports.push(serde_json::json!({"file":"repair-broken.multicad","expected_full_native_error":failure,"source_revision":session.revision(),"source_hash":partial.snapshot().stamp.source_hash,"replacement":replacement.feature,"consumer":cross,"scope":"Structurally valid canonical project with explicitly broken consumed reference; only fresh source-only inspection succeeds"}));
+    let topo = &partial.snapshot().shapes[&replacement.feature].topology;
+    let selected=topo.elements.iter().find(|e|matches!(e.geometry,Some(AnalyticGeometry::Line{a_mm:a,b_mm:b})if(a[0]-50.).abs()<1e-7&&(b[0]-50.).abs()<1e-7&&a[1].abs()<1e-7&&b[1].abs()<1e-7&&(a[2]-b[2]).abs()>9.)).ok_or("Replacement native edge missing")?.key;
+    let maps = partial
+        .snapshot()
+        .shapes
+        .iter()
+        .map(|(id, s)| (*id, s.topology.clone()))
+        .collect();
+    let binding = multicad_core::sketch_external::bindings(session.document(), cross)?
+        .into_iter()
+        .next()
+        .ok_or("No external reference")?;
+    let edit = multicad_solver::prepare_external_repair(
+        &session,
+        session.revision(),
+        actor(),
+        &multicad_solver::ExternalRepairRequest {
+            sketch: cross,
+            reference: binding.reference,
+            source: replacement.feature,
+            selected,
+        },
+        &maps,
+    )?;
+    let prepared = edit.preview.ok_or("No checked repair preview")?;
+    let full = Compiler::default().compile(prepared.document(), session.revision())?;
+    if (full.snapshot().shapes[&intersection_feature].bounds.min[0] - 50.).abs() > 1e-6 {
+        return Err("Repair did not regenerate downstream solid at X50".into());
+    }
+    session.commit(prepared)?;
+    reports.push(save(&session, &directory.join("repair-repaired.multicad"))?);
+    let report = serde_json::json!({"scope":"Genuine production OCCT compiler; exact checked source references; byte-roundtripped native containers; explicit broken recovery fixture; no native GUI acceptance implied","source":base,"projection_sketch":top,"intersection_sketch":cross,"fixtures":reports});
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -360,7 +440,7 @@ mod tests {
     fn generated_projects_compile_and_reopen_with_exact_live_dependencies() {
         let directory = tempfile::tempdir().unwrap();
         let reports = super::generate(directory.path()).unwrap();
-        assert_eq!(reports.len(), 5);
+        assert_eq!(reports.len(), 7);
         assert!(
             super::generate(directory.path()).is_err(),
             "Never overwrite acceptance assets"

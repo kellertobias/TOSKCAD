@@ -34,6 +34,9 @@ pub(super) fn available(
         .count())
 }
 fn current(document: &Document, revision: u64, scene: &Scene) -> Result<(), String> {
+    if !scene.is_full_model() {
+        return Err("Choose bodies from a full current native model".into());
+    }
     if scene.stamp().document != document.id() || scene.stamp().revision != revision {
         return Err("Wait for current native bodies before choosing body inputs".into());
     }

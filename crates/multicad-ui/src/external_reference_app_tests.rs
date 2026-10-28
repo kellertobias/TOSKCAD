@@ -19,11 +19,13 @@ impl DocumentStorage for Storage {
 struct Backend {
     scene: Arc<Scene>,
     reply: Option<SceneReply>,
+    candidate: bool,
 }
 impl SceneBackend for Backend {
     fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
-        if self.scene.model_evaluation().unwrap().source_hash
-            != multicad_core::project_file::ContentHash::document(document)?
+        if !self.candidate
+            && self.scene.model_evaluation().unwrap().source_hash
+                != multicad_core::project_file::ContentHash::document(document)?
         {
             return Err("Test native scene belongs to different source".into());
         }
@@ -32,7 +34,11 @@ impl SceneBackend for Backend {
             self.scene.geometries().values().cloned().collect(),
             self.scene.reference_instances().to_vec(),
         )?
-        .with_model_evaluation(self.scene.model_evaluation().unwrap().clone())?;
+        .with_model_evaluation(Arc::new(multicad_core::model::ModelEvaluationInfo {
+            source_hash: multicad_core::project_file::ContentHash::document(document)?,
+            consumed_bodies: Default::default(),
+            cut_targets: vec![],
+        }))?;
         self.reply = Some(SceneReply {
             stamp,
             result: Ok(Arc::new(scene)),
@@ -75,9 +81,17 @@ fn ribbon_command_pointer_preview_apply_and_undo_use_the_shared_external_transac
     let native = scene(&fixture, 1);
     let mut app = Application::with_document(Box::new(Storage), document.clone()).unwrap();
     app.current_mut().scene.set_backend(Box::new(Backend {
-        scene: native,
+        scene: native.clone(),
         reply: None,
+        candidate: false,
     }));
+    app.current_mut()
+        .sketch
+        .set_external_backend(Box::new(Backend {
+            scene: native,
+            reply: None,
+            candidate: true,
+        }));
     app.mode = Mode::Sketch;
     app.current_mut()
         .sketch
@@ -136,6 +150,15 @@ fn ribbon_command_pointer_preview_apply_and_undo_use_the_shared_external_transac
     app.invoke(Command::Preview, &[], Channel::CommandLine)
         .unwrap();
     assert!(app.current().sketch.external_pending());
+    assert!(
+        !app.enabled(Command::Apply),
+        "Apply waits for complete native candidate validation"
+    );
+    assert!(
+        app.invoke(Command::Apply, &[], Channel::CommandLine)
+            .is_err()
+    );
+    frame(&context, &mut app, vec![]);
     assert!(app.enabled(Command::Apply));
     assert!(!app.enabled(Command::Save));
     assert!(

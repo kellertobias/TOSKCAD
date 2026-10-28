@@ -500,3 +500,68 @@ fn native_backend_places_shared_meshes_and_picks_current_world_topology() {
         native.snapshot().stamp.source_hash
     );
 }
+
+#[test]
+fn native_source_inspection_is_explicitly_partial_and_does_not_relabel_a_full_request() {
+    let (mut session, source) = box_session();
+    let other = PrimitiveRequest::new(
+        "Independent body",
+        PrimitiveParameters::Box {
+            size: std::array::from_fn(|_| length(5.)),
+            frame: model::PrimitiveFrame {
+                origin: [length(100.), length(0.), length(0.)],
+                ..Default::default()
+            },
+        },
+    );
+    let edit = model::prepare_primitive(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        &other,
+    )
+    .unwrap();
+    session.commit(edit.prepared).unwrap();
+    let mut backend = Backend::new();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 91,
+    };
+    backend
+        .request_sources(
+            session.document(),
+            &Default::default(),
+            stamp,
+            &[source.feature],
+        )
+        .unwrap();
+    let scene = receive(&mut backend).result.unwrap();
+    assert_eq!(
+        scene.scope(),
+        &viewport::SceneScope::Sources(vec![source.feature])
+    );
+    assert!(!scene.is_full_model());
+    assert_eq!(
+        scene.model_evaluation().unwrap().source_hash,
+        multicad_core::project_file::ContentHash::document(session.document()).unwrap()
+    );
+    assert!(scene.geometries().contains_key(&source.feature));
+    assert!(!scene.geometries().contains_key(&other.feature));
+    assert!(
+        scene
+            .reference_instances()
+            .iter()
+            .all(|instance| instance.geometry == source.feature)
+    );
+    assert!(scene.world_bounds().unwrap()[1][0] < 11.);
+    let full_stamp = SceneStamp {
+        generation: 92,
+        ..stamp
+    };
+    backend.request(session.document(), full_stamp).unwrap();
+    let full = receive(&mut backend).result.unwrap();
+    assert!(full.is_full_model());
+    assert_eq!(full.reference_instances().len(), 2);
+    assert!(full.world_bounds().unwrap()[1][0] > 104.);
+}

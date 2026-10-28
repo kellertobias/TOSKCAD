@@ -271,7 +271,7 @@ fn source_revision_and_resource_changes_invalidate_native_receipts() {
 }
 #[test]
 fn wrong_scope_empty_mesh_success_and_native_failure_cannot_be_applied() {
-    for kind in [0, 1, 2] {
+    for kind in [0, 1, 2, 3] {
         let (mut session, sketch, profiles) = fixture();
         let before = session.document().clone();
         let (mut controller, state) = controller(&session, sketch, profiles);
@@ -288,7 +288,20 @@ fn wrong_scope_empty_mesh_success_and_native_failure_cannot_be_applied() {
                 },
             )),
             1 => Ok(Arc::new(Scene::new(stamp, vec![], vec![]).unwrap())),
-            _ => Err("Native exact profile is open".into()),
+            2 => Err("Native exact profile is open".into()),
+            _ => {
+                let full = native_scene(&document, stamp);
+                Ok(Arc::new(
+                    Scene::new(
+                        stamp,
+                        full.geometries().values().cloned().collect(),
+                        full.reference_instances().to_vec(),
+                    )
+                    .unwrap()
+                    .with_source_scope(vec![sketch])
+                    .unwrap(),
+                ))
+            }
         };
         state
             .lock()

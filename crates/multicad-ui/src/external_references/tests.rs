@@ -531,7 +531,14 @@ fn missing_hash_or_placed_context_is_unavailable_and_narrow_reference_controls_d
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 assert!(
                                     controller
-                                        .inspector(ui, &fixture.session, fixture.sketch, None, true)
+                                        .inspector(
+                                            ui,
+                                            &fixture.session,
+                                            fixture.sketch,
+                                            None,
+                                            true,
+                                            &Default::default()
+                                        )
                                         .is_none()
                                 );
                             });

@@ -18,14 +18,15 @@ pub(crate) struct Proposal {
     pub reference: EntityId,
     pub edit: SketchEdit,
     pub label: &'static str,
+    pub report: multicad_core::references::ReferenceReport,
 }
 pub(super) struct Context {
-    ticket: Prepared,
-    hash: ContentHash,
-    sketch: EntityId,
-    scene: Option<Arc<Scene>>,
+    pub(super) ticket: Prepared,
+    pub(super) hash: ContentHash,
+    pub(super) sketch: EntityId,
+    pub(super) scene: Option<Arc<Scene>>,
     pub(super) snapshots: BTreeMap<EntityId, TopologySnapshot>,
-    pose: Transform,
+    pub(super) pose: Transform,
 }
 #[derive(Clone, Copy)]
 pub(super) enum Purpose {
@@ -33,7 +34,7 @@ pub(super) enum Purpose {
     Repair(EntityId),
 }
 pub(super) struct Active {
-    ticket: Prepared,
+    pub(super) ticket: Prepared,
     pub purpose: Purpose,
     pub method: Method,
     pub behavior: Behavior,
@@ -45,6 +46,7 @@ pub(super) struct Active {
 }
 #[derive(Default)]
 pub struct Controller {
+    pub(super) native: super::native::Native,
     pub(super) context: Option<Context>,
     pub(super) active: Option<Active>,
     hover: Option<Hit>,
@@ -66,6 +68,7 @@ impl Controller {
         self.active = None;
         self.hover = None;
         self.error = None;
+        self.native.clear();
     }
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -87,6 +90,7 @@ impl Controller {
         }) {
             match scope(session, sketch) {
                 Ok((ticket, hash)) => {
+                    self.native.clear();
                     self.context = Some(Context {
                         ticket,
                         hash,
@@ -105,13 +109,15 @@ impl Controller {
         }
         let context = self.context.as_mut().expect("checked context");
         context.pose = pose;
-        let current = scene.filter(|scene| {
-            scene.stamp().document == session.document().id()
+        let canonical = scene.filter(|scene| {
+            scene.is_full_model()
+                && scene.stamp().document == session.document().id()
                 && scene.stamp().revision == session.revision()
                 && scene
                     .model_evaluation()
                     .is_some_and(|info| info.source_hash == context.hash)
         });
+        let current = super::native::current_source(&self.native, context, session).or(canonical);
         if context.scene.as_ref().map(|scene| scene.stamp())
             != current.as_ref().map(|scene| scene.stamp())
         {
@@ -198,7 +204,7 @@ impl Controller {
         session
             .validate_preview(&context.ticket)
             .map_err(|error| error.to_string())?;
-        if !self.ready() {
+        if !self.can_start_repair(session) {
             return Err(self.unavailable());
         }
         let binding = sketch_external::bindings(session.document(), context.sketch)
@@ -434,7 +440,13 @@ impl Controller {
                 (reference, edit, "Repair external reference")
             }
         };
-        checked(reference, edit, label)
+        checked(
+            reference,
+            edit,
+            label,
+            session.revision(),
+            &context.snapshots,
+        )
     }
     pub(super) fn remove(
         &self,
@@ -454,7 +466,13 @@ impl Controller {
             &context.snapshots,
         )
         .map_err(|e| e.to_string())?;
-        checked(reference, edit, "Remove external reference")
+        checked(
+            reference,
+            edit,
+            "Remove external reference",
+            session.revision(),
+            &context.snapshots,
+        )
     }
     pub(super) fn behavior(
         &self,
@@ -481,7 +499,13 @@ impl Controller {
             &context.snapshots,
         )
         .map_err(|e| e.to_string())?;
-        checked(reference, edit, "Change reference behavior")
+        checked(
+            reference,
+            edit,
+            "Change reference behavior",
+            session.revision(),
+            &context.snapshots,
+        )
     }
     fn unavailable(&self) -> String {
         if self
@@ -523,14 +547,26 @@ fn scope(session: &Session, sketch: EntityId) -> Result<(Prepared, ContentHash),
     let hash = ContentHash::document(session.document())?;
     Ok((ticket, hash))
 }
-fn checked(reference: EntityId, edit: SketchEdit, label: &'static str) -> Result<Proposal, String> {
+fn checked(
+    reference: EntityId,
+    edit: SketchEdit,
+    label: &'static str,
+    revision: u64,
+    snapshots: &BTreeMap<EntityId, TopologySnapshot>,
+) -> Result<Proposal, String> {
     if edit.preview.is_none() {
         return Err(format!(
             "Reference edit cannot solve the consumer sketch: {:?}",
             edit.evaluation.diagnostics.state
         ));
     }
+    let report = multicad_core::references::inspect(
+        edit.preview.as_ref().expect("checked preview").document(),
+        revision,
+        snapshots,
+    );
     Ok(Proposal {
+        report,
         reference,
         edit,
         label,

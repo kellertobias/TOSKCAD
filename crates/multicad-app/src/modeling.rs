@@ -38,6 +38,12 @@ impl Backend {
     }
 }
 impl SceneBackend for Backend {
+    fn cancel(&mut self) {
+        self.expected = None;
+        if let Ok(runtime) = self.runtime.as_mut() {
+            runtime.cancel();
+        }
+    }
     fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
         self.evaluate(document, stamp, &EvaluationOptions::default())
     }
@@ -49,6 +55,22 @@ impl SceneBackend for Backend {
         options: &EvaluationOptions,
     ) -> Result<(), String> {
         self.evaluate(document, stamp, options)
+    }
+    fn request_sources(
+        &mut self,
+        document: &Document,
+        _resources: &ProjectResources,
+        stamp: SceneStamp,
+        roots: &[multicad_core::document::EntityId],
+    ) -> Result<(), String> {
+        if stamp.document != document.id() {
+            return Err("Source inspection belongs to another document".into());
+        }
+        let runtime = self.runtime.as_mut().map_err(|e| e.clone())?;
+        let generation =
+            runtime.request_sources(document, stamp.revision, stamp.generation, roots)?;
+        self.expected = Some((generation, stamp));
+        Ok(())
     }
     fn poll(&mut self) -> Option<SceneReply> {
         let (expected, stamp) = self.expected?;
@@ -142,12 +164,32 @@ fn scene(
             color,
         });
     }
+    if let multicad_model::EvaluationScope::Sources(roots) = &model.scope {
+        for root in roots {
+            if model.shapes.contains_key(root)
+                && !instances.iter().any(|instance| instance.geometry == *root)
+            {
+                instances.push(viewport::Instance {
+                    id: *root,
+                    geometry: *root,
+                    transform: Default::default(),
+                    color: [145, 173, 195, 255],
+                });
+            }
+        }
+    }
     let stamp = SceneStamp {
         document: model.stamp.document,
         revision: model.stamp.revision,
         generation,
     };
     viewport::Scene::new(stamp, geometries, instances)
+        .and_then(|scene| match &model.scope {
+            multicad_model::EvaluationScope::Full => Ok(scene),
+            multicad_model::EvaluationScope::Sources(roots) => {
+                scene.with_source_scope(roots.clone())
+            }
+        })
         .and_then(|scene| scene.with_reference_aliases(model.body_sources.clone()))
         .and_then(|scene| {
             scene.with_model_evaluation(Arc::new(ModelEvaluationInfo {

@@ -449,7 +449,13 @@ pub struct SceneStamp {
     pub revision: u64,
     pub generation: u64,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SceneScope {
+    Full,
+    Sources(Vec<EntityId>),
+}
 pub struct Scene {
+    scope: SceneScope,
     stamp: SceneStamp,
     geometries: BTreeMap<EntityId, Arc<Geometry>>,
     instances: Arc<[Instance]>,
@@ -512,6 +518,7 @@ impl Scene {
         let world_bounds = (!instances.is_empty()).then_some([world.min, world.max]);
         let instances: Arc<[Instance]> = instances.into();
         Ok(Self {
+            scope: SceneScope::Full,
             stamp,
             geometries: map,
             reference_instances: instances.clone(),
@@ -566,6 +573,26 @@ impl Scene {
         self.reference_aliases = Arc::new(aliases);
         Ok(self)
     }
+    /// Explicit incomplete evaluation scope. Hash equality alone never makes a
+    /// source-inspection result a successful full-model candidate.
+    pub fn with_source_scope(mut self, roots: Vec<EntityId>) -> Result<Self, String> {
+        let unique: BTreeSet<_> = roots.iter().copied().collect();
+        if roots.is_empty()
+            || roots.len() > 128
+            || unique.len() != roots.len()
+            || unique.iter().any(EntityId::is_nil)
+        {
+            return Err("Source scene requires 1..128 unique non-nil roots".into());
+        }
+        self.scope = SceneScope::Sources(unique.into_iter().collect());
+        Ok(self)
+    }
+    pub fn scope(&self) -> &SceneScope {
+        &self.scope
+    }
+    pub fn is_full_model(&self) -> bool {
+        self.scope == SceneScope::Full
+    }
     pub fn model_evaluation(&self) -> Option<&Arc<multicad_core::model::ModelEvaluationInfo>> {
         self.model_evaluation.as_ref()
     }
@@ -603,6 +630,7 @@ impl Scene {
         view.reference_instances = self.reference_instances.clone();
         view.reference_aliases = self.reference_aliases.clone();
         view.model_evaluation = self.model_evaluation.clone();
+        view.scope = self.scope.clone();
         Ok(Arc::new(view))
     }
     pub fn geometries(&self) -> &BTreeMap<EntityId, Arc<Geometry>> {
@@ -674,7 +702,12 @@ impl Scene {
             .get(&instance.geometry)
             .ok_or("Repair source geometry is unavailable")?
             .clone();
-        Self::new(self.stamp, vec![geometry], vec![instance]).map(Arc::new)
+        let mut view = Self::new(self.stamp, vec![geometry], vec![instance])?;
+        view.scope = match &self.scope {
+            SceneScope::Full => SceneScope::Sources(vec![source]),
+            other => other.clone(),
+        };
+        Ok(Arc::new(view))
     }
     pub fn world_bounds(&self) -> Option<[Point; 2]> {
         self.world_bounds
@@ -843,6 +876,9 @@ impl SceneStore {
         Ok(())
     }
     pub fn publish(&mut self, scene: Arc<Scene>) -> Result<(), String> {
+        if !scene.is_full_model() {
+            return Err("Incomplete source inspection cannot replace the canonical scene".into());
+        }
         if self.wanted != Some(scene.stamp) {
             return Err("Obsolete display scene".into());
         }

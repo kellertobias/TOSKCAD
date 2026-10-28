@@ -45,6 +45,19 @@ pub trait SceneBackend {
         }
         self.request_project(document, resources, stamp)
     }
+    /// Separate current-source inspection. The returned Scene must be marked
+    /// Sources and must never enter the canonical display/Apply publication lane.
+    fn request_sources(
+        &mut self,
+        _document: &Document,
+        _resources: &ProjectResources,
+        _stamp: SceneStamp,
+        _roots: &[EntityId],
+    ) -> Result<(), String> {
+        Err("This native provider does not support source-only repair inspection".into())
+    }
+    /// Drop queued work and obsolete replies without waiting for a native call.
+    fn cancel(&mut self) {}
     /// Never waits. Replies retain their request stamp, including failures.
     fn poll(&mut self) -> Option<SceneReply>;
     /// Optional display-only refinement of the current retained exact geometry.
@@ -239,7 +252,7 @@ impl SceneFeed {
             }
             self.pending = false;
             match reply.result {
-                Ok(scene) if scene.stamp() == reply.stamp => {
+                Ok(scene) if scene.stamp() == reply.stamp && scene.is_full_model() => {
                     let has_references = document
                         .entities()
                         .any(|e| e.references().iter().any(|l| l.geometry.is_some()));
@@ -274,7 +287,7 @@ impl SceneFeed {
                     }
                 }
                 Ok(_) => {
-                    let error = "Display backend returned a mismatched scene stamp".into();
+                    let error = "Display backend returned a mismatched stamp or an incomplete source-inspection scene".into();
                     if self.refining {
                         self.quality_error = Some(error)
                     } else {

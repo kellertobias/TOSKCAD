@@ -1,11 +1,18 @@
 //! External metadata and sketch geometry share one checked Apply/Discard lane.
 use super::*;
+#[derive(Default)]
+pub(super) struct NativeCheck {
+    pub required: bool,
+    pub ready: bool,
+    pub error: Option<String>,
+}
 impl ConstraintEditor {
     pub(crate) fn external_pending(&self) -> bool {
         self.external_reference.is_some()
     }
     pub(crate) fn external_can_apply(&self, session: &Session, id: EntityId) -> bool {
         self.external_reference.is_some()
+            && (!self.external_native.required || self.external_native.ready)
             && self.owner == Some(id)
             && self
                 .result
@@ -14,6 +21,7 @@ impl ConstraintEditor {
                 .is_some_and(|preview| session.validate_preview(preview).is_ok())
             && self.validate_frame(session, id).is_ok()
     }
+    #[cfg(test)]
     pub(crate) fn accept_external_edit(
         &mut self,
         session: &Session,
@@ -21,6 +29,17 @@ impl ConstraintEditor {
         reference: EntityId,
         edit: SketchEdit,
         label: &str,
+    ) -> Result<(), String> {
+        self.accept_external_edit_with_report(session, id, reference, edit, label, None)
+    }
+    pub(crate) fn accept_external_edit_with_report(
+        &mut self,
+        session: &Session,
+        id: EntityId,
+        reference: EntityId,
+        edit: SketchEdit,
+        label: &str,
+        report: Option<ReferenceReport>,
     ) -> Result<(), String> {
         if self.dirty() {
             return Err("Apply or discard the current sketch draft first".into());
@@ -115,7 +134,7 @@ impl ConstraintEditor {
             candidate,
             id,
             session.revision(),
-            self.evaluation.as_ref(),
+            report.as_ref().or(self.evaluation.as_ref()),
         )
         .map_err(|e| e.to_string())?;
         if semantic.frame != frame {
@@ -146,12 +165,31 @@ impl ConstraintEditor {
         self.apply_label = label.into();
         self.canonical_draft = true;
         self.external_reference = Some(reference);
+        self.external_report = report;
+        self.external_native = Default::default();
         self.point_display = None;
         self.point_position = None;
         self.dimension_fields.clear();
         self.selection.clear();
         self.last_element = None;
         Ok(())
+    }
+    pub(crate) fn require_external_native(&mut self) {
+        self.external_native = NativeCheck {
+            required: true,
+            ready: false,
+            error: None,
+        };
+    }
+    pub(crate) fn complete_external_native(&mut self, result: Result<(), String>) {
+        if self.external_reference.is_none() || !self.external_native.required {
+            return;
+        }
+        self.external_native.ready = result.is_ok();
+        self.external_native.error = result.err();
+    }
+    pub(crate) fn external_prepared(&self) -> Option<&multicad_core::commands::Prepared> {
+        self.result.as_ref()?.preview.as_ref()
     }
     pub(super) fn show_external_preview(
         &mut self,
@@ -182,8 +220,18 @@ impl ConstraintEditor {
             }
         }
         ui.small("This checked reference transaction changes geometry and its source links together. Apply or discard it before editing constraints.");
+        if self.external_native.required && !self.external_native.ready {
+            if let Some(error) = &self.external_native.error {
+                ui.colored_label(
+                    Color32::LIGHT_RED,
+                    format!("Complete native model validation failed: {error}"),
+                );
+            } else {
+                ui.small("Validating the complete downstream native model…");
+            }
+        }
         let valid = self.external_can_apply(session, id);
-        if !valid {
+        if !valid && (!self.external_native.required || self.external_native.ready) {
             ui.colored_label(Color32::LIGHT_RED,"The reference preview is stale or unavailable. Discard it and select the source again.");
         }
         ui.horizontal_wrapped(|ui| {

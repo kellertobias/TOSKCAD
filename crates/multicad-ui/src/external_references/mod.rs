@@ -2,6 +2,7 @@
 //! They prepare checked edits; the host owns the shared sketch Apply/Discard lane.
 mod controller;
 mod inspector;
+mod native;
 #[cfg(test)]
 pub(crate) mod tests;
 use crate::icons::Icon;

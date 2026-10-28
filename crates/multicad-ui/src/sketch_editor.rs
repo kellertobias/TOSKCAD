@@ -417,7 +417,8 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
     ) -> bool {
         self.model.poll(session, resources);
-        self.model.pending()
+        let external_pending = self.poll_external(session);
+        self.model.pending() || external_pending
     }
     pub fn model_active(&self) -> bool {
         self.model.active()
@@ -1873,7 +1874,7 @@ impl SketchEditor {
                         }
                         if self.repair.has_pending() {self.tool=None;self.clear_drawing_progress();self.moving=false;self.cancel_move();}
                         if self.editing && let Some(id)=self.selected {
-                            self.external_inspector(ui,session,id);
+                            self.external_inspector(ui,session,id,resources);
                             if self.external.active(){return;}
                         }
                         if let Some((feature,latest))=self.selected_applied_feature(session.document()) {

@@ -251,6 +251,8 @@ pub struct ConstraintEditor {
     apply_label: String,
     canonical_draft: bool,
     external_reference: Option<EntityId>,
+    external_report: Option<ReferenceReport>,
+    external_native: external_preview::NativeCheck,
     point_display: Option<PointDisplay>,
     point_position: Option<PointPositionFields>,
 }
@@ -278,6 +280,8 @@ impl Default for ConstraintEditor {
             apply_label: "Apply constraints".into(),
             canonical_draft: false,
             external_reference: None,
+            external_report: None,
+            external_native: Default::default(),
             point_display: None,
             point_position: None,
         }
@@ -297,7 +301,7 @@ impl ConstraintEditor {
         self.current = current;
     }
     pub fn set_evaluation(&mut self, evaluation: Option<ReferenceReport>) {
-        if self.evaluation != evaluation {
+        if self.evaluation != evaluation && self.external_reference.is_none() {
             self.result = None;
             self.error = None;
             self.current = None;
@@ -326,7 +330,7 @@ impl ConstraintEditor {
             session.document(),
             id,
             session.revision(),
-            self.evaluation.as_ref(),
+            self.external_report.as_ref().or(self.evaluation.as_ref()),
         )
     }
     fn validate_frame(&self, session: &Session, id: EntityId) -> Result<(), String> {
@@ -443,6 +447,8 @@ impl ConstraintEditor {
         self.apply_label = "Apply constraints".into();
         self.canonical_draft = false;
         self.external_reference = None;
+        self.external_report = None;
+        self.external_native = Default::default();
         self.point_display = None;
         self.point_position = None;
     }
@@ -860,6 +866,8 @@ impl ConstraintEditor {
         self.apply_label = label.into();
         self.canonical_draft = true;
         self.external_reference = None;
+        self.external_report = None;
+        self.external_native = Default::default();
         self.point_display = None;
         self.dimension_fields.clear();
         self.selection.clear();
@@ -867,6 +875,13 @@ impl ConstraintEditor {
         Ok(())
     }
     pub fn apply(&mut self, session: &mut Session) -> Result<(), String> {
+        if self.external_reference.is_some()
+            && !self.external_can_apply(session, self.owner.ok_or("Choose the owning sketch")?)
+        {
+            return Err(self.external_native.error.clone().unwrap_or_else(|| {
+                "Wait for a successful complete native reference preview before Apply".into()
+            }));
+        }
         self.validate_frame(
             session,
             self.owner

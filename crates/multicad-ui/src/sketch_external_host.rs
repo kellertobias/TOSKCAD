@@ -5,6 +5,22 @@ use crate::{
     viewport::SceneFeed,
 };
 impl SketchEditor {
+    pub fn set_external_backend(&mut self, backend: Box<dyn crate::viewport::SceneBackend>) {
+        self.external.set_backend(backend);
+    }
+    pub fn has_external_backend(&self) -> bool {
+        self.external.has_backend()
+    }
+    pub(super) fn poll_external(&mut self, session: &Session) -> bool {
+        self.external.poll_native(session);
+        if self.constraints.external_pending()
+            && let Some(result) = self.external.candidate_validation().cloned()
+        {
+            self.constraints.complete_external_native(result);
+        }
+        self.external.native_pending()
+    }
+
     pub(super) fn refresh_external(&mut self, session: &Session, feed: &SceneFeed) {
         // A canonical evaluation attempt may retain unresolved references. It still
         // contains source-current geometry; model-tool candidate scenes never enter.
@@ -66,6 +82,7 @@ impl SketchEditor {
         ui: &mut egui::Ui,
         session: &Session,
         sketch: EntityId,
+        resources: &multicad_core::project_file::ProjectResources,
     ) {
         let enabled = self.preview.is_none()
             && !self.constraints.dirty()
@@ -75,11 +92,16 @@ impl SketchEditor {
             && !self.materials.pending()
             && !self.picking
             && !self.moving;
-        let proposal =
-            self.external
-                .inspector(ui, session, sketch, self.evaluated.as_ref(), enabled);
+        let proposal = self.external.inspector(
+            ui,
+            session,
+            sketch,
+            self.evaluated.as_ref(),
+            enabled,
+            resources,
+        );
         if let Some(proposal) = proposal
-            && let Err(error) = self.adopt_external(session, sketch, proposal)
+            && let Err(error) = self.adopt_external(session, sketch, proposal, resources)
         {
             self.message = error;
         }
@@ -89,15 +111,28 @@ impl SketchEditor {
         session: &Session,
         sketch: EntityId,
         proposal: Proposal,
+        resources: &multicad_core::project_file::ProjectResources,
     ) -> Result<(), String> {
-        self.constraints.accept_external_edit(
+        self.constraints.accept_external_edit_with_report(
             session,
             sketch,
             proposal.reference,
             proposal.edit,
             proposal.label,
+            Some(proposal.report),
         )?;
         self.external.cancel();
+        self.constraints.require_external_native();
+        let result = self.external.validate_candidate(
+            session,
+            self.constraints
+                .external_prepared()
+                .ok_or("Reference preview is missing")?,
+            resources,
+        );
+        if let Err(error) = result {
+            self.constraints.complete_external_native(Err(error));
+        }
         self.tool = None;
         self.operations.cancel();
         self.clear_drawing_progress();
@@ -120,10 +155,15 @@ impl SketchEditor {
         self.selected
             .is_some_and(|id| self.constraints.external_can_apply(session, id))
     }
-    pub fn preview_external(&mut self, session: &Session, channel: Channel) -> Result<(), String> {
+    pub fn preview_external(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
         let id = self.selected.ok_or("Open the owning sketch")?;
         let proposal = self.external.prepare(session, channel)?;
-        self.adopt_external(session, id, proposal)
+        self.adopt_external(session, id, proposal, resources)
     }
     pub fn apply_external(&mut self, session: &mut Session) -> Result<(), String> {
         if !self.external_pending() {
