@@ -1,14 +1,19 @@
 #include "curves.hpp"
 #include "multicad-kernel/src/lib.rs.h"
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepGProp.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
+#include <Bnd_Box.hxx>
 #include <GCE2d_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2dAPI_InterCurveCurve.hxx>
@@ -24,6 +29,7 @@
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
+#include <algorithm>
 #include <cmath>
 #include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
@@ -377,6 +383,110 @@ curved_profile_revolve(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
         gp_Dir(sign * direction.x, sign * direction.y, sign * direction.z));
     BRepPrimAPI_MakeRevol sweep(face.face, axis, std::abs(angle), true);
     return sweepShape(sweep, face, std::abs(angle) != 2. * std::acos(-1.));
+  });
+}
+std::unique_ptr<Shape> curved_profile_to_plane(
+    const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
+    rust::Slice<const uint32_t> offsets, const SweepLimits &limits,
+    const Point3 &direction, const Frame3 &termination) {
+  return guarded([&] {
+    const double tolerance = limits.tolerance;
+    const double minimumFeature = limits.minimum_feature;
+    const double maximumLength = limits.maximum_length;
+    auto source = build(f, edges, offsets, tolerance);
+    const auto targetPlane = plane(termination);
+    const gp_Vec n(targetPlane.Axis().Direction());
+    const gp_Vec sweep(direction.x, direction.y, direction.z);
+    const double denominator = sweep.Dot(n);
+    if (!std::isfinite(denominator) || std::abs(denominator) < 1e-10)
+      throw std::runtime_error(
+          "Extrusion direction is parallel to termination plane");
+    // Rigidly align the *exact* face to target coordinates. Native optimal
+    // bounds conservatively enclose every point, including curved boundaries;
+    // no display vertices or parameter sampling participate in reachability.
+    const auto u = targetPlane.XAxis().Direction();
+    const auto v = targetPlane.YAxis().Direction();
+    const gp_Vec origin(targetPlane.Location().XYZ());
+    gp_Trsf local;
+    local.SetValues(u.X(), u.Y(), u.Z(), -origin.Dot(gp_Vec(u)), v.X(), v.Y(),
+                    v.Z(), -origin.Dot(gp_Vec(v)), n.X(), n.Y(), n.Z(),
+                    -origin.Dot(n));
+    BRepBuilderAPI_Transform transformed(source.face, local, true);
+    if (!transformed.IsDone())
+      throw std::runtime_error("Exact profile support transform failed");
+    Bnd_Box bounds;
+    BRepBndLib::AddOptimal(transformed.Shape(), bounds, false, false);
+    if (bounds.IsVoid() || bounds.IsOpen())
+      throw std::runtime_error("Exact profile has no finite support bounds");
+    double x, y, lo, a, b, hi;
+    bounds.Get(x, y, lo, a, b, hi);
+    const double first = -lo / denominator, last = -hi / denominator;
+    const double minimum = std::min(first, last),
+                 maximum = std::max(first, last);
+    const gp_Vec profileNormal(plane(f).Axis().Direction());
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) ||
+        minimum * std::abs(sweep.Dot(profileNormal)) < minimumFeature)
+      throw std::runtime_error(
+          "Termination plane is unreachable, crosses the start section, or "
+          "leaves less than the minimum feature thickness");
+    if (maximum > maximumLength)
+      throw std::runtime_error(
+          "Plane termination sweep exceeds the model length limit");
+    const double margin =
+        std::max({minimumFeature, tolerance * 100., maximum * 1e-6});
+    BRepPrimAPI_MakePrism prism(source.face, sweep * (maximum + margin));
+    if (!prism.IsDone())
+      throw std::runtime_error("Termination prism construction failed");
+    BRepBuilderAPI_MakeFace boundary(targetPlane);
+    if (!boundary.IsDone())
+      throw std::runtime_error("Termination plane construction failed");
+    const auto keepPoint =
+        targetPlane.Location().Translated(n * -std::copysign(1., denominator));
+    BRepPrimAPI_MakeHalfSpace half(boundary.Face(), keepPoint);
+    if (!half.IsDone())
+      throw std::runtime_error("Termination half-space construction failed");
+    BRepAlgoAPI_Common clipped;
+    TopTools_ListOfShape arguments, tools;
+    arguments.Append(prism.Shape());
+    tools.Append(half.Solid());
+    clipped.SetArguments(arguments);
+    clipped.SetTools(tools);
+    clipped.SetNonDestructive(true);
+    clipped.SetRunParallel(false);
+    clipped.SetFuzzyValue(0.);
+    clipped.Build();
+    if (!clipped.IsDone() || clipped.HasErrors() || clipped.Shape().IsNull() ||
+        !BRepCheck_Analyzer(clipped.Shape()).IsValid())
+      throw std::runtime_error("Exact plane-terminated prism is invalid");
+    auto result = std::make_unique<Shape>(Shape{clipped.Shape(), {}, {}});
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(result->value, TopAbs_FACE, faces);
+    auto append = [&](const TopoDS_Shape &face, uint8_t role,
+                      uint32_t sourceIndex) {
+      const int index = faces.FindIndex(face);
+      if (index <= 0)
+        return;
+      for (const auto &seed : result->seeds)
+        if (seed.face == static_cast<uint32_t>(index - 1) &&
+            seed.role == role && seed.source_index == sourceIndex)
+          return;
+      result->seeds.push_back(
+          NativeSeed{static_cast<uint32_t>(index - 1), sourceIndex, role});
+    };
+    auto seed = [&](const TopoDS_Shape &face, uint8_t role,
+                    uint32_t sourceIndex) {
+      append(face, role, sourceIndex);
+      for (const auto &modified : clipped.Modified(face))
+        append(modified, role, sourceIndex);
+      for (const auto &generated : clipped.Generated(face))
+        append(generated, role, sourceIndex);
+    };
+    seed(prism.FirstShape(), 0, 0);
+    seed(boundary.Face(), 1, 0);
+    for (const auto &entry : source.sources)
+      for (const auto &face : prism.Generated(entry.first))
+        seed(face, 2, entry.second);
+    return result;
   });
 }
 } // namespace multicad::kernel

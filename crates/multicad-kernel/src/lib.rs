@@ -35,6 +35,11 @@ mod ffi {
         pub min: Point3,
         pub max: Point3,
     }
+    pub struct SweepLimits {
+        tolerance: f64,
+        minimum_feature: f64,
+        maximum_length: f64,
+    }
     pub struct FaceInfo {
         pub index: u32,
         pub planar: bool,
@@ -182,6 +187,14 @@ mod ffi {
             axis_direction: &Point3,
             angle: f64,
         ) -> Result<UniquePtr<Shape>>;
+        fn curved_profile_to_plane(
+            frame: &Frame3,
+            edges: &[CurvedEdgeData],
+            offsets: &[u32],
+            limits: &SweepLimits,
+            direction: &Point3,
+            termination: &Frame3,
+        ) -> Result<UniquePtr<Shape>>;
         fn tessellate(
             shape: &Shape,
             deflection: f64,
@@ -202,6 +215,7 @@ mod sketch_queries;
 pub use sketch_queries::NativeRegionQueries;
 mod provenance;
 mod revolve;
+mod to_plane;
 pub use curves::*;
 pub use revolve::RevolutionAxis;
 /// Content identity of the exact native source tree, including local patches.

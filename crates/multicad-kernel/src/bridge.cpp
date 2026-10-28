@@ -127,7 +127,13 @@ bool valid(const Shape &s) {
 double volume(const Shape &s) {
   return guard([&] {
     GProp_GProps p;
-    BRepGProp::VolumeProperties(s.value, p);
+    // Clipped curved faces need adaptive integration; the default overload
+    // uses a fixed rule and can lose visible precision on valid exact B-reps.
+    // Gauss-Kronrod reports whole-solid relative error, avoiding false failures
+    // from near-zero individual face contributions. Spline spans are enabled.
+    const double relativeError = BRepGProp::VolumePropertiesGK(s.value, p, 1e-10, true, true);
+    if (!std::isfinite(relativeError) || relativeError < 0. || relativeError > 1e-7)
+      throw std::runtime_error("Native volume integration did not converge");
     return p.Mass();
   });
 }

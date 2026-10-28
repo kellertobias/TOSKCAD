@@ -4,6 +4,7 @@ namespace multicad::kernel {
 struct CurvedEdgeData;
 struct CurveSampleData;
 struct CurveQueryData;
+struct SweepLimits;
 CurveSampleData curve_evaluate(const CurvedEdgeData &, double parameter);
 CurveQueryData curve_intersections(const CurvedEdgeData &,
                                    const CurvedEdgeData &, double tolerance,
@@ -27,4 +28,8 @@ curved_profile_revolve(const Frame3 &, rust::Slice<const CurvedEdgeData>,
                        rust::Slice<const uint32_t>, double tolerance,
                        const Point3 &axis_origin, const Point3 &axis_direction,
                        double angle);
+std::unique_ptr<Shape>
+curved_profile_to_plane(const Frame3 &, rust::Slice<const CurvedEdgeData>,
+                        rust::Slice<const uint32_t>, const SweepLimits &,
+                        const Point3 &direction, const Frame3 &termination);
 } // namespace multicad::kernel
