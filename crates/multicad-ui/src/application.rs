@@ -120,6 +120,7 @@ pub struct Application {
     text_input_was_focused: bool,
     scene_backends: Option<crate::viewport::BackendFactory>,
     model_backends: Option<crate::viewport::BackendFactory>,
+    drawing_backends: Option<crate::drawings::DrawingBackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
 }
 impl Application {
@@ -159,6 +160,7 @@ impl Application {
             text_input_was_focused: false,
             scene_backends: None,
             model_backends: None,
+            drawing_backends: None,
             sketch_queries: None,
         };
         app.discover_recoveries()?;
@@ -198,6 +200,12 @@ impl Application {
             project.sketch.set_query_factory(factory.clone());
         }
         self.sketch_queries = Some(factory);
+    }
+    pub fn set_drawing_backends(&mut self, factory: crate::drawings::DrawingBackendFactory) {
+        for project in &mut self.projects {
+            project.drawings.set_backend_factory(factory.clone());
+        }
+        self.drawing_backends = Some(factory);
     }
     pub fn current_mut(&mut self) -> &mut Project {
         &mut self.projects[self.active]
@@ -1351,6 +1359,13 @@ impl Application {
         let ctx = ui.ctx().clone();
         self.poll_files();
         self.schedule_recovery(&ctx);
+        if let Some(factory) = &self.drawing_backends {
+            for project in &mut self.projects {
+                if !project.drawings.has_backend_factory() {
+                    project.drawings.set_backend_factory(factory.clone());
+                }
+            }
+        }
         if let Some(factory) = &self.scene_backends {
             for project in &mut self.projects {
                 if !project.scene.has_backend() {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod drawings;
 mod files;
 mod modeling;
 mod self_test;
@@ -99,5 +100,6 @@ fn run_application() -> Result<(), String> {
     // The tool controller uses its own worker and publication lane so a
     // candidate can never replace canonical geometry under the same revision.
     app.set_model_backends(models);
+    app.set_drawing_backends(std::sync::Arc::new(|| Box::new(drawings::Backend::new())));
     multicad_ui::launch_with(Box::new(move |_| Ok(Box::new(app))))
 }

@@ -1,6 +1,9 @@
 //! Page editing owns authored drawing source; it never invents model views.
 mod canvas;
+mod evaluation;
 mod inspector;
+mod views;
+pub use evaluation::{DrawingBackend, DrawingBackendFactory, DrawingReply};
 #[cfg(test)]
 mod tests;
 use crate::{egui, icons::Icon};
@@ -22,9 +25,12 @@ pub enum DrawingTool {
     Apply,
     Discard,
     Text,
+    Projection,
+    Section,
+    Detail,
 }
 impl DrawingTool {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 13] = [
         Self::NewDocument,
         Self::AddPage,
         Self::Duplicate,
@@ -35,6 +41,9 @@ impl DrawingTool {
         Self::Apply,
         Self::Discard,
         Self::Text,
+        Self::Projection,
+        Self::Section,
+        Self::Detail,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -48,6 +57,9 @@ impl DrawingTool {
             Self::Apply => "page-apply",
             Self::Discard => "page-discard",
             Self::Text => "drawing-note",
+            Self::Projection => "drawing-projection",
+            Self::Section => "drawing-section",
+            Self::Detail => "drawing-detail",
         }
     }
     pub fn label(self) -> &'static str {
@@ -62,6 +74,9 @@ impl DrawingTool {
             Self::Apply => "Apply page",
             Self::Discard => "Discard edits",
             Self::Text => "Text note",
+            Self::Projection => "Model view",
+            Self::Section => "Section view",
+            Self::Detail => "Detail view",
         }
     }
     pub fn icon(self) -> Icon {
@@ -75,6 +90,9 @@ impl DrawingTool {
             Self::Discard => Icon::Undo,
             Self::Text => Icon::Sketch,
             Self::Duplicate => Icon::Page,
+            Self::Projection => Icon::Orthographic,
+            Self::Section => Icon::Section,
+            Self::Detail => Icon::Fit,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -89,6 +107,9 @@ impl DrawingTool {
             Self::Apply => &["applypage"],
             Self::Discard => &["discardpage"],
             Self::Text => &["pagenote"],
+            Self::Projection => &["drawingview"],
+            Self::Section => &["drawingsection"],
+            Self::Detail => &["drawingdetail"],
         }
     }
 }
@@ -100,6 +121,9 @@ pub struct DrawingEditor {
     original: Option<Page>,
     revision: Option<u64>,
     pub error: Option<String>,
+    feed: evaluation::DrawingFeed,
+    preview_input: Option<(EntityId, u64, Option<EntityId>, Option<Page>)>,
+    selected_view: Option<EntityId>,
 }
 impl DrawingEditor {
     pub fn dirty(&self) -> bool {
@@ -163,10 +187,14 @@ impl DrawingEditor {
                         .book
                         .is_some_and(|id| session.document().get(id).is_some())
                     && self.validate_draft().is_ok()
+                    && self.changed_views_ready(session)
             }
             DrawingTool::Discard => self.dirty(),
             DrawingTool::Settings => self.selected.is_some(),
             DrawingTool::Text => self.selected.is_some(),
+            DrawingTool::Projection | DrawingTool::Section | DrawingTool::Detail => {
+                self.selected.is_some() && self.has_backend_factory()
+            }
             DrawingTool::AddPage | DrawingTool::NewDocument => !self.dirty(),
             _ => self.selected.is_some() && !self.dirty(),
         }
@@ -194,7 +222,23 @@ impl DrawingEditor {
         let book = self.sync(session)?;
         let actor = Actor::local(channel);
         if tool == DrawingTool::Settings {
+            self.selected_view = None;
             return Ok(());
+        }
+        let view_kind = match tool {
+            DrawingTool::Projection => Some(drawings::ViewKind::Projection),
+            DrawingTool::Section => Some(drawings::ViewKind::Section { offset_mm: 10. }),
+            DrawingTool::Detail => Some(drawings::ViewKind::Detail {
+                center_mm: [0.; 2],
+                radius_mm: 25.,
+            }),
+            _ => None,
+        };
+        if let Some(kind) = view_kind {
+            if !self.has_backend_factory() {
+                return Err("Native drawing provider is unavailable".into());
+            }
+            return self.add_view(kind);
         }
         if tool == DrawingTool::Text {
             let page = self.draft.as_mut().ok_or("Add a page first")?;
@@ -207,6 +251,9 @@ impl DrawingEditor {
             return Ok(());
         }
         if tool == DrawingTool::Apply {
+            if !self.changed_views_ready(session) {
+                return Err("Generate a successful current native preview for the changed drawing views before Apply".into());
+            }
             if !self.dirty() {
                 return Err("There are no unapplied page edits".into());
             }
@@ -358,9 +405,11 @@ impl DrawingEditor {
                     self.inspector(ui, session);
                 });
             });
+        self.tick_views(ui.ctx(), session);
+        let mut view_selected = None;
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(page) = &self.draft {
-                canvas::show(
+                view_selected = canvas::show(
                     ui,
                     page,
                     book.pages
@@ -369,6 +418,12 @@ impl DrawingEditor {
                         .unwrap_or(0)
                         + 1,
                     book.pages.len(),
+                    if self.preview_matches(session) {
+                        self.feed.result.as_deref()
+                    } else {
+                        None
+                    },
+                    self.selected_view,
                 );
             } else {
                 ui.centered_and_justified(|ui| {
@@ -387,5 +442,8 @@ impl DrawingEditor {
                 });
             }
         });
+        if let Some(id) = view_selected {
+            self.selected_view = Some(id);
+        }
     }
 }

@@ -1,11 +1,21 @@
 use crate::egui;
-use multicad_core::drawings::{self, Page, TextCell};
-pub(super) fn show(ui: &mut egui::Ui, page: &Page, index: usize, total: usize) {
+use multicad_core::{
+    document::EntityId,
+    drawings::{self, DrawingEvaluation, Page, TextCell, VectorRole, ViewEvaluation},
+};
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    page: &Page,
+    index: usize,
+    total: usize,
+    evaluation: Option<&DrawingEvaluation>,
+    selected: Option<EntityId>,
+) -> Option<EntityId> {
     let layout = match drawings::layout_page(page, index, total) {
         Ok(layout) => layout,
         Err(error) => {
             ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
-            return;
+            return None;
         }
     };
     let available = ui.available_rect_before_wrap();
@@ -66,6 +76,86 @@ pub(super) fn show(ui: &mut egui::Ui, page: &Page, index: usize, total: usize) {
     for cell in &layout.notes {
         text(cell, false);
     }
+    let mut clicked = None;
+    let view_painter = painter.with_clip_rect(paper);
+    for view in &page.views {
+        let to_screen = |point| {
+            let p = view.paper_point(point);
+            paper.min + egui::vec2(p[0] as f32, p[1] as f32) * scale
+        };
+        let anchor =
+            paper.min + egui::vec2(view.position_mm[0] as f32, view.position_mm[1] as f32) * scale;
+        match evaluation.and_then(|e| e.views.get(&view.id)) {
+            Some(ViewEvaluation::Ready { vectors, .. }) => {
+                let mut bounds = egui::Rect::NOTHING;
+                for vector in vectors {
+                    let points: Vec<_> = vector.preview_mm.iter().map(|p| to_screen(*p)).collect();
+                    for point in &points {
+                        bounds.extend_with(*point);
+                    }
+                    let color = if vector.role == VectorRole::Hidden {
+                        egui::Color32::from_gray(115)
+                    } else {
+                        egui::Color32::BLACK
+                    };
+                    let stroke =
+                        egui::Stroke::new((vector.line_width_mm as f32 * scale).max(0.6), color);
+                    if vector.role == VectorRole::Hidden {
+                        view_painter.extend(egui::Shape::dashed_line(
+                            &points,
+                            stroke,
+                            3. * scale,
+                            2. * scale,
+                        ));
+                    } else {
+                        view_painter.add(egui::Shape::line(points, stroke));
+                    }
+                }
+                if bounds.is_finite() && bounds.intersects(paper) {
+                    let response = ui
+                        .interact(
+                            bounds.expand(5.).intersect(paper),
+                            ui.id().with(view.id),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(format!(
+                            "{} · {}:{} · click to edit",
+                            view.name, view.scale.numerator, view.scale.denominator
+                        ));
+                    if response.clicked() {
+                        clicked = Some(view.id);
+                    }
+                    if selected == Some(view.id) {
+                        view_painter.rect_stroke(
+                            bounds.expand(4.),
+                            0,
+                            egui::Stroke::new(1., egui::Color32::from_rgb(30, 110, 180)),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+                }
+            }
+            Some(ViewEvaluation::Unresolved { message }) => {
+                view_painter.text(
+                    anchor,
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}\nUnresolved: {}", view.name, message),
+                    egui::FontId::proportional(11.),
+                    egui::Color32::DARK_RED,
+                );
+            }
+            None => {
+                view_painter.text(
+                    anchor,
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}\nNative preview pending", view.name),
+                    egui::FontId::proportional(11.),
+                    egui::Color32::from_gray(100),
+                );
+            }
+        }
+    }
     ui.allocate_rect(available, egui::Sense::hover())
-        .on_hover_text("Paper-space drawing source. No model views have been generated.");
+        .on_hover_text("Drawing paper with source-linked native vector views");
+    clicked
 }

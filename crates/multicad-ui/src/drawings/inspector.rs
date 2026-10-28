@@ -30,6 +30,26 @@ impl DrawingEditor {
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
+        if let Some(error) = &self.feed.error {
+            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        }
+        if self.selected_view.is_some() {
+            self.views_inspector(ui, session);
+            return;
+        }
+        if let Some(page) = &self.draft {
+            ui.horizontal_wrapped(|ui| {
+                for view in &page.views {
+                    if ui
+                        .button(&view.name)
+                        .on_hover_text("Edit this model view")
+                        .clicked()
+                    {
+                        self.selected_view = Some(view.id);
+                    }
+                }
+            });
+        }
         let Some(page) = &mut self.draft else {
             ui.label("Select a page or add a new page.");
             return;
@@ -163,40 +183,6 @@ impl DrawingEditor {
         if let Some(index) = remove {
             page.notes.remove(index);
         }
-        let validation = self.validate_draft();
-        if let Err(error) = &validation {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
-        }
-        let stale = self.dirty() && self.revision != Some(session.revision());
-        if stale {
-            ui.colored_label(
-                egui::Color32::LIGHT_RED,
-                "The source changed. Discard this stale page draft before editing again.",
-            );
-        }
-        ui.separator();
-        let mut action = None;
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    self.enabled(DrawingTool::Apply, session),
-                    egui::Button::new("Apply page"),
-                )
-                .clicked()
-            {
-                action = Some(DrawingTool::Apply);
-            }
-            if ui
-                .add_enabled(self.dirty(), egui::Button::new("Discard edits"))
-                .clicked()
-            {
-                action = Some(DrawingTool::Discard);
-            }
-        });
-        if let Some(tool) = action
-            && let Err(error) = self.invoke(session, tool, Channel::Ui)
-        {
-            self.error = Some(error);
-        }
+        self.page_actions(ui, session);
     }
 }

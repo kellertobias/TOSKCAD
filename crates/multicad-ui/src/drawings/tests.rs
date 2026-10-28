@@ -264,3 +264,194 @@ fn long_page_values_and_notes_keep_a_narrow_inspector_bounded() {
             .drop_without_applying_deltas();
     }
 }
+
+struct TestPublisher {
+    reply: Option<DrawingReply>,
+    fail: bool,
+}
+impl DrawingBackend for TestPublisher {
+    fn request(
+        &mut self,
+        document: &Document,
+        stamp: drawings::DrawingStamp,
+    ) -> Result<(), String> {
+        let mut views = std::collections::BTreeMap::new();
+        for id in drawings::books(document) {
+            for view in drawings::read(document, id)
+                .unwrap()
+                .pages
+                .iter()
+                .flat_map(|p| &p.views)
+            {
+                let source = view.source.entities()[0];
+                let evaluation = if self.fail {
+                    drawings::ViewEvaluation::Unresolved {
+                        message: "Test source unavailable".into(),
+                    }
+                } else {
+                    drawings::ViewEvaluation::Ready {
+                        vectors: vec![drawings::DrawingVector {
+                            source,
+                            material_part: source,
+                            role: drawings::VectorRole::Visible,
+                            curve: drawings::VectorCurve::Line {
+                                a: [0., 0.],
+                                b: [600., 400.],
+                            },
+                            preview_mm: vec![[0., 0.], [600., 400.]],
+                            line_width_mm: 0.25,
+                        }],
+                        warnings: vec![],
+                    }
+                };
+                views.insert(view.id, evaluation);
+            }
+        }
+        self.reply = Some(DrawingReply {
+            stamp,
+            result: Ok(std::sync::Arc::new(drawings::DrawingEvaluation {
+                stamp,
+                views,
+            })),
+        });
+        Ok(())
+    }
+    fn poll(&mut self) -> Option<DrawingReply> {
+        self.reply.take()
+    }
+    fn cancel(&mut self) {
+        self.reply = None;
+    }
+}
+fn publish_editor(editor: &mut DrawingEditor, session: &Session) {
+    let ctx = egui::Context::default();
+    editor.tick_views(&ctx, session);
+    editor.feed.tick(1.);
+    editor.feed.tick(2.);
+}
+fn view_editor(fail: bool) -> (DrawingEditor, Session, EntityId) {
+    let mut doc = Document::new("View UI").unwrap();
+    let part = multicad_core::document::Entity::new(
+        "Panel",
+        multicad_core::document::EntityData::Part {
+            features: vec![],
+            material: None,
+            tags: Default::default(),
+        },
+    );
+    let id = part.id;
+    doc.insert(part).unwrap();
+    let mut session = Session::new(doc).unwrap();
+    let mut editor = DrawingEditor::default();
+    editor.set_backend_factory(std::sync::Arc::new(move || {
+        Box::new(TestPublisher { reply: None, fail })
+    }));
+    editor
+        .invoke(&mut session, DrawingTool::AddPage, Channel::Ui)
+        .unwrap();
+    (editor, session, id)
+}
+#[test]
+fn view_apply_requires_current_publication_and_fitting_is_one_undoable_page_edit() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    let id = editor.selected_view.unwrap();
+    assert!(!editor.enabled(DrawingTool::Apply, &session));
+    assert!(
+        editor
+            .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+            .is_err()
+    );
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    assert!(editor.enabled(DrawingTool::Apply, &session));
+    editor.fit_view(id, &session).unwrap();
+    assert!(!editor.enabled(DrawingTool::Apply, &session));
+    let view = &editor.draft.as_ref().unwrap().views[0];
+    assert_eq!(view.frame.origin_mm, [300., 200., 0.]);
+    assert!(view.scale.denominator > 1);
+    publish_editor(&mut editor, &session);
+    assert!(editor.enabled(DrawingTool::Apply, &session));
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    assert_eq!(
+        drawings::read(session.document(), editor.book.unwrap())
+            .unwrap()
+            .pages[0]
+            .views[0]
+            .id,
+        id
+    );
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    editor.sync(&session).unwrap();
+    assert!(editor.draft.as_ref().unwrap().views.is_empty());
+}
+#[test]
+fn unresolved_view_cannot_apply_and_cancel_preserves_the_original_page() {
+    let (mut editor, mut session, source) = view_editor(true);
+    let saved = session.document().clone();
+    editor
+        .invoke(&mut session, DrawingTool::Section, Channel::Ui)
+        .unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    assert!(!editor.enabled(DrawingTool::Apply, &session));
+    assert!(
+        editor
+            .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+            .is_err()
+    );
+    editor
+        .invoke(&mut session, DrawingTool::Discard, Channel::Ui)
+        .unwrap();
+    assert!(!editor.dirty());
+    assert_eq!(session.document(), &saved);
+}
+#[test]
+fn view_tools_require_an_explicit_native_provider_and_reject_source_changes_after_preview() {
+    let mut editor = DrawingEditor::default();
+    let mut session = session();
+    editor
+        .invoke(&mut session, DrawingTool::AddPage, Channel::Ui)
+        .unwrap();
+    assert!(!editor.enabled(DrawingTool::Projection, &session));
+    assert!(
+        editor
+            .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+            .is_err()
+    );
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Detail, Channel::Ui)
+        .unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    assert!(editor.enabled(DrawingTool::Apply, &session));
+    let mut part = session.document().get(source).unwrap().clone();
+    part.name = "Changed source".into();
+    session
+        .apply(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: Actor::local(Channel::Mcp),
+            label: "External edit".into(),
+            edits: vec![multicad_core::document::Mutation::Replace(part)],
+        })
+        .unwrap();
+    assert!(!editor.enabled(DrawingTool::Apply, &session));
+    assert!(
+        editor
+            .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+            .is_err()
+    );
+}
