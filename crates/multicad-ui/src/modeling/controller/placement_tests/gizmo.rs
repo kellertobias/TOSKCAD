@@ -530,3 +530,63 @@ fn source_neutral_queue_failure_aborts_the_drag_without_enabling_apply() {
     assert_eq!(s.document(), &original);
     assert_eq!(s.revision(), revision);
 }
+
+#[test]
+fn a_measure_or_view_interruption_cancels_an_in_progress_gesture_without_a_transaction() {
+    for lost_release in [true, false] {
+        let (mut s, a, _, _) = fixture();
+        let original = s.document().clone();
+        let revision = s.revision();
+        let scene = canonical(&s);
+        let mut h = Harness::new(scene.clone());
+        let (mut c, gate) = begin(&s, &scene, BTreeSet::from([a.body]), true);
+        let start = h.point([18., 0., 0.]);
+        let end = h.point([28., 0., 0.]);
+        h.start(
+            &mut c,
+            &mut s,
+            start,
+            Modifiers {
+                alt: true,
+                ..Modifiers::NONE
+            },
+        );
+        h.frame(
+            &mut c,
+            &mut s,
+            vec![Event::PointerMoved(end)],
+            Modifiers {
+                alt: true,
+                ..Modifiers::NONE
+            },
+        )
+        .unwrap();
+        if lost_release {
+            // Another read-only interaction owns the viewer during this frame.
+            h.ctx
+                .run_ui(
+                    egui::RawInput {
+                        events: vec![Event::PointerButton {
+                            pos: end,
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Modifiers::NONE,
+                        }],
+                        ..Default::default()
+                    },
+                    |_| {},
+                )
+                .drop_without_applying_deltas();
+        } else {
+            h.camera.yaw += 0.1;
+        }
+        assert!(h.frame(&mut c, &mut s, vec![], Modifiers::NONE).is_err());
+        assert!(!c.placement_interaction.active());
+        assert!(c.placement_confirm.is_none());
+        assert!(c.candidate.is_none());
+        gate.store(false, Ordering::SeqCst);
+        c.poll(&s, &Default::default());
+        assert_eq!(s.document(), &original);
+        assert_eq!(s.revision(), revision);
+    }
+}

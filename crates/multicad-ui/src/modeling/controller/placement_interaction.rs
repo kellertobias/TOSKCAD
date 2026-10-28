@@ -80,6 +80,9 @@ impl ModelToolController {
             self.placement_interaction = Default::default();
             self.placement_confirm = None;
             self.candidate = None;
+            if let Some(ModelForm::Placement(panel)) = &mut self.form {
+                panel.set_copy_modifier(false);
+            }
             self.error = Some(error.clone());
         }
         result

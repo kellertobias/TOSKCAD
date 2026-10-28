@@ -330,6 +330,14 @@ impl Interaction {
         parameters: &EvaluatedParameters,
     ) -> Result<Gesture, String> {
         input.basis.validate()?;
+        if let Some(drag) = &self.drag
+            && (drag.camera != input.camera || drag.rect != input.rect || drag.basis != input.basis)
+        {
+            return Err(
+                "The view or transform coordinates changed; the placement gesture was cancelled"
+                    .into(),
+            );
+        }
         let (pointer, pressed, released, down, alt) = ui.input(|i| {
             // Mouse-up may precede an Option/Alt key-up in the same frame.
             // The copy intent belongs to the gesture's pointer event.
@@ -355,6 +363,9 @@ impl Interaction {
             )
         });
         let values = Values::read(source, parameters)?;
+        if self.drag.is_some() && !down && !pressed && !released {
+            return Err("The pointer gesture was interrupted; the placement was cancelled".into());
+        }
         let draw_origin = self
             .drag
             .as_ref()
@@ -438,7 +449,7 @@ impl Interaction {
         }
         let moved = self.drag.as_ref().is_some_and(|d| d.changed);
         let owned = self.drag.is_some();
-        let released = owned && (released || !down && !pressed);
+        let released = owned && released;
         if released {
             self.drag = None;
         }
