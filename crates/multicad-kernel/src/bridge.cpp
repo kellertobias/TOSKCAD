@@ -154,18 +154,23 @@ static std::unique_ptr<Shape> finish_treatment(
   return result;
 }
 
-std::unique_ptr<Shape> treat_edges(const Shape &input,
-    rust::Slice<const uint32_t> indices, uint8_t mode, double size) {
+std::unique_ptr<Shape> treat_edges_sided(const Shape &input,
+    rust::Slice<const uint32_t> indices, rust::Slice<const uint32_t> sides, uint8_t mode, double size, double second) {
   return guard([&]() -> std::unique_ptr<Shape> {
-    if (indices.empty() || indices.size() > 128 || mode > 1 ||
+    if (indices.empty() || indices.size() > 128 || mode > 3 ||
         !std::isfinite(size) || size <= 0. || size > 1e7)
       throw std::runtime_error("Invalid bounded edge-treatment request");
+    if (mode >= 2 && (sides.size() != indices.size() || !std::isfinite(second) || second <= 0. ||
+        (mode == 2 && second > 1e7) || (mode == 3 && second >= std::acos(-1.) / 2.)))
+      throw std::runtime_error("Invalid sided chamfer parameters");
     const auto edges = topology_map(input.value, 1);
+    const auto faces = topology_map(input.value, 0);
     TopTools_IndexedDataMapOfShapeListOfShape adjacency;
     TopExp::MapShapesAndAncestors(input.value, TopAbs_EDGE, TopAbs_FACE, adjacency);
     BRepBuilderAPI_Copy copy(input.value, true, false);
     if (!copy.IsDone()) throw std::runtime_error("Could not isolate edge-treatment input");
     std::vector<TopoDS_Edge> selected;
+    std::vector<TopoDS_Face> referenceFaces;
     std::set<uint32_t> unique;
     for (uint32_t index : indices) {
       if (index >= static_cast<uint32_t>(edges.Extent()) || !unique.insert(index).second)
@@ -180,6 +185,12 @@ std::unique_ptr<Shape> treat_edges(const Shape &input,
       const auto copied = copy.ModifiedShape(edge);
       if (copied.IsNull() || copied.ShapeType() != TopAbs_EDGE)
         throw std::runtime_error("Selected edge copy history is incomplete");
+      if (mode >= 2) {
+        const uint32_t faceIndex = sides[selected.size()];
+        if (faceIndex >= static_cast<uint32_t>(faces.Extent()) || !incident.Contains(faces(static_cast<int>(faceIndex+1))))
+          throw std::runtime_error("The explicit chamfer reference face is not adjacent to the selected edge");
+        referenceFaces.push_back(TopoDS::Face(copy.ModifiedShape(faces(static_cast<int>(faceIndex+1)))));
+      }
       selected.push_back(TopoDS::Edge(copied));
     }
     if (mode == 0) {
@@ -191,12 +202,20 @@ std::unique_ptr<Shape> treat_edges(const Shape &input,
       return finish_treatment(input, copy, operation, selected);
     }
     BRepFilletAPI_MakeChamfer operation(copy.Shape());
-    for (const auto &edge : selected) operation.Add(size, edge);
+    for (size_t i=0; i<selected.size(); ++i) {
+      if (mode == 1) operation.Add(size, selected[i]);
+      else if (mode == 2) operation.Add(size, second, selected[i], referenceFaces[i]);
+      else operation.AddDA(size, second, selected[i], referenceFaces[i]);
+    }
     for (const auto &edge : selected)
       if (operation.Contour(edge) == 0)
         throw std::runtime_error("Selected edge is not a supported chamfer contour");
     return finish_treatment(input, copy, operation, selected);
   });
+}
+std::unique_ptr<Shape> treat_edges(const Shape &input, rust::Slice<const uint32_t> indices, uint8_t mode, double size) {
+  if (mode > 1) throw std::runtime_error("Explicit face sides are required for asymmetric chamfers");
+  return treat_edges_sided(input, indices, indices, mode, size, 0.);
 }
 std::unique_ptr<Shape> extrude(double w, double d, double h) {
   return guard([&] {
@@ -485,6 +504,17 @@ std::unique_ptr<Shape> affine_transform_shape(const Shape &s,
     return result;
   });
 }
+std::unique_ptr<Shape> mirror_shape(const Shape &s, const Frame3 &f) {
+  return guard([&] {
+    gp_Trsf mirror;
+    mirror.SetMirror(axes(f));
+    BRepBuilderAPI_Transform operation(s.value, mirror, true);
+    if (!operation.IsDone()) throw std::runtime_error("Native reflection failed");
+    auto result = checked(operation.Shape());
+    record_history(*result, s, 0, operation);
+    return result;
+  });
+}
 Bounds3 bounds(const Shape &s) {
   return guard([&] {
     Bnd_Box b;
@@ -516,7 +546,12 @@ rust::Vec<FaceInfo> faces(const Shape &s) {
                     data(p.CentreOfMass()), p.Mass()};
       if (surface.GetType() == GeomAbs_Plane) {
         auto plane = surface.Plane();
-        auto n = plane.Axis().Direction();
+        // A reflected gp_Ax3 may be indirect: its stored axis is then the
+        // opposite of the parameter-space surface normal. Use exact native
+        // derivatives before applying the topological face orientation.
+        gp_Pnt location; gp_Vec du, dv;
+        surface.D1(0., 0., location, du, dv);
+        gp_Dir n(du.Crossed(dv));
         if (face.Orientation() == TopAbs_REVERSED)
           n.Reverse();
         info.planar = true;

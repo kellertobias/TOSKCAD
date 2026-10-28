@@ -19,6 +19,19 @@ pub struct TreatmentEdge {
     pub origin: Origin,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidedTreatmentEdge {
+    pub edge: TreatmentEdge,
+    /// Evaluation-local face resolved from an explicitly captured side intent.
+    pub reference_face: TopologyKey,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SidedChamfer {
+    Distances { first_mm: f64, second_mm: f64 },
+    DistanceAngle { distance_mm: f64, angle_rad: f64 },
+}
+
 fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError {
     GeometryError {
         operation: "edge treatment",
@@ -28,6 +41,73 @@ fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError
 }
 
 impl Solid {
+    pub fn chamfer_edges_sided_named(
+        &self,
+        edges: &[SidedTreatmentEdge],
+        treatment: SidedChamfer,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        let (mode, first, second) = match treatment {
+            SidedChamfer::Distances {
+                first_mm,
+                second_mm,
+            } => {
+                policy.length(first_mm)?;
+                policy.length(second_mm)?;
+                (2, first_mm, second_mm)
+            }
+            SidedChamfer::DistanceAngle {
+                distance_mm,
+                angle_rad,
+            } => {
+                policy.length(distance_mm)?;
+                if !angle_rad.is_finite()
+                    || !(0. ..std::f64::consts::FRAC_PI_2).contains(&angle_rad)
+                    || angle_rad == 0.
+                {
+                    return Err(failure(
+                        GeometryErrorKind::Input,
+                        "Chamfer angle must lie strictly between zero and 90 degrees",
+                    ));
+                }
+                (3, distance_mm, angle_rad)
+            }
+        };
+        let selections: Vec<_> = edges.iter().map(|edge| edge.edge.clone()).collect();
+        let indices = self.validate_treatment_edges(&selections, feature)?;
+        let available: BTreeSet<_> = self
+            .topology_snapshot(feature, 0)?
+            .elements
+            .into_iter()
+            .map(|e| e.key)
+            .collect();
+        if edges.iter().any(|edge| {
+            edge.reference_face.kind != TopologyKind::Face
+                || !available.contains(&edge.reference_face)
+        }) {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Each asymmetric chamfer edge needs a current explicitly selected reference face",
+            ));
+        }
+        let sides: Vec<_> = edges
+            .iter()
+            .map(|edge| edge.reference_face.ordinal)
+            .collect();
+        let handle = ffi::treat_edges_sided(&self.native.0, &indices, &sides, mode, first, second)
+            .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
+        let mut result = Self::adopt(handle, policy, "sided chamfer")?;
+        if result.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Chamfer did not produce one connected solid",
+            ));
+        }
+        result.inherit_treatment_provenance(self, &selections, feature)?;
+        Ok(result)
+    }
     /// Constant-radius fillets and symmetric-distance chamfers only. Invalid
     /// treatment results never replace or mutate the input B-rep.
     pub fn treat_edges_named(
@@ -43,6 +123,24 @@ impl Solid {
             EdgeTreatment::Chamfer { distance_mm } => (1, distance_mm),
         };
         policy.length(size)?;
+        let indices = self.validate_treatment_edges(edges, feature)?;
+        let handle = ffi::treat_edges(&self.native.0, &indices, mode, size)
+            .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
+        let mut result = Self::adopt(handle, policy, "edge treatment")?;
+        if result.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Edge treatment did not produce one connected solid",
+            ));
+        }
+        result.inherit_treatment_provenance(self, edges, feature)?;
+        Ok(result)
+    }
+    fn validate_treatment_edges(
+        &self,
+        edges: &[TreatmentEdge],
+        feature: EntityId,
+    ) -> Result<Vec<u32>, GeometryError> {
         if feature.is_nil() || edges.is_empty() || edges.len() > 128 {
             return Err(failure(
                 GeometryErrorKind::Input,
@@ -91,17 +189,6 @@ impl Solid {
                 ));
             }
         }
-        let indices: Vec<_> = edges.iter().map(|e| e.key.ordinal).collect();
-        let handle = ffi::treat_edges(&self.native.0, &indices, mode, size)
-            .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
-        let mut result = Self::adopt(handle, policy, "edge treatment")?;
-        if result.solid_count()? != 1 {
-            return Err(failure(
-                GeometryErrorKind::InvalidResult,
-                "Edge treatment did not produce one connected solid",
-            ));
-        }
-        result.inherit_treatment_provenance(self, edges, feature)?;
-        Ok(result)
+        Ok(edges.iter().map(|e| e.key.ordinal).collect())
     }
 }

@@ -232,11 +232,20 @@ mod ffi {
             matrix: &[f64],
             translation: &Point3,
         ) -> Result<UniquePtr<Shape>>;
+        fn mirror_shape(shape: &Shape, plane: &Frame3) -> Result<UniquePtr<Shape>>;
         fn treat_edges(
             shape: &Shape,
             edges: &[u32],
             mode: u8,
             size: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        fn treat_edges_sided(
+            shape: &Shape,
+            edges: &[u32],
+            sides: &[u32],
+            mode: u8,
+            first: f64,
+            second: f64,
         ) -> Result<UniquePtr<Shape>>;
         fn bounds(shape: &Shape) -> Result<Bounds3>;
         fn faces(shape: &Shape) -> Result<Vec<FaceInfo>>;
@@ -322,8 +331,10 @@ mod geometry;
 pub use geometry::*;
 mod affine;
 pub use affine::AffineTransform;
+mod advanced;
+pub use advanced::TreatmentFace;
 mod edge_treatment;
-pub use edge_treatment::{EdgeTreatment, TreatmentEdge};
+pub use edge_treatment::{EdgeTreatment, SidedChamfer, SidedTreatmentEdge, TreatmentEdge};
 mod drawing;
 pub use drawing::*;
 mod worker;

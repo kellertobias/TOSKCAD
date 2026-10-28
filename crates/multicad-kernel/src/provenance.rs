@@ -72,6 +72,36 @@ fn side_frame(profile: &Profile, edge: &ProfileEdge, height: f64) -> Option<Refe
 }
 
 impl Solid {
+    /// Deformation/reflection frames must describe current native planes rather
+    /// than preserve the pre-operation normals or support-plane positions.
+    pub(crate) fn inherit_current_provenance(
+        &mut self,
+        source: &Self,
+        owner: EntityId,
+    ) -> Result<(), GeometryError> {
+        self.inherit_provenance(&[source], None)?;
+        let snapshot = self.topology_snapshot(owner, 0)?;
+        self.provenance = snapshot
+            .elements
+            .into_iter()
+            .map(|mut element| {
+                let anchors: Vec<_> = element
+                    .frames
+                    .iter()
+                    .map(|frame| frame.origin.clone())
+                    .collect();
+                element.frames.clear();
+                if let Some(AnalyticGeometry::Plane { frame }) = element.geometry {
+                    for origin in anchors {
+                        element.frames.push(AnchoredFrame { origin, frame });
+                    }
+                }
+                element
+            })
+            .collect();
+        self.topology_snapshot(owner, 0)?;
+        Ok(())
+    }
     pub(crate) fn inherit_treatment_provenance(
         &mut self,
         source: &Self,
