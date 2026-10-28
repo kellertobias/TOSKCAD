@@ -3,6 +3,7 @@
 //! before presenting an Apply-capable modeling preview.
 mod advanced;
 mod alignment;
+mod assembly;
 mod boolean;
 mod common;
 mod edge_treatment;
@@ -20,6 +21,7 @@ mod transform;
 mod transform_math;
 pub use advanced::*;
 pub use alignment::*;
+pub use assembly::*;
 pub use boolean::*;
 pub use edge_treatment::*;
 pub use evaluation::*;
