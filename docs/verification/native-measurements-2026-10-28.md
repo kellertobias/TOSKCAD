@@ -16,10 +16,10 @@ artifacts/development/build-CTvRKD/MultiCAD.app
 
 Its `Contents/MacOS/multicad` SHA-256 was
 `0dd49a091f142d972f709e1e33b6db86dce30dd514eb5a2ca69ed953aa12f060`.
-The integrated checkpoint passed `cargo fmt --all -- --check`,
+The integrated source at `e1ce67f` passed `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`, and
-`cargo test --workspace --locked --offline`: 945 passed, zero failed, two ignored.
-Logs are `/private/tmp/multicad-native-transform-final-{fmt,clippy,tests}.log`.
+`cargo test --workspace --locked --offline`: 948 passed, zero failed, two ignored.
+Logs are `/private/tmp/multicad-coalesced-drag-{fmt,clippy,tests}.log`.
 
 ## Face selection, retained values and history
 
@@ -73,10 +73,16 @@ reference. The retained query has a missing-source error instead of a value.
 The helper refuses an existing report path; the overwrite check retained the
 original report unchanged.
 
-## Verification limits
+## Fresh reopen and limits
 
-A fresh interactive reopen of `measurement-native.multicad` remains pending.
-Its independent saved-container read and native recompilation succeeded.
+A fresh launch of `artifacts/development/build-Fd6A5g/MultiCAD.app`, built from
+`e1ce67f`, opened `measurement-native.multicad` in a new session at revision zero.
+Parameters displayed `clearance` at 650 mm. Global Measure listed the retained
+“Measurement” pin at 650.000 mm while both native envelopes remained visible.
+The new session inherited no temporary selection from the earlier review.
+The executable SHA-256 was
+`2bb6d06193518d80feec245a6383e00ff74abc49214ae3405a173c1d86893c1d`.
+The independent saved-container read and native recompilation also succeeded.
 The equipment envelopes do not establish physical operating or safety clearance,
 and this checkpoint does not implement Room tools.
 
