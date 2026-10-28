@@ -140,6 +140,11 @@ pub fn read_scale(
             owner,
             base,
         } => {
+            if output != 0 {
+                return Err(invalid(
+                    "An owned scale branch must start its separate component history",
+                ));
+            }
             if !matches!(
                 document.get(*component).map(|e| &e.data),
                 Some(EntityData::Part { .. })
@@ -182,11 +187,12 @@ pub fn scale_component_owner(
     }
     Ok(None)
 }
-pub fn scale_component_root(
+pub fn scale_component_ancestry(
     document: &Document,
     mut body: EntityId,
-) -> Result<EntityId, DocumentError> {
+) -> Result<Vec<EntityId>, DocumentError> {
     let mut seen = BTreeSet::new();
+    let mut ancestry = vec![];
     loop {
         if seen.len() >= 128 || !seen.insert(body) {
             return Err(invalid(
@@ -196,6 +202,7 @@ pub fn scale_component_root(
         let Some(EntityData::Part { features, .. }) = document.get(body).map(|e| &e.data) else {
             return Err(invalid("Scale component ancestry is missing"));
         };
+        ancestry.push(body);
         let mut next = None;
         for id in features {
             if let Some(EntityData::Feature { definition, .. }) = document.get(*id).map(|e| &e.data)
@@ -209,7 +216,16 @@ pub fn scale_component_root(
         }
         match next {
             Some(component) => body = component,
-            None => return Ok(body),
+            None => return Ok(ancestry),
         }
     }
+}
+pub fn scale_component_root(
+    document: &Document,
+    body: EntityId,
+) -> Result<EntityId, DocumentError> {
+    scale_component_ancestry(document, body)?
+        .last()
+        .copied()
+        .ok_or_else(|| invalid("Scale component ancestry is empty"))
 }

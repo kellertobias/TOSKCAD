@@ -239,8 +239,32 @@ pub fn resolve_instance_pose_with_snapshots(
     else {
         return Err(invalid("Choose an existing Instance"));
     };
-    let Some(mut driver) = *placement_source else {
-        return RigidPose::from_placement(*placement);
+    let base = match placement_source {
+        Some(driver) => PlacementBase::Previous { driver: *driver },
+        None => PlacementBase::Literal {
+            pose: RigidPose::from_placement(*placement)?,
+        },
+    };
+    resolve_placement_base_with_snapshots(
+        document, instance, &base, parameters, revision, snapshots,
+    )
+}
+/// Evaluate a frozen preceding rigid chain independently of the Instance's
+/// later controls. Geometry operations can conjugate into that local frame.
+pub fn resolve_placement_base_with_snapshots(
+    document: &Document,
+    instance: EntityId,
+    base: &PlacementBase,
+    parameters: &EvaluatedParameters,
+    revision: u64,
+    snapshots: &std::collections::BTreeMap<EntityId, crate::references::TopologySnapshot>,
+) -> Result<RigidPose, DocumentError> {
+    let mut driver = match base {
+        PlacementBase::Literal { pose } => {
+            pose.validate()?;
+            return Ok(*pose);
+        }
+        PlacementBase::Previous { driver } => *driver,
     };
     let mut visited = BTreeSet::new();
     let mut controls = vec![];

@@ -114,6 +114,15 @@ impl<'a> Walker<'a> {
             .ok_or_else(|| missing(id, "scope source"))?;
         match &entity.data {
             EntityData::Part { .. } => {
+                if path.is_empty()
+                    && crate::model::scale_component_owner(self.document, id)?.is_some()
+                {
+                    return Err(ExportError::new(
+                        ErrorKind::Unsupported,
+                        Some(id),
+                        "Owned scale geometry must be exported through its explicit Instance",
+                    ));
+                }
                 self.parts.insert(PartRef {
                     part: id,
                     occurrence_path: path.clone(),
@@ -244,7 +253,11 @@ pub fn resolve_parts(document: &Document, scope: &Scope) -> Result<Vec<ResolvedP
             }
             for entity in document.entities() {
                 match &entity.data {
-                    EntityData::Part { .. } => walker.visit(entity.id, &mut vec![], None)?,
+                    EntityData::Part { .. }
+                        if crate::model::scale_component_owner(document, entity.id)?.is_none() =>
+                    {
+                        walker.visit(entity.id, &mut vec![], None)?
+                    }
                     EntityData::Instance { .. } if !members.contains(&entity.id) => {
                         walker.visit(entity.id, &mut vec![], None)?
                     }

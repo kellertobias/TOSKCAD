@@ -79,17 +79,24 @@ pub fn read_instance_alignment(
         let EntityData::Instance { component, .. } = owner.data else {
             return Err(invalid("Instance alignment owner has the wrong kind"));
         };
-        if let (Some(EntityData::Part { features, .. }), AlignmentAnchor::Geometry { reference }) = (
-            document.get(component).map(|e| &e.data),
-            &source.parameters.source,
-        ) && references.iter().any(|input| {
+        if let AlignmentAnchor::Geometry { reference } = &source.parameters.source
+            && matches!(
+                document.get(component).map(|e| &e.data),
+                Some(EntityData::Part { .. })
+            )
+        {
+            let components = crate::model::scale_component_ancestry(document, component)?;
+            if references.iter().any(|input| {
             input.intent.id == *reference
-                && input.source != component
-                && !features.contains(&input.source)
-        }) {
-            return Err(invalid(
+                && !components.iter().any(|component| {
+                    input.source == *component
+                        || matches!(document.get(*component).map(|e|&e.data),Some(EntityData::Part{features,..}) if features.contains(&input.source))
+                })
+            }) {
+                return Err(invalid(
                 "An instance's moving source anchor must refer to its local component producer, never its own world occurrence",
-            ));
+                ));
+            }
         }
     }
     if let PlacementBase::Previous { driver: previous } = source.base
