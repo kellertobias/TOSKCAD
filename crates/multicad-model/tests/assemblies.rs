@@ -393,3 +393,303 @@ fn nested_reused_subassemblies_have_distinct_exact_leaf_paths_and_stable_reorder
         1250.,
     );
 }
+#[test]
+fn all_five_joint_kinds_produce_checked_native_rigid_geometry() {
+    for (kind, translation, rotation, minimum) in [
+        (JointKind::Fixed, [0., 0., 0.], 0., [9., 20., 30.]),
+        (JointKind::Slider, [0., 0., 6.], 0., [9., 20., 36.]),
+        (JointKind::Revolute, [0., 0., 0.], 90., [7., 19., 30.]),
+        (JointKind::Cylindrical, [0., 0., 6.], 90., [7., 19., 36.]),
+        (JointKind::Planar, [5., 7., 0.], 90., [12., 26., 30.]),
+    ] {
+        let mut s = Session::new(Document::new("Native supported DOFs").unwrap()).unwrap();
+        let part = PrimitiveRequest::new(
+            "Stock",
+            PrimitiveParameters::Box {
+                size: [length(2.), length(3.), length(4.)],
+                frame: Default::default(),
+            },
+        );
+        s.commit(prepare_primitive(&s, 0, actor(), &part).unwrap().prepared)
+            .unwrap();
+        let original = s.document().get(part.body).unwrap().clone();
+        let instance = ComponentPlacementRequest::new(part.body, Default::default());
+        let p = prepare_place_component(&s, s.revision(), actor(), &instance).unwrap();
+        commit(&mut s, p);
+        let joint = JointRequest::new(
+            instance.instance,
+            JointParameters {
+                kind,
+                moving: JointAnchor::Frame {
+                    frame: Box::new(PrimitiveFrame {
+                        origin: [length(1.), length(0.), length(0.)],
+                        ..Default::default()
+                    }),
+                },
+                target: JointAnchor::Frame {
+                    frame: Box::new(PrimitiveFrame {
+                        origin: [length(10.), length(20.), length(30.)],
+                        ..Default::default()
+                    }),
+                },
+                values: JointValues {
+                    translation: translation.map(length),
+                    rotation: angle(rotation),
+                },
+                ..Default::default()
+            },
+            vec![],
+        );
+        let p = prepare_joint(&s, s.revision(), actor(), &joint).unwrap();
+        commit(&mut s, p);
+        let path = OccurrencePath {
+            root: instance.instance,
+            members: vec![],
+        };
+        let native = compile(&s);
+        for (a, b) in native
+            .leaf_solid(&path)
+            .unwrap()
+            .bounds()
+            .unwrap()
+            .min
+            .into_iter()
+            .zip(minimum)
+        {
+            near(a, b);
+        }
+        near(native.leaf_solid(&path).unwrap().volume_mm3().unwrap(), 24.);
+        assert_eq!(s.document().get(part.body), Some(&original));
+        assert!(native.snapshot().references.all_resolved());
+        let loaded = reopen(&s);
+        let native = compile(&loaded);
+        for (a, b) in native
+            .leaf_snapshot(&path)
+            .unwrap()
+            .bounds
+            .min
+            .into_iter()
+            .zip(minimum)
+        {
+            near(a, b);
+        }
+    }
+}
+#[test]
+fn semantic_component_anchor_tracks_current_native_faces_and_rejects_missing_reference() {
+    let mut doc = Document::new("Referenced joint anchors").unwrap();
+    doc.insert(Entity::new(
+        "height",
+        EntityData::Parameter {
+            expression: "5".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    ))
+    .unwrap();
+    let mut s = Session::new(doc).unwrap();
+    let height = Dimension::Expression {
+        expression: BoundExpression::bind(s.document(), "=$height", "mm", None).unwrap(),
+    };
+    let base = PrimitiveRequest::new(
+        "Base",
+        PrimitiveParameters::Box {
+            size: [length(20.), length(20.), height],
+            frame: Default::default(),
+        },
+    );
+    let small = PrimitiveRequest::new(
+        "Moving",
+        PrimitiveParameters::Box {
+            size: [length(2.), length(2.), length(2.)],
+            frame: Default::default(),
+        },
+    );
+    for request in [&base, &small] {
+        s.commit(
+            prepare_primitive(&s, s.revision(), actor(), request)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    }
+    let fixed = ComponentPlacementRequest::new(base.body, Default::default());
+    let moving = ComponentPlacementRequest::new(small.body, Default::default());
+    for request in [&fixed, &moving] {
+        let p = prepare_place_component(&s, s.revision(), actor(), request).unwrap();
+        commit(&mut s, p);
+    }
+    let native = compile(&s);
+    let mut topology = native.snapshot().shapes[&base.feature].topology.clone();
+    topology.owner = base.body;
+    let origin = Origin {
+        source: base.feature,
+        role: "cap.end".into(),
+    };
+    let face = topology
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face && e.origins.contains(&origin))
+        .unwrap();
+    let mut intent = GeometryIntent::capture(&topology, face.key).unwrap();
+    intent.attachment = Some(references::Attachment {
+        anchor: origin,
+        offset_mm: [0.; 3],
+        angle_rad: 0.,
+    });
+    let joint = JointRequest::new(
+        moving.instance,
+        JointParameters {
+            parent: Some(fixed.instance),
+            target: JointAnchor::Geometry {
+                reference: intent.id,
+            },
+            ..Default::default()
+        },
+        vec![AlignmentInput {
+            source: base.body,
+            intent,
+        }],
+    );
+    let p = prepare_joint(&s, s.revision(), actor(), &joint).unwrap();
+    commit(&mut s, p);
+    near(
+        compile(&s)
+            .solid(moving.instance)
+            .unwrap()
+            .bounds()
+            .unwrap()
+            .min[2],
+        5.,
+    );
+    let mut parameter = s
+        .document()
+        .entities()
+        .find(|e| e.name == "height")
+        .unwrap()
+        .clone();
+    let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+        panic!()
+    };
+    *expression = "9".into();
+    s.apply(Request {
+        expected_revision: s.revision(),
+        actor: actor(),
+        label: "Raise referenced face".into(),
+        edits: vec![Mutation::Replace(parameter)],
+    })
+    .unwrap();
+    let native = compile(&s);
+    near(
+        native.solid(moving.instance).unwrap().bounds().unwrap().min[2],
+        9.,
+    );
+    assert!(native.snapshot().references.all_resolved());
+    let original = s.document().clone();
+    let revision = s.revision();
+    let mut broken = JointRequest::existing(s.document(), joint.driver).unwrap();
+    broken.references[0]
+        .intent
+        .attachment
+        .as_mut()
+        .unwrap()
+        .anchor
+        .source = multicad_core::document::EntityId::new();
+    broken.references[0].intent.origins = std::collections::BTreeSet::from([broken.references[0]
+        .intent
+        .attachment
+        .as_ref()
+        .unwrap()
+        .anchor
+        .clone()]);
+    let prepared = prepare_joint_edit(&s, revision, actor(), &broken).unwrap();
+    assert!(
+        Compiler::default()
+            .compile(prepared.prepared.document(), revision)
+            .is_err()
+    );
+    assert_eq!(s.document(), &original);
+    assert_eq!(s.revision(), revision);
+}
+#[test]
+fn nested_leaf_geometry_preserves_instance_owned_nonuniform_scale() {
+    let mut s = Session::new(Document::new("Exact scaled component leaves").unwrap()).unwrap();
+    let source = PrimitiveRequest::new(
+        "Original",
+        PrimitiveParameters::Box {
+            size: [length(2.), length(3.), length(4.)],
+            frame: Default::default(),
+        },
+    );
+    s.commit(prepare_primitive(&s, 0, actor(), &source).unwrap().prepared)
+        .unwrap();
+    let instance = ComponentPlacementRequest::new(
+        source.body,
+        NumericTransform {
+            translation: [length(20.), length(0.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let p = prepare_place_component(&s, s.revision(), actor(), &instance).unwrap();
+    commit(&mut s, p);
+    let request = ScaleBatchRequest::new(
+        s.document(),
+        vec![ScaleTarget::Instance {
+            instance: instance.instance,
+        }],
+        ScaleParameters {
+            factors: [2., 3., 1.].map(|value| Dimension::Literal {
+                value,
+                unit: "ratio".into(),
+            }),
+            ..Default::default()
+        },
+        false,
+    )
+    .unwrap();
+    let prepared = prepare_scale_batch(&s, s.revision(), actor(), &request).unwrap();
+    Compiler::default()
+        .compile(prepared.prepared.document(), s.revision())
+        .unwrap();
+    s.commit(prepared.prepared).unwrap();
+    let EntityData::Instance { component, .. } = s.document().get(instance.instance).unwrap().data
+    else {
+        panic!()
+    };
+    let assembly = AssemblyRequest::new("Scaled source", vec![instance.instance], vec![component]);
+    let p = prepare_assembly(&s, s.revision(), actor(), &assembly).unwrap();
+    commit(&mut s, p);
+    let root = ComponentPlacementRequest::new(
+        assembly.assembly,
+        NumericTransform {
+            translation: [length(100.), length(0.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let p = prepare_place_component(&s, s.revision(), actor(), &root).unwrap();
+    commit(&mut s, p);
+    let path = OccurrencePath {
+        root: root.instance,
+        members: vec![instance.instance],
+    };
+    let native = compile(&s);
+    near(
+        native.leaf_solid(&path).unwrap().volume_mm3().unwrap(),
+        144.,
+    );
+    near(
+        native.solid(source.body).unwrap().volume_mm3().unwrap(),
+        24.,
+    );
+    assert_eq!(native.snapshot().leaf_occurrences.len(), 2);
+    let restored = reopen(&s);
+    near(
+        compile(&restored)
+            .leaf_solid(&path)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        144.,
+    );
+}
