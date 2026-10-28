@@ -3,6 +3,7 @@ pub mod camera;
 pub mod controls;
 pub mod icons;
 pub mod model_tree;
+pub mod modeling;
 pub mod navigation;
 pub mod parameter_editor;
 pub mod reference_repair;
