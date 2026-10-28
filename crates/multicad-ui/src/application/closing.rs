@@ -1,11 +1,38 @@
 //! Explicit window-close choices remain in Rust, including native Quit requests.
 use super::*;
 impl Application {
+    fn recents_writing(&self) -> bool {
+        self.recent_worker
+            .as_ref()
+            .is_some_and(|worker| worker.writing())
+    }
+    pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if self.close_after_recents && !self.recents_writing() {
+            self.close_after_recents = false;
+            if !self.should_defer_close() {
+                self.close_allowed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_allowed {
+            if self.should_defer_close() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.close_confirm = true;
+            } else if self.recents_writing() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.close_after_recents = true;
+            }
+        }
+    }
     pub(super) fn confirm_close_without_saving(
         &mut self,
         ctx: &egui::Context,
     ) -> Result<(), String> {
-        if !self.pending_files.is_empty() || self.projects.iter().any(|p| p.exchange.writing()) {
+        if self.recents_writing()
+            || self.picker_scope.is_some()
+            || !self.pending_files.is_empty()
+            || self.projects.iter().any(|p| p.exchange.writing())
+        {
             return Err("Wait for file and export operations to finish before closing".into());
         }
         self.close_allowed = true;
@@ -21,24 +48,49 @@ impl Application {
             .projects
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.dirty())
+            .filter(|(_, p)| Some(p.local_id) != self.welcome_placeholder && p.dirty())
             .map(|(index, p)| (index, p.title(), p.pending_edits()))
             .collect();
-        let busy =
-            !self.pending_files.is_empty() || self.projects.iter().any(|p| p.exchange.writing());
-        egui::Window::new("Unsaved documents").collapsible(false).show(ctx,|ui| {
-            if busy { ui.label("A file or export operation is still running. Keep this window open until it completes."); }
-            else if dirty.is_empty() {ui.label("All documents are saved. You can close this window.");}
-            else {ui.label("Choose a document to save, or close without saving the changes listed below.");}
-            for (index,name,draft) in &dirty {
-                if ui.selectable_label(self.active==*index,format!("{}{}",name,if *draft {" · unapplied edits"} else {""})).on_hover_text("Select this document before saving or reviewing its edits").clicked() {
-                    self.active = *index;
-                    self.mode=if self.current().exchange.dirty(){Mode::Export}else if self.current().drawings.dirty(){Mode::Drawings}else{Mode::Parameters};
-                    self.tab=0;
+        let busy = self.recents_writing()
+            || self.picker_scope.is_some()
+            || !self.pending_files.is_empty()
+            || self.projects.iter().any(|p| p.exchange.writing());
+        let response = crate::controls::modal(
+            ctx,
+            "unsaved-documents",
+            "Unsaved documents",
+            |ui| {
+                if busy {
+                    ui.label("A file or export operation is still running. Keep this window open until it completes.");
+                } else if dirty.is_empty() {
+                    ui.label("All documents are saved. You can close this window.");
+                } else {
+                    ui.label("Choose a document to save, or close without saving the changes listed below.");
                 }
-            }
-            if self.current().pending_edits() { ui.label("Apply or discard this document's pending edits before saving."); }
-            ui.horizontal(|ui| {
+                for (index, name, draft) in &dirty {
+                    if ui
+                        .selectable_label(
+                            self.active == *index,
+                            format!("{}{}", name, if *draft { " · unapplied edits" } else { "" }),
+                        )
+                        .on_hover_text("Select this document before saving or reviewing its edits")
+                        .clicked()
+                    {
+                        self.active = *index;
+                        self.mode = if self.current().exchange.dirty() {
+                            Mode::Export
+                        } else if self.current().drawings.dirty() {
+                            Mode::Drawings
+                        } else {
+                            Mode::Parameters
+                        };
+                        self.tab = 0;
+                    }
+                }
+                if self.current().pending_edits() {
+                    ui.label("Apply or discard this document's pending edits before saving.");
+                }
+                ui.horizontal(|ui| {
                 if ui.button("Cancel").on_hover_text("Keep all documents open").clicked() {self.close_confirm=false;}
                 let selected_unsaved = dirty.iter().any(|(index, _, _)| *index == self.active);
                 if ui.add_enabled(!busy && selected_unsaved && self.enabled(Command::Save),egui::Button::new("Save selected document")).on_hover_text("Save the selected unsaved tab; a new document needs a destination").on_disabled_hover_text("Select an unsaved document and finish or discard its pending edits before saving").clicked() {
@@ -49,7 +101,11 @@ impl Application {
                 if ui.add_enabled(!busy,egui::Button::new(label)).on_hover_text("Close this window and its documents; unapplied and unsaved changes are discarded. Existing project files and recovery snapshots remain intact.").clicked()
                     && let Err(error)=self.confirm_close_without_saving(ctx) {self.message=error;self.message_error=true;}
             });
-        });
+            },
+        );
+        if response.should_close() {
+            self.close_confirm = false;
+        }
     }
 }
 #[cfg(test)]

@@ -215,3 +215,122 @@ mod tests {
         }
     }
 }
+
+/// Consistent centered confirmations; floating tool palettes remain independent.
+pub fn modal<R>(
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    egui::Modal::new(egui::Id::new(id))
+        .area(egui::Modal::default_area(egui::Id::new(id)).fade_in(false))
+        .backdrop_color(egui::Color32::from_black_alpha(80))
+        .show(ctx, |ui| {
+            ui.set_width((ctx.content_rect().width() - 48.).clamp(240., 520.));
+            ui.heading(title);
+            ui.add_space(8.);
+            contents(ui)
+        })
+}
+
+#[cfg(test)]
+mod modal_tests {
+    use super::*;
+    #[test]
+    fn centered_modal_dims_the_full_view_and_owns_background_clicks_and_escape() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1200., 800.));
+        let point = Pos2::new(50., 50.);
+        let mut background_clicks = 0;
+        // Areas determine their content size before the first visible frame.
+        for _ in 0..2 {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |_| {
+                    modal(&ctx, "test-modal", "Unsaved project", |ui| {
+                        ui.label("Keep changes?");
+                        ui.button("Cancel")
+                    });
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        for events in [
+            vec![],
+            vec![],
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            vec![egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ] {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let background = ui.put(
+                        egui::Rect::from_min_size(Pos2::new(20., 20.), Vec2::new(100., 80.)),
+                        egui::Button::new("Underlying action"),
+                    );
+                    background_clicks += usize::from(background.clicked());
+                    let response = modal(&ctx, "test-modal", "Unsaved project", |ui| {
+                        ui.label("Keep changes?");
+                        ui.button("Cancel")
+                    });
+                    assert_eq!(response.backdrop_response.rect, screen);
+                    if response.response.rect.width() > 400. {
+                        assert!(
+                            (response.response.rect.center() - screen.center()).length() < 1.,
+                            "dialog should be centered: {:?}",
+                            response.response.rect
+                        );
+                    }
+                },
+            );
+            assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Rect(r) if r.rect==screen && r.fill==Color32::from_black_alpha(80))));
+            output.drop_without_applying_deltas();
+        }
+        assert_eq!(background_clicks, 0);
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                ..Default::default()
+            },
+            |_| {
+                let response = modal(&ctx, "test-modal", "Unsaved project", |ui| {
+                    ui.label("Keep changes?")
+                });
+                assert!(response.should_close());
+                assert!(
+                    !ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)),
+                    "Escape must not reach the active model tool"
+                );
+            },
+        )
+        .drop_without_applying_deltas();
+    }
+}

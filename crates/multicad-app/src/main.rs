@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod drawings;
 mod exchange;
+mod file_picker;
 mod files;
 mod inspection;
 mod modeling;
+mod recent_projects;
 mod self_test;
 
 use multicad_core::BuildInfo;
@@ -92,7 +94,8 @@ fn record_startup_error(error: &str) {
 }
 fn run_application() -> Result<(), String> {
     let mut app =
-        multicad_ui::application::Application::new(Box::new(files::ProjectStore::default()))?;
+        multicad_ui::application::Application::welcome(Box::new(files::ProjectStore::default()))?;
+    app.set_recent_store(Box::new(recent_projects::RecentFileStore::default()));
     app.set_sketch_queries(std::sync::Arc::new(|| {
         Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
     }));
@@ -105,5 +108,8 @@ fn run_application() -> Result<(), String> {
     app.set_measurement_backends(std::sync::Arc::new(|| Box::new(inspection::Backend::new())));
     app.set_drawing_backends(std::sync::Arc::new(|| Box::new(drawings::Backend::new())));
     app.set_export_backends(std::sync::Arc::new(|| Box::new(exchange::Backend::new())))?;
-    multicad_ui::launch_with(Box::new(move |_| Ok(Box::new(app))))
+    multicad_ui::launch_with(Box::new(move |context| {
+        app.set_file_picker(Box::new(file_picker::NativePicker::new(context)));
+        Ok(Box::new(app))
+    }))
 }

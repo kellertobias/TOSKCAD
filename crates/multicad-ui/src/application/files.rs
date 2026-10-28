@@ -55,9 +55,11 @@ fn recovery_filename(path: Option<&str>) -> &str {
 }
 impl Application {
     pub(super) fn file_busy(&self) -> bool {
-        self.pending_files
-            .values()
-            .any(|p| !matches!(p, PendingFile::Discover | PendingFile::Snapshot { .. }))
+        self.picker_scope.is_some()
+            || self
+                .pending_files
+                .values()
+                .any(|p| !matches!(p, PendingFile::Discover | PendingFile::Snapshot { .. }))
     }
     pub(super) fn discover_recoveries(&mut self) -> Result<(), String> {
         if self
@@ -136,6 +138,9 @@ impl Application {
         }
         self.submit_load(path, false)
     }
+    pub(super) fn submit_picker_import(&mut self, path: PathBuf) -> Result<(), String> {
+        self.submit_load(path, true)
+    }
     fn submit_load(&mut self, path: PathBuf, imported: bool) -> Result<(), String> {
         if self.file_busy() {
             return Err("A file operation is still running".into());
@@ -157,6 +162,7 @@ impl Application {
         self.message_error = false;
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn complete_file_action(&mut self) {
         let Some(action) = self.file_action else {
             return;
@@ -224,9 +230,10 @@ impl Application {
                 p.session
                     .acknowledge_saved(&source)
                     .map_err(|e| e.to_string())?;
-                p.path = Some(path);
+                p.path = Some(path.clone());
                 p.file_stamp = Some(saved.stamp);
                 p.imported_from = None;
+                self.remember_recent(path);
                 self.message = if saved.warnings.is_empty() {
                     "Project saved atomically".into()
                 } else {
@@ -246,8 +253,9 @@ impl Application {
                 } else {
                     let stamp = loaded.stamp.ok_or("Native open returned no file stamp")?;
                     p.session.mark_saved(0).map_err(|e| e.to_string())?;
-                    p.path = Some(path);
+                    p.path = Some(path.clone());
                     p.file_stamp = Some(stamp);
+                    self.remember_recent(path);
                 }
                 self.add_loaded_project(
                     p,
@@ -316,6 +324,7 @@ impl Application {
         Ok(())
     }
     fn add_loaded_project(&mut self, p: Project, diagnostics: Vec<String>, message: &str) {
+        self.discard_welcome_placeholder();
         self.projects.push(p);
         self.activate_project(self.projects.len() - 1);
         self.mode = Mode::Parameters;
@@ -392,66 +401,32 @@ impl Application {
         }
     }
     pub(super) fn file_windows(&mut self, ctx: &egui::Context) {
-        if let Some(action) = self.file_action {
-            let mut open = true;
-            egui::Window::new(match action {
-                FileAction::Open => "Open project",
-                FileAction::Save => "Save project",
-                FileAction::Import => "Import source snapshot",
-            })
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(match action {
-                    FileAction::Import => {
-                        "Explicit legacy JSON import. Save As creates a native .multicad project."
-                    }
-                    _ => {
-                        "Native .multicad project: source, embedded symbols and provider payloads."
-                    }
-                });
-                ui.add_sized(
-                    [500., 28.],
-                    egui::TextEdit::singleline(&mut self.file_path).hint_text("Project path"),
-                )
-                .on_hover_text(
-                    "Absolute or working-directory-relative path; native projects use .multicad",
-                );
-                if ui
-                    .add_enabled(
-                        !self.file_busy() && !self.file_path.trim().is_empty(),
-                        egui::Button::new(match action {
-                            FileAction::Open => "Open",
-                            FileAction::Save => "Save",
-                            FileAction::Import => "Import",
-                        }),
-                    )
-                    .clicked()
-                {
-                    self.complete_file_action();
-                }
-                if self.file_busy() {
-                    ui.label("File operation in progress…");
-                }
-            });
-            if !open && !self.file_busy() {
-                self.file_action = None;
-                self.file_document = None;
-                self.replacement = None;
-            }
-        }
+        self.native_picker_window(ctx);
         if let Some(replacement) = &self.replacement {
             let path = replacement.path.clone();
             let local = replacement.local;
             let stamp = replacement.stamp;
             let mut replace = false;
             let mut cancel = false;
-            egui::Window::new("Replace existing project?").collapsible(false).show(ctx,|ui| {
-                ui.label(format!("Replace {}? The existing project will be replaced only if it has not changed since this confirmation opened.",path.display()));
-                replace=ui.add_enabled(!self.file_busy(),egui::Button::new("Replace project")).clicked();
-                cancel=ui.button("Choose another path").clicked();
-            });
+            let response = crate::controls::modal(
+                ctx,
+                "replace-project",
+                "Replace existing project?",
+                |ui| {
+                    ui.label(format!("Replace {}? The existing project will be replaced only if it has not changed since this confirmation opened.",path.display()));
+                    replace = ui
+                        .add_enabled(!self.file_busy(), egui::Button::new("Replace project"))
+                        .clicked();
+                    cancel = ui.button("Choose another path").clicked();
+                },
+            );
             if cancel {
                 self.replacement = None;
+                self.picker_started = false;
+            } else if response.should_close() {
+                self.replacement = None;
+                self.file_action = None;
+                self.file_document = None;
             }
             if replace {
                 if self.current().local_id != local
@@ -933,8 +908,8 @@ mod tests {
         assert!(app.shortcut_context(&ctx).blocked);
         escape(&mut app);
         assert!(app.replacement.is_none());
-        assert!(matches!(app.file_action, Some(FileAction::Save)));
-        app.file_action = None;
+        assert!(app.file_action.is_none());
+        assert!(app.file_document.is_none());
         app.recovery_open = true;
         app.pending_files
             .insert(43, PendingFile::Restore { expected: None });

@@ -5,6 +5,8 @@ mod closing;
 #[path = "external_reference_app_tests.rs"]
 mod external_reference_tests;
 mod files;
+mod native_picker;
+mod welcome;
 #[cfg(test)]
 use crate::sketch_editor::DrawTool;
 use crate::storage::{FileStamp, FileWorker};
@@ -86,7 +88,7 @@ impl Project {
             .unwrap_or_else(|| self.session.document().name().into())
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum FileAction {
     Save,
     Open,
@@ -99,6 +101,11 @@ struct CommandRecord {
 }
 pub struct Application {
     pub projects: Vec<Project>,
+    welcome: bool,
+    welcome_placeholder: Option<EntityId>,
+    recent_worker: Option<crate::recent_projects::RecentWorker>,
+    recents: Vec<crate::recent_projects::RecentProject>,
+    recent_error: Option<String>,
     pub active: usize,
     pub mode: Mode,
     pub registry: Registry,
@@ -116,12 +123,17 @@ pub struct Application {
     file_action: Option<FileAction>,
     file_path: String,
     file_document: Option<multicad_core::document::EntityId>,
+    file_picker: Option<Box<dyn crate::file_picker::FilePicker>>,
+    picker_scope: Option<native_picker::PickerScope>,
+    picker_started: bool,
+    picker_generation: u64,
     find_open: bool,
     find: String,
     find_index: usize,
     history_open: bool,
     close_confirm: bool,
     close_allowed: bool,
+    close_after_recents: bool,
     pub shortcuts: ShortcutMap,
     shortcut_runtime: shortcuts::Runtime,
     shortcut_help: bool,
@@ -141,6 +153,11 @@ impl Application {
             projects: vec![Project::new(
                 Document::new("Untitled").map_err(|e| e.to_string())?,
             )?],
+            welcome: false,
+            welcome_placeholder: None,
+            recent_worker: None,
+            recents: vec![],
+            recent_error: None,
             active: 0,
             mode: Mode::Parameters,
             registry: Registry::default(),
@@ -158,12 +175,17 @@ impl Application {
             file_action: None,
             file_path: String::new(),
             file_document: None,
+            file_picker: None,
+            picker_scope: None,
+            picker_started: false,
+            picker_generation: 0,
             find_open: false,
             find: String::new(),
             find_index: 0,
             history_open: false,
             close_confirm: false,
             close_allowed: false,
+            close_after_recents: false,
             shortcuts: ShortcutMap::standard(),
             shortcut_runtime: shortcuts::Runtime::default(),
             shortcut_help: false,
@@ -183,8 +205,13 @@ impl Application {
     fn should_defer_close(&self) -> bool {
         self.projects
             .iter()
+            .filter(|p| Some(p.local_id) != self.welcome_placeholder)
             .any(|p| p.dirty() || p.exchange.writing())
-            || !self.pending_files.is_empty()
+            || self
+                .pending_files
+                .values()
+                .any(|job| !matches!(job, PendingFile::Discover))
+            || self.picker_scope.is_some()
     }
     pub fn current(&self) -> &Project {
         &self.projects[self.active]
@@ -323,6 +350,18 @@ impl Application {
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        if self.welcome
+            && !matches!(
+                command,
+                Command::New
+                    | Command::NewWindow
+                    | Command::Open
+                    | Command::RecoverProjects
+                    | Command::KeyboardShortcuts
+            )
+        {
+            return Err("Create or open a project first".into());
+        }
         if self.current().sketch.measurement.active()
             && matches!(command, Command::Drawing(_) | Command::Export(_))
         {
@@ -627,10 +666,14 @@ impl Application {
                 self.message = "Document history restored".into();
             }
             Command::New => {
-                let name = format!("Untitled {}", self.projects.len() + 1);
-                self.projects.push(Project::new(
-                    Document::new(name).map_err(|e| e.to_string())?,
-                )?);
+                let name = if self.welcome {
+                    "Untitled".into()
+                } else {
+                    format!("Untitled {}", self.projects.len() + 1)
+                };
+                let project = Project::new(Document::new(name).map_err(|e| e.to_string())?)?;
+                self.discard_welcome_placeholder();
+                self.projects.push(project);
                 self.activate_project(self.projects.len() - 1);
                 self.mode = Mode::Parameters;
                 self.tab = 0;
@@ -658,10 +701,13 @@ impl Application {
                         .unwrap_or_else(|| "Untitled.multicad".into());
                     self.file_document = Some(self.current().local_id);
                     self.file_action = Some(FileAction::Save);
+                    self.picker_started = false;
                     self.replacement = None;
                 }
             }
             Command::Open | Command::ImportSource => {
+                self.picker_started = false;
+                self.file_document = None;
                 self.file_action = Some(if command == Command::Open {
                     FileAction::Open
                 } else {
@@ -837,6 +883,18 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
+        if self.welcome
+            && !matches!(
+                command,
+                Command::New
+                    | Command::NewWindow
+                    | Command::Open
+                    | Command::RecoverProjects
+                    | Command::KeyboardShortcuts
+            )
+        {
+            return false;
+        }
         if self.measurement_blocks(command) {
             return false;
         }
@@ -1499,6 +1557,8 @@ impl Application {
             if self.replacement.is_some() {
                 if !self.file_busy() {
                     self.replacement = None;
+                    self.file_action = None;
+                    self.file_document = None;
                 }
             } else if self.file_action.is_some() {
                 if !self.file_busy() {
@@ -1603,6 +1663,12 @@ impl Application {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll_files();
+        self.poll_recents(&ctx);
+        self.handle_close_request(&ctx);
+        if self.welcome {
+            self.show_welcome(ui);
+            return;
+        }
         if let Some(factory) = &self.measurement_backends {
             for p in &mut self.projects {
                 if !p.sketch.measurement.has_factory() {
@@ -1682,13 +1748,6 @@ impl Application {
             {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
-        }
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.close_allowed
-            && self.should_defer_close()
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.close_confirm = true;
         }
         self.handle_shortcuts(&ctx);
         egui::Panel::top("header")
