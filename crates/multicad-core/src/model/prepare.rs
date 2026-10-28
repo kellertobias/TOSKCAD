@@ -96,7 +96,7 @@ fn executable(source: &ExtrudeDefinition, session: &Session) -> Result<(), Comma
     source.parameters.resolve_controls(session.parameters())?;
     Ok(())
 }
-fn termination_inputs(
+pub(super) fn termination_inputs(
     document: &Document,
     source: &ExtrudeDefinition,
     inputs: &[crate::document::Link],
@@ -265,6 +265,7 @@ pub fn prepare_extrude_edit(
     parameters: &ExtrudeParameters,
 ) -> Result<ModelPrepared, CommandError> {
     revision(session, expected_revision)?;
+    super::extrude_group::reject_individual_edit(session.document(), feature)?;
     let mut source = read_extrude(session.document(), feature)?;
     source.parameters = parameters.clone();
     let wanted = source.face_references();
@@ -306,6 +307,7 @@ pub fn prepare_extrude_edit_with_faces(
     faces: &[FaceInput],
 ) -> Result<ModelPrepared, CommandError> {
     revision(session, expected_revision)?;
+    super::extrude_group::reject_individual_edit(session.document(), feature)?;
     let mut source = read_extrude(session.document(), feature)?;
     source.parameters = parameters.clone();
     executable(&source, session)?;

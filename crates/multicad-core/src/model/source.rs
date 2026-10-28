@@ -636,6 +636,7 @@ pub fn read_extrude(
     Ok(source)
 }
 pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
+    super::extrude_group::validate_document(document)?;
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
@@ -673,6 +674,14 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::SPLIT_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
+            {
+                Some(format!(
+                    "{}.{}",
+                    definition.type_id, definition.schema_version
+                ))
+            }
+            EntityData::Extension { definition, .. }
+                if definition.type_id == super::EXTRUDE_GROUP_TYPE =>
             {
                 Some(format!(
                     "{}.{}",

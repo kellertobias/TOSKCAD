@@ -387,6 +387,7 @@ pub fn prepare_boolean_edit(
     edit: &BooleanEdit,
 ) -> Result<ModelPrepared, CommandError> {
     revision(session, expected_revision)?;
+    super::extrude_group::reject_individual_edit(session.document(), feature)?;
     let mut source = read_boolean(session.document(), feature)?;
     source.operation = edit.operation;
     source.tools = edit.tools.clone();

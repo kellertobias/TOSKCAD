@@ -17,6 +17,8 @@ use std::collections::BTreeSet;
 pub struct ExtrudeBooleanRequest {
     pub extrusion: ExtrudeRequest,
     pub booleans: Vec<BooleanRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<super::ExtrudeGroupDraft>,
 }
 impl ExtrudeBooleanRequest {
     /// Allocate once when the tool begins. Repeated previews preserve both
@@ -48,6 +50,7 @@ impl ExtrudeBooleanRequest {
         Self {
             extrusion,
             booleans,
+            group: None,
         }
     }
     fn validate(&self) -> Result<(), CommandError> {
@@ -159,14 +162,18 @@ pub fn prepare_extrude_boolean(
         actor.clone(),
         &request.booleans,
     )?;
-    let candidate = booleans.prepared.document();
+    let mut candidate = booleans.prepared.document().clone();
+    if let Some(group) = &request.group {
+        let entity = super::extrude_group::creation_entity(&candidate, group, request)?;
+        candidate = candidate.edited(&[Mutation::Insert(entity)])?;
+    }
     let prepared = session.prepare(Request {
         expected_revision,
         actor,
         label: format!("Extrude and {:?}", request.booleans[0].operation),
-        edits: delta(session.document(), candidate)?,
+        edits: delta(session.document(), &candidate)?,
     })?;
-    if prepared.document() != candidate {
+    if prepared.document() != &candidate {
         return Err(error(
             "Composite source preparation did not preserve the exact derived candidate",
         ));

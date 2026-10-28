@@ -380,5 +380,6 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::REVOLVE_CAPABILITY.into(),
         crate::model::BOOLEAN_CAPABILITY.into(),
         crate::model::SPLIT_CAPABILITY.into(),
+        crate::model::EXTRUDE_GROUP_CAPABILITY.into(),
     ])
 }
