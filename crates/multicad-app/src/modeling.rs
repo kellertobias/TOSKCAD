@@ -1,5 +1,9 @@
 //! Production composition: exact native evaluation to immutable UI scenes.
 use multicad_core::document::{Document, EntityData};
+use multicad_core::{
+    model::{EvaluationOptions, ModelEvaluationInfo},
+    project_file::ProjectResources,
+};
 use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
 use std::sync::Arc;
@@ -17,16 +21,34 @@ impl Backend {
             expected: None,
         }
     }
-}
-impl SceneBackend for Backend {
-    fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
+    fn evaluate(
+        &mut self,
+        document: &Document,
+        stamp: SceneStamp,
+        options: &EvaluationOptions,
+    ) -> Result<(), String> {
         if stamp.document != document.id() {
             return Err("Model scene request belongs to another document".into());
         }
         let runtime = self.runtime.as_mut().map_err(|e| e.clone())?;
-        let generation = runtime.request_tagged(document, stamp.revision, stamp.generation)?;
+        let generation =
+            runtime.request_evaluation(document, stamp.revision, stamp.generation, options)?;
         self.expected = Some((generation, stamp));
         Ok(())
+    }
+}
+impl SceneBackend for Backend {
+    fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
+        self.evaluate(document, stamp, &EvaluationOptions::default())
+    }
+    fn request_evaluation(
+        &mut self,
+        document: &Document,
+        _resources: &ProjectResources,
+        stamp: SceneStamp,
+        options: &EvaluationOptions,
+    ) -> Result<(), String> {
+        self.evaluate(document, stamp, options)
     }
     fn poll(&mut self) -> Option<SceneReply> {
         let (expected, stamp) = self.expected?;
@@ -129,6 +151,13 @@ fn scene(
         generation,
     };
     viewport::Scene::new(stamp, geometries, instances)
+        .and_then(|scene| {
+            scene.with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                source_hash: model.stamp.source_hash,
+                consumed_bodies: model.consumed_bodies.clone(),
+                cut_targets: model.cut_targets.clone(),
+            }))
+        })
         .map(Arc::new)
         .map_err(invalid)
 }

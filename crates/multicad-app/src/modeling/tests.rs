@@ -100,3 +100,224 @@ fn foreign_scene_scope_is_rejected_without_relabeling_the_document() {
     );
     assert!(backend.poll().is_none());
 }
+
+#[test]
+fn native_backend_receipts_bind_exact_queries_to_source_and_latest_options() {
+    use multicad_core::{
+        document::EntityId,
+        model::{CutTargetProbe, CutTargetQuery, PrimitiveFrame},
+        project_file::ContentHash,
+    };
+    let (mut session, target) = box_session();
+    let tool = PrimitiveRequest::new(
+        "Cut tool",
+        PrimitiveParameters::Box {
+            size: [length(2.), length(2.), length(40.)],
+            frame: PrimitiveFrame {
+                origin: [length(4.), length(4.), length(-5.)],
+                ..Default::default()
+            },
+        },
+    );
+    let prepared = model::prepare_primitive(
+        &session,
+        session.revision(),
+        Actor::local(Channel::CommandLine),
+        &tool,
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 41,
+    };
+    let probe = EntityId::new();
+    let mut options = EvaluationOptions {
+        cut_targets: vec![CutTargetProbe {
+            id: probe,
+            query: CutTargetQuery {
+                tools: vec![tool.feature],
+                component: None,
+                include: vec![],
+                exclude: vec![],
+            },
+        }],
+    };
+    let mut backend = Backend::new();
+    backend
+        .request_evaluation(
+            session.document(),
+            &ProjectResources::default(),
+            stamp,
+            &options,
+        )
+        .unwrap();
+    // Options can change without changing the source or even the public stamp.
+    // The backend's private job identity must still suppress the older receipt.
+    options.cut_targets[0].query.exclude.push(target.body);
+    backend
+        .request_evaluation(
+            session.document(),
+            &ProjectResources::default(),
+            stamp,
+            &options,
+        )
+        .unwrap();
+    let reply = receive(&mut backend);
+    assert_eq!(reply.stamp, stamp);
+    let scene = reply.result.unwrap();
+    let info = scene.model_evaluation().unwrap();
+    assert_eq!(
+        info.source_hash,
+        ContentHash::document(session.document()).unwrap()
+    );
+    assert_eq!(info.cut_targets.len(), 1);
+    assert_eq!(info.cut_targets[0].id, probe);
+    let selection = info.cut_targets[0].result.as_ref().unwrap();
+    assert_eq!(
+        selection.defaults,
+        vec![model::BodyInput {
+            body: target.body,
+            producer: target.feature
+        }]
+    );
+    assert!(selection.targets.is_empty());
+    assert_eq!(scene.reference_instances().len(), 2);
+    assert!(backend.poll().is_none());
+
+    options.cut_targets[0].query.exclude.clear();
+    backend
+        .request_evaluation(
+            session.document(),
+            &ProjectResources::default(),
+            SceneStamp {
+                generation: 42,
+                ..stamp
+            },
+            &options,
+        )
+        .unwrap();
+    let scene = receive(&mut backend).result.unwrap();
+    assert_eq!(
+        scene.model_evaluation().unwrap().cut_targets[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .targets
+            .len(),
+        1
+    );
+    assert_eq!(session.revision(), 2);
+}
+
+#[test]
+fn failed_native_probe_keeps_valid_scene_and_diagnostic_identity() {
+    use multicad_core::{
+        document::EntityId,
+        model::{CutTargetProbe, CutTargetQuery},
+    };
+    let (session, _) = box_session();
+    let missing = EntityId::new();
+    let probe = EntityId::new();
+    let options = EvaluationOptions {
+        cut_targets: vec![CutTargetProbe {
+            id: probe,
+            query: CutTargetQuery {
+                tools: vec![missing],
+                component: None,
+                include: vec![],
+                exclude: vec![],
+            },
+        }],
+    };
+    let mut backend = Backend::new();
+    backend
+        .request_evaluation(
+            session.document(),
+            &ProjectResources::default(),
+            SceneStamp {
+                document: session.document().id(),
+                revision: session.revision(),
+                generation: 1,
+            },
+            &options,
+        )
+        .unwrap();
+    let scene = receive(&mut backend).result.unwrap();
+    assert_eq!(scene.reference_instances().len(), 1);
+    let result = &scene.model_evaluation().unwrap().cut_targets[0];
+    assert_eq!(result.id, probe);
+    assert!(result.result.is_err());
+}
+
+#[test]
+fn production_scene_retains_consumed_tool_history_with_source_bound_metadata() {
+    use multicad_core::{
+        model::{BodyInput, BooleanRequest, Operation, PrimitiveFrame},
+        project_file::ContentHash,
+    };
+    let (mut session, target) = box_session();
+    let tool = PrimitiveRequest::new(
+        "Tool",
+        PrimitiveParameters::Box {
+            size: [length(2.), length(2.), length(40.)],
+            frame: PrimitiveFrame {
+                origin: [length(4.), length(4.), length(-5.)],
+                ..Default::default()
+            },
+        },
+    );
+    let p = model::prepare_primitive(
+        &session,
+        session.revision(),
+        Actor::local(Channel::CommandLine),
+        &tool,
+    )
+    .unwrap();
+    session.commit(p.prepared).unwrap();
+    let mut cut = BooleanRequest::new(
+        Operation::Cut,
+        BodyInput {
+            body: target.body,
+            producer: target.feature,
+        },
+        vec![BodyInput {
+            body: tool.body,
+            producer: tool.feature,
+        }],
+    );
+    cut.keep_tools = false;
+    let p = model::prepare_boolean(
+        &session,
+        session.revision(),
+        Actor::local(Channel::CommandLine),
+        &cut,
+    )
+    .unwrap();
+    session.commit(p.prepared).unwrap();
+    let mut backend = Backend::new();
+    backend
+        .request(
+            session.document(),
+            SceneStamp {
+                document: session.document().id(),
+                revision: session.revision(),
+                generation: 9,
+            },
+        )
+        .unwrap();
+    let scene = receive(&mut backend).result.unwrap();
+    let info = scene.model_evaluation().unwrap();
+    assert_eq!(
+        info.source_hash,
+        ContentHash::document(session.document()).unwrap()
+    );
+    assert_eq!(info.consumed_bodies, [tool.body].into());
+    assert!(info.cut_targets.is_empty());
+    assert_eq!(scene.reference_instances().len(), 1);
+    assert_eq!(scene.reference_instances()[0].id, target.body);
+    assert_eq!(scene.reference_instances()[0].geometry, cut.feature);
+    assert!(scene.geometry_snapshot(tool.feature).is_some());
+    assert!(scene.geometry_snapshot(target.feature).is_some());
+}
