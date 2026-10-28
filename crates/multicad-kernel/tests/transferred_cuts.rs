@@ -519,3 +519,73 @@ fn source_axis_rejects_partial_arcs_partial_cylinders_wrong_kinds_and_missing_to
         );
     }
 }
+#[test]
+fn captured_source_face_survives_pattern_count_edits_and_removed_hole_is_missing() {
+    use multicad_core::references::TopologyKey;
+    let base = EntityId::new();
+    let feature = EntityId::new();
+    let origins = names(3);
+    let pattern = |count: usize| {
+        let mut solid = Solid::box_named([120., 20., 2.], base, p()).unwrap();
+        for (i, name) in origins.iter().take(count).enumerate() {
+            solid = solid
+                .cut_transfer_profile_named(
+                    &circle(xy(2.), [20. + 30. * i as f64, 10.], 2.),
+                    -3.,
+                    feature,
+                    std::slice::from_ref(name),
+                    p(),
+                )
+                .unwrap();
+        }
+        solid
+    };
+    let first = pattern(1);
+    let snapshot = first.topology_snapshot(base, 0).unwrap();
+    let face = GeometryIntent::capture(
+        &snapshot,
+        TopologyKey {
+            kind: TopologyKind::Face,
+            ordinal: face_at(&first, 2, 2.),
+        },
+    )
+    .unwrap();
+    let current = first
+        .planar_face_contours_with_sources(face_at(&first, 2, 2.), xy(2.))
+        .unwrap();
+    let hole = current
+        .contours
+        .loops
+        .iter()
+        .position(|w| !w.outer)
+        .unwrap();
+    let hole = GeometryIntent::capture(&snapshot, current.edge_keys[hole][0]).unwrap();
+    for count in [3, 0] {
+        let rebuilt = pattern(count);
+        let next = rebuilt.topology_snapshot(base, 1).unwrap();
+        let Resolution::Resolved { key, .. } = resolve(&face, &next, 1) else {
+            panic!("explicit source face did not survive pattern edit")
+        };
+        let contours = rebuilt
+            .planar_face_contours_with_sources(key.ordinal, xy(2.))
+            .unwrap();
+        assert_eq!(
+            contours.contours.loops.iter().filter(|w| !w.outer).count(),
+            count
+        );
+        for (wire, keys) in contours
+            .contours
+            .loops
+            .iter()
+            .zip(&contours.edge_keys)
+            .filter(|(w, _)| !w.outer)
+        {
+            assert_eq!(wire.edges.len(), 1);
+            assert_eq!(keys.len(), 1);
+            near(rebuilt.transfer_hole_axis(keys[0]).unwrap().radius_mm, 2.);
+        }
+        if count == 0 {
+            assert_eq!(resolve(&hole, &next, 1), Resolution::Missing);
+        }
+    }
+}
