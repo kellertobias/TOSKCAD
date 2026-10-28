@@ -141,7 +141,7 @@ fn valid_name(name: &str) -> bool {
 pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterError> {
     let mut names = BTreeMap::new();
     let mut expressions = BTreeMap::new();
-    let mut bound = document.clone();
+    let mut normalized_entities = Vec::new();
     for entity in document
         .entities()
         .filter(|e| matches!(e.data, EntityData::Parameter { .. }))
@@ -157,17 +157,9 @@ pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterErr
             .at(entity.id));
         }
     }
-    // Remove old graph edges in the candidate before installing the new set.
-    // Otherwise simultaneous dependency changes can appear cyclic mid-update.
-    for entity in document.entities() {
-        if let EntityData::Parameter { .. } = &entity.data {
-            let mut detached = entity.clone();
-            if let EntityData::Parameter { inputs, .. } = &mut detached.data {
-                inputs.clear();
-            }
-            bound.replace(detached)?;
-        }
-    }
+    // Bind against the original source and install every normalized edge set
+    // together. Intermediate detached graphs violate module-owned source
+    // contracts and can create transient dependency cycles.
     for entity in document.entities() {
         let EntityData::Parameter {
             expression,
@@ -227,14 +219,13 @@ pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterErr
         if let EntityData::Parameter { inputs, .. } = &mut normalized.data {
             *inputs = links;
         }
-        bound
-            .replace(normalized)
-            .map_err(|e| ParameterError::from(e).at(entity.id))?;
+        normalized_entities.push(crate::document::Mutation::Replace(normalized));
         expressions.insert(
             entity.id,
             (expr, unit, expression.trim_start().starts_with('=')),
         );
     }
+    let bound = document.edited(&normalized_entities)?;
     let mut values: BTreeMap<EntityId, ParameterValue> = BTreeMap::new();
     for id in bound.topological_order()? {
         let Some((expression, unit, explicit)) = expressions.get(&id) else {

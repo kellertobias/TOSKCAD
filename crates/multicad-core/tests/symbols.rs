@@ -33,6 +33,16 @@ fn author_fixture(kind: SymbolKind) -> (Session, SymbolDefinition, EntityId, Ent
     );
     let width = p.id;
     apply(&mut s, vec![Mutation::Insert(p)]);
+    let derived = Entity::new(
+        "depth",
+        EntityData::Parameter {
+            expression: "=$width / 4".into(),
+            unit: "mm".into(),
+            exposed: false,
+            inputs: vec![],
+        },
+    );
+    apply(&mut s, vec![Mutation::Insert(derived)]);
     let primitive = PrimitiveRequest::new(
         "Door",
         PrimitiveParameters::Box {
@@ -41,7 +51,9 @@ fn author_fixture(kind: SymbolKind) -> (Session, SymbolDefinition, EntityId, Ent
                     expression: BoundExpression::bind(s.document(), "=$width", "mm", None).unwrap(),
                 },
                 length(20.),
-                length(5.),
+                Dimension::Expression {
+                    expression: BoundExpression::bind(s.document(), "=$depth", "mm", None).unwrap(),
+                },
             ],
             frame: Default::default(),
         },
@@ -433,4 +445,75 @@ fn explicit_upgrade_never_reuses_a_removed_source_identity_for_new_content() {
     assert_eq!(current.ids[&width], placed.ids[&width]);
     assert_ne!(current.ids[&new_root], placed.ids[&def.root]);
     assert!(s.document().get(placed.ids[&def.root]).is_none());
+}
+
+#[test]
+fn derived_private_parameter_bindings_normalize_atomically_without_weakening_ownership() {
+    let (_, def, width, _) = author_fixture(SymbolKind::Dynamic);
+    let depth = def
+        .template
+        .entities()
+        .find(|e| e.name == "depth")
+        .unwrap()
+        .id;
+    let (mut s, id) = host(&def);
+    let request = SymbolPlaceRequest::new(
+        s.document(),
+        id,
+        "Derived door",
+        value(width, 100.),
+        Placement::default(),
+    )
+    .unwrap();
+    s.commit(
+        prepare_place(&s, s.revision(), actor(), &request)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let evaluated = parameters::evaluate(s.document()).unwrap();
+    assert_eq!(
+        evaluated
+            .value(request.ids[&depth], Unit::Millimeter)
+            .unwrap(),
+        25.
+    );
+    let before = s.document().clone();
+    let mut tampered = s.document().get(request.ids[&depth]).unwrap().clone();
+    if let EntityData::Parameter { inputs, .. } = &mut tampered.data {
+        inputs.clear();
+    }
+    assert!(s.document().edited(&[Mutation::Replace(tampered)]).is_err());
+    assert_eq!(s.document(), &before);
+    s.commit(
+        prepare_edit(
+            &s,
+            s.revision(),
+            actor(),
+            &SymbolEditRequest {
+                record: request.record,
+                overrides: value(width, 120.),
+            },
+        )
+        .unwrap()
+        .prepared,
+    )
+    .unwrap();
+    assert_eq!(
+        parameters::evaluate(s.document())
+            .unwrap()
+            .value(request.ids[&depth], Unit::Millimeter)
+            .unwrap(),
+        30.
+    );
+    let reopened: Document =
+        serde_json::from_slice(&serde_json::to_vec(s.document()).unwrap()).unwrap();
+    validate(&reopened).unwrap();
+    assert_eq!(
+        parameters::evaluate(&reopened)
+            .unwrap()
+            .value(request.ids[&depth], Unit::Millimeter)
+            .unwrap(),
+        30.
+    );
 }
