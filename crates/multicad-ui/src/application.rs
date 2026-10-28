@@ -492,6 +492,11 @@ impl Application {
                         &project.resources,
                         channel,
                     )?,
+                    crate::modeling::ModelingTool::Revolve => project.sketch.begin_revolve(
+                        &project.session,
+                        &project.resources,
+                        channel,
+                    )?,
                     crate::modeling::ModelingTool::Box
                     | crate::modeling::ModelingTool::Cylinder => project.sketch.begin_primitive(
                         &project.session,
@@ -549,8 +554,9 @@ impl Application {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
                     && match tool {
-                        crate::modeling::ModelingTool::Extrude => {
-                            self.current().sketch.extrusion_ready(
+                        crate::modeling::ModelingTool::Extrude
+                        | crate::modeling::ModelingTool::Revolve => {
+                            self.current().sketch.profile_model_ready(
                                 self.current().session.document(),
                                 self.current().session.revision(),
                             )

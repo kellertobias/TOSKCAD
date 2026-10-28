@@ -413,3 +413,54 @@ fn generated_names_are_unique_against_committed_bodies_and_stable_during_preview
         assert_eq!(sent.get(output.body).unwrap().name, output.name);
     }
 }
+#[test]
+fn revolve_creation_uses_checked_receipt_and_preserves_profiles_and_output_identities() {
+    let (mut session, sketch, profiles) = fixture();
+    let before = session.document().clone();
+    let state = Arc::new(Mutex::new(State::default()));
+    let mut controller = ModelToolController::default();
+    controller.set_backend(Box::new(ScriptedBackend(state.clone())));
+    controller
+        .begin_revolve(
+            &session,
+            &Default::default(),
+            sketch,
+            profiles.clone(),
+            Channel::Ui,
+        )
+        .unwrap();
+    let ModelRequest::Revolve(request) = controller
+        .form
+        .as_ref()
+        .unwrap()
+        .request(session.document(), controller.capabilities())
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        request
+            .outputs
+            .iter()
+            .map(|out| out.region.clone())
+            .collect::<Vec<_>>(),
+        profiles
+    );
+    controller
+        .preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    assert!(controller.apply(&mut session, &Default::default()).is_err());
+    reply(&state, 0);
+    controller.poll(&session, &Default::default());
+    let output = controller.apply(&mut session, &Default::default()).unwrap();
+    assert_eq!(output.len(), 2);
+    for out in output {
+        let source = multicad_core::model::read_revolve(session.document(), out.feature).unwrap();
+        assert_eq!(source.output.body, out.body);
+        assert_eq!(source.profile.sketch, sketch);
+    }
+    assert_eq!(session.document().get(sketch), before.get(sketch));
+    assert_eq!(session.revision(), 1);
+    session.undo(1, Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(session.document(), &before);
+}

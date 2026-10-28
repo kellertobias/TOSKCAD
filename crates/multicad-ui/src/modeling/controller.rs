@@ -4,6 +4,7 @@ use super::{
     form::{ModelEvent, ModelForm},
     names::GeneratedNames,
     primitive::PrimitivePanel,
+    revolve::RevolvePanel,
 };
 use crate::{
     egui,
@@ -13,7 +14,8 @@ use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     document::{EntityData, EntityId},
     model::{
-        CreatedBody, ExtrudeRequest, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length,
+        CreatedBody, ExtrudeRequest, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest,
+        RevolveRequest, length,
     },
     project_file::{ContentHash, ProjectResources},
     sketch_regions::RegionIntent,
@@ -136,6 +138,26 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Primitive(Box::new(PrimitivePanel::new(request)?)),
+        )
+    }
+    pub fn begin_revolve(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        sketch: EntityId,
+        profiles: Vec<RegionIntent>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let mut request = RevolveRequest::new(sketch, profiles, Default::default());
+        let mut names = GeneratedNames::new(session.document());
+        for output in &mut request.outputs {
+            output.name = names.numbered("Revolved part", " feature");
+        }
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Revolve(Box::new(RevolvePanel::new(request)?)),
         )
     }
     fn begin_form(

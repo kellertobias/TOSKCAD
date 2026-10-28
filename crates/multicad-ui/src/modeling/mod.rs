@@ -6,6 +6,7 @@ mod extrude;
 mod form;
 mod names;
 mod primitive;
+mod revolve;
 
 pub use controller::{ModelToolController, ModelToolOutcome};
 pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
@@ -17,14 +18,16 @@ pub enum ModelingTool {
     Extrude,
     Box,
     Cylinder,
+    Revolve,
 }
 impl ModelingTool {
-    pub const ALL: [Self; 3] = [Self::Box, Self::Cylinder, Self::Extrude];
+    pub const ALL: [Self; 4] = [Self::Box, Self::Cylinder, Self::Extrude, Self::Revolve];
     pub fn id(self) -> &'static str {
         match self {
             Self::Extrude => "extrude",
             Self::Box => "box",
             Self::Cylinder => "cylinder",
+            Self::Revolve => "revolve",
         }
     }
     pub fn label(self) -> &'static str {
@@ -32,6 +35,7 @@ impl ModelingTool {
             Self::Extrude => "Extrude",
             Self::Box => "Box",
             Self::Cylinder => "Cylinder",
+            Self::Revolve => "Revolve",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -39,6 +43,7 @@ impl ModelingTool {
             Self::Extrude => crate::icons::Icon::Box,
             Self::Box => crate::icons::Icon::Box,
             Self::Cylinder => crate::icons::Icon::Cylinder,
+            Self::Revolve => crate::icons::Icon::Rotate,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -46,6 +51,7 @@ impl ModelingTool {
             Self::Extrude => &["ext", "extrusion"],
             Self::Box => &["cube", "add-box"],
             Self::Cylinder => &["cyl", "add-cylinder"],
+            Self::Revolve => &["rev", "lathe"],
         }
     }
     pub fn usage(self) -> &'static str {
@@ -56,6 +62,9 @@ impl ModelingTool {
             Self::Box => "Usage: box (enter dimensions in the Inspector, then Preview and Apply)",
             Self::Cylinder => {
                 "Usage: cylinder (enter radius and height in the Inspector, then Preview and Apply)"
+            }
+            Self::Revolve => {
+                "Usage: revolve (select closed sketch areas, choose an axis in the Inspector, then Preview and Apply)"
             }
         }
     }

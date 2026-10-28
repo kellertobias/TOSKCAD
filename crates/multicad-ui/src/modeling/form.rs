@@ -1,12 +1,12 @@
 use super::{
     ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel, FormStamp, PreviewState,
-    primitive::PrimitivePanel,
+    primitive::PrimitivePanel, revolve::RevolvePanel,
 };
 use crate::egui;
 use multicad_core::{
     commands::{Actor, Session},
     document::Document,
-    model::{self, ExtrudeRequest, ModelPrepared, PrimitiveRequest},
+    model::{self, ExtrudeRequest, ModelPrepared, PrimitiveRequest, RevolveRequest},
 };
 
 /// Typed tool intent, independent of display meshes and native model ownership.
@@ -14,6 +14,7 @@ use multicad_core::{
 pub enum ModelRequest {
     Extrude(Box<ExtrudeRequest>),
     Primitive(Box<PrimitiveRequest>),
+    Revolve(Box<RevolveRequest>),
 }
 impl ModelRequest {
     pub(super) fn prepare(&self, session: &Session, actor: Actor) -> Result<ModelPrepared, String> {
@@ -23,6 +24,9 @@ impl ModelRequest {
             }
             Self::Primitive(request) => {
                 model::prepare_primitive(session, session.revision(), actor, request)
+            }
+            Self::Revolve(request) => {
+                model::prepare_revolve(session, session.revision(), actor, request)
             }
         }
         .map_err(|error| error.to_string())
@@ -40,18 +44,21 @@ pub(super) enum ModelEvent {
 pub(super) enum ModelForm {
     Extrude(Box<ExtrudePanel>),
     Primitive(Box<PrimitivePanel>),
+    Revolve(Box<RevolvePanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
         match self {
             Self::Extrude(panel) => panel.stamp().expect("active extrusion form"),
             Self::Primitive(panel) => panel.stamp(),
+            Self::Revolve(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
         match self {
             Self::Extrude(_) => "Extrude",
             Self::Primitive(panel) => panel.label(),
+            Self::Revolve(_) => "Revolve",
         }
     }
     pub fn request(
@@ -66,6 +73,9 @@ impl ModelForm {
             Self::Primitive(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Primitive(Box::new(request))),
+            Self::Revolve(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|request| ModelRequest::Revolve(Box::new(request))),
         }
     }
     pub fn show(
@@ -88,6 +98,7 @@ impl ModelForm {
                     ExtrudeEvent::Cancel => ModelEvent::Cancel,
                 }),
             Self::Primitive(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Revolve(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
 }

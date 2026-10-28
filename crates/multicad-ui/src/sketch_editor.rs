@@ -402,6 +402,9 @@ impl SketchEditor {
         self.model.can_apply(session, resources)
     }
     pub fn extrusion_ready(&self, document: &Document, revision: u64) -> bool {
+        self.profile_model_ready(document, revision)
+    }
+    pub fn profile_model_ready(&self, document: &Document, revision: u64) -> bool {
         self.model.has_backend()
             && !self.has_pending_edits()
             && !self.picking
@@ -413,6 +416,33 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
+        self.begin_profile_model(
+            session,
+            resources,
+            crate::modeling::ModelingTool::Extrude,
+            channel,
+        )
+    }
+    pub fn begin_revolve(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.begin_profile_model(
+            session,
+            resources,
+            crate::modeling::ModelingTool::Revolve,
+            channel,
+        )
+    }
+    fn begin_profile_model(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        tool: crate::modeling::ModelingTool,
+        channel: Channel,
+    ) -> Result<(), String> {
         if !self.model.has_backend() {
             return Err("The native modeling preview provider is unavailable".into());
         }
@@ -421,9 +451,19 @@ impl SketchEditor {
         }
         let (sketch, profiles) = self.selected_profiles(session.document(), session.revision())?;
         self.finish()?;
-        self.model
-            .begin(session, resources, sketch, profiles, channel)?;
-        self.message = "Extrude · choose distance and direction, then Preview".into();
+        match tool {
+            crate::modeling::ModelingTool::Extrude => self
+                .model
+                .begin(session, resources, sketch, profiles, channel)?,
+            crate::modeling::ModelingTool::Revolve => self
+                .model
+                .begin_revolve(session, resources, sketch, profiles, channel)?,
+            _ => return Err("Choose a profile modeling tool".into()),
+        }
+        self.message = format!(
+            "{} · choose controls in the Inspector, then Preview",
+            tool.label()
+        );
         Ok(())
     }
     pub fn preview_model(

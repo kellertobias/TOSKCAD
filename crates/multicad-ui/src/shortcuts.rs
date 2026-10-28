@@ -458,8 +458,10 @@ impl ShortcutMap {
         add(
             Scope::Mode(Mode::Model),
             Chord::plain(Key::R),
-            Command(crate::registry::Command::Extension("revolve")),
-            "Revolve (when available)",
+            Command(crate::registry::Command::Modeling(
+                crate::modeling::ModelingTool::Revolve,
+            )),
+            "Revolve selected profiles",
             false,
         );
         map
