@@ -71,6 +71,76 @@ fn stamp() -> SceneStamp {
     }
 }
 #[test]
+fn assembly_receipts_require_current_complete_known_leaf_sources() {
+    use multicad_core::{
+        model::{AssemblyEvaluationInfo, AssemblyLeafReceipt, OccurrencePath},
+        project_file::ContentHash,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let geometry = box_geometry();
+    let part = instance(&geometry, [0.; 3]);
+    let component = EntityId::new();
+    let source = ContentHash::of(b"assembly source");
+    let make = || {
+        Scene::new(stamp(), vec![geometry.clone()], vec![part.clone()])
+            .unwrap()
+            .with_reference_aliases(BTreeMap::from([(component, geometry.id())]))
+            .unwrap()
+            .with_model_evaluation(Arc::new(multicad_core::model::ModelEvaluationInfo {
+                source_hash: source,
+                consumed_bodies: BTreeSet::new(),
+                cut_targets: vec![],
+            }))
+            .unwrap()
+    };
+    let info = AssemblyEvaluationInfo {
+        source_hash: source,
+        leaves: vec![AssemblyLeafReceipt {
+            path: OccurrencePath {
+                root: part.id,
+                members: vec![],
+            },
+            component,
+            producer: geometry.id(),
+            pose: Default::default(),
+        }],
+    };
+    let scene = make()
+        .with_assembly_evaluation(Arc::new(info.clone()))
+        .unwrap();
+    assert_eq!(scene.assembly_evaluation().unwrap().as_ref(), &info);
+    assert!(
+        scene
+            .visible_subset(&BTreeSet::new())
+            .unwrap()
+            .assembly_evaluation()
+            .is_some()
+    );
+    assert!(
+        scene
+            .presentation_offsets(&BTreeMap::new())
+            .unwrap()
+            .assembly_evaluation()
+            .is_none()
+    );
+    let mut bad = info.clone();
+    bad.source_hash = ContentHash::of(b"changed source");
+    assert!(make().with_assembly_evaluation(Arc::new(bad)).is_err());
+    let mut bad = info.clone();
+    bad.leaves[0].component = EntityId::new();
+    assert!(make().with_assembly_evaluation(Arc::new(bad)).is_err());
+    let mut bad = info.clone();
+    bad.leaves.push(bad.leaves[0].clone());
+    assert!(make().with_assembly_evaluation(Arc::new(bad)).is_err());
+    assert!(
+        make()
+            .with_source_scope(vec![geometry.id()])
+            .unwrap()
+            .with_assembly_evaluation(Arc::new(info))
+            .is_err()
+    );
+}
+#[test]
 fn exploded_presentation_keeps_source_geometry_and_cannot_author_native_operations() {
     use std::collections::BTreeMap;
     let geometry = box_geometry();

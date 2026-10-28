@@ -465,6 +465,7 @@ pub struct Scene {
     reference_aliases: Arc<BTreeMap<EntityId, EntityId>>,
     world_bounds: Option<[Point; 2]>,
     model_evaluation: Option<Arc<multicad_core::model::ModelEvaluationInfo>>,
+    assembly_evaluation: Option<Arc<multicad_core::model::AssemblyEvaluationInfo>>,
     native_bounds: Option<Arc<NativeBounds>>,
 }
 struct NativeBounds {
@@ -533,6 +534,7 @@ impl Scene {
             instances,
             world_bounds,
             model_evaluation: None,
+            assembly_evaluation: None,
             native_bounds: None,
         })
     }
@@ -553,6 +555,45 @@ impl Scene {
         }
         self.model_evaluation = Some(info);
         Ok(self)
+    }
+    /// Exact native leaf paths and poses for a complete current assembly model.
+    pub fn with_assembly_evaluation(
+        mut self,
+        info: Arc<multicad_core::model::AssemblyEvaluationInfo>,
+    ) -> Result<Self, String> {
+        info.validate().map_err(|error| error.to_string())?;
+        if !self.is_full_model()
+            || self
+                .model_evaluation
+                .as_ref()
+                .is_none_or(|model| model.source_hash != info.source_hash)
+            || info.leaves.iter().any(|leaf| {
+                !self
+                    .reference_instances
+                    .iter()
+                    .any(|instance| instance.id == leaf.path.root)
+                    || !self.geometries.contains_key(&leaf.producer)
+                    || self.reference_aliases.get(&leaf.component) != Some(&leaf.producer)
+            })
+        {
+            return Err(
+                "Assembly leaves need complete matching native source geometry and canonical roots"
+                    .into(),
+            );
+        }
+        self.assembly_evaluation = Some(info);
+        Ok(self)
+    }
+    pub fn assembly_evaluation(
+        &self,
+    ) -> Option<&Arc<multicad_core::model::AssemblyEvaluationInfo>> {
+        self.assembly_evaluation.as_ref().filter(|info| {
+            self.is_full_model()
+                && self
+                    .model_evaluation
+                    .as_ref()
+                    .is_some_and(|model| model.source_hash == info.source_hash)
+        })
     }
     /// Reference-only canonical Part aliases. They do not add a draw/pick
     /// occurrence or turn a consumed construction body into a physical output.
@@ -734,6 +775,7 @@ impl Scene {
         view.reference_instances = self.reference_instances.clone();
         view.reference_aliases = self.reference_aliases.clone();
         view.model_evaluation = self.model_evaluation.clone();
+        view.assembly_evaluation = self.assembly_evaluation.clone();
         view.native_bounds = self.native_bounds.clone();
         view.scope = self.scope.clone();
         Ok(Arc::new(view))
