@@ -63,6 +63,13 @@ impl Default for Transform {
     }
 }
 impl Transform {
+    pub fn from_rigid_pose(pose: multicad_core::model::RigidPose) -> Result<Self, String> {
+        pose.validate().map_err(|e| e.to_string())?;
+        Ok(Self {
+            rotation: pose.rotation,
+            translation: pose.translation_mm,
+        })
+    }
     pub fn from_placement(p: Placement) -> Result<Self, String> {
         let [x, y, z, w] = p.rotation_xyzw;
         if p.translation_mm

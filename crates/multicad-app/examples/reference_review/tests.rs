@@ -204,6 +204,7 @@ fn duplicate_instance_transaction_shares_native_assets_and_renders_all_placement
                 translation_mm: [140., 0., 0.],
                 ..Default::default()
             },
+            placement_source: None,
         },
     );
     let third = Entity::new(
@@ -219,6 +220,7 @@ fn duplicate_instance_transaction_shares_native_assets_and_renders_all_placement
                     std::f64::consts::FRAC_1_SQRT_2,
                 ],
             },
+            placement_source: None,
         },
     );
     session
@@ -287,6 +289,7 @@ fn unsupported_instance_components_fail_instead_of_disappearing_from_the_fixture
         EntityData::Instance {
             component: other.id,
             placement: Default::default(),
+            placement_source: None,
         },
     );
     document.insert(other).unwrap();

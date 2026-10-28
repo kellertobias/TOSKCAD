@@ -639,6 +639,7 @@ pub fn read_extrude(
 }
 pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::extrude_group::validate_document(document)?;
+    super::placement::validate_document(document)?;
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
@@ -687,13 +688,18 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                 ))
             }
             EntityData::Extension { definition, .. }
-                if definition.type_id == super::EXTRUDE_GROUP_TYPE =>
+                if [super::EXTRUDE_GROUP_TYPE, super::INSTANCE_PLACEMENT_TYPE]
+                    .contains(&definition.type_id.as_str()) =>
             {
                 Some(format!(
                     "{}.{}",
                     definition.type_id, definition.schema_version
                 ))
             }
+            EntityData::Instance {
+                placement_source: Some(_),
+                ..
+            } => Some(super::INSTANCE_PLACEMENT_CAPABILITY.into()),
             _ => None,
         })
         .collect()

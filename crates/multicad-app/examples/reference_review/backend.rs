@@ -155,6 +155,7 @@ pub fn document() -> Result<Document, String> {
         EntityData::Instance {
             component: part.id,
             placement: Default::default(),
+            placement_source: None,
         },
     );
     let mut document = Document::new("Reference repair review").map_err(|e| e.to_string())?;
@@ -403,6 +404,7 @@ pub fn evaluate(
         if let EntityData::Instance {
             component,
             placement,
+            ..
         } = instance.data
         {
             if component != part.id {

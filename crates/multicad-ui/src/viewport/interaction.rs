@@ -259,6 +259,71 @@ impl Interaction {
         if ids.is_empty() {
             return Err("Select an instance to duplicate".into());
         }
+        if ids.iter().any(|id| {
+            matches!(
+                session.document().get(*id).map(|e| &e.data),
+                Some(EntityData::Instance {
+                    placement_source: Some(_),
+                    ..
+                })
+            )
+        }) {
+            use multicad_core::model::{self, BodyInput, InstanceCopyRequest, InstanceCopySource};
+            let mut requests = Vec::new();
+            for id in &ids {
+                let source = session
+                    .document()
+                    .get(*id)
+                    .ok_or("Selected source no longer exists")?;
+                let target = match &source.data {
+                    EntityData::Instance { .. } => InstanceCopySource::Instance { instance: *id },
+                    EntityData::Part { features, .. } => {
+                        let producer = features
+                            .iter()
+                            .rev()
+                            .find(|id| {
+                                matches!(
+                                    session.document().get(**id).map(|e| &e.data),
+                                    Some(EntityData::Feature {
+                                        suppressed: false,
+                                        ..
+                                    })
+                                )
+                            })
+                            .copied()
+                            .ok_or("Selected Part has no current producer")?;
+                        InstanceCopySource::Part {
+                            source: BodyInput {
+                                body: *id,
+                                producer,
+                            },
+                        }
+                    }
+                    _ => {
+                        return Err(
+                            "Separate Part copies from unsupported subassembly duplication".into(),
+                        );
+                    }
+                };
+                let mut request = InstanceCopyRequest::new(target, Default::default());
+                request.name = format!("{} copy", source.name);
+                requests.push(request);
+            }
+            let prepared = model::prepare_instance_copies(
+                session,
+                stamp.revision,
+                Actor::local(Channel::Ui),
+                &requests,
+            )
+            .map_err(|e| e.to_string())?;
+            let created = prepared.instances.into_iter().collect();
+            session
+                .commit(prepared.prepared)
+                .map_err(|e| e.to_string())?;
+            self.clear();
+            self.parts = Arc::new(created);
+            return Ok(());
+        }
         let mut created = BTreeSet::new();
         let mut edits = Vec::new();
         for id in ids {
@@ -271,6 +336,7 @@ impl Interaction {
                 EntityData::Part { .. } | EntityData::Assembly { .. } => EntityData::Instance {
                     component: id,
                     placement: Placement::default(),
+                    placement_source: None,
                 },
                 _ => {
                     return Err(

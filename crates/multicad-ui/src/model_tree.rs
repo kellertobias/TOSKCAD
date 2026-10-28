@@ -1542,6 +1542,7 @@ mod tests {
                     translation_mm: [30., 0., 0.],
                     ..Default::default()
                 },
+                placement_source: None,
             },
         );
         let mut source_body = session.document().get(body).unwrap().clone();

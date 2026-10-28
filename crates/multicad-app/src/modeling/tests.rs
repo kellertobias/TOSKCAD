@@ -416,3 +416,75 @@ fn native_scene_uses_reusable_appearance_without_changing_exact_stock_geometry()
     // No replacement color or geometry is fabricated for a broken assignment.
     assert_eq!(current.reference_instances()[0].color, [170, 80, 30, 255]);
 }
+
+#[test]
+fn native_backend_places_shared_meshes_and_picks_current_world_topology() {
+    use multicad_core::model::{
+        BodyInput, InstanceCopyRequest, InstanceCopySource, NumericTransform, angle,
+    };
+    let (mut session, part) = box_session();
+    let copy = InstanceCopyRequest::new(
+        InstanceCopySource::Part {
+            source: BodyInput {
+                body: part.body,
+                producer: part.feature,
+            },
+        },
+        NumericTransform {
+            translation: [length(100.), length(0.), length(0.)],
+            angle: angle(90.),
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_instance_copies(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        std::slice::from_ref(&copy),
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let mut backend = Backend::new();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 22,
+    };
+    backend.request(session.document(), stamp).unwrap();
+    let scene = receive(&mut backend).result.unwrap();
+    assert_eq!(scene.geometries().len(), 1);
+    assert_eq!(scene.instances().len(), 2);
+    assert!(
+        scene
+            .instances()
+            .iter()
+            .all(|instance| instance.geometry == part.feature)
+    );
+    let hit = scene
+        .pick_face(viewport::Ray::new([90., 5., 100.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    assert_eq!(hit.instance, copy.instance);
+    assert_eq!(hit.geometry, part.feature);
+    assert_eq!(hit.point_mm, [90., 5., 30.]);
+    let native = Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let actual = scene.topology_snapshot(copy.instance).unwrap();
+    let expected = &native.snapshot().occurrences[&copy.instance].topology;
+    assert_eq!(
+        actual
+            .elements
+            .iter()
+            .map(|e| e.geometry)
+            .collect::<Vec<_>>(),
+        expected
+            .elements
+            .iter()
+            .map(|e| e.geometry)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        scene.model_evaluation().unwrap().source_hash,
+        native.snapshot().stamp.source_hash
+    );
+}

@@ -75,17 +75,6 @@ fn scene(
         entity: None,
         message,
     };
-    // Placement support must preserve canonical body and occurrence identities;
-    // refusing it here prevents an unplaced instance from appearing correct.
-    if document
-        .entities()
-        .any(|e| matches!(e.data, EntityData::Instance { .. }))
-    {
-        return Err(invalid(
-            "Assembly instance placement is not yet supported by the production model provider"
-                .into(),
-        ));
-    }
     let geometries = model
         .shapes
         .iter()
@@ -123,7 +112,7 @@ fn scene(
         .map_err(invalid)?;
     let materials =
         multicad_core::materials::Resolver::new(document).map_err(|e| invalid(e.to_string()))?;
-    let instances = model
+    let mut instances: Vec<_> = model
         .bodies
         .iter()
         .map(|(body, producer)| {
@@ -140,6 +129,19 @@ fn scene(
             })
         })
         .collect::<Result<Vec<_>, ModelError>>()?;
+    for occurrence in model.occurrences.values() {
+        let color = materials
+            .resolve(occurrence.component)
+            .map_err(|error| invalid(error.to_string()))?
+            .appearance
+            .color_rgba;
+        instances.push(viewport::Instance {
+            id: occurrence.instance,
+            geometry: occurrence.producer,
+            transform: viewport::Transform::from_rigid_pose(occurrence.pose).map_err(invalid)?,
+            color,
+        });
+    }
     let stamp = SceneStamp {
         document: model.stamp.document,
         revision: model.stamp.revision,

@@ -657,6 +657,7 @@ mod tests {
             EntityData::Instance {
                 component: part.id,
                 placement,
+                placement_source: None,
             },
         );
         let mut document = Document::new("Plane picking").unwrap();
@@ -1080,6 +1081,7 @@ mod tests {
             EntityData::Instance {
                 component,
                 placement,
+                placement_source: None,
             },
         );
         document.insert(placed.clone()).unwrap();

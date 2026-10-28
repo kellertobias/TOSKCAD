@@ -40,6 +40,8 @@ pub struct ModelSnapshot {
     pub shapes: BTreeMap<EntityId, Arc<ShapeSnapshot>>,
     /// Canonical Part identity to its final unsuppressed producing feature.
     pub bodies: BTreeMap<EntityId, EntityId>,
+    /// Explicit occurrence poses/world topology; component meshes remain shared.
+    pub occurrences: BTreeMap<EntityId, Arc<crate::OccurrenceSnapshot>>,
     /// Canonical tool Parts retained as source/history but consumed by an
     /// unsuppressed Boolean rather than emitted as independent final bodies.
     pub consumed_bodies: BTreeSet<EntityId>,
@@ -211,6 +213,12 @@ impl Compiler {
         // sketches and opaque extensions do not prevent a document from opening.
         let mut needed = BTreeSet::new();
         let mut pending: Vec<_> = bodies.values().copied().collect();
+        pending.extend(
+            document
+                .entities()
+                .filter(|e| matches!(e.data, EntityData::Instance { .. }))
+                .map(|e| e.id),
+        );
         while let Some(id) = pending.pop() {
             if needed.insert(id) {
                 let entity = document
@@ -227,6 +235,7 @@ impl Compiler {
         let mut solids: BTreeMap<EntityId, Solid> = BTreeMap::new();
         let mut consumed_versions = BTreeSet::new();
         let mut shapes = BTreeMap::new();
+        let mut occurrences = BTreeMap::new();
         let mut topologies = BTreeMap::new();
         let mut triangles = 0usize;
         for id in document.topological_order().map_err(|e| error(None, e))? {
@@ -237,6 +246,30 @@ impl Compiler {
             let entity = document
                 .get(id)
                 .ok_or_else(|| error(Some(id), "Missing model source"))?;
+            if matches!(entity.data, EntityData::Instance { .. }) {
+                if occurrences.len() >= crate::MAX_MODEL_OCCURRENCES {
+                    return Err(error(
+                        Some(id),
+                        "Model exceeds the explicit occurrence budget",
+                    ));
+                }
+                let (occurrence, solid) = crate::occurrences::build(
+                    crate::occurrences::Inputs {
+                        document,
+                        parameters: context.parameters(),
+                        body_heads: &bodies,
+                        solids: &solids,
+                        topologies: &topologies,
+                        policy: self.policy,
+                    },
+                    id,
+                    revision,
+                )?;
+                topologies.insert(id, occurrence.topology.clone());
+                solids.insert(id, solid);
+                occurrences.insert(id, Arc::new(occurrence));
+                continue;
+            }
             let EntityData::Feature {
                 definition,
                 suppressed,
@@ -248,7 +281,7 @@ impl Compiler {
             if *suppressed {
                 return Err(error(Some(id), "Required model producer is suppressed"));
             }
-            if solids.len() >= MAX_MODEL_FEATURES {
+            if shapes.len() >= MAX_MODEL_FEATURES {
                 return Err(error(Some(id), "Model exceeds the native feature budget"));
             }
             // Provider dispatch is confined to the native model layer. The UI,
@@ -500,6 +533,7 @@ impl Compiler {
                 stamp,
                 shapes,
                 bodies,
+                occurrences,
                 consumed_bodies,
                 cut_targets: vec![],
                 references,

@@ -64,6 +64,7 @@ fn fixture() -> Fixture {
                 translation_mm: [100., 20., 0.],
                 ..Default::default()
             },
+            placement_source: None,
         },
     );
     let mut state = Hierarchy {
@@ -166,6 +167,7 @@ fn containment_and_instance_expansion_cycles_reject_complete_transactions_withou
         EntityData::Instance {
             component: a.id,
             placement: Placement::default(),
+            placement_source: None,
         },
     );
     let doc = Document::new("Cycles")
@@ -207,6 +209,7 @@ fn containment_and_instance_expansion_cycles_reject_complete_transactions_withou
         data: EntityData::Instance {
             component: b.id,
             placement: Placement::default(),
+            placement_source: None,
         },
         ..instance.clone()
     };
@@ -284,6 +287,7 @@ fn legacy_shared_instances_load_unchanged_and_explicit_move_normalizes_only_the_
         EntityData::Instance {
             component: p.id,
             placement: Placement::default(),
+            placement_source: None,
         },
     );
     let a = Entity::new(
@@ -592,6 +596,7 @@ fn component_consumers_invalidate_from_member_changes_without_adding_containment
         EntityData::Instance {
             component: f.a,
             placement: Placement::default(),
+            placement_source: None,
         },
     );
     let doc = f
@@ -799,6 +804,7 @@ fn explicit_legacy_normalization_preserves_order_and_instance_placement_without_
         EntityData::Instance {
             component: part.id,
             placement: Placement::default(),
+            placement_source: None,
         },
     );
     let second = Entity::new(
@@ -809,6 +815,7 @@ fn explicit_legacy_normalization_preserves_order_and_instance_placement_without_
                 translation_mm: [20., 0., 0.],
                 ..Default::default()
             },
+            placement_source: None,
         },
     );
     let component = Entity::new(

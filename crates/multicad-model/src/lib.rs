@@ -2,10 +2,12 @@
 //! thread; immutable display and reference snapshots may cross to the UI.
 mod compiler;
 mod extrude;
+mod occurrences;
 mod runtime;
 mod split;
 mod targets;
 mod transform;
 pub use compiler::*;
+pub use occurrences::{MAX_MODEL_OCCURRENCES, OccurrenceSnapshot};
 pub use runtime::*;
 pub use targets::*;

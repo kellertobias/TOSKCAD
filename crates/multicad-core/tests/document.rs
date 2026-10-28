@@ -91,6 +91,7 @@ fn mixed_parts_shared_sketch_and_instances_preserve_ids_across_serialization_and
         EntityData::Instance {
             component: panel.id,
             placement: Placement::default(),
+            placement_source: None,
         },
     );
     let metal_instance = Entity::new(
@@ -101,6 +102,7 @@ fn mixed_parts_shared_sketch_and_instances_preserve_ids_across_serialization_and
                 translation_mm: [600.0, 0.0, 0.0],
                 ..Default::default()
             },
+            placement_source: None,
         },
     );
     let assembly = Entity::new(

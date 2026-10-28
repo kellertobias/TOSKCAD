@@ -77,6 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     translation_mm: [index as f64 * 50., 0., 0.],
                     ..Default::default()
                 },
+                placement_source: None,
             },
         );
         instances.push(instance.id);

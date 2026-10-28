@@ -40,6 +40,7 @@ fn fixture() -> (Session, Arc<Scene>, Vec<EntityId>) {
             EntityData::Instance {
                 component: part.id,
                 placement,
+                placement_source: None,
             },
         );
         ids.push(entity.id);
@@ -387,4 +388,61 @@ fn topology_and_hover_accessors_distinguish_face_hits_from_body_sets() {
     interaction.clear();
     assert!(!interaction.has_topology_selection());
     assert_eq!(interaction.hovered_instance(), None);
+}
+
+#[test]
+fn duplication_of_a_driven_instance_clones_pose_ownership_instead_of_sharing_a_driver() {
+    use multicad_core::model::{
+        self, InstanceCopyRequest, InstanceCopySource, NumericTransform, length,
+    };
+    let (mut session, scene, ids) = fixture();
+    let request = InstanceCopyRequest::new(
+        InstanceCopySource::Instance { instance: ids[0] },
+        NumericTransform {
+            translation: [length(10.), length(5.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_instance_copies(
+        &session,
+        0,
+        Actor::local(Channel::Ui),
+        std::slice::from_ref(&request),
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let before = session.document().clone();
+    let mut interaction = Interaction {
+        last_stamp: Some(SceneStamp {
+            revision: session.revision(),
+            ..scene.stamp()
+        }),
+        ..Default::default()
+    };
+    interaction.select_part(request.instance, false);
+    interaction.duplicate_selected(&mut session).unwrap();
+    let created = *interaction.selected_ids().first().unwrap();
+    let EntityData::Instance {
+        placement_source: Some(driver),
+        ..
+    } = session.document().get(created).unwrap().data
+    else {
+        panic!()
+    };
+    assert_ne!(driver, request.driver);
+    assert_eq!(
+        model::read_instance_placement(session.document(), driver)
+            .unwrap()
+            .owner,
+        created
+    );
+    assert_eq!(
+        model::resolve_instance_pose(session.document(), created, session.parameters()).unwrap(),
+        model::resolve_instance_pose(session.document(), request.instance, session.parameters())
+            .unwrap()
+    );
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(session.document(), &before);
 }

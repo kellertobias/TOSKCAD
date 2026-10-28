@@ -60,6 +60,7 @@ pub fn document(mixed: bool) -> Result<Document, String> {
                     translation_mm: [(i % columns) as f64 * 45., (i / columns) as f64 * 40., 0.],
                     ..Default::default()
                 },
+                placement_source: None,
             },
         )));
     }
@@ -192,6 +193,7 @@ impl SceneBackend for Backend {
             if let EntityData::Instance {
                 component,
                 placement,
+                ..
             } = &entity.data
             {
                 let Some(Entity {

@@ -3745,6 +3745,7 @@ mod tests {
             EntityData::Instance {
                 component: part.id,
                 placement,
+                placement_source: None,
             },
         );
         let mut document = Document::new("Plane entry integration").unwrap();
@@ -4862,6 +4863,7 @@ mod tests {
             EntityData::Instance {
                 component: part.id,
                 placement: Default::default(),
+                placement_source: None,
             },
         );
         let mut doc = Document::new("Picking after unavailable transform").unwrap();

@@ -56,6 +56,7 @@ fn project() -> ProjectFile {
                     translation_mm: [20., 10., 5.],
                     ..Default::default()
                 },
+                placement_source: None,
             },
         );
         instance_ids.push(instance.id);

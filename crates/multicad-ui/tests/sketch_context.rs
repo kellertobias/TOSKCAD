@@ -80,6 +80,7 @@ impl Fixture {
             EntityData::Instance {
                 component: part.id,
                 placement: Default::default(),
+                placement_source: None,
             },
         );
         let placed = Entity::new(
@@ -95,6 +96,7 @@ impl Fixture {
                         std::f64::consts::FRAC_1_SQRT_2,
                     ],
                 },
+                placement_source: None,
             },
         );
         let other = Entity::new(
@@ -105,6 +107,7 @@ impl Fixture {
                     translation_mm: [-160., 0., 0.],
                     ..Default::default()
                 },
+                placement_source: None,
             },
         );
         let mut edits = source.replace(session.document(), outline_id).unwrap();

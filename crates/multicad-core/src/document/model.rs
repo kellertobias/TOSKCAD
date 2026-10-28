@@ -149,6 +149,8 @@ pub enum EntityData {
     Instance {
         component: EntityId,
         placement: Placement,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placement_source: Option<EntityId>,
     },
     Material {
         density_kg_m3: Option<f64>,
@@ -225,10 +227,23 @@ impl EntityData {
                 .iter()
                 .map(|id| (Link::new(*id, "instances"), vec![EntityKind::Instance]))
                 .collect(),
-            Self::Instance { component, .. } => vec![(
-                Link::new(*component, "component"),
-                vec![EntityKind::Part, EntityKind::Assembly],
-            )],
+            Self::Instance {
+                component,
+                placement_source,
+                ..
+            } => {
+                let mut links = vec![(
+                    Link::new(*component, "component"),
+                    vec![EntityKind::Part, EntityKind::Assembly],
+                )];
+                if let Some(driver) = placement_source {
+                    links.push((
+                        Link::new(*driver, "placement_source"),
+                        vec![EntityKind::Extension],
+                    ));
+                }
+                links
+            }
             Self::Material { .. } | Self::Group {} => Vec::new(),
         }
     }

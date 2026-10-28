@@ -507,6 +507,7 @@ fn face_creation_rejects_untrusted_owner_kind_stale_curved_and_ambiguous_frames(
         EntityData::Instance {
             component: part.id,
             placement: Default::default(),
+            placement_source: None,
         },
     );
     session

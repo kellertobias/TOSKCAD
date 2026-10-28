@@ -164,6 +164,7 @@ pub fn document() -> Result<Document, String> {
                 translation_mm: [0., -90., 0.],
                 ..Default::default()
             },
+            placement_source: None,
         },
     );
     state.members.get_mut(&b.id).unwrap().push(placed.id);
@@ -297,6 +298,7 @@ pub fn evaluate(
         if let EntityData::Instance {
             component,
             placement,
+            ..
         } = entry.data
         {
             let (producer, color) = bodies

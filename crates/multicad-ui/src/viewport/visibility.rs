@@ -131,6 +131,7 @@ mod tests {
                             translation_mm: [i as f64 * 50., 0., 0.],
                             ..Default::default()
                         },
+                        placement_source: None,
                     },
                 )
             })
