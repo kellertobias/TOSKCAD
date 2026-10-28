@@ -31,7 +31,7 @@ fn spline(closed: bool) -> DrawRequest {
     }
 }
 #[test]
-fn typed_spline_draw_is_source_neutral_shared_closed_and_schema_three_only() {
+fn typed_spline_draw_is_source_neutral_shared_closed_and_requires_at_least_schema_three() {
     let original = source();
     let draft = sketch_draw::draft(&original, &spline(true)).unwrap();
     assert_eq!(original, source());
@@ -46,11 +46,17 @@ fn typed_spline_draw_is_source_neutral_shared_closed_and_schema_three_only() {
     let def = draft.source.definition().unwrap();
     assert_eq!(def.schema_version, 3);
     assert_eq!(Source::from_definition(&def).unwrap(), draft.source);
-    for schema in [1, 2, 4] {
+    for schema in [1, 2, 5] {
         let mut invalid = def.clone();
         invalid.schema_version = schema;
         assert!(Source::from_definition(&invalid).is_err());
     }
+    let mut external_capable = def.clone();
+    external_capable.schema_version = 4;
+    assert_eq!(
+        Source::from_definition(&external_capable).unwrap(),
+        draft.source
+    );
     assert!(draft.source.display_geometry().is_err());
     assert!(sketch_regions::extract(&draft.source).regions.is_empty());
     let json = serde_json::to_string(&spline(true)).unwrap();

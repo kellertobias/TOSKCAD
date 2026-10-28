@@ -163,7 +163,7 @@ impl CacheKey {
         dependencies.insert(
             "multicad.core.semantics".into(),
             ContentHash::of(
-                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1",
+                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1;constrained_sketch.4;sketch.external.1",
             ),
         );
         Ok(Self {
@@ -318,6 +318,12 @@ impl ProjectFile {
         if crate::constraint_sketch::source::requires_v3(&self.document) {
             required.insert(crate::constraint_sketch::source::V3_CAPABILITY.into());
         }
+        if crate::constraint_sketch::source::requires_v4(&self.document) {
+            required.insert(crate::constraint_sketch::source::V4_CAPABILITY.into());
+        }
+        if crate::sketch_external::required_capability(&self.document) {
+            required.insert(crate::sketch_external::CAPABILITY.into());
+        }
         required.extend(crate::model::required_capabilities(&self.document));
         if crate::drawings::required_capability(&self.document) {
             required.insert(crate::drawings::CAPABILITY.into());
@@ -383,6 +389,8 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::constraint_sketch::source::V2_CAPABILITY.into(),
         crate::constraint_sketch::source::V3_CAPABILITY.into(),
         crate::materials::CAPABILITY.into(),
+        crate::constraint_sketch::source::V4_CAPABILITY.into(),
+        crate::sketch_external::CAPABILITY.into(),
         crate::model::CAPABILITY.into(),
         crate::model::PRIMITIVE_CAPABILITY.into(),
         crate::model::REVOLVE_CAPABILITY.into(),

@@ -8,7 +8,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod analytic;
+mod dependency;
 pub use analytic::AnalyticGeometry;
+pub use dependency::dependency_hash;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TopologyKind {
     Face,
@@ -316,6 +318,8 @@ pub struct Diagnostic {
     pub intent: GeometryIntent,
     pub resolution: Resolution,
     pub affected: Vec<EntityId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_hash: Option<crate::project_file::ContentHash>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReferenceReport {
@@ -338,6 +342,7 @@ pub fn inspect(
     snapshots: &BTreeMap<EntityId, TopologySnapshot>,
 ) -> ReferenceReport {
     let mut entries = vec![];
+    let mut hashes = BTreeMap::new();
     for entity in document.entities() {
         for link in entity.references() {
             if let Some(intent) = &link.geometry {
@@ -362,6 +367,9 @@ pub fn inspect(
                     intent: intent.clone(),
                     resolution,
                     affected: document.affected([entity.id]).unwrap_or_default(),
+                    dependency_hash: *hashes
+                        .entry(link.target)
+                        .or_insert_with(|| dependency_hash(document, link.target).ok()),
                 });
             }
         }

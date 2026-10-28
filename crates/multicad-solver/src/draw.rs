@@ -40,7 +40,7 @@ pub fn prepare_draw(
         Source::read_for_evaluation(session.document(), sketch, expected_revision, report)
             .map_err(input)?;
     let semantic = source.minimum_schema_version() >= 2
-        || matches!(&session.document().get(sketch).expect("read sketch").data,multicad_core::document::EntityData::Sketch {definition,..} if (2..=3).contains(&definition.schema_version));
+        || matches!(&session.document().get(sketch).expect("read sketch").data,multicad_core::document::EntityData::Sketch {definition,..} if (2..=4).contains(&definition.schema_version));
     if semantic {
         let evaluated = crate::evaluate_document_sketch_with_parameters(
             session.document(),

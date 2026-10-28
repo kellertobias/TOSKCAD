@@ -12,6 +12,10 @@ It never chooses a replacement from geometric proximity or a saved face index.
 Producer code must supply truthful semantic provenance; this protocol cannot
 infer it from an unlabelled mesh or imported solid.
 
+Constrained sketches consume supported native analytic descriptors through
+[source-linked sketch geometry](sketch-external.md), including its source-bound
+capture precondition and checked consumer repair rules.
+
 Planar attachments store an offset and rotation relative to a semantic source
 frame. Each evaluation applies these to the current source frame. Repeated
 rebuilds do not accumulate displacement. A missing or conflicting source frame

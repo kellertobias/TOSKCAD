@@ -362,7 +362,23 @@ fn evaluate_checked(
             }
         }
     }
-    let evaluation = evaluate_with_parameters(&solver_input, parameters, interrupt)?;
+    let transient = multicad_core::sketch_external::apply_to_solver(
+        document,
+        stamp.revision,
+        sketch,
+        frame,
+        report,
+        &mut solver_input,
+    )
+    .map_err(|e| error(sketch, e.to_string()))?;
+    let mut evaluation = evaluate_with_parameters(&solver_input, parameters, interrupt)?;
+    if let Some(candidate) = &mut evaluation.candidate {
+        // Existing editing paths reuse solved constraints. External locks are
+        // evaluator input only and must never become authored constraints.
+        candidate
+            .constraints
+            .retain(|constraint| !transient.contains(&constraint.id));
+    }
     cancelled(interrupt)?;
     Ok(EvaluatedSketch {
         stamp,

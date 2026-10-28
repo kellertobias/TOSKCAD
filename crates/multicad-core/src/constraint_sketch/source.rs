@@ -10,6 +10,10 @@ use std::collections::BTreeSet;
 pub const TYPE: &str = "core.constrained_sketch";
 pub const V2_CAPABILITY: &str = "core.constrained_sketch.2";
 pub const V3_CAPABILITY: &str = "core.constrained_sketch.3";
+pub const V4_CAPABILITY: &str = "core.constrained_sketch.4";
+pub fn requires_v4(document: &Document) -> bool {
+    document.entities().any(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==TYPE&&definition.schema_version==4))
+}
 pub fn requires_v3(document: &Document) -> bool {
     document.entities().any(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==TYPE&&definition.schema_version==3))
 }
@@ -218,7 +222,7 @@ impl Source {
         Ok(lines[0])
     }
     pub fn from_definition(definition: &Definition) -> Result<Self, DocumentError> {
-        if definition.type_id != TYPE || !(1..=3).contains(&definition.schema_version) {
+        if definition.type_id != TYPE || !(1..=4).contains(&definition.schema_version) {
             return Err(invalid("Unsupported constrained sketch provider/version"));
         }
         let source: Self = serde_json::from_value(definition.data.clone())
@@ -407,7 +411,7 @@ impl Source {
         let source = Self::from_definition(definition)?;
         if definition.schema_version >= 2 && !allow_semantic {
             return Err(invalid(
-                "Constrained sketch schema 2 or 3 requires an EvaluatedSketch; raw authored geometry is unavailable",
+                "Constrained sketch schema 2, 3 or 4 requires an EvaluatedSketch; raw authored geometry is unavailable",
             ));
         }
         let Some(EntityData::Plane { normal, .. }) = document.get(*plane).map(|e| &e.data) else {
@@ -424,6 +428,7 @@ impl Source {
         document: &Document,
         id: EntityId,
     ) -> Result<Vec<Mutation>, DocumentError> {
+        crate::sketch_external::validate_source_edit(document, id, self)?;
         let mut entity = document
             .get(id)
             .ok_or_else(|| invalid("Sketch is missing"))?
@@ -436,7 +441,7 @@ impl Source {
         };
         let previous_version = definition.schema_version;
         *definition = self.definition()?;
-        if definition.type_id == TYPE && (2..=3).contains(&previous_version) {
+        if definition.type_id == TYPE && (2..=4).contains(&previous_version) {
             definition.schema_version = definition.schema_version.max(previous_version);
         }
         inputs.retain(|link| !link.role.starts_with(DIMENSION_LINK_PREFIX));
