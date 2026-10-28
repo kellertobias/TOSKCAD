@@ -1,10 +1,137 @@
 #include "native_window.hpp"
+#include "multicad-ui/src/native_window.rs.h"
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #include <cmath>
+#include <algorithm>
 
 namespace {
 char quit_guard_state_key;
+}
+
+namespace {
+char touch_state_key;
+char touch_originals_key;
+}
+@interface MultiCADTouchState : NSObject
+@property(nonatomic, copy) NSSet* identities;
+@property(nonatomic) NSPoint centroid;
+@property(nonatomic) NSPoint origin;
+@property(nonatomic) NSPoint pending;
+@property(nonatomic) std::uint64_t sequence;
+@property(nonatomic) BOOL engaged;
+@end
+@implementation MultiCADTouchState
+@end
+
+namespace {
+void observe_contacts(MultiCADTouchState* state, NSSet* identities, NSPoint centroid,
+                      NSPoint cursor) {
+    if (identities.count != 3 || !std::isfinite(centroid.x) || !std::isfinite(centroid.y)) {
+        state.identities = nil;
+        return;
+    }
+    if (![identities isEqualToSet:state.identities]) {
+        state.sequence += 1;
+        state.origin = cursor;
+        state.pending = NSZeroPoint;
+    } else {
+        const NSPoint delta = NSMakePoint(centroid.x-state.centroid.x,
+                                         state.centroid.y-centroid.y);
+        state.pending = NSMakePoint(std::clamp(state.pending.x+delta.x, -2000., 2000.),
+                                    std::clamp(state.pending.y+delta.y, -2000., 2000.));
+    }
+    state.identities = identities;
+    state.centroid = centroid;
+    state.engaged = YES;
+}
+}
+
+@interface MultiCADTouchObserver : NSObject
+- (void)touchesBeganWithEvent:(NSEvent*)event;
+- (void)touchesMovedWithEvent:(NSEvent*)event;
+- (void)touchesEndedWithEvent:(NSEvent*)event;
+- (void)touchesCancelledWithEvent:(NSEvent*)event;
+@end
+@implementation MultiCADTouchObserver
+- (void)touchesBeganWithEvent:(NSEvent*)event {
+    // This IMP runs on the unchanged WinitView. Access associated state only,
+    // never helper ivars; retain the host's inherited responder callback.
+    NSView* view = (NSView*)self;
+    MultiCADTouchState* state = objc_getAssociatedObject(self, &touch_state_key);
+    if (state && [NSThread isMainThread]) {
+        NSMutableSet* identities = [NSMutableSet new];
+        NSPoint centroid = NSZeroPoint;
+        for (NSTouch* touch in [event touchesMatchingPhase:NSTouchPhaseTouching inView:view]) {
+            if (touch.type != NSTouchTypeIndirect || touch.isResting) continue;
+            [identities addObject:touch.identity];
+            centroid.x += touch.normalizedPosition.x * touch.deviceSize.width;
+            centroid.y += touch.normalizedPosition.y * touch.deviceSize.height;
+        }
+        if (identities.count) {
+            centroid.x /= identities.count;
+            centroid.y /= identities.count;
+        }
+        NSPoint cursor = [view convertPoint:event.locationInWindow fromView:nil];
+        if (!view.isFlipped) cursor.y = NSMaxY(view.bounds) - cursor.y;
+        observe_contacts(state, identities, centroid, cursor);
+        // Winit's drawRect queues its ordinary redraw; no event loop replacement.
+        [view setNeedsDisplay:YES];
+    }
+    NSDictionary* originals = objc_getAssociatedObject(object_getClass(self), &touch_originals_key);
+    NSValue* original = originals[NSStringFromSelector(_cmd)];
+    if (original) {
+        using Callback = void (*)(id, SEL, NSEvent*);
+        reinterpret_cast<Callback>(original.pointerValue)(self, _cmd, event);
+    }
+}
+- (void)touchesMovedWithEvent:(NSEvent*)event { [self touchesBeganWithEvent:event]; }
+- (void)touchesEndedWithEvent:(NSEvent*)event { [self touchesBeganWithEvent:event]; }
+- (void)touchesCancelledWithEvent:(NSEvent*)event { [self touchesBeganWithEvent:event]; }
+@end
+
+namespace {
+bool owns_selector(Class cls, SEL selector) {
+    unsigned int count = 0;
+    Method* methods = class_copyMethodList(cls, &count);
+    bool found = false;
+    for (unsigned int i=0; i<count; ++i) found |= method_getName(methods[i]) == selector;
+    free(methods);
+    return found;
+}
+bool install_touch_callbacks(Class cls) {
+    SEL selectors[] = { @selector(touchesBeganWithEvent:), @selector(touchesMovedWithEvent:),
+        @selector(touchesEndedWithEvent:), @selector(touchesCancelledWithEvent:) };
+    // Use one implementation with the actual selector, so forwarding preserves
+    // Began/Moved/Ended/Cancelled separately. Never overwrite a host-owned IMP.
+    Method helper = class_getInstanceMethod([MultiCADTouchObserver class], selectors[0]);
+    IMP implementation = method_getImplementation(helper);
+    NSDictionary* previous = objc_getAssociatedObject(cls, &touch_originals_key);
+    const bool installed = [previous[@"installed"] boolValue];
+    if (previous && !installed) return false;
+    for (SEL selector : selectors) {
+        Method existing = class_getInstanceMethod(cls, selector);
+        if (owns_selector(cls, selector) && method_getImplementation(existing) != implementation)
+            return false;
+        // A different subclass inheriting our callback must not record that
+        // helper as its own original IMP (which would recurse during forwarding).
+        if (!installed && existing && method_getImplementation(existing) == implementation)
+            return false;
+    }
+    if (installed) return true;
+    NSMutableDictionary* originals = [NSMutableDictionary new];
+    for (SEL selector : selectors) {
+        Method inherited = class_getInstanceMethod(cls, selector);
+        if (inherited) originals[NSStringFromSelector(selector)] =
+            [NSValue valueWithPointer:reinterpret_cast<void*>(method_getImplementation(inherited))];
+    }
+    objc_setAssociatedObject(cls, &touch_originals_key, originals, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (SEL selector : selectors) {
+        if (!class_addMethod(cls, selector, implementation, method_getTypeEncoding(helper))) return false;
+    }
+    originals[@"installed"] = @YES;
+    return true;
+}
 }
 @interface MultiCADQuitGuardState : NSObject
 @property(nonatomic, weak) NSWindow* window;
@@ -69,7 +196,87 @@ std::uint8_t install_on_delegate(id delegate, NSWindow* window) {
 }
 @end
 
+@interface MultiCADTouchProbeBase : NSObject
+@property(nonatomic) NSInteger callbacks;
+- (void)touchesMovedWithEvent:(NSEvent*)event;
+@end
+@implementation MultiCADTouchProbeBase
+- (void)touchesMovedWithEvent:(NSEvent*)event {
+    (void)event;
+    self.callbacks += 1;
+}
+@end
+@interface MultiCADTouchProbe : MultiCADTouchProbeBase
+@end
+@implementation MultiCADTouchProbe
+@end
+@interface MultiCADDerivedTouchProbe : MultiCADTouchProbe
+@end
+@implementation MultiCADDerivedTouchProbe
+@end
+@interface MultiCADForeignTouchProbe : NSObject
+- (void)touchesMovedWithEvent:(NSEvent*)event;
+@end
+@implementation MultiCADForeignTouchProbe
+- (void)touchesMovedWithEvent:(NSEvent*)event { (void)event; }
+@end
+
 namespace multicad::window {
+NativeTouchFrame poll_trackpad(std::size_t address) noexcept {
+    NativeTouchFrame result{};
+    if (![NSThread isMainThread] || !address) return result;
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(address);
+    if (!view.window || !install_touch_callbacks(object_getClass(view))) return result;
+    MultiCADTouchState* state = objc_getAssociatedObject(view, &touch_state_key);
+    if (!state) {
+        state = [MultiCADTouchState new];
+        objc_setAssociatedObject(view, &touch_state_key, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        view.allowedTouchTypes |= NSTouchTypeMaskIndirect;
+        view.wantsRestingTouches = NO;
+    }
+    result.available = true;
+    if (!view.window.isKeyWindow) {
+        state.identities = nil;
+        state.pending = NSZeroPoint;
+        state.engaged = NO;
+        return result;
+    }
+    result.delta_x = state.pending.x;
+    result.delta_y = state.pending.y;
+    result.origin_x = state.origin.x;
+    result.origin_y = state.origin.y;
+    result.sequence = state.sequence;
+    result.active = state.engaged || state.identities.count == 3;
+    state.pending = NSZeroPoint;
+    state.engaged = NO;
+    return result;
+}
+bool trackpad_contract_test() noexcept {
+    @autoreleasepool {
+        MultiCADTouchState* state = [MultiCADTouchState new];
+        NSSet* three = [NSSet setWithArray:@[@1,@2,@3]];
+        observe_contacts(state, three, NSMakePoint(10,20), NSMakePoint(100,200));
+        if (state.sequence != 1 || state.pending.x != 0 || state.pending.y != 0) return false;
+        observe_contacts(state, three, NSMakePoint(15,17), NSZeroPoint);
+        if (state.pending.x != 5 || state.pending.y != 3 || state.origin.x != 100) return false;
+        observe_contacts(state, [NSSet setWithArray:@[@1,@2]], NSZeroPoint, NSZeroPoint);
+        if (state.identities || !state.engaged || state.pending.x != 5) return false;
+        observe_contacts(state, [NSSet setWithArray:@[@1,@2,@4]], NSMakePoint(500,500), NSZeroPoint);
+        if (state.sequence != 2 || state.pending.x != 0 || state.pending.y != 0) return false;
+        observe_contacts(state, three, NSMakePoint(NAN,0), NSZeroPoint);
+        if (state.identities) return false;
+        MultiCADTouchProbe* probe = [MultiCADTouchProbe new];
+        Class cls = object_getClass(probe);
+        if (!install_touch_callbacks(cls) || !install_touch_callbacks(cls) || object_getClass(probe) != cls) return false;
+        [probe touchesMovedWithEvent:nil];
+        if (probe.callbacks != 1) return false;
+        if (install_touch_callbacks([MultiCADDerivedTouchProbe class])) return false;
+        Class foreign = [MultiCADForeignTouchProbe class];
+        IMP before = method_getImplementation(class_getInstanceMethod(foreign, @selector(touchesMovedWithEvent:)));
+        if (install_touch_callbacks(foreign) || before != method_getImplementation(class_getInstanceMethod(foreign, @selector(touchesMovedWithEvent:)))) return false;
+        return true;
+    }
+}
 std::uint8_t install_quit_guard(std::size_t address) noexcept {
     if (![NSThread isMainThread]) return 1;
     if (!address) return 2;

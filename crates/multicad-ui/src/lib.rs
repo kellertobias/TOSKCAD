@@ -1,5 +1,6 @@
 pub mod application;
 pub mod camera;
+mod camera_gestures;
 pub mod controls;
 pub mod drawings;
 pub mod external_references;

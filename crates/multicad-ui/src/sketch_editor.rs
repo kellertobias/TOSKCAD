@@ -2556,15 +2556,7 @@ impl SketchEditor {
         self.refresh_overlay_visibility(session.document(), session.revision());
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         self.viewport_rect = Some(rect);
-        if response.dragged_by(egui::PointerButton::Secondary) {
-            self.camera.orbit(ui.input(|i| i.pointer.delta()));
-        }
-        if response.dragged_by(egui::PointerButton::Middle) {
-            self.camera.pan(ui.input(|i| i.pointer.delta()));
-        }
-        if response.hovered() {
-            self.camera.zoom(ui.input(|i| i.smooth_scroll_delta.y));
-        }
+        crate::camera_gestures::navigate(ui, &response, &mut self.camera);
         let painter = ui.painter().with_clip_rect(rect);
         let project = |p: [f64; 3], camera: &Camera| {
             let p = camera.project(p.map(|v| v as f32), rect);
@@ -5926,6 +5918,38 @@ mod tests {
         output.drop_without_applying_deltas();
         assert_eq!(session.document(), &before);
         assert!(editor.first.is_some());
+    }
+    #[test]
+    fn trackpad_navigation_changes_camera_without_editing_canonical_sketch() {
+        let ctx = egui::Context::default();
+        let mut editor = SketchEditor::default();
+        let mut session = session();
+        let canonical = session.document().clone();
+        let mut frame = |events| {
+            settle(&mut editor, &session);
+            ctx.run_ui(input(events), |ui| {
+                editor.canvas(ui, &mut session, true, None, false)
+            })
+            .drop_without_applying_deltas();
+        };
+        frame(vec![]);
+        frame(vec![egui::Event::PointerMoved(Pos2::new(450., 350.))]);
+        frame(vec![egui::Event::Zoom(1.5)]);
+        for (unit, modifiers) in [
+            (egui::MouseWheelUnit::Point, egui::Modifiers::NONE),
+            (egui::MouseWheelUnit::Line, egui::Modifiers::NONE),
+            (egui::MouseWheelUnit::Point, egui::Modifiers::ALT),
+        ] {
+            frame(vec![egui::Event::MouseWheel {
+                unit,
+                delta: Vec2::new(12., 8.),
+                phase: egui::TouchPhase::Move,
+                modifiers,
+            }]);
+        }
+        assert_ne!(editor.camera, Camera::default());
+        assert_eq!(session.document(), &canonical);
+        assert_eq!(session.revision(), 0);
     }
     #[test]
     fn middle_mouse_drag_still_pans_the_view_without_editing_source() {

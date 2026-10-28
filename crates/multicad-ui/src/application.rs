@@ -1866,6 +1866,7 @@ impl eframe::App for Application {
                 });
                 return;
             }
+            crate::native_window::feed_trackpad(_frame, ui.ctx());
             crate::native_window::align_title_buttons(_frame, 40.0 * ui.ctx().zoom_factor() as f64);
         }
         self.show(ui);

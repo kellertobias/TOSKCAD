@@ -5,11 +5,22 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 #[allow(unsafe_code, dead_code)]
 #[cxx::bridge(namespace = "multicad::window")]
 mod ffi {
+    struct NativeTouchFrame {
+        delta_x: f64,
+        delta_y: f64,
+        origin_x: f64,
+        origin_y: f64,
+        sequence: u64,
+        active: bool,
+        available: bool,
+    }
     unsafe extern "C++" {
         include!("native_window.hpp");
         fn position_buttons(view: usize, header_height: f64) -> bool;
         fn install_quit_guard(view: usize) -> u8;
         fn quit_guard_contract_test() -> bool;
+        fn poll_trackpad(view: usize) -> NativeTouchFrame;
+        fn trackpad_contract_test() -> bool;
     }
 }
 fn quit_guard_result(status: u8) -> Result<(), &'static str> {
@@ -59,12 +70,43 @@ pub(crate) fn align_title_buttons(frame: &eframe::Frame, height: f64) {
         ffi::position_buttons(appkit.ns_view.as_ptr() as usize, height);
     }
 }
+/// Drain every native frame, including welcome/modals, so touches cannot replay
+/// into a subsequently opened document. Native coordinates are AppKit points.
+pub(crate) fn feed_trackpad(frame: &eframe::Frame, ctx: &eframe::egui::Context) {
+    let mut orbit = crate::camera_gestures::NativeOrbit::default();
+    if let Ok(handle) = frame.window_handle()
+        && let RawWindowHandle::AppKit(appkit) = handle.as_raw()
+    {
+        let input = ffi::poll_trackpad(appkit.ns_view.as_ptr() as usize);
+        if input.available {
+            let zoom = ctx.zoom_factor() as f64;
+            orbit = crate::camera_gestures::NativeOrbit {
+                delta: eframe::egui::vec2(
+                    (input.delta_x / zoom) as f32,
+                    (input.delta_y / zoom) as f32,
+                ),
+                origin: eframe::egui::pos2(
+                    (input.origin_x / zoom) as f32,
+                    (input.origin_y / zoom) as f32,
+                ),
+                sequence: input.sequence,
+                active: input.active,
+            };
+        }
+    }
+    crate::camera_gestures::feed_native(ctx, orbit);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn quit_guard_preserves_delegate_identity_callbacks_and_foreign_termination() {
         assert!(ffi::quit_guard_contract_test());
+    }
+    #[test]
+    fn trackpad_observer_preserves_host_callbacks_and_tracks_exactly_three_contacts() {
+        assert!(ffi::trackpad_contract_test());
     }
     #[test]
     fn quit_guard_failures_never_report_protection_as_installed() {
