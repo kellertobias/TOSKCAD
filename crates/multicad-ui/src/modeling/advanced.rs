@@ -113,7 +113,9 @@ impl AdvancedPanel {
                 .input;
             model::AdvancedRequest::on_body(input, parameters, selection.captures)
         } else {
-            model::AdvancedRequest::new_body(kind.label(), parameters, profiles, None)
+            let name =
+                super::names::GeneratedNames::new(document).numbered(kind.label(), " feature");
+            model::AdvancedRequest::new_body(name, parameters, profiles, None)
         };
         let mut panel = Self::from_request(document, request, kind, false)?;
         if let (Some(scene), Some(input)) = (scene, panel.request.input.as_ref()) {

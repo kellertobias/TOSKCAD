@@ -278,7 +278,7 @@ fn loft_authors_section_order_and_seams_by_pointer_without_uuid_correspondence()
         &ctx,
         &mut p,
         &document,
-        &inputs::profile_label(&document, &b),
+        &inputs::profile_label(&document, &b, &[a.clone(), b.clone()]),
         0,
     );
     let r = request(p.request(&document, true).unwrap());

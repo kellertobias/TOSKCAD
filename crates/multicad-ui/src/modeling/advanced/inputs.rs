@@ -7,17 +7,42 @@ pub(super) struct Inputs {
     choices: Vec<ProfileSource>,
     paths: Vec<SketchPathSource>,
 }
-pub(super) fn profile_label(document: &Document, p: &ProfileSource) -> String {
+pub(super) fn profile_label(
+    document: &Document,
+    p: &ProfileSource,
+    choices: &[ProfileSource],
+) -> String {
+    let ordinal = choices
+        .iter()
+        .filter(|choice| choice.sketch == p.sketch)
+        .position(|choice| choice == p)
+        .map_or_else(
+            || "saved profile".into(),
+            |index| format!("profile {}", index + 1),
+        );
     format!(
-        "{} · {} boundary curves",
+        "{} · {} ({} boundary curves)",
         document
             .get(p.sketch)
             .map_or("Missing sketch", |e| e.name.as_str()),
+        ordinal,
         p.region.outer.curves.len()
     )
 }
-fn curve_label(id: EntityId) -> String {
-    format!("Curve {}", &id.to_string()[..8])
+fn curve_label(document: &Document, sketch: EntityId, id: EntityId) -> String {
+    let source = document.get(sketch).and_then(|e| {
+        if let multicad_core::document::EntityData::Sketch { definition, .. } = &e.data {
+            multicad_core::constraint_sketch::source::Source::from_definition(definition).ok()
+        } else {
+            None
+        }
+    });
+    source
+        .and_then(|source| source.sketch.curves.iter().position(|curve| curve.id == id))
+        .map_or_else(
+            || format!("Saved curve {}", &id.to_string()[..8]),
+            |index| format!("Curve {}", index + 1),
+        )
 }
 pub(super) fn initial_seam(document: &Document, p: &ProfileSource) -> Option<EntityId> {
     // Read identity/creation order only. Geometric choices still come solely
@@ -76,7 +101,7 @@ impl Inputs {
                     if ui
                         .add_enabled(
                             !selected || kind == AdvancedKind::Sweep,
-                            egui::Button::new(profile_label(document, p)),
+                            egui::Button::new(profile_label(document, p, &self.choices)),
                         )
                         .clicked()
                     {
@@ -102,12 +127,12 @@ impl Inputs {
         let mut reorder = None;
         for (index, p) in self.profiles.iter().enumerate() {
             ui.push_id(("advanced-section",index),|ui|{
-                ui.label(format!("{}. {}",index+1,profile_label(document,p)));
+                ui.label(format!("{}. {}",index+1,profile_label(document,p,&self.choices)));
                 ui.horizontal(|ui|{if ui.add_enabled(index>0,egui::Button::new("↑")).on_hover_text("Move this section earlier; its seam follows").clicked(){reorder=Some((index,index-1));}
 if ui.add_enabled(index+1<self.profiles.len(),egui::Button::new("↓")).on_hover_text("Move this section later; its seam follows").clicked(){reorder=Some((index,index+1));}
 if ui.button("Remove section").clicked(){remove=Some(index);}});
                 if let fields::ParameterFields::Loft{seams,..}=fields
-                    && let Some(seam)=seams.get_mut(index){controls::inspector_combo(ui,"section-seam").selected_text(format!("Start: {}",curve_label(*seam))).show_ui(ui,|ui|{for curve in &p.region.outer.curves{changed|=ui.selectable_value(seam,*curve,curve_label(*curve)).changed();}});ui.small("Start curves are explicit correspondence choices; native Preview rejects incompatible sections.");}
+                    && let Some(seam)=seams.get_mut(index){controls::inspector_combo(ui,"section-seam").selected_text(format!("Start: {}",curve_label(document,p.sketch,*seam))).show_ui(ui,|ui|{for curve in &p.region.outer.curves{changed|=ui.selectable_value(seam,*curve,curve_label(document,p.sketch,*curve)).changed();}});ui.small("Start curves are explicit correspondence choices; native Preview rejects incompatible sections.");}
 
             });
         }
@@ -119,8 +144,7 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
                 seams.remove(index);
             }
             changed = true;
-        }
-        if let Some((a, b)) = reorder {
+        } else if let Some((a, b)) = reorder {
             self.profiles.swap(a, b);
             if let fields::ParameterFields::Loft { seams, .. } = fields
                 && a < seams.len()
@@ -155,7 +179,7 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
                             .map_or("Missing path sketch", |e| e.name.as_str()),
                         p.curves
                             .first()
-                            .map_or("No curve".into(), |id| curve_label(*id))
+                            .map_or("No curve".into(), |id| curve_label(document, p.sketch, *id))
                     );
                     if ui.add_enabled(valid, egui::Button::new(label)).clicked() {
                         add = Some(index);
@@ -177,7 +201,11 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
             let mut reorder = None;
             for (index, curve) in path.curves.iter().enumerate() {
                 ui.push_id(("path-segment", index), |ui| {
-                    ui.label(format!("{}. {}", index + 1, curve_label(*curve)));
+                    ui.label(format!(
+                        "{}. {}",
+                        index + 1,
+                        curve_label(document, path.sketch, *curve)
+                    ));
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(index > 0, egui::Button::new("↑"))
@@ -202,8 +230,7 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
             if let Some(index) = remove {
                 path.curves.remove(index);
                 changed = true;
-            }
-            if let Some((a, b)) = reorder {
+            } else if let Some((a, b)) = reorder {
                 path.curves.swap(a, b);
                 changed = true;
             }
