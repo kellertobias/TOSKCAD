@@ -858,6 +858,14 @@ impl Scene {
     pub fn geometries(&self) -> &BTreeMap<EntityId, Arc<Geometry>> {
         &self.geometries
     }
+    /// Canonical source aliases remain available even when a reusable Part is
+    /// definition-only and has no independent physical display instance.
+    pub fn source_producer(&self, source: EntityId) -> Option<EntityId> {
+        self.reference_aliases
+            .get(&source)
+            .copied()
+            .or_else(|| self.geometries.contains_key(&source).then_some(source))
+    }
     /// Local source topology for one canonical geometry producer. Placed
     /// occurrence frames are supplied separately by its instance transform.
     pub fn geometry_snapshot(&self, producer: EntityId) -> Option<TopologySnapshot> {
