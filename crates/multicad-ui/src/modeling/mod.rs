@@ -6,7 +6,7 @@ mod body_choices;
 mod boolean;
 mod boolean_edit;
 mod controller;
-mod dimension;
+pub(crate) mod dimension;
 mod edge_treatment;
 mod extrude;
 mod extrude_operation;

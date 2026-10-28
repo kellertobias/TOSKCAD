@@ -8,7 +8,7 @@ use multicad_core::{
 /// Text stays local, including temporarily incomplete formulas. Stable bindings
 /// are retained when editing a previously bound dimension.
 #[derive(Clone, Debug)]
-pub(super) struct DimensionField {
+pub(crate) struct DimensionField {
     pub text: String,
     unit: String,
     previous: Option<BoundExpression>,
