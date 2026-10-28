@@ -46,20 +46,21 @@ impl Document {
         }
         output
     }
-    fn edges(&self) -> BTreeMap<EntityId, BTreeSet<EntityId>> {
+    pub fn evaluation_dependencies(
+        &self,
+        id: EntityId,
+    ) -> Result<BTreeSet<EntityId>, DocumentError> {
+        crate::model::transfer_evaluation_dependencies(self, id)
+    }
+    fn edges(&self) -> Result<BTreeMap<EntityId, BTreeSet<EntityId>>, DocumentError> {
         self.entities()
-            .map(|e| {
-                (
-                    e.id,
-                    e.references().into_iter().map(|link| link.target).collect(),
-                )
-            })
+            .map(|e| Ok((e.id, self.evaluation_dependencies(e.id)?)))
             .collect()
     }
     /// Sources precede dependents; UUID ordering breaks ties deterministically.
     /// Missing references are diagnosed separately and never invented as nodes.
     pub fn topological_order(&self) -> Result<Vec<EntityId>, DocumentError> {
-        let edges = self.edges();
+        let edges = self.edges()?;
         let mut degree = BTreeMap::new();
         let mut reverse: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
         for (id, inputs) in &edges {

@@ -14,6 +14,7 @@ pub fn dependency_hash(
     let mut visited = BTreeSet::new();
     let mut pending = vec![source];
     let mut entities = BTreeMap::new();
+    let mut pose_fingerprints = BTreeMap::new();
     while let Some(id) = pending.pop() {
         if !visited.insert(id) {
             continue;
@@ -25,11 +26,18 @@ pub fn dependency_hash(
         }
         let entity = document.get(id);
         if let Some(entity) = entity {
-            pending.extend(entity.references().into_iter().map(|link| link.target));
+            pending.extend(document.evaluation_dependencies(id)?);
+            if let Some(projection) = crate::model::transfer_pose_projection(document, entity.id)? {
+                pose_fingerprints.insert(id, projection.fingerprint);
+            }
         }
         entities.insert(id, entity);
     }
-    let bytes = serde_json::to_vec(&(document.id(), entities))
-        .map_err(|e| DocumentError::Invalid(e.to_string()))?;
+    let bytes = if pose_fingerprints.is_empty() {
+        serde_json::to_vec(&(document.id(), entities))
+    } else {
+        serde_json::to_vec(&(document.id(), entities, pose_fingerprints))
+    }
+    .map_err(|e| DocumentError::Invalid(e.to_string()))?;
     Ok(ContentHash::of(&bytes))
 }

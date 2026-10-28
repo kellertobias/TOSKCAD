@@ -421,6 +421,8 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::EDGE_TREATMENT_CAPABILITY.into(),
         crate::model::EDGE_TREATMENT_V2_CAPABILITY.into(),
         crate::model::ADVANCED_CAPABILITY.into(),
+        crate::model::TRANSFER_CAPABILITY.into(),
+        crate::model::TRANSFER_GROUP_CAPABILITY.into(),
         crate::model::JOINT_CAPABILITY.into(),
         crate::model::ASSEMBLY_CAPABILITY.into(),
         crate::model::NAMED_POSE_CAPABILITY.into(),

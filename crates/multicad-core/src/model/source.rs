@@ -642,6 +642,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::extrude_group::validate_document(document)?;
     super::placement::validate_document(document)?;
     super::assembly::validate_document(document)?;
+    super::transfer::validate_document(document)?;
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
@@ -672,6 +673,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::ADVANCED_TYPE => {
                     super::read_advanced(document, entity.id)?;
                 }
+                super::TRANSFER_TYPE => {
+                    super::read_transfer_feature(document, entity.id)?;
+                }
                 super::REVOLVE_TYPE => {
                     super::read_revolve(document, entity.id)?;
                 }
@@ -696,6 +700,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::SCALE_TYPE,
                     super::EDGE_TREATMENT_TYPE,
                     super::ADVANCED_TYPE,
+                    super::TRANSFER_TYPE,
                     super::ALIGN_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
@@ -713,6 +718,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::JOINT_TYPE,
                     super::ASSEMBLY_TYPE,
                     super::NAMED_POSE_TYPE,
+                    super::TRANSFER_GROUP_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {
