@@ -67,17 +67,21 @@ impl DrawingFeed {
         self.queued = None;
         self.pending = false;
     }
-    pub fn tick(&mut self, now: f64) {
+    pub fn tick(&mut self, now: f64) -> bool {
+        let mut changed = false;
         if self.backend.is_none() {
             self.backend = self.factory.as_ref().map(|factory| factory());
         }
         let Some(backend) = self.backend.as_mut() else {
-            self.error = Some("Native drawing provider is unavailable".into());
-            return;
+            let message = "Native drawing provider is unavailable";
+            changed = self.error.as_deref() != Some(message);
+            self.error = Some(message.into());
+            return changed;
         };
         if let Some(reply) = backend.poll()
             && Some(reply.stamp) == self.expected
         {
+            changed = true;
             self.pending = false;
             match reply.result {
                 Ok(result) if result.stamp == reply.stamp => {
@@ -96,8 +100,11 @@ impl DrawingFeed {
             }
         }
         if self.queued.as_ref().is_some_and(|(_, due)| now >= *due) {
+            changed = true;
             let (document, _) = self.queued.take().expect("due drawing job");
-            let Some(stamp) = self.expected else { return };
+            let Some(stamp) = self.expected else {
+                return changed;
+            };
             match backend.request(&document, stamp) {
                 Ok(()) => {
                     self.pending = true;
@@ -109,6 +116,7 @@ impl DrawingFeed {
                 }
             }
         }
+        changed
     }
     pub fn pending(&self) -> bool {
         self.pending || self.queued.is_some()

@@ -455,3 +455,73 @@ fn view_tools_require_an_explicit_native_provider_and_reject_source_changes_afte
             .is_err()
     );
 }
+
+#[test]
+fn removing_the_last_view_commits_without_requesting_a_nonexistent_geometry_preview() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    let book = editor.book.unwrap();
+    let saved_view = editor.draft.as_ref().unwrap().views[0].id;
+    editor.draft.as_mut().unwrap().views.clear();
+    editor.tick_views(&egui::Context::default(), &session);
+    assert!(editor.feed.result.is_none());
+    assert!(editor.enabled(DrawingTool::Apply, &session));
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    assert!(
+        drawings::read(session.document(), book).unwrap().pages[0]
+            .views
+            .is_empty()
+    );
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(
+        drawings::read(session.document(), book).unwrap().pages[0].views[0].id,
+        saved_view
+    );
+}
+
+#[test]
+fn asynchronous_drawing_completion_requests_a_frame_to_refresh_inspector_and_ribbon() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    let ctx = egui::Context::default();
+    // Start the request without consuming its already queued test reply.
+    editor.tick_views(&ctx, &session);
+    assert!(editor.feed.tick(1.));
+    assert!(editor.feed.pending());
+    let mut was_ready = false;
+    let output = ctx.run_ui(
+        egui::RawInput {
+            time: Some(2.),
+            ..Default::default()
+        },
+        |ui| {
+            was_ready = editor.enabled(DrawingTool::Apply, &session);
+            editor.tick_views(ui.ctx(), &session);
+        },
+    );
+    assert!(!was_ready);
+    assert!(editor.enabled(DrawingTool::Apply, &session));
+    assert!(
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .repaint_delay
+            .is_zero()
+    );
+}

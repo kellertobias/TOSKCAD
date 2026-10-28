@@ -67,10 +67,14 @@ impl DrawingView {
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame.validate().map_err(invalid)?;
         let sources = self.source.entities();
+        if sources.is_empty() {
+            return Err(invalid(
+                "Choose at least one Part or component for this drawing view",
+            ));
+        }
         if self.id.is_nil()
             || self.name.trim().is_empty()
             || self.name.len() > 256
-            || sources.is_empty()
             || sources.len() > 4096
             || sources.iter().any(|id| id.is_nil())
             || sources.iter().copied().collect::<BTreeSet<_>>().len() != sources.len()

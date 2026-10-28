@@ -333,7 +333,6 @@ impl Default for Registry {
             ("door", "Door", Icon::Page),
             ("window-tool", "Window", Icon::Page),
             ("stairs", "Stairs", Icon::Edge),
-            ("projection", "Projection / section", Icon::Page),
             ("text", "Text / leader", Icon::Sketch),
             ("export-set", "Tag export set", Icon::Library),
             ("export-3d", "STEP / OBJ", Icon::Export),
@@ -602,12 +601,9 @@ mod tests {
                 );
             }
         }
-        assert!(
-            matches!(
-                registry.tool("projection").unwrap().action,
-                Command::Extension(_)
-            ),
-            "Page creation must not pretend to produce linked model views"
+        assert_eq!(
+            registry.parse_line("projection").unwrap().0,
+            Command::Drawing(crate::drawings::DrawingTool::Projection)
         );
     }
     #[test]

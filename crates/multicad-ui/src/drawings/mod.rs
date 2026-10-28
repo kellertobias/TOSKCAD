@@ -107,7 +107,7 @@ impl DrawingTool {
             Self::Apply => &["applypage"],
             Self::Discard => &["discardpage"],
             Self::Text => &["pagenote"],
-            Self::Projection => &["drawingview"],
+            Self::Projection => &["drawingview", "projection"],
             Self::Section => &["drawingsection"],
             Self::Detail => &["drawingdetail"],
         }

@@ -44,6 +44,11 @@ impl DrawingEditor {
             self.preview_input = None;
             return;
         }
+        if self.validate_draft().is_err() {
+            self.feed.clear();
+            self.preview_input = None;
+            return;
+        }
         if !self.preview_matches(session) {
             self.preview_input = Some((
                 session.document().id(),
@@ -62,12 +67,21 @@ impl DrawingEditor {
                 }
             }
         }
-        self.feed.tick(ctx.input(|i| i.time));
+        if self.feed.tick(ctx.input(|i| i.time)) {
+            ctx.request_repaint();
+        }
         if self.feed.pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
     pub(super) fn changed_views_ready(&self, session: &Session) -> bool {
+        if self
+            .draft
+            .as_ref()
+            .is_some_and(|page| page.views.is_empty())
+        {
+            return true;
+        }
         if self.draft.as_ref().map(|p| &p.views) == self.original.as_ref().map(|p| &p.views) {
             return true;
         }
@@ -300,9 +314,6 @@ impl DrawingEditor {
         }
         if fit && let Err(error) = self.fit_view(id, session) {
             self.error = Some(error);
-        }
-        if let Some(error) = &self.feed.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
         if self.feed.pending() {
             ui.label("Generating native drawing…");
