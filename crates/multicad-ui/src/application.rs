@@ -846,12 +846,10 @@ impl Application {
             }
             Command::Modeling(tool) => {
                 if self.current().editor.dirty() {
-                    return Err("Apply or discard parameter edits before extruding".into());
+                    return Err("Apply or discard parameter edits before modeling".into());
                 }
                 if !matches!(self.mode, Mode::Sketch | Mode::Model) {
-                    return Err(
-                        "Select closed sketch areas in Sketch or Model before extruding".into(),
-                    );
+                    return Err("Open Sketch or Model before starting a modeling tool".into());
                 }
                 let project = self.current_mut();
                 project.sketch.activate_model_tool(
@@ -3016,10 +3014,16 @@ mod tests {
             "Canonical display, modeling candidates and reference recovery need separate workers"
         );
         app.mode = Mode::Model;
-        assert!(app.enabled(command));
-        app.invoke(command, &[], Channel::Ui).unwrap();
-        assert!(app.current().sketch.awaiting_model_targets());
-        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        for command in [
+            command,
+            Command::Modeling(crate::modeling::ModelingTool::Scale),
+        ] {
+            assert!(app.enabled(command));
+            app.invoke(command, &[], Channel::Ui).unwrap();
+            assert!(app.current().sketch.awaiting_model_targets());
+            assert!(!app.enabled(Command::Parameter));
+            app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        }
         assert!(
             app.invoke(command, &["100"], Channel::CommandLine)
                 .unwrap_err()

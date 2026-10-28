@@ -17,6 +17,9 @@ use std::collections::VecDeque;
 mod external_host;
 #[path = "model_target_selection.rs"]
 mod model_target_selection;
+#[cfg(test)]
+#[path = "sketch_scale_host_tests.rs"]
+mod scale_host_tests;
 
 const MAX_PROFILE_CLICKS: usize = 32;
 #[derive(Clone, Copy)]
@@ -449,9 +452,39 @@ impl SketchEditor {
         match &document.get(id)?.data {
             EntityData::Feature { .. } => Some((id, false)),
             EntityData::Instance {
-                placement_source: Some(driver),
+                component,
+                placement_source,
                 ..
-            } => Some((*driver, true)),
+            } => {
+                if let Some(EntityData::Part { features, .. }) =
+                    document.get(*component).map(|e| &e.data)
+                    && let Some(feature) = features.iter().rev().find(|feature| {
+                        matches!(
+                            document.get(**feature).map(|e| &e.data),
+                            Some(EntityData::Feature {
+                                suppressed: false,
+                                ..
+                            })
+                        )
+                    })
+                    && let Ok(scale) = multicad_core::model::read_scale(document, *feature)
+                    && let multicad_core::model::ScaleInput::Component { owner, base, .. } =
+                        scale.input
+                    && owner == id
+                    && match base {
+                        multicad_core::model::PlacementBase::Previous { driver } => {
+                            Some(driver) == *placement_source
+                        }
+                        multicad_core::model::PlacementBase::Literal { .. } => {
+                            placement_source.is_none()
+                        }
+                    }
+                {
+                    Some((*feature, true))
+                } else {
+                    placement_source.map(|driver| (driver, true))
+                }
+            }
             EntityData::Part { features, .. } => features
                 .iter()
                 .rev()
@@ -543,6 +576,32 @@ impl SketchEditor {
     }
     pub fn alignment_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
         self.tree_selection.len() == 1 && self.placement_ready(session, feed)
+    }
+    pub fn begin_scale(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        feed: &crate::viewport::SceneFeed,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.placement_ready(session, feed) {
+            return Err(
+                "Select current native Parts or Instances and finish pending edits before scaling"
+                    .into(),
+            );
+        }
+        let scene = feed
+            .visible()
+            .cloned()
+            .ok_or("Wait for the current native model")?;
+        let selected = self.tree_selection.clone();
+        self.finish()?;
+        self.model
+            .begin_scale(session, resources, &scene, &selected, false, channel)?;
+        self.message =
+            "Scale · drag uniform or axis handles, or enter positive factors in the Inspector"
+                .into();
+        Ok(())
     }
     pub fn begin_alignment(
         &mut self,
@@ -724,7 +783,7 @@ impl SketchEditor {
     ) -> Result<(), String> {
         let label = self.model.label();
         let instances = self.model.candidate_instances();
-        let fit = !self.model.placement_active();
+        let fit = !self.model.placement_active() && !self.model.scaling_active();
         let outputs = self.model.apply(session, resources)?;
         self.accept_model_outputs(outputs, label, fit);
         self.tree_selection.extend(instances);
@@ -1990,7 +2049,7 @@ impl SketchEditor {
                         if self.target_inspector(ui, session, resources, feed) { return; }
                         if self.model.active() {
                             let label=self.model.label();
-                            let fit = !self.model.placement_active();
+                            let fit = !self.model.placement_active() && !self.model.scaling_active();
                             match self.model.show(ui,session,resources) {
                                 Ok(Some(crate::modeling::ModelToolOutcome::Applied(outputs)))=>self.accept_model_outputs(outputs,label,fit),
                                 Ok(Some(crate::modeling::ModelToolOutcome::Placed{parts,instances}))=>{self.accept_model_outputs(parts,label,fit);self.tree_selection.extend(instances);},
@@ -2624,10 +2683,39 @@ impl SketchEditor {
             && let Some(context) = model_context
         {
             let mut owned = false;
-            if self.model.placement_active() {
-                self.model
-                    .set_placement_copy_modifier(ui.input(|i| i.modifiers.alt));
+            if self.model.placement_active() || self.model.scaling_active() {
+                let scaling = self.model.scaling_active();
+                let label = if scaling { "Scale" } else { "Move / Copy" };
+                if scaling {
+                    self.model
+                        .set_scale_copy_modifier(ui.input(|i| i.modifiers.alt));
+                } else {
+                    self.model
+                        .set_placement_copy_modifier(ui.input(|i| i.modifiers.alt));
+                }
+                let canonical_scene = context
+                    .feed
+                    .visible()
+                    .filter(|_| {
+                        context
+                            .feed
+                            .is_current(session.document().id(), session.revision())
+                    })
+                    .map(|s| s.as_ref());
                 let placement_result = match self.placement_basis(session) {
+                    Ok(basis) if scaling => self.model.scale_viewport(
+                        ui,
+                        session,
+                        context.resources,
+                        crate::modeling::ScaleViewport {
+                            scene: canonical_scene,
+                            camera: self.camera,
+                            rect,
+                            basis,
+                            start_allowed: response.hovered()
+                                || response.dragged_by(egui::PointerButton::Primary),
+                        },
+                    ),
                     Ok(basis) => self.model.placement_viewport(
                         ui,
                         session,
@@ -2659,13 +2747,13 @@ impl SketchEditor {
                         owned = result.input_owned;
                         match result.outcome {
                             Some(crate::modeling::ModelToolOutcome::Applied(parts)) => {
-                                self.accept_model_outputs(parts, "Move / Copy", false)
+                                self.accept_model_outputs(parts, label, false)
                             }
                             Some(crate::modeling::ModelToolOutcome::Placed {
                                 parts,
                                 instances,
                             }) => {
-                                self.accept_model_outputs(parts, "Move / Copy", false);
+                                self.accept_model_outputs(parts, label, false);
                                 self.tree_selection.extend(instances);
                             }
                             Some(crate::modeling::ModelToolOutcome::Cancelled) => {
@@ -3221,7 +3309,7 @@ impl SketchEditor {
                         self.solid
                             .section
                             .control(ui, scene.as_ref().and_then(|s| s.world_bounds()));
-                        let transform = ui.add_enabled_ui((self.model.placement_active() || (self.selected.is_some() && !self.model.active() && self.acquisition.is_none())) && !self.measurement.active(),|ui|icons::compact_button(
+                        let transform = ui.add_enabled_ui((self.model.placement_active() || self.model.scaling_active() || (self.selected.is_some() && !self.model.active() && self.acquisition.is_none())) && !self.measurement.active(),|ui|icons::compact_button(
                             ui,
                             Icon::Transform,
                             &format!(
@@ -3229,7 +3317,7 @@ impl SketchEditor {
                                 coordinates.label()
                             ),
                         )).inner.on_disabled_hover_text("Select a sketch to transform");
-                        if transform.clicked() && !self.model.placement_active() {
+                        if transform.clicked() && !self.model.placement_active() && !self.model.scaling_active() {
                             moving = !moving;
                         }
                         transform.context_menu(|ui| {

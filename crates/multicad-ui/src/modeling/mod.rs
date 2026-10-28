@@ -49,9 +49,10 @@ pub enum ModelingTool {
     Move,
     Copy,
     Align,
+    Scale,
 }
 impl ModelingTool {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Box,
         Self::Cylinder,
         Self::Extrude,
@@ -61,6 +62,7 @@ impl ModelingTool {
         Self::Move,
         Self::Copy,
         Self::Align,
+        Self::Scale,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -73,6 +75,7 @@ impl ModelingTool {
             Self::Move => "move",
             Self::Copy => "placed-copy",
             Self::Align => "align",
+            Self::Scale => "scale",
         }
     }
     pub fn label(self) -> &'static str {
@@ -86,6 +89,7 @@ impl ModelingTool {
             Self::Move => "Move / Copy",
             Self::Copy => "Placed copy",
             Self::Align => "Align",
+            Self::Scale => "Scale",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -99,6 +103,7 @@ impl ModelingTool {
             Self::Move => crate::icons::Icon::Transform,
             Self::Copy => crate::icons::Icon::LinearPattern,
             Self::Align => crate::icons::Icon::Link,
+            Self::Scale => crate::icons::Icon::Scale,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -112,10 +117,14 @@ impl ModelingTool {
             Self::Move => &["place", "move-body", "rotate-body"],
             Self::Copy => &["copy-body", "instance-copy"],
             Self::Align => &["align-body", "mate", "align-part"],
+            Self::Scale => &["scale-body", "resize-solid"],
         }
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::Scale => {
+                "Usage: scale (select Parts or Instances, set positive factors and a pivot, then drag or Preview and Apply)"
+            }
             Self::Align => {
                 "Usage: align-body (select one moving object, choose source and target anchors, then Preview and Apply)"
             }
@@ -142,6 +151,9 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::Scale => {
+                "Select current native Parts or Instances and finish pending edits. Positive scale factors change exact geometry; an Instance selection affects only that occurrence."
+            }
             Self::Align => {
                 "Select one current native Part or Instance. Anchors need exact named face frames, line/circle/plane axes, vertices or explicit datums."
             }

@@ -22,10 +22,19 @@ impl Acquisition {
         match document.get(id).map(|e| &e.data) {
             Some(EntityData::Sketch { .. }) => self.profiles(),
             Some(EntityData::Part { .. }) => !self.profiles(),
-            Some(EntityData::Instance { .. }) => matches!(
-                self.tool,
-                ModelingTool::Move | ModelingTool::Copy | ModelingTool::Align
-            ),
+            Some(EntityData::Instance { component, .. }) => {
+                matches!(
+                    self.tool,
+                    ModelingTool::Move
+                        | ModelingTool::Copy
+                        | ModelingTool::Align
+                        | ModelingTool::Scale
+                ) && (self.tool != ModelingTool::Scale
+                    || matches!(
+                        document.get(*component).map(|e| &e.data),
+                        Some(EntityData::Part { .. })
+                    ))
+            }
             _ => false,
         }
     }
@@ -168,21 +177,39 @@ impl SketchEditor {
             if let Some(scene) = feed
                 .visible()
                 .filter(|_| feed.is_current(a.document, a.revision))
-                && self.model.placement_targets() != Some(&self.tree_selection)
-                && let Err(error) =
+            {
+                let scaling = a.tool == ModelingTool::Scale;
+                let targets = if scaling {
+                    self.model.scale_targets()
+                } else {
+                    self.model.placement_targets()
+                };
+                let result = if targets == Some(&self.tree_selection) {
+                    Ok(())
+                } else if scaling {
+                    self.model
+                        .retarget_scale(session, resources, scene, &self.tree_selection)
+                } else {
                     self.model
                         .retarget_placement(session, resources, scene, &self.tree_selection)
-            {
-                self.message = error;
-                if let Some(targets) = self.model.placement_targets() {
-                    self.tree_selection = targets.clone();
-                    if let Err(error) = self.solid.select_source_entities(
-                        session.document(),
-                        session.revision(),
-                        scene,
-                        &self.tree_selection,
-                    ) {
-                        self.message = error;
+                };
+                if let Err(error) = result {
+                    self.message = error;
+                    let targets = if scaling {
+                        self.model.scale_targets()
+                    } else {
+                        self.model.placement_targets()
+                    };
+                    if let Some(targets) = targets {
+                        self.tree_selection = targets.clone();
+                        if let Err(error) = self.solid.select_source_entities(
+                            session.document(),
+                            session.revision(),
+                            scene,
+                            &self.tree_selection,
+                        ) {
+                            self.message = error;
+                        }
                     }
                 }
             }
@@ -212,7 +239,10 @@ impl SketchEditor {
                 && (confirm
                     || matches!(
                         a.tool,
-                        ModelingTool::Move | ModelingTool::Copy | ModelingTool::Align
+                        ModelingTool::Move
+                            | ModelingTool::Copy
+                            | ModelingTool::Align
+                            | ModelingTool::Scale
                     ))
         };
         if !ready {
@@ -220,6 +250,7 @@ impl SketchEditor {
             return;
         }
         let result = match a.tool {
+            ModelingTool::Scale => self.begin_scale(session, resources, feed, a.channel),
             ModelingTool::Move | ModelingTool::Copy => self.begin_placement(
                 session,
                 resources,
@@ -239,7 +270,12 @@ impl SketchEditor {
             _ => unreachable!("primitives have no target acquisition"),
         };
         match result {
-            Ok(()) if matches!(a.tool, ModelingTool::Move | ModelingTool::Copy) => {
+            Ok(())
+                if matches!(
+                    a.tool,
+                    ModelingTool::Move | ModelingTool::Copy | ModelingTool::Scale
+                ) =>
+            {
                 a.started = true;
                 self.acquisition = Some(a);
             }
@@ -265,7 +301,8 @@ impl SketchEditor {
                 let targets = self
                     .model
                     .placement_targets()
-                    .ok_or("Start Move / Copy first")?;
+                    .or_else(|| self.model.scale_targets())
+                    .ok_or("Start Move / Copy or Scale first")?;
                 return crate::modeling::object_gizmo_basis(
                     session.document(),
                     session.revision(),
@@ -291,7 +328,7 @@ impl SketchEditor {
             return false;
         };
         if a.started {
-            ui.small("Shift-click objects to add/remove targets. Drag arrows, planes or rings. Option/Alt creates a copy.");
+            ui.small(if a.tool == ModelingTool::Scale { "Shift-click objects to add/remove targets. Drag the center for uniform scale or an axis handle for one factor. Option/Alt creates a copy." } else { "Shift-click objects to add/remove targets. Drag arrows, planes or rings. Option/Alt creates a copy." });
             ui.separator();
             return false;
         }
@@ -678,6 +715,7 @@ mod tests {
         for tool in [
             ModelingTool::Move,
             ModelingTool::Copy,
+            ModelingTool::Scale,
             ModelingTool::Align,
             ModelingTool::Boolean,
             ModelingTool::Split,
