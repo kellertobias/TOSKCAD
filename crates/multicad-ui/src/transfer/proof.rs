@@ -19,6 +19,37 @@ pub(super) fn validate(
                 .into(),
         );
     }
+    let hash = ContentHash::document(document)?;
+    let info = scene
+        .transfer_evaluation()
+        .ok_or("Transfer Apply requires native source-profile count receipts")?;
+    info.validate().map_err(|e| e.to_string())?;
+    if info.source_hash != hash
+        || outputs
+            .iter()
+            .any(|output| !info.counts.contains_key(&output.feature))
+    {
+        return Err(
+            "Native transfer counts belong to different source or omit a receiving feature".into(),
+        );
+    }
+    let assembly = scene
+        .assembly_evaluation()
+        .ok_or("Transfer Apply requires complete native physical-occurrence receipts")?;
+    assembly.validate().map_err(|e| e.to_string())?;
+    let expected = multicad_core::model::transfer_occurrence_catalog(document)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|item| (item.path, (item.component, item.producer)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let actual = assembly
+        .leaves
+        .iter()
+        .map(|item| (item.path.clone(), (item.component, item.producer)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if assembly.source_hash != hash || expected != actual {
+        return Err("Native transfer preview omitted, added or replaced a physical Part occurrence/current producer".into());
+    }
     for output in outputs {
         if !matches!(document.get(output.body).map(|e|&e.data),Some(EntityData::Part{features,..})if features.contains(&output.feature))
             || !scene

@@ -356,6 +356,8 @@ impl TransferController {
             generation: self.generation,
         };
         self.inspection = None;
+        form.pick = None;
+        form.replace_capture = None;
         self.backend
             .as_mut()
             .ok_or("The native transfer preview provider is unavailable")?
@@ -365,8 +367,6 @@ impl TransferController {
                 stamp,
                 &Default::default(),
             )?;
-        form.pick = None;
-        form.replace_capture = None;
         self.candidate = Some(Candidate {
             prepared: prepared.prepared,
             source,
@@ -637,6 +637,33 @@ impl TransferController {
             ui.label("Checking associative native cuts…");
         } else if self.can_apply(session, resources) {
             ui.label("Native preview ready");
+        }
+        if let Some(candidate) = &self.candidate
+            && self.can_apply(session, resources)
+            && let Some(info) = candidate
+                .scene
+                .as_ref()
+                .and_then(|s| s.transfer_evaluation())
+            && let Some(form) = &self.form
+        {
+            for (index, target) in form.targets.iter().enumerate() {
+                if let Some(count) = info.counts.get(&target.feature) {
+                    if *count == 0 {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_YELLOW,
+                            format!(
+                                "Receiving Part {}: 0 source profiles · no machining cuts",
+                                index + 1
+                            ),
+                        );
+                    } else {
+                        ui.small(format!(
+                            "Receiving Part {}: {count} native source profile(s)",
+                            index + 1
+                        ));
+                    }
+                }
+            }
         }
         let actions = inspector_actions::row(
             ui,
