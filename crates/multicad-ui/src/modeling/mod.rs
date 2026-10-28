@@ -9,6 +9,7 @@ mod dimension;
 mod extrude;
 mod extrude_operation;
 mod form;
+mod gizmo;
 mod group_edit;
 #[cfg(test)]
 mod group_fixture;
@@ -22,9 +23,11 @@ mod split;
 mod termination;
 
 pub use alignment_panel::AlignmentCommand;
+pub use controller::PlacementViewportResult;
 pub use controller::{ModelToolController, ModelToolOutcome};
 pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
 pub use form::ModelRequest;
+pub use gizmo::{GizmoBasis, PlacementViewport};
 use multicad_core::document::EntityId;
 pub use placement::{PlacementCommand, PlacementMode};
 pub use termination::TerminationViewport;

@@ -9,6 +9,7 @@ use std::{
     collections::BTreeSet,
     time::{Duration, Instant},
 };
+mod gizmo;
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
 }

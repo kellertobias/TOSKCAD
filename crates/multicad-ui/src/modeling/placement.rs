@@ -157,7 +157,7 @@ impl PlacementPanel {
     }
     pub fn existing(document: &Document, id: EntityId) -> Result<Self, String> {
         if let Ok(source) = model::read_transform(document, id) {
-            return Self::from_command(
+            let mut panel = Self::from_command(
                 PlacementCommand::EditPart {
                     feature: id,
                     parameters: source.parameters.clone(),
@@ -169,10 +169,12 @@ impl PlacementPanel {
                         .get(source.output.body)
                         .map_or("Missing Part", |e| e.name.as_str())
                 )],
-            );
+            )?;
+            panel.selected.insert(source.output.body);
+            return Ok(panel);
         }
         let source = model::read_instance_placement(document, id).map_err(|e| e.to_string())?;
-        Self::from_command(
+        let mut panel = Self::from_command(
             PlacementCommand::EditInstance {
                 driver: id,
                 instance: source.owner,
@@ -185,7 +187,9 @@ impl PlacementPanel {
                     .get(source.owner)
                     .map_or("Missing Instance", |e| e.name.as_str())
             )],
-        )
+        )?;
+        panel.selected.insert(source.owner);
+        Ok(panel)
     }
     fn from_command(
         command: PlacementCommand,
@@ -299,6 +303,18 @@ impl PlacementPanel {
         };
         parameters.validate().map_err(|e| e.to_string())?;
         Ok(parameters)
+    }
+    pub(super) fn set_drag_parameters(
+        &mut self,
+        parameters: &NumericTransform,
+    ) -> Result<(), String> {
+        parameters.validate().map_err(|e| e.to_string())?;
+        self.translation = fields(&parameters.translation)?;
+        self.pivot = fields(&parameters.pivot)?;
+        self.angle = DimensionField::from_dimension(&parameters.angle, "deg")?;
+        self.axis = parameters.axis;
+        self.stamp.changed();
+        Ok(())
     }
     fn preview_request(
         &mut self,

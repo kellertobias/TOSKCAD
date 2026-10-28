@@ -87,6 +87,8 @@ pub struct ModelToolController {
     context_valid: bool,
     context_attempt: Option<SceneStamp>,
     context_notice: Option<String>,
+    placement_interaction: super::gizmo::Interaction,
+    placement_confirm: Option<FormStamp>,
 }
 pub enum ModelToolOutcome {
     Applied(Vec<CreatedBody>),
@@ -503,6 +505,8 @@ impl ModelToolController {
         )
     }
     pub fn cancel(&mut self) {
+        self.placement_interaction = Default::default();
+        self.placement_confirm = None;
         self.form = None;
         self.scope = None;
         self.candidate = None;
@@ -540,6 +544,7 @@ impl ModelToolController {
         Ok(())
     }
     fn invalidate(&mut self) {
+        self.placement_confirm = None;
         self.candidate = None;
         self.discovery = None;
         if let Some(operations) = &mut self.operations {
@@ -810,6 +815,11 @@ impl ModelToolController {
         resources: &ProjectResources,
     ) -> Result<Vec<CreatedBody>, String> {
         let result: Result<Vec<CreatedBody>, String> = (|| {
+            if self.placement_interaction.active() {
+                return Err(
+                    "Release the placement handle before applying its native preview".into(),
+                );
+            }
             self.current(session, resources, true)?;
             if !self.can_apply(session, resources) {
                 return Err(
@@ -987,6 +997,7 @@ mod groups;
 mod legacy;
 mod operations;
 mod placement_interaction;
+pub use placement_interaction::PlacementViewportResult;
 mod proof;
 mod termination;
 #[cfg(test)]
