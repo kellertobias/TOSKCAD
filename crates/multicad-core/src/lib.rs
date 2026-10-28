@@ -9,6 +9,7 @@ pub mod document;
 pub mod drawings;
 pub mod exchange;
 pub mod hierarchy;
+pub mod inspection;
 pub mod materials;
 pub mod model;
 pub mod parameters;

@@ -327,6 +327,48 @@ pub struct ReferenceReport {
     pub entries: Vec<Diagnostic>,
 }
 impl ReferenceReport {
+    /// Geometry publication ignores only validated non-driving measurement
+    /// owners. The original complete report remains available for repair.
+    pub fn for_model(&self, document: &Document) -> Result<Self, String> {
+        let mut entries = Vec::with_capacity(self.entries.len());
+        let mut pins = BTreeMap::new();
+        for diagnostic in &self.entries {
+            let measurement = matches!(document.get(diagnostic.address.owner).map(|e|&e.data),Some(EntityData::Extension{definition,..})if definition.type_id==crate::inspection::TYPE_ID);
+            if !measurement {
+                entries.push(diagnostic.clone());
+                continue;
+            }
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                pins.entry(diagnostic.address.owner)
+            {
+                let pin = crate::inspection::read(document, diagnostic.address.owner)
+                    .map_err(|e| e.to_string())?;
+                entry.insert(pin);
+            }
+            let pin = &pins[&diagnostic.address.owner];
+            let reference = match diagnostic.role.as_str() {
+                "measurement.a" => &pin.query.a,
+                "measurement.b" => &pin.query.b,
+                _ => {
+                    return Err(
+                        "Non-driving measurement diagnostic has an unknown canonical role".into(),
+                    );
+                }
+            };
+            if diagnostic.address.reference != reference.intent.id
+                || diagnostic.intent != reference.intent
+                || diagnostic.source != reference.source
+            {
+                return Err(
+                    "Non-driving measurement diagnostic differs from its canonical owner".into(),
+                );
+            }
+        }
+        Ok(Self {
+            revision: self.revision,
+            entries,
+        })
+    }
     pub fn all_resolved(&self) -> bool {
         self.entries
             .iter()

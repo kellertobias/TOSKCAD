@@ -163,7 +163,7 @@ impl CacheKey {
         dependencies.insert(
             "multicad.core.semantics".into(),
             ContentHash::of(
-                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1;constrained_sketch.4;sketch.external.1",
+                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1;constrained_sketch.4;sketch.external.1;inspection.measurement.1",
             ),
         );
         Ok(Self {
@@ -336,6 +336,9 @@ impl ProjectFile {
         }) {
             required.insert(crate::drawings::VIEW_CAPABILITY.into());
         }
+        if crate::inspection::required_capability(&self.document) {
+            required.insert(crate::inspection::CAPABILITY.into());
+        }
         if crate::materials::required_capability(&self.document) {
             required.insert(crate::materials::CAPABILITY.into());
         }
@@ -398,6 +401,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::constraint_sketch::source::V2_CAPABILITY.into(),
         crate::constraint_sketch::source::V3_CAPABILITY.into(),
         crate::materials::CAPABILITY.into(),
+        crate::inspection::CAPABILITY.into(),
         crate::constraint_sketch::source::V4_CAPABILITY.into(),
         crate::sketch_external::CAPABILITY.into(),
         crate::exchange::CAPABILITY.into(),
