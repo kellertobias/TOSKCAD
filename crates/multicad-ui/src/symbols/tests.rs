@@ -566,3 +566,168 @@ fn constrained_sketch_extrusion_and_linked_plan_keep_local_ids_through_native_pl
         .compile(s.document(), s.revision())
         .unwrap();
 }
+
+#[test]
+fn loaded_library_import_is_explicit_and_uses_cached_current_snapshot_without_mutating_source() {
+    let (mut s, part, width) = fixture();
+    let definition = embed(&mut s, part.body, width);
+    let mut external = symbols::read_definition(s.document(), definition).unwrap();
+    external.symbol = EntityId::new();
+    external.name = "External cabinet".into();
+    let mut c = controller();
+    c.set_library_snapshot(vec![external.clone()]).unwrap();
+    begin(&mut c, &s, SymbolTool::Library, Default::default());
+    let baseline = s.document().clone();
+    let ctx = egui::Context::default();
+    let (output, _) = frame(&ctx, &mut c, &mut s, vec![], 800.);
+    click(
+        &ctx,
+        &mut c,
+        &mut s,
+        point(&output, "Import definition"),
+        800.,
+    );
+    assert!(c.dirty());
+    assert!(matches!(&c.form.as_ref().unwrap().operation,Operation::Import(d)if d==&external));
+    assert_eq!(s.document(), &baseline);
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    wait(&mut c, &s, &Default::default());
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error);
+    assert_eq!(s.document(), &baseline);
+    c.apply(&mut s, &Default::default()).unwrap();
+    assert_eq!(symbols::definitions(s.document()).unwrap().len(), 2);
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &baseline);
+}
+#[test]
+fn removed_override_requires_explicit_visible_resolution_before_native_upgrade() {
+    let (mut s, part, width) = fixture();
+    let definition = embed(&mut s, part.body, width);
+    let place = symbols::SymbolPlaceRequest::new(
+        s.document(),
+        definition,
+        "Cabinet A",
+        BTreeMap::from([(
+            width,
+            SymbolValue {
+                value: 30.,
+                unit: "mm".into(),
+            },
+        )]),
+        Default::default(),
+    )
+    .unwrap();
+    s.commit(
+        symbols::prepare_place(&s, s.revision(), actor(), &place)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let mut replacement = symbols::read_definition(s.document(), definition).unwrap();
+    replacement.revision = "no-width-input".into();
+    replacement.exposed.clear();
+    let baseline = s.document().clone();
+    let mut c = controller();
+    begin(
+        &mut c,
+        &s,
+        SymbolTool::Update,
+        SymbolSelection {
+            instance: Some(place.instance),
+            ..Default::default()
+        },
+    );
+    c.form
+        .as_mut()
+        .unwrap()
+        .set_replacement(s.document(), replacement)
+        .unwrap();
+    assert!(c.preview(&s, &Default::default(), Channel::Ui).is_err());
+    assert!(!c.can_apply(&s, &Default::default()));
+    assert_eq!(s.document(), &baseline);
+    let ctx = egui::Context::default();
+    let (output, _) = frame(&ctx, &mut c, &mut s, vec![], 1200.);
+    click(
+        &ctx,
+        &mut c,
+        &mut s,
+        point(&output, "Override width"),
+        1200.,
+    );
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    wait(&mut c, &s, &Default::default());
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error);
+    c.apply(&mut s, &Default::default()).unwrap();
+    assert!(
+        symbols::read_instance(s.document(), place.instance)
+            .unwrap()
+            .overrides
+            .is_empty()
+    );
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &baseline);
+}
+#[test]
+fn static_inputs_are_fixed_and_incompatible_override_reset_reloads_the_authored_default() {
+    let (mut s, part, width) = fixture();
+    let id = embed(&mut s, part.body, width);
+    let mut d = symbols::read_definition(s.document(), id).unwrap();
+    let mut values = super::fields::Overrides::new(
+        &d,
+        &BTreeMap::from([(
+            width,
+            SymbolValue {
+                value: 42.,
+                unit: "deg".into(),
+            },
+        )]),
+    )
+    .unwrap();
+    let ctx = egui::Context::default();
+    let render = |values: &mut super::fields::Overrides, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(250., 400.),
+                )),
+                events,
+                focused: true,
+                ..Default::default()
+            },
+            |ui| {
+                values.show(ui, &d);
+            },
+        )
+    };
+    let output = render(&mut values, vec![]);
+    let reset = point(&output, "Use new default");
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        render(
+            &mut values,
+            vec![
+                egui::Event::PointerMoved(reset),
+                egui::Event::PointerButton {
+                    pos: reset,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    assert!(!values.0[&width].enabled);
+    assert_eq!(values.0[&width].text, "10");
+    assert_eq!(values.0[&width].unit, "mm");
+    assert!(values.resolve(&d).unwrap().is_empty());
+    d.kind = SymbolKind::Static;
+    d.exposed.clear();
+    assert!(
+        super::fields::Overrides::new(&d, &BTreeMap::new())
+            .unwrap()
+            .0
+            .is_empty()
+    );
+}

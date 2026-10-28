@@ -10,11 +10,16 @@ use multicad_core::{
     project_file::{ContentHash, ProjectResources},
     symbols::SymbolDefinition,
 };
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 struct Scope {
     guard: Prepared,
     source: ContentHash,
     resources: ProjectResources,
+    embedded: Vec<(EntityId, SymbolDefinition)>,
+    embedded_pins: BTreeMap<EntityId, ContentHash>,
 }
 struct Candidate {
     prepared: Prepared,
@@ -39,6 +44,7 @@ pub struct SymbolController {
     candidate: Option<Candidate>,
     handoff: Option<Handoff>,
     pub(super) library: Vec<SymbolDefinition>,
+    library_pins: Vec<ContentHash>,
     actions: VecDeque<SymbolAction>,
     generation: u64,
     pub(super) error: Option<String>,
@@ -72,10 +78,9 @@ impl SymbolController {
             }
             entries.insert(key, (pin, definition));
         }
-        self.library = entries
-            .into_values()
-            .map(|(_, definition)| definition)
-            .collect();
+        let (pins, definitions) = entries.into_values().unzip();
+        self.library_pins = pins;
+        self.library = definitions;
         Ok(())
     }
     pub fn active(&self) -> bool {
@@ -138,7 +143,20 @@ impl SymbolController {
                 edits: vec![],
             })
             .map_err(|e| e.to_string())?;
+        let embedded =
+            multicad_core::symbols::definitions(session.document()).map_err(|e| e.to_string())?;
+        let embedded_pins = embedded
+            .iter()
+            .map(|(id, definition)| {
+                definition
+                    .pin()
+                    .map(|pin| (*id, pin))
+                    .map_err(|e| e.to_string())
+            })
+            .collect::<Result<_, _>>()?;
         self.scope = Some(Scope {
+            embedded,
+            embedded_pins,
             guard,
             source: ContentHash::document(session.document())?,
             resources: resources.clone(),
@@ -379,8 +397,13 @@ impl SymbolController {
         let (action, error) = super::inspector::show(
             self.form.as_mut()?,
             ui,
-            session.document(),
-            &self.library,
+            session,
+            super::inspector::Catalogue {
+                embedded: &self.scope.as_ref()?.embedded,
+                embedded_pins: &self.scope.as_ref()?.embedded_pins,
+                library: &self.library,
+                library_pins: &self.library_pins,
+            },
             enabled && current && !pending,
         );
         if self.form.as_ref().map(|f| f.version) != version {

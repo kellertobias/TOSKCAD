@@ -12,7 +12,10 @@ pub(super) struct ValueInput {
     pub enabled: bool,
 }
 #[derive(Clone, Default)]
-pub(super) struct Overrides(pub BTreeMap<EntityId, ValueInput>);
+pub(super) struct Overrides(
+    pub BTreeMap<EntityId, ValueInput>,
+    BTreeMap<EntityId, SymbolValue>,
+);
 impl Overrides {
     pub fn new(
         definition: &SymbolDefinition,
@@ -20,6 +23,7 @@ impl Overrides {
     ) -> Result<Self, String> {
         let evaluated = parameters::evaluate(&definition.template).map_err(|e| e.to_string())?;
         let mut inputs = BTreeMap::new();
+        let mut defaults = BTreeMap::new();
         if definition.kind == SymbolKind::Dynamic {
             for id in &definition.exposed {
                 let parameter = evaluated
@@ -29,6 +33,13 @@ impl Overrides {
                 let value = evaluated
                     .value(*id, parameter.unit)
                     .map_err(|e| e.to_string())?;
+                defaults.insert(
+                    *id,
+                    SymbolValue {
+                        value,
+                        unit: parameter.unit.symbol().into(),
+                    },
+                );
                 inputs.insert(
                     *id,
                     ValueInput {
@@ -49,7 +60,7 @@ impl Overrides {
                 },
             );
         }
-        Ok(Self(inputs))
+        Ok(Self(inputs, defaults))
     }
     pub fn resolve(
         &self,
@@ -102,37 +113,92 @@ impl Overrides {
             ui.label("Fixed design values · no instance inputs");
             return false;
         }
-        let evaluated = parameters::evaluate(&definition.template).ok();
         let mut changed = false;
         for (id, field) in &mut self.0 {
-            let entity = definition.template.get(*id);
-            let allowed = definition.kind == SymbolKind::Dynamic && definition.exposed.contains(id);
-            let name = entity.map_or("Removed parameter", |e| e.name.as_str());
-            ui.push_id(*id,|ui|{
-                changed|=ui.checkbox(&mut field.enabled,format!("Override {name}")).on_hover_text("Checked values replace this instance's default formula. Uncheck to restore the definition's default").changed();
-                if allowed {
-                    if field.enabled {
-                        ui.horizontal(|ui|{
-                            changed|=ui.add(egui::TextEdit::singleline(&mut field.text).desired_width((controls::inspector_width(ui)-65.).max(40.))).on_hover_text("Finite numeric value for this instance only").changed();
-                            ui.label(&field.unit);
-                        });
-                    }
-                    let default=evaluated.as_ref().and_then(|e|e.values.get(id).and_then(|p|e.value(*id,p.unit).ok().map(|v|format!("Default: {v} {}",p.unit.symbol()))));
-                    if let Some(default)=default {ui.small(default);}
-                    if let Some(entity)=entity && let multicad_core::document::EntityData::Parameter{expression,..}=&entity.data {ui.small(format!("Definition: {expression}"));}
-                    if let Some(description)=entity.map(|e|e.description.as_str()).filter(|description|!description.is_empty()) {ui.small(description);}
-                    let expected=entity.and_then(|e|match &e.data {multicad_core::document::EntityData::Parameter{unit,..}=>Unit::parse(unit),_=>None});
-                    if field.enabled&&expected.is_some_and(|u|Unit::parse(&field.unit).is_none_or(|old|old.dimension()!=u.dimension())) {
-                        ui.colored_label(egui::Color32::LIGHT_RED,"Override has incompatible units");
-                        if ui.button("Use new default").clicked() {field.enabled=false;changed=true;}
-                    }
-                } else if field.enabled {ui.colored_label(egui::Color32::LIGHT_RED,"No longer exposed. Uncheck to discard this override explicitly.");}
-            });
+            changed |= ui
+                .push_id(*id, |ui| {
+                    show_value(ui, *id, field, definition, self.1.get(id))
+                })
+                .inner;
             ui.add_space(4.);
         }
         changed
     }
 }
+fn reset(field: &mut ValueInput, default: Option<&SymbolValue>) {
+    field.enabled = false;
+    if let Some(default) = default {
+        field.text = default.value.to_string();
+        field.unit = default.unit.clone();
+    }
+}
+fn show_value(
+    ui: &mut egui::Ui,
+    id: EntityId,
+    field: &mut ValueInput,
+    definition: &SymbolDefinition,
+    default: Option<&SymbolValue>,
+) -> bool {
+    let entity = definition.template.get(id);
+    let allowed = definition.kind == SymbolKind::Dynamic && definition.exposed.contains(&id);
+    let name = entity.map_or("Removed parameter", |e| e.name.as_str());
+    let mut changed=ui.checkbox(&mut field.enabled,format!("Override {name}")).on_hover_text("Checked values replace this instance's default formula. Uncheck to restore the definition's default").changed();
+    if changed && !field.enabled {
+        reset(field, default);
+    }
+    if !allowed {
+        if field.enabled {
+            ui.colored_label(
+                egui::Color32::LIGHT_RED,
+                "No longer exposed. Uncheck to discard this override explicitly.",
+            );
+        }
+        return changed;
+    }
+    if field.enabled {
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut field.text)
+                        .desired_width((controls::inspector_width(ui) - 65.).max(40.)),
+                )
+                .on_hover_text("Finite numeric value for this instance only")
+                .changed();
+            ui.label(&field.unit);
+        });
+    }
+    if let Some(default) = default {
+        ui.small(format!("Default: {} {}", default.value, default.unit));
+    }
+    if let Some(entity) = entity
+        && let multicad_core::document::EntityData::Parameter { expression, .. } = &entity.data
+    {
+        ui.small(format!("Definition: {expression}"));
+    }
+    if let Some(description) = entity
+        .map(|e| e.description.as_str())
+        .filter(|description| !description.is_empty())
+    {
+        ui.small(description);
+    }
+    let expected = entity.and_then(|e| match &e.data {
+        multicad_core::document::EntityData::Parameter { unit, .. } => Unit::parse(unit),
+        _ => None,
+    });
+    if field.enabled
+        && expected.is_some_and(|u| {
+            Unit::parse(&field.unit).is_none_or(|old| old.dimension() != u.dimension())
+        })
+    {
+        ui.colored_label(egui::Color32::LIGHT_RED, "Override has incompatible units");
+        if ui.button("Use new default").clicked() {
+            reset(field, default);
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub(super) fn number(text: &str, label: &str) -> Result<f64, String> {
     text.trim()
         .parse::<f64>()

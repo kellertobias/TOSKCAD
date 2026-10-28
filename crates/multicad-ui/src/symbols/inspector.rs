@@ -5,8 +5,9 @@ use super::{
 };
 use crate::{controls, egui};
 use multicad_core::{
+    commands::Session,
     document::{Document, EntityData, EntityId},
-    parameters,
+    project_file::ContentHash,
     symbols::{self, SymbolDefinition, SymbolKind, SymbolPlan},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,31 +18,36 @@ enum Next {
     Replacement(Box<SymbolDefinition>),
     Edit(EntityId),
 }
+pub(super) struct Catalogue<'a> {
+    pub embedded: &'a [(EntityId, SymbolDefinition)],
+    pub embedded_pins: &'a BTreeMap<EntityId, ContentHash>,
+    pub library: &'a [SymbolDefinition],
+    pub library_pins: &'a [ContentHash],
+}
 pub(super) fn show(
     form: &mut Form,
     ui: &mut egui::Ui,
-    document: &Document,
-    library: &[SymbolDefinition],
+    session: &Session,
+    catalogue: Catalogue<'_>,
     enabled: bool,
 ) -> (Option<SymbolAction>, Option<String>) {
     controls::inspector_layout(ui);
     ui.strong(form.tool.label());
-    let definitions = match symbols::definitions(document) {
-        Ok(defs) => defs,
-        Err(error) => return (None, Some(error.to_string())),
-    };
+    let document = session.document();
+    let definitions = catalogue.embedded;
+    let library = catalogue.library;
     let mut changed = false;
     let mut action = None;
     let mut next = None;
     let mut error = None;
-    ui.add_enabled_ui(enabled,|ui|match &mut form.operation {
+    ui.add_enabled_ui(enabled, |ui| { match &mut form.operation {
         Operation::Library=>{
             changed|=fields::text(ui,"Filter symbols",&mut form.filter,"Search embedded and loaded library definitions by name or revision");
             if ui.button("Open library file…").on_hover_text("Load definitions without changing this project. Embedded pins continue working when the file is unavailable").clicked(){action=Some(SymbolAction::ImportLibrary);}
             ui.strong("Embedded in this project");
             let filter=form.filter.to_lowercase();
             let mut shown=0;
-            for (id,definition) in &definitions {
+            for (id,definition) in definitions {
                 if !format!("{} {}",definition.name,definition.revision).to_lowercase().contains(&filter){continue;}
                 shown+=1;
                 ui.group(|ui|{
@@ -56,12 +62,12 @@ pub(super) fn show(
             if shown==0{ui.label("No matching embedded symbols");}
             ui.separator();ui.strong("Loaded library · import before placing");
             let mut shown=0;
-            for definition in library {
+            for (definition,pin) in library.iter().zip(catalogue.library_pins) {
                 if !format!("{} {}",definition.name,definition.revision).to_lowercase().contains(&filter){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
-                    let embedded=definition.pin().ok().is_some_and(|pin|definitions.iter().any(|(_,def)|def.symbol==definition.symbol&&def.pin().ok()==Some(pin)));
+                    let embedded=definitions.iter().any(|(id,def)|def.symbol==definition.symbol&&catalogue.embedded_pins.get(id)==Some(pin));
                     if embedded {ui.small("This exact revision is embedded");}else if ui.button("Import definition").on_hover_text("Preview and explicitly embed this immutable definition before placing it").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
                 });
             }
@@ -93,7 +99,7 @@ pub(super) fn show(
             });
             if request.kind==SymbolKind::Dynamic {
                 ui.strong("Expose instance inputs");
-                let evaluated=parameters::evaluate(document).ok();
+                let evaluated=Some(session.parameters());
                 let mut exposed=request.exposed.iter().copied().collect::<BTreeSet<_>>();
                 for entity in document.entities().filter(|e|matches!(e.data,EntityData::Parameter{..})) {
                     let mut checked=exposed.contains(&entity.id);
@@ -130,13 +136,13 @@ pub(super) fn show(
         Operation::Update{definition,replacement,request,values,report}=>{
             let entries=definitions.iter().map(|(id,def)|(*id,format!("{} · revision {}",def.name,def.revision))).collect::<Vec<_>>();
             if entity_choice(ui,"symbol-update-definition","Embedded definition to replace",definition,&entries,false){*replacement=None;*request=None;values.clear();*report=None;changed=true;}
-            if let Some((_,old))=definitions.iter().find(|(id,_)|Some(*id)==*definition){
+            if let Some((old_id,old))=definitions.iter().find(|(id,_)|Some(*id)==*definition){
                 ui.small(format!("Pinned revision: {}",old.revision));
                 let selected=replacement.as_ref().map(|d|format!("{} · revision {}",d.name,d.revision)).unwrap_or_else(||"Choose incoming revision".into());
                 controls::inspector_combo(ui,"symbol-update-replacement").selected_text(selected).show_ui(ui,|ui|{
-                    for candidate in definitions.iter().map(|(_,d)|d).chain(library.iter()).filter(|d|d.symbol==old.symbol&&d.pin().ok()!=old.pin().ok()){
+                    for (candidate,pin) in definitions.iter().map(|(id,d)|(d,catalogue.embedded_pins[id])).chain(library.iter().zip(catalogue.library_pins).map(|(d,pin)|(d,*pin))).filter(|(d,pin)|d.symbol==old.symbol&&*pin!=catalogue.embedded_pins[old_id]){
                         let label=format!("{} · revision {}",candidate.name,candidate.revision);
-                        if ui.selectable_label(replacement.as_ref()==Some(candidate),label).on_hover_text(candidate.pin().map(|h|h.to_string()).unwrap_or_default()).clicked(){next=Some(Next::Replacement(Box::new(candidate.clone())));ui.close();}
+                        if ui.selectable_label(report.as_ref().is_some_and(|report|report.new_pin==pin),label).on_hover_text(pin.to_string()).clicked(){next=Some(Next::Replacement(Box::new(candidate.clone())));ui.close();}
                     }
                 }).response.on_hover_text("Only revisions of the same stable symbol identity can replace this definition");
                 if ui.button("Open library file…").clicked(){action=Some(SymbolAction::ImportLibrary);}
@@ -164,7 +170,7 @@ pub(super) fn show(
                 ui.small("Compatible overrides are retained. Uncheck removed or incompatible values explicitly. Preview validates the resolved inputs and exact geometry; Apply updates all listed instances in one undoable action.");
             }
         }
-    });
+    }});
     if changed {
         form.changed();
     }
