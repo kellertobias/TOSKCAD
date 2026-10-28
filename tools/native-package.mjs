@@ -33,11 +33,15 @@ export function assembleRuntime(stage,binary,version){
   const executable=runtimeExecutable(stage);mkdirSync(dirname(executable),{recursive:true});copyFileSync(binary,executable);
   if(process.platform==='darwin'){
     const contents=join(stage,'MultiCAD.app/Contents');
-    writeFileSync(join(contents,'Info.plist'),`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>multicad</string><key>CFBundleIdentifier</key><string>de.tokenet.multicad</string><key>CFBundleName</key><string>MultiCAD</string><key>CFBundlePackageType</key><string>APPL</string><key>NSPrincipalClass</key><string>NSApplication</string><key>CFBundleShortVersionString</key><string>${escapeXML(version.split('-')[0])}</string><key>CFBundleVersion</key><string>${escapeXML(version.split('-')[0])}</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>\n`);
+    writeFileSync(join(contents,'Info.plist'),`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>multicad</string><key>CFBundleIdentifier</key><string>de.tokenet.multicad</string><key>CFBundleName</key><string>MultiCAD</string><key>CFBundleIconFile</key><string>AppIcon.icns</string><key>CFBundlePackageType</key><string>APPL</string><key>NSPrincipalClass</key><string>NSApplication</string><key>CFBundleShortVersionString</key><string>${escapeXML(version.split('-')[0])}</string><key>CFBundleVersion</key><string>${escapeXML(version.split('-')[0])}</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>\n`);
   }else if(process.platform==='linux'){
-    writeFileSync(join(stage,'multicad.desktop'),'[Desktop Entry]\nType=Application\nName=MultiCAD\nExec=multicad\nTerminal=false\nCategories=Graphics;Engineering;\n');
+    writeFileSync(join(stage,'multicad.desktop'),'[Desktop Entry]\nType=Application\nName=MultiCAD\nExec=multicad\nIcon=multicad\nTerminal=false\nCategories=Graphics;Engineering;\n');
+    const icons=join(stage,'share/icons/hicolor/512x512/apps');mkdirSync(icons,{recursive:true});
+    copyFileSync(join(root,'assets/branding/app/multicad.png'),join(icons,'multicad.png'));
   }
   const resources=process.platform==='darwin'?join(stage,'MultiCAD.app/Contents/Resources'):join(stage,'resources');mkdirSync(resources,{recursive:true});
+  const iconName=process.platform==='darwin'?'AppIcon.icns':process.platform==='win32'?'AppIcon.ico':'AppIcon.png';
+  copyFileSync(join(root,'assets/branding/app',iconName),join(resources,iconName));
   copyFileSync(join(root,'LICENSE'),join(resources,'LICENSE'));
   copyFileSync(join(root,'native-dependencies.json'),join(resources,'native-dependencies.json'));
   for(const name of ['OCCT-LICENSE-LGPL-2.1.txt','OCCT-LGPL-EXCEPTION.txt'])copyFileSync(join(root,'docs/architecture/foundation',name),join(resources,name));

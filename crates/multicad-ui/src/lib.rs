@@ -28,9 +28,14 @@ pub fn launch_with_storage(storage: Box<dyn application::DocumentStorage>) -> Re
 /// The executable's composition root supplies the application implementation.
 /// Document/command modules never need to initialize a window or a GPU device.
 pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!(
+        "../../../assets/branding/app/AppIcon.png"
+    ))
+    .map_err(|error| format!("Could not decode application icon: {error}"))?;
     let options = eframe::NativeOptions {
         depth_buffer: 32,
         viewport: egui::ViewportBuilder::default()
+            .with_icon(icon)
             .with_inner_size([1360.0, 860.0])
             .with_min_inner_size([1100.0, 700.0])
             .with_decorations(cfg!(target_os = "macos"))

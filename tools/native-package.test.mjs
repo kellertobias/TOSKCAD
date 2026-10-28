@@ -43,6 +43,12 @@ test('native development layout includes a copied executable, identity pin and n
     assert.deepEqual(readFileSync(binary),original,'Packaging must never sign or modify the compiler output');
     if(process.platform!=='darwin')assert.deepEqual(readFileSync(runtimeExecutable(stage)),original);
     assert.equal(JSON.parse(readFileSync(join(layout.resources,'native-dependencies.json'),'utf8')).occt.version,'7.9.3');
+    const iconName=process.platform==='darwin'?'AppIcon.icns':process.platform==='win32'?'AppIcon.ico':'AppIcon.png';
+    assert.deepEqual(readFileSync(join(layout.resources,iconName)),readFileSync(new URL(`../assets/branding/app/${iconName}`,import.meta.url)));
+    if(process.platform==='linux'){
+      assert.match(readFileSync(join(stage,'multicad.desktop'),'utf8'),/^Icon=multicad$/m);
+      assert.deepEqual(readFileSync(join(stage,'share/icons/hicolor/512x512/apps/multicad.png')),readFileSync(new URL('../assets/branding/app/multicad.png',import.meta.url)));
+    }
     assert(readFileSync(join(layout.resources,'OCCT-LGPL-EXCEPTION.txt'),'utf8').length>100);
     const readme=readFileSync(join(stage,'README.txt'),'utf8');
     assert.match(readme,/constrained sketches and initial native solid extrusion/);
@@ -59,6 +65,7 @@ test('macOS development bundle declares its principal class and seals every reso
     const bundle=join(stage,'MultiCAD.app');
     const plist=join(bundle,'Contents/Info.plist');
     assert.equal(execFileSync('plutil',['-extract','NSPrincipalClass','raw','-o','-',plist],{encoding:'utf8'}).trim(),'NSApplication');
+    assert.equal(execFileSync('plutil',['-extract','CFBundleIconFile','raw','-o','-',plist],{encoding:'utf8'}).trim(),'AppIcon.icns');
     assert.equal(execFileSync('plutil',['-extract','CFBundleShortVersionString','raw','-o','-',plist],{encoding:'utf8'}).trim(),'1.2.3');
     execFileSync('codesign',['--verify','--deep','--strict',bundle]);
     const signature=spawnSync('codesign',['--display','--verbose=2',bundle],{encoding:'utf8'});
