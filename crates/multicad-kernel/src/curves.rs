@@ -145,7 +145,7 @@ impl CurvedEdge2d {
             Self::BSpline(s) => [s.knots[0], *s.knots.last().expect("validated knots")],
         })
     }
-    fn data(
+    pub(crate) fn data(
         &self,
         policy: GeometryPolicy,
         source_index: u32,

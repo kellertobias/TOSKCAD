@@ -23,6 +23,8 @@
 #include <GCE2d_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2dAPI_InterCurveCurve.hxx>
+#include <Geom2dAPI_ProjectPointOnCurve.hxx>
+#include <ElCLib.hxx>
 #include <Geom2dConvert.hxx>
 #include <Geom2dInt_GInter.hxx>
 #include <Geom2d_BSplineCurve.hxx>
@@ -40,6 +42,7 @@
 #include <set>
 #include <tuple>
 #include <cmath>
+#include <limits>
 #include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Pln.hxx>
@@ -316,6 +319,68 @@ CurveSampleData curve_evaluate(const CurvedEdgeData &edge, double parameter) {
     c->D1(parameter, p, d);
     return CurveSampleData{data(p), Point3{d.X(), d.Y(), 0.}};
   });
+}
+rust::Vec<CurveProjectionData> curve_project(const CurvedEdgeData &edge,const Point3 &point,double tolerance) {
+ return guarded([&] {
+    if(!std::isfinite(point.x)||!std::isfinite(point.y)||!std::isfinite(tolerance)||tolerance<1e-7||tolerance>1e-3)throw std::runtime_error("Invalid exact projection point/tolerance");
+    const auto c=curve(edge);const auto queryPoint=p2(point);
+    const double first=c->FirstParameter(),last=c->LastParameter();
+    if(edge.kind==3&&queryPoint.Distance(p2(edge.center))<=tolerance)throw std::runtime_error("Circle center has a continuous ambiguous projection");
+    // Native elementary circle parametrization avoids the generic extrema
+    // solver's angular seam snap and has no artificial finite endpoints.
+    if(edge.kind==3) {
+      const auto circle=Handle(Geom2d_Circle)::DownCast(c);
+      const double parameter=ElCLib::Parameter(circle->Circ2d(),queryPoint);
+      gp_Pnt2d p;gp_Vec2d d;c->D1(parameter,p,d);const double speed=d.Magnitude();
+      if(!std::isfinite(speed)||speed<=0.)throw std::runtime_error("Circle projection has a degenerate tangent");
+      rust::Vec<CurveProjectionData> result;
+      result.push_back(CurveProjectionData{data(p),Point3{d.X()/speed,d.Y()/speed,0.},parameter,queryPoint.Distance(p)});
+      return result;
+    }
+    Geom2dAPI_ProjectPointOnCurve projection(queryPoint,c,first,last);
+    if(!projection.Extrema().IsDone())throw std::runtime_error("Native isolated curve projection did not converge");
+    if(projection.NbPoints()>static_cast<int>(maxHits-2))throw std::runtime_error("Curve projection exceeds the isolated-contact budget");
+    const double parameterTolerance=std::max(1.,std::max(std::abs(first),std::abs(last)))*64.*std::numeric_limits<double>::epsilon();
+    std::vector<double> parameters;
+    if(edge.kind!=3){parameters.push_back(first);parameters.push_back(last);}
+    for(int i=1;i<=projection.NbPoints();++i) {
+      double parameter=projection.Parameter(i);
+      if(!std::isfinite(parameter)||parameter<first||parameter>last)throw std::runtime_error("Native projection returned an out-of-domain parameter");
+      if(edge.kind==3&&std::abs(parameter-last)<=parameterTolerance)parameter=first;
+      parameters.push_back(parameter);
+    }
+    std::sort(parameters.begin(),parameters.end());
+    parameters.erase(std::unique(parameters.begin(),parameters.end(),[&](double a,double b){return std::abs(a-b)<=parameterTolerance;}),parameters.end());
+    double nearest=std::numeric_limits<double>::infinity();
+    for(double u:parameters)nearest=std::min(nearest,queryPoint.Distance(c->Value(u)));
+    rust::Vec<CurveProjectionData> result;
+    for(double u:parameters) {
+      const double distance=queryPoint.Distance(c->Value(u));
+      if(!std::isfinite(distance))throw std::runtime_error("Native projection returned a nonfinite distance");
+      if(distance>nearest+tolerance)continue;
+      gp_Pnt2d p;gp_Vec2d d;c->D1(u,p,d);const double speed=d.Magnitude();
+      if(!std::isfinite(speed)||speed<=0.)throw std::runtime_error("Curve projection has a degenerate tangent");
+      result.push_back(CurveProjectionData{data(p),Point3{d.X()/speed,d.Y()/speed,0.},u,distance});
+    }
+    if(result.empty())throw std::runtime_error("Curve projection returned no isolated finite closest point");
+    return result;
+ });
+}
+SplineData spline_segment(const CurvedEdgeData &edge,double from,double to) {
+ return guarded([&] {
+    const auto original=Handle(Geom2d_BSplineCurve)::DownCast(curve(edge));
+    if(original.IsNull()||!std::isfinite(from)||!std::isfinite(to)||from>=to||from<original->FirstParameter()||to>original->LastParameter())throw std::runtime_error("Spline segment requires increasing finite parameters inside the original domain");
+    const auto retained=Handle(Geom2d_BSplineCurve)::DownCast(original->Copy());
+    retained->Segment(from,to,0.);
+    if(retained->IsPeriodic()||retained->NbPoles()>static_cast<int>(maxPoles)||retained->NbKnots()>static_cast<int>(maxPoles+1))throw std::runtime_error("Segmented spline exceeds the clamped basis budget");
+    SplineData out{};out.degree=retained->Degree();
+    for(int i=1;i<=retained->NbPoles();++i) {
+      const auto p=retained->Pole(i);out.poles.push_back(p.X());out.poles.push_back(p.Y());
+      if(!edge.spline.weights.empty()||retained->IsRational())out.weights.push_back(retained->Weight(i));
+    }
+    for(int i=1;i<=retained->NbKnots();++i){out.knots.push_back(retained->Knot(i));out.multiplicities.push_back(retained->Multiplicity(i));}
+    return out;
+ });
 }
 CurveQueryData curve_intersections(const CurvedEdgeData &first,
                                    const CurvedEdgeData &second,

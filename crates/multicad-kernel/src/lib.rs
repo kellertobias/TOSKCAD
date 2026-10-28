@@ -163,6 +163,12 @@ mod ffi {
         pub point: Point3,
         pub derivative: Point3,
     }
+    pub struct CurveProjectionData {
+        pub point: Point3,
+        pub tangent: Point3,
+        pub parameter: f64,
+        pub distance: f64,
+    }
     pub struct LoftSectionData {
         pub frame: Frame3,
         pub edges: Vec<CurvedEdgeData>,
@@ -292,6 +298,12 @@ mod ffi {
         fn analytic_edges(shape: &Shape) -> Result<Vec<AnalyticEdgeData>>;
         fn solid_count(shape: &Shape) -> Result<u32>;
         fn curve_evaluate(curve: &CurvedEdgeData, parameter: f64) -> Result<CurveSampleData>;
+        fn curve_project(
+            curve: &CurvedEdgeData,
+            point: &Point3,
+            tolerance: f64,
+        ) -> Result<Vec<CurveProjectionData>>;
+        fn spline_segment(curve: &CurvedEdgeData, from: f64, to: f64) -> Result<SplineData>;
         fn curve_intersections(
             first: &CurvedEdgeData,
             second: &CurvedEdgeData,
@@ -458,3 +470,5 @@ mod planar_contours;
 pub use planar_contours::SourcedPlanarContours;
 mod transferred_cuts;
 pub use transferred_cuts::TransferHoleAxis;
+mod spline_edits;
+pub use spline_edits::*;

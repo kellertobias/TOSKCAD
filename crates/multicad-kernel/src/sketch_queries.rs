@@ -4,7 +4,8 @@ use crate::{
     BSpline2d, CurvePointLocation, CurvedEdge2d, CurvedProfile, GeometryError, GeometryPolicy,
 };
 use multicad_core::sketch_regions::{
-    AnalyticQueries, CurveHits, Edge, ExactCurve, PointLocation, QueryError, Region, RegionQueries,
+    AnalyticQueries, CurveHits, CurveProjection, Edge, ExactCurve, PointLocation, QueryError,
+    Region, RegionQueries, SplineContinuation,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -17,6 +18,17 @@ fn error(e: impl std::fmt::Display) -> QueryError {
     }
 }
 impl NativeRegionQueries {
+    fn exact_spline(s: BSpline2d) -> ExactCurve {
+        ExactCurve::BSpline {
+            poles: s.poles,
+            basis: multicad_core::constraint_sketch::SplineBasis {
+                degree: s.degree,
+                knots: s.knots,
+                multiplicities: s.multiplicities,
+                weights: s.weights,
+            },
+        }
+    }
     pub fn new(policy: GeometryPolicy) -> Result<Self, GeometryError> {
         policy.validate()?;
         Ok(Self { policy })
@@ -83,6 +95,143 @@ impl NativeRegionQueries {
     }
 }
 impl RegionQueries for NativeRegionQueries {
+    fn project_parameters(
+        &self,
+        curve: &ExactCurve,
+        point_mm: [f64; 2],
+        tolerance_mm: f64,
+    ) -> Result<Vec<CurveProjection>, QueryError> {
+        let policy = self.policy(tolerance_mm)?;
+        let native = Self::curve(curve);
+        let [first, last] = native.domain(policy).map_err(error)?;
+        native
+            .project_parameters(point_mm, policy)
+            .map_err(error)?
+            .into_iter()
+            .map(|p| {
+                let parameter = if p.parameter == first {
+                    0.
+                } else if p.parameter == last {
+                    1.
+                } else {
+                    (p.parameter - first) / (last - first)
+                };
+                if !parameter.is_finite() || !(0. ..=1.).contains(&parameter) {
+                    return Err(error(
+                        "Native curve projection has an invalid normalized parameter",
+                    ));
+                }
+                Ok(CurveProjection {
+                    parameter,
+                    point_mm: p.point,
+                    tangent: p.tangent,
+                    distance_mm: p.distance_mm,
+                })
+            })
+            .collect()
+    }
+    fn curve_segment(
+        &self,
+        curve: &ExactCurve,
+        from: f64,
+        to: f64,
+        tolerance_mm: f64,
+    ) -> Result<ExactCurve, QueryError> {
+        if !from.is_finite() || !to.is_finite() || from < 0. || to > 1. || from >= to {
+            return Err(error(
+                "Exact segment needs increasing normalized parameters inside [0,1]",
+            ));
+        }
+        let policy = self.policy(tolerance_mm)?;
+        let native = Self::curve(curve);
+        let [first, last] = native.domain(policy).map_err(error)?;
+        let at = |t| {
+            if t == 0. {
+                first
+            } else if t == 1. {
+                last
+            } else {
+                first + (last - first) * t
+            }
+        };
+        if let CurvedEdge2d::BSpline(s) = &native {
+            return Ok(Self::exact_spline(
+                s.segment(at(from), at(to), policy).map_err(error)?,
+            ));
+        }
+        if from == 0. && to == 1. {
+            return Ok(curve.clone());
+        }
+        let a = native.evaluate(at(from), policy).map_err(error)?.point;
+        let b = native.evaluate(at(to), policy).map_err(error)?.point;
+        let result = match *curve {
+            ExactCurve::Line { .. } => ExactCurve::Line { a, b },
+            ExactCurve::Arc {
+                center, clockwise, ..
+            } => ExactCurve::Arc {
+                center,
+                a,
+                b,
+                clockwise,
+            },
+            ExactCurve::Circle { center, .. } => ExactCurve::Arc {
+                center,
+                a,
+                b,
+                clockwise: false,
+            },
+            ExactCurve::BSpline { .. } => unreachable!("spline handled"),
+        };
+        Self::curve(&result).domain(policy).map_err(error)?;
+        Ok(result)
+    }
+    fn spline_continuation(
+        &self,
+        curve: &ExactCurve,
+        at_start: bool,
+        max_length_mm: f64,
+        tolerance_mm: f64,
+    ) -> Result<SplineContinuation, QueryError> {
+        let policy = self.policy(tolerance_mm)?;
+        let CurvedEdge2d::BSpline(s) = Self::curve(curve) else {
+            return Err(error(
+                "Tangent spline continuation requires a clamped B-spline source",
+            ));
+        };
+        let result = s
+            .tangent_continuation(at_start, max_length_mm, policy)
+            .map_err(error)?;
+        let first = result.curve.knots[0];
+        let last = *result.curve.knots.last().expect("validated knots");
+        let normalized = |t| {
+            if t == first {
+                0.
+            } else if t == last {
+                1.
+            } else {
+                (t - first) / (last - first)
+            }
+        };
+        let original_range = result.original_range.map(normalized);
+        if original_range
+            .iter()
+            .any(|x| !x.is_finite() || !(0. ..=1.).contains(x))
+            || original_range[0] >= original_range[1]
+            || if at_start {
+                original_range[0] <= 0. || original_range[1] != 1.
+            } else {
+                original_range[0] != 0. || original_range[1] >= 1.
+            }
+        {
+            return Err(error(
+                "Spline continuation loses its original interval in normalized parameter space",
+            ));
+        }
+        Ok(SplineContinuation {
+            curve: Self::exact_spline(result.curve),
+            original_range,
+        })
+    }
     fn tolerance_mm(&self) -> f64 {
         self.policy.linear_tolerance_mm
     }
