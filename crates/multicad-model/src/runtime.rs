@@ -263,6 +263,14 @@ impl<T: Send + 'static> Runtime<T> {
             .reply
             .take()
     }
+    /// Supersede queued/current work without stopping the reusable worker.
+    /// A native operation already running returns to Rust before cancellation.
+    pub fn cancel(&mut self) {
+        self.shared.latest.fetch_add(1, Ordering::AcqRel);
+        let mut slots = self.shared.slots.lock().unwrap_or_else(|p| p.into_inner());
+        slots.pending = None;
+        slots.reply = None;
+    }
 }
 impl<T> Drop for Runtime<T> {
     fn drop(&mut self) {

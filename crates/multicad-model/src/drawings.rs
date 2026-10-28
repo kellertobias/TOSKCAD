@@ -32,6 +32,21 @@ pub enum DrawingSourceKind {
     FlatPattern,
     Exploded,
 }
+#[derive(Clone, Copy, Debug)]
+pub struct DrawingBudget {
+    pub views: usize,
+    pub vectors: usize,
+    pub preview_points: usize,
+}
+impl Default for DrawingBudget {
+    fn default() -> Self {
+        Self {
+            views: 256,
+            vectors: 200_000,
+            preview_points: 2_000_000,
+        }
+    }
+}
 pub trait DrawingSourceProvider {
     fn resolve<'a>(
         &self,
@@ -290,15 +305,51 @@ impl Model {
         revision: u64,
         providers: &DrawingProviders,
     ) -> Result<DrawingEvaluation, ModelError> {
+        self.drawings_with_budget(document, revision, providers, DrawingBudget::default())
+    }
+    pub fn drawings_with_budget(
+        &self,
+        document: &Document,
+        revision: u64,
+        providers: &DrawingProviders,
+        budget: DrawingBudget,
+    ) -> Result<DrawingEvaluation, ModelError> {
+        let maximum = DrawingBudget::default();
+        if budget.views == 0
+            || budget.views > maximum.views
+            || budget.vectors == 0
+            || budget.vectors > maximum.vectors
+            || budget.preview_points == 0
+            || budget.preview_points > maximum.preview_points
+        {
+            return Err(error(None, "Invalid drawing publication budget"));
+        }
         let mut views = BTreeMap::new();
+        let (mut vectors_used, mut points_used) = (0usize, 0usize);
+        let mut exhausted = false;
         for id in books(document) {
             let book = read(document, id).map_err(|e| error(Some(id), e))?;
             for view in book.pages.iter().flat_map(|p| &p.views) {
-                let evaluation = self
-                    .drawing_view(document, revision, view, providers)
-                    .unwrap_or_else(|e| ViewEvaluation::Unresolved {
-                        message: e.to_string(),
-                    });
+                let mut evaluation = if exhausted || views.len() >= budget.views {
+                    ViewEvaluation::Unresolved{message:"Drawing publication budget exceeded; reduce the number or complexity of views".into()}
+                } else {
+                    self.drawing_view(document, revision, view, providers)
+                        .unwrap_or_else(|e| ViewEvaluation::Unresolved {
+                            message: e.to_string(),
+                        })
+                };
+                if let ViewEvaluation::Ready { vectors, .. } = &evaluation {
+                    let points: usize = vectors.iter().map(|v| v.preview_mm.len()).sum();
+                    if vectors.len() > budget.vectors - vectors_used
+                        || points > budget.preview_points - points_used
+                    {
+                        exhausted = true;
+                        evaluation=ViewEvaluation::Unresolved{message:"Drawing vector/point publication budget exceeded; simplify the page".into()};
+                    } else {
+                        vectors_used += vectors.len();
+                        points_used += points;
+                    }
+                }
                 views.insert(view.id, evaluation);
             }
         }

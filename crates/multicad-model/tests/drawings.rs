@@ -382,7 +382,10 @@ fn exact_model_publisher_runs_on_worker_and_publishes_only_source_stamped_vector
         )
     })
     .unwrap();
+    let canceled = worker.request(f.s.document(), f.s.revision()).unwrap();
+    worker.cancel();
     let job = worker.request(f.s.document(), f.s.revision()).unwrap();
+    assert!(job > canceled);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let reply = loop {
         if let Some(reply) = worker.poll() {
@@ -401,4 +404,32 @@ fn exact_model_publisher_runs_on_worker_and_publishes_only_source_stamped_vector
         .check(f.s.document(), f.s.revision())
         .unwrap();
     assert!((xmax(vectors(&evaluation, f.view)) - 40.).abs() < 1e-6);
+}
+
+#[test]
+fn publication_budget_produces_unresolved_views_instead_of_an_incomplete_ready_page() {
+    let f = Fixture::new();
+    let model = Compiler::default()
+        .compile(f.s.document(), f.s.revision())
+        .unwrap();
+    let evaluation = model
+        .drawings_with_budget(
+            f.s.document(),
+            f.s.revision(),
+            &DrawingProviders::default(),
+            DrawingBudget {
+                views: 1,
+                vectors: 1,
+                preview_points: 2,
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(&evaluation.views[&f.view],ViewEvaluation::Unresolved{message} if message.contains("budget"))
+    );
+    assert!(
+        evaluation
+            .checked_page(f.s.document(), f.s.revision(), f.book, f.page)
+            .is_err()
+    );
 }
