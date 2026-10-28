@@ -3,12 +3,14 @@
 //! before presenting an Apply-capable modeling preview.
 mod boolean;
 mod common;
+mod evaluation;
 mod extrude_boolean;
 mod prepare;
 mod primitive;
 mod revolve;
 mod source;
 pub use boolean::*;
+pub use evaluation::*;
 pub use extrude_boolean::*;
 pub use prepare::*;
 pub use primitive::*;
