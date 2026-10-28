@@ -6,6 +6,7 @@ pub enum Icon {
     Hammer,
     Keyboard,
     Transform,
+    Scale,
     Rotate,
     Mirror,
     LinearPattern,
@@ -235,6 +236,12 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             path(&[[1., 7.], [5., 3.], [9., 7.]]);
             line([5., 19.], [16., 8.]);
             path(&[[10., 8.], [16., 8.], [16., 14.]]);
+        }
+        Icon::Scale => {
+            rect(4., 13., 7., 7.);
+            path(&[[4., 9.], [4., 4.], [20., 4.], [20., 20.], [15., 20.]]);
+            path(&[[10., 14.], [18., 6.], [13., 6.]]);
+            path(&[[18., 6.], [18., 11.]]);
         }
         Icon::Rotate => {
             path(&[
