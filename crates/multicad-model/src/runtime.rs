@@ -37,6 +37,31 @@ struct Shared<T> {
     wake: Condvar,
     latest: AtomicU64,
 }
+struct WorkerExit<T> {
+    shared: Arc<Shared<T>>,
+}
+impl<T> Drop for WorkerExit<T> {
+    fn drop(&mut self) {
+        let mut slots = self
+            .shared
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slots.stop {
+            return;
+        }
+        slots.stop = true;
+        slots.pending = None;
+        slots.reply = Some(ModelReply {
+            generation: self.shared.latest.load(Ordering::Acquire),
+            result: Err(ModelError {
+                entity: None,
+                message: "Model evaluation worker exited unexpectedly; this worker cannot accept more requests".into(),
+            }),
+        });
+        self.shared.wake.notify_all();
+    }
+}
 pub struct Runtime<T = Arc<ModelSnapshot>> {
     shared: Arc<Shared<T>>,
 }
@@ -61,6 +86,11 @@ impl<T: Send + 'static> Runtime<T> {
         std::thread::Builder::new()
             .name("multicad-model".into())
             .spawn(move || {
+                // Keep this guard before retained: native models must be
+                // destroyed on their owner thread before failure publication.
+                let _exit = WorkerExit {
+                    shared: Arc::clone(&worker),
+                };
                 let mut retained: Option<Model> = None;
                 loop {
                     let job = {
@@ -146,17 +176,27 @@ impl<T: Send + 'static> Runtime<T> {
         Ok(generation)
     }
     pub fn poll(&mut self) -> Option<ModelReply<T>> {
-        self.shared.slots.lock().ok()?.reply.take()
+        // A poisoned worker may still have its terminal failure to deliver.
+        // Reading that reply never restarts or retries native evaluation.
+        self.shared
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .reply
+            .take()
     }
 }
 impl<T> Drop for Runtime<T> {
     fn drop(&mut self) {
         self.shared.latest.fetch_add(1, Ordering::AcqRel);
-        if let Ok(mut slots) = self.shared.slots.lock() {
-            slots.stop = true;
-            slots.pending = None;
-            slots.reply = None;
-            self.shared.wake.notify_one();
-        }
+        let mut slots = self
+            .shared
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slots.stop = true;
+        slots.pending = None;
+        slots.reply = None;
+        self.shared.wake.notify_one();
     }
 }
