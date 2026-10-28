@@ -770,3 +770,102 @@ fn legacy_unplaced_assembly_roots_keep_one_physical_aggregate_and_source_member_
     let loaded = reopen(&s);
     assert_eq!(compile(&loaded).snapshot().leaf_occurrences.len(), 2);
 }
+#[test]
+fn free_subassembly_move_and_copy_are_atomic_and_preserve_shared_definitions() {
+    let mut f = fixture();
+    let definitions = f
+        .assembly
+        .definition_parts
+        .iter()
+        .chain(std::iter::once(&f.assembly.assembly))
+        .map(|id| (*id, f.session.document().get(*id).unwrap().clone()))
+        .collect::<Vec<_>>();
+    let root = f.roots[0].instance;
+    let path = OccurrencePath {
+        root,
+        members: vec![f.slider.owner],
+    };
+    let before = f.session.document().clone();
+    let move_request = InstanceMoveRequest::new(
+        root,
+        NumericTransform {
+            translation: [length(50.), length(0.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let p =
+        prepare_instance_moves(&f.session, f.session.revision(), actor(), &[move_request]).unwrap();
+    Compiler::default()
+        .compile(p.prepared.document(), f.session.revision())
+        .unwrap();
+    f.session.commit(p.prepared).unwrap();
+    near(
+        compile(&f.session).leaf_snapshot(&path).unwrap().bounds.min[0],
+        250.,
+    );
+    f.session.undo(f.session.revision(), actor()).unwrap();
+    assert_eq!(f.session.document(), &before);
+    f.session.redo(f.session.revision(), actor()).unwrap();
+    let copy = InstanceCopyRequest::new(
+        InstanceCopySource::Instance { instance: root },
+        NumericTransform {
+            translation: [length(0.), length(200.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let before_copy = f.session.document().clone();
+    let p = prepare_instance_copies(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        std::slice::from_ref(&copy),
+    )
+    .unwrap();
+    Compiler::default()
+        .compile(p.prepared.document(), f.session.revision())
+        .unwrap();
+    f.session.commit(p.prepared).unwrap();
+    let native = compile(&f.session);
+    assert_eq!(native.snapshot().occurrences.len(), 3);
+    assert_eq!(native.snapshot().leaf_occurrences.len(), 9);
+    let copy_path = OccurrencePath {
+        root: copy.instance,
+        members: path.members.clone(),
+    };
+    let bounds = native.leaf_snapshot(&copy_path).unwrap().bounds;
+    near(bounds.min[0], 250.);
+    near(bounds.min[1], 250.);
+    near(
+        native.solid(copy.instance).unwrap().volume_mm3().unwrap(),
+        55000.,
+    );
+    for (id, entity) in &definitions {
+        assert_eq!(f.session.document().get(*id), Some(entity));
+    }
+    f.session.undo(f.session.revision(), actor()).unwrap();
+    assert_eq!(f.session.document(), &before_copy);
+    assert!(
+        !compile(&f.session)
+            .snapshot()
+            .occurrences
+            .contains_key(&copy.instance)
+    );
+    f.session.redo(f.session.revision(), actor()).unwrap();
+    near(
+        compile(&reopen(&f.session))
+            .leaf_snapshot(&copy_path)
+            .unwrap()
+            .bounds
+            .min[1],
+        250.,
+    );
+    assert!(
+        prepare_instance_moves(
+            &f.session,
+            f.session.revision(),
+            actor(),
+            &[InstanceMoveRequest::new(f.slider.owner, Default::default())]
+        )
+        .is_err()
+    );
+}

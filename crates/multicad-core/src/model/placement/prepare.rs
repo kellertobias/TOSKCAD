@@ -85,10 +85,10 @@ fn fresh(
 fn part_component(document: &Document, id: EntityId) -> Result<(), CommandError> {
     if !matches!(
         document.get(id).map(|e| &e.data),
-        Some(EntityData::Part { .. })
+        Some(EntityData::Part { .. } | EntityData::Assembly { .. })
     ) {
         return Err(error(
-            "This placement tool supports Part instances; subassembly placement is a separate assembly operation",
+            "This placement tool requires an Instance of an existing Part or Assembly",
         ));
     }
     Ok(())
