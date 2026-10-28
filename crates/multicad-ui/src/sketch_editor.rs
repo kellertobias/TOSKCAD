@@ -13,6 +13,11 @@ use multicad_core::{
     sketch::{self, Datum, Frame, Geometry, Sketch},
 };
 use std::collections::VecDeque;
+#[path = "sketch_edge_host.rs"]
+mod edge_host;
+#[cfg(test)]
+#[path = "sketch_edge_host_tests.rs"]
+mod edge_host_tests;
 #[path = "sketch_external_host.rs"]
 mod external_host;
 #[path = "model_target_selection.rs"]
@@ -2294,11 +2299,21 @@ impl SketchEditor {
         if !self.measurement.active()
             && !self.model.termination_picking()
             && !self.model.alignment_picking()
+            && !self.model.edge_treatment_picking()
             && let Some(candidate) = self.model.display_scene(session, resources)
         {
             scene = Some(candidate);
             current = false;
             model_view = true;
+        }
+        if !self.measurement.active() && self.model.edge_treatment_picking() {
+            match self.edge_source_scene(session, feed) {
+                Ok(source) => {
+                    scene = Some(source);
+                    current = false;
+                }
+                Err(error) => self.message = error,
+            }
         }
         if !self.measurement.active()
             && !model_view
@@ -2683,6 +2698,16 @@ impl SketchEditor {
         if !self.measurement.active()
             && let Some(context) = model_context
         {
+            if self.model.edge_treatment_picking() {
+                self.edge_viewport(
+                    ui,
+                    &response,
+                    session,
+                    context.resources,
+                    context.feed,
+                    rect,
+                );
+            }
             let mut owned = false;
             if self.model.placement_active() || self.model.scaling_active() {
                 let scaling = self.model.scaling_active();

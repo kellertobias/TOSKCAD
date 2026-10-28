@@ -46,7 +46,8 @@ impl Acquisition {
         }
     }
     fn maximum(&self) -> usize {
-        if self.profiles() || self.tool == ModelingTool::Align {
+        if self.profiles() || matches!(self.tool, ModelingTool::Align | ModelingTool::EdgeTreatment)
+        {
             1
         } else {
             128
@@ -119,10 +120,14 @@ impl SketchEditor {
             self.selected = None;
         }
         self.acquisition = Some(acquisition);
-        self.message = format!(
-            "{} · select compatible targets; Shift-click adds or removes",
-            tool.label()
-        );
+        self.message = if tool == ModelingTool::EdgeTreatment {
+            "Fillet / Chamfer · select one Part definition, then its edges. Linked occurrences follow; Instance-only treatment is unsupported".into()
+        } else {
+            format!(
+                "{} · select compatible targets; Shift-click adds or removes",
+                tool.label()
+            )
+        };
         self.advance_model_targets(session, resources, feed, true);
         Ok(())
     }
@@ -147,7 +152,9 @@ impl SketchEditor {
             return true;
         };
         if selection.len() > a.maximum() || selection.iter().any(|id| !a.accepts(document, *id)) {
-            self.message = if a.profiles() {
+            self.message = if a.tool == ModelingTool::EdgeTreatment {
+                "Choose one Part definition. Linked occurrences follow; a placed Instance cannot be treated independently".into()
+            } else if a.profiles() {
                 "Select one sketch, then choose its closed areas".into()
             } else if a.maximum() == 1 {
                 "Select one compatible Part or Instance".into()
@@ -243,6 +250,7 @@ impl SketchEditor {
                             | ModelingTool::Copy
                             | ModelingTool::Align
                             | ModelingTool::Scale
+                            | ModelingTool::EdgeTreatment
                     ))
         };
         if !ready {
@@ -250,6 +258,9 @@ impl SketchEditor {
             return;
         }
         let result = match a.tool {
+            ModelingTool::EdgeTreatment => {
+                self.begin_edge_treatment(session, resources, feed, a.channel)
+            }
             ModelingTool::Scale => self.begin_scale(session, resources, feed, a.channel),
             ModelingTool::Move | ModelingTool::Copy => self.begin_placement(
                 session,
@@ -333,7 +344,7 @@ impl SketchEditor {
             return false;
         }
         ui.strong(format!("{} · select targets", a.tool.label()));
-        ui.label(if a.profiles() { "Select a sketch in the tree, then choose one or more closed areas below or in the viewer." } else { "Select objects in the tree or viewer. Shift-click adds or removes a target." });
+        ui.label(if a.tool==ModelingTool::EdgeTreatment {"Select one Part definition in the tree or viewer, then its native edges. Linked occurrences follow; Instance-only treatment is unsupported."} else if a.profiles() { "Select a sketch in the tree, then choose one or more closed areas below or in the viewer." } else { "Select objects in the tree or viewer. Shift-click adds or removes a target." });
         ui.small(format!("{} selected", self.tree_selection.len()));
         let profiles = a.profiles();
         if profiles && let Some(id) = self.selected {
@@ -723,6 +734,7 @@ mod tests {
             ModelingTool::Move,
             ModelingTool::Copy,
             ModelingTool::Scale,
+            ModelingTool::EdgeTreatment,
             ModelingTool::Align,
             ModelingTool::Boolean,
             ModelingTool::Split,

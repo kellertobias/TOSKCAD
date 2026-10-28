@@ -52,9 +52,10 @@ pub enum ModelingTool {
     Copy,
     Align,
     Scale,
+    EdgeTreatment,
 }
 impl ModelingTool {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Box,
         Self::Cylinder,
         Self::Extrude,
@@ -65,6 +66,7 @@ impl ModelingTool {
         Self::Copy,
         Self::Align,
         Self::Scale,
+        Self::EdgeTreatment,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -78,6 +80,7 @@ impl ModelingTool {
             Self::Copy => "placed-copy",
             Self::Align => "align",
             Self::Scale => "scale",
+            Self::EdgeTreatment => "edge-treatment",
         }
     }
     pub fn label(self) -> &'static str {
@@ -92,6 +95,7 @@ impl ModelingTool {
             Self::Copy => "Placed copy",
             Self::Align => "Align",
             Self::Scale => "Scale",
+            Self::EdgeTreatment => "Fillet / Chamfer",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -106,6 +110,7 @@ impl ModelingTool {
             Self::Copy => crate::icons::Icon::LinearPattern,
             Self::Align => crate::icons::Icon::Link,
             Self::Scale => crate::icons::Icon::Scale,
+            Self::EdgeTreatment => crate::icons::Icon::Edge,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -120,10 +125,14 @@ impl ModelingTool {
             Self::Copy => &["copy-body", "instance-copy"],
             Self::Align => &["align-body", "mate", "align-part"],
             Self::Scale => &["scale-body", "resize-solid"],
+            Self::EdgeTreatment => &["fillet", "chamfer", "edge"],
         }
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::EdgeTreatment => {
+                "Usage: edge-treatment (choose one Part and its edges, select Fillet radius or symmetric Chamfer distance, then Preview and Apply)"
+            }
             Self::Scale => {
                 "Usage: scale (select Parts or Instances, set positive factors and a pivot, then drag or Preview and Apply)"
             }
@@ -153,6 +162,9 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::EdgeTreatment => {
+                "Select native edges of one Part definition. Linked occurrences follow the definition; Instance-only, angled and asymmetric edge treatments are unsupported."
+            }
             Self::Scale => {
                 "Select current native Parts or Instances and finish pending edits. Positive scale factors change exact geometry; an Instance selection affects only that occurrence."
             }

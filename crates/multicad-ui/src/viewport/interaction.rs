@@ -52,6 +52,9 @@ impl Interaction {
     pub fn has_topology_selection(&self) -> bool {
         self.selected.is_some()
     }
+    pub fn selected_hit(&self) -> Option<&Hit> {
+        self.selected.as_ref()
+    }
     pub fn hovered_instance(&self) -> Option<EntityId> {
         self.hovered.as_ref().map(|hit| hit.instance)
     }

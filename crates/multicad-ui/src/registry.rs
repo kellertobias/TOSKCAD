@@ -326,7 +326,6 @@ impl Default for Registry {
             });
         }
         for (id, label, icon) in [
-            ("edge", "Fillet / chamfer", Icon::Edge),
             ("symbol", "Create symbol", Icon::Library),
             ("panel", "Panel", Icon::Box),
             ("joint", "Finger / miter joint", Icon::Link),
@@ -425,7 +424,7 @@ impl Default for Registry {
                             .into_iter()
                             .filter(|tool| *tool != ModelingTool::Copy)
                             .map(ModelingTool::id)
-                            .chain(["edge", "symbol"])
+                            .chain(["symbol"])
                             .collect(),
                         requires_active_sketch: false,
                     },
