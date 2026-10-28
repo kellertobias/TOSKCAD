@@ -163,6 +163,23 @@ impl SceneBackend for NativeBackend {
         self.expected = Some((generation, stamp));
         Ok(())
     }
+    fn request_sources(
+        &mut self,
+        document: &Document,
+        _resources: &ProjectResources,
+        stamp: SceneStamp,
+        roots: &[multicad_core::document::EntityId],
+    ) -> Result<(), String> {
+        let generation =
+            self.runtime
+                .request_sources(document, stamp.revision, stamp.generation, roots)?;
+        self.expected = Some((generation, stamp));
+        Ok(())
+    }
+    fn cancel(&mut self) {
+        self.expected = None;
+        self.runtime.cancel();
+    }
     fn poll(&mut self) -> Option<SceneReply> {
         let (expected, stamp) = self.expected?;
         let reply = self.runtime.poll()?;
