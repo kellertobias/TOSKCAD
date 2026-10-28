@@ -40,32 +40,36 @@ impl Controller {
             });
             ui.add_enabled_ui(enabled && !pending, |ui| {
                 let old_consumer = form.consumer.clone();
-                let context_paths = form.contexts.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+
                 let selected = match &form.consumer {
                     Consumer::Unset => "Choose sketch occurrence".into(),
                     Consumer::World => "World / definition plane".into(),
-                    Consumer::Occurrence(c) => occurrence_label(session.document(), c.component, &c.path, &context_paths).0,
+                    Consumer::Occurrence(c) => form.labels.get(c.component,&c.path).map_or_else(|| "Missing sketch occurrence".into(),|label|label.compact(ui)),
                 };
                 ui.label("Receiving sketch context");
                 controls::inspector_combo(ui, "external-consumer-context").selected_text(selected).show_ui(ui, |ui| {
                     if ui.selectable_value(&mut form.consumer, Consumer::World, "World / definition plane").on_hover_text("Use the sketch's authored plane in world coordinates").clicked() { ui.close(); }
                     for context in &form.contexts {
-                        let (label, help) = occurrence_label(session.document(), context.component, &context.path, &context_paths);
+                        let Some(name)=form.labels.get(context.component,&context.path) else {continue;};
+                        let (label,help)=(&name.full,&name.help);
                         if ui.selectable_value(&mut form.consumer, Consumer::Occurrence(context.clone()), label).on_hover_text(help).clicked() { ui.close(); }
                     }
                 }).response.on_hover_text("Choose the exact placed Part whose local coordinates contain this sketch. Repeated placements are separate choices");
                 if form.consumer != old_consumer { results_changed = true; }
-                let source_paths = form.sources.iter().map(|s| s.path.clone()).collect::<Vec<_>>();
+
                 ui.label("Source occurrence");
-                controls::inspector_combo(ui, "external-source-occurrence").selected_text(form.source.as_ref().map_or_else(|| "Choose source occurrence".into(), |s| occurrence_label(session.document(), s.component, &s.path, &source_paths).0)).show_ui(ui, |ui| {
+                let mut next_source = None;
+                controls::inspector_combo(ui, "external-source-occurrence").selected_text(form.source.as_ref().map_or_else(|| "Choose source occurrence".into(), |s| form.labels.get(s.component,&s.path).map_or_else(|| "Missing source occurrence".into(),|label|label.compact(ui)))).show_ui(ui, |ui| {
                     for source in &form.sources {
-                        let (label, help) = occurrence_label(session.document(), source.component, &source.path, &source_paths);
+                        let Some(name)=form.labels.get(source.component,&source.path) else {continue;};
+                        let (label,help)=(&name.full,&name.help);
                         if ui.selectable_label(form.source.as_ref().is_some_and(|s| s.component == source.component && s.path == source.path), label).on_hover_text(help).clicked() {
-                            if form.source.as_ref() != Some(source) { form.source = Some(source.clone()); geometry_changed = true; }
+                            next_source = Some(source.clone());
                             ui.close();
                         }
                     }
                 }).response.on_hover_text("Choose the placed copy to reference before picking nested geometry. Repeated copies have distinct path labels");
+                if let Some(source) = next_source { geometry_changed |= form.choose_source(&source); }
                 if let Some(source) = &mut form.source {
                     let prior = source.source;
                     ui.label("Source history");

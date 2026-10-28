@@ -31,6 +31,7 @@ pub(super) struct Form {
     pub sketch: EntityId,
     pub reference: EntityId,
     pub sources: Vec<OccurrenceSource>,
+    pub labels: super::labels::Labels,
     pub contexts: Vec<OccurrenceContext>,
     pub source: Option<OccurrenceSource>,
     pub consumer: Consumer,
@@ -66,7 +67,24 @@ impl Form {
                 _ => Consumer::Unset,
             }
         };
+        let entries = sources
+            .iter()
+            .map(|s| (s.component, s.path.clone()))
+            .chain(contexts.iter().map(|c| (c.component, c.path.clone())))
+            .chain(
+                previous
+                    .iter()
+                    .map(|p| (p.query.source.component, p.query.source.path.clone())),
+            )
+            .chain(previous.iter().filter_map(|p| {
+                p.query
+                    .sketch_context
+                    .as_ref()
+                    .map(|c| (c.component, c.path.clone()))
+            }));
+        let labels = super::labels::Labels::new(document, entries);
         Ok(Self {
+            labels,
             sketch,
             reference: previous
                 .as_ref()
@@ -90,6 +108,24 @@ impl Form {
             selected: None,
             prepared: None,
         })
+    }
+    /// Changing only the occurrence keeps an explicit history choice on that
+    /// same Part. Reopening the selected menu row is source-neutral.
+    pub fn choose_source(&mut self, selected: &OccurrenceSource) -> bool {
+        if self.source.as_ref().is_some_and(|current| {
+            current.component == selected.component && current.path == selected.path
+        }) {
+            return false;
+        }
+        let mut next = selected.clone();
+        if let Some(current) = &self.source
+            && current.component == next.component
+        {
+            next.source = current.source;
+        }
+        self.source = Some(next);
+        self.clear_geometry();
+        true
     }
     pub fn clear_results(&mut self) {
         self.catalog = None;
@@ -198,52 +234,16 @@ pub(super) fn occurrence_label(
     path: &OccurrencePath,
     paths: &[OccurrencePath],
 ) -> (String, String) {
-    let component_name = document
-        .get(component)
-        .map_or("Missing Part", |e| e.name.as_str());
-    let ids = |path: &OccurrencePath| {
-        std::iter::once(path.root)
-            .chain(path.members.iter().copied())
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join(" / ")
-    };
-    let full = ids(path);
-    let digest = multicad_core::project_file::ContentHash::of(full.as_bytes()).to_string();
-    let hashes: Vec<_> = paths
-        .iter()
-        .filter(|other| *other != path)
-        .map(|other| {
-            multicad_core::project_file::ContentHash::of(ids(other).as_bytes()).to_string()
-        })
-        .collect();
-    let width = (6..=64)
-        .step_by(2)
-        .find(|width| {
-            !hashes
-                .iter()
-                .any(|other| other[..*width] == digest[..*width])
-        })
-        .unwrap_or(64);
-    let key = &digest[..width];
-    let names = std::iter::once(path.root)
-        .chain(path.members.iter().copied())
-        .map(|id| {
-            document
-                .get(id)
-                .map_or("Missing occurrence", |e| e.name.as_str())
-        })
-        .collect::<Vec<_>>()
-        .join(" / ");
-    (
-        format!(
-            "{component_name} · {} [{key}]",
-            names.rsplit(" / ").next().unwrap_or(&names)
-        ),
-        format!(
-            "Part: {component_name}\nOccurrence: {names}\nFull path IDs: {full}\nComponent ID: {component}"
-        ),
-    )
+    let labels = super::labels::Labels::new(
+        document,
+        paths
+            .iter()
+            .cloned()
+            .chain(std::iter::once(path.clone()))
+            .map(|path| (component, path)),
+    );
+    let value = labels.get(component, path).expect("explicit path label");
+    (value.full.clone(), value.help.clone())
 }
 pub(super) fn source_history(document: &Document, source: &OccurrenceSource) -> Vec<EntityId> {
     let mut ids = vec![source.component];
@@ -252,4 +252,48 @@ pub(super) fn source_history(document: &Document, source: &OccurrenceSource) -> 
         ids.extend(features.iter().copied());
     }
     ids
+}
+
+#[cfg(test)]
+mod source_choice_tests {
+    use super::*;
+    use crate::external_references::occurrence_context_tests::context_fixture;
+    #[test]
+    fn retained_feature_survives_reselecting_the_occurrence_and_switching_its_copies() {
+        let (session, sketch, body, contexts) = context_fixture();
+        let mut form = Form::new(session.document(), sketch, ExternalTool::Project, None).unwrap();
+        let first = form
+            .sources
+            .iter()
+            .find(|s| s.path == contexts[0].path)
+            .unwrap()
+            .clone();
+        let copy = form
+            .sources
+            .iter()
+            .find(|s| s.path == contexts[1].path)
+            .unwrap()
+            .clone();
+        let retained = source_history(session.document(), &first)[1];
+        assert_ne!(retained, body);
+        assert!(form.choose_source(&first));
+        form.source.as_mut().unwrap().source = retained;
+        assert!(!form.choose_source(&first));
+        assert_eq!(form.source.as_ref().unwrap().source, retained);
+        assert!(form.choose_source(&copy));
+        assert_eq!(form.source.as_ref().unwrap().source, retained);
+        assert_eq!(form.source.as_ref().unwrap().path, copy.path);
+        // A new component must use its own history, never retain another Part's feature.
+        let different = OccurrenceSource {
+            component: EntityId::new(),
+            source: EntityId::new(),
+            path: OccurrencePath {
+                root: EntityId::new(),
+                members: vec![],
+            },
+        };
+        assert!(form.choose_source(&different));
+        assert_eq!(form.source.as_ref(), Some(&different));
+        assert!(!form.choose_source(&different));
+    }
 }

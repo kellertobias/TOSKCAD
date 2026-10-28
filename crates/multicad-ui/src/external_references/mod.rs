@@ -3,6 +3,7 @@
 mod backend;
 mod controller;
 mod inspector;
+mod labels;
 mod native;
 mod occurrence_controller;
 mod occurrence_form;
