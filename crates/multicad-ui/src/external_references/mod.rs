@@ -1,11 +1,15 @@
 //! Sketch-reference tools consume only source-current canonical native scenes.
 //! They prepare checked edits; the host owns the shared sketch Apply/Discard lane.
+mod backend;
 mod controller;
 mod inspector;
 mod native;
 #[cfg(test)]
 pub(crate) mod tests;
 use crate::icons::Icon;
+pub use backend::{
+    ExternalPrepared, ExternalQueryBackend, ExternalQueryBackendFactory, ExternalQueryReply,
+};
 pub(crate) use controller::Proposal;
 pub use controller::*;
 pub(crate) use inspector::{behavior_label, method_label};
