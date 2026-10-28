@@ -5,8 +5,8 @@ impl Application {
         &mut self,
         ctx: &egui::Context,
     ) -> Result<(), String> {
-        if !self.pending_files.is_empty() {
-            return Err("Wait for file operations to finish before closing".into());
+        if !self.pending_files.is_empty() || self.projects.iter().any(|p| p.exchange.writing()) {
+            return Err("Wait for file and export operations to finish before closing".into());
         }
         self.close_allowed = true;
         self.close_confirm = false;
@@ -24,15 +24,16 @@ impl Application {
             .filter(|(_, p)| p.dirty())
             .map(|(index, p)| (index, p.title(), p.pending_edits()))
             .collect();
-        let busy = !self.pending_files.is_empty();
+        let busy =
+            !self.pending_files.is_empty() || self.projects.iter().any(|p| p.exchange.writing());
         egui::Window::new("Unsaved documents").collapsible(false).show(ctx,|ui| {
-            if busy { ui.label("A file operation is still running. Keep this window open until it completes."); }
+            if busy { ui.label("A file or export operation is still running. Keep this window open until it completes."); }
             else if dirty.is_empty() {ui.label("All documents are saved. You can close this window.");}
             else {ui.label("Choose a document to save, or close without saving the changes listed below.");}
             for (index,name,draft) in &dirty {
                 if ui.selectable_label(self.active==*index,format!("{}{}",name,if *draft {" · unapplied edits"} else {""})).on_hover_text("Select this document before saving or reviewing its edits").clicked() {
                     self.active = *index;
-                    self.mode=if self.current().drawings.dirty(){Mode::Drawings}else{Mode::Parameters};
+                    self.mode=if self.current().exchange.dirty(){Mode::Export}else if self.current().drawings.dirty(){Mode::Drawings}else{Mode::Parameters};
                     self.tab=0;
                 }
             }

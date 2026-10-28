@@ -202,6 +202,24 @@ fn commit(
         .map_err(|e| e.to_string())
 }
 impl SketchEditor {
+    pub fn export_selection(&self, document: &Document) -> Vec<EntityId> {
+        self.tree_selection
+            .iter()
+            .copied()
+            .chain(self.solid.selected_ids())
+            .filter(|id| {
+                document.get(*id).is_some_and(|e| {
+                    matches!(
+                        e.data,
+                        EntityData::Part { .. } | EntityData::Instance { .. }
+                    )
+                })
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     pub fn open_materials(&mut self, session: &Session) -> Result<(), String> {
         if self.has_pending_edits() {
             return Err("Apply or discard pending edits before opening materials".into());

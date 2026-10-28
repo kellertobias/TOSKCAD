@@ -39,6 +39,7 @@ pub struct Project {
     pub editor: ParameterEditor,
     pub sketch: SketchEditor,
     pub drawings: crate::drawings::DrawingEditor,
+    pub exchange: crate::exchange::ExportWorkspace,
     pub path: Option<PathBuf>,
     pub scene: crate::viewport::SceneFeed,
 }
@@ -58,6 +59,7 @@ impl Project {
             editor,
             sketch: SketchEditor::default(),
             drawings: Default::default(),
+            exchange: Default::default(),
             path: None,
             scene: Default::default(),
         })
@@ -69,7 +71,10 @@ impl Project {
         self.session.dirty() || self.pending_edits()
     }
     fn pending_edits(&self) -> bool {
-        self.editor.dirty() || self.sketch.has_pending_edits() || self.drawings.dirty()
+        self.editor.dirty()
+            || self.sketch.has_pending_edits()
+            || self.drawings.dirty()
+            || self.exchange.dirty()
     }
     fn title(&self) -> String {
         self.path
@@ -124,6 +129,7 @@ pub struct Application {
     scene_backends: Option<crate::viewport::BackendFactory>,
     model_backends: Option<crate::viewport::BackendFactory>,
     drawing_backends: Option<crate::drawings::DrawingBackendFactory>,
+    export_backends: Option<crate::exchange::BackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
 }
 impl Application {
@@ -164,13 +170,17 @@ impl Application {
             scene_backends: None,
             model_backends: None,
             drawing_backends: None,
+            export_backends: None,
             sketch_queries: None,
         };
         app.discover_recoveries()?;
         Ok(app)
     }
     fn should_defer_close(&self) -> bool {
-        self.projects.iter().any(Project::dirty) || !self.pending_files.is_empty()
+        self.projects
+            .iter()
+            .any(|p| p.dirty() || p.exchange.writing())
+            || !self.pending_files.is_empty()
     }
     pub fn current(&self) -> &Project {
         &self.projects[self.active]
@@ -197,6 +207,41 @@ impl Application {
             project.sketch.set_model_backend(factory());
         }
         self.model_backends = Some(factory);
+    }
+    pub fn set_export_backends(
+        &mut self,
+        factory: crate::exchange::BackendFactory,
+    ) -> Result<(), String> {
+        if self.projects.iter().any(|p| p.exchange.pending()) {
+            return Err("Wait for accepted export jobs before replacing the output service".into());
+        }
+        for project in &mut self.projects {
+            project.exchange.set_backend(factory())?;
+        }
+        self.export_backends = Some(factory);
+        Ok(())
+    }
+    fn export_io_allowed(&self) -> bool {
+        !self.file_busy()
+            && self.file_action.is_none()
+            && self.replacement.is_none()
+            && !self.recovery_open
+    }
+    fn export_blocks(&self, command: Command) -> bool {
+        self.current().exchange.dirty()
+            && !matches!(
+                command,
+                Command::Export(
+                    crate::exchange::ExportTool::SaveSet
+                        | crate::exchange::ExportTool::Discard
+                        | crate::exchange::ExportTool::Cancel
+                ) | Command::Apply
+                    | Command::Discard
+                    | Command::Mode(Mode::Export)
+                    | Command::KeyboardShortcuts
+                    | Command::New
+                    | Command::NewWindow
+            )
     }
     pub fn set_sketch_queries(&mut self, factory: crate::sketch_evaluation::RegionQueryFactory) {
         for project in &mut self.projects {
@@ -230,6 +275,9 @@ impl Application {
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        if self.export_blocks(command) {
+            return Err("Save or discard export-set edits first".into());
+        }
         if self.drawing_blocks(command) {
             return Err("Apply or discard the drawing page edits first".into());
         }
@@ -263,7 +311,11 @@ impl Application {
         if !args.is_empty()
             && !matches!(
                 command,
-                Command::Parameter | Command::NewSketch | Command::Draw(_) | Command::Dimension
+                Command::Parameter
+                    | Command::NewSketch
+                    | Command::Draw(_)
+                    | Command::Dimension
+                    | Command::Export(_)
             )
         {
             return Err("This command does not accept arguments yet".into());
@@ -288,6 +340,37 @@ impl Application {
                     self.tab = index;
                 }
                 self.message = format!("{} · select exact native geometry", tool.label());
+            }
+            Command::Export(tool) => {
+                if self.current().editor.dirty()
+                    || self.current().sketch.has_pending_edits()
+                    || self.current().drawings.dirty()
+                {
+                    return Err(
+                        "Apply or discard other pending edits before changing export sets".into(),
+                    );
+                }
+                if args.len() > 1 || (!args.is_empty() && tool != crate::exchange::ExportTool::Run)
+                {
+                    return Err("Only Run export set accepts one absolute output directory".into());
+                }
+                if matches!(
+                    tool,
+                    crate::exchange::ExportTool::Preview | crate::exchange::ExportTool::Run
+                ) && !self.export_io_allowed()
+                {
+                    return Err("Finish the file operation before starting an export job".into());
+                }
+                if self.mode == Mode::Sketch {
+                    self.current_mut().sketch.finish()?;
+                }
+                let p = self.current_mut();
+                let message =
+                    p.exchange
+                        .execute(&mut p.session, tool, args.first().copied(), channel)?;
+                self.mode = Mode::Export;
+                self.tab = 0;
+                self.message = message;
             }
             Command::Drawing(tool) => {
                 if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
@@ -340,6 +423,11 @@ impl Application {
                 if self.mode == Mode::Sketch && mode != Mode::Sketch {
                     self.current_mut().sketch.finish()?;
                 }
+                if mode == Mode::Export {
+                    let p = self.current_mut();
+                    p.exchange
+                        .capture(p.sketch.export_selection(p.session.document()));
+                }
                 self.mode = mode;
                 self.tab = 0;
             }
@@ -348,6 +436,11 @@ impl Application {
                     let p = self.current_mut();
                     p.sketch.apply_external(&mut p.session)?;
                     self.message = "External reference applied · one undoable source edit".into();
+                    return Ok(());
+                }
+                if self.mode == Mode::Export {
+                    let p = self.current_mut();
+                    self.message = p.exchange.save(&mut p.session, channel)?;
                     return Ok(());
                 }
                 if self.mode == Mode::Drawings {
@@ -382,6 +475,12 @@ impl Application {
                 {
                     self.current_mut().sketch.discard_external();
                     self.message = "External reference cancelled · document unchanged".into();
+                    return Ok(());
+                }
+                if self.mode == Mode::Export {
+                    let p = self.current_mut();
+                    p.exchange.discard(&p.session);
+                    self.message = "Export-set draft discarded".into();
                     return Ok(());
                 }
                 if self.mode == Mode::Drawings {
@@ -678,6 +777,9 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
+        if self.export_blocks(command) {
+            return false;
+        }
         if self.drawing_blocks(command) {
             return false;
         }
@@ -705,6 +807,23 @@ impl Application {
                 .current()
                 .sketch
                 .external_can_preview(&self.current().session),
+            Command::Export(tool) => {
+                !self.current().editor.dirty()
+                    && !self.current().sketch.has_pending_edits()
+                    && !self.current().drawings.dirty()
+                    && self
+                        .current()
+                        .exchange
+                        .enabled(tool, &self.current().session)
+                    && (self.export_io_allowed()
+                        || !matches!(
+                            tool,
+                            crate::exchange::ExportTool::Run | crate::exchange::ExportTool::Preview
+                        ))
+            }
+            Command::Apply | Command::Discard if self.mode == Mode::Export => {
+                self.current().exchange.dirty()
+            }
             Command::Apply if self.current().sketch.model_active() => self
                 .current()
                 .sketch
@@ -1293,7 +1412,7 @@ impl Application {
             mode: self.mode,
             workspace: workspace.tabs[self.tab.min(workspace.tabs.len() - 1)].title,
             sketch_editing: self.current().sketch.editing,
-            viewport: self.mode != Mode::Parameters,
+            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export),
             text_input: ctx.text_edit_focused(),
             blocked: self.file_action.is_some()
                 || self.recovery_open
@@ -1402,14 +1521,19 @@ impl Application {
                 }
                 ShortcutAction::Transform => self.current_mut().sketch.toggle_transform(),
                 ShortcutAction::Cancel => {
-                    self.current_mut().sketch.cancel();
+                    if self.mode == Mode::Export {
+                        let p = self.current_mut();
+                        p.exchange.discard(&p.session);
+                    } else {
+                        self.current_mut().sketch.cancel();
+                    }
                     self.message = "Interaction cancelled".into();
                     self.message_error = false;
                 }
                 ShortcutAction::Pan(_) => {}
             }
         }
-        if self.mode != Mode::Parameters
+        if !matches!(self.mode, Mode::Parameters | Mode::Export)
             && !self.shortcut_context(ctx).blocked
             && !self.focus_search
             && !self.focus_command
@@ -1426,6 +1550,22 @@ impl Application {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll_files();
+        if let Some(factory) = &self.export_backends {
+            for p in &mut self.projects {
+                if !p.exchange.has_backend()
+                    && let Err(error) = p.exchange.set_backend(factory())
+                {
+                    self.message = error;
+                    self.message_error = true;
+                }
+            }
+        }
+        for p in &mut self.projects {
+            p.exchange.poll(&p.session);
+            if p.exchange.pending() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+        }
         self.schedule_recovery(&ctx);
         if let Some(factory) = &self.drawing_backends {
             for project in &mut self.projects {
@@ -1511,6 +1651,14 @@ impl Application {
                             bottom: 8,
                         })
                         .show(ui, |ui| p.editor.show(ui, &p.session));
+                } else if self.mode == Mode::Export {
+                    let allow_io = self.export_io_allowed();
+                    let p = self.current_mut();
+                    p.exchange.show(ui, &mut p.session, allow_io);
+                    if let Some((message, error)) = p.exchange.take_notice() {
+                        self.message = message;
+                        self.message_error = error;
+                    }
                 } else if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     let before = p.session.revision();
@@ -3002,3 +3150,6 @@ mod tests {
         assert!(!app.enabled(split));
     }
 }
+
+#[cfg(test)]
+mod export_tests;

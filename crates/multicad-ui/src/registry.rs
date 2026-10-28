@@ -65,6 +65,7 @@ pub enum Command {
     FinishSketch,
     FinishCurve,
     Drawing(crate::drawings::DrawingTool),
+    Export(crate::exchange::ExportTool),
     Delete,
     Mode(Mode),
     Extension(&'static str),
@@ -307,6 +308,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for tool in crate::exchange::ExportTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::Export(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for (id, label, icon) in [
             ("edge", "Fillet / chamfer", Icon::Edge),
             ("move", "Move / rotate", Icon::Link),
@@ -334,7 +344,6 @@ impl Default for Registry {
             ("window-tool", "Window", Icon::Page),
             ("stairs", "Stairs", Icon::Edge),
             ("text", "Text / leader", Icon::Sketch),
-            ("export-set", "Tag export set", Icon::Library),
             ("export-3d", "STEP / OBJ", Icon::Export),
             ("export-2d", "DXF / PDF", Icon::Page),
             ("print", "3MF package", Icon::Export),
@@ -448,7 +457,17 @@ impl Default for Registry {
             Workspace {
                 mode: Mode::Export,
                 tabs: vec![
-                    tab("Common", &["export-set", "export-3d", "export-2d"]),
+                    tab(
+                        "Common",
+                        &[
+                            "export-set",
+                            "export-set-save",
+                            "export-set-discard",
+                            "export-preview",
+                            "export-run",
+                            "export-cancel",
+                        ],
+                    ),
                     tab("Print", &["print"]),
                     tab("Render", &["appearance", "blender"]),
                 ],
