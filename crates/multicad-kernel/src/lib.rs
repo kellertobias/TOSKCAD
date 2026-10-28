@@ -223,10 +223,12 @@ mod sketch_queries;
 pub use sketch_queries::NativeRegionQueries;
 mod provenance;
 mod revolve;
+mod split;
 mod taper;
 mod to_plane;
 pub use curves::*;
 pub use revolve::RevolutionAxis;
+pub use split::SolidSplit;
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")
