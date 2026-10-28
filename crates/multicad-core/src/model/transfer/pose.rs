@@ -19,8 +19,9 @@ pub struct TransferOccurrence {
     pub component: EntityId,
     pub producer: EntityId,
 }
-/// Authored physical leaf identities/current heads, independent of aggregate
-/// geometry. These choices are not a native preview or valid cut receipt.
+/// Authored component leaf choices/current heads, independent of aggregate
+/// geometry. Source definitions (including retained Boolean tools) may appear;
+/// this catalog is neither a physical-output report nor a native cut receipt.
 pub fn transfer_occurrence_catalog(
     document: &Document,
 ) -> Result<Vec<TransferOccurrence>, DocumentError> {
@@ -370,4 +371,55 @@ pub fn transfer_evaluation_dependencies(
         dependencies.extend(projection.geometry_dependencies);
     }
     Ok(dependencies)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Entity, Mutation, Placement};
+    #[test]
+    fn malformed_component_chains_are_iteratively_bounded_before_fingerprinting() {
+        let part = Entity::new(
+            "End of malformed chain",
+            EntityData::Part {
+                features: vec![],
+                material: None,
+                tags: Default::default(),
+            },
+        );
+        let mut next = part.id;
+        let mut edits = vec![Mutation::Insert(part)];
+        for _ in 0..8193 {
+            let instance = Entity::new(
+                "Malformed component",
+                EntityData::Instance {
+                    component: next,
+                    placement: Placement::default(),
+                    placement_source: None,
+                },
+            );
+            next = instance.id;
+            edits.push(Mutation::Insert(instance));
+        }
+        let document = Document::new("Bounded structural repair input")
+            .unwrap()
+            .edited(&edits)
+            .unwrap();
+        let mut collector = Collector {
+            document: &document,
+            geometry: BTreeSet::new(),
+            poses: BTreeMap::new(),
+            structure: BTreeMap::new(),
+            instances: BTreeSet::new(),
+            drivers: BTreeSet::new(),
+            pending: vec![],
+        };
+        assert!(
+            collector
+                .structural(next)
+                .unwrap_err()
+                .to_string()
+                .contains("8192-source budget")
+        );
+        assert_eq!(collector.structure.len(), 8192);
+    }
 }
