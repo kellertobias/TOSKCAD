@@ -1,11 +1,13 @@
 //! Separate instance placement drivers. A driver never depends on its owner,
 //! so source geometry and occurrence pose have explicit acyclic dependencies.
+mod batch;
 mod prepare;
 use super::{NumericTransform, RigidPose, common::parameter_links, source::invalid};
 use crate::{
     document::{Definition, Document, DocumentError, EntityData, EntityId, Link},
     parameters::EvaluatedParameters,
 };
+pub use batch::*;
 pub use prepare::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
