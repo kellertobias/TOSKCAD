@@ -2531,6 +2531,8 @@ impl SketchEditor {
             }
         }
         if self.fitted_model_document != Some(session.document().id())
+            && !transfer_source_view
+            && !anchor_view
             && scene
                 .as_ref()
                 .is_some_and(|scene| scene.world_bounds().is_some())

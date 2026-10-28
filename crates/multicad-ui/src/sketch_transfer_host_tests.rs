@@ -111,7 +111,10 @@ impl Host {
             .iter()
             .rev()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(t) if t.galley.text() == label => {
+                egui::Shape::Text(t)
+                    if t.galley.text() == label
+                        || t.galley.text().starts_with(&format!("{label} · ")) =>
+                {
                     let point = t.pos + t.galley.size() * 0.5;
                     shape.clip_rect.contains(point).then_some(point)
                 }
@@ -171,6 +174,103 @@ fn native_transfer_host_tool_first_cancel_and_measure_conflicts_leave_source_unt
         h.editor
             .begin_transfer_tool(&h.session, &Default::default(), &h.feed, Channel::Ui)
             .is_err()
+    );
+}
+#[test]
+fn native_repair_inspection_does_not_consume_the_first_full_model_camera_fit() {
+    use crate::transfer::{TransferLane, TransferSelection};
+    use multicad_core::references::{AnalyticGeometry, GeometryIntent};
+    let mut h = Host::new();
+    // The canonical model can be unavailable during repair. Source inspection
+    // and the guarded candidate still use their own production native worker.
+    h.feed = SceneFeed::default();
+    h.editor
+        .transfer
+        .begin(
+            &h.session,
+            &Default::default(),
+            None,
+            TransferSelection {
+                source: Some(OccurrencePath {
+                    root: h.source.body,
+                    members: vec![],
+                }),
+                targets: vec![OccurrencePath {
+                    root: h.receiver.body,
+                    members: vec![],
+                }],
+                feature: None,
+            },
+            Channel::Ui,
+        )
+        .unwrap();
+    h.inspect();
+    let source = h
+        .editor
+        .transfer
+        .capture_scene(&h.session, &Default::default())
+        .unwrap();
+    let snapshot = source.geometry_snapshot(h.source.feature).unwrap();
+    let rim = snapshot
+        .elements
+        .iter()
+        .find(|e| matches!(e.geometry, Some(AnalyticGeometry::CircularArc { .. })))
+        .unwrap();
+    h.editor
+        .transfer
+        .set_capture(
+            &h.session,
+            &Default::default(),
+            &source,
+            TransferLane::Source,
+            GeometryIntent::capture(&snapshot, rim.key).unwrap(),
+        )
+        .unwrap();
+    h.click("Finish source selection");
+    h.click("Select receiving face");
+    h.inspect();
+    let receiver = h
+        .editor
+        .transfer
+        .capture_scene(&h.session, &Default::default())
+        .unwrap();
+    let snapshot = receiver.geometry_snapshot(h.receiver.feature).unwrap();
+    let face = snapshot
+        .elements
+        .iter()
+        .find(
+            |e| matches!(e.geometry,Some(AnalyticGeometry::Plane{frame})if frame.normal()[2]>0.99),
+        )
+        .unwrap();
+    let lane = h.editor.transfer.picker().unwrap().lane;
+    h.editor
+        .transfer
+        .set_capture(
+            &h.session,
+            &Default::default(),
+            &receiver,
+            lane,
+            GeometryIntent::capture(&snapshot, face.key).unwrap(),
+        )
+        .unwrap();
+    h.editor
+        .preview_model(&h.session, &Default::default(), Channel::Ui)
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !h.editor.model_can_apply(&h.session, &Default::default()) && Instant::now() < until {
+        h.frame(vec![]).drop_without_applying_deltas();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        h.editor.model_can_apply(&h.session, &Default::default()),
+        "{}",
+        h.editor.message
+    );
+    h.frame(vec![]).drop_without_applying_deltas();
+    assert_eq!(
+        h.editor.camera.target,
+        [40., 30., 17.],
+        "A repaired complete preview fits physical geometry instead of retaining the source-only camera"
     );
 }
 #[test]
