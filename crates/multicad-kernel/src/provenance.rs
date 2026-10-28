@@ -72,6 +72,53 @@ fn side_frame(profile: &Profile, edge: &ProfileEdge, height: f64) -> Option<Refe
 }
 
 impl Solid {
+    pub(crate) fn inherit_treatment_provenance(
+        &mut self,
+        source: &Self,
+        edges: &[crate::TreatmentEdge],
+        feature: EntityId,
+    ) -> Result<(), GeometryError> {
+        self.inherit_provenance(&[source], None)?;
+        // Fresh descriptors come from the actual result. A generated chamfer
+        // plane can anchor a sketch; a curved blend never inherits a fake plane.
+        let snapshot = self.topology_snapshot(feature, 0)?;
+        let mut elements: BTreeMap<_, _> = snapshot
+            .elements
+            .into_iter()
+            .map(|mut element| {
+                element.boundary.clear();
+                (element.key, element)
+            })
+            .collect();
+        let mut generated = 0;
+        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+            if seed.role != 3 {
+                return Err(failure("Unexpected native edge-treatment seed role"));
+            }
+            let origin = &edges
+                .get(seed.source_index as usize)
+                .ok_or_else(|| failure("Treatment history refers to an absent selected edge"))?
+                .origin;
+            let element = elements
+                .get_mut(&key(0, seed.face)?)
+                .ok_or_else(|| failure("Treatment history refers to an absent generated face"))?;
+            element.origins.insert(origin.clone());
+            if let Some(AnalyticGeometry::Plane { frame }) = element.geometry {
+                element.frames.push(AnchoredFrame {
+                    origin: origin.clone(),
+                    frame,
+                });
+            }
+            generated += 1;
+        }
+        if generated == 0 {
+            return Err(failure(
+                "Native edge treatment produced no attributable generated faces",
+            ));
+        }
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        self.finish_provenance(elements, &nodes)
+    }
     /// Curve origins are supplied in authored outer-wire then hole-wire order.
     /// Rewinding a wire for OCCT preserves each curve's supplied identity.
     pub fn extrude_profile_named(

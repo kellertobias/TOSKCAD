@@ -232,6 +232,12 @@ mod ffi {
             matrix: &[f64],
             translation: &Point3,
         ) -> Result<UniquePtr<Shape>>;
+        fn treat_edges(
+            shape: &Shape,
+            edges: &[u32],
+            mode: u8,
+            size: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn bounds(shape: &Shape) -> Result<Bounds3>;
         fn faces(shape: &Shape) -> Result<Vec<FaceInfo>>;
         fn topology(shape: &Shape) -> Result<Vec<TopologyNode>>;
@@ -316,6 +322,8 @@ mod geometry;
 pub use geometry::*;
 mod affine;
 pub use affine::AffineTransform;
+mod edge_treatment;
+pub use edge_treatment::{EdgeTreatment, TreatmentEdge};
 mod drawing;
 pub use drawing::*;
 mod worker;

@@ -11,6 +11,8 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
@@ -96,6 +98,105 @@ static void record_history(Shape &result, const Shape &input, uint8_t operand,
       }
     }
   }
+}
+
+// Compose the deep-copy history with treatment history. No enumeration-order
+// assumption connects the original and copied shapes, and the caller's input
+// is never given to the mutating native builder.
+template <class Operation>
+static std::unique_ptr<Shape> finish_treatment(
+    const Shape &input, BRepBuilderAPI_Copy &copy, Operation &operation,
+    const std::vector<TopoDS_Edge> &selected) {
+  operation.Build();
+  if (!operation.IsDone())
+    throw std::runtime_error("Edge treatment failed; no partial result was accepted");
+  auto result = checked(operation.Shape());
+  for (uint8_t kind = 0; kind < 3; ++kind) {
+    const auto source = topology_map(input.value, kind);
+    const auto output = topology_map(result->value, kind);
+    for (int i = 1; i <= source.Extent(); ++i) {
+      const auto copied = copy.ModifiedShape(source(i));
+      if (copied.IsNull()) throw std::runtime_error("Edge-treatment copy history is incomplete");
+      std::set<int> descendants;
+      auto append = [&](const TopoDS_Shape &candidate) {
+        const int index = output.FindIndex(candidate);
+        if (index > 0) descendants.insert(index);
+      };
+      append(copied);
+      for (const auto &shape : operation.Modified(copied)) append(shape);
+      for (const auto &shape : operation.Generated(copied)) append(shape);
+      for (int index : descendants) {
+        if (result->ancestry.size() >= 1000000)
+          throw std::runtime_error("Edge-treatment history budget exceeded");
+        result->ancestry.push_back(NativeAncestry{kind, 0,
+            static_cast<uint32_t>(index - 1), static_cast<uint32_t>(i - 1)});
+      }
+    }
+  }
+  const auto faces = topology_map(result->value, 0);
+  std::set<std::pair<uint32_t, uint32_t>> seeds;
+  for (uint32_t i = 0; i < selected.size(); ++i) {
+    auto append_generated = [&](const TopoDS_Shape &source) {
+      for (const auto &shape : operation.Generated(source)) {
+        if (shape.ShapeType() != TopAbs_FACE) continue;
+        const int face = faces.FindIndex(shape);
+        if (face > 0) seeds.emplace(static_cast<uint32_t>(face - 1), i);
+      }
+    };
+    append_generated(selected[i]);
+    // Blend corners can be Generated(vertex), rather than Generated(edge).
+    // Qualify those exact vertices by their selected incident edge origins.
+    for (TopExp_Explorer vertex(selected[i], TopAbs_VERTEX); vertex.More(); vertex.Next())
+      append_generated(vertex.Current());
+  }
+  for (const auto &[face, source] : seeds)
+    result->seeds.push_back(NativeSeed{face, source, 3});
+  return result;
+}
+
+std::unique_ptr<Shape> treat_edges(const Shape &input,
+    rust::Slice<const uint32_t> indices, uint8_t mode, double size) {
+  return guard([&]() -> std::unique_ptr<Shape> {
+    if (indices.empty() || indices.size() > 128 || mode > 1 ||
+        !std::isfinite(size) || size <= 0. || size > 1e7)
+      throw std::runtime_error("Invalid bounded edge-treatment request");
+    const auto edges = topology_map(input.value, 1);
+    TopTools_IndexedDataMapOfShapeListOfShape adjacency;
+    TopExp::MapShapesAndAncestors(input.value, TopAbs_EDGE, TopAbs_FACE, adjacency);
+    BRepBuilderAPI_Copy copy(input.value, true, false);
+    if (!copy.IsDone()) throw std::runtime_error("Could not isolate edge-treatment input");
+    std::vector<TopoDS_Edge> selected;
+    std::set<uint32_t> unique;
+    for (uint32_t index : indices) {
+      if (index >= static_cast<uint32_t>(edges.Extent()) || !unique.insert(index).second)
+        throw std::runtime_error("Selected edge is absent or duplicated");
+      const auto edge = TopoDS::Edge(edges(static_cast<int>(index + 1)));
+      if (BRep_Tool::Degenerated(edge) || !adjacency.Contains(edge))
+        throw std::runtime_error("Degenerate or unbounded edges cannot be treated");
+      TopTools_IndexedMapOfShape incident;
+      for (const auto &face : adjacency.FindFromKey(edge)) incident.Add(face);
+      if (incident.Extent() != 2)
+        throw std::runtime_error("Treatment needs an edge between two distinct faces; seams are unsupported");
+      const auto copied = copy.ModifiedShape(edge);
+      if (copied.IsNull() || copied.ShapeType() != TopAbs_EDGE)
+        throw std::runtime_error("Selected edge copy history is incomplete");
+      selected.push_back(TopoDS::Edge(copied));
+    }
+    if (mode == 0) {
+      BRepFilletAPI_MakeFillet operation(copy.Shape());
+      for (const auto &edge : selected) operation.Add(size, edge);
+      for (const auto &edge : selected)
+        if (operation.Contour(edge) == 0)
+          throw std::runtime_error("Selected edge is not a supported fillet contour");
+      return finish_treatment(input, copy, operation, selected);
+    }
+    BRepFilletAPI_MakeChamfer operation(copy.Shape());
+    for (const auto &edge : selected) operation.Add(size, edge);
+    for (const auto &edge : selected)
+      if (operation.Contour(edge) == 0)
+        throw std::runtime_error("Selected edge is not a supported chamfer contour");
+    return finish_treatment(input, copy, operation, selected);
+  });
 }
 std::unique_ptr<Shape> extrude(double w, double d, double h) {
   return guard([&] {

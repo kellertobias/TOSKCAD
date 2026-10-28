@@ -48,6 +48,7 @@ pub const LIBRARIES: &[&str] = &[
     "TKDESTEP",
     "TKDE",
     "TKXSBase",
+    "TKFillet",
     "TKShHealing",
     "TKMesh",
     "TKHLR",
@@ -64,7 +65,7 @@ pub const LIBRARIES: &[&str] = &[
     "TKernel",
 ];
 
-const TOOLKITS: &str = "TKDESTEP TKMesh TKHLR TKBool TKPrim";
+const TOOLKITS: &str = "TKDESTEP TKMesh TKHLR TKBool TKPrim TKFillet";
 const PROFILE: &str = "Release";
 const LINK: &str = "Static";
 const OFF_MODULES: &[&str] = &[
