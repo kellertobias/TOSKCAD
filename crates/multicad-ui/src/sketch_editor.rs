@@ -40,6 +40,13 @@ mod transfer_host;
 #[cfg(test)]
 #[path = "sketch_transfer_host_tests.rs"]
 mod transfer_host_tests;
+#[path = "sketch_trim_host.rs"]
+mod trim_host;
+#[cfg(test)]
+#[path = "sketch_trim_host_tests.rs"]
+mod trim_host_tests;
+#[path = "sketch_trim_worker.rs"]
+mod trim_worker;
 
 const MAX_PROFILE_CLICKS: usize = 32;
 #[derive(Clone, Copy)]
@@ -127,6 +134,11 @@ pub struct SketchEditor {
     operations: crate::sketch_operations::Panel,
     external: crate::external_references::Controller,
     operation_error: Option<String>,
+    trim_worker: trim_worker::Feed,
+    operation_context: Option<(EntityId, crate::sketch_evaluation::EvaluationStamp)>,
+    operation_guard: Option<Prepared>,
+    operation_pick_view: Option<trim_host::PickView>,
+    operation_report: Option<multicad_core::sketch_trim::TrimReport>,
     model: crate::modeling::ModelToolController,
     assembly: crate::assembly::AssemblyController,
     assembly_anchor: Option<assembly_host::PendingAnchor>,
@@ -200,6 +212,11 @@ impl Default for SketchEditor {
             operations: Default::default(),
             external: Default::default(),
             operation_error: None,
+            trim_worker: Default::default(),
+            operation_context: None,
+            operation_guard: None,
+            operation_pick_view: None,
+            operation_report: None,
             model: Default::default(),
             assembly: Default::default(),
             assembly_anchor: None,
@@ -931,7 +948,7 @@ impl SketchEditor {
             return;
         }
         self.moving = !self.moving;
-        self.operations.cancel();
+        self.cancel_operation();
         self.cancel_move();
         self.tool = None;
         self.clear_drawing_progress();
@@ -952,6 +969,7 @@ impl SketchEditor {
             || self.transfer.dirty()
             || self.acquisition.is_some()
             || self.external.active()
+            || self.trim_worker.pending()
     }
     pub fn cancel(&mut self) {
         if self.measurement.active() {
@@ -968,7 +986,7 @@ impl SketchEditor {
             self.message = "Modeling cancelled · document unchanged".into();
         }
         self.model.cancel();
-        self.operations.cancel();
+        self.cancel_operation();
         self.tree.cancel_tool();
         self.repair.cancel();
         self.solid.clear();
@@ -1497,7 +1515,7 @@ impl SketchEditor {
             return Err("Create or open a sketch first".into());
         }
         self.cancel_move();
-        self.operations.cancel();
+        self.cancel_operation();
         self.external.cancel();
         self.moving = false;
         self.tool = Some(tool);
@@ -1534,6 +1552,10 @@ impl SketchEditor {
         self.cancel_move();
         self.clear_drawing_progress();
         self.operations.begin(tool);
+        self.operation_report = None;
+        self.operation_context = None;
+        self.operation_guard = None;
+        self.operation_pick_view = None;
         self.external.cancel();
         self.operation_error = None;
         self.message = format!(
@@ -1552,6 +1574,14 @@ impl SketchEditor {
             return Err("Apply or discard the current preview first".into());
         }
         let tool = self.operations.tool().ok_or("Choose a sketch edit tool")?;
+        if let crate::sketch_operations::OperationRequest::Trim(ref trim, policy) = request {
+            let (source, _, _) = self
+                .read_source(session.document(), id, session.revision())
+                .map_err(|e| e.to_string())?;
+            if self.exact_operation(&source, trim) {
+                return self.request_exact_operation(session, trim.clone(), policy);
+            }
+        }
         let actor = Actor::local(Channel::Ui);
         use crate::sketch_operations::OperationRequest;
         let edit = match request {
@@ -1575,39 +1605,22 @@ impl SketchEditor {
             )
             .map(|result| result.edit)
             .map_err(|e| e.to_string())?,
-            OperationRequest::Trim(request, policy) => multicad_solver::prepare_trim(
-                session,
-                session.revision(),
-                actor,
-                id,
-                self.evaluated.as_ref(),
-                &request,
-                policy,
-            )
-            .map(|result| result.edit)
-            .map_err(|e| e.to_string())?,
+            OperationRequest::Trim(request, policy) => {
+                let result = multicad_solver::prepare_trim(
+                    session,
+                    session.revision(),
+                    actor,
+                    id,
+                    self.evaluated.as_ref(),
+                    &request,
+                    policy,
+                )
+                .map_err(|e| e.to_string())?;
+                self.operation_report = Some(result.report);
+                result.edit
+            }
         };
-        let ready = edit.preview.is_some();
-        self.constraints.accept_edit(
-            session,
-            id,
-            edit,
-            &format!("Apply {}", tool.label().to_lowercase()),
-        )?;
-        self.clear_drawing_progress();
-        self.operation_error = None;
-        self.message = if ready {
-            format!(
-                "{} preview · Apply commits one undoable edit, Discard keeps the original",
-                tool.label()
-            )
-        } else {
-            format!(
-                "{} preview has unresolved constraints · inspect diagnostics or Discard",
-                tool.label()
-            )
-        };
-        Ok(())
+        self.adopt_operation_edit(session, id, tool, edit)
     }
     pub fn can_finish_spline(&self) -> bool {
         self.editing && self.tool == Some(DrawTool::Spline) && self.spline_poles.len() >= 4
@@ -2018,10 +2031,11 @@ impl SketchEditor {
                 .sync(session.document(), session.revision(), reference_context);
         }
         self.sketch_evaluation.poll();
+        self.poll_exact_operation(session);
         if let Err(error) = self.refresh_advanced_sketch_context(session) {
             self.message = error;
         }
-        if self.sketch_evaluation.pending() {
+        if self.sketch_evaluation.pending() || self.trim_worker.pending() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
@@ -2297,8 +2311,14 @@ impl SketchEditor {
                                                 (a[0] - center[0]).hypot(a[1] - center[1])
                                             ),
                                         };
-                                        let response = ui.selectable_label(self.element == Some(g.id()) || self.constraints.selected(g.id()), label);
+                                        let response = ui.selectable_label(self.element == Some(g.id()) || self.constraints.selected(g.id()) || self.operations.curve_selection().contains(&g.id()), label);
                                         if response.clicked() {
+                                            if self.operations.curve_pick_lane().is_some() {
+                                                let point = g.segments().first().map_or([0.; 2], |s| s[0]);
+                                                let modifiers = crate::selection_input::click_modifiers(ui, &response);
+                                                if let Err(error) = self.pick_operation_curve(session, g.id(), point, modifiers.shift || modifiers.command, false) { self.message = error; }
+                                                continue;
+                                            }
                                             self.element = Some(g.id());
                                             let modifiers = crate::selection_input::click_modifiers(ui, &response);
                                             if !self.constraints.select_geometry(g.id(),Some(g.id()),modifiers.shift || modifiers.command) {self.element=None;}
@@ -2328,6 +2348,7 @@ impl SketchEditor {
                                             let enabled=self.operation_ready() && self.sketch_evaluation.current(id).is_some();
                                             if let Some(request)=self.operations.show(ui,&canonical,self.constraints.selection(),enabled) && let Err(error)=self.prepare_operation(session,request) {self.operation_error=Some(error.clone());self.message=error;}
                                             if let Some(error)=&self.operation_error {ui.colored_label(Color32::LIGHT_RED,error);}
+                                            self.show_operation_report(ui);
                                         }
                                         let before = session.revision();
                                         let selection_before=self.constraints.selection().to_vec();
@@ -3183,6 +3204,8 @@ impl SketchEditor {
                     } else if selected
                         && (self.element == Some(g.id())
                             || self.constraints.selected(g.id())
+                            || self.operations.curve_target() == Some(g.id())
+                            || self.operations.curve_boundaries().contains(&g.id())
                             || self.profiles.boundary_selected(g.id()))
                     {
                         Color32::from_rgb(255, 195, 80)
@@ -3466,6 +3489,45 @@ impl SketchEditor {
         }
         if sketch_mode
             && self.editing
+            && self.operations.curve_pick_lane().is_some()
+            && self.tool.is_none()
+            && !self.external.active()
+            && !self.moving
+            && !self.has_pending_edits()
+            && response.clicked()
+            && let Some(id) = self.selected
+            && let Ok((_, frame, _)) = self.read_sketch(session.document(), id, session.revision())
+            && let Some(presentation) = self.sketch_evaluation.current(id).cloned()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            if let Some(crate::sketch_selection::Hit::Curve(curve)) =
+                crate::sketch_selection::pick_geometry(
+                    pointer,
+                    self.camera,
+                    rect,
+                    frame,
+                    &[],
+                    &presentation.geometry,
+                )
+                && let Some(point) = self.camera.on_plane(pointer, rect, frame)
+            {
+                let modifiers = crate::selection_input::click_modifiers(ui, &response);
+                if let Err(error) = self.pick_operation_curve(
+                    session,
+                    curve,
+                    point,
+                    modifiers.shift || modifiers.command,
+                    true,
+                ) {
+                    self.message = error;
+                }
+            } else {
+                self.message = "Click a current solved curve for the active operation pick".into();
+            }
+        }
+        if sketch_mode
+            && self.editing
+            && self.operations.curve_pick_lane().is_none()
             && self.tool.is_none()
             && !self.external.active()
             && !self.moving

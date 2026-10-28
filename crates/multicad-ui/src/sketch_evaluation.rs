@@ -692,6 +692,9 @@ impl SketchEvaluationFeed {
     pub fn current_stamp(&self) -> Option<EvaluationStamp> {
         self.expected
     }
+    pub(crate) fn query_factory(&self) -> RegionQueryFactory {
+        self.query_factory.clone()
+    }
     /// Current solved presentations only; retained display geometry is separate.
     pub fn current_presentations(&self) -> impl ExactSizeIterator<Item = &SketchPresentation> {
         self.current.values()
