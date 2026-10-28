@@ -20,6 +20,7 @@ pub mod registry;
 pub mod ribbon_ui;
 mod selection_input;
 pub mod storage;
+pub mod transfer;
 // Native host and reusable interaction controls. Domain and kernel ownership
 // remain outside the UI.
 pub use eframe::{
