@@ -1,5 +1,5 @@
 //! Production composition: exact native evaluation to immutable UI scenes.
-use multicad_core::document::{Document, EntityData};
+use multicad_core::document::Document;
 use multicad_core::{
     model::{EvaluationOptions, ModelEvaluationInfo},
     project_file::ProjectResources,
