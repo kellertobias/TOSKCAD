@@ -93,6 +93,14 @@ pub enum OperationRequest {
     Pattern(PatternRequest),
     Trim(TrimRequest, TrimPolicy),
 }
+/// A viewport click chooses an authored curve or a point in its sketch plane.
+/// These picks select query inputs; they never establish exact intersections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurvePickLane {
+    Target,
+    Span,
+    Boundaries,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MirrorAxis {
     Horizontal,
@@ -110,6 +118,7 @@ pub struct Panel {
     count: usize,
     expand_connected: bool,
     target: Option<EntityId>,
+    pick_lane: CurvePickLane,
     boundaries: BTreeSet<EntityId>,
     pick_mm: [f64; 2],
     endpoint: Endpoint,
@@ -127,6 +136,7 @@ impl Default for Panel {
             count: 3,
             expand_connected: false,
             target: None,
+            pick_lane: CurvePickLane::Target,
             boundaries: BTreeSet::new(),
             pick_mm: [0.; 2],
             endpoint: Endpoint::End,
@@ -151,6 +161,83 @@ impl Panel {
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
+    pub fn curve_pick_lane(&self) -> Option<CurvePickLane> {
+        self.tool
+            .filter(|tool| tool.curve_operation())
+            .map(|_| self.pick_lane)
+    }
+    pub fn curve_target(&self) -> Option<EntityId> {
+        self.target
+    }
+    pub fn curve_boundaries(&self) -> &BTreeSet<EntityId> {
+        &self.boundaries
+    }
+    pub fn curve_selection(&self) -> BTreeSet<EntityId> {
+        self.boundaries.iter().copied().chain(self.target).collect()
+    }
+    pub fn set_curve_pick(
+        &mut self,
+        source: &Source,
+        curve: EntityId,
+        point_mm: [f64; 2],
+        toggle: bool,
+    ) -> Result<(), String> {
+        let tool = self
+            .tool
+            .filter(|tool| tool.curve_operation())
+            .ok_or("Choose Trim or Extend before picking curves")?;
+        if point_mm.iter().any(|value| !value.is_finite()) {
+            return Err("Pick coordinates must be finite".into());
+        }
+        let kind = &source
+            .sketch
+            .curves
+            .iter()
+            .find(|candidate| candidate.id == curve)
+            .ok_or("The picked curve no longer exists")?
+            .kind;
+        match self.pick_lane {
+            CurvePickLane::Target => {
+                if !target_supported(tool, kind) {
+                    return Err("Choose a supported open target curve for this operation".into());
+                }
+                self.target = Some(curve);
+                self.boundaries.remove(&curve);
+                self.pick_mm = point_mm;
+                self.pick_lane = CurvePickLane::Boundaries;
+            }
+            CurvePickLane::Span => {
+                if tool != OperationTool::Trim || self.target != Some(curve) {
+                    return Err("Pick the span on the selected Trim target".into());
+                }
+                self.pick_mm = point_mm;
+                self.pick_lane = CurvePickLane::Boundaries;
+            }
+            CurvePickLane::Boundaries => {
+                if self.target.is_none() {
+                    return Err("Choose the target curve before its boundaries".into());
+                }
+                if self.target == Some(curve) {
+                    return Err("A curve cannot be its own trim or extension boundary".into());
+                }
+                if matches!(kind, CurveKind::BSpline { .. }) {
+                    return Err(
+                        "Spline boundaries are unavailable until an exact query is supported"
+                            .into(),
+                    );
+                }
+                if !toggle {
+                    self.boundaries.clear();
+                }
+                if !self.boundaries.insert(curve) && toggle {
+                    self.boundaries.remove(&curve);
+                }
+            }
+        }
+        self.selection_seeded = true;
+        self.error = None;
+        Ok(())
+    }
     fn seed_target_selection(&mut self, source: &Source, selected: &[EntityId]) {
         if self.selection_seeded {
             return;
@@ -166,6 +253,7 @@ impl Panel {
             .collect();
         if targets.len() == 1 {
             self.target = Some(targets[0]);
+            self.pick_lane = CurvePickLane::Boundaries;
         }
         self.boundaries.extend(
             source
@@ -455,6 +543,31 @@ impl Panel {
         }
     }
     fn curve_controls(&mut self, ui: &mut egui::Ui, source: &Source, tool: OperationTool) {
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.pick_lane, CurvePickLane::Target, "Pick target")
+                .on_hover_text("Click a curve in the viewer to choose the curve to edit");
+            ui.add_enabled_ui(self.target.is_some(), |ui| {
+                if tool == OperationTool::Trim {
+                    ui.selectable_value(&mut self.pick_lane, CurvePickLane::Span, "Pick span")
+                        .on_hover_text("Click the selected target in the span to remove");
+                }
+                ui.selectable_value(
+                    &mut self.pick_lane,
+                    CurvePickLane::Boundaries,
+                    "Pick boundaries",
+                )
+                .on_hover_text(
+                    "Click a boundary curve; Shift-click adds or removes individual boundaries",
+                );
+            });
+        });
+        ui.small(match self.pick_lane {
+            CurvePickLane::Target => "Click the curve to edit in the viewer.",
+            CurvePickLane::Span => "Click the selected target in the span to remove.",
+            CurvePickLane::Boundaries => {
+                "Click a boundary. Shift-click adds or removes boundaries."
+            }
+        });
         let prior = self.target;
         egui::ComboBox::from_id_salt("curve-target")
             .selected_text(
@@ -479,6 +592,7 @@ impl Panel {
             && let Some(target) = self.target
         {
             self.boundaries.remove(&target);
+            self.pick_lane = CurvePickLane::Boundaries;
         }
         if tool == OperationTool::Trim {
             vector_input(ui, "Point in span to remove", &mut self.pick_mm);
@@ -851,3 +965,7 @@ mod tests {
         assert_eq!(source, before);
     }
 }
+
+#[cfg(test)]
+#[path = "sketch_operations_spline_tests.rs"]
+mod spline_tests;
