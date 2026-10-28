@@ -1082,7 +1082,7 @@ impl Application {
                 if cfg!(target_os = "macos") {
                     ui.add_space(74.0);
                 }
-                let brand = ui.heading("Tusk Cut").interact(egui::Sense::drag());
+                let brand = ui.heading("ToskCAD").interact(egui::Sense::drag());
                 if brand.drag_started() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }

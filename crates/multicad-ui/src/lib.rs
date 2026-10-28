@@ -53,7 +53,7 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         ..Default::default()
     };
     eframe::run_native(
-        "Tusk Cut",
+        "ToskCAD",
         options,
         Box::new(move |cc| {
             theme::configure(&cc.egui_ctx);

@@ -169,7 +169,7 @@ impl Application {
                         if cfg!(target_os = "macos") {
                             ui.add_space(74.);
                         }
-                        ui.heading("Tusk Cut");
+                        ui.heading("ToskCAD");
                     },
                 );
             });
@@ -182,8 +182,8 @@ impl Application {
                 ui.add_space(((ui.available_width()-width)*0.5).max(0.));
                 ui.allocate_ui_with_layout(egui::vec2(width,ui.available_height()),egui::Layout::top_down(egui::Align::Min),|ui| {
                     ui.horizontal(|ui| {
-                        if let Some(logo)=&self.welcome_logo {ui.add(egui::Image::new((logo.id(),egui::vec2(80.,80.))).alt_text("Tusk Cut application logo"));ui.add_space(16.);}
-                        ui.vertical(|ui| {ui.add_space(12.);ui.heading(egui::RichText::new("Welcome to Tusk Cut").size(28.));ui.label("Continue a project or start something new.");});
+                        if let Some(logo)=&self.welcome_logo {ui.add(egui::Image::new((logo.id(),egui::vec2(80.,80.))).alt_text("ToskCAD application logo"));ui.add_space(16.);}
+                        ui.vertical(|ui| {ui.add_space(12.);ui.heading(egui::RichText::new("Welcome to ToskCAD").size(28.));ui.label("Continue a project or start something new.");});
                     });
                     ui.add_space(20.);
                     ui.horizontal(|ui| {

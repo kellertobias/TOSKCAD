@@ -39,7 +39,7 @@ impl BuildInfo {
     /// Return metadata for this compiled target, not the machine running Cargo.
     pub const fn current() -> Self {
         Self {
-            product: "Tusk Cut",
+            product: "ToskCAD",
             version: match option_env!("MULTICAD_RELEASE_VERSION") {
                 Some(version) => version,
                 None => env!("CARGO_PKG_VERSION"),
