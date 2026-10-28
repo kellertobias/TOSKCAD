@@ -1,6 +1,7 @@
 //! Native, source-neutral catalog and selected-part metadata editor.
 mod library;
 mod part;
+mod tag_input;
 use eframe::egui;
 pub use library::LibraryEditor;
 use multicad_core::{commands::Session, document::EntityId};
