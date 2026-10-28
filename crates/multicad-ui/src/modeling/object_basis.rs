@@ -169,6 +169,11 @@ impl Resolver<'_> {
                     }
                 }
             }
+            model::EDGE_TREATMENT_TYPE => {
+                let (source, _) =
+                    model::read_edge_treatment(self.document, feature).map_err(error)?;
+                self.feature(source.input.producer, seen)
+            }
             model::ALIGN_TYPE => {
                 let (source, references) =
                     model::read_alignment(self.document, feature).map_err(error)?;

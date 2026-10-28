@@ -3,6 +3,7 @@
 mod alignment;
 mod compiler;
 mod drawings;
+mod edge_treatment;
 pub mod export;
 mod extrude;
 pub mod inspection;

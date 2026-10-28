@@ -535,6 +535,22 @@ impl Compiler {
                         &source,
                     )?
                 }
+                (model::EDGE_TREATMENT_TYPE, model::EDGE_TREATMENT_SCHEMA) => {
+                    let (source, captures) =
+                        model::read_edge_treatment(document, id).map_err(|e| error(Some(id), e))?;
+                    crate::edge_treatment::build(
+                        crate::edge_treatment::Inputs {
+                            revision,
+                            parameters: context.parameters(),
+                            solids: &solids,
+                            topologies: &topologies,
+                            policy: self.policy,
+                        },
+                        id,
+                        &source,
+                        &captures,
+                    )?
+                }
                 (model::SPLIT_TYPE, model::SPLIT_SCHEMA) => {
                     let source = model::read_split(document, id).map_err(|e| error(Some(id), e))?;
                     let solid = crate::split::build(
