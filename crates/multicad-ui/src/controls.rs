@@ -222,7 +222,11 @@ mod tests {
 /// their own enabled UI and remain usable.
 pub fn block_modal_background(ui: &mut egui::Ui, pending: bool) {
     if pending {
+        // The modal backdrop supplies the dimming. Keep the background's
+        // existing opacity so disabled input does not darken it a second time.
+        let opacity = ui.opacity();
         ui.disable();
+        ui.set_opacity(opacity);
     }
 }
 
@@ -382,7 +386,9 @@ mod modal_first_frame_tests {
                     ..Default::default()
                 },
                 |ui| {
+                    let opacity = ui.opacity();
                     block_modal_background(ui, frame >= 3);
+                    assert_eq!(ui.opacity(), opacity);
                     let response = ui.put(
                         egui::Rect::from_min_size(Pos2::new(20., 20.), Vec2::new(100., 80.)),
                         egui::Button::new("Underlying action"),
