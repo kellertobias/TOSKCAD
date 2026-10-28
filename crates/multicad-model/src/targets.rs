@@ -2,6 +2,7 @@
 //! Scope and explicit overrides select candidate Parts; cached bounds only
 //! prune work, and positive-volume native common geometry decides every hit.
 use crate::{Model, ModelError, compiler::error};
+pub use multicad_core::model::{CutTargetQuery, CutTargetSelection, MAX_CUT_TARGET_POOL};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     hierarchy,
@@ -10,26 +11,6 @@ use multicad_core::{
 };
 use multicad_kernel::{BooleanOperation, Bounds};
 use std::collections::{BTreeMap, BTreeSet};
-pub const MAX_CUT_TARGET_POOL: usize = 4096;
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CutTargetQuery {
-    /// Unique current final-body producer IDs, not Parts or placed instances.
-    pub tools: Vec<EntityId>,
-    /// None means document-root ownership, not an implicit active component.
-    pub component: Option<EntityId>,
-    /// Explicit Part IDs, or component IDs expanded to visible owned Parts.
-    pub include: Vec<EntityId>,
-    /// Explicit existing Part IDs only. Exclusion wins over inclusion.
-    pub exclude: Vec<EntityId>,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CutTargetSelection {
-    pub defaults: Vec<BodyInput>,
-    pub targets: Vec<BodyInput>,
-    /// Included Parts with no volumetric hit. An included component itself is
-    /// returned only when its expansion has no eligible current body outputs.
-    pub not_intersecting: Vec<EntityId>,
-}
 fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ModelError> {
     if interrupt.is_some_and(|f| f()) {
         Err(error(None, "Cut target query superseded"))
@@ -172,7 +153,9 @@ impl Model {
         if pool.len() > MAX_CUT_TARGET_POOL {
             return Err(error(
                 None,
-                "Cut target pool exceeds 4096 bodies; narrow its component scope or explicit includes",
+                format!(
+                    "Cut target pool exceeds {MAX_CUT_TARGET_POOL} bodies; narrow its component scope or explicit includes"
+                ),
             ));
         }
         let mut hits = BTreeMap::new();
@@ -238,7 +221,9 @@ impl Model {
         if targets.len() > MAX_BOOLEAN_TARGETS {
             return Err(error(
                 None,
-                "More than 128 exact cut targets remain; narrow the scope or exclude bodies before applying",
+                format!(
+                    "More than {MAX_BOOLEAN_TARGETS} exact cut targets remain; narrow the scope or exclude bodies before applying"
+                ),
             ));
         }
         let mut not_intersecting = empty_components;
