@@ -385,8 +385,12 @@ pub(super) fn draft(
     } else {
         if matches!(request, TrimRequest::Extend(_) | TrimRequest::ExtendArc(_)) {
             return Err(fail(
-                TrimErrorKind::UnsupportedBoundary,
-                "Analytic extension against spline boundaries requires an explicitly bounded continuation",
+                if matches!(target.kind, CurveKind::BSpline { .. }) {
+                    TrimErrorKind::UnsupportedTarget
+                } else {
+                    TrimErrorKind::UnsupportedBoundary
+                },
+                "Use bounded spline tangent continuation for a spline target; analytic extension against spline boundaries is unsupported",
                 [target.id],
             ));
         }
