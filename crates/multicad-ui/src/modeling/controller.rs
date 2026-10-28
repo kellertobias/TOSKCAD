@@ -2,6 +2,7 @@
 use super::{
     ExtrudeCapabilities, ExtrudePanel, FormStamp, ModelRequest, ModelingTool, PreviewState,
     boolean::BooleanPanel,
+    boolean_edit::BooleanEditPanel,
     form::{ModelEvent, ModelForm, ToolProof},
     names::GeneratedNames,
     primitive::PrimitivePanel,
@@ -29,6 +30,12 @@ struct Scope {
     session: Prepared,
     source: ContentHash,
     resources: ProjectResources,
+    execution: Execution,
+}
+#[derive(Clone, Copy)]
+enum Execution {
+    Create,
+    Edit { feature: EntityId },
 }
 struct Candidate {
     prepared: Prepared,
@@ -37,6 +44,7 @@ struct Candidate {
     stamp: SceneStamp,
     outputs: Vec<CreatedBody>,
     tools: Vec<ToolProof>,
+    execution: Execution,
     pending: bool,
     scene: Option<Arc<Scene>>,
 }
@@ -72,7 +80,100 @@ impl ModelToolController {
         self.form.is_some()
     }
     pub fn label(&self) -> &'static str {
-        self.form.as_ref().map_or("Modeling", ModelForm::label)
+        if self.editing() {
+            "Feature edit"
+        } else {
+            self.form.as_ref().map_or("Modeling", ModelForm::label)
+        }
+    }
+    pub fn editing(&self) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|scope| matches!(scope.execution, Execution::Edit { .. }))
+    }
+    pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE))
+    }
+    pub fn begin_existing(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        feature: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        use multicad_core::model;
+        let document = session.document();
+        if !Self::editable(document, feature) {
+            return Err("Choose a supported, unsuppressed applied model feature".into());
+        }
+        let entity = document.get(feature).expect("checked feature");
+        let EntityData::Feature { definition, .. } = &entity.data else {
+            unreachable!()
+        };
+        let body_name = |body| {
+            document
+                .get(body)
+                .map(|entity| entity.name.clone())
+                .ok_or_else(|| {
+                    "The feature's source body is missing; repair it before editing".to_string()
+                })
+        };
+        let form = match definition.type_id.as_str() {
+            model::EXTRUDE_TYPE => {
+                let source =
+                    model::read_extrude(document, feature).map_err(|error| error.to_string())?;
+                let mut panel = ExtrudePanel::default();
+                panel.begin_request(ExtrudeRequest {
+                    sketch: source.profile.sketch,
+                    outputs: vec![model::ExtrudeOutput {
+                        feature,
+                        body: source.output.body,
+                        name: body_name(source.output.body)?,
+                        region: source.profile.region,
+                    }],
+                    parameters: source.parameters,
+                    operation: source.operation,
+                    targets: source.targets,
+                    keep_tools: source.keep_tools,
+                    faces: vec![],
+                })?;
+                // Validate the current form up front. In particular associative
+                // limits must not silently become distance-only controls.
+                panel.request(document, self.capabilities())?;
+                ModelForm::Extrude(Box::new(panel))
+            }
+            model::PRIMITIVE_TYPE => {
+                let source =
+                    model::read_primitive(document, feature).map_err(|error| error.to_string())?;
+                ModelForm::Primitive(Box::new(PrimitivePanel::existing(PrimitiveRequest {
+                    feature,
+                    body: source.output.body,
+                    name: body_name(source.output.body)?,
+                    parameters: source.parameters,
+                })?))
+            }
+            model::REVOLVE_TYPE => {
+                let source =
+                    model::read_revolve(document, feature).map_err(|error| error.to_string())?;
+                ModelForm::Revolve(Box::new(RevolvePanel::new(RevolveRequest {
+                    sketch: source.profile.sketch,
+                    outputs: vec![model::RevolveOutput {
+                        feature,
+                        body: source.output.body,
+                        name: body_name(source.output.body)?,
+                        region: source.profile.region,
+                    }],
+                    parameters: source.parameters,
+                })?))
+            }
+            model::BOOLEAN_TYPE => {
+                ModelForm::BooleanEdit(Box::new(BooleanEditPanel::new(document, feature)?))
+            }
+            _ => unreachable!(),
+        };
+        self.begin_form(session, resources, channel, form)?;
+        self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+        Ok(())
     }
     pub fn pending(&self) -> bool {
         self.candidate
@@ -189,6 +290,7 @@ impl ModelToolController {
             session: scope,
             source,
             resources: resources.clone(),
+            execution: Execution::Create,
         });
         self.candidate = None;
         self.handoff = None;
@@ -287,12 +389,21 @@ impl ModelToolController {
         if self.stamp() != Some(form) {
             return Err("Modeling inputs changed; preview the current values".into());
         }
-        let prepared = request.prepare(session, Actor::local(channel))?;
+        let execution = self.scope.as_ref().expect("current scope").execution;
+        let prepared = match execution {
+            Execution::Create => request.prepare(session, Actor::local(channel))?,
+            Execution::Edit { feature } => {
+                request.prepare_edit(session, Actor::local(channel), feature)?
+            }
+        };
         session
             .validate_preview(&prepared.prepared)
             .map_err(|error| error.to_string())?;
         let content = ContentHash::document(prepared.prepared.document())?;
-        let tools = request.tool_proof(prepared.prepared.document())?;
+        let tools = match execution {
+            Execution::Create => request.tool_proof(prepared.prepared.document())?,
+            Execution::Edit { .. } => vec![],
+        };
         self.generation = self
             .generation
             .checked_add(1)
@@ -305,7 +416,12 @@ impl ModelToolController {
         self.backend
             .as_mut()
             .ok_or("The native modeling preview provider is unavailable")?
-            .request_project(prepared.prepared.document(), resources, stamp)?;
+            .request_evaluation(
+                prepared.prepared.document(),
+                resources,
+                stamp,
+                &Default::default(),
+            )?;
         self.candidate = Some(Candidate {
             prepared: prepared.prepared,
             content,
@@ -313,6 +429,7 @@ impl ModelToolController {
             stamp,
             outputs: prepared.outputs,
             tools,
+            execution,
             pending: true,
             scene: None,
         });
@@ -353,11 +470,66 @@ impl ModelToolController {
                 if scene.stamp() != candidate.stamp {
                     return Err("Native preview returned the wrong scene scope".into());
                 }
+                if let Some(info) = scene.model_evaluation() {
+                    if info.source_hash != candidate.content {
+                        return Err("Native preview returned evaluation metadata for different source content".into());
+                    }
+                } else if matches!(candidate.execution, Execution::Edit { .. }) {
+                    return Err("Editing applied features requires a native provider with source-bound evaluation metadata".into());
+                }
                 for output in &candidate.outputs {
-                    if !matches!(candidate.prepared.document().get(output.body).map(|entity|&entity.data),Some(EntityData::Part{features,..}) if features.contains(&output.feature))
-                        || !scene.reference_instances().iter().any(|instance| {
+                    let instance_proven = match candidate.execution {
+                        Execution::Create => scene.reference_instances().iter().any(|instance| {
                             instance.id == output.body && instance.geometry == output.feature
-                        })
+                        }),
+                        Execution::Edit { feature } => {
+                            if feature != output.feature {
+                                return Err("Feature edit changed its producer identity".into());
+                            }
+                            let info = scene.model_evaluation().expect("checked edit metadata");
+                            let retained = scene
+                                .geometry_snapshot(feature)
+                                .is_some_and(|snapshot| !snapshot.elements.is_empty());
+                            let membership = if info.consumed_bodies.contains(&output.body) {
+                                !scene
+                                    .reference_instances()
+                                    .iter()
+                                    .any(|instance| instance.id == output.body)
+                            } else {
+                                let head = candidate.prepared.document().get(output.body).and_then(
+                                    |entity| match &entity.data {
+                                        EntityData::Part { features, .. } => {
+                                            features.iter().rev().copied().find(|id| {
+                                                matches!(
+                                                    candidate
+                                                        .prepared
+                                                        .document()
+                                                        .get(*id)
+                                                        .map(|entity| &entity.data),
+                                                    Some(EntityData::Feature {
+                                                        suppressed: false,
+                                                        ..
+                                                    })
+                                                )
+                                            })
+                                        }
+                                        _ => None,
+                                    },
+                                );
+                                head.is_some_and(|head| {
+                                    scene.reference_instances().iter().any(|instance| {
+                                        instance.id == output.body && instance.geometry == head
+                                    }) && scene.geometries().get(&head).is_some_and(|geometry| {
+                                        !geometry.vertices().is_empty()
+                                            && !geometry.indices().is_empty()
+                                    })
+                                })
+                            };
+                            retained && membership
+                        }
+                    };
+                    if !matches!(candidate.prepared.document().get(output.body).map(|entity|&entity.data),Some(EntityData::Part{features,..}) if features.contains(&output.feature))
+                        || !instance_proven
                         || !scene
                             .geometries()
                             .get(&output.feature)
@@ -520,6 +692,23 @@ impl ModelToolController {
         } else {
             ExtrudeCapabilities::default()
         };
+        if self.editing() {
+            ui.strong("Edit applied feature");
+            if let Some(Scope {
+                execution: Execution::Edit { feature },
+                ..
+            }) = &self.scope
+            {
+                ui.label(
+                    session
+                        .document()
+                        .get(*feature)
+                        .map_or("Missing feature", |entity| entity.name.as_str()),
+                );
+            }
+            ui.small("Preview rebuilds this producer and its downstream model. Apply retains all body, feature and profile identities.");
+            ui.separator();
+        }
         let event = self
             .form
             .as_mut()

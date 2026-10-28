@@ -394,6 +394,72 @@ impl SketchEditor {
     pub fn primitive_ready(&self) -> bool {
         self.model.has_backend() && !self.has_pending_edits() && !self.picking
     }
+    fn selected_applied_feature(&self, document: &Document) -> Option<(EntityId, bool)> {
+        if self.tree_selection.len() != 1 {
+            return None;
+        }
+        let id = *self.tree_selection.first()?;
+        match &document.get(id)?.data {
+            EntityData::Feature { .. } => Some((id, false)),
+            EntityData::Part { features, .. } => features
+                .iter()
+                .rev()
+                .copied()
+                .find(|id| {
+                    matches!(
+                        document.get(*id).map(|entity| &entity.data),
+                        Some(EntityData::Feature {
+                            suppressed: false,
+                            ..
+                        })
+                    )
+                })
+                .map(|id| (id, true)),
+            _ => None,
+        }
+    }
+    pub fn feature_edit_ready(
+        &self,
+        session: &Session,
+        feed: &crate::viewport::SceneFeed,
+        feature: EntityId,
+    ) -> bool {
+        self.primitive_ready()
+            && !self.editing
+            && crate::modeling::ModelToolController::editable(session.document(), feature)
+            && feed.is_current(session.document().id(), session.revision())
+            && feed
+                .references()
+                .is_some_and(|evaluation| evaluation.report.all_resolved())
+            && feed
+                .visible()
+                .is_some_and(|scene| scene.model_evaluation().is_some())
+    }
+    pub fn begin_feature_edit(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        feed: &crate::viewport::SceneFeed,
+        feature: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.feature_edit_ready(session, feed, feature) {
+            return Err("Select a supported applied feature and wait for a current native model with resolved references; apply or cancel pending edits first".into());
+        }
+        let info = feed
+            .visible()
+            .and_then(|scene| scene.model_evaluation())
+            .ok_or("The current native model has no source evaluation receipt")?;
+        if info.source_hash
+            != multicad_core::project_file::ContentHash::document(session.document())?
+        {
+            return Err("The native model belongs to different source content; rebuild before editing a feature".into());
+        }
+        self.model
+            .begin_existing(session, resources, feature, channel)?;
+        self.message = "Edit feature · change controls, then Preview the downstream model".into();
+        Ok(())
+    }
     pub fn boolean_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
         self.primitive_ready()
             && feed.is_current(session.document().id(), session.revision())
@@ -1729,6 +1795,12 @@ impl SketchEditor {
                             self.repair.show(ui,session,evaluation);
                         }
                         if self.repair.has_pending() {self.tool=None;self.clear_drawing_progress();self.moving=false;self.cancel_move();}
+                        if let Some((feature,latest))=self.selected_applied_feature(session.document()) {
+                            let ready=self.feature_edit_ready(session,feed,feature);
+                            if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this applied producer's saved controls; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires a supported unsuppressed feature, current native model, resolved references, and no pending tool").clicked()
+                                && let Err(error)=self.begin_feature_edit(session,resources,feed,feature,Channel::Ui) {self.message=error;}
+                            if self.model.active() {return;}
+                        }
                         self.solid.inspector(ui,session.document());
                         if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() && self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision())) {
                             self.fit_requested=true;
@@ -5207,3 +5279,7 @@ mod tests {
         assert_eq!(session.revision(), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "sketch_editor/feature_edit_tests.rs"]
+mod feature_edit_tests;

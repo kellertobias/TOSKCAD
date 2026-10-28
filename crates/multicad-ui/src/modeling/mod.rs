@@ -1,6 +1,7 @@
 //! Reusable modeling forms. Native geometry and document commits belong to the
 //! composition root; painting a form never changes the canonical document.
 mod boolean;
+mod boolean_edit;
 mod controller;
 mod dimension;
 mod extrude;

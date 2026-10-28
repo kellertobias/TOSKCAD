@@ -21,6 +21,7 @@ pub(super) struct PrimitivePanel {
     height: DimensionField,
     plane: Datum,
     error: Option<String>,
+    editing: bool,
 }
 impl PrimitivePanel {
     pub fn new(request: PrimitiveRequest) -> Result<Self, String> {
@@ -69,7 +70,13 @@ impl PrimitivePanel {
             request,
             plane,
             error: None,
+            editing: false,
         })
+    }
+    pub fn existing(request: PrimitiveRequest) -> Result<Self, String> {
+        let mut panel = Self::new(request)?;
+        panel.editing = true;
+        Ok(panel)
     }
     pub fn stamp(&self) -> FormStamp {
         self.stamp
@@ -148,10 +155,13 @@ impl PrimitivePanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.label());
-        ui.small("Create an independent native body. Preview validates geometry before Apply changes the document.");
+        ui.small(if self.editing {"Edit this existing producer and rebuild its downstream features. Body and feature names are retained."}else{"Create an independent native body. Preview validates geometry before Apply changes the document."});
         ui.label("Body name");
         let mut changed = ui
-            .add(egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()))
+            .add_enabled(
+                !self.editing,
+                egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
+            )
             .on_hover_text("Editable body name; intentional duplicate names are allowed")
             .changed();
         ui.separator();

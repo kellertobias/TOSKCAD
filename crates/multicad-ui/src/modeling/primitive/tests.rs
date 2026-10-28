@@ -172,3 +172,57 @@ fn primitive_forms_stay_narrow_and_source_neutral_across_frames() {
     }
     assert_eq!(document, before);
 }
+
+#[test]
+fn existing_primitive_controls_preserve_bound_dimensions_and_source_identities() {
+    use multicad_core::{constraint_sketch::Dimension, parameters::BoundExpression};
+    let mut document = Document::new("Stored formula controls").unwrap();
+    document
+        .insert(Entity::new(
+            "width",
+            EntityData::Parameter {
+                expression: "75".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        ))
+        .unwrap();
+    let width = Dimension::Expression {
+        expression: BoundExpression::bind(&document, "=$width + 5", "mm", None).unwrap(),
+    };
+    let request = PrimitiveRequest::new(
+        "Saved body name",
+        PrimitiveParameters::Box {
+            size: [width.clone(), model::length(30.), model::length(20.)],
+            frame: Default::default(),
+        },
+    );
+    let mut panel = PrimitivePanel::existing(request.clone()).unwrap();
+    assert!(panel.editing);
+    panel.height.text = "60".into(); // Irrelevant cylinder control cannot change a box.
+    panel.size[2].text = "24".into();
+    let Some(ModelEvent::Preview {
+        request: ModelRequest::Primitive(changed),
+        ..
+    }) = panel.finish_frame(
+        true,
+        Some(FormAction::Preview),
+        &document,
+        true,
+        PreviewState::Idle,
+    )
+    else {
+        panic!()
+    };
+    assert_eq!(
+        (changed.feature, changed.body),
+        (request.feature, request.body)
+    );
+    assert_eq!(changed.name, request.name);
+    let PrimitiveParameters::Box { size, .. } = &changed.parameters else {
+        panic!()
+    };
+    assert_eq!(size[0], width);
+    assert_eq!(size[2], model::length(24.));
+}

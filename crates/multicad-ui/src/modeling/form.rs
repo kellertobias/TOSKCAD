@@ -1,6 +1,7 @@
 use super::{
     ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel, FormStamp, PreviewState,
-    boolean::BooleanPanel, primitive::PrimitivePanel, revolve::RevolvePanel,
+    boolean::BooleanPanel, boolean_edit::BooleanEditPanel, primitive::PrimitivePanel,
+    revolve::RevolvePanel,
 };
 use crate::egui;
 use multicad_core::{
@@ -25,6 +26,52 @@ pub(super) struct ToolProof {
     pub consumed: bool,
 }
 impl ModelRequest {
+    pub(super) fn prepare_edit(
+        &self,
+        session: &Session,
+        actor: Actor,
+        feature: multicad_core::document::EntityId,
+    ) -> Result<ModelPrepared, String> {
+        match self {
+            Self::Extrude(request) => model::prepare_extrude_edit(
+                session,
+                session.revision(),
+                actor,
+                feature,
+                &request.parameters,
+            ),
+            Self::Primitive(request) => model::prepare_primitive_edit(
+                session,
+                session.revision(),
+                actor,
+                feature,
+                &request.parameters,
+            ),
+            Self::Revolve(request) => model::prepare_revolve_edit(
+                session,
+                session.revision(),
+                actor,
+                feature,
+                &request.parameters,
+            ),
+            Self::Booleans(requests) if requests.len() == 1 => {
+                let request = &requests[0];
+                model::prepare_boolean_edit(
+                    session,
+                    session.revision(),
+                    actor,
+                    feature,
+                    &model::BooleanEdit {
+                        operation: request.operation,
+                        tools: request.tools.clone(),
+                        keep_tools: request.keep_tools,
+                    },
+                )
+            }
+            _ => return Err("Edit one applied feature at a time".into()),
+        }
+        .map_err(|error| error.to_string())
+    }
     pub(super) fn prepare(&self, session: &Session, actor: Actor) -> Result<ModelPrepared, String> {
         match self {
             Self::Extrude(request) => {
@@ -101,6 +148,7 @@ pub(super) enum ModelForm {
     Primitive(Box<PrimitivePanel>),
     Revolve(Box<RevolvePanel>),
     Boolean(Box<BooleanPanel>),
+    BooleanEdit(Box<BooleanEditPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -109,6 +157,7 @@ impl ModelForm {
             Self::Primitive(panel) => panel.stamp(),
             Self::Revolve(panel) => panel.stamp(),
             Self::Boolean(panel) => panel.stamp(),
+            Self::BooleanEdit(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -117,6 +166,7 @@ impl ModelForm {
             Self::Primitive(panel) => panel.label(),
             Self::Revolve(_) => "Revolve",
             Self::Boolean(_) => "Boolean",
+            Self::BooleanEdit(_) => "Boolean",
         }
     }
     pub fn request(
@@ -137,6 +187,9 @@ impl ModelForm {
             Self::Boolean(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(ModelRequest::Booleans),
+            Self::BooleanEdit(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|request| ModelRequest::Booleans(vec![request])),
         }
     }
     pub fn show(
@@ -161,6 +214,7 @@ impl ModelForm {
             Self::Primitive(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Revolve(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Boolean(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::BooleanEdit(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
 }
