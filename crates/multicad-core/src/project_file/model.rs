@@ -163,7 +163,7 @@ impl CacheKey {
         dependencies.insert(
             "multicad.core.semantics".into(),
             ContentHash::of(
-                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1;constrained_sketch.4;sketch.external.1;sketch.external.2;inspection.measurement.1",
+                b"document.1;plane.offset.1;hierarchy.1;constrained_sketch.2;constrained_sketch.3;drawings.book.1;constrained_sketch.4;sketch.external.1;sketch.external.2;inspection.measurement.1;symbols.1",
             ),
         );
         Ok(Self {
@@ -354,6 +354,9 @@ impl ProjectFile {
         if crate::materials::required_capability(&self.document) {
             required.insert(crate::materials::CAPABILITY.into());
         }
+        if self.document.entities().any(|entity| matches!(&entity.data,EntityData::Extension{definition,..} if matches!(definition.type_id.as_str(),crate::symbols::DEFINITION_TYPE|crate::symbols::INSTANCE_TYPE))) {
+            required.insert(crate::symbols::CAPABILITY.into());
+        }
         required
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -405,6 +408,7 @@ impl ProjectFile {
 }
 pub fn supported_capabilities() -> BTreeSet<String> {
     BTreeSet::from([
+        crate::symbols::CAPABILITY.into(),
         "core.document.1".into(),
         crate::drawings::CAPABILITY.into(),
         crate::drawings::VIEW_CAPABILITY.into(),

@@ -190,6 +190,7 @@ impl Document {
         crate::sketch_external::validate(self)?;
         crate::exchange::validate(self)?;
         crate::inspection::validate(self)?;
+        crate::symbols::validate(self)?;
         Ok(())
     }
 }
