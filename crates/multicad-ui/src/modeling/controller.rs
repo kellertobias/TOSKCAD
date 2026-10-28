@@ -1,7 +1,8 @@
 //! A candidate evaluation lane, separate from canonical display publication.
 use super::{
     ExtrudeCapabilities, ExtrudePanel, FormStamp, ModelRequest, ModelingTool, PreviewState,
-    form::{ModelEvent, ModelForm},
+    boolean::BooleanPanel,
+    form::{ModelEvent, ModelForm, ToolProof},
     names::GeneratedNames,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
@@ -35,6 +36,7 @@ struct Candidate {
     form: FormStamp,
     stamp: SceneStamp,
     outputs: Vec<CreatedBody>,
+    tools: Vec<ToolProof>,
     pending: bool,
     scene: Option<Arc<Scene>>,
 }
@@ -193,6 +195,29 @@ impl ModelToolController {
         self.error = None;
         Ok(())
     }
+    pub fn boolean_available(
+        document: &multicad_core::document::Document,
+        revision: u64,
+        scene: &Scene,
+    ) -> bool {
+        BooleanPanel::available(document, revision, scene).is_ok_and(|count| count >= 2)
+    }
+    pub fn begin_boolean(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: &Scene,
+        selected: &std::collections::BTreeSet<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let panel = BooleanPanel::new(session.document(), session.revision(), scene, selected)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Boolean(Box::new(panel)),
+        )
+    }
     pub fn cancel(&mut self) {
         self.form = None;
         self.scope = None;
@@ -267,6 +292,7 @@ impl ModelToolController {
             .validate_preview(&prepared.prepared)
             .map_err(|error| error.to_string())?;
         let content = ContentHash::document(prepared.prepared.document())?;
+        let tools = request.tool_proof(prepared.prepared.document())?;
         self.generation = self
             .generation
             .checked_add(1)
@@ -286,6 +312,7 @@ impl ModelToolController {
             form,
             stamp,
             outputs: prepared.outputs,
+            tools,
             pending: true,
             scene: None,
         });
@@ -342,6 +369,21 @@ impl ModelToolController {
                             "Native preview did not produce every requested body and producer"
                                 .into(),
                         );
+                    }
+                }
+                for proof in &candidate.tools {
+                    let tool = &proof.input;
+                    let present = scene.reference_instances().iter().any(|instance| {
+                        instance.id == tool.body && instance.geometry == tool.producer
+                    });
+                    if (proof.consumed
+                        && scene
+                            .reference_instances()
+                            .iter()
+                            .any(|instance| instance.id == tool.body))
+                        || (!proof.consumed && !present)
+                    {
+                        return Err("Native preview tool membership disagrees with the requested producer-version consumption".into());
                     }
                 }
                 VisibilityFilter::default().apply(

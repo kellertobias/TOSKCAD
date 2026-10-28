@@ -110,7 +110,11 @@ struct TreeView {
     active: String,
     diagnostics: Vec<String>,
 }
-fn container_path(document: &Document, index: &Index<'_>, id: Option<EntityId>) -> String {
+pub(crate) fn container_path(
+    document: &Document,
+    index: &Index<'_>,
+    id: Option<EntityId>,
+) -> String {
     let mut path = vec![];
     let mut next = id;
     while let Some(id) = next {

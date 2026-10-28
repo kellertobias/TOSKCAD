@@ -288,7 +288,6 @@ impl Default for Registry {
             });
         }
         for (id, label, icon) in [
-            ("boolean", "Boolean", Icon::Cut),
             ("edge", "Fillet / chamfer", Icon::Edge),
             ("move", "Move / rotate", Icon::Link),
             ("symbol", "Create symbol", Icon::Library),

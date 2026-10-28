@@ -497,6 +497,12 @@ impl Application {
                         &project.resources,
                         channel,
                     )?,
+                    crate::modeling::ModelingTool::Boolean => project.sketch.begin_boolean(
+                        &project.session,
+                        &project.resources,
+                        &project.scene,
+                        channel,
+                    )?,
                     crate::modeling::ModelingTool::Box
                     | crate::modeling::ModelingTool::Cylinder => project.sketch.begin_primitive(
                         &project.session,
@@ -561,6 +567,10 @@ impl Application {
                                 self.current().session.revision(),
                             )
                         }
+                        crate::modeling::ModelingTool::Boolean => self
+                            .current()
+                            .sketch
+                            .boolean_ready(&self.current().session, &self.current().scene),
                         _ => self.current().sketch.primitive_ready(),
                     }
             }
@@ -978,9 +988,10 @@ impl Application {
                                     )
                                 })
                                 .inner
-                                .on_disabled_hover_text(
-                                    "This component is not available in the current context",
-                                )
+                                .on_disabled_hover_text(match tool.action {
+                                    Command::Modeling(tool) => tool.requirements(),
+                                    _ => "This component is not available in the current context",
+                                })
                                 .clicked()
                             {
                                 action = Some(tool.action);
@@ -2579,5 +2590,128 @@ mod tests {
         assert!(!app.message_error);
         assert_eq!(app.current().session.document(), &before);
         assert_eq!(app.current().session.revision(), 0);
+    }
+    #[test]
+    fn boolean_command_requires_current_canonical_publication_even_when_geometry_ids_stay_the_same()
+    {
+        use crate::viewport::{
+            Geometry, Instance, Scene, SceneBackend, SceneReply, SceneStamp, Transform,
+        };
+        use multicad_core::model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest};
+        use std::sync::{Arc, Mutex};
+        #[derive(Default)]
+        struct State {
+            stamp: Option<SceneStamp>,
+            reply: Option<SceneReply>,
+        }
+        struct Backend(Arc<Mutex<State>>);
+        impl SceneBackend for Backend {
+            fn request(&mut self, _: &Document, stamp: SceneStamp) -> Result<(), String> {
+                self.0.lock().unwrap().stamp = Some(stamp);
+                Ok(())
+            }
+            fn poll(&mut self) -> Option<SceneReply> {
+                self.0.lock().unwrap().reply.take()
+            }
+        }
+        let mut session = Session::new(Document::new("Current body gate").unwrap()).unwrap();
+        let mut bodies = vec![];
+        for index in 0..2 {
+            let request = PrimitiveRequest::new(
+                format!("Body {index}"),
+                PrimitiveParameters::Box {
+                    size: [model::length(30.), model::length(20.), model::length(10.)],
+                    frame: PrimitiveFrame::default(),
+                },
+            );
+            let prepared = model::prepare_primitive(
+                &session,
+                session.revision(),
+                Actor::local(Channel::Ui),
+                &request,
+            )
+            .unwrap();
+            bodies.extend(prepared.outputs.clone());
+            session.commit(prepared.prepared).unwrap();
+        }
+        let mut app =
+            Application::with_document(Box::new(MemoryStorage), session.document().clone())
+                .unwrap();
+        app.mode = Mode::Model;
+        let state = Arc::new(Mutex::new(State::default()));
+        let canonical = state.clone();
+        app.set_scene_backends(Arc::new(move || Box::new(Backend(canonical.clone()))));
+        app.set_model_backends(Arc::new(|| {
+            Box::new(Backend(Arc::new(Mutex::new(State::default()))))
+        }));
+        let command = Command::Modeling(crate::modeling::ModelingTool::Boolean);
+        assert!(!app.enabled(command));
+        {
+            let project = app.current_mut();
+            project
+                .scene
+                .tick(project.session.document(), project.session.revision());
+        }
+        let stamp = state.lock().unwrap().stamp.unwrap();
+        // Display-only meshes test publication gating, not native solid validity.
+        let geometries = bodies
+            .iter()
+            .map(|body| {
+                Arc::new(
+                    Geometry::new(
+                        body.feature,
+                        vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+                        vec![0, 1, 2],
+                        vec![0],
+                        vec![],
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect();
+        let instances = bodies
+            .iter()
+            .map(|body| Instance {
+                id: body.body,
+                geometry: body.feature,
+                transform: Transform::default(),
+                color: [150, 160, 170, 255],
+            })
+            .collect();
+        state.lock().unwrap().reply = Some(SceneReply {
+            stamp,
+            result: Ok(Arc::new(Scene::new(stamp, geometries, instances).unwrap())),
+        });
+        {
+            let project = app.current_mut();
+            project
+                .scene
+                .tick(project.session.document(), project.session.revision());
+        }
+        assert!(app.enabled(command));
+        let before = app.current().session.document().clone();
+        app.invoke(command, &[], Channel::Ui).unwrap();
+        assert!(app.current().sketch.model_active());
+        assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        let project = app.current_mut();
+        let mut body = project
+            .session
+            .document()
+            .get(bodies[0].body)
+            .unwrap()
+            .clone();
+        body.name = "Renamed, unchanged geometry producer".into();
+        project
+            .session
+            .apply(Request {
+                expected_revision: project.session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Rename body".into(),
+                edits: vec![Mutation::Replace(body)],
+            })
+            .unwrap();
+        assert!(!app.enabled(command));
+        assert!(app.invoke(command, &[], Channel::Ui).is_err());
     }
 }

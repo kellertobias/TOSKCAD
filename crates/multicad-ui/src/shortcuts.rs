@@ -446,6 +446,7 @@ impl ShortcutMap {
         for (key, tool) in [
             (Key::B, crate::modeling::ModelingTool::Box),
             (Key::C, crate::modeling::ModelingTool::Cylinder),
+            (Key::G, crate::modeling::ModelingTool::Boolean),
         ] {
             add(
                 Scope::Mode(Mode::Model),

@@ -6,6 +6,7 @@ use crate::viewport::{Geometry, Instance, SceneReply, Transform};
 use multicad_core::{
     constraint_sketch::source::Source,
     document::{Document, Mutation},
+    model::BodyInput,
     sketch::Datum,
     sketch_regions,
 };
@@ -463,4 +464,191 @@ fn revolve_creation_uses_checked_receipt_and_preserves_profiles_and_output_ident
     assert_eq!(session.revision(), 1);
     session.undo(1, Actor::local(Channel::Ui)).unwrap();
     assert_eq!(session.document(), &before);
+}
+
+fn boolean_fixture() -> (Session, Vec<CreatedBody>, Arc<Scene>) {
+    let mut session = Session::new(Document::new("Boolean receipt membership").unwrap()).unwrap();
+    let mut bodies = vec![];
+    for index in 0..3 {
+        let request = PrimitiveRequest::new(
+            format!("Body {index}"),
+            PrimitiveParameters::Box {
+                size: [length(30.), length(20.), length(10.)],
+                frame: PrimitiveFrame::default(),
+            },
+        );
+        let prepared = multicad_core::model::prepare_primitive(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            &request,
+        )
+        .unwrap();
+        bodies.extend(prepared.outputs.clone());
+        session.commit(prepared.prepared).unwrap();
+    }
+    let scene = native_scene(
+        session.document(),
+        SceneStamp {
+            document: session.document().id(),
+            revision: session.revision(),
+            generation: 1,
+        },
+    );
+    (session, bodies, scene)
+}
+#[test]
+fn boolean_batch_proof_requires_target_heads_and_exact_tool_membership_before_one_commit() {
+    use multicad_core::model::{BooleanRequest, Operation};
+    use std::collections::BTreeSet;
+    for keep in [false, true] {
+        for wrong_membership in [false, true] {
+            let (mut session, bodies, input_scene) = boolean_fixture();
+            let before = session.document().clone();
+            let state = Arc::new(Mutex::new(State::default()));
+            let mut controller = ModelToolController::default();
+            controller.set_backend(Box::new(ScriptedBackend(state.clone())));
+            controller
+                .begin_boolean(
+                    &session,
+                    &Default::default(),
+                    &input_scene,
+                    &BTreeSet::from([bodies[0].body, bodies[1].body]),
+                    Channel::Ui,
+                )
+                .unwrap();
+            let request = ModelRequest::Booleans(
+                bodies[..2]
+                    .iter()
+                    .map(|body| {
+                        let mut request = BooleanRequest::new(
+                            Operation::Cut,
+                            BodyInput {
+                                body: body.body,
+                                producer: body.feature,
+                            },
+                            vec![BodyInput {
+                                body: bodies[2].body,
+                                producer: bodies[2].feature,
+                            }],
+                        );
+                        request.keep_tools = keep;
+                        request
+                    })
+                    .collect(),
+            );
+            controller
+                .submit(
+                    &session,
+                    &Default::default(),
+                    Channel::Ui,
+                    controller.stamp().unwrap(),
+                    &request,
+                )
+                .unwrap();
+            let (document, _, stamp) = state.lock().unwrap().requests[0].clone();
+            let full = native_scene(&document, stamp);
+            let remove_tool = if wrong_membership { keep } else { !keep };
+            let instances = full
+                .instances()
+                .iter()
+                .filter(|instance| !remove_tool || instance.id != bodies[2].body)
+                .cloned()
+                .collect();
+            let scene = Arc::new(
+                Scene::new(
+                    stamp,
+                    full.geometries().values().cloned().collect(),
+                    instances,
+                )
+                .unwrap(),
+            );
+            state.lock().unwrap().replies.push_back(SceneReply {
+                stamp,
+                result: Ok(scene),
+            });
+            controller.poll(&session, &Default::default());
+            if wrong_membership {
+                assert!(!controller.can_apply(&session, &Default::default()));
+                assert!(controller.apply(&mut session, &Default::default()).is_err());
+                assert_eq!(session.document(), &before);
+            } else {
+                let revision = session.revision();
+                let output = controller.apply(&mut session, &Default::default()).unwrap();
+                assert_eq!(output.len(), 2);
+                assert_eq!(session.revision(), revision + 1);
+                assert_eq!(
+                    session.document().get(bodies[2].body),
+                    before.get(bodies[2].body)
+                );
+                session
+                    .undo(session.revision(), Actor::local(Channel::Ui))
+                    .unwrap();
+                assert_eq!(session.document(), &before);
+            }
+        }
+    }
+}
+#[test]
+fn consumption_proof_tracks_the_current_producer_version_instead_of_hiding_future_heads() {
+    use multicad_core::{
+        document::Entity,
+        model::{BodyOutput, BooleanRequest, Operation, PrimitiveDefinition},
+    };
+    let (session, bodies, _) = boolean_fixture();
+    let request = BooleanRequest::new(
+        Operation::Cut,
+        BodyInput {
+            body: bodies[0].body,
+            producer: bodies[0].feature,
+        },
+        vec![BodyInput {
+            body: bodies[2].body,
+            producer: bodies[2].feature,
+        }],
+    );
+    let request = ModelRequest::Booleans(vec![request]);
+    let prepared = request
+        .prepare(&session, Actor::local(Channel::Ui))
+        .unwrap();
+    let proof = request.tool_proof(prepared.prepared.document()).unwrap();
+    assert!(proof[0].consumed);
+    assert_eq!(proof[0].input.producer, bodies[2].feature);
+    let parameters = PrimitiveParameters::Box {
+        size: [length(35.), length(25.), length(15.)],
+        frame: PrimitiveFrame::default(),
+    };
+    let feature = Entity::new(
+        "Later current tool producer",
+        EntityData::Feature {
+            definition: PrimitiveDefinition {
+                output: BodyOutput {
+                    body: bodies[2].body,
+                },
+                parameters,
+            }
+            .definition()
+            .unwrap(),
+            inputs: vec![],
+            suppressed: false,
+        },
+    );
+    let mut body = prepared
+        .prepared
+        .document()
+        .get(bodies[2].body)
+        .unwrap()
+        .clone();
+    let EntityData::Part { features, .. } = &mut body.data else {
+        panic!()
+    };
+    features.push(feature.id);
+    let later = prepared
+        .prepared
+        .document()
+        .edited(&[Mutation::Insert(feature.clone()), Mutation::Replace(body)])
+        .unwrap();
+    let proof = request.tool_proof(&later).unwrap();
+    assert!(!proof[0].consumed);
+    assert_eq!(proof[0].input.producer, feature.id);
 }

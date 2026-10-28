@@ -1,5 +1,6 @@
 //! Reusable modeling forms. Native geometry and document commits belong to the
 //! composition root; painting a form never changes the canonical document.
+mod boolean;
 mod controller;
 mod dimension;
 mod extrude;
@@ -19,15 +20,23 @@ pub enum ModelingTool {
     Box,
     Cylinder,
     Revolve,
+    Boolean,
 }
 impl ModelingTool {
-    pub const ALL: [Self; 4] = [Self::Box, Self::Cylinder, Self::Extrude, Self::Revolve];
+    pub const ALL: [Self; 5] = [
+        Self::Box,
+        Self::Cylinder,
+        Self::Extrude,
+        Self::Revolve,
+        Self::Boolean,
+    ];
     pub fn id(self) -> &'static str {
         match self {
             Self::Extrude => "extrude",
             Self::Box => "box",
             Self::Cylinder => "cylinder",
             Self::Revolve => "revolve",
+            Self::Boolean => "boolean",
         }
     }
     pub fn label(self) -> &'static str {
@@ -36,6 +45,7 @@ impl ModelingTool {
             Self::Box => "Box",
             Self::Cylinder => "Cylinder",
             Self::Revolve => "Revolve",
+            Self::Boolean => "Boolean",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -44,6 +54,7 @@ impl ModelingTool {
             Self::Box => crate::icons::Icon::Box,
             Self::Cylinder => crate::icons::Icon::Cylinder,
             Self::Revolve => crate::icons::Icon::Rotate,
+            Self::Boolean => crate::icons::Icon::Cut,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -52,6 +63,7 @@ impl ModelingTool {
             Self::Box => &["cube", "add-box"],
             Self::Cylinder => &["cyl", "add-cylinder"],
             Self::Revolve => &["rev", "lathe"],
+            Self::Boolean => &["combine", "body-operation"],
         }
     }
     pub fn usage(self) -> &'static str {
@@ -65,6 +77,22 @@ impl ModelingTool {
             }
             Self::Revolve => {
                 "Usage: revolve (select closed sketch areas, choose an axis in the Inspector, then Preview and Apply)"
+            }
+            Self::Boolean => {
+                "Usage: boolean (choose separate targets and tools in the Inspector, then Preview and Apply)"
+            }
+        }
+    }
+    pub fn requirements(self) -> &'static str {
+        match self {
+            Self::Extrude | Self::Revolve => {
+                "Select current closed areas in a sketch and finish pending edits. Native modeling must be available."
+            }
+            Self::Box | Self::Cylinder => {
+                "Requires native modeling and no pending edits. A sketch is not required."
+            }
+            Self::Boolean => {
+                "Requires at least two current native bodies and no pending edits. Targets and tools are chosen explicitly."
             }
         }
     }

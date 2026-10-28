@@ -394,6 +394,38 @@ impl SketchEditor {
     pub fn primitive_ready(&self) -> bool {
         self.model.has_backend() && !self.has_pending_edits() && !self.picking
     }
+    pub fn boolean_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
+        self.primitive_ready()
+            && feed.is_current(session.document().id(), session.revision())
+            && feed.visible().is_some_and(|scene| {
+                crate::modeling::ModelToolController::boolean_available(
+                    session.document(),
+                    session.revision(),
+                    scene,
+                )
+            })
+    }
+    pub fn begin_boolean(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        feed: &crate::viewport::SceneFeed,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.boolean_ready(session, feed) {
+            return Err("Wait for at least two current native bodies and apply or cancel pending edits before Boolean modeling".into());
+        }
+        let selected = self.tree_selection.clone();
+        let scene = feed
+            .visible()
+            .cloned()
+            .ok_or("Wait for a current native scene")?;
+        self.finish()?;
+        self.model
+            .begin_boolean(session, resources, &scene, &selected, channel)?;
+        self.message = "Boolean · choose explicit targets and tools, then Preview".into();
+        Ok(())
+    }
     pub fn model_can_apply(
         &self,
         session: &Session,
