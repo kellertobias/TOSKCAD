@@ -1,5 +1,6 @@
 #include "curves.hpp"
 #include "multicad-kernel/src/lib.rs.h"
+#include "ruled.hpp"
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -17,6 +18,7 @@
 #include <GCE2d_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2dAPI_InterCurveCurve.hxx>
+#include <Geom2dConvert.hxx>
 #include <Geom2dInt_GInter.hxx>
 #include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_Circle.hxx>
@@ -487,6 +489,46 @@ std::unique_ptr<Shape> curved_profile_to_plane(
       for (const auto &face : prism.Generated(entry.first))
         seed(face, 2, entry.second);
     return result;
+  });
+}
+std::unique_ptr<Shape>
+curved_profile_ruled(const Frame3 &startFrame, const Frame3 &endFrame,
+                     rust::Slice<const CurvedEdgeData> startEdges,
+                     rust::Slice<const CurvedEdgeData> endEdges,
+                     rust::Slice<const uint32_t> offsets, double tolerance) {
+  return guarded([&] {
+    // Use the same exact rational representation on caps and ruled sides.
+    // This also avoids sewing a periodic analytic circle against a different
+    // rational parameterization of the same geometric boundary.
+    auto rationalized = [&](rust::Slice<const CurvedEdgeData> input) {
+      std::vector<CurvedEdgeData> exact;
+      for (const auto &edge : input) {
+        exact.push_back(edge);
+        if (edge.kind != 3)
+          continue;
+        auto spline = Geom2dConvert::CurveToBSplineCurve(curve(edge));
+        spline->SetNotPeriodic();
+        auto &out = exact.back();
+        out.kind = 1;
+        out.spline.degree = spline->Degree();
+        for (int i = 1; i <= spline->NbPoles(); ++i) {
+          const auto pole = spline->Pole(i);
+          out.spline.poles.push_back(pole.X());
+          out.spline.poles.push_back(pole.Y());
+          out.spline.weights.push_back(spline->Weight(i));
+        }
+        for (int i = 1; i <= spline->NbKnots(); ++i) {
+          out.spline.knots.push_back(spline->Knot(i));
+          out.spline.multiplicities.push_back(spline->Multiplicity(i));
+        }
+      }
+      return exact;
+    };
+    const auto a = rationalized(startEdges), b = rationalized(endEdges);
+    auto start = build(startFrame, {a.data(), a.size()}, offsets, tolerance);
+    auto end = build(endFrame, {b.data(), b.size()}, offsets, tolerance);
+    return ruled_profile_solid(start.face, end.face, start.sources, end.sources,
+                               startEdges, tolerance);
   });
 }
 } // namespace multicad::kernel

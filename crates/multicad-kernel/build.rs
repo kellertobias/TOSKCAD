@@ -3,6 +3,7 @@ fn main() {
     cxx_build::bridge("src/lib.rs")
         .file("src/bridge.cpp")
         .file("src/curves.cpp")
+        .file("src/ruled.cpp")
         .include("include")
         .include(root.join("include"))
         .std("c++17")
@@ -23,6 +24,8 @@ fn main() {
         "include/bridge.hpp",
         "src/curves.cpp",
         "include/curves.hpp",
+        "src/ruled.cpp",
+        "include/ruled.hpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

@@ -32,4 +32,9 @@ std::unique_ptr<Shape>
 curved_profile_to_plane(const Frame3 &, rust::Slice<const CurvedEdgeData>,
                         rust::Slice<const uint32_t>, const SweepLimits &,
                         const Point3 &direction, const Frame3 &termination);
+std::unique_ptr<Shape>
+curved_profile_ruled(const Frame3 &start, const Frame3 &end,
+                     rust::Slice<const CurvedEdgeData> start_edges,
+                     rust::Slice<const CurvedEdgeData> end_edges,
+                     rust::Slice<const uint32_t> offsets, double tolerance);
 } // namespace multicad::kernel

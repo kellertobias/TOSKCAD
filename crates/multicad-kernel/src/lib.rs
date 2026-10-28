@@ -195,6 +195,14 @@ mod ffi {
             direction: &Point3,
             termination: &Frame3,
         ) -> Result<UniquePtr<Shape>>;
+        fn curved_profile_ruled(
+            start: &Frame3,
+            end: &Frame3,
+            start_edges: &[CurvedEdgeData],
+            end_edges: &[CurvedEdgeData],
+            offsets: &[u32],
+            tolerance: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn tessellate(
             shape: &Shape,
             deflection: f64,
@@ -215,6 +223,7 @@ mod sketch_queries;
 pub use sketch_queries::NativeRegionQueries;
 mod provenance;
 mod revolve;
+mod taper;
 mod to_plane;
 pub use curves::*;
 pub use revolve::RevolutionAxis;
