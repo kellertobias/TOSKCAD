@@ -1,9 +1,10 @@
 # Parametric Fillet and Chamfer
 
 The [edge feature](../../crates/multicad-core/src/model/edge_treatment.rs)
-persists a Fillet radius or symmetric Chamfer distance against selected native
-edges of one Part definition. Linked occurrences follow that definition.
-Instance-only treatment, asymmetric distances and angle controls are unsupported.
+persists a Fillet radius or Chamfer controls against selected native edges of
+one Part definition. Chamfer supports symmetric distance, two distances and a
+distance/angle pair. Linked occurrences follow that definition; Instance-only
+treatment remains unsupported.
 
 Both profiles use the same Inspector and prepared transaction boundary. Native
 B-reps supply the result geometry; configured
@@ -15,6 +16,11 @@ Each `model.edge_treatment` feature records a preceding `BodyInput` producer and
 retains its output Part identity. The parameter payload stores the profile, a
 bound millimeter size and the identities of its selected edge captures. Native
 topology ordinals never enter that payload.
+
+Symmetric controls retain schema 1. Schema 2 adds bound second-distance or angle
+settings and an explicit edge-to-adjacent-face mapping. Canonical links own both
+edge and face intents. The native builder verifies adjacency; neither display
+order nor an implicit choice of side defines the angle or second distance.
 
 Canonical input links own each complete `GeometryIntent` and target the frozen
 producer. The [source reader](../../crates/multicad-core/src/model/edge_treatment.rs)
@@ -51,6 +57,11 @@ Part or requests one through the shared target stage. The
 [Inspector](../../crates/multicad-ui/src/modeling/edge_treatment.rs) accepts an
 empty edge draft while disabling Preview and Apply. Shift-click adds or removes
 edges while retaining unchanged capture identities.
+
+Sided Chamfer presents a face-selection stage for each edge. A single native
+face capture can serve several incident edges. Selecting a side preserves its
+edge binding; switching back to Fillet or symmetric Chamfer removes the sided
+settings and retains the compatible edge source.
 
 Edge selection displays the frozen upstream producer, including when editing a
 saved feature whose current result no longer contains the original edges. This
