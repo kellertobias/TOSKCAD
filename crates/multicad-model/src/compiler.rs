@@ -59,7 +59,7 @@ impl fmt::Display for ModelError {
     }
 }
 impl std::error::Error for ModelError {}
-fn error(entity: Option<EntityId>, message: impl fmt::Display) -> ModelError {
+pub(crate) fn error(entity: Option<EntityId>, message: impl fmt::Display) -> ModelError {
     ModelError {
         entity,
         message: message.to_string(),
@@ -265,35 +265,25 @@ impl Compiler {
                     }
                     let extent = source
                         .parameters
-                        .resolve(context.parameters())
+                        .resolve_controls(context.parameters())
                         .map_err(|e| error(Some(id), e))?;
-                    let (mut profile, origins) = profiles.get(
+                    let (profile, origins) = profiles.get(
                         source.profile.sketch,
                         &source.profile.region,
                         id,
                         &topologies,
                         interrupt,
                     )?;
-                    let frame = profile.frame;
-                    let normal = frame.normal();
-                    let direction: [f64; 3] = std::array::from_fn(|i| {
-                        frame.u[i] * extent.direction[0]
-                            + frame.v[i] * extent.direction[1]
-                            + normal[i] * extent.direction[2]
-                    });
-                    profile.frame.origin = std::array::from_fn(|i| {
-                        frame.origin[i] + normal[i] * extent.start_offset_mm
-                            - direction[i] * extent.backward_mm
-                    });
-                    let sweep = direction.map(|n| n * (extent.forward_mm + extent.backward_mm));
-                    Solid::extrude_curved_profile_vector_named(
-                        &profile,
-                        sweep,
-                        id,
-                        &origins,
-                        self.policy,
-                    )
-                    .map_err(|e| error(Some(id), e))?
+                    crate::extrude::Extrusion {
+                        document,
+                        revision,
+                        feature: id,
+                        solids: &solids,
+                        topologies: &topologies,
+                        policy: self.policy,
+                        interrupt,
+                    }
+                    .build(profile, &origins, &extent)?
                 }
                 (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA) => {
                     let source =
