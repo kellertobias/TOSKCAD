@@ -419,6 +419,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::TRANSFORM_CAPABILITY.into(),
         crate::model::SCALE_CAPABILITY.into(),
         crate::model::EDGE_TREATMENT_CAPABILITY.into(),
+        crate::model::ADVANCED_CAPABILITY.into(),
         crate::model::ALIGN_CAPABILITY.into(),
         crate::model::INSTANCE_PLACEMENT_CAPABILITY.into(),
         crate::model::INSTANCE_ALIGNMENT_CAPABILITY.into(),

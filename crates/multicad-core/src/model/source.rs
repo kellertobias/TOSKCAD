@@ -668,6 +668,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::EDGE_TREATMENT_TYPE => {
                     super::read_edge_treatment(document, entity.id)?;
                 }
+                super::ADVANCED_TYPE => {
+                    super::read_advanced(document, entity.id)?;
+                }
                 super::REVOLVE_TYPE => {
                     super::read_revolve(document, entity.id)?;
                 }
@@ -691,6 +694,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::TRANSFORM_TYPE,
                     super::SCALE_TYPE,
                     super::EDGE_TREATMENT_TYPE,
+                    super::ADVANCED_TYPE,
                     super::ALIGN_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
