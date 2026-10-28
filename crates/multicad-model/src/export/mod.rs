@@ -1,5 +1,8 @@
 //! Native output jobs rebuild an immutable source snapshot. No Scene, display
 //! mesh, retained viewport state or foreign native handle is an export input.
+pub mod dxf;
+mod planar;
+pub use planar::DevelopedContourProvider;
 mod publish;
 mod worker;
 use crate::{Compiler, Model};
@@ -20,6 +23,7 @@ pub struct Exporter {
 struct Built {
     model: Option<Model>,
     preview: ExportPreview,
+    planar_bytes: BTreeMap<String, Vec<u8>>,
 }
 fn failure(kind: ErrorKind, id: Option<EntityId>, message: impl ToString) -> ExportError {
     ExportError::new(kind, id, message.to_string())
@@ -58,6 +62,13 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
                 None
             }
         }
+        RecipeOutput::PlanarDxf { layers, aids, .. } => {
+            if *aids != AidPolicy::IncludeAll {
+                Some("Removable-aid exclusion requires a typed aid provider".into())
+            } else {
+                dxf::layer_names(layers).err()
+            }
+        }
         _ => Some(format!(
             "{} output provider is not installed",
             output.extension().to_ascii_uppercase()
@@ -87,7 +98,7 @@ impl Exporter {
             });
         let p = self.compiler.policy;
         format!(
-            "step-files.1;build:{build};occt:{};policy:{:?}",
+            "step-files.1;planar-dxf.1;build:{build};occt:{};policy:{:?}",
             multicad_kernel::source_identity(),
             [
                 p.linear_tolerance_mm,
@@ -214,15 +225,18 @@ impl Exporter {
         let names = filenames(&effective, document.name())?;
         let mut recipes = Vec::new();
         let mut artifacts = Vec::new();
+        let mut planar_bytes = BTreeMap::new();
         for recipe in &selection.recipes {
             let requested: Vec<_> = names.iter().filter(|n| n.recipe == recipe.id).collect();
-            let status = if let Some(reason) = unsupported(&recipe.output) {
+            let mut status = if let Some(reason) = unsupported(&recipe.output) {
                 RecipeStatus::Unsupported(reason)
             } else if requested.is_empty() {
                 RecipeStatus::Empty
             } else {
                 RecipeStatus::Ready
             };
+            let mut recipe_artifacts = vec![];
+            let mut recipe_bytes = BTreeMap::new();
             if status == RecipeStatus::Ready {
                 for output in requested.iter() {
                     let OutputSubject::Part(part) = &output.subject else {
@@ -240,15 +254,58 @@ impl Exporter {
                                 "Current output availability was not evaluated",
                             )
                         })?;
-                    artifacts.push(ExportArtifact {
+                    let planar = if let RecipeOutput::PlanarDxf { units, layers, .. } =
+                        &recipe.output
+                    {
+                        let model = model.as_ref().ok_or_else(|| {
+                            failure(
+                                ErrorKind::Invalid,
+                                Some(set),
+                                "No owned current model for planar output",
+                            )
+                        })?;
+                        let result = planar::contours(document, model, set, recipe.id, part)
+                            .and_then(|contours| {
+                                let evidence = planar::evidence(&contours)?;
+                                let label =
+                                    document.get(part.part).map_or("Part", |e| e.name.as_str());
+                                let bytes = dxf::encode(
+                                    &contours,
+                                    *units,
+                                    layers,
+                                    label,
+                                    self.compiler.policy.linear_tolerance_mm,
+                                )
+                                .map_err(|e| failure(ErrorKind::Unsupported, Some(part.part), e))?;
+                                Ok((evidence, bytes))
+                            });
+                        match result {
+                            Ok((evidence, bytes)) => {
+                                recipe_bytes.insert(output.filename.clone(), bytes);
+                                Some(evidence)
+                            }
+                            Err(e) => {
+                                status = RecipeStatus::Unsupported(e.message);
+                                break;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    recipe_artifacts.push(ExportArtifact {
                         output: (*output).clone(),
                         producer,
                         solid,
                         bounds_mm,
                         volume_mm3,
                         solid_count,
+                        planar,
                     });
                 }
+            }
+            if status == RecipeStatus::Ready {
+                artifacts.extend(recipe_artifacts);
+                planar_bytes.extend(recipe_bytes);
             }
             recipes.push(RecipeReport {
                 recipe: recipe.id,
@@ -266,7 +323,7 @@ impl Exporter {
         let provider = self.provider();
         let identity: Vec<_> = artifacts
             .iter()
-            .map(|a| (&a.output, a.producer, a.solid, a.solid_count))
+            .map(|a| (&a.output, a.producer, a.solid, a.solid_count, &a.planar))
             .collect();
         let bytes = serde_json::to_vec(&(
             &provider,
@@ -284,6 +341,7 @@ impl Exporter {
         };
         Ok(Built {
             model,
+            planar_bytes,
             preview: ExportPreview {
                 requested_by: actor.clone(),
                 key,

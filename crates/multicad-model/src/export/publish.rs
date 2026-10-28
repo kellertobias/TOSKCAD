@@ -27,7 +27,20 @@ struct Manifest {
 fn io(e: impl ToString) -> ExportError {
     failure(ErrorKind::Io, None, e)
 }
-fn verify(exporter: &Exporter, artifact: &ExportArtifact, path: &Path) -> Result<(), ExportError> {
+fn verify(
+    exporter: &Exporter,
+    built: &Built,
+    artifact: &ExportArtifact,
+    path: &Path,
+) -> Result<(), ExportError> {
+    if artifact.planar.is_some() {
+        let expected = built
+            .planar_bytes
+            .get(&artifact.output.filename)
+            .ok_or_else(|| io("Current exact planar output is missing"))?;
+        let (_, _) = hash_file(path)?;
+        return dxf::verify(&fs::read(path).map_err(io)?, expected).map_err(io);
+    }
     let read = Solid::read_step(path, exporter.compiler.policy).map_err(io)?;
     let count = read.solid_count().map_err(io)?;
     let volume = read.volume_mm3().map_err(io)?;
@@ -134,7 +147,7 @@ fn reuse(
         if hash != stored.content_hash || bytes != stored.bytes {
             return Err(io("Export bundle was modified; nothing was overwritten"));
         }
-        verify(exporter, current, &path)?;
+        verify(exporter, built, current, &path)?;
         stored.artifact = current.clone();
     }
     Ok(RunReceipt {
@@ -215,19 +228,28 @@ pub(super) fn run(
     for artifact in &preview.artifacts {
         checkpoint(interrupt)?;
         let path = staging.path().join(&artifact.output.filename);
-        model
-            .solid(artifact.solid)
-            .ok_or_else(|| {
-                failure(
-                    ErrorKind::Invalid,
-                    Some(artifact.solid),
-                    "Current native solid was lost",
-                )
-            })?
-            .write_step(&path)
-            .map_err(io)?;
+        if let Some(bytes) = built.planar_bytes.get(&artifact.output.filename) {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(io)?;
+            file.write_all(bytes).map_err(io)?;
+        } else {
+            model
+                .solid(artifact.solid)
+                .ok_or_else(|| {
+                    failure(
+                        ErrorKind::Invalid,
+                        Some(artifact.solid),
+                        "Current native solid was lost",
+                    )
+                })?
+                .write_step(&path)
+                .map_err(io)?;
+        }
         checkpoint(interrupt)?;
-        verify(exporter, artifact, &path)?;
+        verify(exporter, built, artifact, &path)?;
         let (content_hash, bytes) = hash_file(&path)?;
         OpenOptions::new()
             .read(true)

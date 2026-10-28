@@ -7,6 +7,19 @@ use std::{path::Path, sync::Arc};
 /// Installed by the native composition root. UI code owns no CAD handles or
 /// manufacturing writer and never treats a display mesh as output geometry.
 pub trait ExportBackend {
+    fn planar_catalog(
+        &mut self,
+        _document: &Document,
+        _revision: u64,
+        _scope: &multicad_core::exchange::Scope,
+        _actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        Err(ExportError::new(
+            multicad_core::exchange::ErrorKind::Unsupported,
+            None,
+            "Native planar face catalog is unavailable",
+        ))
+    }
     fn preview(
         &mut self,
         document: &Document,

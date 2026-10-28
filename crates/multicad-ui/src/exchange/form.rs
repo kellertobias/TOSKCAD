@@ -1,7 +1,7 @@
 use crate::egui;
 use multicad_core::{
     commands::Session,
-    document::{EntityData, EntityId},
+    document::{EntityData, EntityId, Link},
     drawings,
     exchange::*,
     materials::TagQuery,
@@ -76,6 +76,7 @@ pub(super) struct Draft {
     pub all: String,
     pub any: String,
     pub none: String,
+    pub geometry: Vec<Link>,
 }
 impl Draft {
     pub fn new(s: &Session) -> Self {
@@ -88,6 +89,7 @@ impl Draft {
             all: String::new(),
             any: String::new(),
             none: String::new(),
+            geometry: vec![],
         }
     }
     pub fn load(s: &Session, id: EntityId) -> Result<Self, String> {
@@ -113,9 +115,21 @@ impl Draft {
             all,
             any,
             none,
+            geometry: geometry_links(s.document(), id),
         })
     }
     pub fn sync_query(&mut self) {
+        self.source.planar_faces.retain(|f| {
+            self.source
+                .recipes
+                .iter()
+                .any(|r| r.id == f.recipe && matches!(r.output, RecipeOutput::PlanarDxf { .. }))
+        });
+        self.geometry.retain(|l| {
+            l.geometry
+                .as_ref()
+                .is_some_and(|g| self.source.planar_faces.iter().any(|f| f.reference == g.id))
+        });
         if self.source.scope.tags.is_some() {
             let parse = |s: &str| {
                 s.lines()
@@ -137,7 +151,9 @@ impl Draft {
         s: &Session,
         captured: &[EntityId],
         catalog: &Catalog,
-    ) {
+        planar: Option<&PlanarCatalog>,
+    ) -> bool {
+        let mut request_planar = false;
         ui.label("Set name");
         ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()))
             .on_hover_text(
@@ -294,6 +310,21 @@ impl Draft {
         });
         ui.separator();
         ui.strong("Output recipes");
+        if self
+            .source
+            .recipes
+            .iter()
+            .any(|r| matches!(r.output, RecipeOutput::PlanarDxf { .. }))
+        {
+            request_planar=ui.button("Load current planar faces").on_hover_text("Inspect real source-bound planar faces on the native worker. Selection remains explicit for each Part occurrence").clicked();
+        }
+        let fresh_planar = planar.filter(|p| {
+            p.stamp.document == s.document().id()
+                && p.stamp.revision == s.revision()
+                && p.scope == self.source.scope
+        });
+        let bindings = &mut self.source.planar_faces;
+        let geometry = &mut self.geometry;
         let mut remove = None;
         for (index, recipe) in self.source.recipes.iter_mut().enumerate() {
             ui.push_id(recipe.id, |ui| {
@@ -308,6 +339,9 @@ impl Draft {
                     }
                 });
                 output_controls(ui, &mut recipe.output);
+                if matches!(recipe.output, RecipeOutput::PlanarDxf { .. }) {
+                    planar_controls(ui, recipe.id, bindings, geometry, fresh_planar);
+                }
                 ui.separator();
             });
         }
@@ -342,6 +376,8 @@ impl Draft {
             }
             ui.small("Preview shows the exact portable filenames. Collisions block the whole run.");
         });
+        self.sync_query();
+        request_planar
     }
 }
 fn number(ui: &mut egui::Ui, label: &str, v: &mut f64, suffix: &str) {
@@ -349,6 +385,110 @@ fn number(ui: &mut egui::Ui, label: &str, v: &mut f64, suffix: &str) {
         ui.label(label);
         ui.add(egui::DragValue::new(v).speed(0.1).suffix(suffix));
     });
+}
+fn planar_controls(
+    ui: &mut egui::Ui,
+    recipe: EntityId,
+    bindings: &mut Vec<PlanarFace>,
+    geometry: &mut Vec<Link>,
+    catalog: Option<&PlanarCatalog>,
+) {
+    ui.small("1:1 selected-face contours. World origin is projected onto the chosen face; the horizontal world axis is explicit. Internal contours do not imply machining depth.");
+    let Some(catalog) = catalog else {
+        ui.colored_label(
+            egui::Color32::LIGHT_YELLOW,
+            "Load current planar faces for this scope before selecting or changing a face",
+        );
+        return;
+    };
+    for part in &catalog.parts {
+        ui.push_id((part.subject.part, &part.subject.occurrence_path), |ui| {
+            ui.strong(&part.name);
+            if !part.subject.occurrence_path.is_empty() {
+                ui.small("Placed occurrence · world geometry");
+            }
+            for message in &part.diagnostics {
+                ui.colored_label(egui::Color32::LIGHT_YELLOW, message);
+            }
+            let binding = bindings
+                .iter()
+                .find(|f| f.recipe == recipe && f.subject == part.subject);
+            let intent = binding.and_then(|b| {
+                geometry
+                    .iter()
+                    .find_map(|l| l.geometry.as_ref().filter(|g| g.id == b.reference))
+            });
+            let mut selected = intent.and_then(|g| {
+                let mut matches = part.faces.iter().enumerate().filter(|(_, f)| {
+                    g.origins.is_subset(&f.intent.origins)
+                        && g.boundary.as_ref().is_none_or(|b| *b == f.boundary)
+                });
+                let first = matches.next().map(|(i, _)| i);
+                if matches.next().is_none() {
+                    first
+                } else {
+                    None
+                }
+            });
+            let before = selected;
+            crate::controls::inspector_combo(ui, "planar-face")
+                .selected_text(selected.and_then(|i| part.faces.get(i)).map_or(
+                    if binding.is_some() {
+                        "Saved face requires repair or refreshed catalog"
+                    } else {
+                        "Choose a planar face…"
+                    },
+                    |f| f.label.as_str(),
+                ))
+                .show_ui(ui, |ui| {
+                    for (i, face) in part.faces.iter().enumerate() {
+                        ui.selectable_value(&mut selected, Some(i), &face.label);
+                    }
+                });
+            if selected != before
+                && let Some(face) = selected.and_then(|i| part.faces.get(i))
+            {
+                let mut intent = face.intent.clone();
+                intent.id = EntityId::new();
+                let old = bindings
+                    .iter()
+                    .find(|b| b.recipe == recipe && b.subject == part.subject)
+                    .map(|b| b.reference);
+                bindings.retain(|b| b.recipe != recipe || b.subject != part.subject);
+                geometry.retain(|l| l.geometry.as_ref().is_none_or(|g| Some(g.id) != old));
+                bindings.push(PlanarFace {
+                    recipe,
+                    subject: part.subject.clone(),
+                    source: face.source,
+                    reference: intent.id,
+                    horizontal: PlanarAxis::WorldX,
+                });
+                geometry.push(Link {
+                    target: face.source,
+                    role: PLANAR_FACE_ROLE.into(),
+                    geometry: Some(intent),
+                });
+            }
+            if let Some(binding) = bindings
+                .iter_mut()
+                .find(|f| f.recipe == recipe && f.subject == part.subject)
+            {
+                ui.label("Horizontal axis projected into face");
+                crate::controls::inspector_combo(ui, "planar-axis")
+                    .selected_text(format!("{:?}", binding.horizontal))
+                    .show_ui(ui, |ui| {
+                        for axis in [PlanarAxis::WorldX, PlanarAxis::WorldY, PlanarAxis::WorldZ] {
+                            ui.selectable_value(&mut binding.horizontal, axis, format!("{axis:?}"));
+                        }
+                    });
+                if let Some(face) = selected.and_then(|i| part.faces.get(i))
+                    && let Err(error) = binding.horizontal.frame(face.plane)
+                {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                }
+            }
+        });
+    }
 }
 fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
     let mut kind = match output {
@@ -422,7 +562,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
             _ => RecipeOutput::Pdf,
         };
     }
-    if kind != 0 {
+    if kind != 0 && kind != 5 {
         ui.colored_label(
             egui::Color32::LIGHT_YELLOW,
             "This format is not available yet. The recipe can be saved, but it blocks Run.",
@@ -485,16 +625,37 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
             "°",
         );
     }
+    let planar = matches!(output, RecipeOutput::PlanarDxf { .. });
     if let RecipeOutput::PlanarDxf { layers, .. } | RecipeOutput::DrawingDxf { layers, .. } = output
     {
         for (label, value) in [
-            ("Cut layer", &mut layers.cut),
+            (
+                if planar {
+                    "Outer cut layer"
+                } else {
+                    "Cut layer"
+                },
+                &mut layers.cut,
+            ),
             ("Bend layer", &mut layers.bend),
-            ("Construction layer", &mut layers.construction),
+            (
+                if planar {
+                    "Circular-hole center layer"
+                } else {
+                    "Construction layer"
+                },
+                &mut layers.construction,
+            ),
             ("Annotation layer", &mut layers.annotation),
         ] {
+            if planar && label == "Bend layer" {
+                continue;
+            }
             ui.label(label);
             ui.text_edit_singleline(value);
+        }
+        if planar {
+            ui.small(format!("Internal cut loops use {}_INNER. No bend records or machining depths are inferred.",layers.cut));
         }
     }
 }

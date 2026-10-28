@@ -10,9 +10,24 @@ struct State {
     requests: Vec<(EntityId, Document, u64, EntityId, Actor, bool)>,
     replies: VecDeque<ExportReply>,
     cancelled: Vec<EntityId>,
+    catalogs: Vec<(EntityId, Document, u64, Scope, Actor)>,
 }
 struct Backend(Rc<RefCell<State>>);
 impl ExportBackend for Backend {
+    fn planar_catalog(
+        &mut self,
+        d: &Document,
+        r: u64,
+        scope: &Scope,
+        a: Actor,
+    ) -> Result<EntityId, ExportError> {
+        let id = EntityId::new();
+        self.0
+            .borrow_mut()
+            .catalogs
+            .push((id, d.clone(), r, scope.clone(), a));
+        Ok(id)
+    }
     fn preview(
         &mut self,
         d: &Document,
@@ -55,6 +70,45 @@ impl ExportBackend for Backend {
 }
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
+}
+#[test]
+fn face_catalog_is_source_scoped_read_only_and_rejects_stale_foreign_or_wrong_scope_results() {
+    let (s, mut w, state, _) = fixture();
+    let original = s.document().clone();
+    for mode in 0..4 {
+        w.planar_catalog = None;
+        w.request_planar_catalog(&s, Channel::Mcp).unwrap();
+        let (id, document, revision, scope, actor) =
+            state.borrow().catalogs.last().unwrap().clone();
+        let mut catalog = PlanarCatalog {
+            stamp: ExportStamp::capture(&document, revision).unwrap(),
+            scope,
+            parts: vec![],
+        };
+        let mut attributed = actor;
+        match mode {
+            1 => catalog.stamp.source_hash = ContentHash::of(b"foreign source"),
+            2 => {
+                catalog.scope.root = ScopeRoot::Explicit {
+                    entities: vec![EntityId::new()],
+                }
+            }
+            3 => attributed.id = "foreign actor".into(),
+            _ => {}
+        }
+        state.borrow_mut().replies.push_back(ExportReply {
+            id,
+            document: document.id(),
+            revision,
+            actor: attributed,
+            result: ExportResult::PlanarCatalog(Ok(Box::new(catalog))),
+        });
+        w.poll(&s);
+        assert_eq!(w.planar_catalog.is_some(), mode == 0);
+        assert!(!w.dirty());
+        assert_eq!(s.document(), &original);
+        assert!(!w.pending());
+    }
 }
 fn fixture() -> (Session, ExportWorkspace, Rc<RefCell<State>>, EntityId) {
     let mut d = Document::new("Shop project").unwrap();
@@ -101,6 +155,7 @@ fn preview(state: &Rc<RefCell<State>>, index: usize) -> ExportReply {
             files: 1,
         }],
         artifacts: vec![ExportArtifact {
+            planar: None,
             output: files[0].clone(),
             producer: EntityId::new(),
             solid: EntityId::new(),

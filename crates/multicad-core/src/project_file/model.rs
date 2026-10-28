@@ -328,6 +328,11 @@ impl ProjectFile {
         if crate::exchange::required_capability(&self.document) {
             required.insert(crate::exchange::CAPABILITY.into());
         }
+        if crate::exchange::sets(&self.document).any(|id| {
+            crate::exchange::read(&self.document, id).is_ok_and(|s| !s.planar_faces.is_empty())
+        }) {
+            required.insert(crate::exchange::PLANAR_CAPABILITY.into());
+        }
         if crate::drawings::required_capability(&self.document) {
             required.insert(crate::drawings::CAPABILITY.into());
         }
@@ -405,6 +410,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::constraint_sketch::source::V4_CAPABILITY.into(),
         crate::sketch_external::CAPABILITY.into(),
         crate::exchange::CAPABILITY.into(),
+        crate::exchange::PLANAR_CAPABILITY.into(),
         crate::model::CAPABILITY.into(),
         crate::model::PRIMITIVE_CAPABILITY.into(),
         crate::model::REVOLVE_CAPABILITY.into(),

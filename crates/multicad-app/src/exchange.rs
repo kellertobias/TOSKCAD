@@ -24,6 +24,16 @@ impl Backend {
     }
 }
 impl multicad_ui::exchange::ExportBackend for Backend {
+    fn planar_catalog(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        scope: &multicad_core::exchange::Scope,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.worker()?
+            .planar_catalog(document, revision, scope, actor)
+    }
     fn preview(
         &mut self,
         d: &Document,

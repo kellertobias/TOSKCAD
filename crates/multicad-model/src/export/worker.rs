@@ -14,6 +14,12 @@ use std::{
 };
 const MAX_OUTSTANDING: usize = 4;
 enum Request {
+    PlanarCatalog {
+        document: Document,
+        revision: u64,
+        scope: Scope,
+        actor: Actor,
+    },
     Preview {
         document: Document,
         revision: u64,
@@ -37,6 +43,12 @@ impl Request {
                 actor,
                 ..
             }
+            | Self::PlanarCatalog {
+                document,
+                revision,
+                actor,
+                ..
+            }
             | Self::Run {
                 document,
                 revision,
@@ -48,6 +60,7 @@ impl Request {
                 revision: *revision,
                 actor: actor.clone(),
                 run: matches!(self, Self::Run { .. }),
+                catalog: matches!(self, Self::PlanarCatalog { .. }),
             },
         }
     }
@@ -59,6 +72,7 @@ struct Info {
     revision: u64,
     actor: Actor,
     run: bool,
+    catalog: bool,
 }
 impl Info {
     fn reply(&self, result: ExportResult) -> ExportReply {
@@ -72,7 +86,9 @@ impl Info {
     }
     fn failed(&self, message: &str) -> ExportReply {
         let error = Err(failure(ErrorKind::Io, None, message));
-        self.reply(if self.run {
+        self.reply(if self.catalog {
+            ExportResult::PlanarCatalog(Err(failure(ErrorKind::Io, None, message)))
+        } else if self.run {
             ExportResult::Run(error)
         } else {
             ExportResult::Preview(Err(failure(ErrorKind::Io, None, message)))
@@ -123,6 +139,16 @@ pub struct ExportWorker {
 impl ExportWorker {
     pub fn new(exporter: Exporter) -> Result<Self, String> {
         Self::spawn(move |request, interrupt| match request {
+            Request::PlanarCatalog {
+                document,
+                revision,
+                scope,
+                ..
+            } => ExportResult::PlanarCatalog(
+                exporter
+                    .planar_catalog(&document, revision, &scope, Some(interrupt))
+                    .map(Box::new),
+            ),
             Request::Preview {
                 document,
                 revision,
@@ -241,6 +267,20 @@ impl ExportWorker {
             revision,
             expected: expected.clone(),
             directory: directory.to_owned(),
+            actor,
+        })
+    }
+    pub fn planar_catalog(
+        &self,
+        document: &Document,
+        revision: u64,
+        scope: &Scope,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.enqueue(Request::PlanarCatalog {
+            document: document.clone(),
+            revision,
+            scope: scope.clone(),
             actor,
         })
     }

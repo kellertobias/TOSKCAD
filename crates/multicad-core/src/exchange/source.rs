@@ -230,6 +230,8 @@ pub struct SetDefinition {
     pub pages: Pages,
     pub recipes: Vec<Recipe>,
     pub naming: NamingRule,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planar_faces: Vec<PlanarFace>,
 }
 impl Default for SetDefinition {
     fn default() -> Self {
@@ -238,6 +240,7 @@ impl Default for SetDefinition {
             pages: Pages::None,
             recipes: vec![Recipe::step("STEP")],
             naming: Default::default(),
+            planar_faces: vec![],
         }
     }
 }
@@ -300,6 +303,25 @@ impl SetDefinition {
         }
         for r in &self.recipes {
             r.output.validate()?;
+        }
+        if self.planar_faces.len() > MAX_PLANAR_BINDINGS {
+            return Err(DocumentError::Invalid(
+                "At most 128 explicit planar face bindings are supported".into(),
+            ));
+        }
+        let mut bindings = BTreeSet::new();
+        let mut references = BTreeSet::new();
+        for face in &self.planar_faces {
+            face.validate()?;
+            if !self
+                .recipes
+                .iter()
+                .any(|r| r.id == face.recipe && matches!(r.output, RecipeOutput::PlanarDxf { .. }))
+                || !bindings.insert((face.recipe, &face.subject))
+                || !references.insert(face.reference)
+            {
+                return Err(DocumentError::Invalid("Planar face bindings need a matching DXF recipe and unique subject/reference identities".into()));
+            }
         }
         if self.naming.template.is_empty()
             || self.naming.template.len() > 512
@@ -369,17 +391,25 @@ impl SetDefinition {
         links
     }
     pub fn entity(&self, id: EntityId, name: impl Into<String>) -> Result<Entity, DocumentError> {
+        self.entity_with_geometry(id, name, &[])
+    }
+    pub fn entity_with_geometry(
+        &self,
+        id: EntityId,
+        name: impl Into<String>,
+        geometry: &[Link],
+    ) -> Result<Entity, DocumentError> {
         self.validate()?;
         let mut entity = Entity::new(
             name,
             EntityData::ExportSet {
                 definition: Definition {
                     type_id: TYPE_ID.into(),
-                    schema_version: 1,
+                    schema_version: if self.planar_faces.is_empty() { 1 } else { 2 },
                     data: serde_json::to_value(self)
                         .map_err(|e| DocumentError::Invalid(e.to_string()))?,
                 },
-                inputs: self.inputs(),
+                inputs: super::planar::checked_inputs(self, geometry)?,
             },
         );
         entity.id = id;
@@ -397,7 +427,7 @@ pub fn read(document: &Document, id: EntityId) -> Result<SetDefinition, ExportEr
             "Selected entity is not an export set",
         ));
     };
-    if definition.type_id != TYPE_ID || definition.schema_version != 1 {
+    if definition.type_id != TYPE_ID || ![1, 2].contains(&definition.schema_version) {
         return Err(ExportError::new(
             ErrorKind::Unsupported,
             Some(id),
@@ -407,7 +437,19 @@ pub fn read(document: &Document, id: EntityId) -> Result<SetDefinition, ExportEr
     let value: SetDefinition = serde_json::from_value(definition.data.clone())
         .map_err(|e| ExportError::new(ErrorKind::Invalid, Some(id), e.to_string()))?;
     value.validate()?;
-    if *inputs != value.inputs() {
+    if definition.schema_version == 1 && !value.planar_faces.is_empty() {
+        return Err(ExportError::new(
+            ErrorKind::Invalid,
+            Some(id),
+            "Explicit planar faces require export-set schema 2",
+        ));
+    }
+    let geometry = inputs
+        .iter()
+        .filter(|l| l.role == PLANAR_FACE_ROLE)
+        .cloned()
+        .collect::<Vec<_>>();
+    if *inputs != super::planar::checked_inputs(&value, &geometry)? {
         return Err(ExportError::new(
             ErrorKind::Invalid,
             Some(id),

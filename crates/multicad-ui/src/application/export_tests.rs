@@ -40,6 +40,7 @@ impl ExportBackend for Backend {
                 files: 1,
             }],
             artifacts: vec![ExportArtifact {
+                planar: None,
                 output: file,
                 producer: EntityId::new(),
                 solid: EntityId::new(),

@@ -17,3 +17,6 @@ tempfile = "=3.27.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+dxf = "=0.6.2"

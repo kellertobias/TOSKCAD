@@ -78,6 +78,7 @@ struct Pending {
     actor: Actor,
     run: bool,
     expected: Option<PreviewKey>,
+    catalog_scope: Option<Scope>,
 }
 struct JobSummary {
     id: EntityId,
@@ -101,6 +102,7 @@ pub struct ExportWorkspace {
     captured: Vec<EntityId>,
     catalog: Catalog,
     catalog_key: Option<(EntityId, u64)>,
+    planar_catalog: Option<PlanarCatalog>,
 }
 impl ExportWorkspace {
     pub fn has_backend(&self) -> bool {
@@ -176,8 +178,16 @@ impl ExportWorkspace {
         d.sync_query();
         let id = d.id;
         let before = s.revision();
-        let prepared = prepare_set(s, d.revision, Actor::local(channel), id, &d.name, &d.source)
-            .map_err(|e| e.to_string())?;
+        let prepared = prepare_set_with_geometry(
+            s,
+            d.revision,
+            Actor::local(channel),
+            id,
+            &d.name,
+            &d.source,
+            &d.geometry,
+        )
+        .map_err(|e| e.to_string())?;
         s.commit(prepared).map_err(|e| e.to_string())?;
         self.load(s, id)?;
         Ok(if s.revision() == before {
@@ -209,10 +219,46 @@ impl ExportWorkspace {
                 actor,
                 run: false,
                 expected: None,
+                catalog_scope: None,
             },
         );
         self.scheduled = None;
         Ok("Resolving current output scope…".into())
+    }
+    pub fn request_planar_catalog(
+        &mut self,
+        s: &Session,
+        channel: Channel,
+    ) -> Result<String, String> {
+        if self.pending() {
+            return Err("Wait for the accepted output query before loading faces".into());
+        }
+        let draft = self
+            .draft
+            .as_ref()
+            .ok_or("Create or choose an export set")?;
+        let scope = draft.source.scope.clone();
+        let set = draft.id;
+        let actor = Actor::local(channel);
+        let id = self
+            .backend
+            .as_mut()
+            .ok_or("Native output service is not installed")?
+            .planar_catalog(s.document(), s.revision(), &scope, actor.clone())
+            .map_err(|e| e.to_string())?;
+        self.pending.insert(
+            id,
+            Pending {
+                document: s.document().id(),
+                revision: s.revision(),
+                set,
+                actor,
+                run: false,
+                expected: None,
+                catalog_scope: Some(scope),
+            },
+        );
+        Ok("Loading current native planar faces…".into())
     }
     fn current(&self, s: &Session) -> bool {
         !self.dirty()
@@ -301,6 +347,7 @@ impl ExportWorkspace {
                         actor,
                         run: true,
                         expected: Some(preview.key.clone()),
+                        catalog_scope: None,
                     },
                 );
                 Ok(format!(
@@ -354,44 +401,74 @@ impl ExportWorkspace {
                 continue;
             }
             match reply.result {
-                ExportResult::Preview(result) if !p.run => match result {
-                    Ok(preview) => {
-                        if preview.requested_by != p.actor
-                            || preview.key.set != p.set
-                            || preview.selection.set != p.set
-                            || preview.selection.stamp != preview.key.source
-                            || preview.key.source.document != p.document
-                            || preview.key.source.revision != p.revision
+                ExportResult::PlanarCatalog(result) if p.catalog_scope.is_some() => match result {
+                    Ok(catalog)
+                        if Some(&catalog.scope) == p.catalog_scope.as_ref()
+                            && catalog.stamp.document == p.document
+                            && catalog.stamp.revision == p.revision =>
+                    {
+                        if catalog.stamp.check(s.document(), s.revision()).is_ok()
+                            && self
+                                .draft
+                                .as_ref()
+                                .is_some_and(|d| d.id == p.set && d.source.scope == catalog.scope)
                         {
-                            self.error = Some(
-                                "Preview identity or source stamp differs from its request".into(),
-                            );
-                            continue;
+                            self.planar_catalog = Some(*catalog);
+                            self.error = None;
                         }
-                        if s.document().id() == p.document
-                            && s.revision() == p.revision
-                            && self.selected == Some(p.set)
-                            && !self.dirty()
-                        {
-                            match preview.key.source.check(s.document(), s.revision()) {
-                                Ok(()) => {
-                                    self.observed =
-                                        Some((s.document().id(), s.revision(), self.selected));
-                                    self.scheduled = None;
-                                    self.preview = Some(*preview);
-                                    self.error = None;
-                                }
-                                Err(e) => self.error = Some(e.to_string()),
-                            }
-                        }
+                    }
+                    Ok(_) => {
+                        self.error = Some(
+                            "Planar face catalog differs from its accepted source request".into(),
+                        )
                     }
                     Err(e) => {
                         if e.kind != ErrorKind::Cancelled {
                             self.error = Some(e.to_string());
-                            self.notice = Some((e.to_string(), true));
                         }
                     }
                 },
+                ExportResult::Preview(result) if !p.run && p.catalog_scope.is_none() => {
+                    match result {
+                        Ok(preview) => {
+                            if preview.requested_by != p.actor
+                                || preview.key.set != p.set
+                                || preview.selection.set != p.set
+                                || preview.selection.stamp != preview.key.source
+                                || preview.key.source.document != p.document
+                                || preview.key.source.revision != p.revision
+                            {
+                                self.error = Some(
+                                    "Preview identity or source stamp differs from its request"
+                                        .into(),
+                                );
+                                continue;
+                            }
+                            if s.document().id() == p.document
+                                && s.revision() == p.revision
+                                && self.selected == Some(p.set)
+                                && !self.dirty()
+                            {
+                                match preview.key.source.check(s.document(), s.revision()) {
+                                    Ok(()) => {
+                                        self.observed =
+                                            Some((s.document().id(), s.revision(), self.selected));
+                                        self.scheduled = None;
+                                        self.preview = Some(*preview);
+                                        self.error = None;
+                                    }
+                                    Err(e) => self.error = Some(e.to_string()),
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if e.kind != ErrorKind::Cancelled {
+                                self.error = Some(e.to_string());
+                                self.notice = Some((e.to_string(), true));
+                            }
+                        }
+                    }
+                }
                 ExportResult::Run(result) if p.run => match result {
                     Ok(receipt) => {
                         if p.expected.as_ref() != Some(&receipt.key)
@@ -483,6 +560,7 @@ impl ExportWorkspace {
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
         let mut action = None;
+        let mut load_planar = false;
         egui::Panel::left("saved-export-sets")
             .default_size(205.)
             .resizable(true)
@@ -516,7 +594,7 @@ impl ExportWorkspace {
                 });
             });
         egui::Panel::right("export-set-inspector").default_size(325.).resizable(true).show(ui,|ui|{
-   crate::controls::inspector_layout(ui);ui.heading("Export set");egui::ScrollArea::vertical().show(ui,|ui|{if let Some(draft)=&mut self.draft{draft.show(ui,s,&self.captured,&self.catalog);}else{ui.label("Choose a saved set or create one.");}
+   crate::controls::inspector_layout(ui);ui.heading("Export set");egui::ScrollArea::vertical().show(ui,|ui|{if let Some(draft)=&mut self.draft{load_planar=draft.show(ui,s,&self.captured,&self.catalog,self.planar_catalog.as_ref());}else{ui.label("Choose a saved set or create one.");}
     ui.horizontal_wrapped(|ui|{for tool in[ExportTool::SaveSet,ExportTool::Discard]{if ui.add_enabled(self.enabled(tool,s),egui::Button::new(tool.label())).on_hover_text("Edit the canonical export-set definition through one Undo step").clicked(){action=Some(tool);}}});
    });
   });
@@ -533,7 +611,7 @@ impl ExportWorkspace {
      ui.label(format!("{} matched source occurrence(s) · {} selected page(s) · revision {}",preview.selection.parts.len(),preview.selection.pages.len(),preview.key.source.revision));
      for report in &preview.recipes{let name=preview.selection.recipes.iter().find(|r|r.id==report.recipe).map_or("Recipe",|r|r.name.as_str());match &report.status{RecipeStatus::Ready=>{ui.label(format!("{name} · Ready · {} file(s)",report.files));},RecipeStatus::Empty=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Empty"));},RecipeStatus::Unsupported(reason)=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Unsupported · {reason}"));}}}
      ui.collapsing("Matched parts and occurrences",|ui|{for part in &preview.selection.parts {let path=if part.occurrence_names.is_empty(){part.name.clone()}else{format!("{} / {}",part.occurrence_names.join(" / "),part.name)};ui.label(path).on_hover_text(format!("Part {} · occurrence path {:?}",part.reference.part,part.reference.occurrence_path));}});
-     ui.separator();for artifact in &preview.artifacts{let label=match &artifact.output.subject{OutputSubject::Part(reference)=>preview.selection.parts.iter().find(|p|p.reference==*reference).map(|p|if p.occurrence_names.is_empty(){p.name.clone()}else{format!("{} · {}",p.name,p.occurrence_names.join(" / "))}).unwrap_or_else(||"Part".into()),_=>"Drawing".into()};ui.strong(label);ui.label(format!("{:.3} mm³ · {} solid(s)",artifact.volume_mm3,artifact.solid_count));ui.add(egui::Label::new(&artifact.output.filename).truncate()).on_hover_text(&artifact.output.filename);}
+     ui.separator();for artifact in &preview.artifacts{let label=match &artifact.output.subject{OutputSubject::Part(reference)=>preview.selection.parts.iter().find(|p|p.reference==*reference).map(|p|if p.occurrence_names.is_empty(){p.name.clone()}else{format!("{} · {}",p.name,p.occurrence_names.join(" / "))}).unwrap_or_else(||"Part".into()),_=>"Drawing".into()};ui.strong(label);if let Some(planar)=&artifact.planar{ui.label(format!("1:1 · {:.3} mm² · {} outer / {} inner loop(s)",planar.area_mm2,planar.outer_loops,planar.inner_loops));}else{ui.label(format!("{:.3} mm³ · {} solid(s)",artifact.volume_mm3,artifact.solid_count));}ui.add(egui::Label::new(&artifact.output.filename).truncate()).on_hover_text(&artifact.output.filename);}
      for excluded in &preview.excluded{let name=s.document().get(excluded.reference.part).map_or("Part",|e|e.name.as_str());ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("Not exported: {name} · {}",match excluded.reason{ExclusionReason::ConsumedProducer=>"consumed by a later operation",ExclusionReason::NoCurrentSolid=>"no current unsuppressed solid"}));}
      if !preview.selection.pages.is_empty(){ui.separator();for(index,page)in preview.selection.pages.iter().enumerate(){ui.label(format!("Page {} · {} · {} · {} × {} mm",index+1,page.number,page.title,page.paper_mm[0],page.paper_mm[1]));}}
      ui.collapsing("Source identities",|ui|{ui.monospace(format!("Source {}",preview.key.source.source_hash));for part in &preview.selection.parts{ui.monospace(format!("Part {} · occurrences {:?}",part.reference.part,part.reference.occurrence_path));}});
@@ -541,6 +619,15 @@ impl ExportWorkspace {
     if !self.history.is_empty(){ui.separator();ui.collapsing("Output history",|ui|{for job in &self.history{ui.label(&job.text);if let Some(directory)=&job.directory{ui.monospace(directory);if ui.small_button("Copy output directory").clicked(){ui.ctx().copy_text(directory.clone());}}ui.small(format!("Job {}",job.id));}});}
    });
   });
+        if load_planar && allow_io {
+            match self.request_planar_catalog(s, Channel::Ui) {
+                Ok(message) => {
+                    self.notice = Some((message, false));
+                    self.error = None;
+                }
+                Err(error) => self.error = Some(error),
+            }
+        }
         if let Some(tool) = action {
             match self.execute(s, tool, None, Channel::Ui) {
                 Ok(message) => {

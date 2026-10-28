@@ -48,6 +48,18 @@ pub struct ExportArtifact {
     pub bounds_mm: [[f64; 3]; 2],
     pub volume_mm3: f64,
     pub solid_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planar: Option<PlanarEvidence>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanarEvidence {
+    pub frame: crate::references::ReferenceFrame,
+    pub bounds_mm: [[f64; 2]; 2],
+    pub area_mm2: f64,
+    pub outer_loops: usize,
+    pub inner_loops: usize,
+    pub geometry_hash: ContentHash,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,6 +104,7 @@ pub struct RunReceipt {
 pub enum ExportResult {
     Preview(Result<Box<ExportPreview>, ExportError>),
     Run(Result<RunReceipt, ExportError>),
+    PlanarCatalog(Result<Box<PlanarCatalog>, ExportError>),
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

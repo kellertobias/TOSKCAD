@@ -163,100 +163,7 @@ pub fn resolve(
 ) -> Result<ResolvedSet, ExportError> {
     let definition = read(document, set)?;
     let stamp = ExportStamp::capture(document, revision)?;
-    let mut walker = Walker {
-        document,
-        parts: BTreeSet::new(),
-        steps: 0,
-    };
-    match &definition.scope.root {
-        ScopeRoot::Project => {
-            let mut members = BTreeSet::new();
-            let mut components = BTreeSet::new();
-            for entity in document.entities() {
-                match &entity.data {
-                    EntityData::Assembly { instances } => members.extend(instances.iter().copied()),
-                    EntityData::Instance { component, .. } => {
-                        components.insert(*component);
-                    }
-                    _ => {}
-                }
-            }
-            for entity in document.entities() {
-                match &entity.data {
-                    EntityData::Part { .. } => walker.visit(entity.id, &mut vec![], None)?,
-                    EntityData::Instance { .. } if !members.contains(&entity.id) => {
-                        walker.visit(entity.id, &mut vec![], None)?
-                    }
-                    EntityData::Assembly { .. } if !components.contains(&entity.id) => {
-                        walker.visit(entity.id, &mut vec![], Some(entity.id))?
-                    }
-                    _ => {}
-                }
-            }
-        }
-        ScopeRoot::Assembly { assembly } => {
-            if !matches!(
-                document.get(*assembly).map(|e| &e.data),
-                Some(EntityData::Assembly { .. })
-            ) {
-                return Err(if document.get(*assembly).is_none() {
-                    missing(*assembly, "assembly")
-                } else {
-                    invalid(*assembly, "Assembly")
-                });
-            }
-            walker.visit(*assembly, &mut vec![], Some(*assembly))?;
-        }
-        ScopeRoot::Explicit { entities } => {
-            for id in entities {
-                let Some(entity) = document.get(*id) else {
-                    return Err(missing(*id, "explicit source"));
-                };
-                if !matches!(
-                    entity.data,
-                    EntityData::Part { .. } | EntityData::Instance { .. }
-                ) {
-                    return Err(invalid(*id, "explicit Part or Instance"));
-                }
-                walker.visit(*id, &mut vec![], None)?;
-            }
-        }
-    }
-    let matched = definition
-        .scope
-        .tags
-        .as_ref()
-        .map(|q| q.select(document))
-        .transpose()?
-        .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
-    let parts = walker
-        .parts
-        .into_iter()
-        .filter(|p| matched.as_ref().is_none_or(|ids| ids.contains(&p.part)))
-        .map(|reference| {
-            let name = document
-                .get(reference.part)
-                .expect("walker validated part")
-                .name
-                .clone();
-            let occurrence_names = reference
-                .occurrence_path
-                .iter()
-                .map(|id| {
-                    document
-                        .get(*id)
-                        .expect("walker validated occurrence")
-                        .name
-                        .clone()
-                })
-                .collect();
-            ResolvedPart {
-                reference,
-                name,
-                occurrence_names,
-            }
-        })
-        .collect();
+    let parts = resolve_parts(document, &definition.scope)?;
     let book_ids: BTreeSet<_> = match &definition.pages {
         Pages::None => BTreeSet::new(),
         Pages::Project => drawings::books(document).collect(),
@@ -313,4 +220,102 @@ pub fn resolve(
         recipes: definition.recipes,
         naming: definition.naming,
     })
+}
+
+/// Resolve canonical part occurrences independently of a saved output set.
+pub fn resolve_parts(document: &Document, scope: &Scope) -> Result<Vec<ResolvedPart>, ExportError> {
+    let mut walker = Walker {
+        document,
+        parts: BTreeSet::new(),
+        steps: 0,
+    };
+    match &scope.root {
+        ScopeRoot::Project => {
+            let mut members = BTreeSet::new();
+            let mut components = BTreeSet::new();
+            for entity in document.entities() {
+                match &entity.data {
+                    EntityData::Assembly { instances } => members.extend(instances.iter().copied()),
+                    EntityData::Instance { component, .. } => {
+                        components.insert(*component);
+                    }
+                    _ => {}
+                }
+            }
+            for entity in document.entities() {
+                match &entity.data {
+                    EntityData::Part { .. } => walker.visit(entity.id, &mut vec![], None)?,
+                    EntityData::Instance { .. } if !members.contains(&entity.id) => {
+                        walker.visit(entity.id, &mut vec![], None)?
+                    }
+                    EntityData::Assembly { .. } if !components.contains(&entity.id) => {
+                        walker.visit(entity.id, &mut vec![], Some(entity.id))?
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ScopeRoot::Assembly { assembly } => {
+            if !matches!(
+                document.get(*assembly).map(|e| &e.data),
+                Some(EntityData::Assembly { .. })
+            ) {
+                return Err(if document.get(*assembly).is_none() {
+                    missing(*assembly, "assembly")
+                } else {
+                    invalid(*assembly, "Assembly")
+                });
+            }
+            walker.visit(*assembly, &mut vec![], Some(*assembly))?;
+        }
+        ScopeRoot::Explicit { entities } => {
+            for id in entities {
+                let Some(entity) = document.get(*id) else {
+                    return Err(missing(*id, "explicit source"));
+                };
+                if !matches!(
+                    entity.data,
+                    EntityData::Part { .. } | EntityData::Instance { .. }
+                ) {
+                    return Err(invalid(*id, "explicit Part or Instance"));
+                }
+                walker.visit(*id, &mut vec![], None)?;
+            }
+        }
+    }
+    let matched = scope
+        .tags
+        .as_ref()
+        .map(|q| q.select(document))
+        .transpose()?
+        .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+    let parts = walker
+        .parts
+        .into_iter()
+        .filter(|p| matched.as_ref().is_none_or(|ids| ids.contains(&p.part)))
+        .map(|reference| {
+            let name = document
+                .get(reference.part)
+                .expect("walker validated part")
+                .name
+                .clone();
+            let occurrence_names = reference
+                .occurrence_path
+                .iter()
+                .map(|id| {
+                    document
+                        .get(*id)
+                        .expect("walker validated occurrence")
+                        .name
+                        .clone()
+                })
+                .collect();
+            ResolvedPart {
+                reference,
+                name,
+                occurrence_names,
+            }
+        })
+        .collect();
+    Ok(parts)
 }

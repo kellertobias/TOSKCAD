@@ -2,6 +2,7 @@
 //! geometry and filesystem publication; display state is never an export input.
 mod evaluation;
 mod names;
+mod planar;
 mod resolve;
 mod source;
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
 };
 pub use evaluation::*;
 pub use names::*;
+pub use planar::*;
 pub use resolve::*;
 pub use source::*;
 
@@ -68,7 +70,18 @@ pub fn prepare_set(
     name: &str,
     definition: &SetDefinition,
 ) -> Result<Prepared, CommandError> {
-    let entity = definition.entity(id, name)?;
+    prepare_set_with_geometry(session, revision, actor, id, name, definition, &[])
+}
+pub fn prepare_set_with_geometry(
+    session: &Session,
+    revision: u64,
+    actor: Actor,
+    id: EntityId,
+    name: &str,
+    definition: &SetDefinition,
+    geometry: &[crate::document::Link],
+) -> Result<Prepared, CommandError> {
+    let entity = definition.entity_with_geometry(id, name, geometry)?;
     if let Some(existing) = session.document().get(id)
         && !matches!(&existing.data,EntityData::ExportSet{definition,..} if definition.type_id==TYPE_ID)
     {
