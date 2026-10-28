@@ -230,6 +230,9 @@ fn scene(
             }))
         })
         .and_then(|scene| {
+            scene.with_native_reference_report(model.stamp.source_hash, model.references.clone())
+        })
+        .and_then(|scene| {
             if !scene.is_full_model() {
                 return Ok(scene);
             }

@@ -253,6 +253,22 @@ impl SceneFeed {
             self.pending = false;
             match reply.result {
                 Ok(scene) if scene.stamp() == reply.stamp && scene.is_full_model() => {
+                    let source = match multicad_core::project_file::ContentHash::document(document)
+                    {
+                        Ok(source) => source,
+                        Err(error) => {
+                            self.error = Some(error);
+                            return;
+                        }
+                    };
+                    if scene
+                        .model_evaluation()
+                        .is_some_and(|info| info.source_hash != source)
+                    {
+                        self.error =
+                            Some("Native scene belongs to a different source snapshot".into());
+                        return;
+                    }
                     let has_references = document
                         .entities()
                         .any(|e| e.references().iter().any(|l| l.geometry.is_some()));
@@ -261,7 +277,10 @@ impl SceneFeed {
                     } else {
                         BTreeMap::new()
                     };
-                    let report = inspect(document, revision, &snapshots);
+                    let report = scene
+                        .native_reference_report(source)
+                        .cloned()
+                        .unwrap_or_else(|| inspect(document, revision, &snapshots));
                     let driving = report.for_model(document);
                     let driving_resolved =
                         driving.as_ref().is_ok_and(ReferenceReport::all_resolved);

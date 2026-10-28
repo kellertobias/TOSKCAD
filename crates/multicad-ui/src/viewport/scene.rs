@@ -465,6 +465,7 @@ pub struct Scene {
     reference_aliases: Arc<BTreeMap<EntityId, EntityId>>,
     world_bounds: Option<[Point; 2]>,
     model_evaluation: Option<Arc<multicad_core::model::ModelEvaluationInfo>>,
+    native_references: Option<Arc<NativeReferences>>,
     assembly_evaluation: Option<Arc<multicad_core::model::AssemblyEvaluationInfo>>,
     transfer_evaluation: Option<Arc<multicad_core::model::TransferEvaluationInfo>>,
     native_bounds: Option<Arc<NativeBounds>>,
@@ -472,6 +473,10 @@ pub struct Scene {
 struct NativeBounds {
     source: multicad_core::project_file::ContentHash,
     entities: BTreeMap<EntityId, [Point; 2]>,
+}
+struct NativeReferences {
+    source: multicad_core::project_file::ContentHash,
+    report: ReferenceReport,
 }
 #[derive(Clone)]
 pub struct Hit {
@@ -535,6 +540,7 @@ impl Scene {
             instances,
             world_bounds,
             model_evaluation: None,
+            native_references: None,
             assembly_evaluation: None,
             transfer_evaluation: None,
             native_bounds: None,
@@ -549,6 +555,15 @@ impl Scene {
     ) -> Result<Self, String> {
         info.validate().map_err(|error| error.to_string())?;
         if self
+            .native_references
+            .as_ref()
+            .is_some_and(|references| references.source != info.source_hash)
+        {
+            return Err(
+                "Model evaluation cannot replace the native reference report source".into(),
+            );
+        }
+        if self
             .reference_instances
             .iter()
             .any(|instance| info.consumed_bodies.contains(&instance.id))
@@ -557,6 +572,41 @@ impl Scene {
         }
         self.model_evaluation = Some(info);
         Ok(self)
+    }
+    /// Preserve exact model-derived reference results which cannot be
+    /// reconstructed from display topology descriptors. The caller still owns
+    /// matching the source hash to the canonical document before consumption.
+    pub fn with_native_reference_report(
+        mut self,
+        source: multicad_core::project_file::ContentHash,
+        report: ReferenceReport,
+    ) -> Result<Self, String> {
+        if report.revision != self.stamp.revision
+            || self
+                .model_evaluation
+                .as_ref()
+                .is_none_or(|info| info.source_hash != source)
+        {
+            return Err("Native reference report differs from its scene source or revision".into());
+        }
+        self.native_references = Some(Arc::new(NativeReferences { source, report }));
+        Ok(self)
+    }
+    pub fn native_reference_report(
+        &self,
+        source: multicad_core::project_file::ContentHash,
+    ) -> Option<&ReferenceReport> {
+        self.native_references
+            .as_ref()
+            .filter(|info| {
+                info.source == source
+                    && info.report.revision == self.stamp.revision
+                    && self
+                        .model_evaluation
+                        .as_ref()
+                        .is_some_and(|model| model.source_hash == source)
+            })
+            .map(|info| &info.report)
     }
     /// Exact native leaf paths and poses for a complete current assembly model.
     pub fn with_assembly_evaluation(
@@ -883,6 +933,7 @@ impl Scene {
         view.reference_instances = self.reference_instances.clone();
         view.reference_aliases = self.reference_aliases.clone();
         view.model_evaluation = self.model_evaluation.clone();
+        view.native_references = self.native_references.clone();
         view.assembly_evaluation = self.assembly_evaluation.clone();
         view.transfer_evaluation = self.transfer_evaluation.clone();
         view.native_bounds = self.native_bounds.clone();
