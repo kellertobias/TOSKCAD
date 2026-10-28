@@ -2,16 +2,19 @@
 use super::*;
 impl ModelToolController {
     pub fn termination_picking(&self) -> bool {
-        matches!(&self.form,Some(ModelForm::Extrude(panel)) if panel.termination_picking())
+        self.form
+            .as_ref()
+            .and_then(ModelForm::extrusion)
+            .is_some_and(ExtrudePanel::termination_picking)
     }
     pub fn termination_highlight(&self) -> Option<crate::viewport::Selection> {
         if self.error.is_some() {
             return None;
         }
-        match &self.form {
-            Some(ModelForm::Extrude(panel)) => panel.termination_highlight(),
-            _ => None,
-        }
+        self.form
+            .as_ref()
+            .and_then(ModelForm::extrusion)
+            .and_then(ExtrudePanel::termination_highlight)
     }
     pub fn termination_viewport(
         &mut self,
@@ -24,14 +27,14 @@ impl ModelToolController {
         if session.validate_preview(&scope.session).is_err() {
             return false;
         }
-        let changed = match &mut self.form {
-            Some(ModelForm::Extrude(panel)) => panel.termination_viewport(
+        let changed = match self.form.as_mut().and_then(ModelForm::extrusion_mut) {
+            Some(panel) => panel.termination_viewport(
                 session.document(),
                 session.revision(),
                 scope.source,
                 view,
             ),
-            _ => false,
+            None => false,
         };
         if changed {
             self.invalidate();

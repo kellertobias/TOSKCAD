@@ -421,19 +421,12 @@ impl SketchEditor {
     pub fn feature_edit_ready(
         &self,
         session: &Session,
-        feed: &crate::viewport::SceneFeed,
+        _feed: &crate::viewport::SceneFeed,
         feature: EntityId,
     ) -> bool {
         self.primitive_ready()
             && !self.editing
             && crate::modeling::ModelToolController::editable(session.document(), feature)
-            && feed.is_current(session.document().id(), session.revision())
-            && feed
-                .references()
-                .is_some_and(|evaluation| evaluation.report.all_resolved())
-            && feed
-                .visible()
-                .is_some_and(|scene| scene.model_evaluation().is_some())
     }
     pub fn begin_feature_edit(
         &mut self,
@@ -444,19 +437,20 @@ impl SketchEditor {
         channel: Channel,
     ) -> Result<(), String> {
         if !self.feature_edit_ready(session, feed, feature) {
-            return Err("Select a supported applied feature and wait for a current native model with resolved references; apply or cancel pending edits first".into());
-        }
-        let info = feed
-            .visible()
-            .and_then(|scene| scene.model_evaluation())
-            .ok_or("The current native model has no source evaluation receipt")?;
-        if info.source_hash
-            != multicad_core::project_file::ContentHash::document(session.document())?
-        {
-            return Err("The native model belongs to different source content; rebuild before editing a feature".into());
+            return Err("Select a supported readable applied feature and apply or cancel pending edits before opening its saved controls".into());
         }
         self.model
             .begin_existing(session, resources, feature, channel)?;
+        if feed.is_current(session.document().id(), session.revision())
+            && let Some(scene) = feed.visible()
+        {
+            let _ = self.model.set_feature_context(session, resources, scene);
+        } else {
+            self.model.source_only_context(
+                feed.error()
+                    .unwrap_or("The current native model is not ready"),
+            );
+        }
         self.message = "Edit feature · change controls, then Preview the downstream model".into();
         Ok(())
     }
@@ -1638,6 +1632,9 @@ impl SketchEditor {
         self.model.poll(session, resources);
         if feed.is_current(session.document().id(), session.revision()) {
             self.model.canonical_ready(session);
+            if let Some(scene) = feed.visible() {
+                self.model.refresh_source_context(session, resources, scene);
+            }
         }
         if self.model.pending() {
             ui.ctx()
@@ -1833,7 +1830,7 @@ impl SketchEditor {
                         if self.repair.has_pending() {self.tool=None;self.clear_drawing_progress();self.moving=false;self.cancel_move();}
                         if let Some((feature,latest))=self.selected_applied_feature(session.document()) {
                             let ready=self.feature_edit_ready(session,feed,feature);
-                            if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this applied producer's saved controls; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires a supported unsuppressed feature, current native model, resolved references, and no pending tool").clicked()
+                            if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this producer's saved controls or its recorded operation group; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires an installed native modeling provider, a supported readable source feature, and no pending tool").clicked()
                                 && let Err(error)=self.begin_feature_edit(session,resources,feed,feature,Channel::Ui) {self.message=error;}
                             if self.model.active() {return;}
                         }

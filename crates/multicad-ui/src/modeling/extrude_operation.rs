@@ -481,8 +481,16 @@ impl CutDiscovery {
 #[derive(Default)]
 pub(super) struct BooleanIdentities {
     features: BTreeMap<EntityId, EntityId>,
+    group: Option<model::ExtrudeGroupDraft>,
 }
 impl BooleanIdentities {
+    pub fn new(document: &Document) -> Self {
+        let name = super::names::GeneratedNames::new(document).numbered("Extrusion operation", "");
+        Self {
+            features: BTreeMap::new(),
+            group: Some(model::ExtrudeGroupDraft::new(name, None)),
+        }
+    }
     pub fn compose(
         &mut self,
         extrusion: ExtrudeRequest,
@@ -500,6 +508,11 @@ impl BooleanIdentities {
             return Err("No affected bodies; change the extent or choose explicit targets".into());
         }
         let mut request = ExtrudeBooleanRequest::new(extrusion, operation, targets, keep_tools);
+        request.group = Some(
+            self.group
+                .get_or_insert_with(|| model::ExtrudeGroupDraft::new("Extrusion operation", None))
+                .clone(),
+        );
         for boolean in &mut request.booleans {
             boolean.feature = *self.features.entry(boolean.target.body).or_default();
         }

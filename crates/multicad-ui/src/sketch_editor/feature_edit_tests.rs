@@ -192,14 +192,41 @@ fn inspector_opens_saved_feature_controls_and_preview_cancel_preserves_source() 
         })
         .unwrap();
     session.commit(prepared).unwrap();
-    assert!(!editor.feature_edit_ready(&session, &feed, request.feature));
+    assert!(editor.feature_edit_ready(&session, &feed, request.feature));
+    editor
+        .begin_feature_edit(
+            &session,
+            &Default::default(),
+            &feed,
+            request.feature,
+            Channel::Ui,
+        )
+        .unwrap();
+    assert!(editor.model_active());
+    assert!(
+        !editor.model_can_apply(&session, &Default::default()),
+        "The stale canonical scene cannot authorize an edit"
+    );
+    editor
+        .preview_model(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    editor.poll_model(&session, &Default::default());
+    assert!(
+        editor.model_can_apply(&session, &Default::default()),
+        "A separate fresh candidate can validate the saved source controls"
+    );
+    editor.cancel_model();
 }
 #[test]
-fn edit_action_requires_native_receipts_and_authenticates_hash_at_invocation() {
+fn source_controls_open_without_native_context_but_fresh_preview_metadata_is_mandatory() {
     let (session, request) = fixture();
     let mut editor = SketchEditor::default();
-    editor.set_model_backend(Box::<Backend>::default());
     for missing_info in [true, false] {
+        editor.set_model_backend(Box::new(Backend {
+            missing_info,
+            wrong_hash: true,
+            ..Default::default()
+        }));
         let mut feed = SceneFeed::default();
         feed.set_backend(Box::new(Backend {
             missing_info,
@@ -207,21 +234,26 @@ fn edit_action_requires_native_receipts_and_authenticates_hash_at_invocation() {
             ..Default::default()
         }));
         feed.tick(session.document(), session.revision());
-        assert_eq!(
-            editor.feature_edit_ready(&session, &feed, request.feature),
-            !missing_info
-        );
+        assert!(editor.feature_edit_ready(&session, &feed, request.feature));
+        editor
+            .begin_feature_edit(
+                &session,
+                &Default::default(),
+                &feed,
+                request.feature,
+                Channel::Ui,
+            )
+            .unwrap();
+        assert!(editor.model_active());
+        assert!(!editor.model_can_apply(&session, &Default::default()));
+        editor
+            .preview_model(&session, &Default::default(), Channel::Ui)
+            .unwrap();
+        editor.poll_model(&session, &Default::default());
         assert!(
-            editor
-                .begin_feature_edit(
-                    &session,
-                    &Default::default(),
-                    &feed,
-                    request.feature,
-                    Channel::Ui
-                )
-                .is_err()
+            !editor.model_can_apply(&session, &Default::default()),
+            "Missing or foreign candidate metadata must still reject Apply"
         );
-        assert!(!editor.model_active());
+        editor.cancel_model();
     }
 }

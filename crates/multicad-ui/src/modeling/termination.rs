@@ -1,7 +1,7 @@
 //! Source-neutral associative end controls and current canonical viewer picks.
 //! Stored face intent remains on the shared FaceInput link; no display frame,
 //! occurrence transform or arbitrary inherited anchor is baked into source.
-use super::dimension::DimensionField;
+use super::{ExtrudeCapabilities, dimension::DimensionField};
 use crate::{
     camera::Camera,
     controls, egui,
@@ -183,9 +183,9 @@ impl EndCondition {
         ui: &mut egui::Ui,
         document: &Document,
         label: &str,
-        planes: bool,
-        faces: bool,
+        capabilities: ExtrudeCapabilities,
         picking: bool,
+        can_pick: bool,
     ) -> EndAction {
         let mut action = EndAction {
             changed: false,
@@ -198,8 +198,8 @@ impl EndCondition {
             .show_ui(ui, |ui| {
                 for (kind, enabled) in [
                     (EndKind::Distance, true),
-                    (EndKind::Plane, planes),
-                    (EndKind::Face, faces),
+                    (EndKind::Plane, capabilities.to_plane),
+                    (EndKind::Face, capabilities.to_face),
                 ] {
                     ui.add_enabled_ui(enabled, |ui| {
                         action.changed |= ui
@@ -240,7 +240,7 @@ impl EndCondition {
         }
         if self.kind != EndKind::Distance {
             if picking{if ui.button("Cancel target selection").on_hover_text("Keep the prior end target without changing document source").clicked(){action.cancel=true;}}
-            else if ui.button(if self.kind==EndKind::Plane{"Pick plane in viewer"}else{"Pick face in viewer"}).on_hover_text("Select on the fresh canonical model; candidate and stale geometry cannot become end intent").clicked(){action.pick=Some(self.kind);}
+            else if ui.add_enabled(can_pick,egui::Button::new(if self.kind==EndKind::Plane{"Pick plane in viewer"}else{"Pick face in viewer"})).on_hover_text("Select on the fresh canonical model; candidate and stale geometry cannot become end intent").on_disabled_hover_text("Viewer picking requires a source-current native model; saved controls and existing plane selection remain available").clicked(){action.pick=Some(self.kind);}
         }
         action
     }

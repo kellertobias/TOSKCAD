@@ -260,6 +260,14 @@ fn operation_and_override_changes_discard_old_queries_and_stable_target_producer
     let first = controller.candidate.as_ref().unwrap().outputs.clone();
     let guard = state.lock().unwrap();
     let (candidate, _, stamp) = guard.requests[2].clone();
+    let group = model::extrude_group_owner(&candidate, first[0].feature)
+        .unwrap()
+        .unwrap();
+    let capture = model::read_extrude_group(&candidate, group)
+        .unwrap()
+        .captured_scope
+        .unwrap();
+    assert_eq!(capture.include, vec![targets[1].body]);
     let tools = guard.requests[1]
         .0
         .entities()
@@ -282,6 +290,15 @@ fn operation_and_override_changes_discard_old_queries_and_stable_target_producer
         .preview(&session, &Default::default(), Channel::Ui)
         .unwrap();
     let second = &controller.candidate.as_ref().unwrap().outputs;
+    assert_eq!(
+        model::extrude_group_owner(
+            controller.candidate.as_ref().unwrap().prepared.document(),
+            second[0].feature
+        )
+        .unwrap(),
+        Some(group),
+        "Changing operation or repeating Preview must retain the operator identity"
+    );
     assert_eq!(
         first
             .iter()

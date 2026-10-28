@@ -16,15 +16,14 @@ impl ModelToolController {
         resources: &ProjectResources,
         scene: &Scene,
     ) -> Result<(), String> {
-        self.current(session, resources, true)?;
-        let result = self
-            .operations
-            .as_mut()
-            .ok_or("Start a new extrusion before choosing operation targets")?
-            .set_context(session.document(), session.revision(), scene);
-        // A new context must not preserve a receipt prepared with different
-        // target choices, even if an external caller refreshes it later.
-        self.operation_changed();
+        let result = (|| {
+            self.verify_context(session, resources, scene)?;
+            self.operations
+                .as_mut()
+                .ok_or("Start a new extrusion before choosing operation targets")?
+                .set_context(session.document(), session.revision(), scene)
+        })();
+        self.context_result(scene.stamp(), &result);
         result
     }
     pub(super) fn submit_extrusion(
@@ -133,12 +132,21 @@ impl ModelToolController {
             return Err("The extrusion operation changed; Preview again".into());
         }
         controls.receive(selection.clone());
-        let request = self.identities.compose(
+        let mut request = self.identities.compose(
             discovery.cut.extrusion().clone(),
             Operation::Cut,
             selection.targets,
             controls.keep_tools,
         )?;
+        request
+            .group
+            .as_mut()
+            .expect("pinned operation record")
+            .captured_scope = Some(multicad_core::model::ExtrudeCapturedScope {
+            component: controls.component,
+            include: controls.include.iter().copied().collect(),
+            exclude: controls.exclude.iter().copied().collect(),
+        });
         self.submit_final(
             session,
             resources,

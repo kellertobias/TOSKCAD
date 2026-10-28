@@ -2,6 +2,7 @@ use super::{
     ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel, FormStamp, PreviewState,
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
+    group_edit::GroupEditPanel,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
     split::{SplitEvent, SplitPanel},
@@ -25,6 +26,7 @@ pub enum ModelRequest {
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
     Split(Box<model::SplitRequest>),
+    ExtrudeGroupEdit(Box<model::ExtrudeGroupEdit>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -97,6 +99,11 @@ impl ModelRequest {
             }
             Self::Split(request) => {
                 model::prepare_split(session, session.revision(), actor, request)
+            }
+            Self::ExtrudeGroupEdit(_) => {
+                return Err(
+                    "Reopen the recorded extrusion operation before editing its target set".into(),
+                );
             }
         }
         .map_err(|error| error.to_string())
@@ -173,6 +180,7 @@ pub(super) enum ModelForm {
     Boolean(Box<BooleanPanel>),
     BooleanEdit(Box<BooleanEditPanel>),
     Split(Box<SplitPanel>),
+    ExtrudeGroup(Box<GroupEditPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -183,6 +191,7 @@ impl ModelForm {
             Self::Boolean(panel) => panel.stamp(),
             Self::BooleanEdit(panel) => panel.stamp(),
             Self::Split(panel) => panel.stamp(),
+            Self::ExtrudeGroup(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -193,6 +202,7 @@ impl ModelForm {
             Self::Boolean(_) => "Boolean",
             Self::BooleanEdit(_) => "Boolean",
             Self::Split(_) => "Split",
+            Self::ExtrudeGroup(_) => "Extrusion operation",
         }
     }
     pub fn request(
@@ -219,6 +229,9 @@ impl ModelForm {
             Self::Split(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Split(Box::new(request))),
+            Self::ExtrudeGroup(panel) => panel
+                .request(document, capabilities)
+                .map(|request| ModelRequest::ExtrudeGroupEdit(Box::new(request))),
         }
     }
     pub fn show(
@@ -255,6 +268,21 @@ impl ModelForm {
                     SplitEvent::Apply => ModelEvent::Apply,
                     SplitEvent::Cancel => ModelEvent::Cancel,
                 }),
+            Self::ExtrudeGroup(panel) => panel.show(ui, document, capabilities, preview),
+        }
+    }
+    pub fn extrusion(&self) -> Option<&ExtrudePanel> {
+        match self {
+            Self::Extrude(panel) => Some(panel),
+            Self::ExtrudeGroup(panel) => Some(&panel.extrusion),
+            _ => None,
+        }
+    }
+    pub fn extrusion_mut(&mut self) -> Option<&mut ExtrudePanel> {
+        match self {
+            Self::Extrude(panel) => Some(panel),
+            Self::ExtrudeGroup(panel) => Some(&mut panel.extrusion),
+            _ => None,
         }
     }
 }

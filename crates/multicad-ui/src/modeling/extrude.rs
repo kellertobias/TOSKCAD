@@ -227,6 +227,7 @@ impl Draft {
 pub struct ExtrudePanel {
     draft: Option<Draft>,
     error: Option<String>,
+    picking_available: bool,
 }
 impl ExtrudePanel {
     /// Called once when entering the tool, never from painting. Each selected
@@ -284,6 +285,12 @@ impl ExtrudePanel {
         }
         self.error = None;
     }
+    pub(crate) fn set_picking_available(&mut self, available: bool) {
+        self.picking_available = available;
+        if !available && let Some(draft) = &mut self.draft {
+            draft.picker.cancel();
+        }
+    }
     pub fn stamp(&self) -> Option<FormStamp> {
         self.draft.as_ref().map(|draft| draft.stamp)
     }
@@ -308,6 +315,9 @@ impl ExtrudePanel {
         source_hash: ContentHash,
         view: TerminationViewport<'_>,
     ) -> bool {
+        if !self.picking_available {
+            return false;
+        }
         let Some(draft) = self.draft.as_mut() else {
             return false;
         };
@@ -411,6 +421,7 @@ impl ExtrudePanel {
                     &mut draft.forward,
                     &mut draft.picker,
                     capabilities,
+                    self.picking_available,
                 )
             }
             ExtentChoice::TwoSided => {
@@ -421,6 +432,7 @@ impl ExtrudePanel {
                     &mut draft.forward,
                     &mut draft.picker,
                     capabilities,
+                    self.picking_available,
                 );
                 ui.separator();
                 changed |= show_end(
@@ -430,6 +442,7 @@ impl ExtrudePanel {
                     &mut draft.backward,
                     &mut draft.picker,
                     capabilities,
+                    self.picking_available,
                 );
             }
             ExtentChoice::Symmetric => {
@@ -562,16 +575,10 @@ fn show_end(
     field: &mut EndCondition,
     picker: &mut EndPicker,
     capabilities: ExtrudeCapabilities,
+    can_pick: bool,
 ) -> bool {
     let active = picker.active.is_some_and(|(current, _)| current == side);
-    let action = field.show(
-        ui,
-        document,
-        label,
-        capabilities.to_plane,
-        capabilities.to_face,
-        active,
-    );
+    let action = field.show(ui, document, label, capabilities, active, can_pick);
     if action.changed && active || action.cancel {
         picker.cancel();
     }

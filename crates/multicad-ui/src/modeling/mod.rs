@@ -8,6 +8,9 @@ mod dimension;
 mod extrude;
 mod extrude_operation;
 mod form;
+mod group_edit;
+#[cfg(test)]
+mod group_fixture;
 mod names;
 mod primitive;
 mod revolve;

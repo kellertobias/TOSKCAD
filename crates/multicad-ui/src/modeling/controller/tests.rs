@@ -667,6 +667,8 @@ fn consumption_proof_tracks_the_current_producer_version_instead_of_hiding_futur
 
 #[path = "edit_tests.rs"]
 mod edit_tests;
+#[path = "group_tests.rs"]
+mod group_tests;
 #[path = "operation_tests.rs"]
 mod operation_tests;
 
