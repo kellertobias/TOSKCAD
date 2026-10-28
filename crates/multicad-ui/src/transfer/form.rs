@@ -14,7 +14,10 @@ use multicad_core::{
     },
     references::GeometryIntent,
 };
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SourceMode {
     Circles,
@@ -36,6 +39,10 @@ pub(super) struct Choice {
     pub component: EntityId,
     pub producer: EntityId,
     pub label: String,
+    component_name: String,
+    discriminator: String,
+    ambiguous_name: bool,
+    help: String,
 }
 pub(super) struct Target {
     pub id: EntityId,
@@ -109,11 +116,13 @@ impl Form {
     ) -> Result<Self, String> {
         let source = current_producer(document, request.source.component)
             .ok()
-            .map(|producer| Choice {
-                label: path_name(document, &request.source.path),
-                path: request.source.path,
-                component: request.source.component,
-                producer,
+            .map(|producer| {
+                make_choice(
+                    document,
+                    request.source.path,
+                    request.source.component,
+                    producer,
+                )
             });
         let ids = request.source.selection.captures();
         let mode = match request.source.selection {
@@ -356,8 +365,8 @@ impl Form {
             "transfer-source",
             "Source occurrence",
             &mut source,
-            &self.choices,
-            None,
+            &self.choices.iter().collect::<Vec<_>>(),
+            self.source.as_ref().map(|source| source.label.clone()),
         ) && let Some(path) = source
         {
             if let Err(e) = self.set_occurrence(TransferLane::Source, path) {
@@ -382,7 +391,7 @@ impl Form {
                         ui.close();
                     }
                 }
-            });
+            }).response.on_hover_text("Choose individual circular features, all circular holes on a face, or the face's closed outer boundary.");
         if self.mode != old {
             self.captures.clear();
             self.replace_capture = None;
@@ -409,6 +418,7 @@ impl Form {
                     "Select source geometry"
                 }),
             )
+            .on_hover_text("Pick exact source geometry in the selected Part. Circles supply hole centers; face modes supply a hole pattern or outer outline.")
             .clicked()
         {
             self.pick = if self.pick == Some(TransferLane::Source) {
@@ -485,7 +495,6 @@ impl Form {
                         !self.editing
                             || target.input.as_ref().is_some_and(|i| i.body == c.component)
                     })
-                    .cloned()
                     .collect::<Vec<_>>();
                 let mut path = target.path.clone();
                 if choose(
@@ -494,7 +503,7 @@ impl Form {
                     "Occurrence",
                     &mut path,
                     &choices,
-                    target.path.as_ref().map(|p| path_name(document, p)),
+                    target.path.as_ref().map(|p|{let component=target.input.as_ref().map_or(p.root,|i|i.body);format!("{} · {}",document.get(component).map_or("Missing Part",|e|e.name.as_str()),path_name(document,p))}),
                 ) && let Some(choice) = choices.iter().find(|c| Some(&c.path) == path.as_ref())
                 {
                     if target
@@ -531,6 +540,7 @@ impl Form {
                         } else {
                             "Select receiving face"
                         })
+                        .on_hover_text("Choose the receiving planar face before the transferred cuts. Configure cut direction and depth below.")
                         .clicked()
                     {
                         self.pick = Some(lane);
@@ -654,27 +664,26 @@ fn choose(
     id: &str,
     label: &str,
     path: &mut Option<OccurrencePath>,
-    choices: &[Choice],
+    choices: &[&Choice],
     fallback: Option<String>,
 ) -> bool {
     ui.label(label);
     let mut changed = false;
-    let name = path
+    let selected = path
         .as_ref()
-        .and_then(|p| {
-            choices
-                .iter()
-                .find(|c| &c.path == p)
-                .map(|c| c.label.clone())
-        })
+        .and_then(|path| choices.iter().find(|choice| &choice.path == path));
+    let name = selected
+        .map(|choice| selected_name(ui, choice))
         .or(fallback)
         .unwrap_or("Choose Part occurrence…".into());
+    let help=selected.map(|choice|choice.help.clone()).unwrap_or_else(||path.as_ref().map_or("Choose an authored Part occurrence. The path selects which copy supplies the assembly placement.".into(),|path|format!("Stored occurrence path IDs: {}",path_ids(path))));
     controls::inspector_combo(ui, id)
         .selected_text(name)
         .show_ui(ui, |ui| {
             for choice in choices {
                 if ui
                     .selectable_label(path.as_ref() == Some(&choice.path), &choice.label)
+                    .on_hover_text(&choice.help)
                     .clicked()
                 {
                     changed |= path.as_ref() != Some(&choice.path);
@@ -682,7 +691,9 @@ fn choose(
                     ui.close();
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text(help);
     changed
 }
 pub(super) fn catalogue(
@@ -699,7 +710,9 @@ pub(super) fn catalogue_scene(
         return authored_catalogue(document);
     };
     let mut seen = BTreeSet::new();
-    info.leaves.iter().map(|leaf|{if !matches!(document.get(leaf.component).map(|e|&e.data),Some(EntityData::Part{..}))||!seen.insert(leaf.path.clone()){return Err("Native transfer catalogue contains a missing Part or duplicate occurrence path".into());}Ok(Choice{path:leaf.path.clone(),component:leaf.component,producer:leaf.producer,label:path_name(document,&leaf.path)})}).collect()
+    let mut choices=info.leaves.iter().map(|leaf|{if !matches!(document.get(leaf.component).map(|e|&e.data),Some(EntityData::Part{..}))||!seen.insert(leaf.path.clone()){return Err("Native transfer catalogue contains a missing Part or duplicate occurrence path".into());}Ok(make_choice(document,leaf.path.clone(),leaf.component,leaf.producer))}).collect::<Result<Vec<_>,String>>()?;
+    decorate_choices(document, &mut choices);
+    Ok(choices)
 }
 pub(super) fn path_name(document: &Document, path: &OccurrencePath) -> String {
     std::iter::once(path.root)
@@ -733,16 +746,304 @@ fn current_producer(document: &Document, part: EntityId) -> Result<EntityId, Str
 }
 
 fn authored_catalogue(document: &Document) -> Result<Vec<Choice>, String> {
-    model::transfer_occurrence_catalog(document)
+    let mut choices = model::transfer_occurrence_catalog(document)
         .map_err(|e| e.to_string())?
         .into_iter()
-        .map(|entry| {
-            Ok(Choice {
-                label: path_name(document, &entry.path),
-                path: entry.path,
-                component: entry.component,
-                producer: entry.producer,
-            })
+        .map(|entry| make_choice(document, entry.path, entry.component, entry.producer))
+        .collect::<Vec<_>>();
+    decorate_choices(document, &mut choices);
+    Ok(choices)
+}
+fn path_ids(path: &OccurrencePath) -> String {
+    std::iter::once(path.root)
+        .chain(path.members.iter().copied())
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+fn make_choice(
+    document: &Document,
+    path: OccurrencePath,
+    component: EntityId,
+    producer: EntityId,
+) -> Choice {
+    let component_name = document
+        .get(component)
+        .map_or("Missing Part".into(), |e| e.name.clone());
+    let ids = path_ids(&path);
+    let digest = multicad_core::project_file::ContentHash::of(ids.as_bytes()).to_string();
+    let discriminator = digest[..6].to_owned();
+    let readable = path_name(document, &path);
+    Choice {
+        label: format!("{component_name} · {readable} [{discriminator}]"),
+        help: format!(
+            "Part: {component_name}\nOccurrence: {readable}\nPath ID: {discriminator}\nFull path IDs: {ids}\nComponent ID: {component}"
+        ),
+        path,
+        component,
+        producer,
+        component_name,
+        discriminator,
+        ambiguous_name: true,
+    }
+}
+fn decorate_choices(document: &Document, choices: &mut [Choice]) {
+    let digests = choices
+        .iter()
+        .map(|choice| {
+            multicad_core::project_file::ContentHash::of(path_ids(&choice.path).as_bytes())
+                .to_string()
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let mut resolved = vec![false; choices.len()];
+    let mut name_counts = BTreeMap::new();
+    for choice in choices.iter() {
+        *name_counts
+            .entry(choice.component_name.clone())
+            .or_insert(0usize) += 1;
+    }
+    for width in (6..=64).step_by(2) {
+        let mut counts = BTreeMap::new();
+        for hash in &digests {
+            *counts.entry(&hash[..width]).or_insert(0usize) += 1;
+        }
+        for (i, choice) in choices.iter_mut().enumerate() {
+            if !resolved[i] && counts[&digests[i][..width]] == 1 {
+                choice.discriminator = digests[i][..width].into();
+                resolved[i] = true;
+            }
+        }
+        if resolved.iter().all(|resolved| *resolved) {
+            break;
+        }
+    }
+    for (i, choice) in choices.iter_mut().enumerate() {
+        if !resolved[i] {
+            choice.discriminator = path_ids(&choice.path);
+        }
+        choice.ambiguous_name = name_counts[&choice.component_name] > 1;
+        let readable = path_name(document, &choice.path);
+        choice.label = format!(
+            "{} · {readable} [{}]",
+            choice.component_name, choice.discriminator
+        );
+        choice.help = format!(
+            "Part: {}\nOccurrence: {readable}\nPath ID: {}\nFull path IDs: {}\nComponent ID: {}",
+            choice.component_name,
+            choice.discriminator,
+            path_ids(&choice.path),
+            choice.component
+        );
+    }
+}
+fn selected_name(ui: &egui::Ui, choice: &Choice) -> String {
+    if !choice.ambiguous_name {
+        return choice.component_name.clone();
+    }
+    let suffix = format!(" ·{}", choice.discriminator);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let width = ui.available_width().min(220.) - 28.;
+    let measure = |text: String| {
+        ui.painter()
+            .layout_no_wrap(text, font.clone(), ui.visuals().text_color())
+            .size()
+            .x
+    };
+    let mut name = choice.component_name.clone();
+    if measure(format!("{name}{suffix}")) <= width {
+        return format!("{name}{suffix}");
+    }
+    while name.chars().count() > 1 && measure(format!("{name}…{suffix}")) > width {
+        name.pop();
+    }
+    format!("{name}…{suffix}")
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{
+            AssemblyRequest, ComponentPlacementRequest, PrimitiveParameters, PrimitiveRequest,
+            length,
+        },
+    };
+    fn fixture() -> (Document, Vec<EntityId>) {
+        let mut session =
+            Session::new(Document::new("Readable assembly choices").unwrap()).unwrap();
+        let actor = || Actor::local(Channel::Ui);
+        let mut parts = vec![];
+        let mut members = vec![];
+        for name in [
+            "Independent drawer rail",
+            "Wood receiver",
+            "Printed receiver",
+            "Sheet receiver",
+        ] {
+            let part = PrimitiveRequest::new(
+                name,
+                PrimitiveParameters::Box {
+                    size: [length(10.), length(10.), length(10.)],
+                    frame: Default::default(),
+                },
+            );
+            session
+                .commit(
+                    model::prepare_primitive(&session, session.revision(), actor(), &part)
+                        .unwrap()
+                        .prepared,
+                )
+                .unwrap();
+            parts.push(part.body);
+            let member = ComponentPlacementRequest::new(part.body, Default::default());
+            session
+                .commit(
+                    model::prepare_place_component(&session, session.revision(), actor(), &member)
+                        .unwrap()
+                        .prepared,
+                )
+                .unwrap();
+            members.push(member.instance);
+        }
+        let assembly = AssemblyRequest::new("Fixture members", members, parts.clone());
+        session
+            .commit(
+                model::prepare_assembly(&session, session.revision(), actor(), &assembly)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        for _ in 0..2 {
+            let root = ComponentPlacementRequest::new(assembly.assembly, Default::default());
+            session
+                .commit(
+                    model::prepare_place_component(&session, session.revision(), actor(), &root)
+                        .unwrap()
+                        .prepared,
+                )
+                .unwrap();
+        }
+        (session.document().clone(), parts)
+    }
+    #[test]
+    fn identical_instance_names_show_part_first_unique_copy_ids_and_full_hover_paths() {
+        let (document, parts) = fixture();
+        let choices = authored_catalogue(&document).unwrap();
+        assert_eq!(choices.len(), 8);
+        let original = model::transfer_occurrence_catalog(&document)
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.path, c.component, c.producer))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            choices
+                .iter()
+                .map(|c| (c.path.clone(), c.component, c.producer))
+                .collect::<BTreeSet<_>>(),
+            original
+        );
+        assert!(
+            choices
+                .iter()
+                .all(|c| path_name(&document, &c.path) == "Placed component / Placed component")
+        );
+        assert_eq!(
+            choices
+                .iter()
+                .map(|c| &c.label)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            8
+        );
+        assert_eq!(
+            choices
+                .iter()
+                .map(|c| &c.discriminator)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            8
+        );
+        for part in parts {
+            let same = choices
+                .iter()
+                .filter(|c| c.component == part)
+                .collect::<Vec<_>>();
+            assert_eq!(same.len(), 2);
+            let name = &document.get(part).unwrap().name;
+            for choice in &same {
+                assert!(choice.label.starts_with(name));
+                assert!(choice.label.contains("Placed component / Placed component"));
+                assert!(
+                    choice
+                        .label
+                        .ends_with(&format!("[{}]", choice.discriminator))
+                );
+                for id in
+                    std::iter::once(choice.path.root).chain(choice.path.members.iter().copied())
+                {
+                    assert!(choice.help.contains(&id.to_string()));
+                }
+                assert!(choice.help.contains(&part.to_string()));
+            }
+            assert_ne!(same[0].label, same[1].label);
+        }
+        let mut reordered = choices.clone();
+        reordered.reverse();
+        decorate_choices(&document, &mut reordered);
+        for choice in &reordered {
+            let before = choices.iter().find(|c| c.path == choice.path).unwrap();
+            assert_eq!(choice.label, before.label);
+            assert_eq!(choice.discriminator, before.discriminator);
+        }
+    }
+    #[test]
+    fn selected_text_at_narrow_inspector_width_keeps_part_name_and_copy_identity() {
+        let (document, _) = fixture();
+        let choices = authored_catalogue(&document).unwrap();
+        let ctx = egui::Context::default();
+        let mut selected = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(250., 900.),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                for choice in &choices {
+                    let name = selected_name(ui, choice);
+                    assert!(
+                        name.starts_with(choice.component_name.split_whitespace().next().unwrap())
+                    );
+                    assert!(name.contains(&choice.discriminator));
+                    selected.push(name);
+                    let mut path = Some(choice.path.clone());
+                    choose(
+                        ui,
+                        &choice.discriminator,
+                        "Occurrence",
+                        &mut path,
+                        &choices.iter().collect::<Vec<_>>(),
+                        None,
+                    );
+                    assert_eq!(path, Some(choice.path.clone()));
+                }
+            },
+        );
+        output.textures_delta.clear();
+        assert_eq!(selected.iter().collect::<BTreeSet<_>>().len(), 8);
+        for name in [
+            "Independent drawer rail",
+            "Wood receiver",
+            "Printed receiver",
+            "Sheet receiver",
+        ] {
+            assert!(
+                selected.iter().any(|label| label.starts_with(name)),
+                "{name}: {selected:?}"
+            );
+        }
+    }
 }
