@@ -288,3 +288,139 @@ fn failed_native_geometry_missing_and_ambiguous_edges_preserve_the_previous_soli
         6000.,
     );
 }
+#[test]
+fn sided_distance_and_bound_angle_rebuild_the_same_explicit_native_edge() {
+    let (mut session, input, edge) = fixture();
+    let before = session.document().clone();
+    let base = compile(&session);
+    let topology = &base.snapshot().shapes[&input.producer].topology;
+    let face=topology.elements.iter().find(|e|matches!(e.geometry,Some(AnalyticGeometry::Plane {frame}) if e.key.kind==TopologyKind::Face && frame.normal()[0]>0.99)).unwrap();
+    let face = GeometryIntent::capture(topology, face.key).unwrap();
+    let mut request = EdgeTreatmentRequest::new(
+        input.clone(),
+        EdgeTreatmentParameters {
+            profile: EdgeTreatmentProfile::Chamfer,
+            size: length(2.),
+        },
+        vec![edge.clone(), face.clone()],
+    );
+    request.chamfer = Some(model::ChamferSettings::TwoDistances {
+        second: length(3.),
+        sides: vec![model::EdgeSide {
+            edge: edge.id,
+            face: face.id,
+        }],
+    });
+    let candidate =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+    let native = Compiler::default()
+        .compile(candidate.prepared.document(), session.revision())
+        .unwrap();
+    near(
+        native.solid(input.body).unwrap().volume_mm3().unwrap(),
+        5970.,
+    );
+    assert_eq!(session.document(), &before);
+    session.commit(candidate.prepared).unwrap();
+    let mut parameter = Entity::new(
+        "bevel",
+        EntityData::Parameter {
+            expression: "45".into(),
+            unit: "deg".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Add bevel angle".into(),
+            edits: vec![Mutation::Insert(parameter.clone())],
+        })
+        .unwrap();
+    let mut edit = EdgeTreatmentRequest::existing(session.document(), request.feature).unwrap();
+    edit.chamfer = Some(model::ChamferSettings::DistanceAngle {
+        angle: Dimension::Expression {
+            expression: BoundExpression::bind(session.document(), "=$bevel", "deg", None).unwrap(),
+        },
+        sides: vec![model::EdgeSide {
+            edge: edge.id,
+            face: face.id,
+        }],
+    });
+    session
+        .commit(
+            model::prepare_edge_treatment_edit_request(
+                &session,
+                session.revision(),
+                actor(),
+                &edit,
+            )
+            .unwrap()
+            .prepared,
+        )
+        .unwrap();
+    near(
+        compile(&session)
+            .solid(input.body)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        5980.,
+    );
+    let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+        panic!()
+    };
+    *expression = "30".into();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Change bevel angle".into(),
+            edits: vec![Mutation::Replace(parameter)],
+        })
+        .unwrap();
+    let native = compile(&session);
+    let generated = native.snapshot().shapes[&request.feature]
+        .topology
+        .elements
+        .iter()
+        .find(|e| {
+            e.key.kind == TopologyKind::Face
+                && e.origins
+                    .iter()
+                    .any(|o| o.source == request.feature && o.role == format!("edge/{}", edge.id))
+        })
+        .unwrap();
+    let Some(AnalyticGeometry::Plane { frame }) = generated.geometry else {
+        panic!()
+    };
+    near(frame.normal()[0].abs().acos(), std::f64::consts::PI / 6.);
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let reopened = Compiler::default()
+        .compile(&opened.project.document, 0)
+        .unwrap();
+    near(
+        reopened.solid(input.body).unwrap().volume_mm3().unwrap(),
+        native.solid(input.body).unwrap().volume_mm3().unwrap(),
+    );
+    assert_eq!(
+        model::read_edge_treatment(&opened.project.document, request.feature)
+            .unwrap()
+            .1,
+        vec![edge, face]
+    );
+}

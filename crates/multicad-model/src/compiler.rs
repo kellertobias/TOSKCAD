@@ -535,7 +535,10 @@ impl Compiler {
                         &source,
                     )?
                 }
-                (model::EDGE_TREATMENT_TYPE, model::EDGE_TREATMENT_SCHEMA) => {
+                (
+                    model::EDGE_TREATMENT_TYPE,
+                    model::EDGE_TREATMENT_SCHEMA | model::EDGE_TREATMENT_V2_SCHEMA,
+                ) => {
                     let (source, captures) =
                         model::read_edge_treatment(document, id).map_err(|e| error(Some(id), e))?;
                     crate::edge_treatment::build(
