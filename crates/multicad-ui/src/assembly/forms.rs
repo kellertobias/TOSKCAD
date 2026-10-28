@@ -37,6 +37,16 @@ impl Form {
         document: &Document,
         selection: AssemblySelection,
     ) -> Result<Self, String> {
+        let existing_joint = if matches!(tool, AssemblyTool::Relationship | AssemblyTool::Motion) {
+            selection.joint.or_else(|| {
+                selection
+                    .instances
+                    .first()
+                    .and_then(|id| model::joint_driver(document, *id).ok().flatten())
+            })
+        } else {
+            None
+        };
         let operation = match tool {
             AssemblyTool::Place => Operation::Place(Box::new(ComponentPlacementRequest::new(
                 selection.component.unwrap_or(missing()),
@@ -47,27 +57,16 @@ impl Form {
                 selection.instances,
                 vec![],
             )),
-            AssemblyTool::Relationship => Operation::Joint(Box::new(JointRequest::new(
-                selection.instances.first().copied().unwrap_or(missing()),
-                Default::default(),
-                vec![],
-            ))),
-            AssemblyTool::Motion => selection
-                .joint
-                .or_else(|| {
-                    selection
-                        .instances
-                        .first()
-                        .and_then(|id| model::joint_driver(document, *id).ok().flatten())
-                })
+            AssemblyTool::Relationship | AssemblyTool::Motion => existing_joint
                 .map(|id| {
-                    JointRequest::existing(document, id).map(|r| Operation::Joint(Box::new(r)))
+                    JointRequest::existing(document, id)
+                        .map(|request| Operation::Joint(Box::new(request)))
                 })
                 .transpose()
                 .map_err(|e| e.to_string())?
                 .unwrap_or_else(|| {
                     Operation::Joint(Box::new(JointRequest::new(
-                        missing(),
+                        selection.instances.first().copied().unwrap_or(missing()),
                         Default::default(),
                         vec![],
                     )))
@@ -80,13 +79,13 @@ impl Form {
         Ok(Self {
             tool,
             operation,
-            editing: tool == AssemblyTool::Motion,
+            editing: tool == AssemblyTool::Motion || existing_joint.is_some(),
             pick: None,
             fields: Fields::default(),
             version: 0,
             pose: selection.pose,
             explode_mm: 40.,
-            preserve_placement: tool == AssemblyTool::Relationship,
+            preserve_placement: tool == AssemblyTool::Relationship && existing_joint.is_none(),
         })
     }
     pub fn existing(document: &Document, id: EntityId) -> Result<Self, String> {
@@ -316,6 +315,13 @@ impl Form {
                         self.fields.reset();
                         self.pick = None;
                         self.preserve_placement = true;
+                        if let Ok(Some(driver)) = model::joint_driver(document, request.owner)
+                            && let Ok(existing) = JointRequest::existing(document, driver)
+                        {
+                            **request = existing;
+                            self.editing = true;
+                            self.preserve_placement = false;
+                        }
                         changed = true;
                     }
                     if self.editing {
@@ -452,7 +458,9 @@ impl Form {
                         &poses,
                         None,
                     );
+                    if let Some(pose)=self.pose && ui.button("Edit saved pose").on_hover_text("Edit this pose's stored joint coordinates without changing the assembly until a pose is applied").clicked(){match NamedPoseRequest::existing(document,pose){Ok(request)=>{self.operation=Operation::Pose(request);self.editing=true;self.fields.reset();changed=true;},Err(error)=>{self.fields.error=Some(error.to_string());}}}
                     if let Some(pose) = self.pose
+                        && !self.editing
                         && ui.button("Apply saved pose").clicked()
                     {
                         self.operation = Operation::ApplyPose(pose);

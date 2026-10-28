@@ -69,6 +69,9 @@ pub(super) fn validate(document: &Document, revision: u64, scene: &Scene) -> Res
                     pose,
                 )?;
             }
+            EntityData::Assembly{ref instances} if !instances.is_empty()&&!document.entities().any(|other|matches!(other.data,EntityData::Instance{component,..}if component==e.id))&&!document.entities().any(|other|model::read_assembly(document,other.id).is_ok_and(|source|source.assembly==e.id))=>{
+                context.component(e.id,OccurrencePath{root:e.id,members:vec![]},RigidPose::default())?;
+            }
             _ => {}
         }
     }

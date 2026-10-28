@@ -189,6 +189,14 @@ fn display_only_receipt_foreign_session_and_resource_change_never_authorize_appl
             .unwrap_err()
             .contains("session changed")
     );
+    let mut changed_resources = ProjectResources::default();
+    changed_resources
+        .metadata
+        .insert("native-source-change".into(), serde_json::json!(true));
+    assert!(
+        c.preview(&session, &changed_resources, Channel::Ui)
+            .is_err()
+    );
     assert_eq!(session.revision(), 2);
 }
 #[test]

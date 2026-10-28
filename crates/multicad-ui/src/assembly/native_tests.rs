@@ -549,3 +549,278 @@ fn native_controller_all_joint_types_and_component_local_frame_picks() {
         );
     }
 }
+#[test]
+fn selected_relationship_and_saved_pose_edit_controls_keep_existing_ids() {
+    let (mut s, _, placed) = setup();
+    let request = JointRequest::new(
+        placed.instance,
+        JointParameters {
+            kind: JointKind::Revolute,
+            values: JointValues {
+                rotation: angle(30.),
+                ..Default::default()
+            },
+            limits: JointLimits {
+                rotation: Some(JointLimit {
+                    min: angle(0.),
+                    max: angle(90.),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        vec![],
+    );
+    s.commit(
+        prepare_joint(&s, s.revision(), actor(), &request)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let pose = NamedPoseRequest::new(
+        "Half-open",
+        vec![JointPoseValue {
+            joint: request.driver,
+            values: request.parameters.values.clone(),
+        }],
+    );
+    s.commit(
+        prepare_named_pose(&s, s.revision(), actor(), &pose)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let before = s.document().clone();
+    let mut c = controller();
+    c.begin(
+        AssemblyTool::Relationship,
+        &s,
+        &Default::default(),
+        None,
+        AssemblySelection {
+            instances: vec![placed.instance],
+            ..Default::default()
+        },
+        Channel::Ui,
+    )
+    .unwrap();
+    assert!(c.form.as_ref().unwrap().editing);
+    assert_eq!(
+        joint(&mut c),
+        &JointRequest::existing(s.document(), request.driver).unwrap()
+    );
+    c.cancel();
+    c.begin(
+        AssemblyTool::NamedPose,
+        &s,
+        &Default::default(),
+        None,
+        AssemblySelection {
+            pose: Some(pose.pose),
+            ..Default::default()
+        },
+        Channel::Ui,
+    )
+    .unwrap();
+    let ctx = crate::egui::Context::default();
+    let mut point = None;
+    let frame = |c: &mut AssemblyController, s: &mut Session, events: Vec<crate::egui::Event>| {
+        let mut out = ctx.run_ui(
+            crate::egui::RawInput {
+                screen_rect: Some(crate::egui::Rect::from_min_size(
+                    crate::egui::Pos2::ZERO,
+                    crate::egui::vec2(250., 700.),
+                )),
+                events,
+                focused: true,
+                ..Default::default()
+            },
+            |ui| {
+                crate::inspector_actions::scope(
+                    ui,
+                    Some(crate::inspector_actions::Owner::Assembly),
+                    crate::registry::Mode::Model.color(),
+                    |ui| c.show(ui, s, &Default::default()).unwrap(),
+                );
+            },
+        );
+        out.textures_delta.clear();
+        out
+    };
+    for _ in 0..3 {
+        let out = frame(&mut c, &mut s, vec![]);
+        for clipped in out.shapes {
+            if let crate::egui::Shape::Text(text) = clipped.shape
+                && text.galley.text() == "Edit saved pose"
+            {
+                point = Some(text.galley.rect.translate(text.pos.to_vec2()).center());
+            }
+        }
+    }
+    let point = point.expect("painted Edit saved pose button");
+    for pressed in [true, false] {
+        frame(
+            &mut c,
+            &mut s,
+            vec![
+                crate::egui::Event::PointerMoved(point),
+                crate::egui::Event::PointerButton {
+                    pos: point,
+                    button: crate::egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+    }
+    assert!(c.form.as_ref().unwrap().editing);
+    let Operation::Pose(edit) = &mut c.form.as_mut().unwrap().operation else {
+        panic!()
+    };
+    assert_eq!(edit.pose, pose.pose);
+    assert_eq!(edit.name, "Half-open");
+    edit.values[0].values.rotation = angle(45.);
+    preview(&mut c, &s);
+    c.apply(&mut s, &Default::default()).unwrap();
+    assert_eq!(
+        read_named_pose(s.document(), pose.pose).unwrap().values[0]
+            .values
+            .rotation,
+        angle(45.)
+    );
+    assert_eq!(
+        read_joint(s.document(), request.driver)
+            .unwrap()
+            .0
+            .parameters
+            .values
+            .rotation,
+        angle(30.)
+    );
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &before);
+}
+#[test]
+fn legacy_physical_root_remains_in_native_candidate_leaf_proof() {
+    let (mut s, part, member) = setup();
+    let legacy = multicad_core::document::Entity::new(
+        "Legacy physical assembly",
+        multicad_core::document::EntityData::Assembly {
+            instances: vec![member.instance],
+        },
+    );
+    let legacy_id = legacy.id;
+    s.commit(
+        s.prepare(multicad_core::commands::Request {
+            expected_revision: s.revision(),
+            actor: actor(),
+            label: "Legacy assembly source".into(),
+            edits: vec![multicad_core::document::Mutation::Insert(legacy)],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let mut c = controller();
+    c.begin(
+        AssemblyTool::Place,
+        &s,
+        &Default::default(),
+        None,
+        AssemblySelection {
+            component: Some(part.body),
+            ..Default::default()
+        },
+        Channel::Ui,
+    )
+    .unwrap();
+    let scene = preview(&mut c, &s);
+    assert!(
+        scene
+            .assembly_evaluation()
+            .unwrap()
+            .leaves
+            .iter()
+            .any(|l| l.path
+                == OccurrencePath {
+                    root: legacy_id,
+                    members: vec![member.instance]
+                })
+    );
+    assert_eq!(scene.assembly_evaluation().unwrap().leaves.len(), 3);
+    let before = s.document().clone();
+    c.cancel();
+    assert_eq!(s.document(), &before);
+}
+fn corrupt_publish(
+    document: &Document,
+    snapshot: &ModelSnapshot,
+    generation: u64,
+) -> Result<Arc<Scene>, ModelError> {
+    let native = native_fixture::scene(document, snapshot, generation)?;
+    let native = Arc::try_unwrap(native).map_err(|_| ModelError {
+        entity: None,
+        message: "Shared test scene".into(),
+    })?;
+    let mut leaves = snapshot
+        .leaf_occurrences
+        .values()
+        .map(|leaf| AssemblyLeafReceipt {
+            path: leaf.path.clone(),
+            component: leaf.component,
+            producer: leaf.producer,
+            pose: leaf.pose,
+        })
+        .collect::<Vec<_>>();
+    leaves[0].pose.translation_mm[0] += 1.;
+    native
+        .with_assembly_evaluation(Arc::new(AssemblyEvaluationInfo {
+            source_hash: snapshot.stamp.source_hash,
+            leaves,
+        }))
+        .map(Arc::new)
+        .map_err(|message| ModelError {
+            entity: None,
+            message,
+        })
+}
+#[test]
+fn native_content_hash_alone_cannot_authorize_an_incorrect_leaf_pose() {
+    let (mut s, part, _) = setup();
+    let before = s.document().clone();
+    let revision = s.revision();
+    let mut c = AssemblyController::default();
+    c.set_backend(Box::new(NativeBackend {
+        runtime: Runtime::with_publisher(Compiler::default(), corrupt_publish).unwrap(),
+        stamp: None,
+    }));
+    c.begin(
+        AssemblyTool::Place,
+        &s,
+        &Default::default(),
+        None,
+        AssemblySelection {
+            component: Some(part.body),
+            ..Default::default()
+        },
+        Channel::Ui,
+    )
+    .unwrap();
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    let until = Instant::now() + Duration::from_secs(20);
+    while c.pending() {
+        c.poll(&s, &Default::default());
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!c.can_apply(&s, &Default::default()));
+    assert!(
+        c.error
+            .as_deref()
+            .unwrap()
+            .contains("component, producer or pose")
+    );
+    assert!(c.apply(&mut s, &Default::default()).is_err());
+    assert_eq!(s.document(), &before);
+    assert_eq!(s.revision(), revision);
+    c.cancel();
+}
