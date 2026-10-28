@@ -10,6 +10,27 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
 };
 use serde::{Deserialize, Serialize};
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransferEvaluationInfo {
+    pub source_hash: crate::project_file::ContentHash,
+    pub counts: std::collections::BTreeMap<EntityId, usize>,
+}
+impl TransferEvaluationInfo {
+    pub fn validate(&self) -> Result<(), DocumentError> {
+        if self.counts.len() > 4096
+            || self
+                .counts
+                .iter()
+                .any(|(feature, count)| feature.is_nil() || *count > super::MAX_TRANSFER_SOURCES)
+        {
+            return Err(invalid(
+                "Transfer receipt exceeds its 4096-feature/256-source-per-target budget or has an invalid feature identity",
+            ));
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TransferSelection {
