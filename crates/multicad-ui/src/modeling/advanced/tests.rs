@@ -287,7 +287,7 @@ fn loft_authors_section_order_and_seams_by_pointer_without_uuid_correspondence()
         panic!()
     };
     assert_eq!(parameters.seams, vec![seam_a, seam_b]);
-    click(&ctx, &mut p, &document, "↓", 0);
+    click(&ctx, &mut p, &document, "Move section later", 0);
     let r = request(p.request(&document, true).unwrap());
     assert_eq!(r.profiles, vec![b, a]);
     let model::AdvancedParameters::Loft(parameters) = r.parameters else {

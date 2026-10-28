@@ -1,5 +1,6 @@
 //! Current solved choices are supplied by the host; authored lists retain order.
 use super::*;
+use crate::icons::{Icon, mini_button};
 #[derive(Default)]
 pub(super) struct Inputs {
     pub profiles: Vec<ProfileSource>,
@@ -106,6 +107,7 @@ impl Inputs {
                         .clicked()
                     {
                         add = Some(index);
+                        ui.close();
                     }
                 }
             });
@@ -128,8 +130,8 @@ impl Inputs {
         for (index, p) in self.profiles.iter().enumerate() {
             ui.push_id(("advanced-section",index),|ui|{
                 ui.label(format!("{}. {}",index+1,profile_label(document,p,&self.choices)));
-                ui.horizontal(|ui|{if ui.add_enabled(index>0,egui::Button::new("↑")).on_hover_text("Move this section earlier; its seam follows").clicked(){reorder=Some((index,index-1));}
-if ui.add_enabled(index+1<self.profiles.len(),egui::Button::new("↓")).on_hover_text("Move this section later; its seam follows").clicked(){reorder=Some((index,index+1));}
+                ui.horizontal(|ui|{if ui.add_enabled_ui(index>0,|ui|mini_button(ui,Icon::ArrowUp,"Move section earlier")).inner.on_hover_text("Move this section earlier; its seam follows").clicked(){reorder=Some((index,index-1));}
+if ui.add_enabled_ui(index+1<self.profiles.len(),|ui|mini_button(ui,Icon::ArrowDown,"Move section later")).inner.on_hover_text("Move this section later; its seam follows").clicked(){reorder=Some((index,index+1));}
 if ui.button("Remove section").clicked(){remove=Some(index);}});
                 if let fields::ParameterFields::Loft{seams,..}=fields
                     && let Some(seam)=seams.get_mut(index){controls::inspector_combo(ui,"section-seam").selected_text(format!("Start: {}",curve_label(document,p.sketch,*seam))).show_ui(ui,|ui|{for curve in &p.region.outer.curves{changed|=ui.selectable_value(seam,*curve,curve_label(document,p.sketch,*curve)).changed();}});ui.small("Start curves are explicit correspondence choices; native Preview rejects incompatible sections.");}
@@ -183,6 +185,7 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
                     );
                     if ui.add_enabled(valid, egui::Button::new(label)).clicked() {
                         add = Some(index);
+                        ui.close();
                     }
                 }
             });
@@ -208,14 +211,20 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
                     ));
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(index > 0, egui::Button::new("↑"))
+                            .add_enabled_ui(index > 0, |ui| {
+                                mini_button(ui, Icon::ArrowUp, "Move segment earlier")
+                            })
+                            .inner
                             .on_hover_text("Move this segment earlier")
                             .clicked()
                         {
                             reorder = Some((index, index - 1));
                         }
                         if ui
-                            .add_enabled(index + 1 < path.curves.len(), egui::Button::new("↓"))
+                            .add_enabled_ui(index + 1 < path.curves.len(), |ui| {
+                                mini_button(ui, Icon::ArrowDown, "Move segment later")
+                            })
+                            .inner
                             .on_hover_text("Move this segment later")
                             .clicked()
                         {
