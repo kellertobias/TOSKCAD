@@ -135,11 +135,7 @@ impl Solid {
         let nodes = ffi::topology(&self.native.0).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
-    pub fn with_member_origin(
-        mut self,
-        feature: EntityId,
-        index: u32,
-    ) -> Result<Self, GeometryError> {
+    pub fn with_member_origin(self, feature: EntityId, index: u32) -> Result<Self, GeometryError> {
         if feature.is_nil() || index >= 128 {
             return Err(failure(
                 "Pattern member identity exceeds the feature/member budget",
@@ -149,14 +145,32 @@ impl Solid {
             source: feature,
             role: format!("member/{index}"),
         };
-        let snapshot = self.topology_snapshot(feature, 0)?;
+        self.with_identity_origin(origin)
+    }
+    pub fn with_occurrence_origin(
+        self,
+        owner: EntityId,
+        member: EntityId,
+    ) -> Result<Self, GeometryError> {
+        if owner.is_nil() || member.is_nil() {
+            return Err(failure(
+                "Assembly member provenance needs non-nil owner/member identities",
+            ));
+        }
+        self.with_identity_origin(Origin {
+            source: owner,
+            role: format!("assembly/member/{member}"),
+        })
+    }
+    fn with_identity_origin(mut self, origin: Origin) -> Result<Self, GeometryError> {
+        let snapshot = self.topology_snapshot(origin.source, 0)?;
         if snapshot
             .elements
             .iter()
             .any(|e| e.origins.contains(&origin))
         {
             return Err(failure(
-                "Pattern member origin collides with existing source provenance",
+                "Member origin collides with existing source provenance",
             ));
         }
         let elements: BTreeMap<_, _> = snapshot
