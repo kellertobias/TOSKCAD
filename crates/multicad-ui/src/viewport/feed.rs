@@ -262,10 +262,14 @@ impl SceneFeed {
                         BTreeMap::new()
                     };
                     let report = inspect(document, revision, &snapshots);
-                    let approved =
+                    let driving = report.for_model(document);
+                    let driving_resolved =
+                        driving.as_ref().is_ok_and(ReferenceReport::all_resolved);
+                    let approved = driving.and_then(|driving| {
                         self.reference_gate
-                            .consider(revision, scene.clone(), report.clone());
-                    if !self.refining || report.all_resolved() {
+                            .consider(revision, scene.clone(), driving)
+                    });
+                    if !self.refining || driving_resolved {
                         self.references = Some(ReferenceEvaluation {
                             stamp: reply.stamp,
                             report,

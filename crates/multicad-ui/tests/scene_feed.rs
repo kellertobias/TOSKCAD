@@ -333,3 +333,109 @@ fn evaluation_default_preserves_legacy_and_resource_requests_but_rejects_probes(
         .unwrap();
     assert!(Arc::ptr_eq(backend.0.as_ref().unwrap(), &bytes));
 }
+#[test]
+fn dangling_non_driving_pin_keeps_real_native_model_current_and_full_repair_diagnostics() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        inspection::{self, GeometryReference, MeasurementQuery, PinRequest},
+        model::{self, PrimitiveParameters, PrimitiveRequest, length},
+        references::{GeometryIntent, Origin, TopologyKind},
+    };
+    use multicad_kernel::{GeometryPolicy, MeshOptions, Solid};
+    let mut session =
+        Session::new(Document::new("Unresolved inspection cannot freeze geometry").unwrap())
+            .unwrap();
+    let r = PrimitiveRequest::new(
+        "Visible current stock",
+        PrimitiveParameters::Box {
+            size: [length(10.), length(8.), length(3.)],
+            frame: Default::default(),
+        },
+    );
+    session
+        .commit(
+            model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &r)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let reference = || GeometryReference {
+        source: multicad_core::document::EntityId::new(),
+        intent: GeometryIntent {
+            id: multicad_core::document::EntityId::new(),
+            kind: TopologyKind::Face,
+            origins: [Origin {
+                source: r.feature,
+                role: "removed geometry".into(),
+            }]
+            .into(),
+            boundary: None,
+            attachment: None,
+        },
+    };
+    let pin = PinRequest::new(
+        "Detached visual measurement",
+        MeasurementQuery {
+            a: reference(),
+            b: reference(),
+        },
+    );
+    session
+        .commit(
+            inspection::prepare_pin(
+                &session,
+                session.revision(),
+                Actor::local(Channel::Ui),
+                &pin,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let state = Arc::new(Mutex::new(State::default()));
+    let mut feed = SceneFeed::default();
+    feed.set_backend(Box::new(Backend(state.clone())));
+    feed.tick(session.document(), session.revision());
+    let stamp = state.lock().unwrap().requests[0].0;
+    let native = Solid::box_solid([10., 8., 3.], GeometryPolicy::default()).unwrap();
+    let mesh = native.mesh(MeshOptions::default()).unwrap();
+    let geometry = Arc::new(
+        Geometry::new(
+            r.feature,
+            mesh.vertices.as_chunks::<3>().0.to_vec(),
+            mesh.indices,
+            mesh.face_indices,
+            native
+                .topology_snapshot(r.feature, session.revision())
+                .unwrap()
+                .elements,
+        )
+        .unwrap(),
+    );
+    let scene = Scene::new(
+        stamp,
+        vec![geometry],
+        vec![Instance {
+            id: r.body,
+            geometry: r.feature,
+            transform: Default::default(),
+            color: [100, 150, 200, 255],
+        }],
+    )
+    .unwrap();
+    state.lock().unwrap().replies.push_back(SceneReply {
+        stamp,
+        result: Ok(Arc::new(scene)),
+    });
+    feed.tick(session.document(), session.revision());
+    assert!(feed.is_current(session.document().id(), session.revision()));
+    assert!(feed.error().is_none());
+    assert!(
+        !feed.visible().unwrap().geometries()[&r.feature]
+            .vertices()
+            .is_empty()
+    );
+    let report = &feed.references().unwrap().report;
+    assert_eq!(report.entries.len(), 2);
+    assert!(!report.all_resolved());
+    assert!(report.entries.iter().all(|e| e.address.owner == pin.id));
+}
