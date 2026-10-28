@@ -3,6 +3,7 @@ use super::{
     alignment_panel::AlignmentPanel,
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
+    edge_treatment::EdgeTreatmentPanel,
     group_edit::GroupEditPanel,
     placement::PlacementPanel,
     primitive::PrimitivePanel,
@@ -33,6 +34,7 @@ pub enum ModelRequest {
     GroupedExtrude(Box<model::GroupedExtrudeRequest>),
     Placement(Box<super::PlacementCommand>),
     Scale(Box<super::ScaleCommand>),
+    EdgeTreatment(Box<super::EdgeTreatmentCommand>),
     Alignment(Box<super::AlignmentCommand>),
 }
 pub(super) struct ToolProof {
@@ -47,6 +49,12 @@ impl ModelRequest {
         feature: multicad_core::document::EntityId,
     ) -> Result<ModelPrepared, String> {
         match self {
+            Self::EdgeTreatment(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Edge-treatment edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Scale(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Scale edit changed its saved producer identity".into());
@@ -107,6 +115,12 @@ impl ModelRequest {
     }
     pub(super) fn prepare(&self, session: &Session, actor: Actor) -> Result<ModelPrepared, String> {
         match self {
+            Self::EdgeTreatment(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved edge treatment before editing".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Scale(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved scale before editing its source".into());
@@ -229,6 +243,7 @@ pub(super) enum ModelForm {
     ExtrudeGroup(Box<GroupEditPanel>),
     Placement(Box<PlacementPanel>),
     Scale(Box<ScalePanel>),
+    EdgeTreatment(Box<EdgeTreatmentPanel>),
     Alignment(Box<AlignmentPanel>),
 }
 impl ModelForm {
@@ -243,6 +258,7 @@ impl ModelForm {
             Self::ExtrudeGroup(panel) => panel.stamp(),
             Self::Placement(panel) => panel.stamp(),
             Self::Scale(panel) => panel.stamp(),
+            Self::EdgeTreatment(panel) => panel.stamp(),
             Self::Alignment(panel) => panel.stamp(),
         }
     }
@@ -257,6 +273,7 @@ impl ModelForm {
             Self::ExtrudeGroup(_) => "Extrusion operation",
             Self::Placement(panel) => panel.label(),
             Self::Scale(panel) => panel.label(),
+            Self::EdgeTreatment(panel) => panel.label(),
             Self::Alignment(_) => "Referenced alignment",
         }
     }
@@ -266,6 +283,9 @@ impl ModelForm {
         capabilities: ExtrudeCapabilities,
     ) -> Result<ModelRequest, String> {
         match self {
+            Self::EdgeTreatment(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::EdgeTreatment(Box::new(command))),
             Self::Alignment(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Alignment(Box::new(command))),
@@ -335,6 +355,7 @@ impl ModelForm {
             Self::ExtrudeGroup(panel) => panel.show(ui, document, capabilities, preview),
             Self::Placement(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Scale(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::EdgeTreatment(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Alignment(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }

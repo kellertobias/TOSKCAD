@@ -4,6 +4,7 @@ use super::{
     alignment_panel::AlignmentPanel,
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
+    edge_treatment::EdgeTreatmentPanel,
     extrude_operation::{BooleanIdentities, CutDiscovery, OperationControls},
     form::{ModelEvent, ModelForm, ToolProof},
     group_edit::GroupEditPanel,
@@ -144,7 +145,8 @@ impl ModelToolController {
             return false;
         }
 
-        if super::ScaleCommand::editable(document, feature)
+        if super::EdgeTreatmentCommand::editable(document, feature)
+            || super::ScaleCommand::editable(document, feature)
             || super::PlacementCommand::editable(document, feature)
             || multicad_core::model::read_alignment(document, feature).is_ok()
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
@@ -176,6 +178,17 @@ impl ModelToolController {
                 resources,
                 channel,
                 ModelForm::Alignment(Box::new(panel)),
+            )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
+        }
+        if super::EdgeTreatmentCommand::editable(document, feature) {
+            let panel = EdgeTreatmentPanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::EdgeTreatment(Box::new(panel)),
             )?;
             self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
             return Ok(());
@@ -578,6 +591,7 @@ impl ModelToolController {
         resources: &ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
+        self.stop_edge_treatment_picking();
         self.invalidate();
         let result: Result<(), String> = (|| {
             self.current(session, resources, true)?;
@@ -602,6 +616,7 @@ impl ModelToolController {
         form: FormStamp,
         request: &ModelRequest,
     ) -> Result<(), String> {
+        self.stop_edge_treatment_picking();
         if matches!(
             self.scope.as_ref().map(|scope| scope.execution),
             Some(Execution::Create)
@@ -702,6 +717,7 @@ impl ModelToolController {
                     | ModelRequest::Split(_)
                     | ModelRequest::Placement(_)
                     | ModelRequest::Scale(_)
+                    | ModelRequest::EdgeTreatment(_)
                     | ModelRequest::Alignment(_)
             ) || !matches!(execution, Execution::Create),
         });
@@ -1015,6 +1031,7 @@ impl ModelToolController {
 }
 
 mod context;
+mod edge_treatment;
 mod groups;
 mod legacy;
 mod operations;
