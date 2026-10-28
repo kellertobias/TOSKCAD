@@ -3,6 +3,7 @@
 mod alignment;
 mod compiler;
 mod drawings;
+pub mod export;
 mod extrude;
 mod occurrences;
 mod runtime;

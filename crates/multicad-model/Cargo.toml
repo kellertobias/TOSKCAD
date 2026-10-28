@@ -11,6 +11,9 @@ publish.workspace = true
 multicad-core.workspace = true
 multicad-kernel.workspace = true
 multicad-solver.workspace = true
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+tempfile = "=3.27.0"
 
 [lints]
 workspace = true

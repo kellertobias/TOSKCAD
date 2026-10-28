@@ -1,5 +1,6 @@
 //! Saved output intent and snapshot queries. Native providers own manufacturing
 //! geometry and filesystem publication; display state is never an export input.
+mod evaluation;
 mod names;
 mod resolve;
 mod source;
@@ -7,6 +8,7 @@ use crate::{
     commands::{Actor, CommandError, Prepared, Request, Session},
     document::{Document, DocumentError, EntityData, EntityId, Mutation},
 };
+pub use evaluation::*;
 pub use names::*;
 pub use resolve::*;
 pub use source::*;
@@ -23,6 +25,7 @@ pub enum ErrorKind {
     Budget,
     Empty,
     Io,
+    Cancelled,
 }
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
