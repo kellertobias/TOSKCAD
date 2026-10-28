@@ -194,3 +194,111 @@ fn invalid_factors_kinds_capture_ids_or_stale_producers_leave_source_unchanged()
     assert!(invalid.replace(feature).is_err());
     assert_eq!(session.document(), &original);
 }
+#[test]
+fn sided_chamfers_keep_schema_one_readable_and_store_side_intents_only_in_links() {
+    let (mut session, input, edge) = fixture();
+    let face = GeometryIntent {
+        id: EntityId::new(),
+        kind: TopologyKind::Face,
+        origins: BTreeSet::from([Origin {
+            source: input.producer,
+            role: "cap.end".into(),
+        }]),
+        boundary: None,
+        attachment: None,
+    };
+    let mut request = EdgeTreatmentRequest::new(
+        input,
+        EdgeTreatmentParameters {
+            profile: EdgeTreatmentProfile::Chamfer,
+            size: length(2.),
+        },
+        vec![edge.clone(), face.clone()],
+    );
+    request.chamfer = Some(ChamferSettings::TwoDistances {
+        second: length(3.),
+        sides: vec![EdgeSide {
+            edge: edge.id,
+            face: face.id,
+        }],
+    });
+    let before = session.document().clone();
+    let candidate =
+        prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+    let (source, captures) =
+        read_edge_treatment(candidate.prepared.document(), request.feature).unwrap();
+    assert_eq!(captures, vec![edge.clone(), face.clone()]);
+    assert_eq!(
+        source.definition().unwrap().schema_version,
+        EDGE_TREATMENT_V2_SCHEMA
+    );
+    assert!(
+        !serde_json::to_string(&source.definition().unwrap().data)
+            .unwrap()
+            .contains("origins")
+    );
+    session.commit(candidate.prepared).unwrap();
+    let mut edit = EdgeTreatmentRequest::existing(session.document(), request.feature).unwrap();
+    edit.chamfer = Some(ChamferSettings::DistanceAngle {
+        angle: angle(30.),
+        sides: vec![EdgeSide {
+            edge: edge.id,
+            face: face.id,
+        }],
+    });
+    session
+        .commit(
+            prepare_edge_treatment_edit_request(&session, session.revision(), actor(), &edit)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let project = ProjectFile::new(session.document().clone()).unwrap();
+    assert!(
+        project
+            .capabilities()
+            .contains(EDGE_TREATMENT_V2_CAPABILITY)
+    );
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let mut old = project_file::supported_capabilities();
+    old.remove(EDGE_TREATMENT_V2_CAPABILITY);
+    assert!(
+        project_file::read(&mut std::io::Cursor::new(&bytes), Default::default(), &old).is_err()
+    );
+    let opened = project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(opened.project.document, *session.document());
+    for invalid in [angle(0.), angle(90.)] {
+        edit.chamfer = Some(ChamferSettings::DistanceAngle {
+            angle: invalid,
+            sides: vec![EdgeSide {
+                edge: edge.id,
+                face: face.id,
+            }],
+        });
+        assert!(
+            prepare_edge_treatment_edit_request(&session, session.revision(), actor(), &edit)
+                .is_err()
+        );
+    }
+    let mut legacy = EdgeTreatmentRequest::new(
+        request.input,
+        EdgeTreatmentParameters::default(),
+        vec![edge],
+    );
+    legacy.feature = EntityId::new();
+    let legacy_session = Session::new(before).unwrap();
+    let p = prepare_edge_treatment(&legacy_session, legacy_session.revision(), actor(), &legacy)
+        .unwrap();
+    let (source, _) = read_edge_treatment(p.prepared.document(), legacy.feature).unwrap();
+    assert_eq!(
+        source.definition().unwrap().schema_version,
+        EDGE_TREATMENT_SCHEMA
+    );
+    assert!(source.definition().unwrap().data.get("chamfer").is_none());
+}

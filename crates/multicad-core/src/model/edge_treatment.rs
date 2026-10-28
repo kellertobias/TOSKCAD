@@ -1,4 +1,5 @@
 //! Persistent edge captures belong to canonical input links, never face/edge order.
+mod chamfer;
 mod prepare;
 use super::{
     BodyInput, BodyOutput,
@@ -12,12 +13,15 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     references::{GeometryIntent, TopologyKind},
 };
+pub use chamfer::*;
 pub use prepare::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 pub const EDGE_TREATMENT_TYPE: &str = "model.edge_treatment";
 pub const EDGE_TREATMENT_SCHEMA: u32 = 1;
 pub const EDGE_TREATMENT_CAPABILITY: &str = "model.edge_treatment.1";
+pub const EDGE_TREATMENT_V2_SCHEMA: u32 = 2;
+pub const EDGE_TREATMENT_V2_CAPABILITY: &str = "model.edge_treatment.2";
 pub const MAX_TREATMENT_EDGES: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +68,8 @@ pub struct EdgeTreatmentDefinition {
     pub parameters: EdgeTreatmentParameters,
     /// Identities of canonical geometry captures carried by input links.
     pub edges: Vec<EntityId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chamfer: Option<ChamferSettings>,
 }
 impl EdgeTreatmentDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
@@ -83,30 +89,49 @@ impl EdgeTreatmentDefinition {
         {
             return Err(invalid("Choose 1-128 distinct captured Part edges"));
         }
+        if let Some(chamfer) = &self.chamfer {
+            if self.parameters.profile != EdgeTreatmentProfile::Chamfer {
+                return Err(invalid("Sided settings require the Chamfer profile"));
+            }
+            chamfer.validate(&self.edges)?;
+        }
         self.parameters.validate()
     }
     pub fn definition(&self) -> Result<Definition, DocumentError> {
         self.validate()?;
         Ok(Definition {
             type_id: EDGE_TREATMENT_TYPE.into(),
-            schema_version: EDGE_TREATMENT_SCHEMA,
+            schema_version: if self.chamfer.is_some() {
+                EDGE_TREATMENT_V2_SCHEMA
+            } else {
+                EDGE_TREATMENT_SCHEMA
+            },
             data: serde_json::to_value(self).map_err(|e| invalid(e.to_string()))?,
         })
     }
     pub fn from_definition(definition: &Definition) -> Result<Self, DocumentError> {
         if definition.type_id != EDGE_TREATMENT_TYPE
-            || definition.schema_version != EDGE_TREATMENT_SCHEMA
+            || ![EDGE_TREATMENT_SCHEMA, EDGE_TREATMENT_V2_SCHEMA]
+                .contains(&definition.schema_version)
         {
             return Err(invalid("Unsupported edge-treatment provider or schema"));
         }
         let source: Self =
             serde_json::from_value(definition.data.clone()).map_err(|e| invalid(e.to_string()))?;
         source.validate()?;
+        if source.chamfer.is_some() != (definition.schema_version == EDGE_TREATMENT_V2_SCHEMA) {
+            return Err(invalid(
+                "Sided chamfer settings require schema 2; symmetric source retains schema 1",
+            ));
+        }
         Ok(source)
     }
     pub fn inputs(&self, edges: &[GeometryIntent]) -> Result<Vec<Link>, DocumentError> {
         self.validate()?;
-        if edges.len() != self.edges.len() {
+        let faces = self.chamfer.as_ref().map_or_else(BTreeSet::new, |c| {
+            c.sides().iter().map(|s| s.face).collect()
+        });
+        if edges.len() != self.edges.len() + faces.len() {
             return Err(invalid(
                 "Every selected edge requires one canonical capture",
             ));
@@ -115,21 +140,31 @@ impl EdgeTreatmentDefinition {
         let mut seen = BTreeSet::new();
         for intent in edges {
             intent.validate().map_err(invalid)?;
-            if intent.kind != TopologyKind::Edge
-                || !self.edges.contains(&intent.id)
-                || !seen.insert(intent.id)
-            {
+            let role = if intent.kind == TopologyKind::Edge && self.edges.contains(&intent.id) {
+                "edge"
+            } else if intent.kind == TopologyKind::Face && faces.contains(&intent.id) {
+                "side_face"
+            } else {
+                return Err(invalid(
+                    "Chamfer captures must identify the selected edges and their explicit side faces",
+                ));
+            };
+            if !seen.insert(intent.id) {
                 return Err(invalid(
                     "Edge treatment captures must identify distinct edges from the frozen source",
                 ));
             }
             links.push(Link {
                 target: self.input.producer,
-                role: format!("edge/{}", intent.id),
+                role: format!("{role}/{}", intent.id),
                 geometry: Some(intent.clone()),
             });
         }
-        links.extend(parameter_links(vec![&self.parameters.size]));
+        let mut dimensions = vec![&self.parameters.size];
+        if let Some(chamfer) = &self.chamfer {
+            dimensions.extend(chamfer.dimensions());
+        }
+        links.extend(parameter_links(dimensions));
         Ok(links)
     }
 }

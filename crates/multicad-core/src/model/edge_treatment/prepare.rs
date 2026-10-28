@@ -16,6 +16,8 @@ pub struct EdgeTreatmentRequest {
     pub input: BodyInput,
     pub parameters: EdgeTreatmentParameters,
     pub edges: Vec<GeometryIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chamfer: Option<ChamferSettings>,
 }
 impl EdgeTreatmentRequest {
     pub fn new(
@@ -28,7 +30,21 @@ impl EdgeTreatmentRequest {
             input,
             parameters,
             edges,
+            chamfer: None,
         }
+    }
+    pub fn existing(
+        document: &crate::document::Document,
+        feature: EntityId,
+    ) -> Result<Self, crate::document::DocumentError> {
+        let (source, edges) = read_edge_treatment(document, feature)?;
+        Ok(Self {
+            feature,
+            input: source.input,
+            parameters: source.parameters,
+            edges,
+            chamfer: source.chamfer,
+        })
     }
 }
 pub fn prepare_edge_treatment(
@@ -48,13 +64,22 @@ pub fn prepare_edge_treatment(
     }
     available(session.document(), &request.input, true)?;
     request.parameters.resolved_size_mm(session.parameters())?;
+    if let Some(chamfer) = &request.chamfer {
+        chamfer.resolve(session.parameters())?;
+    }
     let source = EdgeTreatmentDefinition {
         input: request.input.clone(),
         output: BodyOutput {
             body: request.input.body,
         },
         parameters: request.parameters.clone(),
-        edges: request.edges.iter().map(|e| e.id).collect(),
+        edges: request
+            .edges
+            .iter()
+            .filter(|e| e.kind == TopologyKind::Edge)
+            .map(|e| e.id)
+            .collect(),
+        chamfer: request.chamfer.clone(),
     };
     let mut feature = Entity::new(
         "Fillet / Chamfer",
@@ -112,9 +137,38 @@ pub fn prepare_edge_treatment_edit(
 ) -> Result<ModelPrepared, CommandError> {
     revision(session, expected_revision)?;
     parameters.resolved_size_mm(session.parameters())?;
+    let mut request = EdgeTreatmentRequest::existing(session.document(), feature)?;
+    request.parameters = parameters.clone();
+    request.edges = edges.to_vec();
+    if parameters.profile == EdgeTreatmentProfile::Fillet {
+        request.chamfer = None;
+    }
+    prepare_edge_treatment_edit_request(session, expected_revision, actor, &request)
+}
+pub fn prepare_edge_treatment_edit_request(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    request: &EdgeTreatmentRequest,
+) -> Result<ModelPrepared, CommandError> {
+    revision(session, expected_revision)?;
+    request.parameters.resolved_size_mm(session.parameters())?;
+    if let Some(chamfer) = &request.chamfer {
+        chamfer.resolve(session.parameters())?;
+    }
+    let feature = request.feature;
     let (mut source, _) = read_edge_treatment(session.document(), feature)?;
-    source.parameters = parameters.clone();
-    source.edges = edges.iter().map(|e| e.id).collect();
+    if source.input != request.input {
+        return Err(error("An edge edit must retain its frozen Part producer"));
+    }
+    source.parameters = request.parameters.clone();
+    source.edges = request
+        .edges
+        .iter()
+        .filter(|e| e.kind == TopologyKind::Edge)
+        .map(|e| e.id)
+        .collect();
+    source.chamfer = request.chamfer.clone();
     let mut entity = session
         .document()
         .get(feature)
@@ -134,7 +188,7 @@ pub fn prepare_edge_treatment_edit(
         ));
     }
     *definition = source.definition()?;
-    *inputs = source.inputs(edges)?;
+    *inputs = source.inputs(&request.edges)?;
     let prepared = session.prepare(Request {
         expected_revision,
         actor,
