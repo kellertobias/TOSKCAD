@@ -27,7 +27,7 @@ pub(super) fn faces(
     let Some(EntityData::Feature { inputs, .. }) = document.get(feature).map(|e| &e.data) else {
         return Err(DocumentError::Missing(feature));
     };
-    let mut faces: Vec<_> = inputs
+    let faces: Vec<_> = inputs
         .iter()
         .filter_map(|link| {
             link.geometry.as_ref().map(|intent| FaceInput {
@@ -36,7 +36,6 @@ pub(super) fn faces(
             })
         })
         .collect();
-    faces.sort_by_key(|face| face.intent.id);
     Ok(faces)
 }
 fn known_part(document: &Document, body: EntityId, feature: EntityId) -> Result<(), DocumentError> {
@@ -74,10 +73,12 @@ pub(super) fn read(
                     "Extrusion operation tools must retain their own new-body sources",
                 ));
             }
+            let mut common_faces = faces(document, tool.producer)?;
+            common_faces.sort_by_key(|face| face.intent.id);
             let settings = (
                 tool_source.profile.sketch,
                 tool_source.parameters.clone(),
-                faces(document, tool.producer)?,
+                common_faces,
             );
             if common.as_ref().is_some_and(|old| old != &settings) {
                 return Err(invalid(
@@ -232,6 +233,10 @@ pub(super) fn inspect(
     }
     Ok(ExtrudeGroupState {
         group,
+        schema_version: match &document.get(group).expect("read group").data {
+            EntityData::Extension { definition, .. } => definition.schema_version,
+            _ => unreachable!(),
+        },
         definition,
         extrusion: ExtrudeRequest {
             sketch,

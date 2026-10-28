@@ -114,7 +114,10 @@ impl ExtrudeBooleanRequest {
         Ok(())
     }
 }
-fn delta(original: &Document, candidate: &Document) -> Result<Vec<Mutation>, CommandError> {
+pub(super) fn delta(
+    original: &Document,
+    candidate: &Document,
+) -> Result<Vec<Mutation>, CommandError> {
     if original.id() != candidate.id() || original.name() != candidate.name() {
         return Err(error(
             "Composite modeling must retain the original document identity and name",

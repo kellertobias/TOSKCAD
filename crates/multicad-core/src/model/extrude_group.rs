@@ -1,5 +1,8 @@
 //! Canonical association for one captured extrusion operation. Geometry remains
 //! in child providers; this Extension neither evaluates nor discovers targets.
+mod adoption;
+mod codec;
+mod creation;
 mod prepare;
 mod validation;
 use super::{
@@ -10,6 +13,10 @@ use crate::{
     commands::Prepared,
     document::{Definition, Document, DocumentError, EntityId, Link},
 };
+pub use adoption::{
+    AdoptExtrudeGroupRequest, inspect_ungrouped_extrude, prepare_adopt_extrude_group,
+};
+pub use creation::{GroupedExtrudeRequest, prepare_grouped_extrude};
 pub(super) use prepare::creation_entity;
 pub use prepare::prepare_extrude_group_edit;
 use serde::{Deserialize, Serialize};
@@ -18,6 +25,8 @@ pub(super) use validation::{reject_individual_edit, validate_document};
 pub const EXTRUDE_GROUP_TYPE: &str = "model.extrude_group";
 pub const EXTRUDE_GROUP_SCHEMA: u32 = 1;
 pub const EXTRUDE_GROUP_CAPABILITY: &str = "model.extrude_group.1";
+pub const EXTRUDE_GROUP_V2_SCHEMA: u32 = 2;
+pub const EXTRUDE_GROUP_V2_CAPABILITY: &str = "model.extrude_group.2";
 /// Historical query intent at creation, not an active rediscovery rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,22 +76,46 @@ pub struct ExtrudeGroupResult {
     pub body: EntityId,
     pub feature: EntityId,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtrudeGroupKind {
+    Boolean,
+    NewBody,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtrudeGroupDefinition {
+    #[serde(skip)]
+    source_schema: Option<u32>,
+    pub kind: ExtrudeGroupKind,
     pub tools: Vec<BodyInput>,
     pub results: Vec<ExtrudeGroupResult>,
     pub captured_scope: Option<ExtrudeCapturedScope>,
 }
+impl PartialEq for ExtrudeGroupDefinition {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.tools == other.tools
+            && self.results == other.results
+            && self.captured_scope == other.captured_scope
+    }
+}
+impl Eq for ExtrudeGroupDefinition {}
 impl ExtrudeGroupDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
         if self.tools.is_empty()
             || self.tools.len() > MAX_BOOLEAN_TOOLS
-            || self.results.is_empty()
             || self.results.len() > MAX_BOOLEAN_TARGETS
         {
             return Err(invalid(
                 "Extrusion operation requires 1–128 tools and 1–128 captured targets",
+            ));
+        }
+        if (self.kind == ExtrudeGroupKind::Boolean && self.results.is_empty())
+            || (self.kind == ExtrudeGroupKind::NewBody && !self.results.is_empty())
+        {
+            return Err(invalid(
+                "Boolean operations require captured targets; New body operations require no Boolean results",
             ));
         }
         let mut ids = BTreeSet::new();
@@ -106,20 +139,17 @@ impl ExtrudeGroupDefinition {
         Ok(())
     }
     pub fn definition(&self) -> Result<Definition, DocumentError> {
-        self.validate()?;
-        Ok(Definition {
-            type_id: EXTRUDE_GROUP_TYPE.into(),
-            schema_version: EXTRUDE_GROUP_SCHEMA,
-            data: serde_json::to_value(self).map_err(|e| invalid(e.to_string()))?,
-        })
+        let minimum = match self.kind {
+            ExtrudeGroupKind::Boolean => EXTRUDE_GROUP_SCHEMA,
+            ExtrudeGroupKind::NewBody => EXTRUDE_GROUP_V2_SCHEMA,
+        };
+        self.definition_in_schema(self.source_schema.unwrap_or(minimum).max(minimum))
+    }
+    pub(super) fn definition_in_schema(&self, schema: u32) -> Result<Definition, DocumentError> {
+        codec::encode(self, schema)
     }
     pub fn from_definition(d: &Definition) -> Result<Self, DocumentError> {
-        if d.type_id != EXTRUDE_GROUP_TYPE || d.schema_version != EXTRUDE_GROUP_SCHEMA {
-            return Err(invalid("Unsupported extrusion operation group/version"));
-        }
-        let s: Self = serde_json::from_value(d.data.clone()).map_err(|e| invalid(e.to_string()))?;
-        s.validate()?;
-        Ok(s)
+        codec::decode(d)
     }
     pub fn inputs(&self) -> Result<Vec<Link>, DocumentError> {
         self.validate()?;
@@ -143,9 +173,44 @@ impl ExtrudeGroupDefinition {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtrudeGroupState {
     pub group: EntityId,
+    pub schema_version: u32,
     pub definition: ExtrudeGroupDefinition,
     pub extrusion: ExtrudeRequest,
     pub booleans: Vec<BooleanRequest>,
+}
+impl ExtrudeGroupState {
+    fn settings(&self) -> Result<(Operation, bool), DocumentError> {
+        self.definition.validate()?;
+        if self.booleans.len() != self.definition.results.len() {
+            return Err(invalid(
+                "Extrusion operation Boolean state disagrees with its membership",
+            ));
+        }
+        if self.definition.kind == ExtrudeGroupKind::NewBody {
+            return Ok((Operation::NewBody, false));
+        }
+        let first = self
+            .booleans
+            .first()
+            .ok_or_else(|| invalid("Extrusion operation has no Boolean settings"))?;
+        if !matches!(
+            first.operation,
+            Operation::Join | Operation::Cut | Operation::Intersect
+        ) || self
+            .booleans
+            .iter()
+            .any(|b| b.operation != first.operation || b.keep_tools != first.keep_tools)
+        {
+            return Err(invalid("Extrusion operation Boolean settings disagree"));
+        }
+        Ok((first.operation, first.keep_tools))
+    }
+    pub fn operation(&self) -> Result<Operation, DocumentError> {
+        Ok(self.settings()?.0)
+    }
+    pub fn keep_tools(&self) -> Result<bool, DocumentError> {
+        Ok(self.settings()?.1)
+    }
 }
 /// Read metadata even when a member is missing. Known conflicting source or
 /// membership still fails; inspecting editable controls requires every member.
@@ -194,16 +259,13 @@ pub struct ExtrudeGroupEdit {
 impl ExtrudeGroupEdit {
     pub fn from_state(state: &ExtrudeGroupState) -> Result<Self, DocumentError> {
         state.definition.validate()?;
-        let first = state
-            .booleans
-            .first()
-            .ok_or_else(|| invalid("Extrusion operation has no editable Boolean members"))?;
+        let (operation, keep_tools) = state.settings()?;
         Ok(Self {
             group: state.group,
             parameters: state.extrusion.parameters.clone(),
             faces: None,
-            operation: first.operation,
-            keep_tools: first.keep_tools,
+            operation,
+            keep_tools,
             targets: state
                 .definition
                 .results
@@ -216,7 +278,7 @@ impl ExtrudeGroupEdit {
 #[derive(Clone, Debug)]
 pub struct ExtrudeGroupPrepared {
     pub prepared: Prepared,
-    /// Retained and newly added Boolean result producers.
+    /// Boolean result producers, or owned extrusion producers in New body mode.
     pub outputs: Vec<CreatedBody>,
     /// Actual restored final heads after removing captured target operations.
     pub restored: Vec<BodyInput>,

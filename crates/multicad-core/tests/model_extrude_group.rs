@@ -7,6 +7,8 @@ use multicad_core::{
     sketch::Datum,
     sketch_regions,
 };
+#[path = "model_extrude_group/conversion.rs"]
+mod conversion;
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }

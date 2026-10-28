@@ -17,15 +17,9 @@ pub(in crate::model) fn creation_entity(
     draft: &ExtrudeGroupDraft,
     request: &model::ExtrudeBooleanRequest,
 ) -> Result<Entity, CommandError> {
-    if draft.id.is_nil() || draft.id == document.id() || document.get(draft.id).is_some() {
-        return Err(error(
-            "Extrusion operation identity must be new and non-nil",
-        ));
-    }
-    if draft.name.trim().is_empty() || draft.name.len() > 1000 {
-        return Err(error("Extrusion operation name must contain 1–1000 bytes"));
-    }
     let source = ExtrudeGroupDefinition {
+        source_schema: None,
+        kind: ExtrudeGroupKind::Boolean,
         tools: request
             .extrusion
             .outputs
@@ -45,10 +39,26 @@ pub(in crate::model) fn creation_entity(
             .collect(),
         captured_scope: draft.captured_scope.clone(),
     };
+    new_group_entity(document, draft, &source, EXTRUDE_GROUP_SCHEMA)
+}
+pub(super) fn new_group_entity(
+    document: &Document,
+    draft: &ExtrudeGroupDraft,
+    source: &ExtrudeGroupDefinition,
+    schema: u32,
+) -> Result<Entity, CommandError> {
+    if draft.id.is_nil() || draft.id == document.id() || document.get(draft.id).is_some() {
+        return Err(error(
+            "Extrusion operation identity must be new and non-nil",
+        ));
+    }
+    if draft.name.trim().is_empty() || draft.name.len() > 1000 {
+        return Err(error("Extrusion operation name must contain 1–1000 bytes"));
+    }
     let mut entity = Entity::new(
         &draft.name,
         EntityData::Extension {
-            definition: source.definition()?,
+            definition: source.definition_in_schema(schema)?,
             inputs: source.inputs()?,
         },
     );
@@ -106,18 +116,49 @@ pub fn prepare_extrude_group_edit(
     revision(session, expected_revision)?;
     let document = session.document();
     let state = inspect_extrude_group(document, edit.group)?;
-    if !matches!(
-        edit.operation,
-        Operation::Join | Operation::Cut | Operation::Intersect
-    ) {
+    apply_state(session, expected_revision, actor, edit, state, None)
+}
+pub(super) fn apply_state(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    edit: &ExtrudeGroupEdit,
+    state: ExtrudeGroupState,
+    draft: Option<&ExtrudeGroupDraft>,
+) -> Result<ExtrudeGroupPrepared, CommandError> {
+    revision(session, expected_revision)?;
+    if edit.group != state.group {
         return Err(error(
-            "Captured extrusion operation supports Join, Cut or Intersect",
+            "Extrusion operation edit belongs to a different group",
         ));
     }
-    if edit.targets.is_empty() || edit.targets.len() > MAX_BOOLEAN_TARGETS {
+    let document = session.document();
+    if !matches!(
+        edit.operation,
+        Operation::NewBody | Operation::Join | Operation::Cut | Operation::Intersect
+    ) {
         return Err(error(
-            "Choose 1–128 captured targets; converting to New body is a separate operation",
+            "Extrusion operation supports New body, Join, Cut or Intersect",
         ));
+    }
+    let kind = if edit.operation == Operation::NewBody {
+        if !edit.targets.is_empty() || edit.keep_tools {
+            return Err(error(
+                "New body requires no Boolean targets and no keep-tools setting",
+            ));
+        }
+        ExtrudeGroupKind::NewBody
+    } else {
+        if edit.targets.is_empty() || edit.targets.len() > MAX_BOOLEAN_TARGETS {
+            return Err(error("Choose 1–128 captured Boolean targets"));
+        }
+        ExtrudeGroupKind::Boolean
+    };
+    if !matches!(
+        state.schema_version,
+        EXTRUDE_GROUP_SCHEMA | EXTRUDE_GROUP_V2_SCHEMA
+    ) {
+        return Err(error("Unsupported extrusion operation schema"));
     }
     edit.parameters.resolve_controls(session.parameters())?;
     let existing: BTreeMap<_, _> = state.booleans.iter().map(|r| (r.target.body, r)).collect();
@@ -255,17 +296,43 @@ pub fn prepare_extrude_group_edit(
         removed.push(old.feature);
         restored_bodies.push(old.body);
     }
+    if kind == ExtrudeGroupKind::NewBody {
+        outputs = tools
+            .iter()
+            .map(|tool| CreatedBody {
+                feature: tool.producer,
+                body: tool.body,
+            })
+            .collect();
+    }
+    let schema =
+        if kind == ExtrudeGroupKind::NewBody || state.schema_version == EXTRUDE_GROUP_V2_SCHEMA {
+            EXTRUDE_GROUP_V2_SCHEMA
+        } else {
+            EXTRUDE_GROUP_SCHEMA
+        };
     let source = ExtrudeGroupDefinition {
+        source_schema: None,
+        kind,
         tools,
         results,
         captured_scope: state.definition.captured_scope,
     };
-    let mut group = document.get(edit.group).expect("inspected group").clone();
-    group.data = EntityData::Extension {
-        definition: source.definition()?,
-        inputs: source.inputs()?,
-    };
-    edits.push(Mutation::Replace(group));
+    if let Some(draft) = draft {
+        if draft.id != edit.group {
+            return Err(error("Adoption group identity and edit identity disagree"));
+        }
+        edits.push(Mutation::Insert(new_group_entity(
+            document, draft, &source, schema,
+        )?));
+    } else {
+        let mut group = document.get(edit.group).expect("inspected group").clone();
+        group.data = EntityData::Extension {
+            definition: source.definition_in_schema(schema)?,
+            inputs: source.inputs()?,
+        };
+        edits.push(Mutation::Replace(group));
+    }
     if hierarchy != *document.hierarchy() {
         edits.push(Mutation::SetHierarchy(hierarchy));
     }
