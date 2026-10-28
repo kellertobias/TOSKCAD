@@ -14,6 +14,7 @@ pub mod parameter_editor;
 pub mod recent_projects;
 pub mod reference_repair;
 pub mod registry;
+pub mod ribbon_ui;
 mod selection_input;
 pub mod storage;
 // Native host and reusable interaction controls. Domain and kernel ownership
@@ -50,7 +51,7 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         ..Default::default()
     };
     eframe::run_native(
-        "MultiCAD",
+        "Tusk Cut",
         options,
         Box::new(move |cc| {
             theme::configure(&cc.egui_ctx);

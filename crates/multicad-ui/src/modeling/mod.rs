@@ -90,11 +90,11 @@ impl ModelingTool {
     }
     pub fn icon(self) -> crate::icons::Icon {
         match self {
-            Self::Extrude => crate::icons::Icon::Box,
+            Self::Extrude => crate::icons::Icon::Extrude,
             Self::Box => crate::icons::Icon::Box,
             Self::Cylinder => crate::icons::Icon::Cylinder,
-            Self::Revolve => crate::icons::Icon::Rotate,
-            Self::Boolean => crate::icons::Icon::Cut,
+            Self::Revolve => crate::icons::Icon::Revolve,
+            Self::Boolean => crate::icons::Icon::Boolean,
             Self::Split => crate::icons::Icon::Split,
             Self::Move => crate::icons::Icon::Transform,
             Self::Copy => crate::icons::Icon::LinearPattern,

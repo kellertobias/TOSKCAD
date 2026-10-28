@@ -1,6 +1,6 @@
 //! User-local launch metadata. The persistent lock inode is separate from the
 //! atomically replaced JSON file, so independent instances share one lock.
-use multicad_ui::recent_projects::{RecentProject, RecentStore, normalize};
+use multicad_ui::recent_projects::{RecentProject, RecentStore, RecentView, normalize};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File, OpenOptions},
@@ -54,7 +54,8 @@ fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
     }
     let value: Value = serde_json::from_slice(bytes).map_err(invalid)?;
     fields(&value, &["application", "version", "projects"])?;
-    if value["application"].as_str() != Some(APPLICATION) || value["version"].as_u64() != Some(1) {
+    let version = value["version"].as_u64();
+    if value["application"].as_str() != Some(APPLICATION) || !matches!(version, Some(1 | 2)) {
         return Err(invalid("foreign application or unsupported version"));
     }
     let projects = value["projects"]
@@ -65,8 +66,32 @@ fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
     }
     let mut entries = Vec::with_capacity(projects.len());
     for project in projects {
-        fields(project, &["path", "title", "last_opened_unix_ms"])?;
+        let view = if version == Some(1) {
+            fields(project, &["path", "title", "last_opened_unix_ms"])?;
+            None
+        } else {
+            fields(project, &["path", "title", "last_opened_unix_ms", "view"])?;
+            if project["view"].is_null() {
+                None
+            } else {
+                fields(&project["view"], &["mode", "workspace"])?;
+                let mode = project["view"]["mode"]
+                    .as_str()
+                    .and_then(|name| {
+                        multicad_ui::registry::Mode::ALL
+                            .into_iter()
+                            .find(|m| m.title() == name)
+                    })
+                    .ok_or_else(|| invalid("unknown workspace mode"))?;
+                let workspace = project["view"]["workspace"]
+                    .as_str()
+                    .ok_or_else(|| invalid("workspace must be a string"))?
+                    .into();
+                Some(RecentView { mode, workspace })
+            }
+        };
         let entry = RecentProject {
+            view,
             path: PathBuf::from(
                 project["path"]
                     .as_str()
@@ -89,10 +114,14 @@ fn encode(entries: &[RecentProject]) -> Result<Vec<u8>, String> {
     let mut projects = Vec::with_capacity(entries.len());
     for entry in entries {
         let path = validate(entry)?;
-        projects.push(json!({"path":path,"title":entry.title,"last_opened_unix_ms":entry.last_opened_unix_ms}));
+        let view = entry
+            .view
+            .as_ref()
+            .map(|v| json!({"mode":v.mode.title(),"workspace":v.workspace}));
+        projects.push(json!({"path":path,"title":entry.title,"last_opened_unix_ms":entry.last_opened_unix_ms,"view":view}));
     }
     let bytes = serde_json::to_vec_pretty(
-        &json!({"application":APPLICATION,"version":1,"projects":projects}),
+        &json!({"application":APPLICATION,"version":2,"projects":projects}),
     )
     .map_err(invalid)?;
     if bytes.len() > MAX_BYTES {
@@ -168,8 +197,15 @@ impl RecentStore for RecentFileStore {
         }) {
             return Ok(entries);
         }
+        let mut entry = entry.clone();
+        if entry.view.is_none() {
+            entry.view = entries
+                .iter()
+                .find(|old| old.path == entry.path)
+                .and_then(|old| old.view.clone());
+        }
         entries.retain(|old| old.path != entry.path);
-        entries.push(entry.clone());
+        entries.push(entry);
         let entries = normalize(entries)?;
         let bytes = encode(&entries)?;
         let mut temporary = tempfile::NamedTempFile::new_in(self.parent()).map_err(invalid)?;
@@ -202,6 +238,7 @@ mod tests {
             path: root.join(format!("project-{index}.multicad")),
             title: format!("Project {index}"),
             last_opened_unix_ms: timestamp,
+            view: None,
         }
     }
     #[test]
@@ -410,5 +447,44 @@ mod tests {
                 format!("Canonical project {index}")
             );
         }
+    }
+    #[test]
+    fn workspace_metadata_roundtrips_and_legacy_history_migrates_without_losing_visits() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = RecentFileStore::new(root.path().join("recent.json"));
+        let mut first = entry(root.path(), 0, 1);
+        first.view = Some(RecentView {
+            mode: multicad_ui::registry::Mode::Model,
+            workspace: "Sheet metal".into(),
+        });
+        store.record(&first).unwrap();
+        assert_eq!(store.load().unwrap(), vec![first.clone()]);
+        let mut visit = first.clone();
+        visit.view = None;
+        visit.last_opened_unix_ms = 2;
+        let persisted = store.record(&visit).unwrap();
+        assert_eq!(
+            persisted[0].view, first.view,
+            "Opening before history is read must retain its saved view"
+        );
+        let mut legacy = serde_json::from_slice::<Value>(&fs::read(&store.path).unwrap()).unwrap();
+        legacy["version"] = json!(1);
+        legacy["projects"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("view");
+        fs::write(&store.path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(store.load().unwrap()[0].view, None);
+        first.last_opened_unix_ms = 3;
+        store.record(&first).unwrap();
+        let migrated = serde_json::from_slice::<Value>(&fs::read(&store.path).unwrap()).unwrap();
+        assert_eq!(migrated["version"], json!(2));
+        assert_eq!(store.load().unwrap()[0], first);
+        let mut invalid = migrated;
+        invalid["projects"][0]["view"]["mode"] = json!("Unknown");
+        let bytes = serde_json::to_vec(&invalid).unwrap();
+        fs::write(&store.path, &bytes).unwrap();
+        assert!(store.record(&visit).is_err());
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
     }
 }

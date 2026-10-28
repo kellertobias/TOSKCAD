@@ -153,7 +153,10 @@ mod tests {
             entered,
             finish: gate,
         }));
-        app.remember_recent(PathBuf::from("/private/tmp/saved-close-project.multicad"));
+        app.remember_recent(
+            PathBuf::from("/private/tmp/saved-close-project.multicad"),
+            None,
+        );
         signal.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(app.recents_writing());
         assert!(!app.should_defer_close());

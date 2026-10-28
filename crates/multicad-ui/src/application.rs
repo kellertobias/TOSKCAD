@@ -30,6 +30,8 @@ use std::{
     path::PathBuf,
 };
 pub struct Project {
+    view: crate::recent_projects::RecentView,
+    view_restore_pending: bool,
     local_id: EntityId,
     pub resources: ProjectResources,
     pub file_stamp: Option<FileStamp>,
@@ -51,6 +53,8 @@ impl Project {
         let session = Session::new(document).map_err(|e| e.to_string())?;
         let editor = ParameterEditor::new(&session);
         Ok(Self {
+            view: Default::default(),
+            view_restore_pending: false,
             local_id: EntityId::new(),
             resources: ProjectResources::default(),
             file_stamp: None,
@@ -102,6 +106,7 @@ struct CommandRecord {
 pub struct Application {
     pub projects: Vec<Project>,
     welcome: bool,
+    welcome_logo: Option<egui::TextureHandle>,
     welcome_placeholder: Option<EntityId>,
     recent_worker: Option<crate::recent_projects::RecentWorker>,
     recents: Vec<crate::recent_projects::RecentProject>,
@@ -154,6 +159,7 @@ impl Application {
                 Document::new("Untitled").map_err(|e| e.to_string())?,
             )?],
             welcome: false,
+            welcome_logo: None,
             welcome_placeholder: None,
             recent_worker: None,
             recents: vec![],
@@ -299,10 +305,15 @@ impl Application {
         self.tab = tab;
     }
     fn activate_project(&mut self, index: usize) {
+        if index == self.active {
+            return;
+        }
         if index != self.active && self.current().sketch.measurement.active() {
             self.close_measurement();
         }
+        self.remember_current_view();
         self.active = index;
+        self.restore_current_view();
     }
     fn measurement_blocks(&self, command: Command) -> bool {
         self.current().sketch.measurement.active()
@@ -672,9 +683,12 @@ impl Application {
                     format!("Untitled {}", self.projects.len() + 1)
                 };
                 let project = Project::new(Document::new(name).map_err(|e| e.to_string())?)?;
+                if !self.welcome {
+                    self.remember_current_view();
+                }
                 self.discard_welcome_placeholder();
                 self.projects.push(project);
-                self.activate_project(self.projects.len() - 1);
+                self.active = self.projects.len() - 1;
                 self.mode = Mode::Parameters;
                 self.tab = 0;
             }
@@ -740,7 +754,8 @@ impl Application {
                     return Err("Apply or discard pending edits before creating a sketch".into());
                 }
                 if args.is_empty() {
-                    self.current_mut().sketch.begin();
+                    let p = self.current_mut();
+                    p.sketch.begin_from_selection(&mut p.session, channel)?;
                 } else {
                     if args.len() != 1 {
                         return Err("Usage: start [xy|xz|yz]".into());
@@ -1050,7 +1065,7 @@ impl Application {
                 if cfg!(target_os = "macos") {
                     ui.add_space(74.0);
                 }
-                let brand = ui.heading("MultiCAD").interact(egui::Sense::drag());
+                let brand = ui.heading("Tusk Cut").interact(egui::Sense::drag());
                 if brand.drag_started() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
@@ -1362,38 +1377,16 @@ impl Application {
             })
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                egui::ScrollArea::horizontal().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for id in &workspace.tabs[self.tab].tools {
-                            if self.mode == Mode::Sketch
-                                && !self.current().sketch.editing
-                                && *id != "new-sketch"
-                            {
-                                continue;
-                            }
-                            let tool = *self.registry.tool(id).expect("registered tool");
-                            let enabled = self.enabled(tool.action);
-                            if ui
-                                .add_enabled_ui(enabled, |ui| {
-                                    icons::tool_with_hint(
-                                        ui,
-                                        tool.icon,
-                                        tool.label,
-                                        &self.command_help(tool.action, tool.label, ui.ctx()),
-                                    )
-                                })
-                                .inner
-                                .on_disabled_hover_text(match tool.action {
-                                    Command::Modeling(tool) => tool.requirements(),
-                                    _ => "This component is not available in the current context",
-                                })
-                                .clicked()
-                            {
-                                action = Some(tool.action);
-                            }
-                        }
-                    });
-                })
+                let context = ui.ctx().clone();
+                action = crate::ribbon_ui::show(
+                    ui,
+                    &self.registry,
+                    self.mode,
+                    &workspace.tabs[self.tab],
+                    self.current().sketch.editing,
+                    |command| self.enabled(command),
+                    |command, label| self.command_help(command, label, &context),
+                );
             });
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
@@ -1662,8 +1655,8 @@ impl Application {
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        self.poll_files();
         self.poll_recents(&ctx);
+        self.poll_files();
         self.handle_close_request(&ctx);
         controls::block_modal_background(
             ui,
@@ -1856,6 +1849,7 @@ impl Application {
             ctx.request_repaint();
         }
         self.show_close_dialog(&ctx);
+        self.remember_current_view();
         self.text_input_was_focused = ctx.text_edit_focused();
     }
 }

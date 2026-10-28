@@ -842,6 +842,36 @@ impl SketchEditor {
         self.delta = [0.; 3];
         self.drag = None;
     }
+    pub fn begin_from_selection(
+        &mut self,
+        session: &mut Session,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before creating a sketch".into());
+        }
+        if let Some(hit) = self
+            .solid
+            .selected_hit()
+            .filter(|hit| hit.key.kind == multicad_core::references::TopologyKind::Face)
+            .cloned()
+        {
+            let scene = self.display_scene.clone();
+            let context = PlaneContext {
+                document: session.document(),
+                revision: session.revision(),
+                scene: scene.as_deref(),
+                report: self.evaluated.as_ref(),
+                occurrence: Some(hit.instance),
+                section: self.solid.section.plane(),
+            };
+            let preview = crate::sketch_plane::selected_face(context, &hit)?;
+            self.create_on_plane(session, preview, channel)
+        } else {
+            self.begin();
+            Ok(())
+        }
+    }
     pub fn begin(&mut self) {
         if self.has_pending_edits() {
             self.message =
@@ -4193,6 +4223,80 @@ mod tests {
                 .unwrap(),
             )
         };
+        // Selection-first entry must consume the existing face, without a second
+        // plane picker click or an Inspector confirmation.
+        {
+            let mut direct_session = Session::new(before.clone()).unwrap();
+            let mut direct = SketchEditor {
+                display_scene: Some(scene(0, 1)),
+                ..Default::default()
+            };
+            direct.camera.target = [110., 75., 58.];
+            direct.camera.pitch = std::f32::consts::FRAC_PI_2;
+            direct.camera.yaw = 0.;
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000., 700.));
+            let point = direct
+                .camera
+                .project(pose.point([30., 20., 18.]).map(|v| v as f32), rect);
+            let point = Pos2::new(point[0], point[1]);
+            let ctx = egui::Context::default();
+            for events in [
+                vec![],
+                vec![],
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ] {
+                ctx.run_ui(input(events), |ui| {
+                    direct.canvas(ui, &mut direct_session, false, Some(scene(0, 1)), true)
+                })
+                .drop_without_applying_deltas();
+            }
+            assert!(direct.solid.selected_hit().is_some(), "real face selection");
+            let mut stale = Session::new(before.clone()).unwrap();
+            stale
+                .apply(Request {
+                    expected_revision: 0,
+                    actor: Actor::local(Channel::Ui),
+                    label: "Rename".into(),
+                    edits: vec![Mutation::RenameDocument("Changed".into())],
+                })
+                .unwrap();
+            let stale_source = stale.document().clone();
+            assert!(
+                direct
+                    .begin_from_selection(&mut stale, Channel::Ui)
+                    .unwrap_err()
+                    .contains("stale")
+            );
+            assert_eq!(stale.document(), &stale_source);
+            direct
+                .begin_from_selection(&mut direct_session, Channel::Ui)
+                .unwrap();
+            assert!(direct.editing && !direct.picking);
+            assert_eq!(direct_session.revision(), 1);
+            assert_eq!(direct.occurrence, Some(instance.id));
+            assert_eq!(
+                direct_session
+                    .document()
+                    .entities()
+                    .filter(|e| matches!(e.data, EntityData::Sketch { .. }))
+                    .count(),
+                1
+            );
+        }
         let mut editor = SketchEditor {
             display_scene: Some(scene(0, 1)),
             ..Default::default()

@@ -46,6 +46,9 @@ impl Interaction {
         self.action_error = None;
         self.last_query = None;
     }
+    pub fn selected_hit(&self) -> Option<&Hit> {
+        self.selected.as_ref()
+    }
     pub fn has_topology_selection(&self) -> bool {
         self.selected.is_some()
     }

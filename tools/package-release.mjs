@@ -57,7 +57,7 @@ export async function buildPackage(version){
   run('cargo',['build','--workspace','--release','--locked'],{env,stdio:'inherit'});
   const metadata=JSON.parse(run('cargo',['metadata','--no-deps','--format-version','1','--locked']));
   const binary=join(metadata.target_directory,'release',process.platform==='win32'?'multicad.exe':'multicad');
-  if(run(binary,['--version'])!==`MultiCAD ${version}`)throw new Error('Compiled version does not match package');
+  if(run(binary,['--version'])!==`Tusk Cut ${version}`)throw new Error('Compiled version does not match package');
   const diagnostics=run(binary,['--diagnostics']);
   const nativeIdentity=nativeSourceHash(join(root,'artifacts/native-deps/OCCT-7_9_3'));
   if(!diagnostics.includes(`OCCT source: ${nativeIdentity}`))throw new Error('Binary native source identity does not match the source package');

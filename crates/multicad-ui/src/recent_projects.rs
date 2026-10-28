@@ -4,14 +4,43 @@ use std::{
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
 };
 pub const MAX_RECENTS: usize = 20;
+/// User-local navigation state. It is never part of CAD source or Undo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentView {
+    pub mode: crate::registry::Mode,
+    pub workspace: String,
+}
+impl Default for RecentView {
+    fn default() -> Self {
+        Self {
+            mode: crate::registry::Mode::Parameters,
+            workspace: "Common".into(),
+        }
+    }
+}
+impl RecentView {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.workspace.trim().is_empty()
+            || self.workspace.chars().count() > 80
+            || self.workspace.chars().any(char::is_control)
+        {
+            return Err("Invalid recent workspace".into());
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentProject {
     pub path: PathBuf,
     pub title: String,
     pub last_opened_unix_ms: u64,
+    pub view: Option<RecentView>,
 }
 impl RecentProject {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(view) = &self.view {
+            view.validate()?;
+        }
         if !self.path.is_absolute()
             || self.path.as_os_str().len() > 8192
             || self.title.trim().is_empty()
@@ -43,6 +72,7 @@ pub fn normalize(mut entries: Vec<RecentProject>) -> Result<Vec<RecentProject>, 
 pub trait RecentStore: Send + 'static {
     fn load(&mut self) -> Result<Vec<RecentProject>, String>;
     /// Merge atomically with other application instances, preserving unrelated entries.
+    /// A visit with no view preserves that path's previously recorded navigation.
     fn record(&mut self, entry: &RecentProject) -> Result<Vec<RecentProject>, String>;
 }
 enum Job {
@@ -54,6 +84,7 @@ pub struct RecentWorker {
     rx: Receiver<(bool, Result<Vec<RecentProject>, String>)>,
     pending: usize,
     pending_records: usize,
+    loading: bool,
 }
 impl RecentWorker {
     pub fn new(mut store: Box<dyn RecentStore>) -> Result<Self, String> {
@@ -81,6 +112,7 @@ impl RecentWorker {
             rx,
             pending: 1,
             pending_records: 0,
+            loading: true,
         })
     }
     pub fn record(&mut self, entry: RecentProject) -> Result<(), String> {
@@ -95,6 +127,9 @@ impl RecentWorker {
     pub fn poll(&mut self) -> Option<Result<Vec<RecentProject>, String>> {
         match self.rx.try_recv() {
             Ok((record, result)) => {
+                if !record {
+                    self.loading = false;
+                }
                 self.pending_records = self.pending_records.saturating_sub(usize::from(record));
                 self.pending = self.pending.saturating_sub(1);
                 Some(result)
@@ -103,10 +138,14 @@ impl RecentWorker {
             Err(TryRecvError::Disconnected) if self.pending > 0 => {
                 self.pending = 0;
                 self.pending_records = 0;
+                self.loading = false;
                 Some(Err("Recent-project metadata worker stopped".into()))
             }
             Err(TryRecvError::Disconnected) => None,
         }
+    }
+    pub fn loading(&self) -> bool {
+        self.loading
     }
     pub fn writing(&self) -> bool {
         self.pending_records > 0
@@ -157,6 +196,7 @@ mod tests {
             path: PathBuf::from("/private/tmp/confirmed.multicad"),
             title: "Confirmed".into(),
             last_opened_unix_ms: 1,
+            view: None,
         };
         worker.record(entry.clone()).unwrap();
         signal.recv_timeout(Duration::from_secs(2)).unwrap();

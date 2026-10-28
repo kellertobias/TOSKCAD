@@ -227,6 +227,36 @@ fn face_choice(
     let Some(hit) = scene.pick_face_section(ray, context.section) else {
         return Ok(None);
     };
+    face_from_hit(context, &hit, cached)
+}
+/// Reuse a committed selection rather than ray-picking beneath a toolbar click.
+pub fn selected_face(
+    context: PlaneContext<'_>,
+    hit: &crate::viewport::Hit,
+) -> Result<PlanePreview, String> {
+    let scene = context
+        .scene
+        .ok_or("Wait for the current model before creating a face sketch")?;
+    if hit.stamp != scene.stamp()
+        || hit.stamp.document != context.document.id()
+        || hit.stamp.revision != context.revision
+    {
+        return Err("The selected face is stale; select it again on the current model".into());
+    }
+    if hit.key.kind != multicad_core::references::TopologyKind::Face {
+        return Err("Select a planar face to start a face sketch".into());
+    }
+    let choice = face_from_hit(context, hit, None)?.ok_or("Select a current planar face")?;
+    preview(&choice, PlaneOptions::default(), context)
+}
+fn face_from_hit(
+    context: PlaneContext<'_>,
+    hit: &crate::viewport::Hit,
+    cached: Option<&Arc<FacePlane>>,
+) -> Result<Option<PlaneChoice>, String> {
+    let scene = context
+        .scene
+        .ok_or("Wait for the current model before choosing a face")?;
     if !matches!(
         context.document.get(hit.geometry).map(|e| &e.data),
         Some(EntityData::Feature {

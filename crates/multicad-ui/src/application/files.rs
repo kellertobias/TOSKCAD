@@ -74,6 +74,7 @@ impl Application {
         Ok(())
     }
     pub(super) fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
+        self.remember_current_view();
         let p = self.current();
         if p.pending_edits() {
             return Err("Apply or cancel pending edits before saving".into());
@@ -233,7 +234,8 @@ impl Application {
                 p.path = Some(path.clone());
                 p.file_stamp = Some(saved.stamp);
                 p.imported_from = None;
-                self.remember_recent(path);
+                let view = p.view.clone();
+                self.remember_recent(path, Some(view));
                 self.message = if saved.warnings.is_empty() {
                     "Project saved atomically".into()
                 } else {
@@ -255,7 +257,17 @@ impl Application {
                     p.session.mark_saved(0).map_err(|e| e.to_string())?;
                     p.path = Some(path.clone());
                     p.file_stamp = Some(stamp);
-                    self.remember_recent(path);
+                    p.view = self
+                        .recents
+                        .iter()
+                        .find(|e| e.path == path)
+                        .and_then(|e| e.view.clone())
+                        .unwrap_or_default();
+                    p.view_restore_pending = self
+                        .recent_worker
+                        .as_ref()
+                        .is_some_and(|worker| worker.loading());
+                    self.remember_recent(path, None);
                 }
                 self.add_loaded_project(
                     p,
@@ -324,11 +336,16 @@ impl Application {
         Ok(())
     }
     fn add_loaded_project(&mut self, p: Project, diagnostics: Vec<String>, message: &str) {
+        if !self.welcome {
+            if self.current().sketch.measurement.active() {
+                self.close_measurement();
+            }
+            self.remember_current_view();
+        }
         self.discard_welcome_placeholder();
         self.projects.push(p);
-        self.activate_project(self.projects.len() - 1);
-        self.mode = Mode::Parameters;
-        self.tab = 0;
+        self.active = self.projects.len() - 1;
+        self.restore_current_view();
         self.file_action = None;
         self.file_document = None;
         self.replacement = None;

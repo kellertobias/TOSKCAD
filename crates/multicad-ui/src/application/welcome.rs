@@ -1,5 +1,5 @@
 use super::*;
-use crate::recent_projects::{RecentProject, RecentStore, RecentWorker};
+use crate::recent_projects::{RecentProject, RecentStore, RecentView, RecentWorker};
 impl Application {
     /// Production startup has no acquired document or unsaved-close prompt.
     /// The internal empty slot is replaced before the first New/Open completes.
@@ -17,22 +17,81 @@ impl Application {
         }
     }
     pub(super) fn poll_recents(&mut self, ctx: &egui::Context) {
+        let mut restore_active = false;
         if let Some(worker) = &mut self.recent_worker {
             while let Some(result) = worker.poll() {
                 match result {
                     Ok(entries) => {
+                        for (index, p) in self.projects.iter_mut().enumerate() {
+                            if p.view_restore_pending {
+                                p.view_restore_pending = false;
+                                if let Some(view) = entries
+                                    .iter()
+                                    .find(|e| Some(&e.path) == p.path.as_ref())
+                                    .and_then(|e| e.view.clone())
+                                {
+                                    p.view = view;
+                                    restore_active |= index == self.active;
+                                }
+                            }
+                        }
                         self.recents = entries;
                         self.recent_error = None;
                     }
-                    Err(error) => self.recent_error = Some(error),
+                    Err(error) => {
+                        self.recent_error = Some(error);
+                        for p in &mut self.projects {
+                            p.view_restore_pending = false;
+                        }
+                    }
                 }
             }
             if worker.pending() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(32));
             }
         }
+        if restore_active {
+            self.restore_current_view();
+            ctx.request_repaint();
+        }
     }
-    pub(super) fn remember_recent(&mut self, path: PathBuf) {
+    pub(super) fn restore_current_view(&mut self) {
+        let view = self.current().view.clone();
+        self.mode = view.mode;
+        self.tab = self
+            .registry
+            .workspace(view.mode)
+            .tabs
+            .iter()
+            .position(|t| t.title == view.workspace)
+            .unwrap_or(0);
+        if self.registry.workspace(self.mode).tabs[self.tab].requires_active_sketch
+            && !self.current().sketch.editing
+        {
+            self.tab = 0;
+        }
+    }
+    pub(super) fn remember_current_view(&mut self) {
+        if self.welcome {
+            return;
+        }
+        let workspace = self.registry.workspace(self.mode);
+        let tab = self.tab.min(workspace.tabs.len().saturating_sub(1));
+        let view = RecentView {
+            mode: self.mode,
+            workspace: workspace.tabs[tab].title.into(),
+        };
+        if self.current().view == view {
+            return;
+        }
+        let path = self.current().file_stamp.and(self.current().path.clone());
+        self.current_mut().view = view.clone();
+        self.current_mut().view_restore_pending = false;
+        if let Some(path) = path {
+            self.remember_recent(path, Some(view));
+        }
+    }
+    pub(super) fn remember_recent(&mut self, path: PathBuf, view: Option<RecentView>) {
         let Some(worker) = &mut self.recent_worker else {
             return;
         };
@@ -50,6 +109,7 @@ impl Application {
             path,
             title,
             last_opened_unix_ms,
+            view,
         }) {
             self.recent_error = Some(error);
         }
@@ -74,6 +134,18 @@ impl Application {
         if !self.pending_files.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        if self.welcome_logo.is_none()
+            && let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!(
+                "../../../../assets/branding/app/AppIcon.png"
+            ))
+        {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width as usize, icon.height as usize],
+                &icon.rgba,
+            );
+            self.welcome_logo =
+                Some(ctx.load_texture("approved-application-logo", image, Default::default()));
+        }
         self.handle_shortcuts(&ctx);
         egui::Panel::top("welcome-titlebar")
             .frame(
@@ -89,7 +161,7 @@ impl Application {
                         if cfg!(target_os = "macos") {
                             ui.add_space(74.);
                         }
-                        ui.heading("MultiCAD");
+                        ui.heading("Tusk Cut");
                     },
                 );
             });
@@ -101,8 +173,10 @@ impl Application {
             ui.horizontal(|ui| {
                 ui.add_space(((ui.available_width()-width)*0.5).max(0.));
                 ui.allocate_ui_with_layout(egui::vec2(width,ui.available_height()),egui::Layout::top_down(egui::Align::Min),|ui| {
-                    ui.heading(egui::RichText::new("Welcome to MultiCAD").size(28.));
-                    ui.label("Continue a project or start something new.");
+                    ui.horizontal(|ui| {
+                        if let Some(logo)=&self.welcome_logo {ui.add(egui::Image::new((logo.id(),egui::vec2(80.,80.))).alt_text("Tusk Cut application logo"));ui.add_space(16.);}
+                        ui.vertical(|ui| {ui.add_space(12.);ui.heading(egui::RichText::new("Welcome to Tusk Cut").size(28.));ui.label("Continue a project or start something new.");});
+                    });
                     ui.add_space(20.);
                     ui.horizontal(|ui| {
                         if ui.add_sized([156.,40.],egui::Button::new("Open project…")).on_hover_text("Choose a .multicad project with the operating system file picker").clicked(){command=Some(Command::Open);}
@@ -192,7 +266,15 @@ mod tests {
         }
         fn record(&mut self, entry: &RecentProject) -> Result<Vec<RecentProject>, String> {
             let mut entries = self.0.lock().unwrap();
-            entries.push(entry.clone());
+            let mut entry = entry.clone();
+            if entry.view.is_none() {
+                entry.view = entries
+                    .iter()
+                    .find(|old| old.path == entry.path)
+                    .and_then(|old| old.view.clone());
+            }
+            entries.retain(|old| old.path != entry.path);
+            entries.push(entry);
             Ok(entries.clone())
         }
     }
@@ -332,5 +414,96 @@ mod tests {
         }
         assert_eq!(app.current().session.document().name(), "Delayed recent");
         assert_eq!(app.projects.len(), 1);
+    }
+    #[test]
+    fn reopened_files_and_local_tabs_recall_their_mode_and_workspace_without_source_edits() {
+        let entries = Arc::new(Mutex::new(vec![
+            RecentProject {
+                path: PathBuf::from("/private/tmp/recall-a.multicad"),
+                title: "A".into(),
+                last_opened_unix_ms: 1,
+                view: Some(RecentView {
+                    mode: Mode::Model,
+                    workspace: "Wood".into(),
+                }),
+            },
+            RecentProject {
+                path: PathBuf::from("/private/tmp/recall-b.multicad"),
+                title: "B".into(),
+                last_opened_unix_ms: 2,
+                view: Some(RecentView {
+                    mode: Mode::Export,
+                    workspace: "Render".into(),
+                }),
+            },
+        ]));
+        let source = Document::new("Recall source").unwrap();
+        let mut app = Application::welcome(Box::new(Storage {
+            document: source.clone(),
+            fail: false,
+        }))
+        .unwrap();
+        app.set_recent_store(Box::new(Recents(entries.clone())));
+        drain(&mut app);
+        app.load_path(PathBuf::from("/private/tmp/recall-a.multicad"))
+            .unwrap();
+        drain(&mut app);
+        assert_eq!(app.mode, Mode::Model);
+        assert_eq!(app.registry.workspace(app.mode).tabs[app.tab].title, "Wood");
+        app.mode = Mode::Drawings;
+        app.tab = 0;
+        app.remember_current_view();
+        app.load_path(PathBuf::from("/private/tmp/recall-b.multicad"))
+            .unwrap();
+        drain(&mut app);
+        assert_eq!(app.mode, Mode::Export);
+        assert_eq!(
+            app.registry.workspace(app.mode).tabs[app.tab].title,
+            "Render"
+        );
+        app.activate_project(0);
+        assert_eq!(app.mode, Mode::Drawings);
+        for project in &app.projects {
+            assert_eq!(project.session.document(), &source);
+            assert_eq!(project.session.revision(), 0);
+            assert!(!project.session.dirty() && !project.session.can_undo());
+        }
+        drain(&mut app);
+        let mut reopened = Application::welcome(Box::new(Storage {
+            document: source,
+            fail: false,
+        }))
+        .unwrap();
+        reopened.set_recent_store(Box::new(Recents(entries)));
+        drain(&mut reopened);
+        reopened
+            .load_path(PathBuf::from("/private/tmp/recall-a.multicad"))
+            .unwrap();
+        drain(&mut reopened);
+        assert_eq!(reopened.mode, Mode::Drawings);
+        assert_eq!(reopened.projects.len(), 1);
+    }
+    #[test]
+    fn a_removed_workspace_falls_back_within_the_saved_mode() {
+        let mut app = Application::welcome(Box::new(Storage {
+            document: Document::new("Safe view fallback").unwrap(),
+            fail: false,
+        }))
+        .unwrap();
+        app.recents.push(RecentProject {
+            path: PathBuf::from("/private/tmp/old-workspace.multicad"),
+            title: "Old workspace".into(),
+            last_opened_unix_ms: 1,
+            view: Some(RecentView {
+                mode: Mode::Model,
+                workspace: "Removed extension".into(),
+            }),
+        });
+        app.load_path(PathBuf::from("/private/tmp/old-workspace.multicad"))
+            .unwrap();
+        drain(&mut app);
+        assert_eq!(app.mode, Mode::Model);
+        assert_eq!(app.tab, 0);
+        assert!(!app.current().session.dirty());
     }
 }

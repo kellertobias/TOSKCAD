@@ -23,14 +23,14 @@ impl FilePicker for NativePicker {
             return Err("A native file dialog is already open".into());
         }
         let mut dialog = self.parent.clone().set_title(match request.kind {
-            Kind::OpenProject => "Open MultiCAD project",
-            Kind::SaveProject => "Save MultiCAD project",
+            Kind::OpenProject => "Open Tusk Cut project",
+            Kind::SaveProject => "Save Tusk Cut project",
             Kind::ImportSource => "Import source snapshot",
         });
         dialog = if request.kind == Kind::ImportSource {
             dialog.add_filter("Source snapshot", &["json"])
         } else {
-            dialog.add_filter("MultiCAD project", &["multicad"])
+            dialog.add_filter("Tusk Cut project", &["multicad"])
         };
         if let Some(path) = &request.directory {
             dialog = dialog.set_directory(path);
