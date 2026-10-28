@@ -19,12 +19,21 @@ export function nativeSourceHash(source){
 }
 
 export function runtimeExecutable(stage,platform=process.platform){return platform==='darwin'?join(stage,'MultiCAD.app/Contents/MacOS/multicad'):join(stage,platform==='win32'?'multicad.exe':'multicad');}
+// The current development/archive policy is ad-hoc signing. Seal the outer
+// bundle after its resources; a copied executable signature does not seal a
+// newly assembled app. Publisher signing must follow the final resource write.
+function sealMacOSBundle(resources){
+  if(process.platform!=='darwin')return;
+  const bundle=resolve(resources,'../..');
+  run('codesign',['--force','--sign','-',bundle]);
+  run('codesign',['--verify','--deep','--strict',bundle]);
+}
 export function assembleRuntime(stage,binary,version){
   mkdirSync(stage,{recursive:true});
   const executable=runtimeExecutable(stage);mkdirSync(dirname(executable),{recursive:true});copyFileSync(binary,executable);
   if(process.platform==='darwin'){
     const contents=join(stage,'MultiCAD.app/Contents');
-    writeFileSync(join(contents,'Info.plist'),`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>multicad</string><key>CFBundleIdentifier</key><string>de.tokenet.multicad</string><key>CFBundleName</key><string>MultiCAD</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${escapeXML(version.split('-')[0])}</string><key>CFBundleVersion</key><string>${escapeXML(version.split('-')[0])}</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>\n`);
+    writeFileSync(join(contents,'Info.plist'),`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>multicad</string><key>CFBundleIdentifier</key><string>de.tokenet.multicad</string><key>CFBundleName</key><string>MultiCAD</string><key>CFBundlePackageType</key><string>APPL</string><key>NSPrincipalClass</key><string>NSApplication</string><key>CFBundleShortVersionString</key><string>${escapeXML(version.split('-')[0])}</string><key>CFBundleVersion</key><string>${escapeXML(version.split('-')[0])}</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>\n`);
   }else if(process.platform==='linux'){
     writeFileSync(join(stage,'multicad.desktop'),'[Desktop Entry]\nType=Application\nName=MultiCAD\nExec=multicad\nTerminal=false\nCategories=Graphics;Engineering;\n');
   }
@@ -32,7 +41,8 @@ export function assembleRuntime(stage,binary,version){
   copyFileSync(join(root,'LICENSE'),join(resources,'LICENSE'));
   copyFileSync(join(root,'native-dependencies.json'),join(resources,'native-dependencies.json'));
   for(const name of ['OCCT-LICENSE-LGPL-2.1.txt','OCCT-LGPL-EXCEPTION.txt'])copyFileSync(join(root,'docs/architecture/foundation',name),join(resources,name));
-  writeFileSync(join(stage,'README.txt'),`MultiCAD ${version} — unsigned native development host.\nThe CAD workspaces and native project format are not implemented yet.\nRun with no arguments to open the native window; --diagnostics is headless.\nmacOS: open MultiCAD.app. Windows: run multicad.exe. Linux: run ./multicad on an Ubuntu 24.04+ desktop with graphics drivers.\nNo Python, Node.js, FreeCAD or source checkout is required at runtime.\nThis development build is not notarized or publisher-signed.\nSource and third-party notices accompany release archives.\n`);
+  writeFileSync(join(stage,'README.txt'),`MultiCAD ${version} native development build.\nIncludes parameter editing, constrained sketches and initial native solid extrusion.\nNative .multicad projects support save/open, embedded resources and explicit recovery.\nSpecialized workspaces, drawing and 3D export workflows, and the MCP server remain under development.\nRun with no arguments to open the native window; --diagnostics is headless.\nmacOS: open MultiCAD.app. Windows: run multicad.exe. Linux: run ./multicad on an Ubuntu 24.04+ desktop with graphics drivers.\nNo Python, Node.js, FreeCAD or source checkout is required at runtime.\n${process.platform==='darwin'?'This macOS bundle is ad-hoc signed, without publisher signing or notarization.':'This development build is not publisher-signed.'}\nSource and third-party notices accompany release archives.\n`);
+  sealMacOSBundle(resources);
   return {executable,resources};
 }
 
@@ -68,7 +78,7 @@ export function collectNotices(resources,source,metadata){
     records.push({name:p.name,version:p.version,license:p.license,source:p.source});
   }
   writeFileSync(join(resources,'third-party.json'),JSON.stringify(records.sort((a,b)=>a.name.localeCompare(b.name)),null,2)+'\n');
-  if(process.platform==='darwin')run('codesign',['--force','--sign','-',resolve(resources,'../..')]);
+  sealMacOSBundle(resources);
 }
 export function auditRuntime(binary){
   if(process.platform==='darwin'){

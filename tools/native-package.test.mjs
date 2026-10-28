@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync,chmodSync,statSync,copyFileSync} from 'node:fs';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
-import {assembleRuntime,nativeSourceHash,peImports,runtimeExecutable} from './native-package.mjs';
+import {assembleRuntime,collectNotices,nativeSourceHash,peImports,runtimeExecutable} from './native-package.mjs';
+
+// Use a real Mach-O to exercise native executable signing. This fixture never
+// creates a window and is not an application runtime or a shipped product.
+function executableFixture(directory){
+  const binary=join(directory,'fixture');
+  if(process.platform==='darwin')execFileSync('xcrun',['clang','-x','c','-o',binary,'-'],{input:'int main(void) { return 0; }\n'});
+  else{writeFileSync(binary,'layout fixture only');chmodSync(binary,0o755);}
+  return binary;
+}
 
 test('native build entry loads without a pre-existing node_modules directory',()=>{
   const directory=mkdtempSync(join(tmpdir(),'multicad-clean-build-entry-'));
@@ -29,12 +38,43 @@ test('native source identity includes content and relative names, not checkout l
 test('native development layout includes a copied executable, identity pin and notices',()=>{
   const directory=mkdtempSync(join(tmpdir(),'multicad-layout-'));
   try{
-    const binary=join(directory,'fixture');writeFileSync(binary,'layout fixture only');chmodSync(binary,0o755);
+    const binary=executableFixture(directory),original=readFileSync(binary);
     const stage=join(directory,'stage');const layout=assembleRuntime(stage,binary,'1.2.3-dev');
-    assert.equal(readFileSync(runtimeExecutable(stage),'utf8'),'layout fixture only');
+    assert.deepEqual(readFileSync(binary),original,'Packaging must never sign or modify the compiler output');
+    if(process.platform!=='darwin')assert.deepEqual(readFileSync(runtimeExecutable(stage)),original);
     assert.equal(JSON.parse(readFileSync(join(layout.resources,'native-dependencies.json'),'utf8')).occt.version,'7.9.3');
     assert(readFileSync(join(layout.resources,'OCCT-LGPL-EXCEPTION.txt'),'utf8').length>100);
+    const readme=readFileSync(join(stage,'README.txt'),'utf8');
+    assert.match(readme,/constrained sketches and initial native solid extrusion/);
+    assert.match(readme,/Native \.multicad projects support save\/open/);
+    assert.match(readme,/MCP server remain under development/);
+    assert.doesNotMatch(readme,/project format.*not implemented|CAD workspaces.*not implemented|unsigned native development host/);
     if(process.platform!=='win32')assert(statSync(layout.executable).mode&0o111);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+test('macOS development bundle declares its principal class and seals every resource',{skip:process.platform!=='darwin'},()=>{
+  const directory=mkdtempSync(join(tmpdir(),'multicad-macos-seal-'));
+  try{
+    const stage=join(directory,'stage'),layout=assembleRuntime(stage,executableFixture(directory),'1.2.3-dev');
+    const bundle=join(stage,'MultiCAD.app');
+    const plist=join(bundle,'Contents/Info.plist');
+    assert.equal(execFileSync('plutil',['-extract','NSPrincipalClass','raw','-o','-',plist],{encoding:'utf8'}).trim(),'NSApplication');
+    assert.equal(execFileSync('plutil',['-extract','CFBundleShortVersionString','raw','-o','-',plist],{encoding:'utf8'}).trim(),'1.2.3');
+    execFileSync('codesign',['--verify','--deep','--strict',bundle]);
+    const signature=spawnSync('codesign',['--display','--verbose=2',bundle],{encoding:'utf8'});
+    assert.equal(signature.status,0,signature.stderr);
+    assert.match(signature.stderr,/Signature=adhoc/);
+    // Notice collection changes Resources after development assembly. It must
+    // reseal the final closure before release packaging, using the same policy.
+    const vendor=join(directory,'vendor-fixture');mkdirSync(vendor);
+    writeFileSync(join(vendor,'LICENSE'),'Third-party notice fixture');
+    collectNotices(layout.resources,directory,{packages:[{source:'registry+https://example.invalid',name:'notice-fixture',version:'1.0.0',license:'MIT',manifest_path:join(vendor,'Cargo.toml')}]});
+    assert.deepEqual(JSON.parse(readFileSync(join(layout.resources,'third-party.json'),'utf8')),[{name:'notice-fixture',version:'1.0.0',license:'MIT',source:'registry+https://example.invalid'}]);
+    assert.equal(readFileSync(join(layout.resources,'third-party/notice-fixture-1.0.0/LICENSE'),'utf8'),'Third-party notice fixture');
+    execFileSync('codesign',['--verify','--deep','--strict',bundle]);
+    writeFileSync(join(layout.resources,'LICENSE'),'tampered resource');
+    assert.throws(()=>execFileSync('codesign',['--verify','--deep','--strict',bundle],{stdio:'pipe'}));
+    assert.match(readFileSync(join(stage,'README.txt'),'utf8'),/macOS bundle is ad-hoc signed/);
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 function peFixture(name){
