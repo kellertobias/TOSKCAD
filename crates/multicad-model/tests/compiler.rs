@@ -1,12 +1,17 @@
 mod common;
 use common::*;
 use multicad_core::{
-    document::{EntityData, Mutation},
+    constraint_sketch::{Dimension, source::Source},
+    document::{Entity, EntityData, Mutation},
     model::{
         self, BodyInput, Direction, Extent, ExtrudeParameters, Operation, Termination, angle,
         length,
     },
+    parameters::BoundExpression,
     project_file::ContentHash,
+    references::{Origin, TopologyKind},
+    sketch::{self, CreationPlane, PlaneOptions},
+    sketch_regions,
 };
 use multicad_kernel::Solid;
 use multicad_model::{Compiler, Model, ShapeSnapshot};
@@ -332,4 +337,227 @@ fn exact_compiled_body_writes_and_reads_step_without_using_the_display_mesh() {
     let bounds = imported.bounds().unwrap();
     point_near(bounds.min, [14., 14., 0.]);
     point_near(bounds.max, [26., 26., 10.]);
+}
+#[test]
+fn face_attached_child_body_follows_an_edited_parent_cap_without_rewriting_its_sketch() {
+    let mut fixture = SharedProfiles::new(Default::default());
+    let compiler = Compiler::default();
+    let parent = fixture.outer().feature;
+    let initial = compiler
+        .compile(fixture.session.document(), fixture.session.revision())
+        .unwrap();
+    let snapshot = &initial.snapshot().shapes[&parent].topology;
+    let cap = Origin {
+        source: parent,
+        role: "cap.end".into(),
+    };
+    let face = snapshot
+        .elements
+        .iter()
+        .find(|element| element.key.kind == TopologyKind::Face && element.origins.contains(&cap))
+        .expect("Named generated end cap");
+    let created = sketch::prepare_new(
+        &fixture.session,
+        fixture.session.revision(),
+        actor(),
+        "Attached cap sketch",
+        CreationPlane::Face {
+            snapshot,
+            key: face.key,
+            anchor: Some(&cap),
+        },
+        PlaneOptions::default(),
+    )
+    .unwrap();
+    let child_sketch = created.sketch;
+    let child_plane = created.plane;
+    fixture.session.commit(created.prepared).unwrap();
+    let EntityData::Sketch { definition, .. } =
+        &fixture.session.document().get(child_sketch).unwrap().data
+    else {
+        panic!()
+    };
+    let mut source = Source::from_definition(definition).unwrap();
+    source.add_rectangle([5., 5.], [15., 15.]).unwrap();
+    let region = sketch_regions::extract(&source).regions[0].intent();
+    let edits = source
+        .replace(fixture.session.document(), child_sketch)
+        .unwrap();
+    fixture.apply(edits);
+    let child_request = model::ExtrudeRequest::new(
+        child_sketch,
+        vec![region],
+        ExtrudeParameters {
+            extent: Extent::OneSided {
+                end: Termination::Distance {
+                    distance: length(3.),
+                },
+            },
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_extrude(
+        &fixture.session,
+        fixture.session.revision(),
+        actor(),
+        &child_request,
+    )
+    .unwrap();
+    fixture.session.commit(prepared.prepared).unwrap();
+    let before = fixture.session.document().clone();
+    let child = child_request.outputs[0].body;
+    let first = compiler
+        .compile(&before, fixture.session.revision())
+        .unwrap();
+    assert_eq!(first.snapshot().bodies.len(), 3);
+    let child_shape = shape(&first, child);
+    near(child_shape.volume_mm3, 300.);
+    point_near(child_shape.bounds.min, [5., 5., 10.]);
+    point_near(child_shape.bounds.max, [15., 15., 13.]);
+    let identities = first.snapshot().bodies.clone();
+
+    let mut parent_parameters = fixture.request.parameters.clone();
+    parent_parameters.extent = Extent::OneSided {
+        end: Termination::Distance {
+            distance: length(20.),
+        },
+    };
+    let changed = model::prepare_extrude_edit(
+        &fixture.session,
+        fixture.session.revision(),
+        actor(),
+        parent,
+        &parent_parameters,
+    )
+    .unwrap();
+    fixture.session.commit(changed.prepared).unwrap();
+    let canonical = fixture.session.document().clone();
+    assert_eq!(canonical.get(child_sketch), before.get(child_sketch));
+    assert_eq!(canonical.get(child_plane), before.get(child_plane));
+    let second = compiler
+        .compile(&canonical, fixture.session.revision())
+        .unwrap();
+    assert_eq!(second.snapshot().bodies, identities);
+    near(shape(&second, child).volume_mm3, 300.);
+    point_near(shape(&second, child).bounds.min, [5., 5., 20.]);
+    point_near(shape(&second, child).bounds.max, [15., 15., 23.]);
+    let frame = sketch::inspect_plane(
+        &canonical,
+        child_plane,
+        fixture.session.revision(),
+        Some(&second.snapshot().references),
+    )
+    .unwrap();
+    point_near(frame.origin, [0., 0., 20.]);
+    assert_eq!(fixture.session.document(), &canonical);
+    assert!(
+        sketch::prepare_new(
+            &fixture.session,
+            fixture.session.revision(),
+            actor(),
+            "Stale face",
+            CreationPlane::Face {
+                snapshot,
+                key: face.key,
+                anchor: Some(&cap)
+            },
+            PlaneOptions::default()
+        )
+        .is_err()
+    );
+}
+#[test]
+fn parameter_bound_extrusion_uses_source_units_and_stable_identity_after_rename_and_edit() {
+    let mut fixture = SharedProfiles::new(Default::default());
+    let feature = fixture.outer().feature;
+    let depth = Entity::new(
+        "depth",
+        EntityData::Parameter {
+            expression: "2".into(),
+            unit: "cm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    fixture.apply(vec![Mutation::Insert(depth.clone())]);
+    let expression =
+        BoundExpression::bind(fixture.session.document(), "=$depth", "mm", None).unwrap();
+    let parameters = ExtrudeParameters {
+        extent: Extent::OneSided {
+            end: Termination::Distance {
+                distance: Dimension::Expression {
+                    expression: expression.clone(),
+                },
+            },
+        },
+        ..Default::default()
+    };
+    let prepared = model::prepare_extrude_edit(
+        &fixture.session,
+        fixture.session.revision(),
+        actor(),
+        feature,
+        &parameters,
+    )
+    .unwrap();
+    fixture.session.commit(prepared.prepared).unwrap();
+    let compiler = Compiler::default();
+    let first = compiler
+        .compile(fixture.session.document(), fixture.session.revision())
+        .unwrap();
+    near(
+        shape(&first, fixture.outer().body).volume_mm3,
+        (WIDTH * HEIGHT - INNER_AREA) * 20.,
+    );
+    near(
+        shape(&first, fixture.inner().body).volume_mm3,
+        INNER_AREA * 10.,
+    );
+    let bound_source = model::read_extrude(fixture.session.document(), feature).unwrap();
+    let mut renamed = depth.clone();
+    renamed.name = "renamed_depth".into();
+    let EntityData::Parameter { expression, .. } = &mut renamed.data else {
+        panic!()
+    };
+    *expression = "3".into();
+    fixture.apply(vec![Mutation::Replace(renamed)]);
+    let canonical = fixture.session.document().clone();
+    let second = compiler
+        .compile(&canonical, fixture.session.revision())
+        .unwrap();
+    near(
+        shape(&second, fixture.outer().body).volume_mm3,
+        (WIDTH * HEIGHT - INNER_AREA) * 30.,
+    );
+    point_near(
+        shape(&second, fixture.outer().body).bounds.max,
+        [WIDTH, HEIGHT, 30.],
+    );
+    assert_eq!(second.snapshot().bodies, first.snapshot().bodies);
+    assert_eq!(
+        model::read_extrude(&canonical, feature).unwrap(),
+        bound_source
+    );
+    assert_eq!(fixture.session.document(), &canonical);
+    let EntityData::Parameter { unit, .. } = &canonical.get(depth.id).unwrap().data else {
+        panic!()
+    };
+    assert_eq!(unit, "cm");
+    fixture.apply(vec![
+        Mutation::Remove(depth.id),
+        Mutation::Insert(Entity::new(
+            "depth",
+            EntityData::Parameter {
+                expression: "90".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        )),
+    ]);
+    let error = compiler
+        .compile(fixture.session.document(), fixture.session.revision())
+        .err()
+        .expect("Deleted binding must not rebind to a reused name");
+    assert_eq!(error.entity, Some(depth.id));
 }
