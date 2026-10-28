@@ -646,3 +646,142 @@ fn floor_grid_follows_distant_views_is_bounded_and_keeps_snap_unit_multiples() {
     );
     assert!(floor_grid(Camera::default(), rect, f64::NAN).is_empty());
 }
+
+#[test]
+fn evaluation_metadata_is_shared_without_relabeling_across_visibility_and_stale_display() {
+    use multicad_core::{model::*, project_file::ContentHash};
+    use std::collections::BTreeSet;
+    let geometry = box_geometry();
+    let placed = instance(&geometry, [0.; 3]);
+    let consumed = EntityId::new();
+    let stamp = stamp();
+    let body = BodyInput {
+        body: placed.id,
+        producer: geometry.id(),
+    };
+    let info = Arc::new(ModelEvaluationInfo {
+        source_hash: ContentHash::of(b"Exact immutable source snapshot"),
+        consumed_bodies: BTreeSet::from([consumed]),
+        cut_targets: vec![
+            CutTargetProbeResult {
+                id: EntityId::new(),
+                result: Ok(CutTargetSelection {
+                    defaults: vec![body.clone()],
+                    targets: vec![body],
+                    not_intersecting: vec![],
+                }),
+            },
+            CutTargetProbeResult {
+                id: EntityId::new(),
+                result: Err(ModelQueryError {
+                    entity: Some(consumed),
+                    message: "Tool is consumed".into(),
+                }),
+            },
+        ],
+    });
+    let scene = Arc::new(
+        Scene::new(stamp, vec![geometry.clone()], vec![placed.clone()])
+            .unwrap()
+            .with_model_evaluation(info.clone())
+            .unwrap(),
+    );
+    assert!(Arc::ptr_eq(scene.model_evaluation().unwrap(), &info));
+    let hidden = scene.visible_subset(&BTreeSet::new()).unwrap();
+    assert!(hidden.instances().is_empty());
+    assert_eq!(hidden.reference_instances().len(), 1);
+    assert_eq!(hidden.stamp(), stamp);
+    assert!(Arc::ptr_eq(hidden.model_evaluation().unwrap(), &info));
+    let visible = hidden.visible_subset(&BTreeSet::from([placed.id])).unwrap();
+    assert!(Arc::ptr_eq(visible.model_evaluation().unwrap(), &info));
+    assert!(
+        scene
+            .isolated_source(geometry.id())
+            .unwrap()
+            .model_evaluation()
+            .is_none(),
+        "A raw upstream repair view is not a canonical evaluation output"
+    );
+    let mut store = SceneStore::default();
+    store.begin(stamp).unwrap();
+    store.publish(hidden.clone()).unwrap();
+    store
+        .begin(SceneStamp {
+            revision: stamp.revision + 1,
+            generation: stamp.generation + 1,
+            ..stamp
+        })
+        .unwrap();
+    assert!(!store.is_current());
+    assert_eq!(store.visible().unwrap().stamp(), stamp);
+    assert!(Arc::ptr_eq(
+        store.visible().unwrap().model_evaluation().unwrap(),
+        &info
+    ));
+    assert!(store.publish(visible).is_err());
+    assert!(Arc::ptr_eq(store.visible().unwrap(), &hidden));
+}
+
+#[test]
+fn scene_rejects_malformed_or_contradictory_evaluation_metadata() {
+    use multicad_core::{model::*, project_file::ContentHash};
+    use std::collections::BTreeSet;
+    let geometry = box_geometry();
+    let placed = instance(&geometry, [0.; 3]);
+    let build = |info| {
+        Scene::new(stamp(), vec![geometry.clone()], vec![placed.clone()])
+            .unwrap()
+            .with_model_evaluation(Arc::new(info))
+    };
+    let empty = ModelEvaluationInfo {
+        source_hash: ContentHash::of(b"source"),
+        consumed_bodies: BTreeSet::new(),
+        cut_targets: vec![],
+    };
+    assert!(
+        Scene::new(stamp(), vec![], vec![])
+            .unwrap()
+            .model_evaluation()
+            .is_none()
+    );
+    let mut contradictory = empty.clone();
+    contradictory.consumed_bodies.insert(placed.id);
+    assert!(build(contradictory.clone()).is_err());
+    let hidden = Scene::new(stamp(), vec![geometry.clone()], vec![placed.clone()])
+        .unwrap()
+        .visible_subset(&BTreeSet::new())
+        .unwrap();
+    // Consumed membership is checked against all semantic occurrences, including
+    // those omitted by the current visibility view.
+    let hidden = Arc::try_unwrap(hidden).ok().unwrap();
+    assert!(
+        hidden
+            .with_model_evaluation(Arc::new(contradictory))
+            .is_err()
+    );
+    let probe = CutTargetProbeResult {
+        id: EntityId::new(),
+        result: Ok(CutTargetSelection {
+            defaults: vec![],
+            targets: vec![],
+            not_intersecting: vec![],
+        }),
+    };
+    let mut duplicate = empty.clone();
+    duplicate.cut_targets = vec![probe.clone(), probe.clone()];
+    assert!(build(duplicate).is_err());
+    let mut excessive = empty.clone();
+    excessive.cut_targets = (0..=MAX_CUT_TARGET_PROBES)
+        .map(|_| CutTargetProbeResult {
+            id: EntityId::new(),
+            ..probe.clone()
+        })
+        .collect();
+    assert!(build(excessive).is_err());
+    let mut nil = empty;
+    nil.cut_targets = vec![CutTargetProbeResult {
+        id: EntityId::parse("00000000-0000-0000-0000-000000000000").unwrap(),
+        ..probe
+    }];
+    assert!(build(nil).is_err());
+}

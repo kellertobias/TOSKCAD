@@ -30,6 +30,21 @@ pub trait SceneBackend {
     ) -> Result<(), String> {
         self.request(document, stamp)
     }
+    /// Evaluate source and optional typed native queries on the same worker.
+    /// Existing providers remain usable for requests without query probes.
+    fn request_evaluation(
+        &mut self,
+        document: &Document,
+        resources: &ProjectResources,
+        stamp: SceneStamp,
+        options: &multicad_core::model::EvaluationOptions,
+    ) -> Result<(), String> {
+        options.validate().map_err(|error| error.to_string())?;
+        if !options.cut_targets.is_empty() {
+            return Err("This display provider does not support native cut-target queries".into());
+        }
+        self.request_project(document, resources, stamp)
+    }
     /// Never waits. Replies retain their request stamp, including failures.
     fn poll(&mut self) -> Option<SceneReply>;
     /// Optional display-only refinement of the current retained exact geometry.

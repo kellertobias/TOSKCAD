@@ -448,6 +448,7 @@ pub struct Scene {
     instances: Arc<[Instance]>,
     reference_instances: Arc<[Instance]>,
     world_bounds: Option<[Point; 2]>,
+    model_evaluation: Option<Arc<multicad_core::model::ModelEvaluationInfo>>,
 }
 #[derive(Clone)]
 pub struct Hit {
@@ -508,7 +509,29 @@ impl Scene {
             reference_instances: instances.clone(),
             instances,
             world_bounds,
+            model_evaluation: None,
         })
+    }
+    /// Attach immutable results from this exact source evaluation. Structural
+    /// checks happen here; callers must match source_hash to their Document
+    /// before using these results to authorize a source edit.
+    pub fn with_model_evaluation(
+        mut self,
+        info: Arc<multicad_core::model::ModelEvaluationInfo>,
+    ) -> Result<Self, String> {
+        info.validate().map_err(|error| error.to_string())?;
+        if self
+            .reference_instances
+            .iter()
+            .any(|instance| info.consumed_bodies.contains(&instance.id))
+        {
+            return Err("Consumed bodies cannot remain evaluated display instances".into());
+        }
+        self.model_evaluation = Some(info);
+        Ok(self)
+    }
+    pub fn model_evaluation(&self) -> Option<&Arc<multicad_core::model::ModelEvaluationInfo>> {
+        self.model_evaluation.as_ref()
     }
     pub fn stamp(&self) -> SceneStamp {
         self.stamp
@@ -542,6 +565,7 @@ impl Scene {
             instances,
         )?;
         view.reference_instances = self.reference_instances.clone();
+        view.model_evaluation = self.model_evaluation.clone();
         Ok(Arc::new(view))
     }
     pub fn geometries(&self) -> &BTreeMap<EntityId, Arc<Geometry>> {

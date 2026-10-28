@@ -242,3 +242,94 @@ fn source_compilation_receives_preserved_immutable_project_resources() {
         &bytes
     ));
 }
+
+#[test]
+fn evaluation_default_preserves_legacy_and_resource_requests_but_rejects_probes() {
+    use multicad_core::{
+        document::EntityId,
+        model::{CutTargetProbe, CutTargetQuery, EvaluationOptions},
+        project_file::{Payload, ProjectResources},
+    };
+    let document = Document::new("Evaluation source").unwrap();
+    let stamp = SceneStamp {
+        document: document.id(),
+        revision: 3,
+        generation: 7,
+    };
+    let state = Arc::new(Mutex::new(State::default()));
+    let mut legacy = Backend(state.clone());
+    legacy
+        .request_evaluation(
+            &document,
+            &ProjectResources::default(),
+            stamp,
+            &EvaluationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        state.lock().unwrap().requests,
+        vec![(stamp, document.name().into())]
+    );
+    let mut probes = EvaluationOptions {
+        cut_targets: vec![CutTargetProbe {
+            id: EntityId::new(),
+            query: CutTargetQuery {
+                tools: vec![EntityId::new()],
+                component: None,
+                include: vec![],
+                exclude: vec![],
+            },
+        }],
+    };
+    assert!(
+        legacy
+            .request_evaluation(&document, &ProjectResources::default(), stamp, &probes)
+            .unwrap_err()
+            .contains("does not support")
+    );
+    probes.cut_targets.push(probes.cut_targets[0].clone());
+    assert!(
+        legacy
+            .request_evaluation(&document, &ProjectResources::default(), stamp, &probes)
+            .unwrap_err()
+            .contains("unique")
+    );
+    assert_eq!(
+        state.lock().unwrap().requests.len(),
+        1,
+        "Unsupported or malformed probes must not enqueue an ordinary source request"
+    );
+
+    struct ResourcesOnly(Option<Arc<[u8]>>);
+    impl SceneBackend for ResourcesOnly {
+        fn request(&mut self, _: &Document, _: SceneStamp) -> Result<(), String> {
+            panic!("Resource-aware implementation must be retained")
+        }
+        fn request_project(
+            &mut self,
+            _: &Document,
+            resources: &ProjectResources,
+            _: SceneStamp,
+        ) -> Result<(), String> {
+            self.0 = Some(resources.payloads.values().next().unwrap().bytes.clone());
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<SceneReply> {
+            None
+        }
+    }
+    let bytes: Arc<[u8]> = Arc::from([10, 20, 30]);
+    let payload = Payload::new(
+        "kernel.opaque",
+        "application/octet-stream",
+        None,
+        bytes.clone(),
+    );
+    let mut resources = ProjectResources::default();
+    resources.payloads.insert(payload.descriptor.id, payload);
+    let mut backend = ResourcesOnly(None);
+    backend
+        .request_evaluation(&document, &resources, stamp, &EvaluationOptions::default())
+        .unwrap();
+    assert!(Arc::ptr_eq(backend.0.as_ref().unwrap(), &bytes));
+}
