@@ -7,6 +7,7 @@ pub mod commands;
 pub mod constraint_sketch;
 pub mod document;
 pub mod drawings;
+pub mod exchange;
 pub mod hierarchy;
 pub mod materials;
 pub mod model;

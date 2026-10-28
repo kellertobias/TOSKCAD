@@ -325,6 +325,9 @@ impl ProjectFile {
             required.insert(crate::sketch_external::CAPABILITY.into());
         }
         required.extend(crate::model::required_capabilities(&self.document));
+        if crate::exchange::required_capability(&self.document) {
+            required.insert(crate::exchange::CAPABILITY.into());
+        }
         if crate::drawings::required_capability(&self.document) {
             required.insert(crate::drawings::CAPABILITY.into());
         }
@@ -397,6 +400,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::materials::CAPABILITY.into(),
         crate::constraint_sketch::source::V4_CAPABILITY.into(),
         crate::sketch_external::CAPABILITY.into(),
+        crate::exchange::CAPABILITY.into(),
         crate::model::CAPABILITY.into(),
         crate::model::PRIMITIVE_CAPABILITY.into(),
         crate::model::REVOLVE_CAPABILITY.into(),

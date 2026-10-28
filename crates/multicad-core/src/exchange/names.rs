@@ -1,0 +1,157 @@
+use super::*;
+use crate::project_file::ContentHash;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum OutputSubject {
+    Part(PartRef),
+    Page(PageRef),
+    Pages(Vec<PageRef>),
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedOutput {
+    pub recipe: EntityId,
+    pub subject: OutputSubject,
+    pub filename: String,
+}
+/// Predictable ASCII filenames avoid platform-dependent Unicode normalization,
+/// path separators and reserved device names. The preview shows the exact result.
+pub fn filename_token(value: &str) -> String {
+    let mut s = String::new();
+    for c in value.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' {
+            s.push(c);
+        } else if !s.ends_with('_') {
+            s.push('_');
+        }
+    }
+    let s = s.trim_matches('_');
+    let mut s = if s.is_empty() {
+        "unnamed".into()
+    } else {
+        s.to_owned()
+    };
+    let upper = s.to_ascii_uppercase();
+    if ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str())
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit()
+            && upper.as_bytes()[3] != b'0')
+    {
+        s.insert(0, '_');
+    }
+    s
+}
+fn digest(subject: &OutputSubject) -> Result<String, ExportError> {
+    let bytes = serde_json::to_vec(subject)
+        .map_err(|e| ExportError::new(ErrorKind::Invalid, None, e.to_string()))?;
+    Ok(ContentHash::of(&bytes).to_string()[..12].into())
+}
+pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, ExportError> {
+    let revision = match &plan.naming.revision {
+        RevisionRule::ContentHash => plan.stamp.source_hash.to_string()[..12].to_owned(),
+        RevisionRule::Label(v) => filename_token(v),
+    };
+    let mut result = vec![];
+    let mut names = BTreeSet::new();
+    for recipe in &plan.recipes {
+        let subjects: Vec<_> = match recipe.output {
+            RecipeOutput::Pdf => {
+                if plan.pages.is_empty() {
+                    vec![]
+                } else {
+                    vec![OutputSubject::Pages(
+                        plan.pages.iter().map(|p| p.reference.clone()).collect(),
+                    )]
+                }
+            }
+            RecipeOutput::DrawingDxf { .. } => plan
+                .pages
+                .iter()
+                .map(|p| OutputSubject::Page(p.reference.clone()))
+                .collect(),
+            _ => plan
+                .parts
+                .iter()
+                .map(|p| OutputSubject::Part(p.reference.clone()))
+                .collect(),
+        };
+        for subject in subjects {
+            if result.len() >= 4096 {
+                return Err(ExportError::new(
+                    ErrorKind::Budget,
+                    Some(plan.set),
+                    "Export plan exceeds 4096 output files",
+                ));
+            }
+            let (label, id, page) = match &subject {
+                OutputSubject::Part(p) => {
+                    let source = plan
+                        .parts
+                        .iter()
+                        .find(|s| s.reference == *p)
+                        .expect("subjects from plan");
+                    (source.name.clone(), p.part, String::new())
+                }
+                OutputSubject::Page(p) => {
+                    let source = plan
+                        .pages
+                        .iter()
+                        .find(|s| s.reference == *p)
+                        .expect("subjects from plan");
+                    (
+                        if source.title.is_empty() {
+                            "page".into()
+                        } else {
+                            source.title.clone()
+                        },
+                        p.page,
+                        source.number.clone(),
+                    )
+                }
+                OutputSubject::Pages(_) => ("drawings".into(), plan.set, "pages".into()),
+            };
+            let mut stem = plan.naming.template.clone();
+            for (token, value) in [
+                ("project", filename_token(project)),
+                ("set", filename_token(&plan.name)),
+                ("part", filename_token(&label)),
+                ("id", id.to_string()),
+                ("occurrence", digest(&subject)?),
+                ("recipe", filename_token(&recipe.name)),
+                ("revision", revision.clone()),
+                ("page", filename_token(&page)),
+            ] {
+                stem = stem.replace(&format!("{{{token}}}"), &value);
+            }
+            let filename = format!("{}.{}", filename_token(&stem), recipe.output.extension());
+            if filename.len() > 200 {
+                return Err(ExportError::new(
+                    ErrorKind::Invalid,
+                    Some(recipe.id),
+                    "Output filename exceeds 200 bytes; use a shorter naming rule",
+                ));
+            }
+            if !names.insert(filename.to_ascii_lowercase()) {
+                return Err(ExportError::new(
+                    ErrorKind::Invalid,
+                    Some(recipe.id),
+                    format!("Output filename collision: {filename}"),
+                ));
+            }
+            result.push(NamedOutput {
+                recipe: recipe.id,
+                subject,
+                filename,
+            });
+        }
+    }
+    Ok(result)
+}

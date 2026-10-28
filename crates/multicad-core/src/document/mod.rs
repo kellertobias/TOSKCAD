@@ -188,6 +188,7 @@ impl Document {
         crate::drawings::validate(self)?;
         crate::materials::validate(self)?;
         crate::sketch_external::validate(self)?;
+        crate::exchange::validate(self)?;
         Ok(())
     }
 }
