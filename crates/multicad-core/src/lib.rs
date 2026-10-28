@@ -3,6 +3,7 @@
 //! Canonical source definitions and dependency identities. No GUI, solver IDs,
 //! native pointers or tessellations are part of the document.
 
+pub mod assembly_inspection;
 pub mod commands;
 pub mod constraint_sketch;
 pub mod document;
