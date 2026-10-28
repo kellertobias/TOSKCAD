@@ -380,6 +380,24 @@ impl Compiler {
                     )
                     .map_err(|e| error(Some(id), e))?
                 }
+                (model::SPLIT_TYPE, model::SPLIT_SCHEMA) => {
+                    let source = model::read_split(document, id).map_err(|e| error(Some(id), e))?;
+                    let solid = crate::split::build(
+                        document,
+                        id,
+                        &source,
+                        &solids,
+                        self.policy,
+                        interrupt,
+                    )?;
+                    consumed_versions.extend(
+                        source
+                            .consumed_inputs()
+                            .iter()
+                            .map(|input| (input.body, input.producer)),
+                    );
+                    solid
+                }
                 (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA) => {
                     let source =
                         model::read_boolean(document, id).map_err(|e| error(Some(id), e))?;

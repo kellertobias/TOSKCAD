@@ -3,6 +3,7 @@
 mod compiler;
 mod extrude;
 mod runtime;
+mod split;
 mod targets;
 pub use compiler::*;
 pub use runtime::*;
