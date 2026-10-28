@@ -20,6 +20,112 @@ fn box_session() -> (Session, PrimitiveRequest) {
     session.commit(prepared.prepared).unwrap();
     (session, request)
 }
+#[test]
+fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipts() {
+    use std::collections::BTreeMap;
+    let (mut session, stock) = box_session();
+    let actor = || Actor::local(Channel::CommandLine);
+    let mut members = vec![];
+    for x in [0., 20.] {
+        let request = model::ComponentPlacementRequest::new(
+            stock.body,
+            model::NumericTransform {
+                translation: [length(x), length(0.), length(0.)],
+                ..Default::default()
+            },
+        );
+        session
+            .commit(
+                model::prepare_place_component(&session, session.revision(), actor(), &request)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        members.push(request.instance);
+    }
+    let assembly = model::AssemblyRequest::new("Reusable pair", members, vec![stock.body]);
+    session
+        .commit(
+            model::prepare_assembly(&session, session.revision(), actor(), &assembly)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let placed = model::ComponentPlacementRequest::new(
+        assembly.assembly,
+        model::NumericTransform {
+            translation: [length(100.), length(0.), length(0.)],
+            ..Default::default()
+        },
+    );
+    session
+        .commit(
+            model::prepare_place_component(&session, session.revision(), actor(), &placed)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let original = session.document().clone();
+    let native = Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let scene = scene(session.document(), native.snapshot(), 7).unwrap();
+    assert_eq!(scene.instances().len(), 1);
+    assert_eq!(scene.instances()[0].id, placed.instance);
+    let info = scene.assembly_evaluation().unwrap();
+    assert_eq!(info.leaves.len(), 2);
+    assert!(info.leaves.iter().all(|leaf| leaf.component == stock.body
+        && leaf.path.root == placed.instance
+        && leaf.path.members.len() == 1));
+    let mut x: Vec<_> = info
+        .leaves
+        .iter()
+        .map(|leaf| leaf.pose.translation_mm[0])
+        .collect();
+    x.sort_by(f64::total_cmp);
+    assert_eq!(x, vec![100., 120.]);
+    assert_eq!(
+        scene.instance_bounds(placed.instance).unwrap(),
+        [[100., 0., 0.], [130., 20., 30.]]
+    );
+    let hit = scene
+        .pick_face(viewport::Ray::new([105., 5., 100.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    let intent = hit.intent.unwrap();
+    assert!(matches!(
+        multicad_core::references::resolve(
+            &intent,
+            &native.snapshot().occurrences[&placed.instance].topology,
+            session.revision()
+        ),
+        multicad_core::references::Resolution::Resolved { .. }
+    ));
+    let offsets = info
+        .leaves
+        .iter()
+        .enumerate()
+        .map(|(index, leaf)| (leaf.path.clone(), [0., index as f64 * 50., 0.]))
+        .collect();
+    let exploded = scene
+        .presentation_leaf_offsets(
+            &offsets,
+            &BTreeMap::from([(stock.body, [45, 75, 105, 255])]),
+        )
+        .unwrap();
+    assert_eq!(exploded.instances().len(), 2);
+    assert!(
+        exploded
+            .instances()
+            .iter()
+            .all(|instance| session.document().get(instance.id).is_none()
+                && instance.color == [45, 75, 105, 255])
+    );
+    assert!(!exploded.is_full_model());
+    assert!(exploded.assembly_evaluation().is_none());
+    assert!(exploded.model_evaluation().is_none());
+    assert_eq!(scene.instances().len(), 1);
+    assert_eq!(session.document(), &original);
+}
 fn receive(backend: &mut Backend) -> SceneReply {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

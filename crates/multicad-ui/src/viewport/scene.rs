@@ -747,6 +747,81 @@ impl Scene {
         view.reference_aliases = self.reference_aliases.clone();
         Ok(Arc::new(view))
     }
+    /// Expand selected native leaf paths into an exploded illustration. View
+    /// object IDs are ephemeral and never enter the canonical document.
+    pub fn presentation_leaf_offsets(
+        &self,
+        offsets: &BTreeMap<multicad_core::model::OccurrencePath, Point>,
+        colors: &BTreeMap<EntityId, [u8; 4]>,
+    ) -> Result<Arc<Self>, String> {
+        let receipt = self
+            .assembly_evaluation()
+            .ok_or("Exploded members require current native leaf geometry")?;
+        if offsets.len() > 128
+            || offsets
+                .values()
+                .flatten()
+                .any(|v| !v.is_finite() || v.abs() > 1e7)
+        {
+            return Err("Exploded members exceed the finite 128-leaf display budget".into());
+        }
+        let leaves: BTreeMap<_, _> = receipt
+            .leaves
+            .iter()
+            .map(|leaf| (&leaf.path, leaf))
+            .collect();
+        if offsets.keys().any(|path| !leaves.contains_key(path)) {
+            return Err("Exploded display contains an unknown native occurrence path".into());
+        }
+        let roots: BTreeSet<_> = offsets.keys().map(|path| path.root).collect();
+        // Replacing an aggregate must retain every one of its visible members.
+        if receipt
+            .leaves
+            .iter()
+            .any(|leaf| roots.contains(&leaf.path.root) && !offsets.contains_key(&leaf.path))
+        {
+            return Err("Exploded display must retain all leaves of each selected root".into());
+        }
+        let mut instances: Vec<_> = self
+            .instances
+            .iter()
+            .filter(|instance| !roots.contains(&instance.id))
+            .cloned()
+            .collect();
+        for (path, delta) in offsets {
+            let Some(root) = self
+                .instances
+                .iter()
+                .find(|instance| instance.id == path.root)
+            else {
+                continue;
+            };
+            let leaf = leaves[path];
+            let mut pose = leaf.pose;
+            for (position, offset) in pose.translation_mm.iter_mut().zip(delta) {
+                *position += offset;
+                if !position.is_finite() || position.abs() > 1e9 {
+                    return Err("Exploded member exceeds the coordinate budget".into());
+                }
+            }
+            let transform = Transform::from_rigid_pose(pose)?;
+            instances.push(Instance {
+                id: EntityId::new(),
+                geometry: leaf.producer,
+                transform,
+                color: colors.get(&leaf.component).copied().unwrap_or(root.color),
+            });
+        }
+        let mut view = Self::new(
+            self.stamp,
+            self.geometries.values().cloned().collect(),
+            instances,
+        )?;
+        view.scope = SceneScope::Presentation;
+        view.reference_instances = self.reference_instances.clone();
+        view.reference_aliases = self.reference_aliases.clone();
+        Ok(Arc::new(view))
+    }
     /// All evaluated occurrences remain available for semantic references even
     /// when a source visibility view omits them from drawing and picking.
     pub fn reference_instances(&self) -> &[Instance] {

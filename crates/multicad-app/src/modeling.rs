@@ -152,11 +152,23 @@ fn scene(
         })
         .collect::<Result<Vec<_>, ModelError>>()?;
     for occurrence in model.occurrences.values() {
-        let color = materials
-            .resolve(occurrence.component)
-            .map_err(|error| invalid(error.to_string()))?
-            .appearance
-            .color_rgba;
+        // An aggregate assembly has no single manufacturing material. Its
+        // member Parts keep their assignments; the compound uses a neutral
+        // display appearance rather than inventing an assembly material.
+        let color = if matches!(
+            document
+                .get(occurrence.component)
+                .map(|entity| &entity.data),
+            Some(multicad_core::document::EntityData::Assembly { .. })
+        ) {
+            multicad_core::materials::Appearance::default().color_rgba
+        } else {
+            materials
+                .resolve(occurrence.component)
+                .map_err(|error| invalid(error.to_string()))?
+                .appearance
+                .color_rgba
+        };
         instances.push(viewport::Instance {
             id: occurrence.instance,
             geometry: occurrence.producer,
@@ -215,6 +227,24 @@ fn scene(
                 source_hash: model.stamp.source_hash,
                 consumed_bodies: model.consumed_bodies.clone(),
                 cut_targets: model.cut_targets.clone(),
+            }))
+        })
+        .and_then(|scene| {
+            if !scene.is_full_model() {
+                return Ok(scene);
+            }
+            scene.with_assembly_evaluation(Arc::new(multicad_core::model::AssemblyEvaluationInfo {
+                source_hash: model.stamp.source_hash,
+                leaves: model
+                    .leaf_occurrences
+                    .values()
+                    .map(|leaf| multicad_core::model::AssemblyLeafReceipt {
+                        path: leaf.path.clone(),
+                        component: leaf.component,
+                        producer: leaf.producer,
+                        pose: leaf.pose,
+                    })
+                    .collect(),
             }))
         })
         .and_then(|scene| scene.with_native_bounds(model.stamp.source_hash, native_bounds))

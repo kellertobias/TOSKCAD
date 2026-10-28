@@ -83,7 +83,7 @@ pub(crate) fn scene(
                 [occurrence.bounds.min, occurrence.bounds.max],
             );
         }
-        Scene::new(
+        let scene = Scene::new(
             SceneStamp {
                 document: model.stamp.document,
                 revision: model.stamp.revision,
@@ -92,13 +92,36 @@ pub(crate) fn scene(
             geometries,
             instances,
         )?
-        .with_reference_aliases(model.body_sources.clone())?
-        .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+        .with_reference_aliases(model.body_sources.clone())?;
+        let scene = match &model.scope {
+            multicad_model::EvaluationScope::Full => scene,
+            multicad_model::EvaluationScope::Sources(roots) => {
+                scene.with_source_scope(roots.clone())?
+            }
+        };
+        let scene = scene
+            .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                source_hash: model.stamp.source_hash,
+                consumed_bodies: model.consumed_bodies.clone(),
+                cut_targets: model.cut_targets.clone(),
+            }))?
+            .with_native_bounds(model.stamp.source_hash, native_bounds)?;
+        if !scene.is_full_model() {
+            return Ok(scene);
+        }
+        scene.with_assembly_evaluation(Arc::new(multicad_core::model::AssemblyEvaluationInfo {
             source_hash: model.stamp.source_hash,
-            consumed_bodies: model.consumed_bodies.clone(),
-            cut_targets: model.cut_targets.clone(),
-        }))?
-        .with_native_bounds(model.stamp.source_hash, native_bounds)
+            leaves: model
+                .leaf_occurrences
+                .values()
+                .map(|leaf| multicad_core::model::AssemblyLeafReceipt {
+                    path: leaf.path.clone(),
+                    component: leaf.component,
+                    producer: leaf.producer,
+                    pose: leaf.pose,
+                })
+                .collect(),
+        }))
     };
     make().map(Arc::new).map_err(|message| ModelError {
         entity: None,
