@@ -980,7 +980,20 @@ impl ConstraintEditor {
                 Color32::LIGHT_RED,
                 "Apply or discard the other sketch draft first.",
             );
-            if ui.button("Discard constraint draft").clicked() {
+            use crate::inspector_actions::{self, Button, Owner};
+            if inspector_actions::row(
+                ui,
+                Owner::Constraints,
+                None,
+                Button::new("Apply", false, "Repair or discard the invalid draft"),
+                Button::new(
+                    "Discard constraint draft",
+                    true,
+                    "Discard this stale constraint draft",
+                ),
+            )
+            .cancel
+            {
                 self.discard();
             }
             return;
@@ -1005,7 +1018,20 @@ impl ConstraintEditor {
         }
         if let Err(error) = &read {
             ui.colored_label(Color32::LIGHT_RED, error.to_string());
-            if ui.button("Discard constraint draft").clicked() {
+            use crate::inspector_actions::{self, Button, Owner};
+            if inspector_actions::row(
+                ui,
+                Owner::Constraints,
+                None,
+                Button::new("Apply", false, "Repair or discard the invalid draft"),
+                Button::new(
+                    "Discard constraint draft",
+                    true,
+                    "Discard this stale constraint draft",
+                ),
+            )
+            .cancel
+            {
                 self.discard();
             }
             return;
@@ -1238,20 +1264,28 @@ impl ConstraintEditor {
             self.error = Some(error);
         }
         if self.dirty() {
-            ui.horizontal_wrapped(|ui| {
-                let ready = self.revision == session.revision()
-                    && self.result.as_ref().is_some_and(|r| r.preview.is_some());
-                if ui
-                    .add_enabled(ready, egui::Button::new(&self.apply_label).wrap())
-                    .clicked()
-                    && let Err(e) = self.apply(session)
-                {
-                    self.error = Some(e);
-                }
-                if ui.button("Discard").clicked() {
-                    self.discard();
-                }
-            });
+            use crate::inspector_actions::{self, Button, Owner};
+            let ready = self.revision == session.revision()
+                && self.result.as_ref().is_some_and(|r| r.preview.is_some());
+            let clicked = inspector_actions::row(
+                ui,
+                Owner::Constraints,
+                None,
+                Button::new(
+                    &self.apply_label,
+                    ready,
+                    "Commit the checked sketch edit as one Undo step",
+                ),
+                Button::new("Discard", true, "Discard the uncommitted constraint draft"),
+            );
+            if clicked.apply
+                && let Err(e) = self.apply(session)
+            {
+                self.error = Some(e);
+            }
+            if clicked.cancel {
+                self.discard();
+            }
         }
     }
 }

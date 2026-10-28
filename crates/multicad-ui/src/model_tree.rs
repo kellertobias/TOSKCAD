@@ -790,10 +790,11 @@ impl ModelTree {
                 if !current {
                     ui.colored_label(Color32::LIGHT_RED, "The document changed. Cancel and reopen this tool to review the current state.");
                 }
-                ui.horizontal_wrapped(|ui| {
-                    apply = ui.add_enabled(current, egui::Button::new("Apply")).on_hover_text("Commit one undoable hierarchy transaction").clicked();
-                    cancel = ui.button("Cancel").on_hover_text("Discard this source-neutral form").clicked();
-                });
+                use crate::inspector_actions::{self,Button,Owner};
+                let clicked=inspector_actions::row(ui,Owner::Tree,None,
+                    Button::new("Apply",current,"Commit one undoable hierarchy transaction"),
+                    Button::new("Cancel",true,"Discard this source-neutral form"));
+                apply=clicked.apply;cancel=clicked.cancel;
             });
             if cancel {
                 self.tool = None;

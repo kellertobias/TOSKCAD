@@ -234,23 +234,31 @@ impl ConstraintEditor {
         if !valid && (!self.external_native.required || self.external_native.ready) {
             ui.colored_label(Color32::LIGHT_RED,"The reference preview is stale or unavailable. Discard it and select the source again.");
         }
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(valid, egui::Button::new(&self.apply_label))
-                .on_hover_text("Commit this checked source-linked edit as one undoable transaction")
-                .clicked()
-                && let Err(error) = self.apply(session)
-            {
-                self.error = Some(error);
-            }
-            if ui
-                .button("Discard reference preview")
-                .on_hover_text("Leave canonical source unchanged")
-                .clicked()
-            {
-                self.discard();
-            }
-        });
+        use crate::inspector_actions::{self, Button, Owner};
+        let clicked = inspector_actions::row(
+            ui,
+            Owner::Constraints,
+            None,
+            Button::new(
+                &self.apply_label,
+                valid,
+                "Commit this checked source-linked edit as one undoable transaction",
+            ),
+            Button::new(
+                "Discard reference preview",
+                true,
+                "Leave canonical source unchanged",
+            ),
+        );
+        if clicked.apply
+            && let Err(error) = self.apply(session)
+        {
+            self.error = Some(error);
+        }
+        if clicked.cancel {
+            self.discard();
+        }
+
         if let Some(error) = &self.error {
             ui.colored_label(Color32::LIGHT_RED, error);
         }

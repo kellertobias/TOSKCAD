@@ -165,13 +165,13 @@ impl PartEditor {
    choice(ui,"Stock",&mut d.assignment.stock,s,1);
    choice(ui,"Appearance override",&mut d.assignment.appearance,s,2);
    choice(ui,"Section hatch override",&mut d.assignment.hatch,s,3);
-   if ui.button("Apply part properties").on_hover_text("Assign current definitions and acknowledge changed library content in one Undo step").clicked(){apply=true;}
    ui.separator();ui.label("Part tags");
    ui.small("Exact, case-sensitive tags; one tag per line.");
    egui::ComboBox::from_id_salt("tag-mode").selected_text(["Add tags","Remove tags","Replace tags"][d.tag_mode]).show_ui(ui,|ui|{for (i,label) in ["Add tags","Remove tags","Replace tags"].into_iter().enumerate(){ui.selectable_value(&mut d.tag_mode,i,label);}});
    ui.add(egui::TextEdit::multiline(&mut d.tags).hint_text("cabinet\ncnc").desired_rows(2).desired_width(ui.available_width())).on_hover_text("Tags select Parts independently of their names or display visibility");
-   ui.horizontal_wrapped(|ui|{if ui.button("Apply tags").on_hover_text("Apply the selected tag mode to all selected Parts in one Undo step").clicked(){tags=true;}
-if ui.button("Discard property edits").on_hover_text("Reload canonical assignments and tags").clicked(){discard=true;}});
+   use crate::inspector_actions::{self,Button,Owner};
+   let clicked=inspector_actions::row(ui,Owner::Properties,Some(Button::new("Apply tags",true,"Apply the selected tag mode to all selected Parts in one Undo step")),Button::new("Apply part properties",true,"Assign current definitions and acknowledge changed library content in one Undo step"),Button::new("Discard property edits",true,"Reload canonical assignments and tags"));
+   apply=clicked.apply;tags=clicked.preview;discard=clicked.cancel;
   });
         if apply {
             self.error = self.apply_properties(s).err();

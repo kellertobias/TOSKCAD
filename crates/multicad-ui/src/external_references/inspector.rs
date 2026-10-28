@@ -44,8 +44,9 @@ impl Controller {
     if self.context.as_ref().and_then(|c|c.scene.as_ref()).is_some_and(|scene|!scene.is_full_model()){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Reference source view · incomplete model");}
     if let Some(hit)=&active.selected{ui.label(format!("Selected: {}",session.document().get(hit.geometry).map_or("Source",|entity|entity.name.as_str())));ui.small(format!("{:?} · exact current native geometry",hit.key.kind));}else{ui.small("Click a native edge or vertex in the viewport. Source stays unchanged until Preview and Apply.");}
     if active.method==Method::Intersect{ui.small("Finite straight edges only. Face boundaries and ambiguous circular/spline intersections are unsupported.");}
-    preview=ui.add_enabled(ready&&active.selected.is_some(),egui::Button::new("Preview reference")).on_hover_text("Resolve the persistent source intent and solve the complete consumer sketch without modifying source").clicked();
-    cancel=ui.button("Cancel reference tool").on_hover_text("Drop this selection and leave the document unchanged").clicked();
+    use crate::inspector_actions::{self,Button,Owner};
+    let clicked=inspector_actions::row(ui,Owner::External,Some(Button::new("Preview reference",ready&&active.selected.is_some(),"Resolve source intent and solve the complete consumer before Apply")),Button::new("Apply",false,"Preview the reference before applying its checked transaction"),Button::new("Cancel reference tool",true,"Drop this selection and leave the document unchanged"));
+    preview=clicked.preview;cancel=clicked.cancel;
    });
             if !ready {
                 ui.colored_label(egui::Color32::LIGHT_YELLOW,"Current native definition geometry is unavailable. Placed sketch contexts need the occurrence-aware reference adapter.");

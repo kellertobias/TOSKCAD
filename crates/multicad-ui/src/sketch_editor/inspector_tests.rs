@@ -185,3 +185,213 @@ fn runaway_persisted_inspector_is_bounded_after_cancel_and_across_opened_documen
         assert_eq!(session.document(), &original);
     }
 }
+fn short_frame(
+    ctx: &egui::Context,
+    editor: &mut SketchEditor,
+    session: &mut Session,
+    feed: &mut crate::viewport::SceneFeed,
+    events: Vec<egui::Event>,
+    sketch: bool,
+) -> egui::FullOutput {
+    ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1360., 320.))),
+            events,
+            focused: true,
+            ..Default::default()
+        },
+        |ui| editor.show_project(ui, session, sketch, feed, &Default::default()),
+    )
+}
+fn action_bounds(out: &egui::FullOutput, label: &str) -> Rect {
+    let b = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .find(|(_, n)| n.label() == Some(label))
+        .and_then(|(_, n)| n.bounds())
+        .unwrap_or_else(|| panic!("Missing {label}"));
+    Rect::from_min_max(
+        egui::pos2(b.x0 as f32, b.y0 as f32),
+        egui::pos2(b.x1 as f32, b.y1 as f32),
+    )
+}
+fn short_click(
+    ctx: &egui::Context,
+    editor: &mut SketchEditor,
+    session: &mut Session,
+    feed: &mut crate::viewport::SceneFeed,
+    point: Pos2,
+    sketch: bool,
+) {
+    for pressed in [true, false] {
+        short_frame(
+            ctx,
+            editor,
+            session,
+            feed,
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+            sketch,
+        )
+        .drop_without_applying_deltas();
+    }
+}
+#[test]
+fn pinned_native_scale_footer_requires_receipt_applies_once_undoes_and_cancels_at_short_height() {
+    let (mut session, mut editor, mut feed) = fixture();
+    let original = session.document().clone();
+    let revision = session.revision();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let selected = editor.tree_selection.clone();
+    let scene = feed.visible().unwrap().clone();
+    editor
+        .model
+        .begin_scale(
+            &session,
+            &Default::default(),
+            &scene,
+            &selected,
+            false,
+            Channel::Ui,
+        )
+        .unwrap();
+    for _ in 0..2 {
+        short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false)
+            .drop_without_applying_deltas();
+    }
+    let out = short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false);
+    let apply = action_bounds(&out, "Apply");
+    let preview = action_bounds(&out, "Preview");
+    assert!(apply.bottom() > 290. && apply.bottom() <= 320.);
+    out.drop_without_applying_deltas();
+    short_click(
+        &ctx,
+        &mut editor,
+        &mut session,
+        &mut feed,
+        apply.center(),
+        false,
+    );
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision(), revision);
+    short_click(
+        &ctx,
+        &mut editor,
+        &mut session,
+        &mut feed,
+        preview.center(),
+        false,
+    );
+    let until = Instant::now() + Duration::from_secs(4);
+    while !editor.model_can_apply(&session, &Default::default()) && Instant::now() < until {
+        short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false)
+            .drop_without_applying_deltas();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        editor.model_can_apply(&session, &Default::default()),
+        "{:?}",
+        editor.model.error()
+    );
+    let out = short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false);
+    assert_eq!(action_bounds(&out, "Apply"), apply);
+    out.drop_without_applying_deltas();
+    short_click(
+        &ctx,
+        &mut editor,
+        &mut session,
+        &mut feed,
+        apply.center(),
+        false,
+    );
+    assert_eq!(session.revision(), revision + 1);
+    assert!(!editor.model.active());
+    let native = multicad_model::Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    assert_eq!(native.snapshot().occurrences.len(), 1);
+    assert_eq!(native.snapshot().bodies.len(), 1);
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(session.document(), &original);
+    let until = Instant::now() + Duration::from_secs(4);
+    while !feed.is_current(session.document().id(), session.revision()) && Instant::now() < until {
+        feed.tick(session.document(), session.revision());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let scene = feed.visible().unwrap().clone();
+    editor
+        .model
+        .begin_scale(
+            &session,
+            &Default::default(),
+            &scene,
+            &selected,
+            false,
+            Channel::Ui,
+        )
+        .unwrap();
+    let out = short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false);
+    let cancel = action_bounds(&out, "Cancel");
+    out.drop_without_applying_deltas();
+    let revision = session.revision();
+    short_click(
+        &ctx,
+        &mut editor,
+        &mut session,
+        &mut feed,
+        cancel.center(),
+        false,
+    );
+    assert!(!editor.model.active());
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision(), revision);
+    let out = short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false);
+    assert!(!out.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="Apply"||t.galley.text()=="Cancel")));
+    out.drop_without_applying_deltas();
+}
+#[test]
+fn pinned_sketch_plane_footer_cancel_is_source_neutral_at_short_height() {
+    let (mut session, mut editor, mut feed) = fixture();
+    let original = session.document().clone();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    editor.begin();
+    for _ in 0..2 {
+        short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], true)
+            .drop_without_applying_deltas();
+    }
+    let out = short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], true);
+    let apply = action_bounds(&out, "Apply");
+    let cancel = action_bounds(&out, "Cancel");
+    assert!(apply.bottom() > 290.);
+    assert!(
+        out.shapes.iter().any(
+            |s| matches!(&s.shape,egui::Shape::Rect(r)if r.rect==cancel&&r.fill==Color32::WHITE)
+        )
+    );
+    out.drop_without_applying_deltas();
+    short_click(
+        &ctx,
+        &mut editor,
+        &mut session,
+        &mut feed,
+        cancel.center(),
+        true,
+    );
+    assert!(!editor.picking);
+    assert_eq!(session.document(), &original);
+}

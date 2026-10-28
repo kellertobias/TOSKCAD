@@ -6,6 +6,7 @@ pub mod external_references;
 pub mod file_picker;
 pub mod icons;
 pub mod inspection;
+mod inspector_actions;
 pub mod materials;
 pub mod model_tree;
 pub mod modeling;

@@ -332,7 +332,6 @@ impl Panel {
         let tool = self.tool?;
         ui.strong(tool.label());
         ui.small("All distances use sketch-plane millimeters. Preview validates constraints before Apply changes the document.");
-        let mut preview = false;
         ui.add_enabled_ui(enabled, |ui| {
             if tool.curve_operation() {
                 self.seed_target_selection(source, selected);
@@ -349,9 +348,33 @@ impl Panel {
                 ui.checkbox(&mut self.expand_connected, "Include connected geometry")
                     .on_hover_text("Explicitly permit the solver to expand selection through shared endpoints; affected geometry and constraints are reported in the preview");
             }
-            preview = ui.button("Preview")
-                .on_hover_text("Build a source-neutral numerical preview; Apply is a separate step").clicked();
+
         });
+        use crate::inspector_actions::{self, Button, Owner};
+        let clicked = inspector_actions::row(
+            ui,
+            Owner::Operation,
+            Some(Button::new(
+                "Preview",
+                enabled,
+                "Build a source-neutral numerical preview before Apply",
+            )),
+            Button::new(
+                "Apply",
+                false,
+                "Preview the sketch operation before applying the checked draft",
+            ),
+            Button::new(
+                "Cancel operation",
+                true,
+                "Discard these uncommitted operation controls",
+            ),
+        );
+        let preview = clicked.preview;
+        if clicked.cancel {
+            self.cancel();
+            return None;
+        }
         if let Some(error) = &self.error {
             ui.colored_label(Color32::LIGHT_RED, error);
         }

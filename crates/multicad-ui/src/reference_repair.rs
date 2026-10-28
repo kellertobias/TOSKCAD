@@ -449,32 +449,38 @@ impl RepairPanel {
                 "{} affected objects · accepting creates one undoable transaction",
                 preview.affected.len()
             ));
-            if ui
-                .button("Accept replacement")
-                .on_hover_text(
-                    "Commit this explicit replacement using the shared transactional API",
-                )
-                .clicked()
-                && let Err(error) = self.commit(session, evaluation)
-            {
-                self.message = Some((true, error));
-            }
-        } else if ui
-            .add_enabled(
+        }
+        use crate::inspector_actions::{self, Button, Owner};
+        let clicked = inspector_actions::row(
+            ui,
+            Owner::Repair,
+            self.preview.is_none().then_some(Button::new(
+                "Preview replacement",
                 self.selected.is_some() && self.selection_error.is_none(),
-                egui::Button::new("Preview replacement"),
-            )
-            .on_hover_text("Validate the chosen provenance and attachment without modifying source")
-            .clicked()
+                "Validate provenance and attachment without modifying source",
+            )),
+            Button::new(
+                "Accept replacement",
+                self.preview.is_some(),
+                "Commit this explicit replacement through the shared transactional API",
+            ),
+            Button::new(
+                "Cancel repair",
+                true,
+                "Discard the repair draft and return to the retained model",
+            ),
+        );
+        if clicked.apply
+            && let Err(error) = self.commit(session, evaluation)
+        {
+            self.message = Some((true, error));
+        }
+        if clicked.preview
             && let Err(error) = self.prepare(session, evaluation)
         {
             self.message = Some((true, error));
         }
-        if ui
-            .button("Cancel repair")
-            .on_hover_text("Discard the repair draft and return to the retained model")
-            .clicked()
-        {
+        if clicked.cancel {
             self.cancel();
         }
     }

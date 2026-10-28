@@ -367,34 +367,35 @@ pub(super) fn actions(
     stamp: FormStamp,
     preview: PreviewState<'_>,
 ) -> Option<FormAction> {
-    let mut action = None;
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .add_enabled(valid, egui::Button::new("Preview"))
-            .on_hover_text("Validate these exact local inputs using native geometry")
-            .clicked()
-        {
-            action = Some(FormAction::Preview);
-        }
-        if ui
-            .add_enabled(
-                valid && !changed && preview.ready(stamp),
-                egui::Button::new("Apply"),
-            )
-            .on_hover_text("Commit the exact transaction whose matching native preview succeeded")
-            .clicked()
-        {
-            action = Some(FormAction::Apply);
-        }
-        if ui
-            .button("Cancel")
-            .on_hover_text("Discard the form and its uncommitted native preview")
-            .clicked()
-        {
-            action = Some(FormAction::Cancel);
-        }
-    });
-    action
+    use crate::inspector_actions::{self, Button, Owner};
+    let clicked = inspector_actions::row(
+        ui,
+        Owner::Model,
+        Some(Button::new(
+            "Preview",
+            valid,
+            "Validate these exact local inputs using native geometry",
+        )),
+        Button::new(
+            "Apply",
+            valid && !changed && preview.ready(stamp),
+            "Commit the exact transaction whose matching native preview succeeded",
+        ),
+        Button::new(
+            "Cancel",
+            true,
+            "Discard the form and its uncommitted native preview",
+        ),
+    );
+    if clicked.cancel {
+        Some(FormAction::Cancel)
+    } else if clicked.apply {
+        Some(FormAction::Apply)
+    } else if clicked.preview {
+        Some(FormAction::Preview)
+    } else {
+        None
+    }
 }
 pub(super) fn preview_status(ui: &mut egui::Ui, stamp: FormStamp, preview: PreviewState<'_>) {
     match preview {

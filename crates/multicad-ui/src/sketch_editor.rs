@@ -2042,9 +2042,21 @@ impl SketchEditor {
                 crate::controls::inspector_layout(ui);
                 ui.heading("Inspector");
                 ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("sketch-inspector-content")
-                    .show(ui, |ui| {
+                use crate::inspector_actions::Owner;
+                let owner=if self.measurement.active(){None}
+                    else if self.model.active(){Some(Owner::Model)}
+                    else if self.acquisition.is_some(){Some(Owner::Targets)}
+                    else if self.tree.tool_active(){Some(Owner::Tree)}
+                    else if self.repair.has_pending(){Some(Owner::Repair)}
+                    else if self.external.active(){Some(Owner::External)}
+                    else if self.constraints.dirty(){Some(Owner::Constraints)}
+                    else if self.materials.parts.dirty(){Some(Owner::Properties)}
+                    else if self.picking{Some(Owner::Plane)}
+                    else if self.moving{Some(Owner::Move)}
+                    else if self.operations.tool().is_some(){Some(Owner::Operation)}
+                    else if self.tool.is_some(){Some(Owner::Drawing)}else{None};
+                let accent=if sketch_mode{crate::registry::Mode::Sketch.color()}else{crate::registry::Mode::Model.color()};
+                crate::inspector_actions::scope(ui,owner,accent,|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
                         if self.target_inspector(ui, session, resources, feed) { return; }
                         if self.model.active() {
@@ -2114,9 +2126,14 @@ impl SketchEditor {
                             if tool==DrawTool::Arc {ui.checkbox(&mut self.arc_clockwise,"Clockwise arc").on_hover_text("Direction around the sketch's positive normal");}
                             if tool==DrawTool::Spline {
                                 ui.small(format!("{} control poles",self.spline_poles.len()));
-                                if ui.add_enabled(self.can_finish_spline(),egui::Button::new("Finish spline · Enter")).on_hover_text("Create an open cubic spline as one undoable edit").clicked() && let Err(error)=self.finish_spline(session,false,Channel::Ui) {self.message=error;}
                                 if ui.add_enabled(!self.spline_poles.is_empty(),egui::Button::new("Remove last pole")).on_hover_text("Remove only the last uncommitted control pole").clicked() {self.spline_poles.pop();}
                             }
+                            use crate::inspector_actions::{self,Button,Owner};
+                            let clicked=inspector_actions::row(ui,Owner::Drawing,None,
+                                Button::new("Finish spline",tool==DrawTool::Spline&&self.can_finish_spline(),"Finish the pending spline; other drawing tools commit through viewport gestures"),
+                                Button::new("Cancel drawing",true,"Cancel uncommitted drawing input; retain existing geometry"));
+                            if clicked.apply && let Err(error)=self.finish_spline(session,false,Channel::Ui){self.message=error;}
+                            if clicked.cancel{self.cancel();}
                             ui.separator();
                         }
                         if let Some(id) = self.selected {
@@ -2250,21 +2267,13 @@ impl SketchEditor {
                                             self.preview = None;
                                             self.message = e;
                                         }
-                                        ui.horizontal(|ui| {
-                                            if ui
-                                                .add_enabled(
-                                                    self.preview.is_some(),
-                                                    egui::Button::new("Apply move"),
-                                                )
-                                                .clicked()
-                                                && let Err(e) = self.apply_move(session)
-                                            {
-                                                self.message = e;
-                                            }
-                                            if ui.button("Cancel move").clicked() {
-                                                self.cancel_move();
-                                            }
-                                        });
+                                        use crate::inspector_actions::{self,Button,Owner};
+                                        let clicked=inspector_actions::row(ui,Owner::Move,None,
+                                            Button::new("Apply move",self.preview.is_some(),"Commit the prepared sketch move in one Undo step"),
+                                            Button::new("Cancel move",true,"Discard the uncommitted move"));
+                                        if clicked.apply && let Err(e)=self.apply_move(session){self.message=e;}
+                                        if clicked.cancel{self.cancel_move();}
+
                                     }
                                 }
                                 Err(e) => {

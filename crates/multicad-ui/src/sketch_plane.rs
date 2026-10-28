@@ -531,22 +531,28 @@ impl PlanePicker {
         if let Some(error) = result.as_ref().err().or(self.message.as_ref()) {
             ui.colored_label(Color32::LIGHT_YELLOW, error);
         }
-        let accept = ui
-            .add_enabled(
+        use crate::inspector_actions::{self, Button, Owner};
+        let clicked = inspector_actions::row(
+            ui,
+            Owner::Plane,
+            None,
+            Button::new(
+                "Use plane",
                 matches!(result, Ok(Some(_))),
-                egui::Button::new("Use plane"),
-            )
-            .on_hover_text("Create a sketch on this preview through the shared command API")
-            .clicked();
-        if ui
-            .button("Cancel new sketch")
-            .on_hover_text("Leave plane selection without changing the document")
-            .clicked()
-        {
+                "Create a sketch on this preview through the shared command API",
+            ),
+            Button::new(
+                "Cancel new sketch",
+                true,
+                "Leave plane selection without changing the document",
+            ),
+        );
+        if clicked.cancel {
             self.cancel();
             self.cancel_requested = true;
             return None;
         }
+        let accept = clicked.apply;
         if accept { result.ok().flatten() } else { None }
     }
     pub fn paint_preview(
