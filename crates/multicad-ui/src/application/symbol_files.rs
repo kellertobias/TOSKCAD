@@ -26,6 +26,15 @@ impl Application {
         self.picker_started = false;
         self.replacement = None;
     }
+    pub(super) fn begin_artwork_import(&mut self, path: PathBuf) -> Result<(), String> {
+        self.file_action = None;
+        self.file_document = None;
+        self.current_mut().sketch.begin_artwork_import(path)?;
+        self.mode = Mode::Sketch;
+        self.message = "Reading artwork…".into();
+        self.message_error = false;
+        Ok(())
+    }
     pub(super) fn symbol_filename(&self, id: EntityId) -> Result<String, String> {
         let definition =
             multicad_core::symbols::read_definition(self.current().session.document(), id)

@@ -60,6 +60,7 @@ impl Application {
                 FileAction::Open | FileAction::SymbolOpen => Kind::OpenProject,
                 FileAction::Save | FileAction::SymbolSave(_) => Kind::SaveProject,
                 FileAction::Import => Kind::ImportSource,
+                FileAction::Artwork => Kind::ImportArtwork,
             },
             directory: self
                 .current()
@@ -126,6 +127,7 @@ impl Application {
                     FileAction::Save => self.save_to(path),
                     FileAction::SymbolOpen => self.load_symbol_library(path),
                     FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
+                    FileAction::Artwork => self.begin_artwork_import(path),
                 }
             }
             Ok(None) => {
@@ -223,6 +225,52 @@ mod tests {
         app.invoke(Command::SaveAs, &[], Channel::Ui).unwrap();
         app.start_native_picker().unwrap();
         (app, requests)
+    }
+    #[test]
+    fn artwork_import_uses_a_dxf_svg_picker_and_opens_the_inspector_without_editing() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        app.set_file_picker(Box::new(Picker(requests.clone())));
+        assert!(app.enabled(Command::ImportArtwork));
+        app.invoke(Command::ImportArtwork, &[], Channel::Ui)
+            .unwrap();
+        app.start_native_picker().unwrap();
+        let request = requests.lock().unwrap()[0].clone();
+        assert_eq!(request.kind, Kind::ImportArtwork);
+        let path = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../multicad-core/tests/fixtures/sketch_import/badge.svg"
+        ));
+        app.accept_picker_reply(Reply {
+            id: request.id,
+            result: Ok(Some(path)),
+        });
+        assert!(
+            app.file_action.is_none() && !app.message_error,
+            "{}",
+            app.message
+        );
+        assert_eq!(app.mode, Mode::Sketch);
+        assert!(app.current().sketch.artwork_import_active());
+        for _ in 0..400 {
+            let controller = app.current_mut().sketch.artwork_controller();
+            controller.poll();
+            if !controller.pending() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let controller = app.current_mut().sketch.artwork_controller();
+        assert!(controller.can_apply(), "{:?}", controller.error());
+        assert_eq!(app.current().session.revision(), 0);
+        assert!(
+            !app.enabled(Command::ImportArtwork),
+            "an open import blocks another"
+        );
+        app.current_mut().sketch.cancel();
+        assert!(!app.current().sketch.artwork_import_active());
+        assert_eq!(app.current().session.revision(), 0);
     }
     #[test]
     fn native_save_has_filter_name_and_cancellation_leaves_source_and_history_unchanged() {

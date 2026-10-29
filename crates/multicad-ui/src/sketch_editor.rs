@@ -144,6 +144,7 @@ pub struct SketchEditor {
     model: crate::modeling::ModelToolController,
     assembly: crate::assembly::AssemblyController,
     symbols: crate::symbols::SymbolController,
+    artwork: crate::artwork_import::ImportController,
     assembly_anchor: Option<assembly_host::PendingAnchor>,
     assembly_presentation: Option<assembly_host::PresentationCache>,
     assembly_pick_view: Option<assembly_host::AnchorView>,
@@ -223,6 +224,7 @@ impl Default for SketchEditor {
             model: Default::default(),
             assembly: Default::default(),
             symbols: Default::default(),
+            artwork: Default::default(),
             assembly_anchor: None,
             assembly_presentation: None,
             assembly_pick_view: None,
@@ -434,6 +436,54 @@ impl SketchEditor {
         self.revision = session.revision();
         self.message = "Geometry committed · Undo restores the previous sketch".into();
         Ok(())
+    }
+    pub fn artwork_import_active(&self) -> bool {
+        self.artwork.active()
+    }
+    /// Starts a DXF/SVG import from a picked file. The open sketch, if any,
+    /// becomes the default target; nothing changes until Apply.
+    pub fn begin_artwork_import(&mut self, path: std::path::PathBuf) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err("Apply or discard pending edits before importing artwork".into());
+        }
+        let open = self.selected.filter(|_| self.editing);
+        self.tool = None;
+        self.clear_drawing_progress();
+        self.artwork.begin(path, open);
+        self.message =
+            "Import DXF/SVG · choose units, placement and layers in the Inspector".into();
+        Ok(())
+    }
+    pub fn artwork_controller(&mut self) -> &mut crate::artwork_import::ImportController {
+        &mut self.artwork
+    }
+    fn artwork_inspector(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+        self.artwork.poll();
+        let report = self.evaluated.clone();
+        match self.artwork.show(ui, session, report.as_ref()) {
+            Some(crate::artwork_import::ImportOutcome::Applied { sketch, curves }) => {
+                self.accept_artwork(session, sketch, curves.len())
+            }
+            Some(crate::artwork_import::ImportOutcome::Cancelled) => {
+                self.message = "Import cancelled · document unchanged".into();
+            }
+            None => {}
+        }
+        if self.artwork.pending() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
+    }
+    pub fn accept_artwork(&mut self, session: &Session, sketch: EntityId, curves: usize) {
+        if !(self.editing && self.selected == Some(sketch))
+            && let Err(error) = self.open_at(session.document(), sketch, session.revision())
+        {
+            self.message = error;
+            return;
+        }
+        self.revision = session.revision();
+        self.fit_requested = true;
+        self.message = format!("Imported {curves} curves · Undo restores the previous document");
     }
     pub fn selected_solid(&self) -> Option<EntityId> {
         self.solid.selected_id()
@@ -991,6 +1041,7 @@ impl SketchEditor {
             || self.assembly.dirty()
             || self.transfer.dirty()
             || self.symbols.dirty()
+            || self.artwork.active()
             || self.acquisition.is_some()
             || self.external.active()
             || self.trim_worker.pending()
@@ -1002,6 +1053,7 @@ impl SketchEditor {
         }
         self.acquisition = None;
         self.symbols.cancel();
+        self.artwork.cancel();
         self.transfer.cancel();
         self.assembly.cancel();
         self.assembly_anchor = None;
@@ -2207,6 +2259,7 @@ impl SketchEditor {
                 use crate::inspector_actions::Owner;
                 let owner=if self.measurement.active(){None}
                     else if self.symbols.active(){Some(Owner::Symbols)}
+                    else if self.artwork.active(){Some(Owner::Import)}
                     else if self.transfer.active(){Some(Owner::Transfer)}
                     else if self.assembly.active(){Some(Owner::Assembly)}
                     else if self.model.active(){Some(Owner::Model)}
@@ -2225,6 +2278,10 @@ impl SketchEditor {
                         if self.symbols.active(){
                             if let Some(outcome)=self.symbols.show(ui,session,resources,true){self.accept_symbol_outcome(outcome);}
                             if self.symbols.pending(){ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));}
+                            return;
+                        }
+                        if self.artwork.active(){
+                            self.artwork_inspector(ui,session);
                             return;
                         }
                         if self.target_inspector(ui, session, resources, feed) { return; }

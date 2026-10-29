@@ -7,6 +7,7 @@ pub(crate) enum Owner {
     Assembly,
     Transfer,
     Symbols,
+    Import,
     Targets,
     Plane,
     Tree,

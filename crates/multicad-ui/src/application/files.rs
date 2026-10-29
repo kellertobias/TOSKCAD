@@ -184,6 +184,7 @@ impl Application {
             FileAction::Save => self.save_to(path),
             FileAction::SymbolOpen => self.load_symbol_library(path),
             FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
+            FileAction::Artwork => self.begin_artwork_import(path),
         };
         if let Err(error) = result {
             self.message = error;

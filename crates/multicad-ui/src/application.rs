@@ -102,6 +102,7 @@ enum FileAction {
     Import,
     SymbolOpen,
     SymbolSave(EntityId),
+    Artwork,
 }
 struct CommandRecord {
     input: String,
@@ -359,6 +360,7 @@ impl Application {
                     | Command::Discard
                     | Command::Preview
                     | Command::NewSketch
+                    | Command::ImportArtwork
                     | Command::Draw(_)
                     | Command::SketchOperation(_)
                     | Command::Modeling(_)
@@ -388,6 +390,7 @@ impl Application {
                 command,
                 Command::Parameter
                     | Command::NewSketch
+                    | Command::ImportArtwork
                     | Command::Draw(_)
                     | Command::SketchOperation(_)
                     | Command::External(_)
@@ -788,6 +791,21 @@ impl Application {
                     self.replacement = None;
                 }
             }
+            Command::ImportArtwork => {
+                if self.current().pending_edits() {
+                    return Err("Apply or discard pending edits before importing artwork".into());
+                }
+                if self.file_busy() || self.file_action.is_some() {
+                    return Err("Complete the current file operation first".into());
+                }
+                self.mode = Mode::Sketch;
+                self.file_action = Some(FileAction::Artwork);
+                self.file_document = Some(self.current().local_id);
+                self.file_path.clear();
+                self.picker_started = false;
+                self.replacement = None;
+                self.message = "Choose a DXF or SVG file".into();
+            }
             Command::Open | Command::ImportSource => {
                 self.picker_started = false;
                 self.file_document = None;
@@ -1150,6 +1168,7 @@ impl Application {
             }
             Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
             Command::NewSketch => !pending(),
+            Command::ImportArtwork => !pending() && !self.file_busy(),
             Command::FinishCurve => {
                 self.mode == Mode::Sketch && !pending() && self.current().sketch.can_finish_spline()
             }

@@ -51,6 +51,7 @@ pub enum Command {
     Save,
     SaveAs,
     ImportSource,
+    ImportArtwork,
     RecoverProjects,
     RecoverySnapshot,
     Open,
@@ -217,6 +218,13 @@ impl Default for Registry {
                 icon: Icon::Sketch,
                 action: Command::NewSketch,
                 aliases: &["start", "new-sketch"],
+            },
+            Tool {
+                id: "import-artwork",
+                label: "Import DXF/SVG",
+                icon: Icon::Page,
+                action: Command::ImportArtwork,
+                aliases: &["import-artwork", "dxf", "svg"],
             },
             Tool {
                 id: "construction",
@@ -401,6 +409,7 @@ impl Default for Registry {
                         "Common",
                         &[
                             "new-sketch",
+                            "import-artwork",
                             "rectangle",
                             "line",
                             "circle",
