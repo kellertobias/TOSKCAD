@@ -174,6 +174,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `set_machining`, `delete_machining` | yes | Groove, rabbet, pocket, drilling or placed hardware pattern on one or more panels |
 | `import_step` | yes | Import or update a STEP file's solids from the exchange folder (see [imports](imports.md)) |
 | `import_kicad` | yes | Import or update a KiCad board, its holes and footprint components from the exchange folder |
+| `schedule` | no | BOM, panel cut list, machining, member cut list or weld schedule as rows, optionally written as CSV into the export folder (see [schedules](schedules.md)) |
 | `cut_list` | no | Finished and core panel sizes measured from the solids, stock fit and stack contact |
 | `set_fdm_process` | yes | FDM process allowances (layer height, line width, minimum layers and lines, support gap, fit clearance) used to inspect aids (see [FDM aids](fdm-aids.md)) |
 | `set_fdm_aid` | yes | Create or edit a breakaway tab, thin bridge or derived-height support as its own Part serving a finished Part |

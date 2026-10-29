@@ -209,7 +209,7 @@ sequence and in at most one sequence.
 ### Weld schedule
 
 `Model::weld_schedule` lists every weld: sequenced welds by sequence and
-step, then the others in document order. Each record holds:
+step, then the others by mark. Each record holds:
 
 - the weld, its mark, sequence, step and step note;
 - the connection, its kind, and both member Parts and names, in connection
