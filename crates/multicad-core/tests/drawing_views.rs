@@ -270,3 +270,68 @@ fn section_limits_keep_old_wire_form_and_validate() {
         .is_err()
     );
 }
+
+#[test]
+fn a_picked_parent_line_defines_a_finite_section_and_paper_points_invert() {
+    use multicad_core::drawings::{SectionRange, SectionWindow, section_from_line, section_guide};
+    let mut top = DrawingView {
+        id: EntityId::new(),
+        name: "Plan".into(),
+        source: ViewSource::Model {
+            entities: vec![EntityId::new()],
+        },
+        frame: ReferenceFrame {
+            origin_mm: [10., 20., 0.],
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+        },
+        kind: ViewKind::Projection,
+        position_mm: [100., 80.],
+        scale: Scale {
+            numerator: 1,
+            denominator: 2,
+        },
+        hidden_lines: false,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+    };
+    let paper = top.paper_point([12., -7.]);
+    let back = top.model_point(paper);
+    assert!((back[0] - 12.).abs() < 1e-12 && (back[1] + 7.).abs() < 1e-12);
+    // A line along plan +X at plan y = 5, 40 mm long.
+    let (frame, window) = section_from_line(&top, [0., 5.], [40., 5.]).unwrap();
+    assert_eq!(frame.origin_mm, [10., 25., 0.]);
+    assert_eq!(frame.u, [1., 0., 0.]);
+    assert_eq!(frame.v, [0., 0., 1.]);
+    assert_eq!(
+        window,
+        SectionWindow {
+            u_mm: Some([0., 40.]),
+            v_mm: None
+        }
+    );
+    // Its guide in the plan lies back on the picked segment.
+    let section = DrawingView {
+        frame,
+        kind: ViewKind::Section {
+            offset_mm: 0.,
+            range: SectionRange::Unlimited,
+            window,
+        },
+        ..top.clone()
+    };
+    let guide = section_guide(&top, &section, ([-100., -100.], [100., 100.])).unwrap();
+    for (end, expected) in guide.cut.iter().zip([[0., 5.], [40., 5.]]) {
+        assert!(
+            (end[0] - expected[0]).abs() < 1e-9 && (end[1] - expected[1]).abs() < 1e-9,
+            "{end:?}"
+        );
+    }
+    assert!(section_from_line(&top, [1., 1.], [1., 1.]).is_none());
+    top.kind = ViewKind::Detail {
+        center_mm: [3., 4.],
+        radius_mm: 10.,
+    };
+    let back = top.model_point(top.paper_point([5., 6.]));
+    assert!((back[0] - 5.).abs() < 1e-12 && (back[1] - 6.).abs() < 1e-12);
+}

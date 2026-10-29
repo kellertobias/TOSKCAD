@@ -121,6 +121,71 @@ impl DrawingEditor {
         self.selected_view = Some(id);
         Ok(())
     }
+    /// Start picking a section line in `parent`, a projection on this page.
+    pub(super) fn begin_section_pick(&mut self, parent: EntityId) -> Result<(), String> {
+        let page = self.draft.as_ref().ok_or("Add a page first")?;
+        match page.views.iter().find(|v| v.id == parent).map(|v| v.kind) {
+            Some(ViewKind::Projection) => {
+                self.section_pick = Some((parent, None));
+                Ok(())
+            }
+            Some(_) => Err("Pick section lines in a projection view".into()),
+            None => Err("The parent view is missing".into()),
+        }
+    }
+    pub(super) fn cancel_section_pick(&mut self) {
+        self.section_pick = None;
+    }
+    /// Record a picked paper point. The second point adds a section view whose
+    /// cut runs through the picked line, limited to that segment.
+    pub(super) fn pick_section_point(&mut self, paper_mm: [f64; 2]) -> Result<(), String> {
+        let Some((parent_id, first)) = self.section_pick else {
+            return Ok(());
+        };
+        let Some(first) = first else {
+            self.section_pick = Some((parent_id, Some(paper_mm)));
+            return Ok(());
+        };
+        self.section_pick = None;
+        let page = self.draft.as_mut().ok_or("Add a page first")?;
+        let parent = page
+            .views
+            .iter()
+            .find(|v| v.id == parent_id)
+            .ok_or("The parent view is missing")?
+            .clone();
+        let (frame, window) = drawings::section_from_line(
+            &parent,
+            parent.model_point(first),
+            parent.model_point(paper_mm),
+        )
+        .ok_or("Pick two distinct points for the section line")?;
+        let id = EntityId::new();
+        let letter = page
+            .views
+            .iter()
+            .filter(|v| matches!(v.kind, ViewKind::Section { .. }))
+            .count();
+        let letter = char::from(b'A' + (letter % 26) as u8);
+        let [w, _] = page.settings.dimensions();
+        page.views.push(DrawingView {
+            id,
+            name: format!("Section {letter}-{letter}"),
+            frame,
+            kind: ViewKind::Section {
+                offset_mm: 0.,
+                range: SectionRange::Unlimited,
+                window,
+            },
+            position_mm: [
+                (parent.position_mm[0] + w * 0.35).min(w * 0.85),
+                parent.position_mm[1],
+            ],
+            ..parent
+        });
+        self.selected_view = Some(id);
+        Ok(())
+    }
     pub(super) fn fit_view(&mut self, id: EntityId, session: &Session) -> Result<(), String> {
         if !self.preview_matches(session) {
             return Err("Wait for the current native drawing preview".into());
@@ -220,6 +285,8 @@ impl DrawingEditor {
             return;
         };
         let id = view.id;
+        let picking = self.section_pick.is_some_and(|(parent, _)| parent == id);
+        let mut pick = None;
         ui.separator();
         ui.label("View name");
         ui.text_edit_singleline(&mut view.name)
@@ -286,6 +353,18 @@ impl DrawingEditor {
         match &mut view.kind {
             ViewKind::Projection => {
                 ui.label("Orthographic projection");
+                pick = if picking {
+                    ui.small("Click the start, then the end of the section line on the page.");
+                    ui.button("Cancel section line")
+                        .on_hover_text("Stop picking without adding a section")
+                        .clicked()
+                        .then_some(false)
+                } else {
+                    ui.button("Pick section line")
+                        .on_hover_text("Click two points in this view to add a finite section through them; it looks toward the left of the picked direction")
+                        .clicked()
+                        .then_some(true)
+                };
             }
             ViewKind::Section {
                 offset_mm,
@@ -315,6 +394,15 @@ impl DrawingEditor {
         }
         if fit && let Err(error) = self.fit_view(id, session) {
             self.error = Some(error);
+        }
+        match pick {
+            Some(true) => {
+                if let Err(error) = self.begin_section_pick(id) {
+                    self.error = Some(error);
+                }
+            }
+            Some(false) => self.cancel_section_pick(),
+            None => {}
         }
         if self.feed.pending() {
             ui.label("Generating native drawing…");

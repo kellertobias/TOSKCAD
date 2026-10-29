@@ -609,7 +609,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let page = editor.draft.clone().unwrap();
     let result = editor.feed.result.clone();
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &page, 0, 1, result.as_deref(), None);
+        canvas::show(ui, &page, 0, 1, result.as_deref(), None, None);
     });
     assert!(
         canvas.contains("Section A-A"),
@@ -619,7 +619,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let mut facing = page.clone();
     facing.views[0].frame = facing.views[1].frame;
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &facing, 0, 1, result.as_deref(), None);
+        canvas::show(ui, &facing, 0, 1, result.as_deref(), None, None);
     });
     assert!(!canvas.contains("Section A-A"), "{canvas}");
     editor
@@ -639,4 +639,61 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
             ..
         }
     ));
+}
+#[test]
+fn picking_two_points_in_a_plan_adds_a_finite_section_through_that_line() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    let plan = editor.selected_view.unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    let parent = editor.draft.as_ref().unwrap().views[0].clone();
+    // A click outside picking mode is ignored.
+    editor.pick_section_point([1., 1.]).unwrap();
+    assert_eq!(editor.draft.as_ref().unwrap().views.len(), 1);
+    editor.begin_section_pick(plan).unwrap();
+    editor
+        .pick_section_point(parent.paper_point([0., 5.]))
+        .unwrap();
+    assert_eq!(
+        editor.draft.as_ref().unwrap().views.len(),
+        1,
+        "one point is not a line"
+    );
+    let inspector = painted_text(|ui| editor.inspector(ui, &mut session));
+    assert!(inspector.contains("Cancel section line"), "{inspector}");
+    editor
+        .pick_section_point(parent.paper_point([40., 5.]))
+        .unwrap();
+    let page = editor.draft.as_ref().unwrap();
+    assert_eq!(page.views.len(), 2);
+    let section = &page.views[1];
+    assert_eq!(editor.selected_view, Some(section.id));
+    assert_eq!(section.name, "Section A-A");
+    assert_eq!(section.source, parent.source);
+    let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9);
+    assert!(
+        near(section.frame.origin_mm, [0., 5., 0.]),
+        "{:?}",
+        section.frame
+    );
+    assert!(near(section.frame.u, [1., 0., 0.]) && near(section.frame.v, [0., 0., 1.]));
+    let drawings::ViewKind::Section { window, .. } = section.kind else {
+        panic!()
+    };
+    let [lo, hi] = window.u_mm.unwrap();
+    assert!(lo.abs() < 1e-9 && (hi - 40.).abs() < 1e-9);
+    // The new view applies like any other once its preview is current.
+    publish_editor(&mut editor, &session);
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    // Sections cannot themselves be pick parents.
+    assert!(editor.begin_section_pick(section_id(&editor)).is_err());
+}
+fn section_id(editor: &DrawingEditor) -> EntityId {
+    editor.draft.as_ref().unwrap().views[1].id
 }

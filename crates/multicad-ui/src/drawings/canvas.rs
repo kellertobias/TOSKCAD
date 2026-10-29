@@ -3,6 +3,14 @@ use multicad_core::{
     document::EntityId,
     drawings::{self, DrawingEvaluation, Page, TextCell, VectorRole, ViewEvaluation},
 };
+/// What a click on the paper did.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct CanvasEvent {
+    pub view: Option<EntityId>,
+    /// While picking a section line: the clicked paper point, in mm.
+    pub pick_mm: Option<[f64; 2]>,
+}
+/// `picking` is `Some(first point)` while a section line is being picked.
 pub(super) fn show(
     ui: &mut egui::Ui,
     page: &Page,
@@ -10,12 +18,13 @@ pub(super) fn show(
     total: usize,
     evaluation: Option<&DrawingEvaluation>,
     selected: Option<EntityId>,
-) -> Option<EntityId> {
+    picking: Option<Option<[f64; 2]>>,
+) -> CanvasEvent {
     let layout = match drawings::layout_page(page, index, total) {
         Ok(layout) => layout,
         Err(error) => {
             ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
-            return None;
+            return CanvasEvent::default();
         }
     };
     let available = ui.available_rect_before_wrap();
@@ -156,9 +165,41 @@ pub(super) fn show(
         }
     }
     section_guides(&view_painter, page, evaluation, paper.min, scale);
-    ui.allocate_rect(available, egui::Sense::hover())
-        .on_hover_text("Drawing paper with source-linked native vector views");
-    clicked
+    let mut event = CanvasEvent {
+        view: clicked,
+        pick_mm: None,
+    };
+    if let Some(first) = picking {
+        let response = ui
+            .interact(paper, ui.id().with("section-pick"), egui::Sense::click())
+            .on_hover_text("Click the start, then the end of the section line");
+        let to_paper = |p: egui::Pos2| {
+            let mm = (p - paper.min) / scale;
+            [mm.x as f64, mm.y as f64]
+        };
+        let color = egui::Color32::from_rgb(30, 110, 180);
+        if let (Some(first), Some(pointer)) = (first, response.hover_pos()) {
+            let start = paper.min + egui::vec2(first[0] as f32, first[1] as f32) * scale;
+            view_painter.extend(egui::Shape::dashed_line(
+                &[start, pointer],
+                egui::Stroke::new(1.4, color),
+                5.,
+                3.,
+            ));
+        }
+        if response.clicked()
+            && let Some(position) = response.interact_pointer_pos()
+        {
+            event = CanvasEvent {
+                view: None,
+                pick_mm: Some(to_paper(position)),
+            };
+        }
+    } else {
+        ui.allocate_rect(available, egui::Sense::hover())
+            .on_hover_text("Drawing paper with source-linked native vector views");
+    }
+    event
 }
 
 /// Draw each section's cut line, and its far limit dashed, in the other views

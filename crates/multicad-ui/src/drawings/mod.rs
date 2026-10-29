@@ -124,6 +124,8 @@ pub struct DrawingEditor {
     feed: evaluation::DrawingFeed,
     preview_input: Option<(EntityId, u64, Option<EntityId>, Option<Page>)>,
     selected_view: Option<EntityId>,
+    /// Picking a section line in this parent view; the first paper point.
+    section_pick: Option<(EntityId, Option<[f64; 2]>)>,
 }
 impl DrawingEditor {
     pub fn dirty(&self) -> bool {
@@ -410,10 +412,10 @@ impl DrawingEditor {
                 });
             });
         self.tick_views(ui.ctx(), session);
-        let mut view_selected = None;
+        let mut event = canvas::CanvasEvent::default();
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(page) = &self.draft {
-                view_selected = canvas::show(
+                event = canvas::show(
                     ui,
                     page,
                     book.pages
@@ -428,6 +430,7 @@ impl DrawingEditor {
                         None
                     },
                     self.selected_view,
+                    self.section_pick.map(|(_, first)| first),
                 );
             } else {
                 ui.centered_and_justified(|ui| {
@@ -446,8 +449,14 @@ impl DrawingEditor {
                 });
             }
         });
-        if let Some(id) = view_selected {
+        if let Some(id) = event.view {
             self.selected_view = Some(id);
+        }
+        if let Some(point) = event.pick_mm
+            && let Err(error) = self.pick_section_point(point)
+        {
+            self.error = Some(error);
+            self.section_pick = None;
         }
     }
 }

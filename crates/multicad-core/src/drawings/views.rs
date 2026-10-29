@@ -172,6 +172,18 @@ impl DrawingView {
             _ => Ok(()),
         }
     }
+    /// The inverse of `paper_point`: view model coordinates under a paper point.
+    pub fn model_point(&self, paper_mm: [f64; 2]) -> [f64; 2] {
+        let center = match self.kind {
+            ViewKind::Detail { center_mm, .. } => center_mm,
+            _ => [0.; 2],
+        };
+        let scale = self.scale.numerator as f64 / self.scale.denominator as f64;
+        [
+            center[0] + (paper_mm[0] - self.position_mm[0]) / scale,
+            center[1] - (paper_mm[1] - self.position_mm[1]) / scale,
+        ]
+    }
     pub fn paper_point(&self, point_mm: [f64; 2]) -> [f64; 2] {
         let center = match self.kind {
             ViewKind::Detail { center_mm, .. } => center_mm,
@@ -410,4 +422,35 @@ pub fn section_guide(
             _ => None,
         },
     })
+}
+
+/// A section through a finite line picked in `parent` from `a` to `b` (parent
+/// model coordinates). The cut plane contains the line and the parent's view
+/// direction; the section looks toward the left of a→b as drawn, keeping the
+/// material on that side, with the parent's normal up. Its window spans the
+/// picked segment. Returns the frame, with the cut at offset 0, and window.
+pub fn section_from_line(
+    parent: &DrawingView,
+    a: [f64; 2],
+    b: [f64; 2],
+) -> Option<(ReferenceFrame, SectionWindow)> {
+    let f = &parent.frame;
+    let d = [0, 1, 2].map(|i| (b[0] - a[0]) * f.u[i] + (b[1] - a[1]) * f.v[i]);
+    let length = dot(d, d).sqrt();
+    if !length.is_finite() || length < 1e-6 {
+        return None;
+    }
+    let frame = ReferenceFrame {
+        origin_mm: [0, 1, 2].map(|i| f.origin_mm[i] + a[0] * f.u[i] + a[1] * f.v[i]),
+        u: d.map(|x| x / length),
+        v: cross(f.u, f.v),
+    };
+    frame.validate().ok()?;
+    Some((
+        frame,
+        SectionWindow {
+            u_mm: Some([0., length]),
+            v_mm: None,
+        },
+    ))
 }
