@@ -52,6 +52,17 @@ pub struct ExportArtifact {
     pub planar: Option<PlanarEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawing: Option<DrawingEvidence>,
+}
+/// What a drawing output contains, in page order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingEvidence {
+    pub pages: Vec<PageRef>,
+    pub page_sizes_mm: Vec<[f64; 2]>,
+    pub vectors: usize,
+    pub texts: usize,
 }
 /// What a mesh output contains: resource objects, placed build items and the
 /// tessellation actually written, in millimeters.

@@ -33,6 +33,34 @@ fn verify(
     artifact: &ExportArtifact,
     path: &Path,
 ) -> Result<(), ExportError> {
+    if let Some(evidence) = &artifact.drawing {
+        let expected = built
+            .generated
+            .get(&artifact.output.filename)
+            .ok_or_else(|| io("Current drawing output is missing"))?;
+        let written = fs::read(path).map_err(io)?;
+        if written != *expected {
+            return Err(io("Written drawing bytes differ from the generated output"));
+        }
+        let text = String::from_utf8_lossy(&written);
+        let structure_ok = if artifact.output.filename.ends_with(".pdf") {
+            written.starts_with(b"%PDF-1.4")
+                && text.ends_with("%%EOF\n")
+                && text.matches("/Type /Page ").count() == evidence.pages.len()
+        } else {
+            text.starts_with("0\nSECTION\n2\nHEADER")
+                && text.ends_with("0\nEOF\n")
+                && evidence.pages.len() == 1
+        };
+        if !structure_ok {
+            return Err(failure(
+                ErrorKind::Invalid,
+                Some(artifact.producer),
+                "Drawing readback structure or page count differs from the plan",
+            ));
+        }
+        return Ok(());
+    }
     if let Some(evidence) = &artifact.mesh {
         let expected = built
             .generated

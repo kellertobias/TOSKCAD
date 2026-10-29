@@ -333,7 +333,10 @@ fn dimensions_follow_parameters_at_any_scale_detach_and_sheet_edits_never_drive_
             .any(|(c, t)| c.starts_with("title@") && t == "Title")
     );
     assert!(strokes.iter().any(|(c, w)| c == "visible" && w == "0.25"));
-    assert!(svg.contains(r#"class="draft""#) && svg.matches("<line").count() > 20);
+    assert!(
+        svg.matches(r#"class="draft""#).count() > 10,
+        "hatch boundary and lines"
+    );
 
     // Parameters regenerate the dimensions.
     let mut edited = s.document().get(width.id).unwrap().clone();

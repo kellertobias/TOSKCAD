@@ -107,6 +107,7 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
                 dxf::layer_names(layers).err()
             }
         }
+        RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. } => None,
         RecipeOutput::Mesh {
             format,
             aids,
@@ -125,15 +126,59 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
                 None
             }
         }
-        _ => Some(format!(
-            "{} output provider is not installed",
-            output.extension().to_ascii_uppercase()
-        )),
     }
 }
 /// Solid, producer, world bounds, volume and solid count of a selected Part.
 type Availability = (EntityId, EntityId, [[f64; 3]; 2], f64, u32);
 type Selected = BTreeMap<PartRef, Availability>;
+/// Render drawing pages to PDF (all pages in one file) or DXF (one page).
+/// A stale view, unresolved view or detached dimension blocks the output
+/// with a reason naming the page; nothing old is presented as current.
+fn drawing_output(
+    document: &Document,
+    revision: u64,
+    selection: &ResolvedSet,
+    output: &RecipeOutput,
+    named: &NamedOutput,
+    evaluation: &multicad_core::drawings::DrawingEvaluation,
+) -> Result<(Vec<u8>, DrawingEvidence), String> {
+    use multicad_core::drawings::{dxf as sheet_dxf, pdf, render};
+    let pages: Vec<PageRef> = match &named.subject {
+        OutputSubject::Page(p) => vec![p.clone()],
+        OutputSubject::Pages(ps) => ps.clone(),
+        _ => return Err("Drawing output needs page subjects".into()),
+    };
+    let mut renders = vec![];
+    for page in &pages {
+        let label = selection
+            .pages
+            .iter()
+            .find(|p| p.reference == *page)
+            .map_or_else(|| page.page.to_string(), |p| p.number.clone());
+        renders.push(
+            render::render_page(document, revision, page.book, page.page, evaluation)
+                .map_err(|e| format!("Page {label} cannot export: {e}"))?,
+        );
+    }
+    let evidence = DrawingEvidence {
+        pages: pages.clone(),
+        page_sizes_mm: renders.iter().map(|r| r.size_mm).collect(),
+        vectors: renders
+            .iter()
+            .map(|r| r.polylines.len() + r.arcs.len() + r.fills.len())
+            .sum(),
+        texts: renders.iter().map(|r| r.texts.len()).sum(),
+    };
+    let bytes = match output {
+        RecipeOutput::Pdf => pdf::render_pdf(&renders, document.name()),
+        RecipeOutput::DrawingDxf { units, .. } => {
+            let (scale, code) = dxf::unit_scale(*units);
+            sheet_dxf::render_dxf(&renders[0], scale, code).into_bytes()
+        }
+        _ => return Err("Not a drawing recipe".into()),
+    };
+    Ok((bytes, evidence))
+}
 /// Tessellate one mesh output. Separate files hold one Part in world
 /// coordinates. An assembly 3MF holds one object per component definition
 /// placed by build items; an assembly OBJ holds one world-space object per
@@ -309,7 +354,7 @@ impl Exporter {
             });
         let p = self.compiler.policy;
         format!(
-            "step-files.1;planar-dxf.1;mesh-obj-3mf.1;build:{build};occt:{};policy:{:?}",
+            "step-files.1;planar-dxf.1;mesh-obj-3mf.1;drawing-pdf-dxf.1;build:{build};occt:{};policy:{:?}",
             multicad_kernel::source_identity(),
             [
                 p.linear_tolerance_mm,
@@ -340,7 +385,14 @@ impl Exporter {
             .recipes
             .iter()
             .any(|r| unsupported(&r.output).is_none());
-        let model = if supported && !selection.parts.is_empty() {
+        let drawings = !selection.pages.is_empty()
+            && selection.recipes.iter().any(|r| {
+                matches!(
+                    r.output,
+                    RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. }
+                )
+            });
+        let model = if supported && (!selection.parts.is_empty() || drawings) {
             Some(
                 self.compiler
                     .compile_interruptible(document, revision, interrupt)
@@ -438,7 +490,63 @@ impl Exporter {
             };
             let mut recipe_artifacts = vec![];
             let mut recipe_bytes = BTreeMap::new();
-            if status == RecipeStatus::Ready && matches!(recipe.output, RecipeOutput::Mesh { .. }) {
+            if status == RecipeStatus::Ready
+                && matches!(
+                    recipe.output,
+                    RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. }
+                )
+            {
+                let model = model.as_ref().ok_or_else(|| {
+                    failure(
+                        ErrorKind::Invalid,
+                        Some(set),
+                        "No owned current model for drawing output",
+                    )
+                })?;
+                checkpoint(interrupt)?;
+                let evaluation = model
+                    .drawings(
+                        document,
+                        revision,
+                        &crate::drawings::DrawingProviders::default(),
+                    )
+                    .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
+                for output in requested.iter() {
+                    match drawing_output(
+                        document,
+                        revision,
+                        &selection,
+                        &recipe.output,
+                        output,
+                        &evaluation,
+                    ) {
+                        Ok((bytes, evidence)) => {
+                            recipe_bytes.insert(output.filename.clone(), bytes);
+                            let size = evidence
+                                .page_sizes_mm
+                                .iter()
+                                .fold([0f64; 2], |a, s| [a[0].max(s[0]), a[1].max(s[1])]);
+                            recipe_artifacts.push(ExportArtifact {
+                                output: (*output).clone(),
+                                producer: evidence.pages[0].page,
+                                solid: evidence.pages[0].book,
+                                bounds_mm: [[0.; 3], [size[0], size[1], 0.]],
+                                volume_mm3: 0.,
+                                solid_count: 0,
+                                planar: None,
+                                mesh: None,
+                                drawing: Some(evidence),
+                            });
+                        }
+                        Err(reason) => {
+                            status = RecipeStatus::Unsupported(reason);
+                            break;
+                        }
+                    }
+                }
+            } else if status == RecipeStatus::Ready
+                && matches!(recipe.output, RecipeOutput::Mesh { .. })
+            {
                 let model = model.as_ref().ok_or_else(|| {
                     failure(
                         ErrorKind::Invalid,
@@ -464,6 +572,7 @@ impl Exporter {
                                 solid_count,
                                 planar: None,
                                 mesh: Some(evidence),
+                                drawing: None,
                             });
                         }
                         Err(e) => {
@@ -536,6 +645,7 @@ impl Exporter {
                         solid_count,
                         planar,
                         mesh: None,
+                        drawing: None,
                     });
                 }
             }
@@ -567,6 +677,7 @@ impl Exporter {
                     a.solid_count,
                     &a.planar,
                     &a.mesh,
+                    &a.drawing,
                 )
             })
             .collect();
