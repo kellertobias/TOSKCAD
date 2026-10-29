@@ -227,6 +227,25 @@ pub(super) fn author(
                 }
             }
         }
+        if matches!(
+            e.data,
+            EntityData::Part { .. } | EntityData::Material { .. }
+        ) {
+            for metadata in bound.entities() {
+                let owner = match crate::materials::read(metadata)? {
+                    Some(crate::materials::LibraryDefinition::MaterialStyle(style)) => {
+                        Some(style.material)
+                    }
+                    Some(crate::materials::LibraryDefinition::PartProperties(properties)) => {
+                        Some(properties.part)
+                    }
+                    _ => None,
+                };
+                if owner == Some(id) {
+                    queue.push_back(metadata.id);
+                }
+            }
+        }
     }
     let template = Document::new(&request.name)?.edited(
         &keep

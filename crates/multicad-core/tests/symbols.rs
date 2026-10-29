@@ -517,3 +517,55 @@ fn derived_private_parameter_bindings_normalize_atomically_without_weakening_own
         30.
     );
 }
+
+#[test]
+fn unrelated_extensions_are_ignored_but_assigned_unsupported_metadata_is_never_silently_lost() {
+    let (mut library, def, width, _) = author_fixture(SymbolKind::Dynamic);
+    let extra = Entity::new(
+        "Unrelated module",
+        EntityData::Extension {
+            definition: multicad_core::document::Definition {
+                type_id: "example.unrelated".into(),
+                schema_version: 1,
+                data: serde_json::json!({"text":"preserve elsewhere"}),
+            },
+            inputs: vec![],
+        },
+    );
+    let unused = extra.id;
+    apply(&mut library, vec![Mutation::Insert(extra)]);
+    let request = SymbolAuthorRequest::new(
+        "Plain door",
+        def.root,
+        SymbolKind::Dynamic,
+        vec![width],
+        None,
+    );
+    let preview = prepare_author(&library, library.revision(), actor(), &request).unwrap();
+    assert!(
+        read_definition(preview.prepared.document(), request.definition)
+            .unwrap()
+            .template
+            .get(unused)
+            .is_none()
+    );
+    let metadata = multicad_core::materials::LibraryDefinition::PartProperties(
+        multicad_core::materials::PartProperties {
+            part: def.root,
+            material: None,
+            stock: None,
+            appearance: None,
+            hatch: None,
+        },
+    )
+    .entity(EntityId::new(), "Assigned properties")
+    .unwrap();
+    apply(&mut library, vec![Mutation::Insert(metadata)]);
+    let before = library.document().clone();
+    let error = match prepare_author(&library, library.revision(), actor(), &request) {
+        Err(e) => e,
+        Ok(_) => panic!("Unsupported owned metadata must not be discarded"),
+    };
+    assert!(error.message.contains("materials.part_properties"));
+    assert_eq!(library.document(), &before);
+}
