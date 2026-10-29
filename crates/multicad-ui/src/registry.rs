@@ -373,7 +373,8 @@ impl Default for Registry {
             ("export-3d", "STEP / OBJ", Icon::Export),
             ("export-2d", "DXF / PDF", Icon::Page),
             ("print", "3MF package", Icon::Export),
-            ("appearance", "Render scene", Icon::Box),
+            ("appearance", "Capture render view", Icon::Box),
+            ("render-view", "Show render view", Icon::Box),
             ("blender", "Blender handoff", Icon::Export),
         ] {
             registry.tools.push(Tool {
@@ -531,7 +532,7 @@ impl Default for Registry {
                         ],
                     ),
                     tab("Print", &["print"]),
-                    tab("Render", &["appearance", "blender"]),
+                    tab("Render", &["appearance", "render-view", "blender"]),
                 ],
             },
         ];

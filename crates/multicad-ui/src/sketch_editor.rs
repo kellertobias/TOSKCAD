@@ -1088,6 +1088,9 @@ impl SketchEditor {
                 .into();
         Ok(())
     }
+    pub fn display_style(&self) -> DisplayStyle {
+        self.style
+    }
     pub fn set_display_style(&mut self, style: DisplayStyle) {
         self.style = style;
     }

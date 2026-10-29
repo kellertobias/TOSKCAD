@@ -110,7 +110,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
     sections
 }
 fn implemented(command: Command) -> bool {
-    !matches!(command,Command::Extension(id) if id!="materials")
+    !matches!(command,Command::Extension(id) if !matches!(id,"materials"|"appearance"|"render-view"))
 }
 pub fn show(
     ui: &mut egui::Ui,

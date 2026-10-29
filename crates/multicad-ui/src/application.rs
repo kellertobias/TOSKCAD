@@ -881,6 +881,55 @@ impl Application {
                 self.message =
                     "Symbols · embedded definitions and explicit library revisions".into();
             }
+            Command::Extension("appearance") => {
+                let p = self.current_mut();
+                let height = p.sketch.viewport_rect.map_or(0., |r| r.height());
+                let camera = crate::render_view::capture(&p.sketch.camera, height)?;
+                let display = crate::render_view::display_of(p.sketch.display_style());
+                let document = p.session.document();
+                let existing = multicad_core::model::render_scenes(document)
+                    .next()
+                    .map(|e| (e.id, e.name.clone()));
+                let mut scene = match &existing {
+                    Some((id, _)) => multicad_core::model::read_render_scene(document, *id)
+                        .map_err(|e| e.to_string())?,
+                    None => Default::default(),
+                };
+                scene.camera = camera;
+                scene.display = display;
+                let name = existing
+                    .as_ref()
+                    .map_or("Render scene".to_owned(), |(_, n)| n.clone());
+                let (_, prepared) = multicad_core::model::prepare_render_scene(
+                    &p.session,
+                    p.session.revision(),
+                    multicad_core::commands::Actor::local(channel),
+                    existing.map(|(id, _)| id),
+                    &name,
+                    &scene,
+                )
+                .map_err(|e| e.to_string())?;
+                p.session.commit(prepared).map_err(|e| e.to_string())?;
+                self.message = format!(
+                    "{name} · view captured ({}); hand it to Blender with the MCP blender_handoff tool",
+                    render_display_label(display)
+                );
+            }
+            Command::Extension("render-view") => {
+                let p = self.current_mut();
+                let document = p.session.document();
+                let id = multicad_core::model::render_scenes(document)
+                    .next()
+                    .map(|e| e.id)
+                    .ok_or("No render scene yet; capture a render view first")?;
+                let scene = multicad_core::model::read_render_scene(document, id)
+                    .map_err(|e| e.to_string())?;
+                let height = p.sketch.viewport_rect.map_or(0., |r| r.height());
+                p.sketch.camera = crate::render_view::restore(&scene.camera, height)?;
+                p.sketch
+                    .set_display_style(crate::render_view::style_of(scene.display));
+                self.message = "Render view shown in the viewport".into();
+            }
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
@@ -1207,6 +1256,17 @@ impl Application {
                 self.mode == Mode::Sketch && self.current().sketch.editing && !pending()
             }
             Command::Extension("materials") => !pending(),
+            Command::Extension("appearance") => {
+                self.mode == Mode::Export
+                    && !pending()
+                    && self.current().sketch.viewport_rect.is_some()
+            }
+            Command::Extension("render-view") => {
+                self.mode == Mode::Export
+                    && multicad_core::model::render_scenes(self.current().session.document())
+                        .next()
+                        .is_some()
+            }
             Command::Extension("symbol" | "library") => {
                 !pending() && self.current().sketch.has_symbol_backend()
             }
@@ -2208,6 +2268,69 @@ mod tests {
                 warnings: vec![],
             })
         }
+    }
+    #[test]
+    fn render_view_is_captured_into_the_document_and_shown_again() {
+        use crate::navigation::DisplayStyle;
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.mode = Mode::Export;
+        let capture = Command::Extension("appearance");
+        let show = Command::Extension("render-view");
+        // Without a laid-out viewport or a stored scene there is nothing to do.
+        assert!(!app.enabled(capture) && !app.enabled(show));
+        app.current_mut().sketch.viewport_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800., 600.),
+        ));
+        app.current_mut().sketch.camera.perspective = true;
+        app.current_mut()
+            .sketch
+            .set_display_style(DisplayStyle::AllEdges);
+        let revision = app.current().session.revision();
+        app.invoke(capture, &[], Channel::Ui).unwrap();
+        assert_eq!(app.current().session.revision(), revision + 1);
+        let document = app.current().session.document();
+        let id = multicad_core::model::render_scenes(document)
+            .next()
+            .unwrap()
+            .id;
+        let scene = multicad_core::model::read_render_scene(document, id).unwrap();
+        assert_eq!(scene.display, multicad_core::model::RenderDisplay::Xray);
+        assert_eq!(scene.lights.len(), 1, "a new scene gets the default sun");
+        // Move the viewport away, then show the stored view again.
+        let stored = app.current().sketch.camera;
+        app.current_mut().sketch.camera.yaw += 1.;
+        app.current_mut().sketch.camera.target = [0.; 3];
+        app.current_mut()
+            .sketch
+            .set_display_style(DisplayStyle::Filled);
+        assert!(app.enabled(show));
+        app.invoke(show, &[], Channel::Ui).unwrap();
+        let shown = app.current().sketch.camera;
+        assert!((shown.yaw - stored.yaw).abs() < 1e-4);
+        assert!((shown.scale - stored.scale).abs() < 1e-3);
+        assert_eq!(shown.target, stored.target);
+        assert_eq!(app.current().sketch.display_style(), DisplayStyle::AllEdges);
+        // A second capture of a changed view updates the same scene; Undo
+        // restores the first.
+        app.current_mut().sketch.camera.pitch = 0.2;
+        app.invoke(capture, &[], Channel::Ui).unwrap();
+        assert_ne!(
+            multicad_core::model::read_render_scene(app.current().session.document(), id).unwrap(),
+            scene
+        );
+        assert_eq!(
+            multicad_core::model::render_scenes(app.current().session.document()).count(),
+            1
+        );
+        app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
+        assert_eq!(
+            multicad_core::model::read_render_scene(app.current().session.document(), id).unwrap(),
+            scene
+        );
+        // Outside Export mode the Render tools are not offered.
+        app.mode = Mode::Model;
+        assert!(!app.enabled(capture) && !app.enabled(show));
     }
     fn wait_files(app: &mut Application) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -3809,3 +3932,6 @@ mod ribbon_layout_tests {
 #[cfg(test)]
 #[path = "application/inspector_tests.rs"]
 mod inspector_tests;
+fn render_display_label(display: multicad_core::model::RenderDisplay) -> &'static str {
+    crate::render_view::style_of(display).label()
+}
