@@ -467,6 +467,10 @@ pub struct AnnotationGraphic {
     pub text: String,
     pub text_mm: [f64; 2],
     pub text_angle_deg: f64,
+    /// Further horizontal single-line labels, each at the left end of its
+    /// baseline, such as table cells.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<([f64; 2], String)>,
     /// The measured model value: millimeters, or degrees for angles.
     pub value: f64,
     pub unit: String,
@@ -572,6 +576,7 @@ pub fn linear_dimension(
         text: wrap(number(value, precision), reference),
         text_mm: add(mid, [0., -1.]),
         text_angle_deg: angle,
+        labels: vec![],
         value,
         unit: "mm".into(),
     }
@@ -617,6 +622,7 @@ pub fn radial_dimension(
         text_mm: add(shelf, [if side > 0. { 1. } else { -1. - width }, -1.]),
         text,
         text_angle_deg: 0.,
+        labels: vec![],
         value,
         unit: "mm".into(),
     }
@@ -682,6 +688,7 @@ pub fn angle_dimension(
             [(radius + 2.) * mid.cos(), (radius + 2.) * mid.sin()],
         ),
         text_angle_deg: 0.,
+        labels: vec![],
         value: angle_deg,
         unit: "deg".into(),
     }
@@ -718,6 +725,7 @@ pub fn draft_dimension(
         text: number(value, precision),
         text_mm: add(scale(add(da, db), 0.5), [0., -1.]),
         text_angle_deg: angle,
+        labels: vec![],
         value,
         unit: "mm".into(),
     }
@@ -857,14 +865,25 @@ pub fn sheet_graphic(annotation: &Annotation) -> AnnotationGraphic {
                 g.lines.push([[x, header], [x, y1]]);
             }
             g.lines.push([[x1, y0], [x1, header]]);
-            let mut cells = vec![];
+            // Each cell's baseline centers its text vertically in its row.
+            let baseline = |row: usize| {
+                y0 + row as f64 * row_height_mm + (row_height_mm + ANNOTATION_TEXT_MM * 0.7) / 2.
+            };
+            let mut row = 0;
             if !title.is_empty() {
-                cells.push(title.clone());
+                g.labels.push(([x0 + 1., baseline(row)], title.clone()));
+                row += 1;
             }
-            cells.push(columns.join(" | "));
-            cells.extend(rows.iter().map(|r| r.join(" | ")));
-            g.text = cells.join("\n");
-            g.text_mm = add(*position_mm, [1., 1.]);
+            for cells in std::iter::once(columns).chain(rows.iter()) {
+                let mut x = position_mm[0];
+                for (cell, w) in cells.iter().zip(widths_mm) {
+                    if !cell.is_empty() {
+                        g.labels.push(([x + 1., baseline(row)], cell.clone()));
+                    }
+                    x += w;
+                }
+                row += 1;
+            }
         }
         AnnotationKind::Draft { geometry, .. } => match geometry {
             DraftGeometry::Line { a, b } => g.lines.push([*a, *b]),

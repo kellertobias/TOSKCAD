@@ -385,6 +385,15 @@ fn annotations(
             shape.angle = (graphic.text_angle_deg as f32).to_radians();
             painter.add(shape);
         }
+        for (at, label) in &graphic.labels {
+            let galley = painter.layout_no_wrap(
+                label.clone(),
+                egui::FontId::monospace(drawings::ANNOTATION_TEXT_MM as f32 * scale),
+                color,
+            );
+            let corner = to(*at) - egui::vec2(0., galley.size().y);
+            painter.galley(corner, galley, color);
+        }
         let bounds =
             drawings::table_bounds(annotation).or_else(|| drawings::graphic_bounds(&graphic));
         if let Some([x0, y0, x1, y1]) = bounds {

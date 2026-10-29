@@ -443,7 +443,9 @@ fn two_page_pdf_and_page_dxfs_keep_sizes_titles_scales_dimensions_and_section_se
             "A-101",
             "40.0",
             "Break sharp edges",
-            "Block | 1",
+            "Parts",
+            "Block",
+            "Qty",
         ] {
             assert!(one.contains(expected), "page 1 lacks {expected}: {one}");
         }
@@ -504,11 +506,13 @@ fn two_page_pdf_and_page_dxfs_keep_sizes_titles_scales_dimensions_and_section_se
             .iter()
             .any(|(l, v, _)| l == "SHEET_TITLE" && v == "Bench block")
     );
-    assert!(
-        texts
-            .iter()
-            .any(|(l, v, _)| l == "TABLES" && v == "Block | 1")
-    );
+    // Table cells are separate texts on the table layer.
+    for cell in ["Parts", "Part", "Qty", "Block", "1"] {
+        assert!(
+            texts.iter().any(|(l, v, _)| l == "TABLES" && v == cell),
+            "{texts:?}"
+        );
+    }
     let visible = extent(&lines_on(&one, "VIEW_VISIBLE"));
     // The block's 40 mm front edge spans 40 mm of paper at 1:1.
     assert!(visible[2] - visible[0] >= 40. - 1e-6);

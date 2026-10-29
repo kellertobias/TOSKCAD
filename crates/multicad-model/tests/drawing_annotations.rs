@@ -326,7 +326,7 @@ fn dimensions_follow_parameters_at_any_scale_detach_and_sheet_edits_never_drive_
     assert!(find("dimension@2.500", "40.0"), "{texts:?}");
     assert!(find("dimension@2.500", "Ø12.0") && find("dimension@2.500", "90.0°"));
     assert!(find("note@2.500", "Break sharp edges"));
-    assert!(find("table@2.500", "Block | 1") && find("weld@2.500", "a3"));
+    assert!(find("table@2.500", "Block") && find("table@2.500", "Qty") && find("weld@2.500", "a3"));
     assert!(
         texts
             .iter()

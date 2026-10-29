@@ -143,6 +143,9 @@ impl PageRender {
                 &g.text,
             );
         }
+        for (at, label) in &g.labels {
+            self.text(layer, *at, super::ANNOTATION_TEXT_MM, 0., label);
+        }
     }
     /// Bounds of everything drawn, for clipping checks.
     pub fn content_bounds(&self) -> Option<[f64; 4]> {

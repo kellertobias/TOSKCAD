@@ -199,7 +199,33 @@ fn hatches_clip_to_their_boundary_and_tables_and_welds_lay_out() {
     };
     assert_eq!(table_bounds(&table), Some([20., 20., 62., 40.]));
     let g = sheet_graphic(&table);
-    assert!(g.text.contains("Part | Qty") && g.text.contains("Top | 1"));
+    // Every cell is its own label, wholly inside its row and column.
+    assert!(g.text.is_empty());
+    let cell = |text: &str| {
+        g.labels
+            .iter()
+            .find(|(_, t)| t == text)
+            .unwrap_or_else(|| panic!("missing cell {text}: {:?}", g.labels))
+            .0
+    };
+    for (text, [x0, x1], row) in [
+        ("Cut list", [20., 62.], 0.),
+        ("Part", [20., 50.], 1.),
+        ("Qty", [50., 62.], 1.),
+        ("Side", [20., 50.], 2.),
+        ("2", [50., 62.], 2.),
+        ("Top", [20., 50.], 3.),
+        ("1", [50., 62.], 3.),
+    ] {
+        let [x, baseline] = cell(text);
+        let (top, bottom) = (20. + row * 5., 25. + row * 5.);
+        assert!(x > x0 && x < x1, "{text} x {x}");
+        assert!(
+            baseline - ANNOTATION_TEXT_MM > top && baseline < bottom,
+            "{text} baseline {baseline} outside row {top}..{bottom}"
+        );
+    }
+    assert_eq!(g.labels.len(), 7);
     let weld = Annotation {
         id: EntityId::new(),
         kind: AnnotationKind::Weld {
