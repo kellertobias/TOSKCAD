@@ -156,7 +156,7 @@ impl ModelToolController {
         {
             return true;
         }
-        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE))
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE|multicad_core::model::MACHINING_CUT_TYPE))
     }
     pub fn begin_existing(
         &mut self,
@@ -232,6 +232,15 @@ impl ModelToolController {
         }
         if !Self::editable(document, feature) {
             return Err("Choose a supported, unsuppressed applied model feature".into());
+        }
+        if model::read_machining_cut(document, feature).is_ok() {
+            let form = super::machining::MachiningPanel::existing(document, feature)?;
+            return self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Machining(Box::new(form)),
+            );
         }
         if model::read_panel_joint_cut(document, feature).is_ok() {
             // A joint edit rebuilds every pair's cuts, so it runs as a
@@ -422,6 +431,20 @@ impl ModelToolController {
                 session.document(),
                 name,
             )?)),
+        )
+    }
+    pub fn begin_machining(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Machining", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Machining(Box::new(super::machining::MachiningPanel::new(name))),
         )
     }
     pub fn begin_joint(

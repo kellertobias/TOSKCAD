@@ -19,6 +19,7 @@ mod group_edit;
 mod group_fixture;
 mod guide_fields;
 mod joint;
+mod machining;
 mod names;
 #[cfg(test)]
 pub(crate) mod native_fixture;
@@ -64,16 +65,18 @@ pub enum ModelingTool {
     Level,
     Panel,
     Joint,
+    Machining,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
         Self::Level,
         Self::Panel,
         Self::Joint,
+        Self::Machining,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -114,6 +117,7 @@ impl ModelingTool {
             Self::Level => "level",
             Self::Panel => "panel",
             Self::Joint => "joint",
+            Self::Machining => "drill",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -142,6 +146,7 @@ impl ModelingTool {
             Self::Level => "Levels & stairs",
             Self::Panel => "Panel / carcass",
             Self::Joint => "Panel joint",
+            Self::Machining => "Drill / pocket",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -170,6 +175,7 @@ impl ModelingTool {
             Self::Level => crate::icons::Icon::Edge,
             Self::Panel => crate::icons::Icon::Box,
             Self::Joint => crate::icons::Icon::Link,
+            Self::Machining => crate::icons::Icon::Cut,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -198,6 +204,7 @@ impl ModelingTool {
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
+            Self::Machining => &["groove", "dado", "rabbet", "pocket", "hardware-holes"],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -216,6 +223,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
+            }
+            Self::Machining => {
+                "Usage: drill (choose a groove, rabbet, pocket, drilling or hardware pattern and target panels in the Inspector, then Preview and Apply)"
             }
             Self::Joint => {
                 "Usage: joint (choose panel pairs that overlap at a corner and a butt, miter or finger joint in the Inspector, then Preview and Apply)"
@@ -266,6 +276,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Requires native modeling and no pending edits. Slabs and stairs are placed on an existing level; editing a level rebuilds everything on it. Stair figures are geometric notes, not code approval."
+            }
+            Self::Machining => {
+                "Requires rectangular panels and no pending edits. Cuts are modeled geometry, not CNC toolpaths."
             }
             Self::Joint => {
                 "Requires rectangular panels that overlap at a right-angle corner, one full thickness of each, and no pending edits."

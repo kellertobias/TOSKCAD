@@ -104,6 +104,9 @@ impl SketchEditor {
         if tool == ModelingTool::Joint {
             return self.begin_joint(session, resources, channel);
         }
+        if tool == ModelingTool::Machining {
+            return self.begin_machining(session, resources, channel);
+        }
         if tool == ModelingTool::Level {
             return self.begin_architecture(session, resources, channel);
         }

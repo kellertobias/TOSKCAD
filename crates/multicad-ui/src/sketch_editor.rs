@@ -1032,6 +1032,25 @@ impl SketchEditor {
                 .into();
         Ok(())
     }
+    pub fn begin_machining(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before machining panels"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_machining(session, resources, channel)?;
+        self.message =
+            "Drill / pocket · choose an operation and target panels in the Inspector, then Preview"
+                .into();
+        Ok(())
+    }
     pub fn begin_joint(
         &mut self,
         session: &Session,

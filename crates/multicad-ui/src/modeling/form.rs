@@ -9,6 +9,7 @@ use super::{
     edge_treatment::EdgeTreatmentPanel,
     group_edit::GroupEditPanel,
     joint::{JointCommand, JointPanel},
+    machining::{MachiningCommand, MachiningPanel},
     placement::PlacementPanel,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
@@ -46,6 +47,7 @@ pub enum ModelRequest {
     Architecture(Box<ArchitectureCommand>),
     Cabinet(Box<CabinetCommand>),
     Joint(Box<JointCommand>),
+    Machining(Box<MachiningCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -198,6 +200,7 @@ impl ModelRequest {
                 return command.prepare(session, actor);
             }
             Self::Joint(command) => return command.prepare(session, actor),
+            Self::Machining(command) => return command.prepare(session, actor),
             Self::Extrude(request) => {
                 model::prepare_extrude(session, session.revision(), actor, request)
             }
@@ -309,6 +312,7 @@ pub(super) enum ModelForm {
     Architecture(Box<ArchitecturePanel>),
     Cabinet(Box<CabinetPanel>),
     Joint(Box<JointPanel>),
+    Machining(Box<MachiningPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -329,6 +333,7 @@ impl ModelForm {
             Self::Architecture(panel) => panel.stamp(),
             Self::Cabinet(panel) => panel.stamp(),
             Self::Joint(panel) => panel.stamp(),
+            Self::Machining(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -349,6 +354,7 @@ impl ModelForm {
             Self::Architecture(panel) => panel.label(),
             Self::Cabinet(panel) => panel.label(),
             Self::Joint(panel) => panel.label(),
+            Self::Machining(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -378,6 +384,9 @@ impl ModelForm {
             Self::Joint(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Joint(Box::new(command))),
+            Self::Machining(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Machining(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -451,6 +460,7 @@ impl ModelForm {
             Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Joint(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Machining(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {
