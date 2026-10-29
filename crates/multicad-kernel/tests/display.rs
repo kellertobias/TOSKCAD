@@ -91,3 +91,32 @@ fn display_edges_and_vertices_are_brep_entities_without_mesh_diagonals() {
     }
     assert!(solid.display_edges(f64::NAN).is_err());
 }
+
+/// Exported meshes need consistent outward orientation: the divergence
+/// volume of a closed tessellation equals the exact solid volume.
+#[test]
+fn tessellations_are_consistently_oriented_closed_surfaces() {
+    let mesh_volume = |solid: &multicad_kernel::Solid| {
+        let mesh = solid.mesh(multicad_kernel::MeshOptions::default()).unwrap();
+        let v = mesh.vertices.as_chunks::<3>().0;
+        mesh.indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| v[i as usize]);
+                a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0])
+            })
+            .sum::<f64>()
+            / 6.
+    };
+    let block = multicad_kernel::Solid::box_solid([10., 20., 30.], Default::default()).unwrap();
+    let signed = mesh_volume(&block);
+    assert!((signed - 6000.).abs() < 1e-6, "{signed}");
+    let pin =
+        multicad_kernel::Solid::cylinder(Default::default(), 5., 10., Default::default()).unwrap();
+    let signed = mesh_volume(&pin);
+    let exact = std::f64::consts::PI * 250.;
+    assert!(signed > 0.99 * exact && signed <= exact, "{signed}");
+}

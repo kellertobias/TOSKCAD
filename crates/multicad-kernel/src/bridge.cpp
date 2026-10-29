@@ -281,6 +281,10 @@ Mesh tessellate(const Shape &s, double tolerance, double angle, uint32_t limit) 
     auto exactFaces = topology_map(s.value, 0);
     for (int faceIndex = 1; faceIndex <= exactFaces.Extent(); ++faceIndex) {
       auto face = TopoDS::Face(copy.ModifiedShape(exactFaces(faceIndex)));
+      // The copy's modified sub-shape need not carry the orientation the face
+      // has inside the solid; the exact topology map does. Winding follows it
+      // so the tessellation is a consistently outward-oriented closed surface.
+      const bool reversed = exactFaces(faceIndex).Orientation() == TopAbs_REVERSED;
       TopLoc_Location location;
       auto tri = BRep_Tool::Triangulation(face, location);
       if (tri.IsNull())
@@ -298,7 +302,7 @@ Mesh tessellate(const Shape &s, double tolerance, double angle, uint32_t limit) 
       for (int i = 1; i <= tri->NbTriangles(); ++i) {
         int a, b, c;
         tri->Triangle(i).Get(a, b, c);
-        if (face.Orientation() == TopAbs_REVERSED)
+        if (reversed)
           std::swap(b, c);
         out.indices.push_back(offset + a - 1);
         out.indices.push_back(offset + b - 1);
