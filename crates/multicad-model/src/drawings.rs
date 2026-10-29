@@ -239,6 +239,18 @@ impl Model {
                 "A source-only inspection model cannot generate drawings",
             ));
         }
+        // A guided view takes its frame, cut and sources from the current
+        // guide and levels; a deleted guide or level is reported here.
+        let guided;
+        let view = if view.guide.is_some() {
+            let parameters = multicad_core::parameters::evaluate(document)
+                .map_err(|e| error(Some(view.id), e))?;
+            guided = multicad_core::drawings::resolve_guided(document, &parameters, view)
+                .map_err(|e| error(Some(view.id), e))?;
+            &guided
+        } else {
+            view
+        };
         view.validate().map_err(|e| error(Some(view.id), e))?;
         let stamp = self.snapshot().stamp;
         if stamp.document != document.id()

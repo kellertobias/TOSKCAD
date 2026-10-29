@@ -46,6 +46,8 @@ pub fn prepare(
             }
             for view in &mut copy.views {
                 view.id = EntityId::new();
+                // A copy is free-standing; only the original follows its guide.
+                view.guide = None;
             }
             book.pages.insert(i + 1, copy);
             "Duplicate drawing page"

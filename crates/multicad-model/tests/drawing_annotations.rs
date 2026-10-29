@@ -87,6 +87,7 @@ fn front(parts: Vec<EntityId>, denominator: u32, x: f64) -> DrawingView {
         hidden_lines: false,
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
+        guide: None,
     }
 }
 fn graphic(e: &DrawingEvaluation, id: EntityId) -> &AnnotationGraphic {

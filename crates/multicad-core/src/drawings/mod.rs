@@ -2,6 +2,7 @@
 //! creating paper never creates geometry or illustrative model projections.
 mod annotations;
 pub mod dxf;
+mod guides;
 mod layout;
 pub mod pdf;
 pub mod render;
@@ -10,6 +11,7 @@ pub mod svg;
 mod transactions;
 mod views;
 pub use annotations::*;
+pub use guides::*;
 pub use layout::*;
 pub use source::*;
 pub use transactions::*;

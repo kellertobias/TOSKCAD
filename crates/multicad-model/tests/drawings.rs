@@ -47,6 +47,7 @@ fn view(part: EntityId) -> DrawingView {
         hidden_lines: true,
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
+        guide: None,
     }
 }
 struct Fixture {

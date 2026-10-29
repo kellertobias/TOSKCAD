@@ -378,6 +378,15 @@ impl ProjectFile {
         }) {
             required.insert(crate::drawings::ANNOTATION_CAPABILITY.into());
         }
+        if crate::drawings::guides(&self.document).next().is_some() {
+            required.insert(crate::drawings::GUIDE_CAPABILITY.into());
+        }
+        if crate::drawings::books(&self.document).any(|id| {
+            crate::drawings::read(&self.document, id)
+                .is_ok_and(|book| crate::drawings::has_guided_views(&book))
+        }) {
+            required.insert(crate::drawings::GUIDED_VIEW_CAPABILITY.into());
+        }
         if crate::inspection::required_capability(&self.document) {
             required.insert(crate::inspection::CAPABILITY.into());
         }
@@ -444,6 +453,8 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::drawings::VIEW_CAPABILITY.into(),
         crate::drawings::SECTION_CAPABILITY.into(),
         crate::drawings::ANNOTATION_CAPABILITY.into(),
+        crate::drawings::GUIDE_CAPABILITY.into(),
+        crate::drawings::GUIDED_VIEW_CAPABILITY.into(),
         "core.plane.offset.1".into(),
         crate::hierarchy::CAPABILITY.into(),
         crate::constraint_sketch::source::V2_CAPABILITY.into(),

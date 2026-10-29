@@ -104,6 +104,10 @@ pub struct DrawingView {
     /// Vector approximation bound for nonanalytic rendering/export consumers.
     /// Exact supported curve records remain available separately.
     pub paper_chord_tolerance_mm: f64,
+    /// The drawing guide that generated this view. Its frame, kind and
+    /// sources then follow the guide and its levels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide: Option<super::GuideLink>,
 }
 impl DrawingView {
     pub fn validate(&self) -> Result<(), DocumentError> {
@@ -201,6 +205,13 @@ pub fn view_inputs(book: &super::DrawingBook) -> Vec<Link> {
         .iter()
         .flat_map(|p| &p.views)
         .flat_map(|v| v.source.entities())
+        .chain(
+            book.pages
+                .iter()
+                .flat_map(|p| &p.views)
+                .filter_map(|v| v.guide)
+                .flat_map(|l| std::iter::once(l.guide).chain(l.level)),
+        )
         .chain(
             book.pages
                 .iter()

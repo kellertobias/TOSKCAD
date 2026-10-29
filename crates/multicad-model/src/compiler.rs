@@ -67,6 +67,9 @@ pub struct ModelSnapshot {
     /// Service envelope boxes in world millimeters (bottom four corners then
     /// top four), for display. Clearance checks use `Model::envelopes`.
     pub envelope_boxes: BTreeMap<EntityId, [[f64; 3]; 8]>,
+    /// Drawing guide outlines (cut planes, section and elevation frames) as
+    /// closed four-corner loops in world millimeters, for display.
+    pub guide_outlines: BTreeMap<EntityId, Vec<[[f64; 3]; 4]>>,
 }
 impl ModelSnapshot {
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
@@ -935,10 +938,12 @@ impl Compiler {
                 transfer_counts,
                 references,
                 envelope_boxes: BTreeMap::new(),
+                guide_outlines: BTreeMap::new(),
             },
         };
         if full {
             model.snapshot.envelope_boxes = model.envelope_boxes(document);
+            model.snapshot.guide_outlines = model.guide_outlines(document);
         }
         Ok(model)
     }

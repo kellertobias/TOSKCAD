@@ -100,6 +100,7 @@ fn simultaneous_first_use() {
                     hidden_lines: true,
                     tangent_edges: false,
                     paper_chord_tolerance_mm: 0.01,
+                    guide: None,
                 };
                 barrier.wait();
                 for _ in 0..4 {

@@ -217,6 +217,40 @@ impl Model {
         }
         Ok((env, boxed, corners))
     }
+    /// Viewport outlines of every drawing guide, sized to the final model.
+    pub(crate) fn guide_outlines(
+        &self,
+        document: &Document,
+    ) -> std::collections::BTreeMap<EntityId, Vec<[[f64; 3]; 4]>> {
+        let snapshot = self.snapshot();
+        let mut bounds: Option<[[f64; 3]; 2]> = None;
+        let finals = snapshot
+            .bodies
+            .iter()
+            .filter(|(part, _)| !snapshot.consumed_bodies.contains(part))
+            .filter_map(|(_, producer)| snapshot.shapes.get(producer).map(|s| s.bounds))
+            .chain(snapshot.occurrences.values().map(|o| o.bounds));
+        for b in finals {
+            let [lo, hi] = bounds.unwrap_or([[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]);
+            bounds = Some([
+                std::array::from_fn(|i| lo[i].min(b.min[i])),
+                std::array::from_fn(|i| hi[i].max(b.max[i])),
+            ]);
+        }
+        let (Some(bounds), Ok(parameters)) =
+            (bounds, multicad_core::parameters::evaluate(document))
+        else {
+            return Default::default();
+        };
+        multicad_core::drawings::guides(document)
+            .filter_map(|e| {
+                let guide = multicad_core::drawings::read_guide(document, e.id).ok()?;
+                let loops =
+                    multicad_core::drawings::guide_outlines(document, &parameters, &guide, bounds);
+                (!loops.is_empty()).then_some((e.id, loops))
+            })
+            .collect()
+    }
     /// Display boxes of every envelope whose target currently has a solid.
     pub(crate) fn envelope_boxes(
         &self,

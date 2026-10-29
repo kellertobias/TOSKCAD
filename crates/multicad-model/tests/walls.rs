@@ -381,6 +381,7 @@ fn closed_room_and_plan_section_show_door_swings_and_window_panes() {
         hidden_lines: false,
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
+        guide: None,
     };
     let view_id = plan.id;
     page.views.push(plan);

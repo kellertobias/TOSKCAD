@@ -224,7 +224,7 @@ pub struct ResolvedExtrudeControls {
     pub taper_rad: f64,
     pub extent: ResolvedExtent,
 }
-pub(super) fn check_dimension(value: &Dimension, unit: Unit) -> Result<(), DocumentError> {
+pub(crate) fn check_dimension(value: &Dimension, unit: Unit) -> Result<(), DocumentError> {
     if Unit::parse(value.unit()).is_none_or(|u| u.dimension() != unit.dimension()) {
         return Err(invalid(format!(
             "Expected {}-compatible model units",

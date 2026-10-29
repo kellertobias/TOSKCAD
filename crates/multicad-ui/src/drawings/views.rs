@@ -117,6 +117,7 @@ impl DrawingEditor {
             hidden_lines: false,
             tangent_edges: false,
             paper_chord_tolerance_mm: 0.01,
+            guide: None,
         });
         self.selected_view = Some(id);
         Ok(())
