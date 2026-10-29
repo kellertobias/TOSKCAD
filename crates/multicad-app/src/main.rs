@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod app_control;
 mod assembly_inspection;
 mod drawings;
 mod exchange;
@@ -55,7 +56,7 @@ fn main() -> ExitCode {
         Action::Run => run_application().inspect_err(|error| record_startup_error(error)),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.multicad] [--export-dir DIRECTORY] [--read-only]\n\nLaunches the native application host with no arguments.\nIncludes Parameters, constrained Sketch and initial New body extrusion. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. No network port is opened.",
+                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.multicad] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n\nLaunches the native application host with no arguments.\nIncludes Parameters, constrained Sketch and initial New body extrusion. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.",
                 build.product, build.version
             );
             Ok(())
@@ -124,6 +125,10 @@ fn run_application() -> Result<(), String> {
     app.set_export_backends(std::sync::Arc::new(|| Box::new(exchange::Backend::new())))?;
     multicad_ui::launch_with(Box::new(move |context| {
         app.set_file_picker(Box::new(file_picker::NativePicker::new(context)));
+        app.set_external_control(Box::new(app_control::WindowControl::new(
+            context.egui_ctx.clone(),
+            app_control::default_endpoint(),
+        )));
         Ok(Box::new(app))
     }))
 }

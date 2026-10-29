@@ -16,6 +16,9 @@ pub struct Options {
     pub project: Option<PathBuf>,
     pub export_directory: Option<PathBuf>,
     pub read_only: bool,
+    /// Bridge to the open desktop window instead of a headless document.
+    pub app: bool,
+    pub socket: Option<PathBuf>,
 }
 pub fn parse(arguments: &[OsString]) -> Result<Options, String> {
     let mut options = Options::default();
@@ -34,6 +37,10 @@ pub fn parse(arguments: &[OsString]) -> Result<Options, String> {
                 options.export_directory = Some(value("--export-dir")?)
             }
             Some("--read-only") if !options.read_only => options.read_only = true,
+            Some("--app") if !options.app => options.app = true,
+            Some("--socket") if options.socket.is_none() => {
+                options.socket = Some(value("--socket")?)
+            }
             _ => {
                 return Err(format!(
                     "unsupported --mcp argument {:?}; see --help",
@@ -41,6 +48,14 @@ pub fn parse(arguments: &[OsString]) -> Result<Options, String> {
                 ));
             }
         }
+    }
+    if options.app
+        && (options.project.is_some() || options.export_directory.is_some() || options.read_only)
+    {
+        return Err("--app controls the open window; --project, --export-dir and --read-only apply to headless documents".into());
+    }
+    if options.socket.is_some() && !options.app {
+        return Err("--socket requires --app".into());
     }
     if let Some(project) = &options.project
         && project.extension().is_none_or(|e| e != "multicad")
@@ -74,6 +89,19 @@ impl Storage for NativeStorage {
 }
 
 pub fn run(options: Options) -> Result<(), String> {
+    if options.app {
+        let socket = match options.socket {
+            Some(socket) => socket,
+            None => crate::app_control::default_endpoint()?,
+        };
+        #[cfg(unix)]
+        return multicad_mcp::local_socket::bridge_stdio(&socket);
+        #[cfg(not(unix))]
+        return Err(format!(
+            "Window control is unavailable here ({})",
+            socket.display()
+        ));
+    }
     // stdout carries JSON-RPC; native diagnostics must not interleave with it.
     multicad_kernel::route_native_output_to_stderr();
     let export_directory = options
@@ -133,5 +161,9 @@ mod tests {
             .is_err()
         );
         assert!(parse(&args(&["--listen", "0.0.0.0:80"])).is_err());
+        let app = parse(&args(&["--app", "--socket", "/tmp/s"])).unwrap();
+        assert!(app.app && app.socket == Some(PathBuf::from("/tmp/s")));
+        assert!(parse(&args(&["--app", "--project", "a.multicad"])).is_err());
+        assert!(parse(&args(&["--socket", "/tmp/s"])).is_err());
     }
 }

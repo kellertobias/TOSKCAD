@@ -3,6 +3,8 @@
 pub mod error;
 pub mod headless;
 pub mod host;
+#[cfg(unix)]
+pub mod local_socket;
 pub mod server;
 pub mod tools;
 

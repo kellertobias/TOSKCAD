@@ -436,3 +436,42 @@ fn artwork_import_and_inspection_through_the_protocol() {
     assert_eq!(unitless["code"], "import_failed");
     assert_eq!(client.revision(), 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn app_bridge_relays_stdio_to_a_listening_window_and_fails_clearly_without_one() {
+    use multicad_mcp::{Headless, Workspace, local_socket::Listener};
+    use std::sync::Arc;
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("private").join("app.sock");
+    let missing = Command::new(env!("CARGO_BIN_EXE_multicad"))
+        .args(["--mcp", "--app", "--socket"])
+        .arg(&socket)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    assert!(missing.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("Allow local MCP connections"));
+
+    let host = Arc::new(Headless::new(
+        Workspace::new(multicad_core::document::Document::new("Window").unwrap()).unwrap(),
+        None,
+        false,
+    ));
+    let _listener = Listener::bind(
+        socket.clone(),
+        move |_| host.clone() as Arc<dyn multicad_mcp::Host>,
+        |_| {},
+    )
+    .unwrap();
+    let mut client = Client::start(&["--app", "--socket", socket.to_str().unwrap()]);
+    assert_eq!(client.ok("document_info", json!({}))["name"], "Window");
+    client.ok(
+        "set_parameter",
+        json!({ "expected_revision": 0, "name": "w", "expression": "3", "unit": "in" }),
+    );
+    let parameters = client.ok("list_parameters", json!({}));
+    close(parameters["parameters"][0]["value"].as_f64().unwrap(), 3.);
+    assert_eq!(parameters["parameters"][0]["unit"], "in");
+}

@@ -418,9 +418,18 @@ fn revision_guard(target: &dyn Target, expected: u64) -> Result<(), ToolError> {
         .at_revision(current))
     }
 }
+fn editable(target: &dyn Target) -> Result<(), ToolError> {
+    match target.edit_blocked() {
+        Some(reason) => {
+            Err(ToolError::new("busy", reason).at_revision(target.session().revision()))
+        }
+        None => Ok(()),
+    }
+}
 /// Commit a checked candidate unless the call was cancelled meanwhile.
 fn commit(target: &mut dyn Target, call: &Call, prepared: Prepared) -> Result<u64, ToolError> {
     call.check()?;
+    editable(target)?;
     let change = target
         .session_mut()
         .commit(prepared)
@@ -489,7 +498,7 @@ fn diagnostics_json(d: &multicad_solver::Diagnostics) -> Value {
 // ---- Tools ----------------------------------------------------------------
 
 fn document_info(host: &dyn Host, _: &Call, _: NoArgs) -> ToolResult {
-    let scope = host.scope().clone();
+    let scope = host.scope();
     with(host, move |target| {
         let session = target.session();
         let document = session.document();
@@ -1109,6 +1118,7 @@ fn undo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
     with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
         call.check()?;
+        editable(target)?;
         let change = target
             .session_mut()
             .undo(args.expected_revision, call.actor.clone())?;
@@ -1121,6 +1131,7 @@ fn redo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
     with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
         call.check()?;
+        editable(target)?;
         let change = target
             .session_mut()
             .redo(args.expected_revision, call.actor.clone())?;
@@ -1165,7 +1176,7 @@ fn save_project(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult 
 }
 
 fn export_step(host: &dyn Host, call: &Call, args: ExportStep) -> ToolResult {
-    let directory = host.scope().export_directory.clone().ok_or_else(|| {
+    let directory = host.scope().export_directory.ok_or_else(|| {
         ToolError::new(
             "out_of_scope",
             "No export folder is in scope; start the server with --export-dir",

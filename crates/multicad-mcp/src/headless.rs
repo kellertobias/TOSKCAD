@@ -116,15 +116,15 @@ impl Headless {
     }
 }
 impl Host for Headless {
-    fn scope(&self) -> &Scope {
-        &self.scope
+    fn scope(&self) -> Scope {
+        self.scope.clone()
     }
     fn submit(&self, job: Job) -> Result<(), String> {
         let mut workspace = self
             .workspace
             .lock()
             .map_err(|_| "The headless workspace is poisoned by an earlier failure")?;
-        job(&mut *workspace);
+        job(Ok(&mut *workspace));
         Ok(())
     }
 }
