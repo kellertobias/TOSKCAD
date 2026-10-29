@@ -404,7 +404,10 @@ impl ModelToolController {
         resources: &ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
-        let name = if multicad_core::model::levels(session.document()).next().is_none() {
+        let name = if multicad_core::model::levels(session.document())
+            .next()
+            .is_none()
+        {
             "Ground floor".to_owned()
         } else {
             GeneratedNames::new(session.document()).numbered("Slab", " feature")
