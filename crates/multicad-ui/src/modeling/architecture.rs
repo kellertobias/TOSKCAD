@@ -1,16 +1,18 @@
-//! Level inspector: define or edit levels and service envelopes, and place
-//! slabs, pedestals and stairs on a level. Slabs and stairs are features with
-//! one output Part; levels and envelopes are reusable source entities.
+//! Level inspector: define or edit levels, service envelopes and drawing
+//! guides, and place slabs, pedestals and stairs on a level. Slabs and stairs
+//! are features with one output Part; the others are reusable source entities.
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
     form::{self, FormAction, ModelEvent, ModelRequest},
+    guide_fields::GuideFields,
 };
 use crate::{controls, egui};
 use multicad_core::{
     commands::{Actor, Session},
     constraint_sketch::Dimension,
     document::{Document, EntityData, EntityId},
+    drawings::{self, GuideDefinition},
     model::{
         self, BodyOutput, EnvelopeDefinition, LevelDefinition, ModelPrepared, SlabDefinition,
         SlabKind, StairDefinition, StairForm, Turn, length,
@@ -25,14 +27,16 @@ pub enum ArchitectureKind {
     Pedestal,
     Stair,
     Envelope,
+    Guide,
 }
 impl ArchitectureKind {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Level,
         Self::Slab,
         Self::Pedestal,
         Self::Stair,
         Self::Envelope,
+        Self::Guide,
     ];
     fn label(self) -> &'static str {
         match self {
@@ -41,6 +45,7 @@ impl ArchitectureKind {
             Self::Pedestal => "Pedestal",
             Self::Stair => "Stair",
             Self::Envelope => "Service envelope",
+            Self::Guide => "Drawing guide",
         }
     }
 }
@@ -67,6 +72,12 @@ pub enum ArchitectureCommand {
         edit: Option<EntityId>,
         name: String,
         stair: StairDefinition,
+    },
+    Guide {
+        existing: Option<EntityId>,
+        name: String,
+        value: GuideDefinition,
+        generate: bool,
     },
 }
 impl ArchitectureCommand {
@@ -120,6 +131,15 @@ impl ArchitectureCommand {
                 name,
                 stair,
             } => model::prepare_stair(session, revision, actor, name, stair, None),
+            Self::Guide {
+                existing,
+                name,
+                value,
+                generate,
+            } => drawings::prepare_guide(
+                session, revision, actor, *existing, name, value, *generate, None,
+            )
+            .map(|g| source(g.prepared)),
         }
         .map_err(|e| e.to_string())
     }
@@ -128,7 +148,7 @@ impl ArchitectureCommand {
     pub fn edit_id(&self) -> Option<EntityId> {
         match self {
             Self::Slab { edit, .. } | Self::Stair { edit, .. } => *edit,
-            Self::Level { .. } | Self::Envelope { .. } => None,
+            Self::Level { .. } | Self::Envelope { .. } | Self::Guide { .. } => None,
         }
     }
 }
@@ -159,6 +179,7 @@ pub(super) struct ArchitecturePanel {
     target: Option<EntityId>,
     clearances: [DimensionField; 5],
     label: String,
+    guide: GuideFields,
     error: Option<String>,
 }
 fn literal(d: &Dimension) -> String {
@@ -220,6 +241,7 @@ impl ArchitecturePanel {
             target: None,
             clearances: [mm(600.)?, mm(0.)?, mm(0.)?, mm(0.)?, mm(0.)?],
             label: String::new(),
+            guide: GuideFields::new(document)?,
             error: None,
         })
     }
@@ -329,7 +351,9 @@ impl ArchitecturePanel {
             return Err("The native modeling preview provider is unavailable".into());
         }
         let creates = match self.kind {
-            ArchitectureKind::Level | ArchitectureKind::Envelope => self.existing.is_none(),
+            ArchitectureKind::Level | ArchitectureKind::Envelope | ArchitectureKind::Guide => {
+                self.existing.is_none()
+            }
             _ => self.feature.is_none(),
         };
         if creates && (self.name.trim().is_empty() || self.name.len() > 1000) {
@@ -345,6 +369,12 @@ impl ArchitecturePanel {
                     height: self.height.resolve(document)?,
                     slab_thickness: self.slab_thickness.resolve(document)?,
                 },
+            },
+            ArchitectureKind::Guide => ArchitectureCommand::Guide {
+                existing: self.existing,
+                name,
+                value: self.guide.definition(document)?,
+                generate: self.guide.generate,
             },
             ArchitectureKind::Envelope => {
                 let [front, back, left, right, top] = &self.clearances;
@@ -442,14 +472,16 @@ impl ArchitecturePanel {
             .map(|e| (e.id, e.name.clone()))
             .collect();
         match self.kind {
-            ArchitectureKind::Level | ArchitectureKind::Envelope => {
+            ArchitectureKind::Level | ArchitectureKind::Envelope | ArchitectureKind::Guide => {
                 let level = self.kind == ArchitectureKind::Level;
-                let existing: Vec<_> = if level {
-                    levels.clone()
-                } else {
-                    model::envelopes(document)
+                let existing: Vec<_> = match self.kind {
+                    ArchitectureKind::Level => levels.clone(),
+                    ArchitectureKind::Envelope => model::envelopes(document)
                         .map(|e| (e.id, e.name.clone()))
-                        .collect()
+                        .collect(),
+                    _ => drawings::guides(document)
+                        .map(|e| (e.id, e.name.clone()))
+                        .collect(),
                 };
                 let before = self.existing;
                 if Self::level_combo(
@@ -457,15 +489,20 @@ impl ArchitecturePanel {
                     "architecture-existing",
                     &existing,
                     &mut self.existing,
-                    Some(if level { "New level" } else { "New envelope" }),
+                    Some(match self.kind {
+                        ArchitectureKind::Level => "New level",
+                        ArchitectureKind::Envelope => "New envelope",
+                        _ => "New guide",
+                    }),
                 ) {
                     changed = true;
                 }
                 if before != self.existing {
-                    let loaded = if level {
-                        self.load_level(document)
-                    } else {
-                        self.load_envelope(document)
+                    let loaded = match (self.kind, self.existing) {
+                        (ArchitectureKind::Guide, Some(id)) => self.guide.load(document, id),
+                        (ArchitectureKind::Guide, None) => Ok(()),
+                        _ if level => self.load_level(document),
+                        _ => self.load_envelope(document),
                     };
                     if let Err(error) = loaded {
                         self.error = Some(error);
@@ -475,7 +512,9 @@ impl ArchitecturePanel {
             _ => {}
         }
         let naming = match self.kind {
-            ArchitectureKind::Level | ArchitectureKind::Envelope => self.existing.is_none(),
+            ArchitectureKind::Level | ArchitectureKind::Envelope | ArchitectureKind::Guide => {
+                self.existing.is_none()
+            }
             _ => self.feature.is_none(),
         };
         if naming {
@@ -625,6 +664,9 @@ impl ArchitecturePanel {
                 changed |= ui.text_edit_singleline(&mut self.label).changed();
                 ui.small("The envelope follows the target's placement and is checked for overlaps with check_clearances.");
             }
+            ArchitectureKind::Guide => {
+                changed |= self.guide.show(ui, document);
+            }
         }
         ui.separator();
         form::preview_status(ui, self.stamp, preview);
@@ -747,6 +789,43 @@ mod tests {
         assert!(
             model.snapshot().envelope_boxes.len() == 1,
             "the envelope box follows the rebuilt slab"
+        );
+
+        // A floor plan guide on the level generates one linked view; a
+        // rerun from the reopened guide updates it instead of adding one.
+        let mut guide = ArchitecturePanel::new(session.document(), "Plans".into()).unwrap();
+        guide.kind = ArchitectureKind::Guide;
+        assert_eq!(guide.guide.levels.len(), 1);
+        let prepared = apply(&mut session, &guide);
+        session.commit(prepared.prepared).unwrap();
+        let guide_id = drawings::guides(session.document()).next().unwrap().id;
+        let count = |s: &Session| {
+            drawings::books(s.document())
+                .map(|b| {
+                    drawings::read(s.document(), b)
+                        .unwrap()
+                        .pages
+                        .iter()
+                        .map(|p| p.views.len())
+                        .sum::<usize>()
+                })
+                .sum::<usize>()
+        };
+        assert_eq!(count(&session), 1);
+        let mut rerun = ArchitecturePanel::new(session.document(), String::new()).unwrap();
+        rerun.kind = ArchitectureKind::Guide;
+        rerun.existing = Some(guide_id);
+        rerun.guide.load(session.document(), guide_id).unwrap();
+        rerun.guide.cut_height = mm(1100.).unwrap();
+        let prepared = apply(&mut session, &rerun);
+        session.commit(prepared.prepared).unwrap();
+        assert_eq!(count(&session), 1, "the rerun updates the linked view");
+        rerun.guide.levels.clear();
+        assert!(
+            rerun
+                .request(session.document(), true)
+                .unwrap_err()
+                .contains("at least one level")
         );
 
         panel.kind = ArchitectureKind::Slab;

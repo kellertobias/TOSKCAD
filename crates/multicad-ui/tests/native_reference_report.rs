@@ -136,7 +136,7 @@ fn scene_feed_keeps_native_diagnostics_instead_of_reconstructing_a_clean_display
 }
 
 #[test]
-fn envelope_display_boxes_are_checked_and_kept_with_the_scene() {
+fn envelope_boxes_and_guide_outlines_are_checked_and_kept_with_the_scene() {
     let document = Document::new("Envelope display").unwrap();
     let id = EntityId::new();
     let corners = std::array::from_fn(|k| [k as f64, 0., 0.]);
@@ -144,6 +144,25 @@ fn envelope_display_boxes_are_checked_and_kept_with_the_scene() {
         .with_envelope_boxes([(id, corners)].into())
         .unwrap();
     assert_eq!(scene.envelope_boxes()[&id], corners);
+    let outline = [
+        [0., 0., 1000.],
+        [1., 0., 1000.],
+        [1., 1., 1000.],
+        [0., 1., 1000.],
+    ];
+    let scene = scene
+        .with_guide_outlines([(id, vec![outline])].into())
+        .unwrap();
+    assert_eq!(scene.guide_outlines()[&id], vec![outline]);
+    assert_eq!(scene.envelope_boxes()[&id], corners);
+    let mut bad_outline = outline;
+    bad_outline[2][2] = f64::INFINITY;
+    assert!(
+        Scene::new(stamp(&document), vec![], vec![])
+            .unwrap()
+            .with_guide_outlines([(id, vec![bad_outline])].into())
+            .is_err()
+    );
     let mut bad = corners;
     bad[3][1] = f64::NAN;
     assert!(

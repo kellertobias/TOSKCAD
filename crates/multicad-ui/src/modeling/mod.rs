@@ -16,6 +16,7 @@ mod gizmo;
 mod group_edit;
 #[cfg(test)]
 mod group_fixture;
+mod guide_fields;
 mod names;
 #[cfg(test)]
 pub(crate) mod native_fixture;

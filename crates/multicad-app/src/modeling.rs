@@ -261,6 +261,7 @@ fn scene(
         })
         .and_then(|scene| scene.with_native_bounds(model.stamp.source_hash, native_bounds))
         .and_then(|scene| scene.with_envelope_boxes(model.envelope_boxes.clone()))
+        .and_then(|scene| scene.with_guide_outlines(model.guide_outlines.clone()))
         .map(Arc::new)
         .map_err(invalid)
 }

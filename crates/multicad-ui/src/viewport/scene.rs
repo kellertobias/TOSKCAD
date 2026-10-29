@@ -470,6 +470,7 @@ pub struct Scene {
     transfer_evaluation: Option<Arc<multicad_core::model::TransferEvaluationInfo>>,
     native_bounds: Option<Arc<NativeBounds>>,
     envelope_boxes: Arc<BTreeMap<EntityId, [Point; 8]>>,
+    guide_outlines: Arc<BTreeMap<EntityId, Vec<[Point; 4]>>>,
 }
 struct NativeBounds {
     source: multicad_core::project_file::ContentHash,
@@ -546,6 +547,7 @@ impl Scene {
             transfer_evaluation: None,
             native_bounds: None,
             envelope_boxes: Arc::new(BTreeMap::new()),
+            guide_outlines: Arc::new(BTreeMap::new()),
         })
     }
     /// Attach immutable results from this exact source evaluation. Structural
@@ -776,6 +778,31 @@ impl Scene {
     }
     pub fn envelope_boxes(&self) -> &BTreeMap<EntityId, [Point; 8]> {
         &self.envelope_boxes
+    }
+    /// Drawing guide outlines (plan cut planes, section and elevation
+    /// frames) as closed loops in world millimeters. Display only.
+    pub fn with_guide_outlines(
+        mut self,
+        outlines: BTreeMap<EntityId, Vec<[Point; 4]>>,
+    ) -> Result<Self, String> {
+        if outlines.len() > 4096
+            || outlines.iter().any(|(id, loops)| {
+                id.is_nil()
+                    || loops.len() > 256
+                    || loops
+                        .iter()
+                        .flatten()
+                        .flatten()
+                        .any(|v| !v.is_finite() || v.abs() > 1e9)
+            })
+        {
+            return Err("Drawing guide outlines contain an invalid identity or extent".into());
+        }
+        self.guide_outlines = Arc::new(outlines);
+        Ok(self)
+    }
+    pub fn guide_outlines(&self) -> &BTreeMap<EntityId, Vec<[Point; 4]>> {
+        &self.guide_outlines
     }
     /// Callers still verify this Scene's source hash and document/revision.
     /// Source-inspection views never authorize placement defaults.

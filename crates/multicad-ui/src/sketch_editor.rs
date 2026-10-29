@@ -120,6 +120,7 @@ pub struct SketchEditor {
     style: DisplayStyle,
     grid: bool,
     envelopes: bool,
+    guides: bool,
     spacing: f64,
     snap: bool,
     pub moving: bool,
@@ -205,6 +206,7 @@ impl Default for SketchEditor {
             style: DisplayStyle::VisibleEdges,
             grid: true,
             envelopes: true,
+            guides: true,
             spacing: 10.,
             snap: true,
             moving: false,
@@ -3172,10 +3174,13 @@ impl SketchEditor {
                 self.selected = None;
             }
         }
-        if self.envelopes
-            && let Some(scene) = &scene
-        {
-            self.paint_envelopes(&painter, scene, rect);
+        if let Some(scene) = &scene {
+            if self.envelopes {
+                self.paint_envelopes(&painter, scene, rect);
+            }
+            if self.guides {
+                self.paint_guides(&painter, scene, rect);
+            }
         }
         if !self.measurement.active()
             && let Some(context) = model_context
@@ -3851,6 +3856,7 @@ impl SketchEditor {
         let mut moving = self.moving;
         let mut grid = self.grid;
         let mut envelopes = self.envelopes;
+        let mut guides = self.guides;
         let mut spacing = self.spacing;
         let mut snap = self.snap;
         egui::Area::new(ui.id().with("camera-toolbar"))
@@ -3870,6 +3876,7 @@ impl SketchEditor {
                         });
                         ui.checkbox(&mut snap, "Snap sketch points to spacing");
                         ui.checkbox(&mut envelopes, "Service envelopes");
+                        ui.checkbox(&mut guides, "Drawing guides");
                     },
                     |ui| {
                         self.solid.filter_control(ui);
@@ -3927,6 +3934,7 @@ impl SketchEditor {
         self.moving = moving;
         self.grid = grid;
         self.envelopes = envelopes;
+        self.guides = guides;
         self.spacing = spacing;
         self.snap = snap;
     }
@@ -3940,6 +3948,18 @@ impl SketchEditor {
                     if let Some(segment) = self.camera.segment(corners[a], corners[b], rect) {
                         painter.extend(egui::Shape::dashed_line(&segment, stroke, 6., 4.));
                     }
+                }
+            }
+        }
+    }
+    /// Dashed drawing guide frames: plan cut planes, section lines and
+    /// elevation directions authored in the model.
+    fn paint_guides(&self, painter: &egui::Painter, scene: &crate::viewport::Scene, rect: Rect) {
+        let stroke = Stroke::new(1.2, Color32::from_rgb(80, 200, 220));
+        for corners in scene.guide_outlines().values().flatten() {
+            for k in 0..4 {
+                if let Some(segment) = self.camera.segment(corners[k], corners[(k + 1) % 4], rect) {
+                    painter.extend(egui::Shape::dashed_line(&segment, stroke, 10., 5.));
                 }
             }
         }

@@ -66,7 +66,7 @@ volumes, the scoped geometric stair check and clearance conflicts.
   committed. The stair reopens as a feature edit that keeps its Part, and a
   level edit runs as an ordinary transaction whose rebuilt model still
   carries the envelope box. A malformed outline line is reported.
-- **Scene test.** `envelope_display_boxes_are_checked_and_kept_with_the_scene`
+- **Scene test.** `envelope_boxes_and_guide_outlines_are_checked_and_kept_with_the_scene`
   keeps valid boxes with the scene and refuses non-finite corners.
 
 ## Not verified
