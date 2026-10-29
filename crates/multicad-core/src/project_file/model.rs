@@ -498,5 +498,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::PANEL_CAPABILITY.into(),
         crate::model::CARCASS_CAPABILITY.into(),
         crate::model::STACK_CAPABILITY.into(),
+        crate::model::PANEL_JOINT_CAPABILITY.into(),
+        crate::model::PANEL_JOINT_CUT_CAPABILITY.into(),
     ])
 }

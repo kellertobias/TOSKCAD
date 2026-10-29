@@ -606,6 +606,15 @@ impl Compiler {
                     panel_frames.insert(id, frame);
                     solid
                 }
+                (model::PANEL_JOINT_CUT_TYPE, model::PANEL_JOINT_CUT_SCHEMA) => {
+                    crate::cabinetry::build_joint_cut(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        &solids,
+                    )?
+                }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
                 }

@@ -102,6 +102,17 @@ fn remove_panel(
     feature: EntityId,
     body: EntityId,
 ) -> Result<Vec<Mutation>, CommandError> {
+    if let Some(joint) = panel_joints_of(document, body).first() {
+        return Err(error(format!(
+            "{} is joined by {}; delete the joint before removing the panel",
+            document
+                .get(body)
+                .map_or("A panel".into(), |e| e.name.clone()),
+            document
+                .get(*joint)
+                .map_or("a joint".into(), |e| e.name.clone()),
+        )));
+    }
     let mut edits = vec![Mutation::Remove(body), Mutation::Remove(feature)];
     if let Some((id, _)) = materials::part_properties(document, body)? {
         edits.push(Mutation::Remove(id));

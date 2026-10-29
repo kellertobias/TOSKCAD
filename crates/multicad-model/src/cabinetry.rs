@@ -12,8 +12,10 @@ use multicad_core::{
     sketch_regions::RegionIntent,
 };
 use multicad_kernel::{
-    CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform, Solid,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
+    Solid,
 };
+use std::collections::BTreeMap;
 
 /// Face roles of a rectangular panel's edge faces, in profile edge order.
 pub const PANEL_EDGE_ROLES: [&str; 4] = [
@@ -97,6 +99,75 @@ pub(crate) fn build(
     Ok((solid, profile.frame))
 }
 
+/// Remove the other panel's share of each joint corner from a panel solid.
+pub(crate) fn build_joint_cut(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    id: EntityId,
+    policy: GeometryPolicy,
+    solids: &BTreeMap<EntityId, Solid>,
+) -> Result<Solid, ModelError> {
+    let e = |e: DocumentError| error(Some(id), e);
+    let cut = model::read_panel_joint_cut(document, id).map_err(e)?;
+    let joint = model::read_panel_joint(document, cut.joint).map_err(e)?;
+    let corner = model::resolve_panel_joint_pair(document, parameters, &joint, cut.pair as usize)
+        .map_err(e)?;
+    let base = solids
+        .get(&cut.input.producer)
+        .ok_or_else(|| error(Some(id), "The panel before this joint has no solid"))?;
+    let mut current: Option<Solid> = None;
+    let prisms = match cut.side {
+        model::PanelJointSide::A => &corner.cut_a,
+        model::PanelJointSide::B => &corner.cut_b,
+    };
+    for (k, prism) in prisms.iter().enumerate() {
+        let n = prism.polygon.len();
+        let profile = CurvedProfile {
+            frame: PlaneFrame {
+                origin: prism.origin,
+                u: prism.u,
+                v: prism.v,
+            },
+            outer: (0..n)
+                .map(|i| CurvedEdge2d::Line {
+                    a: prism.polygon[i],
+                    b: prism.polygon[(i + 1) % n],
+                })
+                .collect(),
+            holes: vec![],
+        };
+        let origins: Vec<_> = (0..n)
+            .map(|i| Origin {
+                source: id,
+                role: format!("joint.{}.{k}.{i}", cut.joint),
+            })
+            .collect();
+        let tool =
+            Solid::extrude_curved_profile_vector_named(&profile, prism.sweep, id, &origins, policy)
+                .map_err(|e| error(Some(id), e))?;
+        let source = current.as_ref().unwrap_or(base);
+        current = source
+            .boolean(&tool, BooleanOperation::Subtract, policy)
+            .map_err(|e| error(Some(id), e))?
+            .map(Some)
+            .ok_or_else(|| error(Some(id), "The joint removed the whole panel"))?;
+    }
+    // The through panel keeps its corner; it still gets its own copy.
+    let solid = match current {
+        Some(solid) => solid,
+        None => base
+            .transformed(RigidTransform::default())
+            .map_err(|e| error(Some(id), e))?,
+    };
+    if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
+        return Err(error(
+            Some(id),
+            "The joint splits the panel into pieces; check the panel overlap at the corner",
+        ));
+    }
+    Ok(solid)
+}
+
 /// The world-to-frame transform: frame u, v and u × v become X, Y and Z.
 fn into_frame(frame: &PlaneFrame) -> RigidTransform {
     let n = cross(frame.u, frame.v);
@@ -119,6 +190,8 @@ pub struct CutRecord {
     pub carcass: Option<EntityId>,
     pub role: Option<PanelRole>,
     pub stack: Option<EntityId>,
+    /// Cabinetry joints this panel takes part in.
+    pub joints: Vec<EntityId>,
     pub material: Option<EntityId>,
     pub stock: EntityId,
     pub stock_name: String,
@@ -223,6 +296,7 @@ impl Model {
                 carcass,
                 role,
                 stack: stacks.get(&part).copied(),
+                joints: model::panel_joints_of(document, part),
                 material: *material,
                 stock: panel.stock,
                 stock_name: document

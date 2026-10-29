@@ -8,8 +8,10 @@
 //! The modeled solid is the finished panel, edge banding included. Core cut
 //! dimensions subtract banding, add banding allowances and any panel
 //! oversize, and are reported along and across the grain.
+mod joint;
 mod prepare;
 mod resolve;
+pub use joint::*;
 pub use prepare::*;
 pub use resolve::*;
 
@@ -585,5 +587,5 @@ pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError
     for e in stacks(document) {
         read_stack(document, e.id)?;
     }
-    Ok(())
+    validate_panel_joints(document)
 }
