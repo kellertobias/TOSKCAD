@@ -1,0 +1,601 @@
+//! Cabinetry panels: a parametric carcass generating named panel Parts with
+//! finished and core sizes, parameter edits and Undo, shelf and back
+//! changes, explicit banding and grain on rectangle panels, sketch-region
+//! panels, face-to-face stacks, and save/reopen. Every size is measured from
+//! the native solids.
+use multicad_core::{
+    commands::{Actor, Channel, Prepared, Request, Session},
+    constraint_sketch::{Dimension, source::Source},
+    document::{Document, Entity, EntityData, EntityId, Mutation},
+    materials::*,
+    model::{
+        self, Back, Band, BodyOutput, CarcassDefinition, CarcassRequest, Construction, GrainAxis,
+        PanelDefinition, PanelEdges, PanelPlane, PanelRequest, PanelRole, PanelSource,
+        ProfileSource, ShelfLayout, Shelves, angle, length,
+    },
+    parameters::BoundExpression,
+    project_file::{self, ProjectFile},
+    sketch::Datum,
+    sketch_regions,
+};
+use multicad_model::{Compiler, CutRecord, Model};
+
+fn actor() -> Actor {
+    Actor::local(Channel::Ui)
+}
+fn near(a: f64, b: f64) {
+    assert!((a - b).abs() <= 1e-6, "{a} != {b}");
+}
+fn pair(a: [f64; 2], b: [f64; 2]) {
+    near(a[0], b[0]);
+    near(a[1], b[1]);
+}
+fn compile(s: &Session) -> Model {
+    Compiler::default()
+        .compile(s.document(), s.revision())
+        .unwrap()
+}
+/// Evaluate the candidate natively, then commit it.
+fn checked(s: &mut Session, prepared: Prepared) {
+    Compiler::default()
+        .compile(prepared.document(), s.revision() + 1)
+        .unwrap();
+    s.commit(prepared).unwrap();
+}
+fn insert(s: &mut Session, edits: Vec<Mutation>) {
+    s.apply(Request {
+        expected_revision: s.revision(),
+        actor: actor(),
+        label: "Fixture".into(),
+        edits,
+    })
+    .unwrap();
+}
+fn record<'a>(list: &'a [CutRecord], name: &str) -> &'a CutRecord {
+    list.iter()
+        .find(|r| r.name == name)
+        .unwrap_or_else(|| panic!("no cut record {name}"))
+}
+
+struct Fixture {
+    s: Session,
+    ply: EntityId,
+    ply_material: EntityId,
+    hdf: EntityId,
+    width: EntityId,
+}
+fn material(name: &str, color: [u8; 4]) -> Entity {
+    Entity::new(
+        name,
+        EntityData::Material {
+            density_kg_m3: Some(650.),
+            color_rgba: color,
+            section_hatch: None,
+        },
+    )
+}
+fn stock(material: EntityId, thickness: f64, grain: Grain, name: &str) -> Entity {
+    LibraryDefinition::Stock(Stock {
+        material,
+        specification: StockKind::Panel {
+            thickness_mm: thickness,
+            length_mm: 2500.,
+            width_mm: 1250.,
+            grain,
+        },
+    })
+    .entity(EntityId::new(), name)
+    .unwrap()
+}
+fn fixture() -> Fixture {
+    let mut s = Session::new(Document::new("Cabinetry").unwrap()).unwrap();
+    let birch = material("Birch plywood", [214, 186, 140, 255]);
+    let fibre = material("HDF", [120, 96, 70, 255]);
+    let ply = stock(birch.id, 18., Grain::AlongLength, "Birch ply 18");
+    let hdf = stock(fibre.id, 6., Grain::None, "HDF 6");
+    let mut width = Entity::new(
+        "cab_width",
+        EntityData::Parameter {
+            expression: "600".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    width.description = "Outside cabinet width".into();
+    let ids = (ply.id, birch.id, hdf.id, width.id);
+    s.commit(prepare_library(&s, 0, actor(), &[birch, fibre]).unwrap())
+        .unwrap();
+    s.commit(prepare_library(&s, s.revision(), actor(), &[ply, hdf]).unwrap())
+        .unwrap();
+    insert(&mut s, vec![Mutation::Insert(width)]);
+    Fixture {
+        s,
+        ply: ids.0,
+        ply_material: ids.1,
+        hdf: ids.2,
+        width: ids.3,
+    }
+}
+fn set_parameter(s: &mut Session, id: EntityId, expression: &str) {
+    let mut entity = s.document().get(id).unwrap().clone();
+    let EntityData::Parameter { expression: e, .. } = &mut entity.data else {
+        unreachable!()
+    };
+    *e = expression.into();
+    let prepared = s
+        .prepare(Request {
+            expected_revision: s.revision(),
+            actor: actor(),
+            label: "Edit parameter".into(),
+            edits: vec![Mutation::Replace(entity)],
+        })
+        .unwrap();
+    checked(s, prepared);
+}
+fn band(thickness: f64, allowance: f64) -> Band {
+    Band {
+        thickness: length(thickness),
+        allowance: Some(length(allowance)),
+    }
+}
+fn cabinet(f: &Fixture) -> CarcassDefinition {
+    CarcassDefinition {
+        origin: [length(0.), length(0.), length(0.)],
+        rotation: angle(0.),
+        width: Dimension::Expression {
+            expression: BoundExpression::bind(f.s.document(), "=$cab_width", "mm", None).unwrap(),
+        },
+        height: length(720.),
+        depth: length(560.),
+        stock: f.ply,
+        construction: Construction::SidesFullHeight,
+        back: Back::Inset {
+            stock: f.hdf,
+            recess: length(10.),
+        },
+        shelves: Shelves {
+            layout: ShelfLayout::Even { count: 2 },
+            setback: length(20.),
+            clearance: length(1.),
+        },
+        front_band: Some(band(2., 0.5)),
+        group: None,
+    }
+}
+fn bounds(m: &Model, s: &Session, part: EntityId) -> multicad_kernel::Bounds {
+    let head = m.snapshot().bodies[&part];
+    let _ = s;
+    m.solid(head).unwrap().bounds().unwrap()
+}
+
+#[test]
+fn carcass_generates_named_panels_with_finished_and_core_sizes() {
+    let mut f = fixture();
+    let created = model::prepare_carcass(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        &CarcassRequest::new("Base cabinet", cabinet(&f)),
+    )
+    .unwrap();
+    let carcass = created.carcass;
+    assert_eq!(created.panels.len(), 7);
+    checked(&mut f.s, created.model.prepared);
+    let m = compile(&f.s);
+    let list = m.cut_list(f.s.document()).unwrap();
+    assert_eq!(list.len(), 7);
+    for r in &list {
+        assert!(r.issues.is_empty(), "{}: {:?}", r.name, r.issues);
+        assert!(r.fits_stock, "{}", r.name);
+        assert_eq!(r.carcass, Some(carcass));
+    }
+
+    // Sides: full height, grain up, front edge banded 2 mm with 0.5 allowance.
+    let side = record(&list, "Base cabinet left side");
+    assert_eq!(side.role, Some(PanelRole::LeftSide));
+    assert_eq!(side.material, Some(f.ply_material));
+    assert_eq!(side.stock, f.ply);
+    pair(side.cut.finished_mm, [720., 560.]);
+    pair(side.cut.core_mm, [720., 558.5]);
+    near(side.cut.thickness_mm, 18.);
+    near(side.volume_mm3, 18. * 560. * 720.);
+    assert_eq!(side.bands.len(), 1);
+    assert_eq!(side.bands[0].0, "u_start");
+    // Top and bottom fit between the sides, grain along the width.
+    let top = record(&list, "Base cabinet top");
+    pair(top.cut.finished_mm, [564., 560.]);
+    pair(top.cut.core_mm, [564., 558.5]);
+    // The inset back sits 10 mm in from the rear, captured on all four sides.
+    let back = record(&list, "Base cabinet back");
+    assert_eq!(back.stock, f.hdf);
+    pair(back.cut.finished_mm, [684., 564.]);
+    near(back.cut.thickness_mm, 6.);
+    assert!(back.bands.is_empty());
+    let b = bounds(&m, &f.s, back.part);
+    near(b.min[1], 544.);
+    near(b.max[1], 550.);
+    // Two evenly spaced shelves, 1 mm clear of each side, from the setback to the back.
+    let shelf = record(&list, "Base cabinet shelf 1");
+    pair(shelf.cut.finished_mm, [562., 524.]);
+    pair(shelf.cut.core_mm, [562., 522.5]);
+    near(bounds(&m, &f.s, shelf.part).min[2], 18. + 216.);
+    let shelf2 = record(&list, "Base cabinet shelf 2");
+    near(bounds(&m, &f.s, shelf2.part).min[2], 18. + 2. * 216. + 18.);
+    // The panels are held by a group named after the carcass.
+    let group = model::read_carcass(f.s.document(), carcass)
+        .unwrap()
+        .group
+        .unwrap();
+    let members = &f.s.document().hierarchy().members[&group];
+    assert!(
+        created
+            .panels
+            .iter()
+            .all(|(_, o)| members.contains(&o.body))
+    );
+
+    // A parameter edit resizes the panels in place; Undo restores them.
+    let before = f.s.document().clone();
+    set_parameter(&mut f.s, f.width, "800");
+    let wide = compile(&f.s).cut_list(f.s.document()).unwrap();
+    pair(
+        record(&wide, "Base cabinet top").cut.finished_mm,
+        [764., 560.],
+    );
+    pair(
+        record(&wide, "Base cabinet shelf 2").cut.core_mm,
+        [762., 522.5],
+    );
+    pair(
+        record(&wide, "Base cabinet back").cut.finished_mm,
+        [684., 764.],
+    );
+    assert_eq!(record(&wide, "Base cabinet top").part, top.part);
+    f.s.undo(f.s.revision(), actor()).unwrap();
+    assert_eq!(f.s.document(), &before);
+
+    // Explicit shelf offsets add a third shelf; existing shelves keep their Parts.
+    let mut edited = cabinet(&f);
+    edited.shelves.layout = ShelfLayout::Offsets {
+        offsets: vec![length(100.), length(300.), length(500.)],
+    };
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &edited).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    let m = compile(&f.s);
+    let list = m.cut_list(f.s.document()).unwrap();
+    assert_eq!(list.len(), 8);
+    assert_eq!(record(&list, "Base cabinet shelf 1").part, shelf.part);
+    let third = record(&list, "Base cabinet shelf 3");
+    near(bounds(&m, &f.s, third.part).min[2], 518.);
+    assert!(f.s.document().hierarchy().members[&group].contains(&third.part));
+    // One shelf removes the others with their properties; Undo brings them back.
+    let mut one = cabinet(&f);
+    one.shelves.layout = ShelfLayout::Even { count: 1 };
+    let with_three = f.s.document().clone();
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &one).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    assert!(f.s.document().get(third.part).is_none());
+    assert!(
+        part_properties(f.s.document(), third.part)
+            .unwrap()
+            .is_none()
+    );
+    let list = compile(&f.s).cut_list(f.s.document()).unwrap();
+    assert_eq!(list.len(), 6);
+    near(
+        bounds(&compile(&f.s), &f.s, shelf.part).min[2],
+        18. + (684. - 18.) / 2.,
+    );
+    f.s.undo(f.s.revision(), actor()).unwrap();
+    assert_eq!(f.s.document(), &with_three);
+
+    // An overlay back covers the whole rear; sides, top and shelves get shallower.
+    let mut overlay = cabinet(&f);
+    overlay.back = Back::Overlay { stock: f.hdf };
+    overlay.construction = Construction::TopBottomFullWidth;
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &overlay).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    let list = compile(&f.s).cut_list(f.s.document()).unwrap();
+    pair(
+        record(&list, "Base cabinet back").cut.finished_mm,
+        [720., 600.],
+    );
+    pair(
+        record(&list, "Base cabinet left side").cut.finished_mm,
+        [684., 554.],
+    );
+    pair(
+        record(&list, "Base cabinet top").cut.finished_mm,
+        [600., 554.],
+    );
+    pair(
+        record(&list, "Base cabinet shelf 1").cut.finished_mm,
+        [562., 534.],
+    );
+
+    // Save and reopen keep the editable carcass and identical cut records.
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(f.s.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert!(opened.capabilities().contains(model::CARCASS_CAPABILITY));
+    assert!(opened.capabilities().contains(model::PANEL_CAPABILITY));
+    assert_eq!(&opened.document, f.s.document());
+    let reopened = Compiler::default()
+        .compile(&opened.document, 0)
+        .unwrap()
+        .cut_list(&opened.document)
+        .unwrap();
+    assert_eq!(reopened, list);
+
+    // Sizes that cannot be built are refused before anything is staged.
+    let mut crowded = cabinet(&f);
+    crowded.shelves.layout = ShelfLayout::Even { count: 40 };
+    let e =
+        model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &crowded).unwrap_err();
+    assert!(e.message.contains("do not fit"), "{}", e.message);
+    let mut narrow = cabinet(&f);
+    narrow.width = length(30.);
+    assert!(model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &narrow).is_err());
+    let mut overlapping = cabinet(&f);
+    overlapping.shelves.layout = ShelfLayout::Offsets {
+        offsets: vec![length(100.), length(110.)],
+    };
+    let e = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &overlapping)
+        .unwrap_err();
+    assert!(e.message.contains("overlaps"), "{}", e.message);
+}
+
+#[test]
+fn rotated_carcass_places_panels_about_its_origin() {
+    let mut f = fixture();
+    let mut def = cabinet(&f);
+    def.origin = [length(1000.), length(500.), length(100.)];
+    def.rotation = angle(90.);
+    def.shelves.layout = ShelfLayout::Even { count: 0 };
+    let created = model::prepare_carcass(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        &CarcassRequest {
+            group: false,
+            ..CarcassRequest::new("Tall", def)
+        },
+    )
+    .unwrap();
+    assert_eq!(created.panels.len(), 5);
+    checked(&mut f.s, created.model.prepared);
+    let m = compile(&f.s);
+    let left = created.panels[0].1.body;
+    // Width now runs along +Y, depth along −X.
+    let b = bounds(&m, &f.s, left);
+    near(b.min[0], 1000. - 560.);
+    near(b.max[0], 1000.);
+    near(b.min[1], 500.);
+    near(b.max[1], 518.);
+    near(b.min[2], 100.);
+    near(b.max[2], 820.);
+    let list = m.cut_list(f.s.document()).unwrap();
+    pair(
+        record(&list, "Tall left side").cut.finished_mm,
+        [720., 560.],
+    );
+}
+
+#[test]
+fn rectangle_panels_band_edges_follow_grain_and_stack_face_to_face() {
+    let mut f = fixture();
+    let rect = |stock: EntityId, z: f64, l: f64, w: f64, grain: GrainAxis| PanelDefinition {
+        output: BodyOutput {
+            body: EntityId::new(),
+        },
+        source: PanelSource::Rectangle {
+            stock,
+            plane: PanelPlane::Xy,
+            origin: [length(0.), length(0.), length(z)],
+            length: length(l),
+            width: length(w),
+        },
+        grain,
+        edges: PanelEdges::default(),
+        oversize: None,
+    };
+    let mut top = rect(f.ply, 0., 800., 400., GrainAxis::U);
+    top.edges = PanelEdges {
+        u_start: Some(band(1., 0.)),
+        u_end: Some(band(1., 0.)),
+        v_start: Some(band(2., 1.)),
+        v_end: None,
+    };
+    top.oversize = Some(length(2.));
+    let a = PanelRequest::new("Desk top", top);
+    let p = model::prepare_panel(&f.s, f.s.revision(), actor(), &a).unwrap();
+    checked(&mut f.s, p.prepared);
+    let b = PanelRequest::new("Desk lining", rect(f.hdf, 18., 800., 400., GrainAxis::Free));
+    let p = model::prepare_panel(&f.s, f.s.revision(), actor(), &b).unwrap();
+    checked(&mut f.s, p.prepared);
+    let list = compile(&f.s).cut_list(f.s.document()).unwrap();
+    let desk = record(&list, "Desk top");
+    pair(desk.cut.finished_mm, [800., 400.]);
+    // u loses two 1 mm bands; v loses 2 mm and keeps 1 mm allowance; both get 2 mm oversize.
+    pair(desk.cut.core_mm, [800., 401.]);
+    assert_eq!(desk.bands.len(), 3);
+    assert_eq!(desk.carcass, None);
+
+    // Grain decides whether a long panel fits the 2500 × 1250 stock with grain along its length.
+    let along = PanelRequest::new("Rail", rect(f.ply, 100., 1300., 300., GrainAxis::U));
+    let p = model::prepare_panel(&f.s, f.s.revision(), actor(), &along).unwrap();
+    checked(&mut f.s, p.prepared);
+    let mut across = rect(f.ply, 100., 1300., 300., GrainAxis::V);
+    across.output.body = along.body;
+    let p =
+        model::prepare_panel_edit(&f.s, f.s.revision(), actor(), along.feature, &across).unwrap();
+    let list = Compiler::default()
+        .compile(p.prepared.document(), 0)
+        .unwrap()
+        .cut_list(p.prepared.document())
+        .unwrap();
+    assert!(!record(&list, "Rail").fits_stock);
+    pair(record(&list, "Rail").cut.core_mm, [300., 1300.]);
+    assert!(record(&compile(&f.s).cut_list(f.s.document()).unwrap(), "Rail").fits_stock);
+
+    // A face-to-face stack keeps each layer's own Part, material and stock.
+    let (stack, p) = model::prepare_stack(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "Desk laminate",
+        &[a.body, b.body],
+        Some("PVA".into()),
+        true,
+    )
+    .unwrap();
+    checked(&mut f.s, p);
+    let m = compile(&f.s);
+    let stacks = m.stacks(f.s.document()).unwrap();
+    assert_eq!(stacks.len(), 1);
+    let s0 = &stacks[0];
+    assert!(s0.face_to_face, "{:?}", s0.issues);
+    near(s0.total_thickness_mm, 24.);
+    assert_eq!(
+        s0.layers.iter().map(|l| l.stock).collect::<Vec<_>>(),
+        [f.ply, f.hdf]
+    );
+    assert_ne!(s0.layers[0].material, s0.layers[1].material);
+    assert_eq!(s0.adhesive.as_deref(), Some("PVA"));
+    let list = m.cut_list(f.s.document()).unwrap();
+    assert_eq!(record(&list, "Desk top").stack, Some(stack));
+    assert_eq!(record(&list, "Desk lining").stack, Some(stack));
+    let group = model::read_stack(f.s.document(), stack)
+        .unwrap()
+        .group
+        .unwrap();
+    assert_eq!(
+        f.s.document().hierarchy().members[&group],
+        vec![a.body, b.body]
+    );
+
+    // Moving a layer away is reported; the stack is not silently regrouped.
+    let mut lifted = rect(f.hdf, 20., 800., 400., GrainAxis::Free);
+    lifted.output.body = b.body;
+    let p = model::prepare_panel_edit(&f.s, f.s.revision(), actor(), b.feature, &lifted).unwrap();
+    checked(&mut f.s, p.prepared);
+    let stacks = compile(&f.s).stacks(f.s.document()).unwrap();
+    assert!(!stacks[0].face_to_face);
+    assert!(
+        stacks[0].issues[0].contains("2.000 mm apart"),
+        "{:?}",
+        stacks[0].issues
+    );
+
+    // Only panel Parts stack, and a layer belongs to one stack.
+    let e = model::prepare_stack(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "Again",
+        &[a.body, along.body],
+        None,
+        false,
+    )
+    .unwrap_err();
+    assert!(e.message.contains("already a layer"), "{}", e.message);
+    let e = model::prepare_stack(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "Odd",
+        &[along.body, f.ply],
+        None,
+        false,
+    )
+    .unwrap_err();
+    assert!(e.message.contains("not a panel"), "{}", e.message);
+    // Carcass panels cannot be edited directly.
+    let carcass_panel = PanelDefinition {
+        output: BodyOutput { body: a.body },
+        source: PanelSource::Carcass {
+            carcass: EntityId::new(),
+            role: PanelRole::Top,
+        },
+        grain: GrainAxis::U,
+        edges: PanelEdges::default(),
+        oversize: None,
+    };
+    assert!(
+        model::prepare_panel_edit(&f.s, f.s.revision(), actor(), a.feature, &carcass_panel)
+            .is_err()
+    );
+}
+
+#[test]
+fn sketch_region_panel_takes_stock_thickness_and_follows_stock_edits() {
+    let mut f = fixture();
+    let (sketch, edits) = Source::create(Datum::Xz, "Side profile").unwrap();
+    insert(&mut f.s, edits);
+    let mut source = Source::read(f.s.document(), sketch).unwrap().0;
+    source.add_rectangle([0., 0.], [450., 700.]).unwrap();
+    let regions = sketch_regions::extract(&source);
+    assert_eq!(regions.regions.len(), 1);
+    let region = regions.regions[0].intent();
+    let edits = source.replace(f.s.document(), sketch).unwrap();
+    insert(&mut f.s, edits);
+    let request = PanelRequest::new(
+        "Shaped side",
+        PanelDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            source: PanelSource::Profile {
+                stock: f.ply,
+                profile: ProfileSource { sketch, region },
+            },
+            grain: GrainAxis::V,
+            edges: PanelEdges::default(),
+            oversize: None,
+        },
+    );
+    let p = model::prepare_panel(&f.s, f.s.revision(), actor(), &request).unwrap();
+    checked(&mut f.s, p.prepared);
+    let list = compile(&f.s).cut_list(f.s.document()).unwrap();
+    let side = record(&list, "Shaped side");
+    pair(side.cut.finished_mm, [700., 450.]);
+    near(side.cut.thickness_mm, 18.);
+    near(side.volume_mm3, 450. * 700. * 18.);
+
+    // Banding is refused on sketch-region panels.
+    let mut banded = model::read_panel(f.s.document(), request.feature).unwrap();
+    banded.edges.u_start = Some(band(2., 0.));
+    assert!(
+        model::prepare_panel_edit(&f.s, f.s.revision(), actor(), request.feature, &banded).is_err()
+    );
+
+    // Editing the stock thickness rebuilds the panel; the assignment shows review.
+    let stock = f.s.document().get(f.ply).unwrap().clone();
+    let LibraryDefinition::Stock(mut spec) = read(&stock).unwrap().unwrap() else {
+        unreachable!()
+    };
+    let StockKind::Panel { thickness_mm, .. } = &mut spec.specification else {
+        unreachable!()
+    };
+    *thickness_mm = 19.;
+    let replaced = LibraryDefinition::Stock(spec)
+        .entity(f.ply, stock.name.clone())
+        .unwrap();
+    let p = prepare_library(&f.s, f.s.revision(), actor(), &[replaced]).unwrap();
+    checked(&mut f.s, p);
+    let list = compile(&f.s).cut_list(f.s.document()).unwrap();
+    near(record(&list, "Shaped side").cut.thickness_mm, 19.);
+    near(record(&list, "Shaped side").volume_mm3, 450. * 700. * 19.);
+}

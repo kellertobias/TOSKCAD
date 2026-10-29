@@ -70,6 +70,8 @@ pub struct ModelSnapshot {
     /// Drawing guide outlines (cut planes, section and elevation frames) as
     /// closed four-corner loops in world millimeters, for display.
     pub guide_outlines: BTreeMap<EntityId, Vec<[[f64; 3]; 4]>>,
+    /// Cabinetry panel frames by panel feature: thickness runs along u × v.
+    pub panel_frames: BTreeMap<EntityId, PlaneFrame>,
 }
 impl ModelSnapshot {
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
@@ -379,6 +381,7 @@ impl Compiler {
         let mut shapes = BTreeMap::new();
         let mut occurrences = BTreeMap::new();
         let mut transfer_counts = BTreeMap::new();
+        let mut panel_frames = BTreeMap::new();
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
@@ -589,6 +592,19 @@ impl Compiler {
                 }
                 (model::STAIR_TYPE, 1) => {
                     crate::levels::build_stair(document, context.parameters(), id, self.policy)?
+                }
+                (model::PANEL_TYPE, model::PANEL_SCHEMA) => {
+                    let (solid, frame) = crate::cabinetry::build(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        |sketch, region| {
+                            profiles.get(sketch, region, id, &solids, &topologies, interrupt)
+                        },
+                    )?;
+                    panel_frames.insert(id, frame);
+                    solid
                 }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
@@ -939,6 +955,7 @@ impl Compiler {
                 references,
                 envelope_boxes: BTreeMap::new(),
                 guide_outlines: BTreeMap::new(),
+                panel_frames,
             },
         };
         if full {
