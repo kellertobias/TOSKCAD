@@ -362,7 +362,6 @@ impl Default for Registry {
             ("fastener", "Attached fastener", Icon::Link),
             ("flat", "Flat pattern", Icon::Page),
             ("bend-list", "Bend schedule", Icon::Page),
-            ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
             ("support", "Thin support", Icon::Box),
             ("tab", "Breakaway tab", Icon::Edge),
@@ -451,6 +450,7 @@ impl Default for Registry {
                                         | ModelingTool::Panel
                                         | ModelingTool::Member
                                         | ModelingTool::Connection
+                                        | ModelingTool::Weld
                                 )
                             })
                             .map(ModelingTool::id)
@@ -463,7 +463,7 @@ impl Default for Registry {
                         "Sheet metal",
                         &["sheet", "bend", "fastener", "flat", "bend-list"],
                     ),
-                    tab("Weld", &["tube", "cope", "weld", "weld-list"]),
+                    tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     RibbonTab {
                         title: "Relationships",
                         tools: crate::assembly::AssemblyTool::ALL
@@ -767,10 +767,14 @@ mod tests {
                         | ModelingTool::Panel
                         | ModelingTool::Member
                         | ModelingTool::Connection
+                        | ModelingTool::Weld
                 ),
                 "Copy shares the Move / Copy ribbon entry; Panel and Member live on the Wood and Weld tabs"
             );
-            if matches!(tool, ModelingTool::Member | ModelingTool::Connection) {
+            if matches!(
+                tool,
+                ModelingTool::Member | ModelingTool::Connection | ModelingTool::Weld
+            ) {
                 let weld = registry
                     .workspace(Mode::Model)
                     .tabs

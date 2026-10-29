@@ -15,6 +15,7 @@ use super::{
     split::{SplitEvent, SplitPanel},
     wall::{WallCommand, WallPanel},
     weld_connection::ConnectionPanel,
+    weld_form::WeldPanel,
     weldment::{WeldmentCommand, WeldmentPanel},
 };
 use crate::egui;
@@ -322,6 +323,7 @@ pub(super) enum ModelForm {
     Cabinet(Box<CabinetPanel>),
     Weldment(Box<WeldmentPanel>),
     WeldConnection(Box<ConnectionPanel>),
+    Weld(Box<WeldPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -343,6 +345,7 @@ impl ModelForm {
             Self::Cabinet(panel) => panel.stamp(),
             Self::Weldment(panel) => panel.stamp(),
             Self::WeldConnection(panel) => panel.stamp(),
+            Self::Weld(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -364,6 +367,7 @@ impl ModelForm {
             Self::Cabinet(panel) => panel.label(),
             Self::Weldment(panel) => panel.label(),
             Self::WeldConnection(panel) => panel.label(),
+            Self::Weld(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -394,6 +398,9 @@ impl ModelForm {
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Weldment(Box::new(command))),
             Self::WeldConnection(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Weldment(Box::new(command))),
+            Self::Weld(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Weldment(Box::new(command))),
             Self::Placement(panel) => panel
@@ -470,6 +477,7 @@ impl ModelForm {
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Weldment(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::WeldConnection(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Weld(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

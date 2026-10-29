@@ -14,7 +14,8 @@ use multicad_core::{
     materials::{self, LibraryDefinition, StockKind},
     model::{
         self, AxisAnchor, BodyOutput, ConnectionDefinition, CreatedBody, MemberDefinition,
-        MemberPath, MemberRequest, ModelPrepared, angle, length,
+        MemberPath, MemberRequest, ModelPrepared, SequenceDefinition, WeldDefinition, angle,
+        length,
     },
 };
 
@@ -28,6 +29,16 @@ pub enum WeldmentCommand {
     EditMember {
         feature: EntityId,
         member: Box<MemberDefinition>,
+    },
+    /// Add a weld to a connection, or edit an existing weld by ID.
+    Weld {
+        existing: Option<EntityId>,
+        weld: Box<WeldDefinition>,
+    },
+    /// Create the weld sequence, or replace an existing one's steps.
+    Sequence {
+        existing: Option<EntityId>,
+        sequence: SequenceDefinition,
     },
     /// Create a connection, or edit an existing one by ID.
     Connection {
@@ -45,6 +56,33 @@ impl WeldmentCommand {
             }
             Self::EditMember { feature, member } => {
                 model::prepare_member_edit(session, revision, actor, *feature, member)
+            }
+            Self::Weld { existing, weld } => {
+                let prepared = match existing {
+                    Some(id) => model::prepare_weld_edit(session, revision, actor, *id, weld),
+                    None => model::prepare_weld(session, revision, actor, weld).map(|(_, p)| p),
+                }
+                .map_err(|e| e.to_string())?;
+                return Ok(ModelPrepared {
+                    prepared,
+                    outputs: vec![],
+                });
+            }
+            Self::Sequence { existing, sequence } => {
+                let prepared = model::prepare_sequence(
+                    session,
+                    revision,
+                    actor,
+                    *existing,
+                    "Weld sequence",
+                    sequence,
+                )
+                .map_err(|e| e.to_string())?
+                .1;
+                return Ok(ModelPrepared {
+                    prepared,
+                    outputs: vec![],
+                });
             }
             Self::Connection {
                 existing,

@@ -458,6 +458,21 @@ impl ModelToolController {
             ))),
         )
     }
+    pub fn begin_weld(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Weld(Box::new(super::weld_form::WeldPanel::new(
+                session.document(),
+            ))),
+        )
+    }
     pub fn begin_weld_connection(
         &mut self,
         session: &Session,
