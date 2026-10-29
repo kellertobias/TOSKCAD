@@ -41,6 +41,7 @@ mod guides;
 mod levels;
 mod reference_repair;
 mod walls;
+mod weldment;
 pub use cabinetry::{CarcassArgs, PanelArgs, PanelStockArgs, StackArgs};
 use cabinetry::{create_panel, create_panel_stack, create_panel_stock, cut_list, set_carcass};
 use guides::set_drawing_guide;
@@ -55,6 +56,8 @@ pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
 use walls::{create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type};
+pub use weldment::{EditMemberArgs, MembersArgs, ProfileStockArgs};
+use weldment::{create_members, create_profile_stock, edit_member, weldment_cut_list};
 
 pub type ToolResult = Result<Value, ToolError>;
 
@@ -250,6 +253,18 @@ tools! {
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;
+    "create_profile_stock" => ProfileStockArgs, "Create profile stock", false,
+        "Create tube, bar or angle profile stock (rectangular SHS/RHS or flat bar, round CHS or round bar, angle) with section size, optional wall and bar length, on an existing Material or a new one. Commits one transaction.",
+        create_profile_stock;
+    "create_members" => MembersArgs, "Create weldment members", false,
+        "Create straight tube/profile members from profile stock, one Part each: from every (or selected) solid line of a sketch, following those lines through later sketch edits, or from explicit point pairs. Section anchor, rotation about the axis and end extensions apply to all; optionally grouped. Every member is evaluated natively before commit.",
+        create_members;
+    "edit_member" => EditMemberArgs, "Edit weldment member", false,
+        "Change a member's stock, point-pair path, section anchor, rotation or end extensions, keeping its Part. Evaluated natively before commit.",
+        edit_member;
+    "weldment_cut_list" => NoArgs, "Weldment cut list", true,
+        "Every weldment member measured from its evaluated solid: section, material and stock, overall length along the axis, rotation, anchor and world orientation, volume and whether it fits one stock bar.",
+        weldment_cut_list;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;

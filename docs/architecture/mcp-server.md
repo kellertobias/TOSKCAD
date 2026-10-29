@@ -170,6 +170,10 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |
 | `create_panel_stack` | yes | Face-to-face panel layers kept as their own Parts, optionally grouped |
 | `cut_list` | no | Finished and core panel sizes measured from the solids, stock fit and stack contact |
+| `create_profile_stock` | yes | Rectangular, round or angle profile stock on an existing or new Material (see [weldments](weldments.md)) |
+| `create_members` | yes | One member Part per sketch line or point pair, with section anchor, rotation and end extensions |
+| `edit_member` | yes | Member stock, point path, anchor, rotation or extensions, keeping its Part |
+| `weldment_cut_list` | no | Member lengths, sections and orientation measured from the solids |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
 | `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |
