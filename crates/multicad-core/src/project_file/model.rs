@@ -477,5 +477,8 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::PART_REFERENCE_CAPABILITY.into(),
         crate::model::EXTRUDE_GROUP_CAPABILITY.into(),
         crate::model::EXTRUDE_GROUP_V2_CAPABILITY.into(),
+        crate::model::WALL_CAPABILITY.into(),
+        crate::model::WALL_TYPE_CAPABILITY.into(),
+        crate::model::OPENING_TYPE_CAPABILITY.into(),
     ])
 }

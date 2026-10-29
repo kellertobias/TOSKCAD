@@ -21,6 +21,7 @@ mod symbols;
 mod targets;
 mod transfer;
 mod transform;
+mod walls;
 pub use assemblies::LeafOccurrenceSnapshot;
 pub use compiler::*;
 pub use drawings::*;

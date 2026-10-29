@@ -578,6 +578,9 @@ impl Compiler {
                     )
                     .map_err(|e| error(Some(id), e))?
                 }
+                (model::WALL_TYPE, model::WALL_SCHEMA) => {
+                    crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
+                }
                 (model::REVOLVE_TYPE, model::REVOLVE_SCHEMA) => {
                     let source =
                         model::read_revolve(document, id).map_err(|e| error(Some(id), e))?;

@@ -333,7 +333,7 @@ impl Model {
                 "View has no projected edges in its section/detail region",
             ));
         }
-        let vectors = output
+        let mut vectors: Vec<_> = output
             .into_iter()
             .map(|v| {
                 let body = &bodies[v.source_index];
@@ -357,6 +357,7 @@ impl Model {
                 }
             })
             .collect();
+        crate::walls::plan_vectors(document, view, &bodies, &mut vectors)?;
         let warnings = properties
             .iter()
             .flat_map(|p| p.diagnostics.iter().map(|d| d.message.clone()))
