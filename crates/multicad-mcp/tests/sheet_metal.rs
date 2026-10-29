@@ -309,3 +309,73 @@ fn mcp_exports_a_developed_sheet_dxf_into_the_export_folder() {
     assert!(!folder.path().join("stock.dxf").exists());
     assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn mcp_attaches_hardware_with_holes_and_separate_parts() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Hardware").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let steel = run(
+        "create_sheet_stock",
+        json!({ "expected_revision": 0, "name": "DC01 2.0", "material_name": "DC01",
+        "thickness_mm": 2, "sheet_length_mm": 2000, "sheet_width_mm": 1000,
+        "inside_bend_radius_mm": 2, "k_factor": 0.4 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = run(
+        "set_sheet_part",
+        json!({ "expected_revision": 1, "name": "Plate", "stock": steel,
+        "plane": "xy", "length": mm(100.), "width": mm(60.) }),
+    )
+    .unwrap();
+    let feature = created["feature"].as_str().unwrap().to_owned();
+    let set = run(
+        "set_sheet_fasteners",
+        json!({ "expected_revision": 2, "feature": feature, "patterns": [
+            { "kind": "screw", "thread": "M4", "length": mm(10.), "washers": true, "nut": true,
+              "points_mm": [[20, 30], [80, 30]] },
+            { "kind": "standoff", "thread": "M3", "length": mm(12.), "across_flats": mm(5.5),
+              "points_mm": [[50, 45]] }
+        ] }),
+    )
+    .unwrap();
+    assert_eq!(set["revision"], 3);
+    assert_eq!(set["hardware"].as_array().unwrap().len(), 4);
+    let list = run("sheet_hardware", json!({})).unwrap();
+    let items = list["hardware"].as_array().unwrap();
+    let find = |item: &str| items.iter().find(|r| r["item"] == item).unwrap();
+    assert_eq!(find("screw")["designation"], "ISO 4762 M4 × 10");
+    assert_eq!(find("screw")["quantity"], 2);
+    assert_eq!(find("washer")["quantity"], 4);
+    assert_eq!(find("nut")["quantity"], 2);
+    assert_eq!(find("standoff")["source"], "User-specified dimensions");
+    assert!(
+        items.iter().all(|r| r["findings"] == json!([])),
+        "{items:?}"
+    );
+    let sheets = run("sheet_metal", json!({})).unwrap();
+    let pi = std::f64::consts::PI;
+    near(
+        &sheets["sheet_parts"][0]["volume_mm3"],
+        100. * 60. * 2. - 2. * pi * 2.25f64.powi(2) * 2. - pi * 1.7f64.powi(2) * 2.,
+    );
+    // A pattern on a missing flange is refused without a change.
+    let before = host.document();
+    assert!(
+        run(
+            "set_sheet_fasteners",
+            json!({ "expected_revision": 3, "feature": feature, "patterns": [
+                { "kind": "screw", "thread": "M3", "length": mm(8.), "flange": 2,
+                  "points_mm": [[5, 5]] }
+            ] }),
+        )
+        .is_err()
+    );
+    assert_eq!(host.document(), before);
+}

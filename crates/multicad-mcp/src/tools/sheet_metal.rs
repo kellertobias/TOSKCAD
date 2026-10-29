@@ -14,7 +14,8 @@ use multicad_core::{
     materials::{self, LibraryDefinition, Stock, StockKind},
     model::{
         self, BendDirection, BodyOutput, Cutout, CutoutFace, CutoutShape, Flange, FlangeKind,
-        PanelPlane, ProfileSource, Relief, SheetBase, SheetDefinition, SheetRequest,
+        HardwarePreset, HardwareSide, MountingPattern, PanelPlane, ProfileSource, Relief,
+        SheetBase, SheetDefinition, SheetRequest, Thread,
     },
     parameters::EvaluatedParameters,
 };
@@ -741,4 +742,184 @@ pub(super) fn export_sheet_dxf(host: &dyn Host, call: &Request, args: SheetDxfAr
         "DRILL": "circular cutout centers", "LABEL": "bend, cutout and part labels (non-cut)",
     });
     Ok(out)
+}
+
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareKindArg {
+    Screw,
+    Standoff,
+    Insert,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+pub enum ThreadArg {
+    M3,
+    M4,
+    M5,
+    M6,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareSideArg {
+    Material,
+    Base,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatternArg {
+    pub kind: HardwareKindArg,
+    /// Screw and standoff thread (ISO metric coarse).
+    #[serde(default)]
+    pub thread: Option<ThreadArg>,
+    /// Screw or standoff length.
+    #[serde(default)]
+    pub length: Option<Quantity>,
+    /// Screw: ISO 7089 washers under the head and the nut.
+    #[serde(default)]
+    pub washers: bool,
+    /// Screw: an ISO 4032 nut on the other side.
+    #[serde(default)]
+    pub nut: bool,
+    /// Standoff width across flats (user value).
+    #[serde(default)]
+    pub across_flats: Option<Quantity>,
+    /// Insert: catalogue designation and the source of its dimensions.
+    #[serde(default)]
+    pub designation: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub hole_diameter: Option<Quantity>,
+    #[serde(default)]
+    pub body_diameter: Option<Quantity>,
+    #[serde(default)]
+    pub height: Option<Quantity>,
+    /// Insert: supported sheet thickness range from the catalogue.
+    #[serde(default)]
+    pub min_sheet: Option<Quantity>,
+    #[serde(default)]
+    pub max_sheet: Option<Quantity>,
+    /// Flange index (zero-based) for a flange leg; omit for the base.
+    #[serde(default)]
+    pub flange: Option<u32>,
+    /// Side of the face the head or body sits on (default material).
+    #[serde(default)]
+    pub side: Option<HardwareSideArg>,
+    /// Points in the face's coordinates, like cutout centers.
+    pub points_mm: Vec<[f64; 2]>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SheetFastenersArgs {
+    pub expected_revision: u64,
+    /// The sheet feature whose mounting patterns are replaced.
+    pub feature: String,
+    #[serde(default)]
+    pub patterns: Vec<PatternArg>,
+}
+
+fn pattern(
+    p: &PatternArg,
+    d: &Document,
+    e: &EvaluatedParameters,
+) -> Result<MountingPattern, ToolError> {
+    let thread = || {
+        p.thread
+            .map(|t| match t {
+                ThreadArg::M3 => Thread::M3,
+                ThreadArg::M4 => Thread::M4,
+                ThreadArg::M5 => Thread::M5,
+                ThreadArg::M6 => Thread::M6,
+            })
+            .ok_or_else(|| ToolError::invalid("This hardware needs a thread"))
+    };
+    let text = |v: &Option<String>, what: &str| {
+        v.clone()
+            .ok_or_else(|| ToolError::invalid(format!("An insert needs {what}")))
+    };
+    Ok(MountingPattern {
+        preset: match p.kind {
+            HardwareKindArg::Screw => HardwarePreset::Screw {
+                thread: thread()?,
+                length: need(&p.length, "a length", d, e)?,
+                washers: p.washers,
+                nut: p.nut,
+            },
+            HardwareKindArg::Standoff => HardwarePreset::Standoff {
+                thread: thread()?,
+                length: need(&p.length, "a length", d, e)?,
+                across_flats: need(&p.across_flats, "a width across flats", d, e)?,
+            },
+            HardwareKindArg::Insert => HardwarePreset::Insert {
+                designation: text(&p.designation, "a designation")?,
+                source: text(&p.source, "a catalogue source")?,
+                hole_diameter: need(&p.hole_diameter, "a hole diameter", d, e)?,
+                body_diameter: need(&p.body_diameter, "a body diameter", d, e)?,
+                height: need(&p.height, "a height", d, e)?,
+                min_sheet: need(&p.min_sheet, "a minimum sheet thickness", d, e)?,
+                max_sheet: need(&p.max_sheet, "a maximum sheet thickness", d, e)?,
+            },
+        },
+        face: match p.flange {
+            Some(index) => CutoutFace::Flange { index },
+            None => CutoutFace::Base,
+        },
+        side: match p.side {
+            Some(HardwareSideArg::Base) => HardwareSide::Base,
+            _ => HardwareSide::Material,
+        },
+        points: p.points_mm.iter().map(|q| q.map(model::length)).collect(),
+    })
+}
+
+pub(super) fn set_sheet_fasteners(
+    host: &dyn Host,
+    call: &Request,
+    args: SheetFastenersArgs,
+) -> ToolResult {
+    let (document, revision, evaluated) = snapshot(host)?;
+    if revision != args.expected_revision {
+        return Err(stale(args.expected_revision, revision));
+    }
+    let feature = id(&args.feature)?;
+    let patterns = args
+        .patterns
+        .iter()
+        .map(|p| pattern(p, &document, &evaluated))
+        .collect::<Result<Vec<_>, _>>()?;
+    let call_owned = call.clone();
+    let (prepared, out) = with(host, move |target| {
+        revision_guard(target, revision)?;
+        let p = model::prepare_sheet_fasteners(
+            target.session(),
+            revision,
+            call_owned.actor.clone(),
+            feature,
+            &patterns,
+        )?;
+        let out = json!({
+            "feature": feature,
+            "hardware": p.hardware.iter().map(|(pattern, item, o)| json!({
+                "pattern": pattern, "item": item.label(), "part": o.body, "feature": o.feature,
+            })).collect::<Vec<_>>(),
+        });
+        Ok::<_, ToolError>((p.model.prepared, out))
+    })??;
+    finish(host, call, prepared, revision, out)
+}
+
+pub(super) fn sheet_hardware(host: &dyn Host, call: &Request, _: super::NoArgs) -> ToolResult {
+    let (document, revision, _) = snapshot(host)?;
+    let model = compile(&document, revision, call)?;
+    let records = model.sheet_hardware(&document)?;
+    Ok(json!({
+        "revision": revision,
+        "scope": "Purchased hardware Parts attached to sheet parts. Quantities are measured from the hardware solids. Built-in dimensions are nominal values from the named standards; insert dimensions come from the source given. No torque, strength or installation data is provided.",
+        "hardware": records.iter().map(|r| json!({
+            "part": r.part, "feature": r.feature, "sheet_part": r.sheet_part,
+            "pattern": r.pattern, "item": r.item.label(), "designation": r.designation,
+            "source": r.source, "quantity": r.quantity, "hole_mm": r.hole_mm,
+            "findings": r.findings,
+        })).collect::<Vec<_>>(),
+    }))
 }

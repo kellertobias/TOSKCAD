@@ -135,6 +135,67 @@ error names the failing feature, and the document keeps its last valid part.
   cutout.
 - **Fragments.** A part that falls apart into pieces.
 
+## Attached hardware
+
+A sheet part holds a list of **mounting patterns**, at most 32. Each
+pattern has:
+
+- a hardware preset;
+- the face it attaches to: the base or a flange leg, in cutout coordinates;
+- a side: the material side (along the face's thickness direction) or the
+  base side;
+- 1–64 points.
+
+### Presets
+
+| Preset | Items | Receiving hole | Dimension source |
+| --- | --- | --- | --- |
+| Screw | ISO 4762 socket head cap screw; optional ISO 7089 washers under the head and the nut; optional ISO 4032 nut | ISO 273 medium clearance | Nominal values of those standards for M3–M6 |
+| Standoff | Hex standoff of a user length and width across flats | ISO 273 medium clearance | User-specified, not a standard |
+| Insert | One catalogue insert or captive fastener | The catalogue hole diameter | The designation, source, body size and supported sheet thickness the user enters |
+
+Nothing in a preset states torque, strength, installation force or
+certification.
+
+### Holes and Parts
+
+The sheet cuts each pattern's receiving holes like cutouts, with the id
+`fastener.<pattern>.<point>`. They appear in the folded solid, the flat
+pattern, the bend-proximity diagnostics and the DXF drill points.
+
+Each purchased item of a pattern is its own Part, produced by a
+`sheet_metal.hardware` feature (capability `sheet_metal.hardware.1`). The
+feature references the sheet feature, the pattern index and the item. A
+pattern of screws with washers and nuts therefore gives three Parts. Each
+Part holds the item at every point, built natively on the evaluated sheet
+face:
+
+- the screw head sits over its washer;
+- the shank runs through the hole;
+- the nut and its washer sit on the opposite face.
+
+Hardware Parts follow the sheet, so moving a pattern's points or the
+flange it sits on moves the holes and the hardware together.
+
+`prepare_sheet_fasteners` replaces the patterns in one transaction:
+
+- Parts whose pattern and item remain keep their identities;
+- items no longer needed are removed;
+- new items get new Parts.
+
+### Hardware records
+
+`Model::sheet_hardware` lists every hardware Part as a separate BOM
+identity. Each record contains:
+
+- the designation and its dimension source;
+- the quantity, measured as the number of solids in the Part;
+- the receiving hole size;
+- findings:
+  - a screw shorter than its stack of sheet, washers and nut;
+  - a sheet outside an insert's supported thickness range;
+  - hardware that intersects the sheet.
+
 ## One folded and flat identity
 
 The folded solid and the developed flat pattern are two evaluations of the
@@ -313,6 +374,7 @@ nothing.
   Sketch-region or converted bases, flanges the form cannot show and
   cutouts are kept unchanged.
 - **MCP.** `create_sheet_stock`, `set_sheet_part`, `set_sheet_forming`,
+  `set_sheet_fasteners`, `sheet_hardware`,
   `convert_to_sheet`, `sheet_metal`, `unfold_sheet` and `export_sheet_dxf`.
   `export_sheet_dxf` writes into the server's export folder.
 
@@ -331,6 +393,16 @@ nothing.
 - **Unfolding in the window.** The Flat pattern and Bend schedule ribbon
   entries are still placeholders. Unfolding is available through
   `Model::unfold` and the MCP `unfold_sheet` tool.
+- **Hardware.**
+  - The window has no hardware form; the Attached fastener ribbon entry is
+    still a placeholder. Hardware is available through MCP and the core
+    API.
+  - Threads are modeled as plain cylinders, without thread geometry.
+  - Hardware attaches at pattern points, not at selected faces or axes of
+    other parts. Hardware cannot yet be aligned to a mating part.
+  - Built-in screws cover M3–M6 only.
+  - There are no catalogue libraries; inserts are entered with their
+    source.
 - **Developed DXF routes.** The window's Export mode has no developed sheet
   DXF recipe yet. The DXF is written by the exporter API and the MCP
   `export_sheet_dxf` tool.

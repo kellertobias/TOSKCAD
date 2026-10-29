@@ -53,12 +53,12 @@ pub use reference_repair::{
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
 pub use sheet_metal::{
-    ConvertSheetArgs, SheetDxfArgs, SheetFormingArgs, SheetPartArgs, SheetStockArgs,
-    UnfoldSheetArgs,
+    ConvertSheetArgs, SheetDxfArgs, SheetFastenersArgs, SheetFormingArgs, SheetPartArgs,
+    SheetStockArgs, UnfoldSheetArgs,
 };
 use sheet_metal::{
-    convert_to_sheet, create_sheet_stock, export_sheet_dxf, set_sheet_forming, set_sheet_part,
-    sheet_metal, unfold_sheet,
+    convert_to_sheet, create_sheet_stock, export_sheet_dxf, set_sheet_fasteners, set_sheet_forming,
+    set_sheet_part, sheet_hardware, sheet_metal, unfold_sheet,
 };
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
@@ -280,6 +280,12 @@ tools! {
     "export_sheet_dxf" => SheetDxfArgs, "Export developed sheet DXF", true,
         "Unfold one sheet Part from a fresh evaluation and write its developed blank as a 1:1 DXF in the export folder: CUT and CUT_INNER closed contours (reliefs and openings included), BEND_UP and BEND_DOWN center lines, DRILL points for circular cutouts and LABEL texts naming each bend and cutout id. Failed unfolding or a source that changed during the export writes nothing.",
         export_sheet_dxf;
+    "set_sheet_fasteners" => SheetFastenersArgs, "Set sheet mounting hardware", false,
+        "Replace a sheet part's mounting patterns: ISO 4762 screws (optional ISO 7089 washers and ISO 4032 nut, ISO 273 clearance holes), user-sized hex standoffs, or catalogue inserts with their designation, source, dimensions and sheet thickness range, on the base or a flange leg at points. Each pattern cuts receiving holes in the sheet; each purchased item is its own hardware Part. Evaluated natively before commit.",
+        set_sheet_fasteners;
+    "sheet_hardware" => NoArgs, "Sheet hardware list", true,
+        "Every attached hardware Part: designation, dimension source, quantity measured from its solids, receiving hole and compatibility findings (stack longer than the screw, sheet outside an insert's range, hardware intersecting the sheet). No torque, strength or installation data.",
+        sheet_hardware;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;
