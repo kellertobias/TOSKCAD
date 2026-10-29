@@ -44,6 +44,7 @@ mod levels;
 mod reference_repair;
 mod render;
 mod schedules;
+mod sheet_metal;
 mod walls;
 pub use cabinetry::{
     CarcassArgs, DeleteJointArgs, DeleteMachiningArgs, HardwareArgs, MachiningArgs, PanelArgs,
@@ -70,6 +71,14 @@ pub use render::{AssignAppearanceArgs, CreateAppearanceArgs, HandoffArgs, Render
 use render::{assign_appearance, blender_handoff, create_appearance, set_render_scene};
 use schedules::schedule;
 pub use schedules::{ScheduleArgs, ScheduleKindArg};
+pub use sheet_metal::{
+    ConvertSheetArgs, SheetDxfArgs, SheetFastenersArgs, SheetFormingArgs, SheetPartArgs,
+    SheetStockArgs, UnfoldSheetArgs,
+};
+use sheet_metal::{
+    convert_to_sheet, create_sheet_stock, export_sheet_dxf, set_sheet_fasteners, set_sheet_forming,
+    set_sheet_part, sheet_hardware, sheet_metal, unfold_sheet,
+};
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
@@ -352,6 +361,33 @@ tools! {
     "place_weld_plan" => WeldPlanArgs, "Place weld plan", false,
         "Place weld symbols pointing at each weld's joint in a drawing view, tailed with the weld mark and process, and a weld sequence table on the page. Replaces earlier symbols with the same marks and earlier weld sequence tables by default. Placed annotations are page content and are refreshed by placing the plan again.",
         place_weld_plan;
+    "create_sheet_stock" => SheetStockArgs, "Create sheet stock", false,
+        "Create a sheet-metal stock definition (thickness, sheet size, default inside bend radius and K-factor) on an existing Material or a new one. Commits one transaction.",
+        create_sheet_stock;
+    "set_sheet_part" => SheetPartArgs, "Create or edit sheet part", false,
+        "Create a sheet-metal Part from sheet stock with a rectangle base on a principal plane or a sketch-region base, or edit one by feature ID (omitting the base keeps it). Thickness comes from the stock; the inside radius and K-factor come from the stock unless given here. Evaluated natively before commit.",
+        set_sheet_part;
+    "convert_to_sheet" => ConvertSheetArgs, "Convert solid to sheet part", false,
+        "Analyze a Part's current solid as a constant-thickness plate and, if supported, create a sheet Part whose base is the captured stationary face. Inclined faces, steps, thickness that differs from the stock and curved bend regions are refused with their measurements. The source Part is unchanged.",
+        convert_to_sheet;
+    "set_sheet_forming" => SheetFormingArgs, "Set sheet flanges and cutouts", false,
+        "Replace a sheet part's flanges, hems and jogs (on straight base edges, with angle, direction, leg length, inside radius, corner insets and reliefs) and its through-cutouts (circle or rectangle in the base or a flange leg). Overlapping or touching flanges, cutouts outside their face and flanges running into the base are refused with the failing feature; the document is unchanged. Evaluated natively before commit.",
+        set_sheet_forming;
+    "sheet_metal" => NoArgs, "Sheet-metal records", true,
+        "Every sheet Part measured from its evaluated solid: thickness and measured thickness, inside radius and K-factor with their source, volume, and the developed flat pattern of the same feature with its size and area.",
+        sheet_metal;
+    "unfold_sheet" => UnfoldSheetArgs, "Unfold sheet part", true,
+        "Develop one sheet Part without changing it: closed cut loops, bend lines (id, order, up/down, angle, inside radius, allowance, flat line), drill points for circular cutouts, size and area in explicit millimeters, and scoped diagnostics (hole-to-bend proximity, short legs, tight radii, missing or shallow reliefs as rules of thumb; stock-sheet fit against the model; tooling data that is not defined). Parts that are not sheet parts, or that later features change, are refused.",
+        unfold_sheet;
+    "export_sheet_dxf" => SheetDxfArgs, "Export developed sheet DXF", true,
+        "Unfold one sheet Part from a fresh evaluation and write its developed blank as a 1:1 DXF in the export folder: CUT and CUT_INNER closed contours (reliefs and openings included), BEND_UP and BEND_DOWN center lines, DRILL points for circular cutouts and LABEL texts naming each bend and cutout id. Failed unfolding or a source that changed during the export writes nothing.",
+        export_sheet_dxf;
+    "set_sheet_fasteners" => SheetFastenersArgs, "Set sheet mounting hardware", false,
+        "Replace a sheet part's mounting patterns: ISO 4762 screws (optional ISO 7089 washers and ISO 4032 nut, ISO 273 clearance holes), user-sized hex standoffs, or catalogue inserts with their designation, source, dimensions and sheet thickness range, on the base or a flange leg at points. Each pattern cuts receiving holes in the sheet; each purchased item is its own hardware Part. Evaluated natively before commit.",
+        set_sheet_fasteners;
+    "sheet_hardware" => NoArgs, "Sheet hardware list", true,
+        "Every attached hardware Part: designation, dimension source, quantity measured from its solids, receiving hole and compatibility findings (stack longer than the screw, sheet outside an insert's range, hardware intersecting the sheet). No torque, strength or installation data.",
+        sheet_hardware;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;

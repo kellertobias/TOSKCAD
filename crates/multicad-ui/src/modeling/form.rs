@@ -15,6 +15,7 @@ use super::{
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
     scaling::ScalePanel,
+    sheet::{SheetCommand, SheetPanel},
     split::{SplitEvent, SplitPanel},
     wall::{WallCommand, WallPanel},
     weld_connection::ConnectionPanel,
@@ -54,6 +55,7 @@ pub enum ModelRequest {
     Machining(Box<MachiningCommand>),
     FdmAid(Box<FdmAidCommand>),
     Weldment(Box<WeldmentCommand>),
+    Sheet(Box<SheetCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -124,6 +126,12 @@ impl ModelRequest {
             Self::Weldment(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Member edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Sheet(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Sheet edit changed its producer identity".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -228,6 +236,12 @@ impl ModelRequest {
             Self::Weldment(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved member before editing it".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Sheet(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved sheet part before editing it".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -347,6 +361,7 @@ pub(super) enum ModelForm {
     Weldment(Box<WeldmentPanel>),
     WeldConnection(Box<ConnectionPanel>),
     Weld(Box<WeldPanel>),
+    Sheet(Box<SheetPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -372,6 +387,7 @@ impl ModelForm {
             Self::Weldment(panel) => panel.stamp(),
             Self::WeldConnection(panel) => panel.stamp(),
             Self::Weld(panel) => panel.stamp(),
+            Self::Sheet(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -397,6 +413,7 @@ impl ModelForm {
             Self::Weldment(panel) => panel.label(),
             Self::WeldConnection(panel) => panel.label(),
             Self::Weld(panel) => panel.label(),
+            Self::Sheet(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -441,6 +458,9 @@ impl ModelForm {
             Self::Weld(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Weldment(Box::new(command))),
+            Self::Sheet(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Sheet(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -519,6 +539,7 @@ impl ModelForm {
             Self::Weldment(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::WeldConnection(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Weld(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Sheet(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

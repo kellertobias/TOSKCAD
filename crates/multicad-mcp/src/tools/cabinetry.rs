@@ -13,7 +13,7 @@ use multicad_core::{
     materials::{self, Grain, LibraryDefinition, Stock, StockKind},
     model::{
         self, Back, Band, BodyOutput, CarcassDefinition, CarcassRequest, Construction, GrainAxis,
-        HardwareDefinition, HardwareHole, MachiningDefinition, MachiningFace, MachiningKind,
+        HardwareHole, HardwarePatternDefinition, MachiningDefinition, MachiningFace, MachiningKind,
         MaterialAllowance, PanelAxis, PanelDefinition, PanelEdgeName, PanelEdges,
         PanelJointDefinition, PanelJointKind, PanelJointPair, PanelPlane, PanelRequest,
         PanelSource, ShelfLayout, Shelves, angle, length,
@@ -698,7 +698,7 @@ pub(super) fn set_hardware_pattern(
     call: &Request,
     args: HardwareArgs,
 ) -> ToolResult {
-    let pattern = HardwareDefinition {
+    let pattern = HardwarePatternDefinition {
         holes: args
             .holes
             .iter()

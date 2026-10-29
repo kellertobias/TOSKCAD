@@ -42,11 +42,11 @@ pub fn layer_names(layers: &Layers) -> Result<[String; 4], String> {
     Ok(names)
 }
 #[derive(Clone, Copy, Debug)]
-struct Vertex {
-    p: [f64; 2],
-    bulge: f64,
+pub(crate) struct Vertex {
+    pub(crate) p: [f64; 2],
+    pub(crate) bulge: f64,
 }
-fn vertices(wire: &PlanarLoop) -> Vec<Vertex> {
+pub(crate) fn vertices(wire: &PlanarLoop) -> Vec<Vertex> {
     let mut result = vec![];
     for edge in &wire.edges {
         match *edge {
@@ -111,15 +111,15 @@ fn circular_center(wire: &PlanarLoop, tolerance: f64) -> Option<[f64; 2]> {
     }
     ((sweep.abs() - std::f64::consts::TAU).abs() < 1e-9).then_some(center)
 }
-struct Writer {
-    text: String,
-    handle: u32,
+pub(crate) struct Writer {
+    pub(crate) text: String,
+    pub(crate) handle: u32,
 }
 impl Writer {
-    fn pair(&mut self, code: u16, value: impl std::fmt::Display) {
+    pub(crate) fn pair(&mut self, code: u16, value: impl std::fmt::Display) {
         writeln!(self.text, "{code}\n{value}").expect("String write");
     }
-    fn entity(&mut self, kind: &str, layer: &str, class: &str) {
+    pub(crate) fn entity(&mut self, kind: &str, layer: &str, class: &str) {
         self.pair(0, kind);
         self.pair(5, format!("{:X}", self.handle));
         self.handle += 1;

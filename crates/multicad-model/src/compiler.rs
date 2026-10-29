@@ -74,6 +74,8 @@ pub struct ModelSnapshot {
     pub panel_frames: BTreeMap<EntityId, PlaneFrame>,
     /// Solved weldment member path segments by member feature.
     pub member_paths: BTreeMap<EntityId, model::PathSegment>,
+    /// Sheet-metal base layouts by sheet feature.
+    pub sheet_layouts: BTreeMap<EntityId, crate::sheet_metal::SheetLayout>,
 }
 impl ModelSnapshot {
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
@@ -386,6 +388,7 @@ impl Compiler {
         let mut panel_frames = BTreeMap::new();
         let mut member_paths = BTreeMap::new();
         let mut weld_paths = crate::weldment::Paths::new(&context);
+        let mut sheet_layouts = BTreeMap::new();
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
@@ -655,6 +658,22 @@ impl Compiler {
                     )?;
                     member_paths.insert(id, member.path);
                     solid
+                }
+                (model::SHEET_TYPE, model::SHEET_SCHEMA) => {
+                    let (solid, layout) = crate::sheet_metal::build(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        |sketch, region| {
+                            profiles.get(sketch, region, id, &solids, &topologies, interrupt)
+                        },
+                    )?;
+                    sheet_layouts.insert(id, layout);
+                    solid
+                }
+                (model::HARDWARE_TYPE, model::HARDWARE_SCHEMA) => {
+                    crate::sheet_hardware::build(document, id, &sheet_layouts, self.policy)?
                 }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
@@ -1007,6 +1026,7 @@ impl Compiler {
                 guide_outlines: BTreeMap::new(),
                 panel_frames,
                 member_paths,
+                sheet_layouts,
             },
         };
         if full {

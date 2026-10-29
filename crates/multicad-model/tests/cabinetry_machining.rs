@@ -356,7 +356,7 @@ fn hardware_patterns_follow_their_source_and_material_allowances() {
     let mut f = fixture();
     // A hinge-plate pattern: two 5 mm holes 32 mm apart, 12 deep; MDF gets
     // 0.5 mm larger and 1 mm deeper holes.
-    let pattern = HardwareDefinition {
+    let pattern = HardwarePatternDefinition {
         holes: vec![
             HardwareHole {
                 at: [length(0.), length(-16.)],

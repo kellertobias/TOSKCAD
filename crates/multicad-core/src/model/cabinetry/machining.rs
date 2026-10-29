@@ -20,8 +20,8 @@ pub const MACHINING_CAPABILITY: &str = "cabinetry.machining.1";
 pub const MACHINING_CUT_TYPE: &str = "cabinetry.machining_cut";
 pub const MACHINING_CUT_SCHEMA: u32 = 1;
 pub const MACHINING_CUT_CAPABILITY: &str = "cabinetry.machining_cut.1";
-pub const HARDWARE_KIND: &str = "cabinetry.hardware";
-pub const HARDWARE_CAPABILITY: &str = "cabinetry.hardware.1";
+pub const HARDWARE_PATTERN_KIND: &str = "cabinetry.hardware";
+pub const HARDWARE_PATTERN_CAPABILITY: &str = "cabinetry.hardware.1";
 pub const MAX_TARGETS: usize = 64;
 pub const MAX_HOLES: usize = 256;
 const MARGIN_MM: f64 = 1.;
@@ -122,7 +122,7 @@ pub struct MaterialAllowance {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HardwareDefinition {
+pub struct HardwarePatternDefinition {
     pub holes: Vec<HardwareHole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowances: Vec<MaterialAllowance>,
@@ -135,7 +135,7 @@ pub struct MachiningCutDefinition {
     pub output: BodyOutput,
 }
 
-impl HardwareDefinition {
+impl HardwarePatternDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
         if self.holes.is_empty() || self.holes.len() > MAX_HOLES {
             return Err(invalid(format!(
@@ -176,7 +176,7 @@ impl HardwareDefinition {
                 .map(|a| Link::new(a.material, format!("material/{}", a.material))),
         );
         Ok(EntityData::Extension {
-            definition: definition(HARDWARE_KIND, self)?,
+            definition: definition(HARDWARE_PATTERN_KIND, self)?,
             inputs,
         })
     }
@@ -299,7 +299,9 @@ pub fn machinings(document: &Document) -> impl Iterator<Item = &Entity> {
     document.entities().filter(|e| is_kind(e, MACHINING_KIND))
 }
 pub fn hardware_patterns(document: &Document) -> impl Iterator<Item = &Entity> {
-    document.entities().filter(|e| is_kind(e, HARDWARE_KIND))
+    document
+        .entities()
+        .filter(|e| is_kind(e, HARDWARE_PATTERN_KIND))
 }
 pub fn machining_cuts(document: &Document) -> impl Iterator<Item = &Entity> {
     document.entities().filter(
@@ -315,11 +317,14 @@ pub fn read_machining(
     value.validate()?;
     Ok(value)
 }
-pub fn read_hardware(
+pub fn read_hardware_pattern(
     document: &Document,
     id: EntityId,
-) -> Result<HardwareDefinition, DocumentError> {
-    let value: HardwareDefinition = parse(&extension(document, id, HARDWARE_KIND)?, HARDWARE_KIND)?;
+) -> Result<HardwarePatternDefinition, DocumentError> {
+    let value: HardwarePatternDefinition = parse(
+        &extension(document, id, HARDWARE_PATTERN_KIND)?,
+        HARDWARE_PATTERN_KIND,
+    )?;
     value.validate()?;
     Ok(value)
 }
@@ -352,7 +357,7 @@ pub fn machinings_of(document: &Document, part: EntityId) -> Vec<EntityId> {
 }
 pub(super) fn validate_machining(document: &Document) -> Result<(), DocumentError> {
     for e in hardware_patterns(document) {
-        read_hardware(document, e.id)?;
+        read_hardware_pattern(document, e.id)?;
     }
     for e in machinings(document) {
         read_machining(document, e.id)?;
@@ -646,7 +651,7 @@ pub fn resolve_machining(
             at,
             quarter_turns,
         } => {
-            let hw = read_hardware(document, *pattern)?;
+            let hw = read_hardware_pattern(document, *pattern)?;
             let material = read_panel(
                 document,
                 panel_feature(document, target).expect("checked panel"),
@@ -698,7 +703,7 @@ pub fn prepare_hardware(
     expected_revision: u64,
     actor: Actor,
     name: &str,
-    pattern: &HardwareDefinition,
+    pattern: &HardwarePatternDefinition,
 ) -> Result<(EntityId, Prepared), CommandError> {
     revision(session, expected_revision)?;
     check_name(name, "Hardware pattern")?;
@@ -718,10 +723,10 @@ pub fn prepare_hardware_edit(
     expected_revision: u64,
     actor: Actor,
     id: EntityId,
-    pattern: &HardwareDefinition,
+    pattern: &HardwarePatternDefinition,
 ) -> Result<Prepared, CommandError> {
     revision(session, expected_revision)?;
-    read_hardware(session.document(), id)?;
+    read_hardware_pattern(session.document(), id)?;
     let mut entity = session
         .document()
         .get(id)

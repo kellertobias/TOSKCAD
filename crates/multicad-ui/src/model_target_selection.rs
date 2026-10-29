@@ -119,6 +119,9 @@ impl SketchEditor {
         if tool == ModelingTool::FdmAid {
             return self.begin_fdm_aid(session, resources, channel);
         }
+        if tool == ModelingTool::Sheet {
+            return self.begin_sheet(session, resources, channel);
+        }
         if tool == ModelingTool::Level {
             return self.begin_architecture(session, resources, channel);
         }

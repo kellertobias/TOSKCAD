@@ -156,7 +156,7 @@ impl ModelToolController {
         {
             return true;
         }
-        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE|multicad_core::model::MACHINING_CUT_TYPE|multicad_core::model::AID_TYPE|multicad_core::model::MEMBER_TYPE))
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE|multicad_core::model::MACHINING_CUT_TYPE|multicad_core::model::AID_TYPE|multicad_core::model::MEMBER_TYPE|multicad_core::model::SHEET_TYPE))
     }
     pub fn begin_existing(
         &mut self,
@@ -232,6 +232,17 @@ impl ModelToolController {
         }
         if !Self::editable(document, feature) {
             return Err("Choose a supported, unsuppressed applied model feature".into());
+        }
+        if model::read_sheet(document, feature).is_ok() {
+            let form = super::sheet::SheetPanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Sheet(Box::new(form)),
+            )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
         }
         if model::read_member(document, feature).is_ok() {
             let form = super::weldment::WeldmentPanel::existing(document, feature)?;
@@ -453,6 +464,23 @@ impl ModelToolController {
                 session.document(),
                 name,
             )?)),
+        )
+    }
+    pub fn begin_sheet(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Sheet part", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Sheet(Box::new(super::sheet::SheetPanel::new(
+                session.document(),
+                name,
+            ))),
         )
     }
     pub fn begin_machining(

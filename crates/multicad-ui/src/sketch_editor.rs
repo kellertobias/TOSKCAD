@@ -1087,6 +1087,24 @@ impl SketchEditor {
             "Panel / carcass · choose stock and sizes in the Inspector, then Preview".into();
         Ok(())
     }
+    pub fn begin_sheet(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before adding sheet parts"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_sheet(session, resources, channel)?;
+        self.message =
+            "Base sheet · choose sheet stock and size in the Inspector, then Preview".into();
+        Ok(())
+    }
     pub fn begin_weldment(
         &mut self,
         session: &Session,

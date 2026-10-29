@@ -7,6 +7,7 @@ pub use render::{RenderManifest, RenderPackage};
 mod planar;
 pub use planar::DevelopedContourProvider;
 mod publish;
+pub mod sheet_dxf;
 mod worker;
 use crate::{Compiler, Model};
 use multicad_core::{

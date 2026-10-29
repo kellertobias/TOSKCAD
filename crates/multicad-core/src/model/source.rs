@@ -650,6 +650,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::fdm::validate_document(document)?;
     super::render::validate_document(document)?;
     super::weldment::validate_document(document)?;
+    super::sheet_metal::validate_document(document)?;
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
@@ -720,6 +721,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::imports::COMPONENT_TYPE,
                     super::AID_TYPE,
                     super::MEMBER_TYPE,
+                    super::SHEET_TYPE,
+                    super::HARDWARE_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {
@@ -745,7 +748,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::STACK_KIND,
                     super::PANEL_JOINT_KIND,
                     super::MACHINING_KIND,
-                    super::HARDWARE_KIND,
+                    super::HARDWARE_PATTERN_KIND,
                     super::imports::STEP_SOURCE_KIND,
                     super::PROCESS_KIND,
                     super::RENDER_SCENE_KIND,

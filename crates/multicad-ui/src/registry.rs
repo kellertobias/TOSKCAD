@@ -355,8 +355,6 @@ impl Default for Registry {
             ("symbol", "Create symbol", Icon::Library),
             ("library", "Symbol library", Icon::Library),
             ("cut-list", "Cut list", Icon::Page),
-            ("sheet", "Base sheet", Icon::Page),
-            ("bend", "Flange / bend", Icon::Edge),
             ("fastener", "Attached fastener", Icon::Link),
             ("flat", "Flat pattern", Icon::Page),
             ("bend-list", "Bend schedule", Icon::Page),
@@ -451,6 +449,7 @@ impl Default for Registry {
                                         | ModelingTool::Member
                                         | ModelingTool::Connection
                                         | ModelingTool::Weld
+                                        | ModelingTool::Sheet
                                 )
                             })
                             .map(ModelingTool::id)
@@ -459,10 +458,7 @@ impl Default for Registry {
                         requires_active_sketch: false,
                     },
                     tab("Wood", &["panel", "drill", "joint", "cut-list"]),
-                    tab(
-                        "Sheet metal",
-                        &["sheet", "bend", "fastener", "flat", "bend-list"],
-                    ),
+                    tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     RibbonTab {
                         title: "Relationships",
@@ -771,6 +767,7 @@ mod tests {
                         | ModelingTool::Member
                         | ModelingTool::Connection
                         | ModelingTool::Weld
+                        | ModelingTool::Sheet
                 ),
                 "Copy shares the Move / Copy ribbon entry; workbench tools live on their Wood, Weld and FDM aids tabs"
             );
@@ -784,6 +781,14 @@ mod tests {
                     .iter()
                     .find(|t| t.title == "Weld");
                 assert!(weld.unwrap().tools.contains(&tool.id()));
+            }
+            if tool == ModelingTool::Sheet {
+                let tab = registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .find(|t| t.title == "Sheet metal");
+                assert!(tab.unwrap().tools.contains(&tool.id()));
             }
             if tool == ModelingTool::FdmAid {
                 let fdm = registry
