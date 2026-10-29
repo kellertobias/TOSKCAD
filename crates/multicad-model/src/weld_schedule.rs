@@ -166,7 +166,7 @@ impl Model {
         model::resolve_member(document, parameters, &source, *segment).map_err(e)
     }
     /// Every weld in authored order: sequenced welds by sequence and step,
-    /// then unsequenced welds in document order.
+    /// then unsequenced welds by mark.
     pub fn weld_schedule(&self, document: &Document) -> Result<Vec<WeldRecord>, ModelError> {
         let parameters =
             multicad_core::parameters::evaluate(document).map_err(|e| error(None, e))?;
@@ -178,11 +178,19 @@ impl Model {
                 order.push((step.weld, Some((s.id, i + 1, step.note))));
             }
         }
+        // Unsequenced welds follow, ordered by mark so the schedule does not
+        // depend on entity identities.
+        let mut rest = vec![];
         for w in model::welds(document) {
             if !order.iter().any(|(id, _)| *id == w.id) {
-                order.push((w.id, None));
+                let mark = model::read_weld(document, w.id)
+                    .map(|weld| weld.mark.trim().to_owned())
+                    .unwrap_or_default();
+                rest.push((mark, w.id));
             }
         }
+        rest.sort();
+        order.extend(rest.into_iter().map(|(_, id)| (id, None)));
         let name = |id: EntityId| document.get(id).map(|e| e.name.clone()).unwrap_or_default();
         let mut out = vec![];
         for (id, step) in order {

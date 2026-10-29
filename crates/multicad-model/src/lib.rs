@@ -20,6 +20,7 @@ mod levels;
 mod occurrences;
 mod runtime;
 mod scale;
+pub mod schedules;
 mod split;
 mod symbols;
 mod targets;
