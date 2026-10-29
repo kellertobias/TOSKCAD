@@ -1,7 +1,8 @@
-//! Real OBJ and 3MF output from exact native solids, read back by readers
-//! that share no code with the writers: a local OBJ parser, a separate ZIP
-//! reader with CRC checks, quick-xml for the 3MF model and, when present, the
-//! system `unzip`.
+//! Real OBJ, 3MF, STL and GLB output from exact native solids, read back by
+//! readers that share no code with the writers: a local OBJ parser, a
+//! separate ZIP reader with CRC checks, quick-xml for the 3MF model, the
+//! system `unzip` when present, a binary STL parser and a glTF reader that
+//! composes node matrices itself.
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     document::{Document, Entity, EntityData, EntityId, Mutation, Placement},
@@ -572,7 +573,7 @@ fn tag_scopes_are_reproducible_and_unsupported_or_failed_runs_leave_everything_u
                 LengthUnit::Millimeter,
                 HierarchyMode::SeparateParts,
             ),
-            "CAD-131",
+            "meters",
         ),
         (
             Recipe {
@@ -617,4 +618,413 @@ fn tag_scopes_are_reproducible_and_unsupported_or_failed_runs_leave_everything_u
     );
     // The earlier bundle is untouched by the failed runs.
     assert_eq!(bytes(&first), bytes(&second));
+}
+
+/// Independent binary STL reading: header text and triangles in file units.
+fn parse_stl(bytes: &[u8]) -> (String, Triangles) {
+    let header = String::from_utf8_lossy(&bytes[..80]).trim_end().to_owned();
+    let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
+    assert_eq!(bytes.len(), 84 + count * 50, "binary STL length");
+    let f = |at: usize| f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as f64;
+    let triangles = (0..count)
+        .map(|t| {
+            let at = 84 + t * 50 + 12;
+            std::array::from_fn(|v| std::array::from_fn(|i| f(at + v * 12 + i * 4)))
+        })
+        .collect();
+    (header, triangles)
+}
+/// Independent GLB reading: the JSON document, and every drawn triangle as
+/// (node name, mesh index, triangle) converted back to Z-up millimeters by
+/// composing the node matrices and rotations from the scene root.
+struct Glb {
+    json: serde_json::Value,
+    drawn: Vec<(String, usize, [[f64; 3]; 3])>,
+}
+fn parse_glb(bytes: &[u8]) -> Glb {
+    use serde_json::Value;
+    let u32le = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+    assert_eq!(&bytes[..4], b"glTF");
+    assert_eq!(u32le(4), 2);
+    assert_eq!(u32le(8), bytes.len());
+    let json_len = u32le(12);
+    assert_eq!(&bytes[16..20], b"JSON");
+    let json: Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+    let bin_at = 20 + json_len;
+    assert_eq!(&bytes[bin_at + 4..bin_at + 8], b"BIN\0");
+    let bin = &bytes[bin_at + 8..bin_at + 8 + u32le(bin_at)];
+    let accessor = |index: usize| -> Vec<f64> {
+        let a = &json["accessors"][index];
+        let view = &json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let width = if a["type"] == "VEC3" { 3 } else { 1 };
+        let count = a["count"].as_u64().unwrap() as usize * width;
+        (0..count)
+            .map(|i| {
+                let raw: [u8; 4] = bin[offset + i * 4..offset + i * 4 + 4].try_into().unwrap();
+                match a["componentType"].as_u64().unwrap() {
+                    5126 => f32::from_le_bytes(raw) as f64,
+                    5125 => u32::from_le_bytes(raw) as f64,
+                    other => panic!("component type {other}"),
+                }
+            })
+            .collect()
+    };
+    type M = [[f64; 4]; 4];
+    let mul = |a: &M, b: &M| -> M {
+        std::array::from_fn(|i| std::array::from_fn(|j| (0..4).map(|k| a[i][k] * b[k][j]).sum()))
+    };
+    let local = |node: &Value| -> M {
+        if let Some(m) = node["matrix"].as_array() {
+            let m: Vec<f64> = m.iter().map(|v| v.as_f64().unwrap()).collect();
+            std::array::from_fn(|i| std::array::from_fn(|j| m[j * 4 + i]))
+        } else {
+            let q: Vec<f64> = node["rotation"]
+                .as_array()
+                .map(|r| r.iter().map(|v| v.as_f64().unwrap()).collect())
+                .unwrap_or(vec![0., 0., 0., 1.]);
+            let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+            [
+                [
+                    1. - 2. * (y * y + z * z),
+                    2. * (x * y - z * w),
+                    2. * (x * z + y * w),
+                    0.,
+                ],
+                [
+                    2. * (x * y + z * w),
+                    1. - 2. * (x * x + z * z),
+                    2. * (y * z - x * w),
+                    0.,
+                ],
+                [
+                    2. * (x * z - y * w),
+                    2. * (y * z + x * w),
+                    1. - 2. * (x * x + y * y),
+                    0.,
+                ],
+                [0., 0., 0., 1.],
+            ]
+        }
+    };
+    let mut drawn = vec![];
+    let identity: M = std::array::from_fn(|i| std::array::from_fn(|j| f64::from(i == j)));
+    let mut stack: Vec<(usize, M)> = json["scenes"][0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| (n.as_u64().unwrap() as usize, identity))
+        .collect();
+    while let Some((index, parent)) = stack.pop() {
+        let node = &json["nodes"][index];
+        let world = mul(&parent, &local(node));
+        if let Some(mesh) = node["mesh"].as_u64() {
+            let primitive = &json["meshes"][mesh as usize]["primitives"][0];
+            let p = accessor(primitive["attributes"]["POSITION"].as_u64().unwrap() as usize);
+            let i = accessor(primitive["indices"].as_u64().unwrap() as usize);
+            for t in i.chunks(3) {
+                let tri = std::array::from_fn(|v| {
+                    let at = t[v] as usize * 3;
+                    let q: [f64; 3] = std::array::from_fn(|r| {
+                        (0..3).map(|c| world[r][c] * p[at + c]).sum::<f64>() + world[r][3]
+                    });
+                    // Y-up meters back to Z-up millimeters.
+                    [q[0] * 1000., -q[2] * 1000., q[1] * 1000.]
+                });
+                drawn.push((
+                    node["name"].as_str().unwrap().to_owned(),
+                    mesh as usize,
+                    tri,
+                ));
+            }
+        }
+        for child in node["children"].as_array().into_iter().flatten() {
+            stack.push((child.as_u64().unwrap() as usize, world));
+        }
+    }
+    Glb { json, drawn }
+}
+fn written(receipt: &RunReceipt, extension: &str) -> Vec<Vec<u8>> {
+    receipt
+        .files
+        .iter()
+        .filter(|f| f.artifact.output.filename.ends_with(extension))
+        .map(|f| {
+            std::fs::read(Path::new(&receipt.directory).join(&f.artifact.output.filename)).unwrap()
+        })
+        .collect()
+}
+fn drawn_by(glb: &Glb, name: &str) -> Triangles {
+    glb.drawn
+        .iter()
+        .filter(|(n, ..)| n == name)
+        .map(|(.., t)| *t)
+        .collect()
+}
+fn assert_bounds(b: [[f64; 3]; 2], e: [[f64; 3]; 2], tolerance: f64) {
+    for side in 0..2 {
+        for i in 0..3 {
+            near(b[side][i], e[side][i], tolerance);
+        }
+    }
+}
+
+#[test]
+fn stl_files_hold_exact_world_meshes_in_the_stated_unit_and_repeat_byte_for_byte() {
+    let mut f = Fixture::new();
+    f.define(SetDefinition {
+        scope: Scope {
+            root: ScopeRoot::Explicit {
+                entities: vec![f.panel.body, f.instances[0]],
+            },
+            tags: None,
+        },
+        recipes: vec![
+            mesh(
+                MeshFormat::Stl,
+                LengthUnit::Millimeter,
+                HierarchyMode::SeparateParts,
+            ),
+            mesh(
+                MeshFormat::Stl,
+                LengthUnit::Inch,
+                HierarchyMode::PreserveAssembly,
+            ),
+        ],
+        ..Default::default()
+    });
+    let preview = f.preview();
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    let root = tempfile::tempdir().unwrap();
+    let receipt = f.run(&preview, root.path()).unwrap();
+    let mut separate = vec![];
+    let mut combined = vec![];
+    for file in &receipt.files {
+        let bytes =
+            std::fs::read(Path::new(&receipt.directory).join(&file.artifact.output.filename))
+                .unwrap();
+        let (header, triangles) = parse_stl(&bytes);
+        if header.contains("units=millimeter") {
+            separate.push(triangles);
+        } else {
+            assert!(
+                header.contains("units=inch (not stored by STL)"),
+                "{header}"
+            );
+            combined.push(triangles);
+        }
+    }
+    // Separate parts: the panel at its origin and the rotated copy in world.
+    assert_eq!(separate.len(), 2);
+    let mut boxes: Vec<_> = separate.iter().map(|t| bounds(t)).collect();
+    boxes.sort_by(|a, b| a[0][0].total_cmp(&b[0][0]));
+    assert_bounds(boxes[0], [[0.; 3], [10., 20., 30.]], 1e-4);
+    assert_bounds(boxes[1], [[30., 5., 2.], [50., 15., 32.]], 1e-4);
+    for t in &separate {
+        near(volume(t), 6000., 1e-2);
+    }
+    // One assembly-preserving STL in inches: both bodies, no instancing.
+    assert_eq!(combined.len(), 1);
+    near(volume(&combined[0]), 2. * 6000. / 25.4f64.powi(3), 1e-5);
+    // Facet normals agree with the vertex winding (outward for a closed body).
+    let bytes = written(&receipt, ".stl");
+    let n = |at: usize| f32::from_le_bytes(bytes[0][at..at + 4].try_into().unwrap()) as f64;
+    let t = &parse_stl(&bytes[0]).1[0];
+    let u = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
+    let v = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
+    let cross = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    assert!(cross[0] * n(84) + cross[1] * n(88) + cross[2] * n(92) > 0.);
+    // Reproducible tessellation: a second run into another root is identical.
+    let other = tempfile::tempdir().unwrap();
+    let again = Exporter::default()
+        .run(
+            f.session.document(),
+            f.session.revision(),
+            &preview.key,
+            other.path(),
+            &Actor::local(Channel::Mcp),
+            None,
+        )
+        .unwrap();
+    assert_eq!(written(&receipt, ".stl"), written(&again, ".stl"));
+}
+
+#[test]
+fn assembly_glb_shares_one_mesh_between_named_placed_instances_at_meter_scale() {
+    let mut f = Fixture::new();
+    f.define(SetDefinition {
+        scope: Scope {
+            root: ScopeRoot::Assembly {
+                assembly: f.assembly,
+            },
+            tags: None,
+        },
+        recipes: vec![mesh(
+            MeshFormat::Glb,
+            LengthUnit::Meter,
+            HierarchyMode::PreserveAssembly,
+        )],
+        ..Default::default()
+    });
+    let preview = f.preview();
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    assert_eq!(preview.artifacts.len(), 1);
+    let evidence = preview.artifacts[0].mesh.as_ref().unwrap();
+    assert_eq!((evidence.objects, evidence.build_items), (1, 2));
+    let root = tempfile::tempdir().unwrap();
+    let receipt = f.run(&preview, root.path()).unwrap();
+    let glb = parse_glb(&written(&receipt, ".glb")[0]);
+    let json = &glb.json;
+    assert_eq!(json["asset"]["version"], "2.0");
+    assert_eq!(
+        json["meshes"].as_array().unwrap().len(),
+        1,
+        "one shared mesh"
+    );
+    // Root (Z-up to Y-up) → "Bench" group → the two named instances.
+    let nodes = json["nodes"].as_array().unwrap();
+    let root_node = &nodes[json["scenes"][0]["nodes"][0].as_u64().unwrap() as usize];
+    assert_eq!(root_node["extras"]["units"], "meter");
+    let bench = &nodes[root_node["children"][0].as_u64().unwrap() as usize];
+    assert_eq!(bench["name"], "Bench");
+    let leaves: Vec<_> = bench["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &nodes[c.as_u64().unwrap() as usize])
+        .collect();
+    assert_eq!(leaves.len(), 2);
+    assert!(leaves.iter().all(|l| l["mesh"] == 0));
+    // Mesh positions are the local definition in meters.
+    let accessor = &json["accessors"][json["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+        .as_u64()
+        .unwrap() as usize];
+    let max: Vec<f64> = accessor["max"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    for (m, e) in max.iter().zip([0.010, 0.020, 0.030]) {
+        near(*m, e, 1e-7);
+    }
+    // Placed exactly once: world bounds match the 3MF and STEP placements.
+    let rotated = drawn_by(&glb, "Panel Rotated copy");
+    let moved = drawn_by(&glb, "Panel Moved copy");
+    assert_bounds(bounds(&rotated), [[30., 5., 2.], [50., 15., 32.]], 1e-4);
+    assert_bounds(bounds(&moved), [[-20., 40., 0.], [-10., 60., 30.]], 1e-4);
+    near(volume(&rotated), 6000., 1e-2);
+    near(volume(&moved), 6000., 1e-2);
+    // Basic appearance: the default appearance as linear PBR factors.
+    let material = &json["materials"][0]["pbrMetallicRoughness"];
+    let linear = |c: f64| ((c / 255. + 0.055) / 1.055f64).powf(2.4);
+    near(
+        material["baseColorFactor"][0].as_f64().unwrap(),
+        linear(137.),
+        1e-9,
+    );
+    near(material["roughnessFactor"].as_f64().unwrap(), 0.6, 1e-12);
+}
+
+#[test]
+fn project_and_tag_scopes_keep_glb_membership_and_part_appearances() {
+    let mut f = Fixture::new();
+    let steel = Entity::new(
+        "Steel",
+        EntityData::Material {
+            density_kg_m3: Some(7850.),
+            color_rgba: [200, 40, 40, 255],
+            section_hatch: None,
+        },
+    );
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Add steel".into(),
+            edits: vec![Mutation::Insert(steel.clone())],
+        })
+        .unwrap();
+    let assigned = materials::prepare_assignment(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        &[f.pin.body],
+        &materials::Assignment {
+            material: Some(steel.id),
+            stock: None,
+            appearance: None,
+            hatch: None,
+        },
+    )
+    .unwrap();
+    f.session.commit(assigned).unwrap();
+    let glb_for = |f: &mut Fixture, tags: Option<TagQuery>| {
+        f.define(SetDefinition {
+            scope: Scope {
+                root: ScopeRoot::Project,
+                tags,
+            },
+            recipes: vec![mesh(
+                MeshFormat::Glb,
+                LengthUnit::Meter,
+                HierarchyMode::PreserveAssembly,
+            )],
+            ..Default::default()
+        });
+        let preview = f.preview();
+        assert!(preview.can_run(), "{:?}", preview.recipes);
+        let root = tempfile::tempdir().unwrap();
+        let receipt = f.run(&preview, root.path()).unwrap();
+        parse_glb(&written(&receipt, ".glb")[0])
+    };
+    // Whole project: panel, pin and the two assembly copies, each once.
+    let all = glb_for(&mut f, None);
+    let names: std::collections::BTreeSet<_> = all.drawn.iter().map(|(n, ..)| n.clone()).collect();
+    assert_eq!(names.len(), 4, "{names:?}");
+    let total: f64 = names.iter().map(|n| volume(&drawn_by(&all, n))).sum();
+    near(total, 3. * 6000. + PI * 25. * 10., 2.);
+    // Two appearances: the default and steel red.
+    let materials = all.json["materials"].as_array().unwrap();
+    assert_eq!(materials.len(), 2);
+    let red = ((200. / 255. + 0.055) / 1.055f64).powf(2.4);
+    assert!(materials.iter().any(|m| {
+        (m["pbrMetallicRoughness"]["baseColorFactor"][0]
+            .as_f64()
+            .unwrap()
+            - red)
+            .abs()
+            < 1e-9
+    }));
+    // The cnc tag selects the panel and its copies, not the pin.
+    let tagged = glb_for(
+        &mut f,
+        Some(TagQuery {
+            all: ["cnc".into()].into(),
+            ..Default::default()
+        }),
+    );
+    // The placed Part is written in world; its two copies share one mesh.
+    assert_eq!(tagged.json["meshes"].as_array().unwrap().len(), 2);
+    let drawn_nodes = tagged.json["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n.get("mesh").is_some())
+        .count();
+    assert_eq!(drawn_nodes, 3);
+    let total: f64 = tagged
+        .drawn
+        .iter()
+        .map(|(n, ..)| n.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .iter()
+        .map(|n| volume(&drawn_by(&tagged, n)))
+        .sum();
+    near(total, 3. * 6000., 1e-1);
+    assert!(drawn_by(&tagged, "Pin").is_empty());
 }

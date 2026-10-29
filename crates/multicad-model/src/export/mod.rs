@@ -110,12 +110,13 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
         RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. } => None,
         RecipeOutput::Mesh {
             format,
+            units,
             aids,
             quality,
             ..
         } => {
-            if !matches!(format, MeshFormat::Obj | MeshFormat::ThreeMf) {
-                Some("STL and GLB providers are separate work (CAD-131)".into())
+            if *format == MeshFormat::Glb && *units != LengthUnit::Meter {
+                Some("glTF is defined in meters; choose meters for GLB".into())
             } else if *aids != AidPolicy::IncludeAll {
                 Some("Removable-aid exclusion requires a typed aid provider; no aid geometry is classified yet".into())
             } else if !(0.001..=10.).contains(&quality.chord_deviation_mm)
@@ -179,11 +180,86 @@ fn drawing_output(
     };
     Ok((bytes, evidence))
 }
+/// GLB scene nodes and the materials they reference.
+type Scene = (
+    Vec<mesh::SceneNode>,
+    Vec<multicad_core::materials::Appearance>,
+);
+/// GLB nodes: one named group for the root assembly and for each enclosing
+/// occurrence along a path (identity transforms), and one leaf node per item
+/// carrying its world pose, so no placement is applied twice. Each leaf
+/// Part's effective appearance becomes a material.
+fn scene(
+    document: &Document,
+    items: &[mesh::BuildItem],
+    leaves: &[(String, PartRef)],
+) -> Result<Scene, ExportError> {
+    const IDENTITY: [[f64; 3]; 3] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+    let resolver = multicad_core::materials::Resolver::new(document)
+        .map_err(|e| failure(ErrorKind::Invalid, None, e.to_string()))?;
+    let mut nodes: Vec<mesh::SceneNode> = vec![];
+    let mut groups: BTreeMap<Vec<EntityId>, usize> = BTreeMap::new();
+    let mut appearances = vec![];
+    for (item, (label, part)) in items.iter().zip(leaves) {
+        // Groups: the root assembly, then every occurrence but the leaf one.
+        let mut chain: Vec<EntityId> = part.root_assembly.into_iter().collect();
+        if let Some((_, enclosing)) = part.occurrence_path.split_last() {
+            chain.extend(
+                enclosing
+                    .iter()
+                    .filter(|id| Some(**id) != part.root_assembly),
+            );
+        }
+        let mut parent = None;
+        for depth in 1..=chain.len() {
+            let key = chain[..depth].to_vec();
+            let index = match groups.get(&key) {
+                Some(index) => *index,
+                None => {
+                    let id = key[depth - 1];
+                    nodes.push(mesh::SceneNode {
+                        name: document
+                            .get(id)
+                            .map_or_else(|| id.to_string(), |e| e.name.clone()),
+                        parent,
+                        mesh: None,
+                        rotation: IDENTITY,
+                        translation_mm: [0.; 3],
+                    });
+                    groups.insert(key, nodes.len() - 1);
+                    nodes.len() - 1
+                }
+            };
+            parent = Some(index);
+        }
+        let appearance = resolver
+            .resolve(part.part)
+            .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e.to_string()))?
+            .appearance;
+        let material = match appearances.iter().position(|a| *a == appearance) {
+            Some(index) => index,
+            None => {
+                appearances.push(appearance);
+                appearances.len() - 1
+            }
+        };
+        nodes.push(mesh::SceneNode {
+            name: label.clone(),
+            parent,
+            mesh: Some((item.object, material)),
+            rotation: item.rotation,
+            translation_mm: item.translation_mm,
+        });
+    }
+    Ok((nodes, appearances))
+}
 /// Tessellate one mesh output. Separate files hold one Part in world
 /// coordinates. An assembly 3MF holds one object per component definition
-/// placed by build items; an assembly OBJ holds one world-space object per
-/// Part, since OBJ has no instancing.
+/// placed by build items, and a GLB shares one mesh per definition between
+/// its placed nodes; assembly OBJ and STL files hold every Part in world
+/// coordinates, since neither format has instancing.
 fn mesh_output(
+    document: &Document,
     model: &Model,
     selection: &ResolvedSet,
     output: &RecipeOutput,
@@ -228,6 +304,9 @@ fn mesh_output(
     };
     let mut objects = vec![];
     let mut items = vec![];
+    // Per item: its label and Part reference, for GLB names, groups and
+    // appearances; a shared 3MF or GLB object keeps the first label.
+    let mut leaves: Vec<(String, PartRef)> = vec![];
     let mut definitions: BTreeMap<EntityId, usize> = BTreeMap::new();
     let mut aggregate: Option<Availability> = None;
     for (index, part) in parts.iter().enumerate() {
@@ -260,7 +339,9 @@ fn mesh_output(
                     root: *root,
                     members: part.occurrence_path[1..].to_vec(),
                 });
-        let placed = if assembly && *format == MeshFormat::ThreeMf {
+        let instanced = (assembly && *format == MeshFormat::ThreeMf) || *format == MeshFormat::Glb;
+        leaves.push((name.clone(), (*part).clone()));
+        let placed = if instanced {
             occurrence
                 .as_ref()
                 .and_then(|path| model.leaf_snapshot(path))
@@ -316,7 +397,12 @@ fn mesh_output(
         .sum();
     let bytes = match format {
         MeshFormat::Obj => mesh::obj(&objects, *units),
-        _ => mesh::three_mf(&objects, &items, *units),
+        MeshFormat::ThreeMf => mesh::three_mf(&objects, &items, *units),
+        MeshFormat::Stl => mesh::stl(&objects, &items, *units, &named.filename),
+        MeshFormat::Glb => {
+            let (nodes, appearances) = scene(document, &items, &leaves)?;
+            mesh::glb(&objects, &appearances, &nodes, &named.filename)
+        }
     };
     Ok((
         bytes,
@@ -556,7 +642,14 @@ impl Exporter {
                 })?;
                 for output in requested.iter() {
                     checkpoint(interrupt)?;
-                    match mesh_output(model, &selection, &recipe.output, output, &selected) {
+                    match mesh_output(
+                        document,
+                        model,
+                        &selection,
+                        &recipe.output,
+                        output,
+                        &selected,
+                    ) {
                         Ok((
                             bytes,
                             evidence,

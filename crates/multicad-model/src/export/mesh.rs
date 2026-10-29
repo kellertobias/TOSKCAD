@@ -1,7 +1,10 @@
-//! OBJ and 3MF writers over exact native solids. Tessellation uses the
-//! recipe's quality, independent of the viewport; display meshes are never
-//! an input. 3MF packages use stored (uncompressed) ZIP entries.
-use multicad_core::exchange::{LengthUnit, MeshQuality};
+//! OBJ, 3MF, STL and GLB writers over exact native solids. Tessellation uses
+//! the recipe's quality, independent of the viewport; display meshes are
+//! never an input. 3MF packages use stored (uncompressed) ZIP entries.
+use multicad_core::{
+    exchange::{LengthUnit, MeshQuality},
+    materials::Appearance,
+};
 use multicad_kernel::{MeshOptions, Solid};
 use std::fmt::Write;
 
@@ -289,6 +292,227 @@ fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
+/// Binary STL of every placed item in world coordinates. STL has no unit
+/// field: coordinates are written in `unit` and the 80-byte header states it.
+/// Facet normals are computed from the counterclockwise vertex order.
+pub fn stl(objects: &[MeshObject], items: &[BuildItem], unit: LengthUnit, title: &str) -> Vec<u8> {
+    let factor = scale(unit);
+    let mut header = format!(
+        "MultiCAD binary STL; units={} (not stored by STL); {}",
+        unit_name(unit),
+        title
+    )
+    .into_bytes();
+    header.truncate(80);
+    header.resize(80, b' ');
+    let count: usize = items
+        .iter()
+        .map(|i| objects[i.object].triangles.len())
+        .sum();
+    let mut out = header;
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    for item in items {
+        let object = &objects[item.object];
+        let world: Vec<[f64; 3]> = object
+            .vertices
+            .iter()
+            .map(|p| item.apply(*p).map(|c| c * factor))
+            .collect();
+        for t in &object.triangles {
+            let [a, b, c] = t.map(|i| world[i as usize]);
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let n = if length > 0. {
+                n.map(|x| x / length)
+            } else {
+                [0.; 3]
+            };
+            for value in n.iter().chain(&a).chain(&b).chain(&c) {
+                out.extend_from_slice(&(*value as f32).to_le_bytes());
+            }
+            out.extend_from_slice(&0u16.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// One node of a GLB scene. A node with a mesh draws `objects[mesh.0]` with
+/// `materials[mesh.1]`; its rigid transform (millimeters) is relative to its
+/// parent, so each placement is applied exactly once along a path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneNode {
+    pub name: String,
+    pub parent: Option<usize>,
+    pub mesh: Option<(usize, usize)>,
+    pub rotation: [[f64; 3]; 3],
+    pub translation_mm: [f64; 3],
+}
+fn linear(channel: u8) -> f64 {
+    let c = f64::from(channel) / 255.;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+/// glTF 2.0 binary. glTF is defined in meters with +Y up: geometry and
+/// translations are converted from millimeters, and one root node turns the
+/// Z-up model into the Y-up scene, so importers such as Blender restore Z-up.
+/// Mesh objects are shared by every node that places them.
+pub fn glb(
+    objects: &[MeshObject],
+    materials: &[Appearance],
+    nodes: &[SceneNode],
+    title: &str,
+) -> Vec<u8> {
+    use serde_json::json;
+    let mut bin: Vec<u8> = vec![];
+    let (mut views, mut accessors, mut meshes) = (vec![], vec![], vec![]);
+    let mut mesh_index: Vec<(usize, usize)> = vec![];
+    let mut view = |bin: &mut Vec<u8>, bytes: Vec<u8>, target: u32| {
+        let offset = bin.len();
+        bin.extend_from_slice(&bytes);
+        views.push(
+            json!({"buffer": 0, "byteOffset": offset, "byteLength": bytes.len(), "target": target}),
+        );
+        views.len() - 1
+    };
+    for node in nodes {
+        let Some(key) = node.mesh else { continue };
+        if mesh_index.contains(&key) {
+            continue;
+        }
+        let object = &objects[key.0];
+        let meters: Vec<[f32; 3]> = object
+            .vertices
+            .iter()
+            .map(|p| p.map(|c| (c * 0.001) as f32))
+            .collect();
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for p in &meters {
+            for i in 0..3 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
+        }
+        let positions = view(
+            &mut bin,
+            meters
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect(),
+            34962,
+        );
+        let indices = view(
+            &mut bin,
+            object
+                .triangles
+                .iter()
+                .flatten()
+                .flat_map(|i| i.to_le_bytes())
+                .collect(),
+            34963,
+        );
+        accessors.push(json!({"bufferView": positions, "componentType": 5126, "count": meters.len(), "type": "VEC3", "min": min, "max": max}));
+        accessors.push(json!({"bufferView": indices, "componentType": 5125, "count": object.triangles.len() * 3, "type": "SCALAR"}));
+        meshes.push(json!({"name": object.name, "primitives": [{
+            "attributes": {"POSITION": accessors.len() - 2},
+            "indices": accessors.len() - 1,
+            "material": key.1,
+            "mode": 4,
+        }]}));
+        mesh_index.push(key);
+    }
+    let materials: Vec<_> = materials
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let [r, g, b, alpha] = a.color_rgba;
+            let mut m = json!({
+                "name": format!("appearance-{}", i + 1),
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [linear(r), linear(g), linear(b), f64::from(alpha) / 255.],
+                    "metallicFactor": a.metallic,
+                    "roughnessFactor": a.roughness,
+                },
+                "doubleSided": false,
+            });
+            if alpha < 255 {
+                m["alphaMode"] = json!("BLEND");
+            }
+            m
+        })
+        .collect();
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let mut json_nodes = vec![json!({
+        "name": title,
+        "rotation": [-half, 0., 0., half],
+        "extras": {"units": "meter", "source_up_axis": "Z", "generator": "MultiCAD"},
+    })];
+    let mut children: Vec<Vec<usize>> = vec![vec![]; nodes.len() + 1];
+    for (index, node) in nodes.iter().enumerate() {
+        let r = node.rotation;
+        let t = node.translation_mm.map(|c| c * 0.001);
+        let mut value = json!({
+            "name": node.name,
+            "matrix": [
+                r[0][0], r[1][0], r[2][0], 0.,
+                r[0][1], r[1][1], r[2][1], 0.,
+                r[0][2], r[1][2], r[2][2], 0.,
+                t[0], t[1], t[2], 1.,
+            ],
+        });
+        if let Some(key) = node.mesh {
+            value["mesh"] = json!(mesh_index.iter().position(|k| *k == key));
+        }
+        json_nodes.push(value);
+        children[node.parent.map_or(0, |p| p + 1)].push(index + 1);
+    }
+    for (index, list) in children.into_iter().enumerate() {
+        if !list.is_empty() {
+            json_nodes[index]["children"] = json!(list);
+        }
+    }
+    let document = json!({
+        "asset": {"version": "2.0", "generator": "MultiCAD"},
+        "scene": 0,
+        "scenes": [{"name": title, "nodes": [0]}],
+        "nodes": json_nodes,
+        "meshes": meshes,
+        "materials": materials,
+        "accessors": accessors,
+        "bufferViews": views,
+        "buffers": [{"byteLength": bin.len()}],
+    });
+    let mut text = serde_json::to_vec(&document).expect("glTF JSON is serializable");
+    while !text.len().is_multiple_of(4) {
+        text.push(b' ');
+    }
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let total = 12 + 8 + text.len() + 8 + bin.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&text);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&bin);
+    out
+}
+
 /// What a written mesh file contains, recovered from its bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReadMesh {
@@ -519,6 +743,185 @@ pub fn read_three_mf(bytes: &[u8]) -> Result<ReadMesh, String> {
         unit_scale: unit,
         objects: objects.len(),
         items: items.len(),
+        triangles: world.len(),
+        world,
+    })
+}
+
+/// Read back an STL written by [`stl`]: the unit from its header and every
+/// facet in world millimeters. STL keeps no objects, so each facet is one item.
+pub fn read_stl(bytes: &[u8]) -> Result<ReadMesh, String> {
+    if bytes.len() < 84 {
+        return Err("STL is shorter than its header".into());
+    }
+    let header = String::from_utf8_lossy(&bytes[..80]);
+    let unit = [
+        LengthUnit::Millimeter,
+        LengthUnit::Centimeter,
+        LengthUnit::Meter,
+        LengthUnit::Inch,
+    ]
+    .into_iter()
+    .find(|u| header.contains(&format!("units={} ", unit_name(*u))))
+    .ok_or("STL header states no unit")?;
+    let count = u32::from_le_bytes(bytes[80..84].try_into().expect("four bytes")) as usize;
+    if bytes.len() != 84 + count * 50 {
+        return Err("STL length does not match its facet count".into());
+    }
+    let factor = scale(unit);
+    let f = |at: usize| {
+        f64::from(f32::from_le_bytes(
+            bytes[at..at + 4].try_into().expect("four bytes"),
+        )) / factor
+    };
+    let world = (0..count)
+        .map(|t| {
+            let at = 84 + t * 50 + 12;
+            let p = |v: usize| std::array::from_fn(|i| f(at + v * 12 + i * 4));
+            (p(0), p(1), p(2))
+        })
+        .collect();
+    Ok(ReadMesh {
+        unit_scale: factor,
+        objects: 0,
+        items: 0,
+        triangles: count,
+        world,
+    })
+}
+/// Read back a GLB written by [`glb`]: compose node transforms from the scene
+/// root and return every drawn triangle in Z-up world millimeters.
+pub fn read_glb(bytes: &[u8]) -> Result<ReadMesh, String> {
+    use serde_json::Value;
+    let word = |at: usize| -> Result<usize, String> {
+        bytes
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")) as usize)
+            .ok_or_else(|| "GLB is truncated".to_string())
+    };
+    if bytes.get(..4) != Some(b"glTF") || word(4)? != 2 || word(8)? != bytes.len() {
+        return Err("Not a glTF 2.0 binary".into());
+    }
+    let json_len = word(12)?;
+    if bytes.get(16..20) != Some(b"JSON") {
+        return Err("GLB has no JSON chunk".into());
+    }
+    let json: Value = serde_json::from_slice(
+        bytes
+            .get(20..20 + json_len)
+            .ok_or("GLB JSON is truncated")?,
+    )
+    .map_err(|e| e.to_string())?;
+    let at = 20 + json_len;
+    let bin_len = word(at)?;
+    if bytes.get(at + 4..at + 8) != Some(b"BIN\0") {
+        return Err("GLB has no binary chunk".into());
+    }
+    let bin = bytes
+        .get(at + 8..at + 8 + bin_len)
+        .ok_or("GLB binary is truncated")?;
+    let number = |v: &Value| v.as_u64().map(|n| n as usize).ok_or("Invalid glTF index");
+    let accessor = |index: usize| -> Result<Vec<f64>, String> {
+        let a = &json["accessors"][index];
+        let view = &json["bufferViews"][number(&a["bufferView"])?];
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let width = if a["type"] == "VEC3" { 3 } else { 1 };
+        let count = number(&a["count"])? * width;
+        let float = a["componentType"] == 5126;
+        (0..count)
+            .map(|i| {
+                let raw: [u8; 4] = bin
+                    .get(offset + i * 4..offset + i * 4 + 4)
+                    .ok_or("glTF accessor exceeds its buffer")?
+                    .try_into()
+                    .expect("four bytes");
+                Ok(if float {
+                    f64::from(f32::from_le_bytes(raw))
+                } else {
+                    f64::from(u32::from_le_bytes(raw))
+                })
+            })
+            .collect()
+    };
+    type M = [[f64; 4]; 4];
+    let local = |node: &Value| -> M {
+        if let Some(m) = node["matrix"].as_array() {
+            let m: Vec<f64> = m.iter().map(|v| v.as_f64().unwrap_or(0.)).collect();
+            std::array::from_fn(|i| std::array::from_fn(|j| m[j * 4 + i]))
+        } else {
+            let q: Vec<f64> = node["rotation"]
+                .as_array()
+                .map(|r| r.iter().map(|v| v.as_f64().unwrap_or(0.)).collect())
+                .unwrap_or_else(|| vec![0., 0., 0., 1.]);
+            let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+            [
+                [
+                    1. - 2. * (y * y + z * z),
+                    2. * (x * y - z * w),
+                    2. * (x * z + y * w),
+                    0.,
+                ],
+                [
+                    2. * (x * y + z * w),
+                    1. - 2. * (x * x + z * z),
+                    2. * (y * z - x * w),
+                    0.,
+                ],
+                [
+                    2. * (x * z - y * w),
+                    2. * (y * z + x * w),
+                    1. - 2. * (x * x + y * y),
+                    0.,
+                ],
+                [0., 0., 0., 1.],
+            ]
+        }
+    };
+    let identity: M = std::array::from_fn(|i| std::array::from_fn(|j| f64::from(i == j)));
+    let mut stack = vec![];
+    for n in json["scenes"][0]["nodes"]
+        .as_array()
+        .ok_or("glTF scene has no nodes")?
+    {
+        stack.push((number(n)?, identity, 0usize));
+    }
+    let (mut world, mut items) = (vec![], 0);
+    while let Some((index, parent, depth)) = stack.pop() {
+        if depth > 64 {
+            return Err("glTF node hierarchy is too deep".into());
+        }
+        let node = &json["nodes"][index];
+        let l = local(node);
+        let m: M = std::array::from_fn(|i| {
+            std::array::from_fn(|j| (0..4).map(|k| parent[i][k] * l[k][j]).sum())
+        });
+        if let Some(mesh) = node["mesh"].as_u64() {
+            items += 1;
+            let primitive = &json["meshes"][mesh as usize]["primitives"][0];
+            let p = accessor(number(&primitive["attributes"]["POSITION"])?)?;
+            let indices = accessor(number(&primitive["indices"])?)?;
+            for t in indices.chunks(3) {
+                let point = |v: usize| -> Result<[f64; 3], String> {
+                    let at = t[v] as usize * 3;
+                    let c = p
+                        .get(at..at + 3)
+                        .ok_or("glTF index exceeds its positions")?;
+                    let q: [f64; 3] = std::array::from_fn(|r| {
+                        (0..3).map(|k| m[r][k] * c[k]).sum::<f64>() + m[r][3]
+                    });
+                    Ok([q[0] * 1000., -q[2] * 1000., q[1] * 1000.])
+                };
+                world.push((point(0)?, point(1)?, point(2)?));
+            }
+        }
+        for child in node["children"].as_array().into_iter().flatten() {
+            stack.push((number(child)?, m, depth + 1));
+        }
+    }
+    Ok(ReadMesh {
+        unit_scale: 0.001,
+        objects: json["meshes"].as_array().map_or(0, Vec::len),
+        items,
         triangles: world.len(),
         world,
     })

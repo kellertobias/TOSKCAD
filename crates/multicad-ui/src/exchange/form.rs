@@ -544,9 +544,18 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
                     MeshFormat::ThreeMf,
                     MeshFormat::Glb,
                 ][kind - 1],
-                units: LengthUnit::Millimeter,
+                // glTF is defined in meters and is a named scene.
+                units: if kind == 4 {
+                    LengthUnit::Meter
+                } else {
+                    LengthUnit::Millimeter
+                },
                 hierarchy: HierarchyMode::SeparateParts,
-                names: NameHandling::FileNamesOnly,
+                names: if kind == 4 {
+                    NameHandling::ProductNames
+                } else {
+                    NameHandling::FileNamesOnly
+                },
                 aids: AidPolicy::IncludeAll,
                 quality: Default::default(),
             },
@@ -562,12 +571,11 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
             _ => RecipeOutput::Pdf,
         };
     }
-    // STL and GLB writers are not available yet; every other format runs.
-    if kind == 2 || kind == 4 {
-        ui.colored_label(
-            egui::Color32::LIGHT_YELLOW,
-            "This format is not available yet. The recipe can be saved, but it blocks Run.",
-        );
+    if kind == 2 {
+        ui.small("STL stores no unit: coordinates use the chosen unit, which is named in the file header.");
+    }
+    if kind == 4 {
+        ui.small("GLB is a meter-scale scene with names, assembly groups, shared instance meshes and part colors; choose meters.");
     }
     if kind == 6 {
         ui.small("Drawing DXF writes fixed role layers (VIEW_VISIBLE, DIMENSIONS, …); the layer names below apply to planar DXF only.");
