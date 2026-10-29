@@ -58,6 +58,32 @@ pub(crate) fn prepare_edit_seeded(
     report: Option<&multicad_core::references::ReferenceReport>,
     seed: Option<&multicad_core::constraint_sketch::Sketch>,
 ) -> Result<SketchEdit, EditError> {
+    prepare_edit_with(
+        session,
+        expected_revision,
+        actor,
+        id,
+        source,
+        report,
+        seed,
+        None,
+        Vec::new(),
+    )
+}
+/// Shared sketch edit preparation. `extra` mutations, such as provenance
+/// records, join the same transaction and are visible to the evaluation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_edit_with(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    id: EntityId,
+    source: Source,
+    report: Option<&multicad_core::references::ReferenceReport>,
+    seed: Option<&multicad_core::constraint_sketch::Sketch>,
+    label: Option<&str>,
+    extra: Vec<multicad_core::document::Mutation>,
+) -> Result<SketchEdit, EditError> {
     if session.revision() != expected_revision {
         return Err(EditError::Command(CommandError {
             code: multicad_core::commands::ErrorCode::StaleRevision,
@@ -90,17 +116,18 @@ pub(crate) fn prepare_edit_seeded(
     if semantic {
         // One canonical source edit installs bindings and links. Solved RHS and
         // coordinates are returned independently, never serialized into source.
-        let edits = source.replace(session.document(), id).map_err(|e| {
+        let mut edits = source.replace(session.document(), id).map_err(|e| {
             EditError::Input(InputError {
                 source: Some(id),
                 message: e.to_string(),
             })
         })?;
+        edits.extend(extra);
         let prepared = session
             .prepare(Request {
                 expected_revision,
                 actor,
-                label: "Edit parametric sketch".into(),
+                label: label.unwrap_or("Edit parametric sketch").into(),
                 edits,
             })
             .map_err(EditError::Command)?;
@@ -127,18 +154,19 @@ pub(crate) fn prepare_edit_seeded(
             u: source.u,
             sketch: solved.clone(),
         };
-        let edits = solved_source.replace(session.document(), id).map_err(|e| {
+        let mut edits = solved_source.replace(session.document(), id).map_err(|e| {
             EditError::Input(InputError {
                 source: Some(id),
                 message: e.to_string(),
             })
         })?;
+        edits.extend(extra);
         Some(
             session
                 .prepare(Request {
                     expected_revision,
                     actor,
-                    label: "Edit constrained sketch".into(),
+                    label: label.unwrap_or("Edit constrained sketch").into(),
                     edits,
                 })
                 .map_err(EditError::Command)?,

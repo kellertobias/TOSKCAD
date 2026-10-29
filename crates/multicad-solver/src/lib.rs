@@ -2,6 +2,7 @@ use sketch_solver::{Along, Constraint, Pair, Sketch, Solution, Status};
 
 mod adapter;
 pub mod draw;
+pub mod import;
 pub use adapter::*;
 mod transaction;
 pub use transaction::*;
