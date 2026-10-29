@@ -791,6 +791,80 @@ fn paired_miter_follows_the_meeting_angle_and_records_both_end_angles() {
 }
 
 #[test]
+fn frame_from_a_parameter_dimensioned_sketch_follows_the_parameter() {
+    use multicad_core::constraint_sketch::{
+        ConstraintKind,
+        binding::{self, DimensionInput},
+    };
+    let mut f = fixture();
+    let width = Entity::new(
+        "frame_width",
+        EntityData::Parameter {
+            expression: "900".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let width_id = width.id;
+    insert(&mut f.s, vec![Mutation::Insert(width)]);
+    let (sketch, edits) = Source::create(Datum::Xy, "Frame path").unwrap();
+    insert(&mut f.s, edits);
+    let mut source = Source::read(f.s.document(), sketch).unwrap().0;
+    let bottom = source.add_rectangle([0., 0.], [900., 500.]).unwrap();
+    source.add_constraint(ConstraintKind::Fix {
+        point: source.sketch.points[0].id,
+    });
+    let along = source.add_constraint(ConstraintKind::Length {
+        line: bottom,
+        dimension: length(900.),
+    });
+    source.add_constraint(ConstraintKind::Length {
+        line: source.sketch.curves[1].id,
+        dimension: length(500.),
+    });
+    let source = binding::draft_dimension(
+        f.s.document(),
+        &source,
+        along,
+        &DimensionInput::Expression {
+            text: "=$frame_width".into(),
+            unit: "mm".into(),
+        },
+        false,
+    )
+    .unwrap();
+    let edit =
+        multicad_solver::prepare_edit(&f.s, f.s.revision(), actor(), sketch, source).unwrap();
+    f.s.commit(edit.preview.unwrap()).unwrap();
+    // A sketch with a parameter-bound dimension has no raw authored
+    // geometry, but its lines still become members.
+    assert!(Source::read(f.s.document(), sketch).is_err());
+    let rails =
+        model::frame_member_requests(f.s.document(), sketch, "Rail", &template(f.shs)).unwrap();
+    assert_eq!(rails.len(), 4);
+    create(&mut f, &rails);
+    let length_of = |s: &Session| {
+        record(&compile(s).member_cut_list(s.document()).unwrap(), "Rail 1").length_mm
+    };
+    near(length_of(&f.s), 900.);
+    let mut w = f.s.document().get(width_id).unwrap().clone();
+    if let EntityData::Parameter { expression, .. } = &mut w.data {
+        *expression = "1200".into();
+    }
+    let p =
+        f.s.prepare(Request {
+            expected_revision: f.s.revision(),
+            actor: actor(),
+            label: "Wider".into(),
+            edits: vec![Mutation::Replace(w)],
+        })
+        .unwrap();
+    checked(&mut f.s, p);
+    near(length_of(&f.s), 1200.);
+}
+
+#[test]
 fn long_points_tell_parallel_from_trapezoid_miters() {
     let mut f = fixture();
     // A Z path: the middle rail turns left at one end and right at the
