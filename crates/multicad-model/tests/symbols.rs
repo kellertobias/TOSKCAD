@@ -426,3 +426,154 @@ fn review_files_are_native_editable_and_reopen_without_library_or_sidecar_resour
     }
     Ok(())
 }
+
+#[test]
+fn generic_nested_symbol_move_copy_keeps_native_variants_plans_and_private_pose_bindings_independent()
+-> Result<(), review::Error> {
+    use multicad_core::{
+        constraint_sketch::Dimension,
+        model::{InstanceCopyRequest, InstanceCopySource},
+        parameters::BoundExpression,
+    };
+    let mut f = review::seed(true)?;
+    let original = symbols::read_instance(f.session.document(), f.placed[0].instance)?;
+    let width_name = f
+        .session
+        .document()
+        .get(original.ids[&f.library.panel.width])
+        .unwrap()
+        .name
+        .clone();
+    let moving = InstanceMoveRequest::new(
+        original.instance,
+        NumericTransform {
+            translation: [
+                Dimension::Expression {
+                    expression: BoundExpression::bind(
+                        f.session.document(),
+                        &format!("=${width_name}"),
+                        "mm",
+                        None,
+                    )?,
+                },
+                length(0.),
+                length(0.),
+            ],
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_instance_moves(
+        &f.session,
+        f.session.revision(),
+        review::actor(),
+        &[moving],
+    )?;
+    review::checked(&mut f.session, prepared.prepared)?;
+    let before_copy = f.session.document().clone();
+    let copied = InstanceCopyRequest::new(
+        InstanceCopySource::Instance {
+            instance: original.instance,
+        },
+        NumericTransform {
+            translation: [length(0.), length(300.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_instance_copies(
+        &f.session,
+        f.session.revision(),
+        review::actor(),
+        std::slice::from_ref(&copied),
+    )?;
+    assert_eq!(f.session.document(), &before_copy);
+    review::checked(&mut f.session, prepared.prepared)?;
+    let duplicate = symbols::read_instance(f.session.document(), copied.instance)?;
+    assert_eq!(duplicate.definition, original.definition);
+    assert_eq!(duplicate.pin, original.pin);
+    assert_eq!(duplicate.overrides, original.overrides);
+    assert_ne!(duplicate.wrapper, original.wrapper);
+    assert_ne!(duplicate.member, original.member);
+    assert!(
+        duplicate
+            .ids
+            .values()
+            .collect::<BTreeSet<_>>()
+            .is_disjoint(&original.ids.values().collect::<BTreeSet<_>>())
+    );
+    let copy_plan = symbols::symbol_plan(f.session.document(), copied.instance)?.unwrap();
+    assert_eq!(
+        copy_plan,
+        (copied.instance, duplicate.ids[&f.library.panel.sketch])
+    );
+    assert_ne!(copy_plan.1, original.ids[&f.library.panel.sketch]);
+    let verify = |session: &Session, original_width: f64| -> Result<(), review::Error> {
+        let native = Compiler::default().compile(session.document(), session.revision())?;
+        assert_eq!(native.snapshot().leaf_occurrences.len(), 6);
+        let copy = native.solid(copied.instance).unwrap();
+        assert_eq!(copy.solid_count()?, 2);
+        review::near(copy.volume_mm3()?, 150. * 90. * 8. * 2.)?;
+        let bounds = copy.bounds()?;
+        for (axis, expected) in [400., 350., 0.].into_iter().enumerate() {
+            review::near(bounds.min[axis], expected)?;
+        }
+        for (axis, expected) in [550., 550., 8.].into_iter().enumerate() {
+            review::near(bounds.max[axis], expected)?;
+        }
+        let source = native.solid(original.instance).unwrap();
+        review::near(source.volume_mm3()?, original_width * 90. * 8. * 2.)?;
+        review::near(source.bounds()?.min[0], 250. + original_width)?;
+        let plan = multicad_solver::evaluate_document_sketch(
+            session.document(),
+            session.revision(),
+            copy_plan.1,
+            Some(&native.snapshot().references),
+        )?;
+        review::near(plan.regions()?.regions[0].area_mm2, 150. * 90.)?;
+        let point = native.snapshot().occurrences[&copied.instance]
+            .pose
+            .point(plan.frame.point([0., 0.]));
+        assert_eq!(point, [400., 350., 0.]);
+        Ok(())
+    };
+    verify(&f.session, 150.)?;
+    let copied_source = f.session.document().clone();
+    let mut overrides = original.overrides.clone();
+    overrides.insert(
+        f.library.panel.width,
+        SymbolValue {
+            value: 175.,
+            unit: "mm".into(),
+        },
+    );
+    let prepared = symbols::prepare_edit(
+        &f.session,
+        f.session.revision(),
+        review::actor(),
+        &SymbolEditRequest {
+            record: f.placed[0].record,
+            overrides,
+        },
+    )?;
+    review::checked(&mut f.session, prepared.prepared)?;
+    verify(&f.session, 175.)?;
+    assert_eq!(
+        symbols::read_instance(f.session.document(), copied.instance)?,
+        duplicate
+    );
+    let edited = f.session.document().clone();
+    f.session.undo(f.session.revision(), review::actor())?;
+    assert_eq!(f.session.document(), &copied_source);
+    verify(&f.session, 150.)?;
+    f.session.undo(f.session.revision(), review::actor())?;
+    assert_eq!(f.session.document(), &before_copy);
+    assert!(symbols::read_instance(f.session.document(), copied.instance).is_err());
+    f.session.redo(f.session.revision(), review::actor())?;
+    verify(&f.session, 150.)?;
+    f.session.redo(f.session.revision(), review::actor())?;
+    assert_eq!(f.session.document(), &edited);
+    verify(&f.session, 175.)?;
+    let reopened = review::reopen(&review::archive(f.session.document())?)?;
+    assert_eq!(reopened.document(), f.session.document());
+    verify(&reopened, 175.)?;
+    Ok(())
+}
