@@ -42,11 +42,12 @@ mod levels;
 mod reference_repair;
 mod walls;
 pub use cabinetry::{
-    CarcassArgs, DeleteJointArgs, PanelArgs, PanelJointArgs, PanelStockArgs, StackArgs,
+    CarcassArgs, DeleteJointArgs, DeleteMachiningArgs, HardwareArgs, MachiningArgs, PanelArgs,
+    PanelJointArgs, PanelStockArgs, StackArgs,
 };
 use cabinetry::{
-    create_panel, create_panel_stack, create_panel_stock, cut_list, delete_panel_joint,
-    set_carcass, set_panel_joint,
+    create_panel, create_panel_stack, create_panel_stock, cut_list, delete_machining,
+    delete_panel_joint, set_carcass, set_hardware_pattern, set_machining, set_panel_joint,
 };
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
@@ -258,6 +259,15 @@ tools! {
     "delete_panel_joint" => DeleteJointArgs, "Delete panel joint", false,
         "Delete a panel joint and its cuts, restoring the panels. Later joint cuts on the same Parts are re-attached.",
         delete_panel_joint;
+    "set_hardware_pattern" => HardwareArgs, "Create or edit hardware pattern", false,
+        "Create or edit a reusable hardware hole pattern (hole positions, diameters, blind depths or through) with per-material diameter and depth allowances. Editing it rebuilds every placement, evaluated natively before commit.",
+        set_hardware_pattern;
+    "set_machining" => MachiningArgs, "Create or edit machining", false,
+        "Cut a groove, rabbet, pocket, drilling or placed hardware pattern into one or more panels, in panel face coordinates on the top, bottom or (drilling only) an edge face. Edits keep the targets. Cuts that leave no material, leave the face or would cut through a blind feature are refused. Modeled features only, not CNC toolpaths.",
+        set_machining;
+    "delete_machining" => DeleteMachiningArgs, "Delete machining", false,
+        "Delete a machining operation and its cuts, restoring the panels.",
+        delete_machining;
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;

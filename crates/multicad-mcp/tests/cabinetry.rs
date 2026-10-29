@@ -196,3 +196,83 @@ fn mcp_joins_a_corner_changes_the_joint_and_deletes_it() {
     let list = run("cut_list", json!({})).unwrap();
     assert_eq!(panel(&list, "Bottom")["finished_mm"], json!([600.0, 400.0]));
 }
+
+#[test]
+fn mcp_machines_panels_with_grooves_holes_and_hardware() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Machining").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let stock = run(
+        "create_panel_stock",
+        json!({ "expected_revision": 0, "name": "Ply 18", "material_name": "Birch",
+        "thickness_mm": 18, "sheet_length_mm": 2500, "sheet_width_mm": 1250 }),
+    )
+    .unwrap();
+    let ply = stock["stock"].as_str().unwrap().to_owned();
+    let birch = stock["material"].as_str().unwrap().to_owned();
+    let side = run(
+        "create_panel",
+        json!({ "expected_revision": 1, "name": "Side", "stock": ply, "plane": "xy",
+        "origin_mm": [0, 0, 0], "length": mm(600.), "width": mm(400.) }),
+    )
+    .unwrap()["part"]
+        .clone();
+    let groove = run(
+        "set_machining",
+        json!({ "expected_revision": 2, "name": "Back groove", "kind": "groove", "face": "top",
+        "targets": [side], "along": "u", "offset": mm(20.), "width": mm(6.), "depth": mm(8.) }),
+    )
+    .unwrap();
+    assert_eq!(groove["cuts"].as_array().unwrap().len(), 1);
+    let pattern = run(
+        "set_hardware_pattern",
+        json!({ "expected_revision": 3, "name": "Hinge plate",
+        "holes": [{ "at_mm": [0, -16], "diameter_mm": 5, "depth_mm": 12 },
+                  { "at_mm": [0, 16], "diameter_mm": 5, "depth_mm": 12 }],
+        "allowances": [{ "material": birch, "diameter_mm": 0.2, "depth_mm": 0 }] }),
+    )
+    .unwrap()["pattern"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    run(
+        "set_machining",
+        json!({ "expected_revision": 4, "name": "Hinge", "kind": "hardware", "face": "top",
+        "targets": [side], "pattern": pattern, "at_mm": [100, 200] }),
+    )
+    .unwrap();
+    // A blind hole as deep as the panel is refused; nothing changes.
+    let before = host.document();
+    let refused = run(
+        "set_machining",
+        json!({ "expected_revision": 5, "name": "Too deep", "kind": "drill", "face": "top",
+        "targets": [side], "holes_mm": [[300, 300]], "diameter": mm(5.), "depth": mm(18.) }),
+    )
+    .unwrap_err();
+    assert!(
+        refused.message.contains("cut through"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(host.document(), before);
+    let list = run("cut_list", json!({})).unwrap();
+    let ops = list["machining"].as_array().unwrap();
+    assert_eq!(ops.len(), 2);
+    let hinge = ops.iter().find(|o| o["name"] == "Hinge").unwrap();
+    assert_eq!(hinge["holes"].as_array().unwrap().len(), 2);
+    assert_eq!(hinge["holes"][0]["diameter_mm"], 5.2);
+    let removed = ops.iter().find(|o| o["name"] == "Back groove").unwrap()["removed_mm3"]
+        .as_f64()
+        .unwrap();
+    assert!((removed - 600. * 6. * 8.).abs() < 1e-3);
+    run(
+        "delete_machining",
+        json!({ "expected_revision": 5, "operation": groove["operation"] }),
+    )
+    .unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    assert_eq!(list["machining"].as_array().unwrap().len(), 1);
+}

@@ -13,8 +13,10 @@ use multicad_core::{
     materials::{self, Grain, LibraryDefinition, Stock, StockKind},
     model::{
         self, Back, Band, BodyOutput, CarcassDefinition, CarcassRequest, Construction, GrainAxis,
-        PanelDefinition, PanelEdges, PanelJointDefinition, PanelJointKind, PanelJointPair,
-        PanelPlane, PanelRequest, PanelSource, ShelfLayout, Shelves, angle, length,
+        HardwareDefinition, HardwareHole, MachiningDefinition, MachiningFace, MachiningKind,
+        MaterialAllowance, PanelAxis, PanelDefinition, PanelEdgeName, PanelEdges,
+        PanelJointDefinition, PanelJointKind, PanelJointPair, PanelPlane, PanelRequest,
+        PanelSource, ShelfLayout, Shelves, angle, length,
     },
     parameters::EvaluatedParameters,
 };
@@ -562,17 +564,327 @@ pub(super) fn delete_panel_joint(
     )
 }
 
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeArg {
+    UStart,
+    UEnd,
+    VStart,
+    VEnd,
+}
+impl From<EdgeArg> for PanelEdgeName {
+    fn from(e: EdgeArg) -> Self {
+        match e {
+            EdgeArg::UStart => Self::UStart,
+            EdgeArg::UEnd => Self::UEnd,
+            EdgeArg::VStart => Self::VStart,
+            EdgeArg::VEnd => Self::VEnd,
+        }
+    }
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FaceArg {
+    Top,
+    Bottom,
+    Edge,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MachiningKindArg {
+    Groove,
+    Rabbet,
+    Pocket,
+    Drill,
+    Hardware,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MachiningArgs {
+    pub expected_revision: u64,
+    /// Operation ID to change; omit to create one.
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub kind: MachiningKindArg,
+    /// top, bottom or edge (drilling and hardware only; then give `edge`).
+    pub face: FaceArg,
+    /// Rabbets: the edge; edge faces: the edge drilled into.
+    #[serde(default)]
+    pub edge: Option<EdgeArg>,
+    /// Panel Parts that receive the operation (fixed after creation).
+    pub targets: Vec<String>,
+    /// Grooves: "u" or "v", the axis the groove runs along.
+    #[serde(default)]
+    pub along: Option<GrainAxisArg>,
+    /// Grooves: distance from the start edge of the other axis.
+    #[serde(default)]
+    pub offset: Option<Quantity>,
+    /// Grooves and rabbets: width.
+    #[serde(default)]
+    pub width: Option<Quantity>,
+    /// Blind depth; omit for through holes.
+    #[serde(default)]
+    pub depth: Option<Quantity>,
+    /// Pockets: center and size in face coordinates (mm).
+    #[serde(default)]
+    pub center_mm: Option<[f64; 2]>,
+    #[serde(default)]
+    pub size_mm: Option<[f64; 2]>,
+    /// Drilling: hole centers in face coordinates (mm).
+    #[serde(default)]
+    pub holes_mm: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub diameter: Option<Quantity>,
+    /// Hardware: pattern ID, placement and 0–3 quarter turns.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub at_mm: Option<[f64; 2]>,
+    #[serde(default)]
+    pub quarter_turns: u8,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HardwareHoleArg {
+    pub at_mm: [f64; 2],
+    pub diameter_mm: f64,
+    /// Omit for a through hole.
+    #[serde(default)]
+    pub depth_mm: Option<f64>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AllowanceArg {
+    pub material: String,
+    pub diameter_mm: f64,
+    pub depth_mm: f64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HardwareArgs {
+    pub expected_revision: u64,
+    /// Pattern ID to change; omit to create one.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub holes: Vec<HardwareHoleArg>,
+    /// Per-material diameter and depth additions.
+    #[serde(default)]
+    pub allowances: Vec<AllowanceArg>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteMachiningArgs {
+    pub expected_revision: u64,
+    pub operation: String,
+}
+
+fn stale(revision: u64, expected: u64) -> Result<(), ToolError> {
+    if revision == expected {
+        return Ok(());
+    }
+    Err(ToolError::new(
+        "stale_revision",
+        format!("Request is based on revision {expected}, but the document is at {revision}"),
+    )
+    .at_revision(revision))
+}
+
+pub(super) fn set_hardware_pattern(
+    host: &dyn Host,
+    call: &Request,
+    args: HardwareArgs,
+) -> ToolResult {
+    let pattern = HardwareDefinition {
+        holes: args
+            .holes
+            .iter()
+            .map(|h| HardwareHole {
+                at: h.at_mm.map(length),
+                diameter: length(h.diameter_mm),
+                depth: h.depth_mm.map(length),
+            })
+            .collect(),
+        allowances: args
+            .allowances
+            .iter()
+            .map(|a| {
+                Ok(MaterialAllowance {
+                    material: id(&a.material)?,
+                    diameter: length(a.diameter_mm),
+                    depth: length(a.depth_mm),
+                })
+            })
+            .collect::<Result<_, ToolError>>()?,
+    };
+    let existing = args.pattern.as_deref().map(id).transpose()?;
+    let call_owned = call.clone();
+    let (pattern_id, prepared) = with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        let session = target.session();
+        let actor = call_owned.actor.clone();
+        Ok::<_, ToolError>(match existing {
+            Some(p) => (
+                p,
+                model::prepare_hardware_edit(session, args.expected_revision, actor, p, &pattern)?,
+            ),
+            None => model::prepare_hardware(
+                session,
+                args.expected_revision,
+                actor,
+                args.name
+                    .as_deref()
+                    .ok_or_else(|| ToolError::invalid("A new pattern needs a name"))?,
+                &pattern,
+            )?,
+        })
+    })??;
+    finish(
+        host,
+        call,
+        prepared,
+        args.expected_revision,
+        json!({ "pattern": pattern_id }),
+    )
+}
+
+pub(super) fn set_machining(host: &dyn Host, call: &Request, args: MachiningArgs) -> ToolResult {
+    let (document, revision, evaluated) = snapshot(host)?;
+    stale(revision, args.expected_revision)?;
+    let (d, e) = (&document, &evaluated);
+    let need = |v: &Option<Quantity>, what: &str| {
+        v.as_ref()
+            .ok_or_else(|| ToolError::invalid(format!("This operation needs {what}")))
+            .and_then(|v| q(v, d, e))
+    };
+    let edge = || {
+        args.edge
+            .map(PanelEdgeName::from)
+            .ok_or_else(|| ToolError::invalid("Give the edge"))
+    };
+    let kind = match args.kind {
+        MachiningKindArg::Groove => MachiningKind::Groove {
+            along: match args.along {
+                Some(GrainAxisArg::V) => PanelAxis::V,
+                _ => PanelAxis::U,
+            },
+            offset: need(&args.offset, "an offset")?,
+            width: need(&args.width, "a width")?,
+            depth: need(&args.depth, "a depth")?,
+        },
+        MachiningKindArg::Rabbet => MachiningKind::Rabbet {
+            edge: edge()?,
+            width: need(&args.width, "a width")?,
+            depth: need(&args.depth, "a depth")?,
+        },
+        MachiningKindArg::Pocket => MachiningKind::Pocket {
+            center: args
+                .center_mm
+                .ok_or_else(|| ToolError::invalid("A pocket needs center_mm"))?
+                .map(length),
+            size: args
+                .size_mm
+                .ok_or_else(|| ToolError::invalid("A pocket needs size_mm"))?
+                .map(length),
+            depth: need(&args.depth, "a depth")?,
+        },
+        MachiningKindArg::Drill => MachiningKind::Drill {
+            holes: args.holes_mm.iter().map(|h| h.map(length)).collect(),
+            diameter: need(&args.diameter, "a diameter")?,
+            depth: opt(&args.depth, d, e)?,
+        },
+        MachiningKindArg::Hardware => MachiningKind::Hardware {
+            pattern: id(args
+                .pattern
+                .as_deref()
+                .ok_or_else(|| ToolError::invalid("Hardware needs a pattern"))?)?,
+            at: args
+                .at_mm
+                .ok_or_else(|| ToolError::invalid("Hardware needs at_mm"))?
+                .map(length),
+            quarter_turns: args.quarter_turns,
+        },
+    };
+    let machining = MachiningDefinition {
+        kind,
+        face: match args.face {
+            FaceArg::Top => MachiningFace::Top,
+            FaceArg::Bottom => MachiningFace::Bottom,
+            FaceArg::Edge => MachiningFace::Edge { edge: edge()? },
+        },
+        targets: args
+            .targets
+            .iter()
+            .map(|t| id(t))
+            .collect::<Result<_, _>>()?,
+    };
+    let existing = args.operation.as_deref().map(id).transpose()?;
+    let name = args.name.clone();
+    let call_owned = call.clone();
+    let prepared = with(host, move |target| {
+        revision_guard(target, revision)?;
+        let session = target.session();
+        let actor = call_owned.actor.clone();
+        Ok::<_, ToolError>(match existing {
+            Some(op) => model::prepare_machining_edit(session, revision, actor, op, &machining)?,
+            None => model::prepare_machining(
+                session,
+                revision,
+                actor,
+                name.as_deref()
+                    .ok_or_else(|| ToolError::invalid("A new operation needs a name"))?,
+                &machining,
+            )?,
+        })
+    })??;
+    let out = json!({
+        "operation": prepared.operation,
+        "cuts": prepared.model.outputs.iter().map(|o| json!({ "part": o.body, "feature": o.feature })).collect::<Vec<_>>(),
+    });
+    finish(host, call, prepared.model.prepared, revision, out)
+}
+
+pub(super) fn delete_machining(
+    host: &dyn Host,
+    call: &Request,
+    args: DeleteMachiningArgs,
+) -> ToolResult {
+    let op = id(&args.operation)?;
+    let call_owned = call.clone();
+    let prepared = with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        Ok::<_, ToolError>(model::prepare_machining_delete(
+            target.session(),
+            args.expected_revision,
+            call_owned.actor.clone(),
+            op,
+        )?)
+    })??;
+    finish(
+        host,
+        call,
+        prepared,
+        args.expected_revision,
+        json!({ "deleted": op }),
+    )
+}
+
 pub(super) fn cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> ToolResult {
     let (document, revision, _) = snapshot(host)?;
     let model = compile(&document, revision, call)?;
     let records = model.cut_list(&document)?;
     let stacks = model.stacks(&document)?;
+    let machining = model.machining(&document)?;
     Ok(json!({
         "revision": revision,
         "scope": "Sizes measured from the evaluated panel solids. Core = finished − band thickness + band allowance per banded edge, + oversize. Not a nesting, yield or machining plan.",
         "panels": records.iter().map(|r| json!({
             "part": r.part, "name": r.name, "carcass": r.carcass,
             "role": r.role.map(|role| role.label()), "stack": r.stack, "joints": r.joints,
+            "operations": r.operations,
             "material": r.material, "stock": r.stock, "stock_name": r.stock_name,
             "thickness_mm": r.cut.thickness_mm,
             "finished_mm": r.cut.finished_mm, "core_mm": r.cut.core_mm,
@@ -582,6 +894,17 @@ pub(super) fn cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> Too
             })).collect::<Vec<_>>(),
             "oversize_mm": r.oversize_mm, "volume_mm3": r.volume_mm3,
             "fits_stock": r.fits_stock, "issues": r.issues,
+        })).collect::<Vec<_>>(),
+        "machining": machining.iter().map(|m| json!({
+            "part": m.part, "operation": m.operation, "name": m.name, "kind": m.kind,
+            "material": m.material, "stock": m.stock, "removed_mm3": m.removed_mm3,
+            "holes": m.holes.iter().map(|h| json!({
+                "center_mm": h.center, "axis": h.axis, "diameter_mm": h.diameter_mm,
+                "depth_mm": h.depth_mm, "through": h.through,
+            })).collect::<Vec<_>>(),
+            "recesses": m.recesses.iter().map(|r| json!({
+                "kind": r.kind, "size_mm": r.size_mm, "depth_mm": r.depth_mm,
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "stacks": stacks.iter().map(|s| json!({
             "stack": s.stack, "name": s.name, "adhesive": s.adhesive,
