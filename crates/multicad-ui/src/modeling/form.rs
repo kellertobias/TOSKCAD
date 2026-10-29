@@ -14,6 +14,7 @@ use super::{
     scaling::ScalePanel,
     split::{SplitEvent, SplitPanel},
     wall::{WallCommand, WallPanel},
+    weldment::{WeldmentCommand, WeldmentPanel},
 };
 use crate::egui;
 use multicad_core::{
@@ -44,6 +45,7 @@ pub enum ModelRequest {
     Wall(Box<WallCommand>),
     Architecture(Box<ArchitectureCommand>),
     Cabinet(Box<CabinetCommand>),
+    Weldment(Box<WeldmentCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -102,6 +104,12 @@ impl ModelRequest {
             Self::Cabinet(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Panel edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Weldment(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Member edit changed its producer identity".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -192,6 +200,12 @@ impl ModelRequest {
             Self::Cabinet(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved panel before editing it".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Weldment(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved member before editing it".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -305,6 +319,7 @@ pub(super) enum ModelForm {
     Wall(Box<WallPanel>),
     Architecture(Box<ArchitecturePanel>),
     Cabinet(Box<CabinetPanel>),
+    Weldment(Box<WeldmentPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -324,6 +339,7 @@ impl ModelForm {
             Self::Wall(panel) => panel.stamp(),
             Self::Architecture(panel) => panel.stamp(),
             Self::Cabinet(panel) => panel.stamp(),
+            Self::Weldment(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -343,6 +359,7 @@ impl ModelForm {
             Self::Wall(panel) => panel.label(),
             Self::Architecture(panel) => panel.label(),
             Self::Cabinet(panel) => panel.label(),
+            Self::Weldment(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -369,6 +386,9 @@ impl ModelForm {
             Self::Cabinet(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Cabinet(Box::new(command))),
+            Self::Weldment(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Weldment(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -441,6 +461,7 @@ impl ModelForm {
             Self::Wall(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Weldment(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

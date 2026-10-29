@@ -1050,6 +1050,25 @@ impl SketchEditor {
             "Panel / carcass · choose stock and sizes in the Inspector, then Preview".into();
         Ok(())
     }
+    pub fn begin_weldment(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before adding members"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_weldment(session, resources, channel)?;
+        self.message =
+            "Tube / profile · choose stock and a sketch or two points in the Inspector, then Preview"
+                .into();
+        Ok(())
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,

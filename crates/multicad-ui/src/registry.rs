@@ -362,7 +362,6 @@ impl Default for Registry {
             ("fastener", "Attached fastener", Icon::Link),
             ("flat", "Flat pattern", Icon::Page),
             ("bend-list", "Bend schedule", Icon::Page),
-            ("tube", "Tube / profile", Icon::Box),
             ("cope", "Miter / cope", Icon::Cut),
             ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
@@ -447,7 +446,10 @@ impl Default for Registry {
                         tools: ModelingTool::ALL
                             .into_iter()
                             .filter(|tool| {
-                                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel)
+                                !matches!(
+                                    tool,
+                                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Member
+                                )
                             })
                             .map(ModelingTool::id)
                             .chain(["symbol"])
@@ -757,9 +759,20 @@ mod tests {
                 registry.workspace(Mode::Model).tabs[0]
                     .tools
                     .contains(&tool.id()),
-                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel),
-                "Copy shares the Move / Copy ribbon entry; Panel lives on the Wood tab"
+                !matches!(
+                    tool,
+                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Member
+                ),
+                "Copy shares the Move / Copy ribbon entry; Panel and Member live on the Wood and Weld tabs"
             );
+            if tool == ModelingTool::Member {
+                let weld = registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .find(|t| t.title == "Weld");
+                assert!(weld.unwrap().tools.contains(&tool.id()));
+            }
             if tool == ModelingTool::Panel {
                 let wood = registry
                     .workspace(Mode::Model)
