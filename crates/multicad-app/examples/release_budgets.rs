@@ -126,16 +126,23 @@ fn read_project(path: &Path) -> Result<project_file::OpenedProject, Error> {
     )?)
 }
 
-/// Number of cooperative interruption checks one compile performs: an
-/// engine-independent measure of how much of the graph it evaluates.
-fn checkpoints(document: &Document, revision: u64) -> Result<usize, Error> {
+/// Number of cooperative interruption checks one compile performs (an
+/// engine-independent measure of how much of the graph it evaluates) and
+/// the longest span between two checks, which bounds cancellation latency.
+fn checkpoints(document: &Document, revision: u64) -> Result<(usize, f64), Error> {
     let count = AtomicUsize::new(0);
+    let state = Mutex::new((Instant::now(), Duration::ZERO));
     let probe = || {
         count.fetch_add(1, Ordering::Relaxed);
+        let mut state = state.lock().unwrap();
+        let now = Instant::now();
+        state.1 = state.1.max(now - state.0);
+        state.0 = now;
         false
     };
     Compiler::default().compile_interruptible(document, revision, Some(&probe))?;
-    Ok(count.into_inner())
+    let (last, longest) = state.into_inner().unwrap();
+    Ok((count.into_inner(), ms(longest.max(last.elapsed()))))
 }
 
 /// Shape fingerprints by producer, to count which evaluated outputs changed.
@@ -414,12 +421,15 @@ fn measure(scenario: &str, directory: &Path) -> Result<Value, Error> {
             "commit_ms": edit_commit_ms,
             "rebuild_ms": edit_compile_ms,
             "rebuild_to_warm_full_ratio": (edit_compile_ms / warm_min * 100.).round() / 100.,
-            "evaluation_checkpoints_before": steps_before,
-            "evaluation_checkpoints_after": steps_after,
+            "evaluation_checkpoints_before": steps_before.0,
+            "evaluation_checkpoints_after": steps_after.0,
             "evaluated_shapes": after.len(),
             "changed_shapes": changed,
         },
-        "cancellation": cancellations,
+        "cancellation": {
+            "longest_span_between_checks_ms": steps_before.1,
+            "requests": cancellations,
+        },
         "exports": { "total_ms": exports_ms, "sets": exports },
         "save_reopen": {
             "save_ms": save_ms,
