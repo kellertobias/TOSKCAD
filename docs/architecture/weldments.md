@@ -1,13 +1,14 @@
-# Weldment members
+# Weldment members and connections
 
 Weldments are built from ordinary model features in the canonical document.
 The window and the MCP server use the same core API.
 
 | Code | Contents |
 | --- | --- |
-| `crates/multicad-core/src/model/weldment/` | Source types, section and member-frame resolution, and transactions |
-| `crates/multicad-model/src/weldment.rs` | Native member solids, solved sketch paths and the member cut list |
+| `crates/multicad-core/src/model/weldment/` | Source types, section and member-frame resolution, connection geometry and transactions |
+| `crates/multicad-model/src/weldment.rs` | Native member solids and end cuts, solved sketch paths and the member cut list |
 | `crates/multicad-ui/src/modeling/weldment.rs` | The window's Tube / profile form |
+| `crates/multicad-ui/src/modeling/weld_connection.rs` | The window's Miter / cope form |
 | `crates/multicad-mcp/src/tools/weldment.rs` | MCP tools |
 
 ## Profile stock
@@ -107,6 +108,71 @@ geometry:
 - a path line that no longer exists in its sketch;
 - two members on the same sketch line.
 
+## Connections
+
+A **connection** is a `weldment.connection` extension naming two member
+Parts, a kind and an optional gap. It holds intent only. Whenever either
+member is built, the evaluator derives that member's end cut from both
+members' current resolved geometry. A path, section or anchor edit therefore
+updates both cuts, and both members stay separate Parts.
+
+### The joint
+
+The joint point is where the two member paths meet: the closest points of
+the two path lines must coincide within 0.001 mm. For each member the
+evaluator decides whether the joint is at its start, at its end or inside
+the member. Members are refused when:
+
+- their paths are parallel;
+- their paths pass each other without meeting (non-coplanar members);
+- the joint lies beyond the end of a member;
+- the members meet at less than 15°.
+
+### Kinds
+
+- **Miter.** Both members end at the joint. Each is cut on the plane that
+  bisects the two member directions. A gap moves each cut back by half the
+  gap along the plane normal. The cut is only accepted when the two placed
+  sections are mirror images across that plane: same shape and size, and an
+  anchor and rotation that mirror. Different widths, anchors or shapes are
+  refused with a message to use a butt joint or cope. No half-angle formula
+  is applied to sections that do not mirror.
+- **Butt.** The first member terminates; the second continues.
+  - The terminating member must end at the joint and be square to a flat
+    face of a rectangular continuing member. It is cut square at that face,
+    short by the gap.
+  - When the continuing member also ends at the joint (a corner), its end is
+    cut square at the far side of the terminating member, covering it.
+  - Angled butt joints, and butt joints against round or angle members, are
+    refused.
+- **Cope.** The first member is the branch, the second the receiving
+  member. The branch must end at the joint; the receiving member may pass
+  through or end there. The branch is cut by:
+  - the receiving member's actual outside (rectangular, round or angle),
+    grown by the gap and swept over its length. The receiving bore is not
+    used;
+  - the plane through the receiving section center, square to the branch
+    direction across the receiving axis.
+
+  This gives a fish-mouth saddle for round tubes, at 90° or another angle,
+  and a square notch against a flat face. A branch wider than the receiving
+  member across both axes is refused.
+
+Two connections may not cut the same end of a member, and two connections
+may not join the same pair of members.
+
+### Native cuts
+
+A connected end starts long enough to pass the joint, then:
+
+- a plane cut subtracts an exact half-space prism;
+- a cope subtracts the grown envelope prism, then the half-space beyond the
+  receiving center.
+
+Cut faces carry the provenance role `connection.<id>.…` of their
+connection. A cut that removes the whole member, or leaves it in separate
+pieces, is refused.
+
 ## Member cut list
 
 `Model::member_cut_list` lists every evaluated member Part. It measures the
@@ -117,7 +183,14 @@ Part are included. Each record contains:
 - the designation, shape, section size and wall;
 - the **length**: the overall length along the member axis, from the
   farthest point of one end to the farthest point of the other;
-- the nominal length (path length plus extensions);
+- the measured axial span of the solid from the path start;
+- the start and end treatments: square, or the connection kind, its
+  connection and partner member, whether this member terminates there, and
+  the angle. Plane cuts give the cut-face angle from square (0 = square,
+  45 = a right-angle miter); copes give the branch angle to the receiving
+  axis;
+- the nominal length (path length plus extensions; connected ends are cut
+  to their joint instead);
 - the measured section size;
 - the rotation, anchor and world axis, width and height directions;
 - the volume and whether the length fits one stock bar;
@@ -133,8 +206,11 @@ producer contract for BOM and cut-list exports (CAD-89).
   lines of a chosen sketch into members, or places one member between two
   points. Preview builds the native solids and Apply commits them. Opening
   an applied member edits it in place; a sketch-line member keeps its line.
-- **MCP.** `create_profile_stock`, `create_members`, `edit_member` and
-  `weldment_cut_list`.
+- **Window.** Model → Weld → **Miter / cope**. Choose the kind, the two
+  members and the gap. An existing connection can be picked from the form
+  and edited.
+- **MCP.** `create_profile_stock`, `create_members`, `edit_member`,
+  `connect_members` and `weldment_cut_list`.
 
 ## Limits
 
@@ -146,5 +222,14 @@ producer contract for BOM and cut-list exports (CAD-89).
   no channels, beams or custom profile sketches.
 - **Path changes in the window.** A sketch-line member cannot be moved to
   another line from the form; edit the sketch or recreate the member.
+- **Connections.**
+  - Only coplanar members whose paths meet are connected. Offsets between
+    paths, and members that cross without meeting, are not supported.
+  - Butt joints need a square, flat face. There are no angled butt joints
+    and no butt joints against round or angle members.
+  - Miters need mirroring sections; unequal-width miters are refused.
+  - A cope's envelope covers the receiving member's nominal length, not its
+    own end cuts.
+  - Connections are picked in the form, not in the viewport.
 - **Not a structural tool.** Members, records and lengths are geometric
   aids. They are not structural, strength or code checks.
