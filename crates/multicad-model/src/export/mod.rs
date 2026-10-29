@@ -83,7 +83,7 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
             units,
             hierarchy,
             names,
-            aids,
+            ..
         } => {
             if *units != LengthUnit::Millimeter {
                 Some("STEP output currently supports millimeters only".into())
@@ -94,31 +94,20 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
                     "STEP product-name attributes are unavailable; file naming remains supported"
                         .into(),
                 )
-            } else if *aids != AidPolicy::IncludeAll {
-                Some("Removable-aid exclusion requires a typed aid provider".into())
             } else {
                 None
             }
         }
-        RecipeOutput::PlanarDxf { layers, aids, .. } => {
-            if *aids != AidPolicy::IncludeAll {
-                Some("Removable-aid exclusion requires a typed aid provider".into())
-            } else {
-                dxf::layer_names(layers).err()
-            }
-        }
+        RecipeOutput::PlanarDxf { layers, .. } => dxf::layer_names(layers).err(),
         RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. } => None,
         RecipeOutput::Mesh {
             format,
             units,
-            aids,
             quality,
             ..
         } => {
             if *format == MeshFormat::Glb && *units != LengthUnit::Meter {
                 Some("glTF is defined in meters; choose meters for GLB".into())
-            } else if *aids != AidPolicy::IncludeAll {
-                Some("Removable-aid exclusion requires a typed aid provider; no aid geometry is classified yet".into())
             } else if !(0.001..=10.).contains(&quality.chord_deviation_mm)
                 || !(0.6..=57.).contains(&quality.angular_deviation_deg)
             {
@@ -128,6 +117,45 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
             }
         }
     }
+}
+/// Whether a recipe leaves removable FDM aids out of its outputs.
+fn excludes_aids(output: &RecipeOutput) -> bool {
+    matches!(
+        output,
+        RecipeOutput::Step {
+            aids: AidPolicy::ExcludeRemovable,
+            ..
+        } | RecipeOutput::PlanarDxf {
+            aids: AidPolicy::ExcludeRemovable,
+            ..
+        } | RecipeOutput::Mesh {
+            aids: AidPolicy::ExcludeRemovable,
+            ..
+        }
+    )
+}
+/// A recipe's outputs with removable aid Parts left out, and the Parts it
+/// left out. Aids are classified by their producing `fdm.aid` feature only.
+fn without_aids(
+    outputs: Vec<NamedOutput>,
+    aids: &std::collections::BTreeSet<EntityId>,
+) -> (Vec<NamedOutput>, Vec<PartRef>) {
+    let mut excluded = vec![];
+    let mut kept = vec![];
+    for mut output in outputs {
+        match &mut output.subject {
+            OutputSubject::Part(p) if aids.contains(&p.part) => excluded.push(p.clone()),
+            OutputSubject::Parts(ps) => {
+                excluded.extend(ps.iter().filter(|p| aids.contains(&p.part)).cloned());
+                ps.retain(|p| !aids.contains(&p.part));
+                if !ps.is_empty() {
+                    kept.push(output);
+                }
+            }
+            _ => kept.push(output),
+        }
+    }
+    (kept, excluded)
 }
 /// Solid, producer, world bounds, volume and solid count of a selected Part.
 type Availability = (EntityId, EntityId, [[f64; 3]; 2], f64, u32);
@@ -562,11 +590,21 @@ impl Exporter {
                 .retain(|p| selected.contains_key(&p.reference));
         }
         let names = filenames(&effective, document.name())?;
+        let aid_parts = multicad_core::model::aid_parts(document);
         let mut recipes = Vec::new();
         let mut artifacts = Vec::new();
         let mut generated = BTreeMap::new();
         for recipe in &selection.recipes {
-            let requested: Vec<_> = names.iter().filter(|n| n.recipe == recipe.id).collect();
+            let requested: Vec<NamedOutput> = names
+                .iter()
+                .filter(|n| n.recipe == recipe.id)
+                .cloned()
+                .collect();
+            let (requested, excluded_aids) = if excludes_aids(&recipe.output) {
+                without_aids(requested, &aid_parts)
+            } else {
+                (requested, vec![])
+            };
             let mut status = if let Some(reason) = unsupported(&recipe.output) {
                 RecipeStatus::Unsupported(reason)
             } else if requested.is_empty() {
@@ -750,6 +788,7 @@ impl Exporter {
                 recipe: recipe.id,
                 status,
                 files: requested.len(),
+                excluded_aids,
             });
         }
         if artifacts.len() > MAX_NATIVE_EXPORT_FILES {

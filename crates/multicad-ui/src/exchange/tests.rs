@@ -153,6 +153,7 @@ fn preview(state: &Rc<RefCell<State>>, index: usize) -> ExportReply {
             recipe,
             status: RecipeStatus::Ready,
             files: 1,
+            excluded_aids: vec![],
         }],
         artifacts: vec![ExportArtifact {
             planar: None,

@@ -566,6 +566,7 @@ fn tag_scopes_are_reproducible_and_unsupported_or_failed_runs_leave_everything_u
     assert!(again.reused);
 
     let before = ContentHash::document(f.session.document()).unwrap();
+    // Removable-aid exclusion is supported now; see tests/fdm_aids.rs.
     for (recipe, reason) in [
         (
             mesh(
@@ -583,7 +584,10 @@ fn tag_scopes_are_reproducible_and_unsupported_or_failed_runs_leave_everything_u
                     hierarchy: HierarchyMode::SeparateParts,
                     names: NameHandling::FileNamesOnly,
                     aids: AidPolicy::ExcludeRemovable,
-                    quality: MeshQuality::default(),
+                    quality: MeshQuality {
+                        chord_deviation_mm: 20.,
+                        angular_deviation_deg: 15.,
+                    },
                 },
                 ..mesh(
                     MeshFormat::Obj,
@@ -591,7 +595,7 @@ fn tag_scopes_are_reproducible_and_unsupported_or_failed_runs_leave_everything_u
                     HierarchyMode::SeparateParts,
                 )
             },
-            "Removable-aid",
+            "Mesh quality",
         ),
     ] {
         f.define(SetDefinition {
