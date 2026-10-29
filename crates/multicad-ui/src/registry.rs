@@ -366,8 +366,6 @@ impl Default for Registry {
             ("cope", "Miter / cope", Icon::Cut),
             ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
-            ("support", "Thin support", Icon::Box),
-            ("tab", "Breakaway tab", Icon::Edge),
             ("materials", "Materials", Icon::Library),
             ("door", "Door", Icon::Page),
             ("window-tool", "Window", Icon::Page),
@@ -447,7 +445,10 @@ impl Default for Registry {
                         tools: ModelingTool::ALL
                             .into_iter()
                             .filter(|tool| {
-                                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel)
+                                !matches!(
+                                    tool,
+                                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::FdmAid
+                                )
                             })
                             .map(ModelingTool::id)
                             .chain(["symbol"])
@@ -469,7 +470,7 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: false,
                     },
-                    tab("FDM aids", &["support", "tab"]),
+                    tab("FDM aids", &["fdm-aid"]),
                     tab("Materials", &["materials"]),
                 ],
             },
@@ -757,9 +758,21 @@ mod tests {
                 registry.workspace(Mode::Model).tabs[0]
                     .tools
                     .contains(&tool.id()),
-                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel),
-                "Copy shares the Move / Copy ribbon entry; Panel lives on the Wood tab"
+                !matches!(
+                    tool,
+                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::FdmAid
+                ),
+                "Copy shares the Move / Copy ribbon entry; Panel lives on the Wood tab and print aids on the FDM aids tab"
             );
+            if tool == ModelingTool::FdmAid {
+                let fdm = registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .find(|t| t.title == "FDM aids");
+                assert!(fdm.unwrap().tools.contains(&tool.id()));
+                assert_eq!(registry.resolve("support").unwrap().id, tool.id());
+            }
             if tool == ModelingTool::Panel {
                 let wood = registry
                     .workspace(Mode::Model)

@@ -156,7 +156,7 @@ impl ModelToolController {
         {
             return true;
         }
-        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE))
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::AID_TYPE))
     }
     pub fn begin_existing(
         &mut self,
@@ -232,6 +232,17 @@ impl ModelToolController {
         }
         if !Self::editable(document, feature) {
             return Err("Choose a supported, unsuppressed applied model feature".into());
+        }
+        if model::read_aid(document, feature).is_ok() {
+            let form = super::fdm_aid::FdmAidPanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::FdmAid(Box::new(form)),
+            )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
         }
         if let Ok(panel) = model::read_panel(document, feature) {
             let form = super::cabinet::CabinetPanel::existing(document, feature)?;
@@ -425,6 +436,23 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Cabinet(Box::new(super::cabinet::CabinetPanel::new(
+                session.document(),
+                name,
+            ))),
+        )
+    }
+    pub fn begin_fdm_aid(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Print aid", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::FdmAid(Box::new(super::fdm_aid::FdmAidPanel::new(
                 session.document(),
                 name,
             ))),

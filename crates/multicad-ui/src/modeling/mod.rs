@@ -12,6 +12,7 @@ pub(crate) mod dimension;
 mod edge_treatment;
 mod extrude;
 mod extrude_operation;
+mod fdm_aid;
 mod form;
 mod gizmo;
 mod group_edit;
@@ -62,15 +63,17 @@ pub enum ModelingTool {
     Wall,
     Level,
     Panel,
+    FdmAid,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
         Self::Level,
         Self::Panel,
+        Self::FdmAid,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -110,6 +113,7 @@ impl ModelingTool {
             Self::Wall => "wall",
             Self::Level => "level",
             Self::Panel => "panel",
+            Self::FdmAid => "fdm-aid",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -137,6 +141,7 @@ impl ModelingTool {
             Self::Wall => "Wall",
             Self::Level => "Levels & stairs",
             Self::Panel => "Panel / carcass",
+            Self::FdmAid => "Tab / bridge / support",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -164,6 +169,7 @@ impl ModelingTool {
             Self::Wall => crate::icons::Icon::Box,
             Self::Level => crate::icons::Icon::Edge,
             Self::Panel => crate::icons::Icon::Box,
+            Self::FdmAid => crate::icons::Icon::Edge,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -191,6 +197,13 @@ impl ModelingTool {
             Self::Wall => &["walls", "architectural-wall", "doors-windows"],
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
+            Self::FdmAid => &[
+                "support",
+                "tab",
+                "breakaway-tab",
+                "sacrificial-bridge",
+                "fdm",
+            ],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -209,6 +222,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
+            }
+            Self::FdmAid => {
+                "Usage: fdm-aid (choose tab, bridge or support, the finished Part and process allowances in the Inspector, then Preview and Apply)"
             }
             Self::Panel => {
                 "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
@@ -256,6 +272,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Requires native modeling and no pending edits. Slabs and stairs are placed on an existing level; editing a level rebuilds everything on it. Stair figures are geometric notes, not code approval."
+            }
+            Self::FdmAid => {
+                "Requires native modeling, a finished Part and no pending edits. Each aid is its own Part; the finished Part is not changed. No slicer, support generation or G-code."
             }
             Self::Panel => {
                 "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."
