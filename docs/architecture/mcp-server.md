@@ -175,6 +175,10 @@ schema is generated from the Rust argument types with schemars and returned by
 | `edit_member` | yes | Member stock, point path, anchor, rotation or extensions, keeping its Part |
 | `connect_members` | yes | Miter, butt or cope connection between two members, with gap; cuts derived from both members |
 | `weldment_cut_list` | no | Member lengths, sections, orientation and both end treatments measured from the solids |
+| `set_weld` | yes | Weld on a member connection: mark, symbol, size, process and notes |
+| `set_weld_sequence` | yes | Authored weld order, created or reordered without losing references |
+| `weld_schedule` | no | Welds in sequence order with joint positions, and grouped member cuts with quantities |
+| `place_weld_plan` | yes | Weld symbols at projected joints and a weld sequence table on a drawing page |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
 | `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |

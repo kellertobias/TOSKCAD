@@ -13,7 +13,7 @@ use multicad_core::{
     materials::{self, LibraryDefinition, ProfileShape, Stock, StockKind},
     model::{
         self, AxisAnchor, BodyOutput, ConnectionDefinition, ConnectionKind, MemberDefinition,
-        MemberPath, MemberRequest, angle,
+        MemberPath, MemberRequest, SequenceDefinition, SequenceStep, WeldDefinition, angle,
     },
     parameters::EvaluatedParameters,
 };
@@ -160,6 +160,94 @@ pub struct ConnectArgs {
     /// Clearance between the cut end and the face it meets (default 0).
     #[serde(default)]
     pub gap: Option<Quantity>,
+}
+
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WeldSymbolArg {
+    Fillet,
+    SquareGroove,
+    VGroove,
+    BevelGroove,
+    Plug,
+    Spot,
+    Seam,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WeldSideArg {
+    Arrow,
+    Other,
+    Both,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WeldArgs {
+    pub expected_revision: u64,
+    /// Weld ID to edit; omit to add a weld.
+    #[serde(default)]
+    pub weld: Option<String>,
+    /// The member connection the weld joins.
+    pub connection: String,
+    /// Weld mark shown on drawings and schedules, unique in the document, e.g. "W1".
+    pub mark: String,
+    pub symbol: WeldSymbolArg,
+    /// Arrow side (default), other side or both.
+    #[serde(default)]
+    pub side: Option<WeldSideArg>,
+    /// Authored size, e.g. the fillet leg.
+    #[serde(default)]
+    pub size: Option<Quantity>,
+    /// Authored weld length; omit for the full joint.
+    #[serde(default)]
+    pub length: Option<Quantity>,
+    #[serde(default)]
+    pub all_around: bool,
+    /// Made on site.
+    #[serde(default)]
+    pub field: bool,
+    /// Process annotation, e.g. "135 MAG".
+    #[serde(default)]
+    pub process: Option<String>,
+    /// Access, position and orientation notes.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StepArg {
+    pub weld: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceArgs {
+    pub expected_revision: u64,
+    /// Sequence ID to replace (e.g. to reorder); omit to create one.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// Name of a new sequence.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Welds in the order they are to be made.
+    pub steps: Vec<StepArg>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WeldPlanArgs {
+    pub expected_revision: u64,
+    /// Drawing document holding the page.
+    pub drawing: String,
+    pub page: String,
+    /// View on that page the weld symbols point into.
+    pub view: String,
+    /// Top-left paper position of the sequence table, in millimeters.
+    pub table_mm: [f64; 2],
+    /// Remove weld symbols with the current marks and earlier weld sequence
+    /// tables from the page first (default true).
+    #[serde(default)]
+    pub replace: Option<bool>,
 }
 
 fn q(q: &Quantity, d: &Document, e: &EvaluatedParameters) -> Result<Dimension, ToolError> {
@@ -459,6 +547,173 @@ fn end_json(e: &multicad_model::EndRecord) -> Value {
         "connection": e.connection, "partner": e.partner,
         "angle_deg": e.angle_deg, "terminates": e.terminates,
     })
+}
+
+pub(super) fn set_weld(host: &dyn Host, call: &Request, args: WeldArgs) -> ToolResult {
+    use multicad_core::drawings::{WeldSide, WeldSymbol};
+    let (document, revision, evaluated) = snapshot(host)?;
+    stale(args.expected_revision, revision)?;
+    let (d, e) = (&document, &evaluated);
+    let weld = WeldDefinition {
+        connection: id(&args.connection)?,
+        mark: args.mark.clone(),
+        symbol: match args.symbol {
+            WeldSymbolArg::Fillet => WeldSymbol::Fillet,
+            WeldSymbolArg::SquareGroove => WeldSymbol::SquareGroove,
+            WeldSymbolArg::VGroove => WeldSymbol::VGroove,
+            WeldSymbolArg::BevelGroove => WeldSymbol::BevelGroove,
+            WeldSymbolArg::Plug => WeldSymbol::Plug,
+            WeldSymbolArg::Spot => WeldSymbol::Spot,
+            WeldSymbolArg::Seam => WeldSymbol::Seam,
+        },
+        side: match args.side {
+            Some(WeldSideArg::Other) => WeldSide::Other,
+            Some(WeldSideArg::Both) => WeldSide::Both,
+            _ => WeldSide::Arrow,
+        },
+        size: opt(&args.size, d, e)?,
+        length: opt(&args.length, d, e)?,
+        all_around: args.all_around,
+        field: args.field,
+        process: args.process.clone().unwrap_or_default(),
+        notes: args.notes.clone().unwrap_or_default(),
+    };
+    let edit = args.weld.as_deref().map(id).transpose()?;
+    let call_owned = call.clone();
+    let (weld_id, prepared) = with(host, move |target| {
+        revision_guard(target, revision)?;
+        let session = target.session();
+        let actor = call_owned.actor.clone();
+        Ok::<_, ToolError>(match edit {
+            Some(w) => (
+                w,
+                model::prepare_weld_edit(session, revision, actor, w, &weld)?,
+            ),
+            None => model::prepare_weld(session, revision, actor, &weld)?,
+        })
+    })??;
+    // The schedule must resolve before the weld is committed.
+    let model = compile(prepared.document(), revision, call)?;
+    model.weld_schedule(prepared.document())?;
+    let call = call.clone();
+    let committed = with(host, move |target| commit(target, &call, prepared))??;
+    Ok(json!({ "revision": committed, "weld": weld_id }))
+}
+
+pub(super) fn set_weld_sequence(host: &dyn Host, call: &Request, args: SequenceArgs) -> ToolResult {
+    let sequence = SequenceDefinition {
+        steps: args
+            .steps
+            .iter()
+            .map(|s| {
+                Ok(SequenceStep {
+                    weld: id(&s.weld)?,
+                    note: s.note.clone().unwrap_or_default(),
+                })
+            })
+            .collect::<Result<_, ToolError>>()?,
+    };
+    let existing = args.sequence.as_deref().map(id).transpose()?;
+    let name = args.name.clone().unwrap_or_else(|| "Weld sequence".into());
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        let (sequence_id, prepared) = model::prepare_sequence(
+            target.session(),
+            args.expected_revision,
+            call.actor.clone(),
+            existing,
+            &name,
+            &sequence,
+        )?;
+        let revision = commit(target, &call, prepared)?;
+        Ok(json!({ "revision": revision, "sequence": sequence_id }))
+    })?
+}
+
+fn weld_json(r: &multicad_model::WeldRecord) -> Value {
+    json!({
+        "weld": r.weld, "mark": r.mark, "sequence": r.sequence, "step": r.step,
+        "step_note": r.step_note, "connection": r.connection,
+        "connection_name": r.connection_name, "joint": r.kind.label(),
+        "members": r.members, "member_names": r.member_names,
+        "position_mm": r.position, "joint_perimeter_mm": r.joint_perimeter_mm,
+        "symbol": format!("{:?}", r.symbol), "side": format!("{:?}", r.side),
+        "size_mm": r.size_mm, "length_mm": r.length_mm,
+        "all_around": r.all_around, "field": r.field,
+        "process": r.process, "notes": r.notes,
+    })
+}
+
+pub(super) fn weld_schedule(host: &dyn Host, call: &Request, _: super::NoArgs) -> ToolResult {
+    let (document, revision, _) = snapshot(host)?;
+    let model = compile(&document, revision, call)?;
+    let welds = model.weld_schedule(&document)?;
+    let groups = multicad_model::group_cuts(&model.member_cut_list(&document)?);
+    Ok(json!({
+        "revision": revision,
+        "scope": "Welds in authored sequence order with joint positions resolved from the current members, and identical member cuts grouped with quantities. Documentation only: not a welding procedure, distortion, strength, heat-input or structural-safety calculation. Joint perimeters are measured on plane cuts (round tubes by Ramanujan's ellipse approximation); copes report none.",
+        "welds": welds.iter().map(weld_json).collect::<Vec<_>>(),
+        "cut_groups": groups.iter().map(|g| json!({
+            "quantity": g.quantity, "parts": g.parts, "names": g.names,
+            "stock": g.stock, "designation": g.designation, "length_mm": g.length_mm,
+            "start": { "treatment": g.ends[0].0, "angle_deg": g.ends[0].1 },
+            "end": { "treatment": g.ends[1].0, "angle_deg": g.ends[1].1 },
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+pub(super) fn place_weld_plan(host: &dyn Host, call: &Request, args: WeldPlanArgs) -> ToolResult {
+    use multicad_core::drawings::{self, AnnotationKind, PageAction};
+    let (document, revision, _) = snapshot(host)?;
+    stale(args.expected_revision, revision)?;
+    let (book_id, page_id, view_id) = (id(&args.drawing)?, id(&args.page)?, id(&args.view)?);
+    let book = drawings::read(&document, book_id).map_err(ToolError::from)?;
+    let mut page = book
+        .pages
+        .iter()
+        .find(|p| p.id == page_id)
+        .cloned()
+        .ok_or_else(|| ToolError::invalid("The page is not in this drawing"))?;
+    let view = page
+        .views
+        .iter()
+        .find(|v| v.id == view_id)
+        .cloned()
+        .ok_or_else(|| ToolError::invalid("The view is not on this page"))?;
+    let model = compile(&document, revision, call)?;
+    let records = model.weld_schedule(&document)?;
+    if records.is_empty() {
+        return Err(ToolError::invalid("There are no welds to place"));
+    }
+    if args.replace.unwrap_or(true) {
+        let marks: Vec<&str> = records.iter().map(|r| r.mark.as_str()).collect();
+        page.annotations.retain(|a| match &a.kind {
+            AnnotationKind::Weld { tail, .. } => tail
+                .split_whitespace()
+                .next()
+                .is_none_or(|m| !marks.contains(&m)),
+            AnnotationKind::Table { title, .. } => title != "Weld sequence",
+            _ => true,
+        });
+    }
+    let placed = multicad_model::weld_plan_annotations(&records, &view, args.table_mm);
+    let ids: Vec<EntityId> = placed.iter().map(|a| a.id).collect();
+    page.annotations.extend(placed);
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, revision)?;
+        let prepared = drawings::prepare(
+            target.session(),
+            revision,
+            call.actor.clone(),
+            book_id,
+            PageAction::Replace(page),
+        )
+        .map_err(ToolError::from)?;
+        let revision = commit(target, &call, prepared)?;
+        Ok(json!({ "revision": revision, "annotations": ids }))
+    })?
 }
 
 pub(super) fn weldment_cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> ToolResult {
