@@ -43,6 +43,7 @@ mod imports;
 mod levels;
 mod reference_repair;
 mod render;
+mod schedules;
 mod walls;
 pub use cabinetry::{
     CarcassArgs, DeleteJointArgs, DeleteMachiningArgs, HardwareArgs, MachiningArgs, PanelArgs,
@@ -67,6 +68,8 @@ pub use reference_repair::{
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
 pub use render::{AssignAppearanceArgs, CreateAppearanceArgs, HandoffArgs, RenderSceneArgs};
 use render::{assign_appearance, blender_handoff, create_appearance, set_render_scene};
+use schedules::schedule;
+pub use schedules::{ScheduleArgs, ScheduleKindArg};
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
@@ -292,6 +295,9 @@ tools! {
     "import_kicad" => KicadImportArgs, "Import or update KiCad board", false,
         "Import a .kicad_pcb from the exchange folder in scope: the Edge.Cuts outline with cutouts and drilled holes (mounting holes by default) as a board Part, and selected footprints as component Parts from their STEP models in that folder or courtyard envelopes when a model is missing. Updating keeps the board and matching components. Missing models and unsupported items are reported.",
         import_kicad;
+    "schedule" => ScheduleArgs, "Schedule", true,
+        "A schedule from the evaluated model as columns and rows with its revision and source hash: the BOM (one row per Part, quantity from physical occurrences, supply class, explicit aid/purchased inclusion, stack layers listed individually), the panel cut list, machining, the grouped member cut list or the weld schedule. With file_name, also writes it as CSV into the export folder in scope.",
+        schedule;
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;
