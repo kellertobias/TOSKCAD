@@ -357,7 +357,6 @@ impl Default for Registry {
             ("joint", "Finger / miter joint", Icon::Link),
             ("drill", "Drill / pocket", Icon::Cut),
             ("cut-list", "Cut list", Icon::Page),
-            ("bend", "Flange / bend", Icon::Edge),
             ("fastener", "Attached fastener", Icon::Link),
             ("flat", "Flat pattern", Icon::Page),
             ("bend-list", "Bend schedule", Icon::Page),
@@ -457,10 +456,7 @@ impl Default for Registry {
                         requires_active_sketch: false,
                     },
                     tab("Wood", &["panel", "drill", "joint", "cut-list"]),
-                    tab(
-                        "Sheet metal",
-                        &["sheet", "bend", "fastener", "flat", "bend-list"],
-                    ),
+                    tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld", "weld-list"]),
                     RibbonTab {
                         title: "Relationships",

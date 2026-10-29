@@ -141,7 +141,7 @@ impl ModelingTool {
             Self::Wall => "Wall",
             Self::Level => "Levels & stairs",
             Self::Panel => "Panel / carcass",
-            Self::Sheet => "Base sheet",
+            Self::Sheet => "Sheet part / flanges",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -197,7 +197,15 @@ impl ModelingTool {
             Self::Wall => &["walls", "architectural-wall", "doors-windows"],
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
-            Self::Sheet => &["sheet-metal", "base-sheet", "sheet-part"],
+            Self::Sheet => &[
+                "sheet-metal",
+                "base-sheet",
+                "sheet-part",
+                "flange",
+                "bend",
+                "hem",
+                "jog",
+            ],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -221,7 +229,7 @@ impl ModelingTool {
                 "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
             }
             Self::Sheet => {
-                "Usage: sheet (choose sheet stock and base size, optionally override the inside radius and K-factor in the Inspector, then Preview and Apply)"
+                "Usage: sheet (choose sheet stock, base size and edge flanges, hems or jogs, optionally override the inside radius and K-factor in the Inspector, then Preview and Apply)"
             }
             Self::Wall => {
                 "Usage: wall (choose or define a wall type, enter path points and doors/windows in the Inspector, then Preview and Apply)"

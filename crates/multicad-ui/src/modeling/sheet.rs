@@ -14,8 +14,8 @@ use multicad_core::{
     document::{Document, EntityId},
     materials::{self, LibraryDefinition, StockKind},
     model::{
-        self, BodyOutput, Cutout, Flange, ModelPrepared, PanelPlane, SheetBase, SheetDefinition,
-        SheetRequest,
+        self, BendDirection, BodyOutput, Cutout, Flange, FlangeKind, ModelPrepared, PanelPlane,
+        SheetBase, SheetDefinition, SheetRequest,
     },
 };
 
@@ -87,6 +87,147 @@ fn sheet_stocks(document: &Document) -> Vec<(EntityId, String, f64, f64, f64)> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowKind {
+    Bend,
+    Hem,
+    Jog,
+}
+/// One rectangle edge's flange in the form: off, or a bend, hem or jog with
+/// its values and an equal corner inset at both ends.
+struct FlangeRow {
+    on: bool,
+    kind: RowKind,
+    angle: DimensionField,
+    length: DimensionField,
+    gap: DimensionField,
+    offset: DimensionField,
+    down: bool,
+    inset: DimensionField,
+}
+impl FlangeRow {
+    fn new() -> Self {
+        Self {
+            on: false,
+            kind: RowKind::Bend,
+            angle: field(90., "deg"),
+            length: field(20., "mm"),
+            gap: field(1., "mm"),
+            offset: field(10., "mm"),
+            down: false,
+            inset: field(0., "mm"),
+        }
+    }
+    /// The row for an applied flange, when the form can show it.
+    fn from_flange(f: &Flange) -> Result<Option<Self>, String> {
+        if f.edge > 3
+            || f.relief.is_some()
+            || f.inside_radius.is_some()
+            || f.start_inset != f.end_inset
+        {
+            return Ok(None);
+        }
+        let mut row = Self::new();
+        row.on = true;
+        row.length = of(&f.length, "mm")?;
+        row.down = f.direction == BendDirection::Down;
+        if let Some(inset) = &f.start_inset {
+            row.inset = of(inset, "mm")?;
+        }
+        match &f.kind {
+            FlangeKind::Bend { angle } => row.angle = of(angle, "deg")?,
+            FlangeKind::Hem { gap } => {
+                row.kind = RowKind::Hem;
+                row.gap = of(gap, "mm")?;
+            }
+            FlangeKind::Jog { angle, offset } => {
+                row.kind = RowKind::Jog;
+                row.angle = of(angle, "deg")?;
+                row.offset = of(offset, "mm")?;
+            }
+        }
+        Ok(Some(row))
+    }
+    fn flange(&self, edge: u32, document: &Document) -> Result<Flange, String> {
+        let inset = self.inset.resolve(document)?;
+        let zero = matches!(inset, Dimension::Literal { value, .. } if value == 0.);
+        Ok(Flange {
+            edge,
+            kind: match self.kind {
+                RowKind::Bend => FlangeKind::Bend {
+                    angle: self.angle.resolve(document)?,
+                },
+                RowKind::Hem => FlangeKind::Hem {
+                    gap: self.gap.resolve(document)?,
+                },
+                RowKind::Jog => FlangeKind::Jog {
+                    angle: self.angle.resolve(document)?,
+                    offset: self.offset.resolve(document)?,
+                },
+            },
+            direction: if self.down {
+                BendDirection::Down
+            } else {
+                BendDirection::Up
+            },
+            length: self.length.resolve(document)?,
+            inside_radius: None,
+            start_inset: (!zero).then(|| inset.clone()),
+            end_inset: (!zero).then_some(inset),
+            relief: None,
+        })
+    }
+    fn show(&mut self, ui: &mut egui::Ui, label: &str) -> bool {
+        let mut changed = ui.checkbox(&mut self.on, label).changed();
+        if !self.on {
+            return changed;
+        }
+        ui.horizontal(|ui| {
+            for (kind, text) in [
+                (RowKind::Bend, "Bend"),
+                (RowKind::Hem, "Hem"),
+                (RowKind::Jog, "Jog"),
+            ] {
+                changed |= ui.radio_value(&mut self.kind, kind, text).changed();
+            }
+            changed |= ui.checkbox(&mut self.down, "Down").changed();
+        });
+        match self.kind {
+            RowKind::Bend => {
+                changed |= self
+                    .angle
+                    .show(ui, "Angle", "Bend angle, above 0° and at most 180°");
+            }
+            RowKind::Hem => {
+                changed |= self.gap.show(
+                    ui,
+                    "Hem gap",
+                    "Gap between the folded leg and the base face",
+                );
+            }
+            RowKind::Jog => {
+                changed |= self
+                    .angle
+                    .show(ui, "Jog angle", "Angle of both jog bends, at most 90°");
+                changed |= self.offset.show(
+                    ui,
+                    "Jog offset",
+                    "Distance between the base face and the leg's matching face",
+                );
+            }
+        }
+        changed |= self
+            .length
+            .show(ui, "Leg length", "Straight leg beyond the last bend");
+        changed |= self.inset.show(
+            ui,
+            "Corner inset",
+            "Gap at both ends of the edge, so flanges on neighboring edges do not touch",
+        );
+        changed
+    }
+}
+
 pub(super) struct SheetPanel {
     stamp: FormStamp,
     existing: Option<EntityId>,
@@ -98,6 +239,8 @@ pub(super) struct SheetPanel {
     kept_base: Option<SheetBase>,
     /// Flanges and cutouts kept unchanged by this form.
     kept_forming: (Vec<Flange>, Vec<Cutout>),
+    /// Flanges on the four rectangle edges, when the form can edit them.
+    rows: Option<[FlangeRow; 4]>,
     plane: PanelPlane,
     origin: [DimensionField; 3],
     length: DimensionField,
@@ -122,6 +265,7 @@ impl SheetPanel {
             stock: first.map(|s| s.0),
             kept_base: None,
             kept_forming: (vec![], vec![]),
+            rows: Some(std::array::from_fn(|_| FlangeRow::new())),
             plane: PanelPlane::Xy,
             origin: [field(0., "mm"), field(0., "mm"), field(0., "mm")],
             length: field(200., "mm"),
@@ -166,6 +310,21 @@ impl SheetPanel {
         }
         form.reverse = sheet.reverse;
         form.kept_forming = (sheet.flanges.clone(), sheet.cutouts.clone());
+        form.rows = None;
+        if form.kept_base.is_none() {
+            let mut rows: [FlangeRow; 4] = std::array::from_fn(|_| FlangeRow::new());
+            let mut shown = true;
+            for f in &sheet.flanges {
+                match FlangeRow::from_flange(f)? {
+                    Some(row) => rows[f.edge as usize] = row,
+                    None => shown = false,
+                }
+            }
+            if shown {
+                form.rows = Some(rows);
+                form.kept_forming.0.clear();
+            }
+        }
         if let Some(r) = &sheet.inside_radius {
             form.radius_override = true;
             form.radius = of(r, "mm")?;
@@ -180,7 +339,7 @@ impl SheetPanel {
         self.stamp
     }
     pub fn label(&self) -> &'static str {
-        "Base sheet"
+        "Sheet part"
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<SheetCommand, String> {
         if !enabled {
@@ -222,7 +381,15 @@ impl SheetPanel {
                     .k_override
                     .then(|| self.k_factor.resolve(document))
                     .transpose()?,
-                flanges: self.kept_forming.0.clone(),
+                flanges: match &self.rows {
+                    Some(rows) => rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.on)
+                        .map(|(edge, r)| r.flange(edge as u32, document))
+                        .collect::<Result<_, _>>()?,
+                    None => self.kept_forming.0.clone(),
+                },
                 cutouts: self.kept_forming.1.clone(),
             },
         })
@@ -323,6 +490,32 @@ impl SheetPanel {
                 "K-factor",
                 "Neutral-axis position as a fraction of thickness, 0–1",
             );
+        }
+        ui.separator();
+        ui.strong("Flanges");
+        match &mut self.rows {
+            Some(rows) => {
+                for (row, label) in rows.iter_mut().zip([
+                    "Edge 1 · along length at v = 0",
+                    "Edge 2 · along width at u = length",
+                    "Edge 3 · along length at v = width",
+                    "Edge 4 · along width at u = 0",
+                ]) {
+                    changed |= row.show(ui, label);
+                }
+            }
+            None => {
+                ui.small(format!(
+                    "{} flange(s) are kept as they are; edit them through MCP set_sheet_forming.",
+                    self.kept_forming.0.len()
+                ));
+            }
+        }
+        if !self.kept_forming.1.is_empty() {
+            ui.small(format!(
+                "{} cutout(s) are kept as they are.",
+                self.kept_forming.1.len()
+            ));
         }
         ui.separator();
         form::preview_status(ui, self.stamp, preview);
@@ -444,6 +637,25 @@ mod tests {
             .unwrap();
         assert_eq!(records[0].inside_radius_mm, 5.);
         assert_eq!(records[0].flat_size_mm, [250., 100.]);
+        // Flanges on the long edges; reopening shows them in their rows.
+        edit.rows.as_mut().unwrap()[0].on = true;
+        let hem = &mut edit.rows.as_mut().unwrap()[2];
+        hem.on = true;
+        hem.kind = RowKind::Hem;
+        let command = edit.request(s.document(), true).unwrap();
+        let prepared = command.prepare(&s, Actor::local(Channel::Ui)).unwrap();
+        let records = Compiler::default()
+            .compile(prepared.prepared.document(), 2)
+            .unwrap()
+            .sheet_metal(prepared.prepared.document())
+            .unwrap();
+        assert_eq!(records[0].bends.len(), 2);
+        assert_eq!(records[0].bends[1].angle_deg, 180.);
+        s.commit(prepared.prepared).unwrap();
+        let mut edit = SheetPanel::existing(s.document(), feature).unwrap();
+        let rows = edit.rows.as_ref().unwrap();
+        assert!(rows[0].on && rows[2].on && !rows[1].on);
+        assert_eq!(rows[2].kind, RowKind::Hem);
         // A K-factor outside 0–1 is refused before any geometry exists.
         edit.k_override = true;
         edit.k_factor = field(2., "ratio");
