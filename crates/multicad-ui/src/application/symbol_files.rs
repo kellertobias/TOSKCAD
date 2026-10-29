@@ -30,18 +30,20 @@ impl Application {
         let definition =
             multicad_core::symbols::read_definition(self.current().session.document(), id)
                 .map_err(|e| e.to_string())?;
-        let raw = format!("{}-{}.multicad", definition.name, definition.revision);
-        Ok(raw
-            .chars()
-            .map(|c| {
-                if c.is_control() || "<>:\"/\\|?*".contains(c) {
-                    '_'
-                } else {
-                    c
-                }
-            })
-            .take(180)
-            .collect())
+        let raw = format!("{}-{}", definition.name, definition.revision);
+        let mut name = String::new();
+        for character in raw.chars() {
+            let character = if character.is_control() || "<>:\"/\\|?*".contains(character) {
+                '_'
+            } else {
+                character
+            };
+            if name.len() + character.len_utf8() > 180 {
+                break;
+            }
+            name.push(character);
+        }
+        Ok(format!("{name}.multicad"))
     }
     pub(super) fn load_symbol_library(&mut self, path: PathBuf) -> Result<(), String> {
         if self.file_busy() {

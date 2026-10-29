@@ -3269,10 +3269,11 @@ mod tests {
         assert!(app.current().sketch.has_model_backend());
         assert!(app.current().sketch.has_assembly_backend());
         assert!(app.current().sketch.has_transfer_backend());
+        assert!(app.current().sketch.has_symbol_backend());
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            5,
-            "Canonical display, modeling, assembly, transfer candidates and reference recovery need separate workers"
+            6,
+            "Canonical display, modeling, assembly, transfer, symbol candidates and reference recovery need separate workers"
         );
         app.mode = Mode::Model;
         for command in [
@@ -3327,7 +3328,8 @@ mod tests {
         assert!(app.current().sketch.has_transfer_backend());
         assert!(app.projects[0].scene.has_backend());
         assert!(app.current().scene.has_backend());
-        assert_eq!(calls.load(Ordering::SeqCst), 10);
+        assert!(app.current().sketch.has_symbol_backend());
+        assert_eq!(calls.load(Ordering::SeqCst), 12);
     }
     #[test]
     fn primitive_starts_without_sketch_and_inspector_cancel_updates_status_without_editing_source()
