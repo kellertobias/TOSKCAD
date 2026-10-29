@@ -22,31 +22,48 @@ The native provider supports:
 
 - separate STEP files in millimeters, with filename-only naming and all design aids included;
 - [explicit planar-face DXF](planar-dxf.md) with declared units and exact closed contours;
-- [OBJ and 3MF](#mesh-output) in millimeters, centimeters, meters or inches, as separate parts or one assembly file.
+- [OBJ, 3MF and STL](#mesh-output) in millimeters, centimeters, meters or inches, as separate parts or one assembly file;
+- [GLB scenes](#glb-scenes) in meters, for Blender and other scene tools.
 
 - [multi-page PDF and per-page drawing DXF](drawing-exports.md) from checked drawing pages.
 
-Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, aid filtering, and STL and GLB (CAD-131) report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
+Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, aid filtering, and GLB in units other than meters report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
 
 ## Mesh output
 
 The [mesh writers](../../crates/multicad-model/src/export/mesh.rs) tessellate exact native solids at the recipe's chord and angular deviation. Viewport tessellation and display meshes are never inputs.
 
-| Hierarchy | OBJ | 3MF |
+| Hierarchy | OBJ and STL | 3MF |
 | --- | --- | --- |
 | Separate parts | One file per Part or occurrence, in world coordinates | One file per Part or occurrence: one object and one identity build item |
-| Preserve assembly | One file with one world-space object per Part, since OBJ has no instancing | One file with one object per component definition (the producing feature) and one build item per occurrence, carrying its rigid pose |
+| Preserve assembly | One file with every Part in world coordinates, since neither format has instancing | One file with one object per component definition (the producing feature) and one build item per occurrence, carrying its rigid pose |
 
-- **Units.** OBJ states its unit in a `# units:` header and scales coordinates. 3MF declares `unit` on the model. Translations in 3MF build items use the same unit.
+- **Units.**
+  - OBJ states its unit in a `# units:` header and scales coordinates.
+  - STL is binary with outward facet normals. The format has no unit field, so coordinates use the chosen unit and the 80-byte header names it (`units=millimeter (not stored by STL)`). Readers that assume a unit may scale it wrongly.
+  - 3MF declares `unit` on the model. Translations in 3MF build items use the same unit.
 - **Names.** Product names use the Part and occurrence names; filename-only naming writes `object-N`.
 - **Packaging.** 3MF packages contain `[Content_Types].xml`, `_rels/.rels` and `3D/3dmodel.model` as stored ZIP entries with a fixed timestamp, so identical source produces identical bytes.
 - **Evidence.** Each artifact records objects, build items, triangles, chord deviation and the placed tessellated volume.
-- **Readback.** Publication reads every OBJ and 3MF back and requires:
-  - the same bytes as generated, and the same objects, build items and triangles;
+- **Readback.** Publication reads every OBJ, 3MF, STL and GLB back and requires:
+  - the same bytes as generated, and the same objects, build items and triangles (STL keeps no objects, so only its triangles are compared);
   - a matching tessellated volume;
   - world bounds within twice the chord of the exact solid's bounds;
   - a volume within the chord allowance of the exact solid's volume, so an open or mis-oriented mesh fails.
+  - STL and GLB store single-precision coordinates, so their bounds and volume comparisons allow for that precision.
 - **Removable aids.** Removable-aid exclusion stays Unsupported until a typed aid provider classifies such geometry. Ordinary geometry exports with `IncludeAll`.
+
+### GLB scenes
+
+GLB is glTF 2.0 binary, for handing a model to Blender or other scene tools.
+
+- **Scale and axes.** glTF is defined in meters with +Y up. Geometry and translations are converted from millimeters, and one root node turns the Z-up model into the Y-up scene, so Blender's importer restores Z-up at true size. A GLB recipe in any other unit is Unsupported.
+- **Hierarchy.** Each scope root assembly and each enclosing occurrence becomes a named group node with an identity transform. Every Part or occurrence is a leaf node named like other product names and carrying its rigid world pose, so a placement is applied exactly once.
+- **Instances.** Occurrences of one component definition share one mesh in the definition's local frame. A Part placed directly in the project is written in world coordinates.
+- **Appearance.** Each Part's effective appearance becomes a metallic-roughness material: its sRGB color as a linear base color, with alpha blending below full opacity.
+- **Not included.** Textures, normals, cameras, lights and render settings are not written. Importers compute normals.
+
+[`tools/blender/glb_import_report.py`](../../tools/blender/glb_import_report.py) imports a GLB in background Blender and reports objects, parents, world bounds, shared meshes and base colors. It is a developer check, not part of the application.
 
 Run receives an immutable document snapshot and the exact accepted key. It resolves and compiles again, checks the key, and writes only the requested snapshot. Later edits leave an older preview available for inspection but disable its Run action. An already accepted Run retains its original source and actor attribution even if the user edits or switches documents.
 
