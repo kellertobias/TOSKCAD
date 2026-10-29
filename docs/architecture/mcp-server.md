@@ -165,6 +165,11 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_wall_type`, `edit_wall_type` | yes | Reusable wall types; a type edit rebuilds every wall that does not override the value (see [walls](walls.md)) |
 | `create_opening_type` | yes | Reusable door (hinge, swing) or window type with width, height and sill |
 | `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit |
+| `create_panel_stock` | yes | Panel stock (thickness, sheet size, grain) on an existing or new Material (see [cabinetry](cabinetry.md)) |
+| `set_carcass` | yes | Create or edit a parametric carcass; every panel is evaluated natively before commit |
+| `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |
+| `create_panel_stack` | yes | Face-to-face panel layers kept as their own Parts, optionally grouped |
+| `cut_list` | no | Finished and core panel sizes measured from the solids, stock fit and stack contact |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
 | `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |
