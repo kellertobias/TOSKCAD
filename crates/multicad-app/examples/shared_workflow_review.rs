@@ -481,6 +481,7 @@ pub fn generate(directory: &Path) -> Result<serde_json::Value, Error> {
     file.sync_all()?;
     let exports = directory.join("exports");
     std::fs::create_dir(&exports)?;
+    let exports = exports.canonicalize()?;
     let receipt = export(scenario.session(), scenario.set, &exports)?;
     let manifest = serde_json::json!({
         "generator": "shared_workflow_review",
