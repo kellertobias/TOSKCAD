@@ -141,5 +141,5 @@ The upgrade report retains the original conflict summary after a user unchecks
 an obsolete override; Preview/Apply use the resolved current controls. That
 summary could be clearer. Some long scrolled native Inspector controls required
 coordinate interaction during computer-use verification, although their visible
-fixed actions worked. No low-power performance, Windows/Linux runtime, remote
+fixed actions worked. No low-power performance, Windows/Linux runtime,
 connected MCP transport or human workflow acceptance is claimed here.
