@@ -312,6 +312,7 @@ impl DrawingBackend for TestPublisher {
             result: Ok(std::sync::Arc::new(drawings::DrawingEvaluation {
                 stamp,
                 views,
+                annotations: Default::default(),
             })),
         });
         Ok(())
@@ -609,7 +610,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let page = editor.draft.clone().unwrap();
     let result = editor.feed.result.clone();
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &page, 0, 1, result.as_deref(), None, None);
+        canvas::show(ui, &page, 0, 1, result.as_deref(), None, None, None);
     });
     assert!(
         canvas.contains("Section A-A"),
@@ -619,7 +620,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let mut facing = page.clone();
     facing.views[0].frame = facing.views[1].frame;
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &facing, 0, 1, result.as_deref(), None, None);
+        canvas::show(ui, &facing, 0, 1, result.as_deref(), None, None, None);
     });
     assert!(!canvas.contains("Section A-A"), "{canvas}");
     editor
@@ -696,4 +697,121 @@ fn picking_two_points_in_a_plan_adds_a_finite_section_through_that_line() {
 }
 fn section_id(editor: &DrawingEditor) -> EntityId {
     editor.draft.as_ref().unwrap().views[1].id
+}
+#[test]
+fn sheet_annotations_add_edit_move_copy_and_apply_as_one_page_edit() {
+    use drawings::{AnnotationKind, DraftGeometry, SheetTransform};
+    let (mut editor, mut session, source) = view_editor(false);
+    // A model dimension needs a pinned measurement's persistent references.
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    editor.draft.as_mut().unwrap().settings.scale = drawings::Scale {
+        numerator: 1,
+        denominator: 2,
+    };
+    let error = editor
+        .invoke(&mut session, DrawingTool::Dimension, Channel::Ui)
+        .unwrap_err();
+    assert!(error.contains("Pin a measurement"), "{error}");
+    for tool in [
+        DrawingTool::Leader,
+        DrawingTool::Weld,
+        DrawingTool::Table,
+        DrawingTool::DraftLine,
+        DrawingTool::DraftCircle,
+        DrawingTool::DraftArc,
+        DrawingTool::Hatch,
+        DrawingTool::DraftDimension,
+    ] {
+        assert!(editor.enabled(tool, &session), "{tool:?}");
+        editor.invoke(&mut session, tool, Channel::Ui).unwrap();
+    }
+    let page = editor.draft.as_ref().unwrap();
+    assert_eq!(page.annotations.len(), 8);
+    assert!(
+        editor.validate_draft().is_ok(),
+        "{:?}",
+        editor.validate_draft()
+    );
+    // Move and rotate the drafting line; its length is preserved.
+    let line = page
+        .annotations
+        .iter()
+        .find(|a| {
+            matches!(
+                a.kind,
+                AnnotationKind::Draft {
+                    geometry: DraftGeometry::Line { .. },
+                    ..
+                }
+            )
+        })
+        .unwrap()
+        .id;
+    editor.selected_annotation = Some(line);
+    editor
+        .transform_selected(SheetTransform::translation([10., 5.]))
+        .unwrap();
+    editor
+        .transform_selected(SheetTransform {
+            translate_mm: [0.; 2],
+            rotate_deg: 90.,
+            about_mm: [100., 80.],
+        })
+        .unwrap();
+    editor.copy_selected([5., 0.]).unwrap();
+    let page = editor.draft.as_ref().unwrap();
+    assert_eq!(page.annotations.len(), 9);
+    for a in page.annotations.iter().filter(|a| {
+        matches!(
+            a.kind,
+            AnnotationKind::Draft {
+                geometry: DraftGeometry::Line { .. },
+                ..
+            }
+        )
+    }) {
+        let AnnotationKind::Draft {
+            geometry: DraftGeometry::Line { a, b },
+            ..
+        } = a.kind
+        else {
+            unreachable!()
+        };
+        assert!(((b[0] - a[0]).hypot(b[1] - a[1]) - 30.).abs() < 1e-9);
+    }
+    editor.remove_selected().unwrap();
+    assert_eq!(editor.draft.as_ref().unwrap().annotations.len(), 8);
+
+    // The canvas paints sheet annotations and a pending marker for none.
+    let page = editor.draft.clone().unwrap();
+    let canvas = painted_text(|ui| {
+        canvas::show(ui, &page, 0, 1, None, None, None, None);
+    });
+    assert!(
+        canvas.contains("Note") && canvas.contains("a3") && canvas.contains("Schedule"),
+        "{canvas}"
+    );
+    assert!(
+        canvas.contains("60.0"),
+        "the 30 mm sheet dimension reads 60 on a 1:2 page: {canvas}"
+    );
+
+    publish_editor(&mut editor, &session);
+    let before = session.revision();
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    assert_eq!(session.revision(), before + 1);
+    let stored = drawings::read(session.document(), editor.book.unwrap()).unwrap();
+    assert_eq!(stored.pages[0].annotations.len(), 8);
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    let stored = drawings::read(session.document(), editor.book.unwrap()).unwrap();
+    assert!(stored.pages[0].annotations.is_empty());
 }

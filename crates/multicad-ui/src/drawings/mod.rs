@@ -1,4 +1,5 @@
 //! Page editing owns authored drawing source; it never invents model views.
+mod annotations;
 mod canvas;
 mod evaluation;
 mod inspector;
@@ -28,9 +29,29 @@ pub enum DrawingTool {
     Projection,
     Section,
     Detail,
+    Dimension,
+    Leader,
+    Weld,
+    Table,
+    DraftLine,
+    DraftCircle,
+    DraftArc,
+    Hatch,
+    DraftDimension,
 }
 impl DrawingTool {
-    pub const ALL: [Self; 13] = [
+    pub const ANNOTATIONS: [Self; 9] = [
+        Self::Dimension,
+        Self::Leader,
+        Self::Weld,
+        Self::Table,
+        Self::DraftLine,
+        Self::DraftCircle,
+        Self::DraftArc,
+        Self::Hatch,
+        Self::DraftDimension,
+    ];
+    pub const ALL: [Self; 22] = [
         Self::NewDocument,
         Self::AddPage,
         Self::Duplicate,
@@ -44,6 +65,15 @@ impl DrawingTool {
         Self::Projection,
         Self::Section,
         Self::Detail,
+        Self::Dimension,
+        Self::Leader,
+        Self::Weld,
+        Self::Table,
+        Self::DraftLine,
+        Self::DraftCircle,
+        Self::DraftArc,
+        Self::Hatch,
+        Self::DraftDimension,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -60,6 +90,15 @@ impl DrawingTool {
             Self::Projection => "drawing-projection",
             Self::Section => "drawing-section",
             Self::Detail => "drawing-detail",
+            Self::Dimension => "drawing-dimension",
+            Self::Leader => "drawing-leader",
+            Self::Weld => "drawing-weld",
+            Self::Table => "drawing-table",
+            Self::DraftLine => "draft-line",
+            Self::DraftCircle => "draft-circle",
+            Self::DraftArc => "draft-arc",
+            Self::Hatch => "draft-hatch",
+            Self::DraftDimension => "draft-dimension",
         }
     }
     pub fn label(self) -> &'static str {
@@ -77,6 +116,15 @@ impl DrawingTool {
             Self::Projection => "Model view",
             Self::Section => "Section view",
             Self::Detail => "Detail view",
+            Self::Dimension => "Model dimension",
+            Self::Leader => "Leader",
+            Self::Weld => "Weld symbol",
+            Self::Table => "Table",
+            Self::DraftLine => "Sheet line",
+            Self::DraftCircle => "Sheet circle",
+            Self::DraftArc => "Sheet arc",
+            Self::Hatch => "Sheet hatch",
+            Self::DraftDimension => "Sheet dimension",
         }
     }
     pub fn icon(self) -> Icon {
@@ -93,6 +141,13 @@ impl DrawingTool {
             Self::Projection => Icon::Orthographic,
             Self::Section => Icon::Section,
             Self::Detail => Icon::Fit,
+            Self::Dimension | Self::DraftDimension => Icon::Measure,
+            Self::Leader | Self::Weld => Icon::Line,
+            Self::Table => Icon::Grid,
+            Self::DraftLine => Icon::Line,
+            Self::DraftCircle => Icon::Circle,
+            Self::DraftArc => Icon::Arc,
+            Self::Hatch => Icon::Section,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -110,6 +165,15 @@ impl DrawingTool {
             Self::Projection => &["drawingview", "projection"],
             Self::Section => &["drawingsection"],
             Self::Detail => &["drawingdetail"],
+            Self::Dimension => &["drawingdim", "modeldim"],
+            Self::Leader => &["leader"],
+            Self::Weld => &["weld"],
+            Self::Table => &["table", "schedule"],
+            Self::DraftLine => &["sheetline"],
+            Self::DraftCircle => &["sheetcircle"],
+            Self::DraftArc => &["sheetarc"],
+            Self::Hatch => &["sheethatch"],
+            Self::DraftDimension => &["sheetdim"],
         }
     }
 }
@@ -126,6 +190,7 @@ pub struct DrawingEditor {
     selected_view: Option<EntityId>,
     /// Picking a section line in this parent view; the first paper point.
     section_pick: Option<(EntityId, Option<[f64; 2]>)>,
+    selected_annotation: Option<EntityId>,
 }
 impl DrawingEditor {
     pub fn dirty(&self) -> bool {
@@ -194,6 +259,8 @@ impl DrawingEditor {
             DrawingTool::Discard => self.dirty(),
             DrawingTool::Settings => self.selected.is_some(),
             DrawingTool::Text => self.selected.is_some(),
+            DrawingTool::Dimension => self.draft.as_ref().is_some_and(|p| !p.views.is_empty()),
+            tool if DrawingTool::ANNOTATIONS.contains(&tool) => self.selected.is_some(),
             DrawingTool::Projection | DrawingTool::Section | DrawingTool::Detail => {
                 self.selected.is_some() && self.has_backend_factory()
             }
@@ -245,6 +312,9 @@ impl DrawingEditor {
                 return Err("Native drawing provider is unavailable".into());
             }
             return self.add_view(kind);
+        }
+        if DrawingTool::ANNOTATIONS.contains(&tool) {
+            return self.add_annotation(session, tool);
         }
         if tool == DrawingTool::Text {
             let page = self.draft.as_mut().ok_or("Add a page first")?;
@@ -431,6 +501,7 @@ impl DrawingEditor {
                     },
                     self.selected_view,
                     self.section_pick.map(|(_, first)| first),
+                    self.selected_annotation,
                 );
             } else {
                 ui.centered_and_justified(|ui| {
@@ -451,6 +522,10 @@ impl DrawingEditor {
         });
         if let Some(id) = event.view {
             self.selected_view = Some(id);
+        }
+        if let Some(id) = event.annotation {
+            self.selected_annotation = Some(id);
+            self.selected_view = None;
         }
         if let Some(point) = event.pick_mm
             && let Err(error) = self.pick_section_point(point)

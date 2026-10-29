@@ -183,6 +183,8 @@ impl DrawingEditor {
         if let Some(index) = remove {
             page.notes.remove(index);
         }
+        self.annotations_inspector(ui, session);
+        self.pin_dimension_controls(ui, session);
         self.page_actions(ui, session);
     }
 }

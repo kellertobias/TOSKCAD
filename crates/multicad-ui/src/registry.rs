@@ -494,7 +494,26 @@ impl Default for Registry {
                             "drawing-detail",
                         ],
                     ),
-                    tab("Annotate", &["drawing-note", "dimension", "text"]),
+                    tab(
+                        "Annotate",
+                        &[
+                            "drawing-note",
+                            "drawing-dimension",
+                            "drawing-leader",
+                            "drawing-weld",
+                            "drawing-table",
+                        ],
+                    ),
+                    tab(
+                        "Drafting",
+                        &[
+                            "draft-line",
+                            "draft-circle",
+                            "draft-arc",
+                            "draft-hatch",
+                            "draft-dimension",
+                        ],
+                    ),
                 ],
             },
             Workspace {

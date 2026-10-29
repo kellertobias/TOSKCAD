@@ -7,10 +7,12 @@ use multicad_core::{
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct CanvasEvent {
     pub view: Option<EntityId>,
+    pub annotation: Option<EntityId>,
     /// While picking a section line: the clicked paper point, in mm.
     pub pick_mm: Option<[f64; 2]>,
 }
 /// `picking` is `Some(first point)` while a section line is being picked.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn show(
     ui: &mut egui::Ui,
     page: &Page,
@@ -19,6 +21,7 @@ pub(super) fn show(
     evaluation: Option<&DrawingEvaluation>,
     selected: Option<EntityId>,
     picking: Option<Option<[f64; 2]>>,
+    selected_annotation: Option<EntityId>,
 ) -> CanvasEvent {
     let layout = match drawings::layout_page(page, index, total) {
         Ok(layout) => layout,
@@ -165,8 +168,18 @@ pub(super) fn show(
         }
     }
     section_guides(&view_painter, page, evaluation, paper.min, scale);
+    let annotation = annotations(
+        ui,
+        &view_painter,
+        page,
+        evaluation,
+        paper,
+        scale,
+        selected_annotation,
+    );
     let mut event = CanvasEvent {
-        view: clicked,
+        view: clicked.filter(|_| annotation.is_none()),
+        annotation,
         pick_mm: None,
     };
     if let Some(first) = picking {
@@ -192,6 +205,7 @@ pub(super) fn show(
         {
             event = CanvasEvent {
                 view: None,
+                annotation: None,
                 pick_mm: Some(to_paper(position)),
             };
         }
@@ -256,4 +270,136 @@ fn section_guides(
             }
         }
     }
+}
+
+/// Draw page annotations. Model dimensions use the current evaluation; a
+/// detached or pending dimension shows a marker instead of an old value.
+/// Returns the annotation clicked, if any.
+fn annotations(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    page: &Page,
+    evaluation: Option<&DrawingEvaluation>,
+    paper: egui::Rect,
+    scale: f32,
+    selected: Option<EntityId>,
+) -> Option<EntityId> {
+    use drawings::{AnnotationEvaluation, AnnotationKind};
+    let to = |p: [f64; 2]| paper.min + egui::vec2(p[0] as f32, p[1] as f32) * scale;
+    let mut clicked = None;
+    for annotation in &page.annotations {
+        let (graphic, width, color) = match &annotation.kind {
+            AnnotationKind::Dimension { view, .. } => {
+                match evaluation.and_then(|e| e.annotations.get(&annotation.id)) {
+                    Some(AnnotationEvaluation::Ready { graphic }) => {
+                        (graphic.clone(), 0.18, egui::Color32::BLACK)
+                    }
+                    other => {
+                        let anchor = page
+                            .views
+                            .iter()
+                            .find(|v| v.id == *view)
+                            .map_or([20., 20.], |v| v.position_mm);
+                        let text = match other {
+                            Some(AnnotationEvaluation::Detached { message }) => {
+                                format!("Detached dimension: {message}")
+                            }
+                            _ => "Dimension pending".into(),
+                        };
+                        painter.text(
+                            to([anchor[0], anchor[1] + 12.]),
+                            egui::Align2::CENTER_TOP,
+                            text,
+                            egui::FontId::proportional(10.),
+                            egui::Color32::DARK_RED,
+                        );
+                        continue;
+                    }
+                }
+            }
+            AnnotationKind::DraftDimension {
+                a,
+                b,
+                offset_mm,
+                precision,
+            } => (
+                drawings::draft_dimension(page, *a, *b, *offset_mm, *precision),
+                0.18,
+                egui::Color32::BLACK,
+            ),
+            AnnotationKind::Draft { line_width_mm, .. } => (
+                drawings::sheet_graphic(annotation),
+                *line_width_mm,
+                egui::Color32::BLACK,
+            ),
+            _ => (
+                drawings::sheet_graphic(annotation),
+                0.18,
+                egui::Color32::BLACK,
+            ),
+        };
+        let color = if selected == Some(annotation.id) {
+            egui::Color32::from_rgb(30, 110, 180)
+        } else {
+            color
+        };
+        let stroke = egui::Stroke::new((width as f32 * scale).max(0.6), color);
+        for [a, b] in &graphic.lines {
+            painter.line_segment([to(*a), to(*b)], stroke);
+        }
+        for (center, r, start, end) in &graphic.arcs {
+            let steps = 48;
+            let points: Vec<_> = (0..=steps)
+                .map(|i| {
+                    let t = start + (end - start) * i as f64 / steps as f64;
+                    to([center[0] + r * t.cos(), center[1] + r * t.sin()])
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, stroke));
+        }
+        for (tip, dir) in &graphic.arrows {
+            let length = drawings::ARROW_MM;
+            let back = [tip[0] - dir[0] * length, tip[1] - dir[1] * length];
+            let n = [-dir[1] * 0.45, dir[0] * 0.45];
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    to(*tip),
+                    to([back[0] + n[0], back[1] + n[1]]),
+                    to([back[0] - n[0], back[1] - n[1]]),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        if !graphic.text.is_empty() {
+            let galley = painter.layout_no_wrap(
+                graphic.text.clone(),
+                egui::FontId::monospace(drawings::ANNOTATION_TEXT_MM as f32 * scale),
+                color,
+            );
+            let mut shape = egui::epaint::TextShape::new(
+                to(graphic.text_mm) - egui::vec2(0., galley.size().y),
+                galley,
+                color,
+            );
+            shape.angle = (graphic.text_angle_deg as f32).to_radians();
+            painter.add(shape);
+        }
+        let bounds =
+            drawings::table_bounds(annotation).or_else(|| drawings::graphic_bounds(&graphic));
+        if let Some([x0, y0, x1, y1]) = bounds {
+            let rect = egui::Rect::from_two_pos(to([x0, y0]), to([x1, y1])).expand(3.);
+            let response = ui
+                .interact(
+                    rect.intersect(paper),
+                    ui.id().with(("annotation", annotation.id)),
+                    egui::Sense::click(),
+                )
+                .on_hover_text("Click to edit this annotation");
+            if response.clicked() {
+                clicked = Some(annotation.id);
+            }
+        }
+    }
+    clicked
 }
