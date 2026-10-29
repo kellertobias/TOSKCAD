@@ -38,6 +38,7 @@ use std::{
 
 mod cabinetry;
 mod guides;
+mod imports;
 mod levels;
 mod reference_repair;
 mod walls;
@@ -51,6 +52,8 @@ use cabinetry::{
 };
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
+pub use imports::{KicadImportArgs, StepImportArgs};
+use imports::{import_kicad, import_step};
 pub use levels::{EnvelopeArgs, LevelArgs, SlabArgs, StairArgs};
 use levels::{check_clearances, create_envelope, create_slab, set_level, set_stair};
 pub use reference_repair::{
@@ -268,6 +271,12 @@ tools! {
     "delete_machining" => DeleteMachiningArgs, "Delete machining", false,
         "Delete a machining operation and its cuts, restoring the panels.",
         delete_machining;
+    "import_step" => StepImportArgs, "Import or update STEP", false,
+        "Import every solid of a STEP file from the exchange folder in scope as its own Part (exact B-rep, file placement, millimeters), or update an earlier import: solids matching by shape or name keep their Parts; new ones are added and vanished ones are kept and reported missing.",
+        import_step;
+    "import_kicad" => KicadImportArgs, "Import or update KiCad board", false,
+        "Import a .kicad_pcb from the exchange folder in scope: the Edge.Cuts outline with cutouts and drilled holes (mounting holes by default) as a board Part, and selected footprints as component Parts from their STEP models in that folder or courtyard envelopes when a model is missing. Updating keeps the board and matching components. Missing models and unsupported items are reported.",
+        import_kicad;
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;
