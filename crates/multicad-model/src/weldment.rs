@@ -403,6 +403,9 @@ pub struct EndRecord {
     pub angle_deg: f64,
     /// False for a continuing member cut square to cover its partner.
     pub terminates: bool,
+    /// Plane cuts more than 0.01° from square: where the cut end reaches
+    /// farthest along the axis. None for square ends and copes.
+    pub long_point: Option<LongPoint>,
 }
 impl EndRecord {
     fn square() -> Self {
@@ -412,7 +415,52 @@ impl EndRecord {
             partner: None,
             angle_deg: 0.,
             terminates: true,
+            long_point: None,
         }
+    }
+}
+/// The long point of an angled plane cut: the side of the section where the
+/// cut end reaches farthest along the member axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LongPoint {
+    /// World unit direction from the axis toward the long point, square to
+    /// the axis.
+    pub direction: [f64; 3],
+    /// The section face it lies on, in section coordinates (width x, height
+    /// y): "+x", "-x", "+y" or "-y", or a corner such as "+x-y" when the cut
+    /// runs diagonally across the section.
+    pub face: &'static str,
+}
+impl LongPoint {
+    /// The long point of a plane cut that keeps the side `normal` points to.
+    /// For a section offset q the cut face lies at s(q) = -(n_q · q) / n_a
+    /// along the axis, so at either end the material reaches farthest on the
+    /// side of the normal's component square to the axis.
+    pub(crate) fn of_plane(frame: &MemberFrame, normal: [f64; 3]) -> Option<Self> {
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let along = dot(normal, frame.axis);
+        let q = [0, 1, 2].map(|i| normal[i] - along * frame.axis[i]);
+        let length = dot(q, q).sqrt();
+        if length < 0.01_f64.to_radians().sin() {
+            return None;
+        }
+        let direction = q.map(|c| c / length);
+        let (x, y) = (dot(direction, frame.x), dot(direction, frame.y));
+        let face = if (x.abs() - y.abs()).abs() < 1e-6 {
+            match (x > 0., y > 0.) {
+                (true, true) => "+x+y",
+                (true, false) => "+x-y",
+                (false, true) => "-x+y",
+                (false, false) => "-x-y",
+            }
+        } else if x.abs() > y.abs() {
+            if x > 0. { "+x" } else { "-x" }
+        } else if y > 0. {
+            "+y"
+        } else {
+            "-y"
+        };
+        Some(Self { direction, face })
     }
 }
 
@@ -506,6 +554,12 @@ impl Model {
                     partner: Some(j.partner),
                     angle_deg: j.treatment.angle_deg,
                     terminates: j.treatment.terminates,
+                    long_point: match j.treatment.cut {
+                        EndCut::Plane { normal, .. } if j.treatment.angle_deg > 0.01 => {
+                            LongPoint::of_plane(&member.frame, normal)
+                        }
+                        _ => None,
+                    },
                 };
             }
             let measured = [b.max[0] - b.min[0], b.max[1] - b.min[1]];

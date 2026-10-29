@@ -705,6 +705,20 @@ fn paired_miter_follows_the_meeting_angle_and_records_both_end_angles() {
         assert_eq!(joint.partner, Some(partner));
         near(joint.angle_deg, 45.);
         assert!(joint.terminates);
+        // The long point is on the outside of the corner: −Y for the rail
+        // along X, +X for the rail along Y: the −x (width) face of both.
+        let long = joint.long_point.unwrap();
+        let outside = if r.name == "Rail 1" {
+            [0., -1., 0.]
+        } else {
+            [1., 0., 0.]
+        };
+        for (got, want) in long.direction.into_iter().zip(outside) {
+            near(got, want);
+        }
+        assert_eq!(long.face, "-x");
+        // The square far end has no long point.
+        assert!(r.ends[usize::from(r.name == "Rail 2")].long_point.is_none());
     }
     near(ra.length_mm, 820.);
     near(rb.length_mm, 520.);
@@ -774,6 +788,123 @@ fn paired_miter_follows_the_meeting_angle_and_records_both_end_angles() {
     }
     let list = compile(&f.s).member_cut_list(f.s.document()).unwrap();
     assert!(list.iter().all(|r| r.ends.iter().all(|e| e.kind.is_none())));
+}
+
+#[test]
+fn frame_from_a_parameter_dimensioned_sketch_follows_the_parameter() {
+    use multicad_core::constraint_sketch::{
+        ConstraintKind,
+        binding::{self, DimensionInput},
+    };
+    let mut f = fixture();
+    let width = Entity::new(
+        "frame_width",
+        EntityData::Parameter {
+            expression: "900".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let width_id = width.id;
+    insert(&mut f.s, vec![Mutation::Insert(width)]);
+    let (sketch, edits) = Source::create(Datum::Xy, "Frame path").unwrap();
+    insert(&mut f.s, edits);
+    let mut source = Source::read(f.s.document(), sketch).unwrap().0;
+    let bottom = source.add_rectangle([0., 0.], [900., 500.]).unwrap();
+    source.add_constraint(ConstraintKind::Fix {
+        point: source.sketch.points[0].id,
+    });
+    let along = source.add_constraint(ConstraintKind::Length {
+        line: bottom,
+        dimension: length(900.),
+    });
+    source.add_constraint(ConstraintKind::Length {
+        line: source.sketch.curves[1].id,
+        dimension: length(500.),
+    });
+    let source = binding::draft_dimension(
+        f.s.document(),
+        &source,
+        along,
+        &DimensionInput::Expression {
+            text: "=$frame_width".into(),
+            unit: "mm".into(),
+        },
+        false,
+    )
+    .unwrap();
+    let edit =
+        multicad_solver::prepare_edit(&f.s, f.s.revision(), actor(), sketch, source).unwrap();
+    f.s.commit(edit.preview.unwrap()).unwrap();
+    // A sketch with a parameter-bound dimension has no raw authored
+    // geometry, but its lines still become members.
+    assert!(Source::read(f.s.document(), sketch).is_err());
+    let rails =
+        model::frame_member_requests(f.s.document(), sketch, "Rail", &template(f.shs)).unwrap();
+    assert_eq!(rails.len(), 4);
+    create(&mut f, &rails);
+    let length_of = |s: &Session| {
+        record(&compile(s).member_cut_list(s.document()).unwrap(), "Rail 1").length_mm
+    };
+    near(length_of(&f.s), 900.);
+    let mut w = f.s.document().get(width_id).unwrap().clone();
+    if let EntityData::Parameter { expression, .. } = &mut w.data {
+        *expression = "1200".into();
+    }
+    let p =
+        f.s.prepare(Request {
+            expected_revision: f.s.revision(),
+            actor: actor(),
+            label: "Wider".into(),
+            edits: vec![Mutation::Replace(w)],
+        })
+        .unwrap();
+    checked(&mut f.s, p);
+    near(length_of(&f.s), 1200.);
+}
+
+#[test]
+fn long_points_tell_parallel_from_trapezoid_miters() {
+    let mut f = fixture();
+    // A Z path: the middle rail turns left at one end and right at the
+    // other, so its two miters have long points on opposite faces.
+    let (sketch, ..) = path_sketch(
+        &mut f.s,
+        Datum::Xy,
+        &[[0., 0.], [800., 0.], [800., 500.], [1600., 500.]],
+        false,
+    );
+    let rails =
+        model::frame_member_requests(f.s.document(), sketch, "Rail", &template(f.shs)).unwrap();
+    create(&mut f, &rails);
+    for i in 0..2 {
+        connect(
+            &mut f,
+            &format!("Corner {}", i + 1),
+            ConnectionKind::Miter,
+            [rails[i].body, rails[i + 1].body],
+            0.,
+        );
+    }
+    let list = compile(&f.s).member_cut_list(f.s.document()).unwrap();
+    let middle = record(&list, "Rail 2");
+    let [start, end] = middle.ends.each_ref().map(|e| e.long_point.unwrap());
+    assert_eq!(start.direction.map(f64::round), [1., 0., 0.]);
+    assert_eq!(end.direction.map(f64::round), [-1., 0., 0.]);
+    near(start.direction[0], 1.);
+    near(end.direction[0], -1.);
+    assert_ne!(start.face, end.face);
+    let groups = multicad_model::group_cuts(&list);
+    let g = groups.iter().find(|g| g.names == ["Rail 2"]).unwrap();
+    assert_eq!(g.long_points, Some("opposite faces"));
+    // The outer rails have one angled end each and no relation.
+    assert!(
+        groups
+            .iter()
+            .filter(|g| g.names != ["Rail 2"])
+            .all(|g| g.long_points.is_none())
+    );
 }
 
 #[test]
@@ -1010,6 +1141,18 @@ fn welds_follow_their_connections_in_authored_order_with_cut_groups_and_a_plan()
     assert_eq!(long.ends[0].0, "miter");
     near(long.ends[0].1, 45.);
     assert_eq!(long.ends[1].0, "miter");
+    // A picture frame: both long points on the outside face.
+    assert_eq!(long.long_points, Some("same face"));
+    assert_eq!(long.long_faces[0], long.long_faces[1]);
+    let schedule =
+        multicad_model::schedules::member_cut_schedule(f.s.document(), f.s.revision(), &groups)
+            .unwrap();
+    let row = schedule.rows.iter().find(|r| r[3] == "1040").unwrap();
+    let face = long.long_faces[0].unwrap();
+    assert_eq!(row[4], format!("miter 45° long point {face}"));
+    assert_eq!(row[6], "same face");
+    let post_row = schedule.rows.iter().find(|r| r[7] == "Post").unwrap();
+    assert_eq!(post_row[4..7], ["butt 0°", "square", ""]);
     assert_eq!(
         groups
             .iter()

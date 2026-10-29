@@ -220,12 +220,14 @@ pub fn read_profile_stock(document: &Document, id: EntityId) -> Result<Stock, Do
     }
 }
 /// The non-construction lines of a sketch, in source order. These are the
-/// segments a frame path can turn into members.
+/// segments a frame path can turn into members. Only curve identities and
+/// kinds are read, so sketches with solved (parameter-bound) dimensions
+/// qualify; the native evaluator solves their positions.
 pub fn sketch_path_lines(
     document: &Document,
     sketch: EntityId,
 ) -> Result<Vec<EntityId>, DocumentError> {
-    let (source, ..) = Source::read(document, sketch)?;
+    let (source, ..) = Source::read_for_evaluation(document, sketch, 0, None)?;
     Ok(source
         .sketch
         .curves
@@ -240,7 +242,7 @@ pub fn check_sketch_line(
     sketch: EntityId,
     line: EntityId,
 ) -> Result<(), DocumentError> {
-    let (source, ..) = Source::read(document, sketch)?;
+    let (source, ..) = Source::read_for_evaluation(document, sketch, 0, None)?;
     match source.sketch.curves.iter().find(|c| c.id == line) {
         Some(c) if c.construction => Err(invalid(
             "A construction line is not a member path; use a solid line",

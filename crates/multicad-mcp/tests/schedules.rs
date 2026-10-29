@@ -85,7 +85,7 @@ fn mcp_schedules_for_a_welded_frame_and_csv_files() {
     assert!(legs[4].as_str().unwrap().starts_with("miter 45"), "{legs}");
     let csv = std::fs::read_to_string(dir.path().join("members.csv")).unwrap();
     assert!(csv.starts_with("# MultiCAD member_cut_list schedule"));
-    assert!(csv.contains("Mark,Qty,Section,Length,Start,End,Members"));
+    assert!(csv.contains("Mark,Qty,Section,Length,Start,End,Long points,Members"));
     assert!(!dir.path().join("members.csv.partial").exists());
 
     let welds = run("schedule", json!({ "kind": "weld_schedule" })).unwrap();

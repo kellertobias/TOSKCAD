@@ -48,4 +48,4 @@ pub use sheet_metal::{BendRecord, ConversionAnalysis, SheetLayout, SheetRecord};
 pub use sheet_unfold::{BendLine, DevelopedPattern, Diagnostic, DiagnosticScope, DrillPoint};
 pub use targets::*;
 pub use weld_schedule::{CutGroup, WeldRecord, group_cuts, weld_plan_annotations};
-pub use weldment::{EndRecord, MemberRecord};
+pub use weldment::{EndRecord, LongPoint, MemberRecord};
