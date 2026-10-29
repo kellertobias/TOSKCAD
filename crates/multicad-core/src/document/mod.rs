@@ -191,6 +191,7 @@ impl Document {
         crate::exchange::validate(self)?;
         crate::inspection::validate(self)?;
         crate::symbols::validate(self)?;
+        crate::sketch_import::provenance::validate(self)?;
         Ok(())
     }
 }

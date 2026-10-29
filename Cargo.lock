@@ -2076,6 +2076,7 @@ dependencies = [
 name = "multicad-core"
 version = "0.1.0-dev"
 dependencies = [
+ "quick-xml",
  "serde",
  "serde_json",
  "sha2",

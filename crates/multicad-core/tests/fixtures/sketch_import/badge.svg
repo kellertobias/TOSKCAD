@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-authored import fixture: 80 x 40 mm page, viewBox units are 0.5 mm. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="80mm" height="40mm" viewBox="0 0 160 80">
+  <title>Badge</title>
+  <style>path { stroke: black; }</style>
+  <script>alert("never executed")</script>
+  <sodipodi:namedview xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" id="view"/>
+  <g inkscape:label="Outline" transform="translate(10 10)">
+    <rect width="140" height="60" rx="10"/>
+  </g>
+  <g id="holes">
+    <circle cx="30" cy="30" r="8"/>
+    <g transform="rotate(90 120 40)">
+      <g transform="translate(0 0)"><ellipse cx="120" cy="40" rx="12" ry="6"/></g>
+    </g>
+    <path d="M60 50 C60 30 90 30 90 50 Q75 62 60 50 Z"/>
+  </g>
+  <g id="island">
+    <circle cx="30" cy="30" r="3"/>
+  </g>
+  <g id="hidden" style="display:none"><rect x="0" y="0" width="5" height="5"/></g>
+  <text x="10" y="75">BADGE</text>
+  <image xlink:href="https://example.invalid/logo.png" x="0" y="0" width="10" height="10"/>
+  <use xlink:href="#holes" x="100"/>
+</svg>

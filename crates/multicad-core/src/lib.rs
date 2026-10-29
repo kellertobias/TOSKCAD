@@ -20,6 +20,7 @@ pub mod references;
 pub mod sketch;
 pub mod sketch_draw;
 pub mod sketch_external;
+pub mod sketch_import;
 pub mod sketch_pattern;
 pub mod sketch_point;
 pub mod sketch_regions;

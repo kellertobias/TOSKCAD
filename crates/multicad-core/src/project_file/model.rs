@@ -340,6 +340,9 @@ impl ProjectFile {
         }) {
             required.insert(crate::exchange::PLANAR_CAPABILITY.into());
         }
+        if crate::sketch_import::provenance::required_capability(&self.document) {
+            required.insert(crate::sketch_import::CAPABILITY.into());
+        }
         if crate::drawings::required_capability(&self.document) {
             required.insert(crate::drawings::CAPABILITY.into());
         }
@@ -423,6 +426,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::sketch_external::OCCURRENCE_CAPABILITY.into(),
         crate::exchange::CAPABILITY.into(),
         crate::exchange::PLANAR_CAPABILITY.into(),
+        crate::sketch_import::CAPABILITY.into(),
         crate::model::CAPABILITY.into(),
         crate::model::PRIMITIVE_CAPABILITY.into(),
         crate::model::REVOLVE_CAPABILITY.into(),
