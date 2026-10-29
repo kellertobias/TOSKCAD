@@ -354,7 +354,6 @@ impl Default for Registry {
         for (id, label, icon) in [
             ("symbol", "Create symbol", Icon::Library),
             ("library", "Symbol library", Icon::Library),
-            ("joint", "Finger / miter joint", Icon::Link),
             ("drill", "Drill / pocket", Icon::Cut),
             ("cut-list", "Cut list", Icon::Page),
             ("sheet", "Base sheet", Icon::Page),
@@ -447,7 +446,10 @@ impl Default for Registry {
                         tools: ModelingTool::ALL
                             .into_iter()
                             .filter(|tool| {
-                                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel)
+                                !matches!(
+                                    tool,
+                                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Joint
+                                )
                             })
                             .map(ModelingTool::id)
                             .chain(["symbol"])
@@ -757,10 +759,13 @@ mod tests {
                 registry.workspace(Mode::Model).tabs[0]
                     .tools
                     .contains(&tool.id()),
-                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel),
-                "Copy shares the Move / Copy ribbon entry; Panel lives on the Wood tab"
+                !matches!(
+                    tool,
+                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Joint
+                ),
+                "Copy shares the Move / Copy ribbon entry; Panel and Joint live on the Wood tab"
             );
-            if tool == ModelingTool::Panel {
+            if matches!(tool, ModelingTool::Panel | ModelingTool::Joint) {
                 let wood = registry
                     .workspace(Mode::Model)
                     .tabs
