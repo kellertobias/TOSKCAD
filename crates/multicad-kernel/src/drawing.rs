@@ -7,6 +7,13 @@ use multicad_core::drawings::{VectorCurve, VectorRole};
 pub struct DrawingProjection {
     pub frame: PlaneFrame,
     pub section_offset_mm: Option<f64>,
+    /// Section only: draw the exact plane intersection and nothing behind it.
+    pub section_only: bool,
+    /// Finite viewing depth behind the section plane; `None` is unlimited.
+    pub section_depth_mm: Option<f64>,
+    /// Lateral section limits in frame u and v, from the frame origin.
+    pub section_u_mm: Option<[f64; 2]>,
+    pub section_v_mm: Option<[f64; 2]>,
     pub detail: Option<([f64; 2], f64)>,
     pub hidden_lines: bool,
     pub tangent_edges: bool,
@@ -19,6 +26,10 @@ impl Default for DrawingProjection {
         Self {
             frame: PlaneFrame::default(),
             section_offset_mm: None,
+            section_only: false,
+            section_depth_mm: None,
+            section_u_mm: None,
+            section_v_mm: None,
             detail: None,
             hidden_lines: false,
             tangent_edges: false,
@@ -76,6 +87,21 @@ pub fn project_drawing(
         || options
             .section_offset_mm
             .is_some_and(|v| !v.is_finite() || v.abs() > 1e7)
+        || (options.section_offset_mm.is_none()
+            && (options.section_only
+                || options.section_depth_mm.is_some()
+                || options.section_u_mm.is_some()
+                || options.section_v_mm.is_some()))
+        || (options.section_only && options.section_depth_mm.is_some())
+        || options
+            .section_depth_mm
+            .is_some_and(|d| !d.is_finite() || !(1e-5..=1e7).contains(&d))
+        || [options.section_u_mm, options.section_v_mm]
+            .into_iter()
+            .flatten()
+            .any(|[a, b]| {
+                !a.is_finite() || !b.is_finite() || a.abs() > 1e7 || b.abs() > 1e7 || b - a < 1e-5
+            })
         || options.detail.is_some_and(|(c, r)| {
             c.iter().any(|v| !v.is_finite() || v.abs() > 1e7)
                 || !r.is_finite()
@@ -92,6 +118,15 @@ pub fn project_drawing(
         frame,
         section: options.section_offset_mm.is_some(),
         section_offset: options.section_offset_mm.unwrap_or(0.),
+        section_only: options.section_only,
+        depth: options.section_depth_mm.is_some(),
+        depth_mm: options.section_depth_mm.unwrap_or(0.),
+        window_u: options.section_u_mm.is_some(),
+        u_min: options.section_u_mm.map_or(0., |r| r[0]),
+        u_max: options.section_u_mm.map_or(0., |r| r[1]),
+        window_v: options.section_v_mm.is_some(),
+        v_min: options.section_v_mm.map_or(0., |r| r[0]),
+        v_max: options.section_v_mm.map_or(0., |r| r[1]),
         detail: options.detail.is_some(),
         detail_center: p([center[0], center[1], 0.]),
         detail_radius: radius,

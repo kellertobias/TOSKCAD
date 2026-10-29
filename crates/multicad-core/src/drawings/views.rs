@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub const VIEW_CAPABILITY: &str = "drawings.views.1";
+/// Finite-depth or section-only ranges and lateral section windows.
+pub const SECTION_CAPABILITY: &str = "drawings.sections.1";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ViewSource {
@@ -40,11 +42,51 @@ pub enum ViewKind {
     /// the view frame along its normal. Only actual cut faces receive hatching.
     Section {
         offset_mm: f64,
+        /// How far behind the cut plane geometry is shown.
+        #[serde(default, skip_serializing_if = "SectionRange::is_unlimited")]
+        range: SectionRange,
+        /// Lateral limits on the cut plane; geometry outside is not shown.
+        #[serde(default, skip_serializing_if = "SectionWindow::is_unbounded")]
+        window: SectionWindow,
     },
     Detail {
         center_mm: [f64; 2],
         radius_mm: f64,
     },
+}
+/// The viewing interval behind a section plane, measured against the view
+/// direction from the cut plane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SectionRange {
+    /// Every retained solid behind the plane, without a far limit.
+    #[default]
+    Unlimited,
+    /// Uncut geometry only within this depth behind the plane. Solids crossing
+    /// the far limit are clipped there; farther solids are excluded.
+    Depth { depth_mm: f64 },
+    /// Only the exact zero-thickness plane intersection and its hatching.
+    SectionOnly,
+}
+impl SectionRange {
+    pub fn is_unlimited(&self) -> bool {
+        *self == Self::Unlimited
+    }
+}
+/// A finite section line or region: limits in the view frame's u (right) and
+/// v (up) coordinates, in model millimeters from the frame origin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SectionWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub u_mm: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v_mm: Option<[f64; 2]>,
+}
+impl SectionWindow {
+    pub fn is_unbounded(&self) -> bool {
+        self.u_mm.is_none() && self.v_mm.is_none()
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,8 +131,32 @@ impl DrawingView {
             ));
         }
         match self.kind {
-            ViewKind::Section { offset_mm } if !offset_mm.is_finite() || offset_mm.abs() > 1e7 => {
+            ViewKind::Section { offset_mm, .. }
+                if !offset_mm.is_finite() || offset_mm.abs() > 1e7 =>
+            {
                 Err(invalid("Section offset is outside model bounds"))
+            }
+            ViewKind::Section {
+                range: SectionRange::Depth { depth_mm },
+                ..
+            } if !depth_mm.is_finite() || !(1e-5..=1e7).contains(&depth_mm) => Err(invalid(
+                "Section depth must be positive and within model bounds",
+            )),
+            ViewKind::Section { window, .. }
+                if [window.u_mm, window.v_mm]
+                    .into_iter()
+                    .flatten()
+                    .any(|[a, b]| {
+                        !a.is_finite()
+                            || !b.is_finite()
+                            || a.abs() > 1e7
+                            || b.abs() > 1e7
+                            || b - a < 1e-5
+                    }) =>
+            {
+                Err(invalid(
+                    "Section window limits must be finite with the first below the second",
+                ))
             }
             ViewKind::Detail {
                 center_mm,
@@ -130,6 +196,12 @@ pub fn view_inputs(book: &super::DrawingBook) -> Vec<Link> {
 }
 pub fn has_views(book: &super::DrawingBook) -> bool {
     book.pages.iter().any(|p| !p.views.is_empty())
+}
+/// Whether any view uses a section range or window that older readers lack.
+pub fn has_section_limits(book: &super::DrawingBook) -> bool {
+    book.pages.iter().flat_map(|p| &p.views).any(|v| {
+        matches!(v.kind, ViewKind::Section { range, window, .. } if !range.is_unlimited() || !window.is_unbounded())
+    })
 }
 
 /// Exact supported 2D output primitives. B-spline knots include multiplicities
@@ -247,4 +319,95 @@ impl DrawingEvaluation {
             })
             .collect()
     }
+}
+
+/// Where a section view's cut plane, and its far limit, appear in another view
+/// of the same page. Segments are in the parent view's model coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionGuide {
+    pub section: EntityId,
+    pub cut: [[f64; 2]; 2],
+    pub far: Option<[[f64; 2]; 2]>,
+}
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+fn minus(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+/// The guide of `section` in `parent`, when the parent sees the cut plane
+/// edge-on. `extent` is the parent's drawn bounds (min, max) in its model
+/// coordinates; unlimited guide ends extend to it. The guide is trimmed to
+/// the section's lateral window along its u axis.
+pub fn section_guide(
+    parent: &DrawingView,
+    section: &DrawingView,
+    extent: ([f64; 2], [f64; 2]),
+) -> Option<SectionGuide> {
+    let ViewKind::Section {
+        offset_mm,
+        range,
+        window,
+    } = section.kind
+    else {
+        return None;
+    };
+    let (pf, sf) = (&parent.frame, &section.frame);
+    let (np, ns) = (cross(pf.u, pf.v), cross(sf.u, sf.v));
+    if dot(np, ns).abs() > 1e-6 {
+        return None;
+    }
+    let (ka, kb) = (dot(ns, pf.u), dot(ns, pf.v));
+    let direction = [-kb, ka];
+    // Parameter t runs along the guide; trim it to the parent's bounds...
+    let corners = [
+        extent.0,
+        [extent.1[0], extent.0[1]],
+        extent.1,
+        [extent.0[0], extent.1[1]],
+    ];
+    let line = |depth: f64| -> Option<[[f64; 2]; 2]> {
+        let rhs = depth + dot(ns, minus(sf.origin_mm, pf.origin_mm));
+        let base = [rhs * ka, rhs * kb];
+        let along = |p: [f64; 2]| (p[0] - base[0]) * direction[0] + (p[1] - base[1]) * direction[1];
+        let mut lo = corners
+            .iter()
+            .map(|p| along(*p))
+            .fold(f64::INFINITY, f64::min)
+            - 5.;
+        let mut hi = corners
+            .iter()
+            .map(|p| along(*p))
+            .fold(f64::NEG_INFINITY, f64::max)
+            + 5.;
+        // ...and to the section's lateral window along its own u axis.
+        if let Some([u0, u1]) = window.u_mm {
+            let start = dot(sf.u, minus(pf.origin_mm, sf.origin_mm))
+                + base[0] * dot(sf.u, pf.u)
+                + base[1] * dot(sf.u, pf.v);
+            let rate = direction[0] * dot(sf.u, pf.u) + direction[1] * dot(sf.u, pf.v);
+            if rate.abs() > 1e-9 {
+                let (a, b) = ((u0 - start) / rate, (u1 - start) / rate);
+                lo = lo.max(a.min(b));
+                hi = hi.min(a.max(b));
+            }
+        }
+        (hi > lo)
+            .then(|| [lo, hi].map(|t| [base[0] + t * direction[0], base[1] + t * direction[1]]))
+    };
+    Some(SectionGuide {
+        section: section.id,
+        cut: line(offset_mm)?,
+        far: match range {
+            SectionRange::Depth { depth_mm } => line(offset_mm - depth_mm),
+            _ => None,
+        },
+    })
 }

@@ -6,7 +6,7 @@ use multicad_core::{
     drawings::*,
     materials::*,
     model::{
-        self, BodyInput, InstanceCopyRequest, InstanceCopySource, NumericTransform,
+        self, BodyInput, InstanceCopyRequest, InstanceCopySource, NumericTransform, PrimitiveFrame,
         PrimitiveParameters, PrimitiveRequest, length,
     },
     parameters::BoundExpression,
@@ -264,7 +264,11 @@ fn section_uses_material_hatch_in_paper_units_and_missing_links_cannot_use_old_r
     .unwrap();
     f.s.commit(e).unwrap();
     let mut book = read(f.s.document(), f.book).unwrap();
-    book.pages[0].views[0].kind = ViewKind::Section { offset_mm: 10. };
+    book.pages[0].views[0].kind = ViewKind::Section {
+        offset_mm: 10.,
+        range: Default::default(),
+        window: Default::default(),
+    };
     book.pages[0].views[0].scale = Scale {
         numerator: 1,
         denominator: 2,
@@ -431,5 +435,341 @@ fn publication_budget_produces_unresolved_views_instead_of_an_incomplete_ready_p
         evaluation
             .checked_page(f.s.document(), f.s.revision(), f.book, f.page)
             .is_err()
+    );
+}
+
+/// Four parametric boxes along the view of a front section at y = 0 that
+/// keeps y >= 0. A straddles the cut, B lies within 30 mm, C crosses y = 30
+/// and D's depth position is the `rear` parameter (initially beyond range).
+struct RangeFixture {
+    s: Session,
+    rear: EntityId,
+    parts: [EntityId; 4],
+    book: EntityId,
+    view: EntityId,
+}
+fn section_view(parts: &[EntityId]) -> DrawingView {
+    DrawingView {
+        frame: ReferenceFrame {
+            origin_mm: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 0., 1.],
+        },
+        kind: ViewKind::Section {
+            offset_mm: 0.,
+            range: SectionRange::Depth { depth_mm: 30. },
+            window: SectionWindow::default(),
+        },
+        source: ViewSource::Model {
+            entities: parts.to_vec(),
+        },
+        name: "Section A-A".into(),
+        ..view(parts[0])
+    }
+}
+impl RangeFixture {
+    fn new() -> Self {
+        let rear = Entity::new(
+            "rear",
+            EntityData::Parameter {
+                expression: "50".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        let mut s = Session::new(
+            Document::new("Section ranges")
+                .unwrap()
+                .edited(&[Mutation::Insert(rear.clone())])
+                .unwrap(),
+        )
+        .unwrap();
+        let mut parts = vec![];
+        for (name, x, y, depth) in [
+            ("A", 0., Some(-5.), 10.),
+            ("B", 20., Some(10.), 10.),
+            ("C", 40., Some(25.), 15.),
+            ("D", 60., None, 10.),
+        ] {
+            let y = match y {
+                Some(y) => length(y),
+                None => Dimension::Expression {
+                    expression: BoundExpression::bind(s.document(), "=$rear", "mm", None).unwrap(),
+                },
+            };
+            let request = PrimitiveRequest::new(
+                name,
+                PrimitiveParameters::Box {
+                    size: [length(10.), length(depth), length(10.)],
+                    frame: PrimitiveFrame {
+                        origin: [length(x), y, length(0.)],
+                        ..Default::default()
+                    },
+                },
+            );
+            let e = model::prepare_primitive(&s, s.revision(), actor(), &request).unwrap();
+            s.commit(e.prepared).unwrap();
+            parts.push(request.body);
+        }
+        let parts: [EntityId; 4] = parts.try_into().unwrap();
+        // Every part gets a hatched material, so a wrongly hatched uncut part
+        // would show.
+        let material = Entity::new(
+            "Steel",
+            EntityData::Material {
+                density_kg_m3: None,
+                color_rgba: [150, 150, 160, 255],
+                section_hatch: None,
+            },
+        );
+        let hatch = LibraryDefinition::Hatch(HatchStyle {
+            pattern: HatchPattern::Lines,
+            angle_deg: 45.,
+            spacing_mm: 1.,
+            line_width_mm: 0.18,
+        })
+        .entity(EntityId::new(), "Steel section")
+        .unwrap();
+        let e = prepare_library(
+            &s,
+            s.revision(),
+            actor(),
+            &[material.clone(), hatch.clone()],
+        )
+        .unwrap();
+        s.commit(e).unwrap();
+        let style = LibraryDefinition::MaterialStyle(MaterialStyle {
+            material: material.id,
+            appearance: None,
+            hatch: Some(LibraryRef::capture(s.document(), hatch.id).unwrap()),
+        })
+        .entity(EntityId::new(), "Defaults")
+        .unwrap();
+        let e = prepare_library(&s, s.revision(), actor(), &[style]).unwrap();
+        s.commit(e).unwrap();
+        let e = prepare_assignment(
+            &s,
+            s.revision(),
+            actor(),
+            &parts,
+            &Assignment {
+                material: Some(material.id),
+                stock: None,
+                appearance: None,
+                hatch: None,
+            },
+        )
+        .unwrap();
+        s.commit(e).unwrap();
+        let mut page = Page::new("1");
+        let v = section_view(&parts);
+        let view = v.id;
+        page.views.push(v);
+        let (book, p) = prepare_create(&s, s.revision(), actor(), "Sections", Some(page)).unwrap();
+        s.commit(p).unwrap();
+        Self {
+            s,
+            rear: rear.id,
+            parts,
+            book,
+            view,
+        }
+    }
+    fn evaluate(&self, document: &Document, revision: u64) -> DrawingEvaluation {
+        Compiler::default()
+            .compile(document, revision)
+            .unwrap()
+            .drawings(document, revision, &DrawingProviders::default())
+            .unwrap()
+    }
+    fn visible(&self) -> std::collections::BTreeSet<&'static str> {
+        let e = self.evaluate(self.s.document(), self.s.revision());
+        vectors(&e, self.view)
+            .iter()
+            .map(|v| ["A", "B", "C", "D"][self.parts.iter().position(|p| *p == v.source).unwrap()])
+            .collect()
+    }
+    fn set_kind(&mut self, kind: ViewKind) {
+        let mut book = read(self.s.document(), self.book).unwrap();
+        book.pages[0].views[0].kind = kind;
+        let e = prepare(
+            &self.s,
+            self.s.revision(),
+            actor(),
+            self.book,
+            PageAction::Replace(book.pages[0].clone()),
+        )
+        .unwrap();
+        self.s.commit(e).unwrap();
+    }
+}
+
+#[test]
+fn section_depth_window_and_placement_regenerate_and_survive_undo_and_reopen() {
+    let mut f = RangeFixture::new();
+    assert_eq!(f.visible(), ["A", "B", "C"].into(), "D starts beyond 30 mm");
+    let e = f.evaluate(f.s.document(), f.s.revision());
+    let roles = |name: usize| -> std::collections::BTreeSet<String> {
+        vectors(&e, f.view)
+            .iter()
+            .filter(|v| v.source == f.parts[name])
+            .map(|v| format!("{:?}", v.role))
+            .collect()
+    };
+    assert!(roles(0).contains("Section") && roles(0).contains("Hatch"));
+    // Uncut solids behind the plane carry no section outline or hatch.
+    for uncut in [1, 2] {
+        assert!(roles(uncut).iter().all(|r| r == "Visible" || r == "Hidden"));
+    }
+
+    // Moving D into range through its parameter regenerates the view.
+    let mut rear = f.s.document().get(f.rear).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut rear.data else {
+        panic!()
+    };
+    *expression = "20".into();
+    commit(&mut f.s, vec![Mutation::Replace(rear)]);
+    assert_eq!(f.visible(), ["A", "B", "C", "D"].into());
+    f.s.undo(f.s.revision(), actor()).unwrap();
+    assert_eq!(f.visible(), ["A", "B", "C"].into());
+
+    // A shallower depth drops C and B; section-only keeps the cut alone.
+    f.set_kind(ViewKind::Section {
+        offset_mm: 0.,
+        range: SectionRange::Depth { depth_mm: 8. },
+        window: SectionWindow::default(),
+    });
+    assert_eq!(f.visible(), ["A"].into());
+    f.set_kind(ViewKind::Section {
+        offset_mm: 0.,
+        range: SectionRange::SectionOnly,
+        window: SectionWindow::default(),
+    });
+    let e = f.evaluate(f.s.document(), f.s.revision());
+    let cut = vectors(&e, f.view);
+    assert!(cut.iter().all(
+        |v| v.source == f.parts[0] && matches!(v.role, VectorRole::Section | VectorRole::Hatch)
+    ));
+    let hatches: Vec<_> = cut.iter().filter(|v| v.role == VectorRole::Hatch).collect();
+    assert!(!hatches.is_empty() && hatches.iter().all(|v| v.line_width_mm == 0.18));
+    // Hatches stay inside the 10 x 10 mm cut of A, in view coordinates.
+    assert!(
+        cut.iter().flat_map(|v| &v.preview_mm).all(|p| {
+            (-1e-7..=10. + 1e-7).contains(&p[0]) && (-1e-7..=10. + 1e-7).contains(&p[1])
+        })
+    );
+    // A finite section line across B and C only.
+    let windowed = ViewKind::Section {
+        offset_mm: 0.,
+        range: SectionRange::Depth { depth_mm: 30. },
+        window: SectionWindow {
+            u_mm: Some([15., 55.]),
+            v_mm: None,
+        },
+    };
+    f.set_kind(windowed);
+    assert_eq!(f.visible(), ["B", "C"].into());
+    f.s.undo(f.s.revision(), actor()).unwrap();
+    assert!(matches!(
+        read(f.s.document(), f.book).unwrap().pages[0].views[0].kind,
+        ViewKind::Section {
+            range: SectionRange::SectionOnly,
+            ..
+        }
+    ));
+    f.s.redo(f.s.revision(), actor()).unwrap();
+    assert_eq!(
+        read(f.s.document(), f.book).unwrap().pages[0].views[0].kind,
+        windowed
+    );
+
+    // The settings survive save/reopen and require the new capability.
+    let project = ProjectFile::new(f.s.document().clone()).unwrap();
+    assert!(project.capabilities().contains(SECTION_CAPABILITY));
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let mut older = project_file::supported_capabilities();
+    older.remove(SECTION_CAPABILITY);
+    assert!(project_file::read(&mut bytes.as_slice(), Default::default(), &older).is_err());
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project
+    .document;
+    assert_eq!(
+        read(&reopened, f.book).unwrap().pages[0].views[0].kind,
+        windowed
+    );
+    let again = f.evaluate(&reopened, 0);
+    assert_eq!(vectors(&again, f.view).len(), {
+        let e = f.evaluate(f.s.document(), f.s.revision());
+        vectors(&e, f.view).len()
+    });
+
+    // An unlimited section keeps the original wire form and capability set.
+    f.set_kind(ViewKind::Section {
+        offset_mm: 0.,
+        range: SectionRange::Unlimited,
+        window: SectionWindow::default(),
+    });
+    let project = ProjectFile::new(f.s.document().clone()).unwrap();
+    assert!(!project.capabilities().contains(SECTION_CAPABILITY));
+    let EntityData::Drawing { definition, .. } = &f.s.document().get(f.book).unwrap().data else {
+        panic!()
+    };
+    let wire = definition.data.to_string();
+    assert!(wire.contains("\"offset_mm\"") && !wire.contains("range") && !wire.contains("window"));
+    assert_eq!(f.visible(), ["A", "B", "C", "D"].into());
+}
+
+#[test]
+fn invalid_section_limits_are_rejected_before_they_enter_the_document() {
+    let mut f = RangeFixture::new();
+    for kind in [
+        ViewKind::Section {
+            offset_mm: 0.,
+            range: SectionRange::Depth { depth_mm: -1. },
+            window: SectionWindow::default(),
+        },
+        ViewKind::Section {
+            offset_mm: 0.,
+            range: SectionRange::Unlimited,
+            window: SectionWindow {
+                u_mm: Some([5., 5.]),
+                v_mm: None,
+            },
+        },
+    ] {
+        let mut book = read(f.s.document(), f.book).unwrap();
+        book.pages[0].views[0].kind = kind;
+        assert!(
+            prepare(
+                &f.s,
+                f.s.revision(),
+                actor(),
+                f.book,
+                PageAction::Replace(book.pages[0].clone()),
+            )
+            .is_err()
+        );
+    }
+    let revision = f.s.revision();
+    f.set_kind(ViewKind::Section {
+        offset_mm: 0.,
+        range: SectionRange::Depth { depth_mm: 1. },
+        window: SectionWindow {
+            u_mm: Some([100., 200.]),
+            v_mm: None,
+        },
+    });
+    assert_eq!(f.s.revision(), revision + 1);
+    // An empty window is a visible unresolved view, not a silent blank.
+    let e = f.evaluate(f.s.document(), f.s.revision());
+    assert!(
+        matches!(&e.views[&f.view], ViewEvaluation::Unresolved { message } if message.contains("no projected edges"))
     );
 }

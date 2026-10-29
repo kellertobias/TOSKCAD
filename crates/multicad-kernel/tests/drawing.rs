@@ -318,3 +318,247 @@ fn oblique_triangular_section_hatches_in_its_actual_plane_and_clips_a_real_hole(
         }
     }
 }
+
+/// Solids along the view direction of a front section at y = 0 (the view
+/// looks along +Y and keeps y >= 0): A straddles the cut, B lies within a
+/// 30 mm depth, C is a ramp crossing the far limit at y = 30 whose height
+/// grows with y (z <= y - 20), and D lies wholly beyond it.
+fn range_fixture() -> Vec<Solid> {
+    let placed = |size: [f64; 3], at: [f64; 3]| {
+        Solid::box_solid(size, Default::default())
+            .unwrap()
+            .transformed(RigidTransform {
+                translation_mm: at,
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    let s = 2f64.sqrt().recip();
+    // Local (a, b, c) maps to world x = a, y = s(b + c), z = s(c - b); local
+    // b >= 20s is exactly the half-space z <= y - 20.
+    let keep = Solid::box_solid([300.; 3], Default::default())
+        .unwrap()
+        .transformed(RigidTransform {
+            rotation: [[1., 0., 0.], [0., s, s], [0., -s, s]],
+            translation_mm: [-100., s * (20. * s - 150.), s * (-150. - 20. * s)],
+        })
+        .unwrap();
+    let ramp = placed([10., 20., 20.], [40., 20., 0.])
+        .boolean(&keep, BooleanOperation::Intersect, Default::default())
+        .unwrap()
+        .unwrap();
+    // Analytic ramp volume: 10 * (20 * 20 / 2).
+    assert!((ramp.volume_mm3().unwrap() - 2000.).abs() < 1e-6);
+    vec![
+        placed([10., 10., 10.], [0., -5., 0.]),
+        placed([10., 10., 10.], [20., 10., 0.]),
+        ramp,
+        placed([10., 10., 10.], [60., 50., 0.]),
+    ]
+}
+fn front_section() -> DrawingProjection {
+    DrawingProjection {
+        frame: PlaneFrame {
+            origin: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 0., 1.],
+        },
+        section_offset_mm: Some(0.),
+        ..Default::default()
+    }
+}
+fn run(solids: &[Solid], options: DrawingProjection) -> Vec<ProjectedVector> {
+    let hatch = DrawingHatch {
+        angle_rad: std::f64::consts::FRAC_PI_4,
+        spacing_mm: 2.,
+        cross: false,
+    };
+    let inputs: Vec<_> = solids
+        .iter()
+        .map(|solid| DrawingSolid {
+            solid,
+            hatch: Some(hatch),
+        })
+        .collect();
+    project_drawing(&inputs, options).unwrap()
+}
+fn sources(v: &[ProjectedVector]) -> std::collections::BTreeSet<usize> {
+    v.iter().map(|v| v.source_index).collect()
+}
+fn of(v: &[ProjectedVector], source: usize) -> Vec<ProjectedVector> {
+    v.iter()
+        .filter(|v| v.source_index == source)
+        .cloned()
+        .collect()
+}
+fn near(a: f64, b: f64) {
+    assert!((a - b).abs() < 1e-6, "{a} != {b}");
+}
+
+#[test]
+fn section_only_draws_the_exact_plane_intersection_and_nothing_behind_it() {
+    let solids = range_fixture();
+    let v = run(
+        &solids,
+        DrawingProjection {
+            section_only: true,
+            hidden_lines: true,
+            ..front_section()
+        },
+    );
+    assert_eq!(sources(&v), [0].into());
+    assert!(
+        v.iter()
+            .all(|v| matches!(v.role, VectorRole::Section | VectorRole::Hatch))
+    );
+    let outline: Vec<_> = v
+        .iter()
+        .filter(|v| v.role == VectorRole::Section)
+        .cloned()
+        .collect();
+    assert_eq!(outline.len(), 4, "the 10 x 10 cut rectangle");
+    let (min, max) = limits(&outline);
+    near(min[0], 0.);
+    near(min[1], 0.);
+    near(max[0], 10.);
+    near(max[1], 10.);
+    let hatch: Vec<_> = v
+        .iter()
+        .filter(|v| v.role == VectorRole::Hatch)
+        .cloned()
+        .collect();
+    assert!(!hatch.is_empty());
+    let (min, max) = limits(&hatch);
+    assert!(min[0] >= -1e-7 && min[1] >= -1e-7 && max[0] <= 10. + 1e-7 && max[1] <= 10. + 1e-7);
+    // The same plane well inside B cuts only B.
+    let v = run(
+        &solids,
+        DrawingProjection {
+            section_only: true,
+            section_offset_mm: Some(-15.),
+            ..front_section()
+        },
+    );
+    assert_eq!(sources(&v), [1].into());
+}
+
+#[test]
+fn finite_depth_keeps_the_range_clips_at_the_far_plane_and_excludes_farther_solids() {
+    let solids = range_fixture();
+    let unlimited = run(&solids, front_section());
+    assert_eq!(sources(&unlimited), [0, 1, 2, 3].into());
+    near(limits(&of(&unlimited, 2)).1[1], 20.);
+
+    let v = run(
+        &solids,
+        DrawingProjection {
+            section_depth_mm: Some(30.),
+            ..front_section()
+        },
+    );
+    assert_eq!(sources(&v), [0, 1, 2].into(), "D lies beyond the range");
+    // Only the straddling solid has a cut face and hatching.
+    for source in [1, 2] {
+        assert!(of(&v, source).iter().all(|v| v.role == VectorRole::Visible));
+    }
+    assert!(of(&v, 0).iter().any(|v| v.role == VectorRole::Section));
+    assert!(of(&v, 0).iter().any(|v| v.role == VectorRole::Hatch));
+    // The ramp is cut at y = 30, where its height is 30 - 20 = 10.
+    let (min, max) = limits(&of(&v, 2));
+    near(min[0], 40.);
+    near(max[0], 50.);
+    near(max[1], 10.);
+    let (min, max) = limits(&of(&v, 1));
+    near(min[0], 20.);
+    near(max[0], 30.);
+    near(max[1], 10.);
+    // A depth ending inside B clips it but keeps it; one ending before it
+    // excludes it.
+    let v = run(
+        &solids,
+        DrawingProjection {
+            section_depth_mm: Some(12.),
+            ..front_section()
+        },
+    );
+    assert_eq!(sources(&v), [0, 1].into());
+    let v = run(
+        &solids,
+        DrawingProjection {
+            section_depth_mm: Some(8.),
+            ..front_section()
+        },
+    );
+    assert_eq!(sources(&v), [0].into());
+}
+
+#[test]
+fn lateral_windows_limit_a_section_to_a_finite_line() {
+    let solids = range_fixture();
+    let v = run(
+        &solids,
+        DrawingProjection {
+            section_u_mm: Some([15., 35.]),
+            ..front_section()
+        },
+    );
+    assert_eq!(sources(&v), [1].into());
+    let v = run(
+        &solids,
+        DrawingProjection {
+            section_u_mm: Some([25., 100.]),
+            section_v_mm: Some([-1., 5.]),
+            ..front_section()
+        },
+    );
+    assert_eq!(sources(&v), [1, 2, 3].into());
+    let (min, max) = limits(&of(&v, 1));
+    near(min[0], 25.);
+    near(max[1], 5.);
+    let empty = run(
+        &solids,
+        DrawingProjection {
+            section_only: true,
+            section_u_mm: Some([20., 30.]),
+            ..front_section()
+        },
+    );
+    assert!(
+        empty.is_empty(),
+        "no solid crosses the plane in this window"
+    );
+}
+
+#[test]
+fn inconsistent_section_ranges_are_refused() {
+    let solids = range_fixture();
+    let inputs = [DrawingSolid {
+        solid: &solids[0],
+        hatch: None,
+    }];
+    for options in [
+        DrawingProjection {
+            section_only: true,
+            ..Default::default()
+        },
+        DrawingProjection {
+            section_only: true,
+            section_depth_mm: Some(5.),
+            ..front_section()
+        },
+        DrawingProjection {
+            section_depth_mm: Some(0.),
+            ..front_section()
+        },
+        DrawingProjection {
+            section_u_mm: Some([5., 1.]),
+            ..front_section()
+        },
+        DrawingProjection {
+            section_v_mm: Some([0., f64::NAN]),
+            ..front_section()
+        },
+    ] {
+        assert!(project_drawing(&inputs, options).is_err());
+    }
+}

@@ -7,7 +7,10 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
+#include <TopoDS_Compound.hxx>
+#include <BRep_Builder.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib.hxx>
@@ -39,6 +42,9 @@ std::unique_ptr<DrawingJob> drawing_job(const DrawingOptionsData &o) {
   job->offset=o.section_offset; job->cx=o.detail_center.x; job->cy=o.detail_center.y;
   job->radius=o.detail_radius; job->tolerance=o.tolerance;
   job->max_curves=o.max_curves; job->max_points=o.max_points;
+  job->section_only=o.section_only; job->depth=o.depth; job->depth_mm=o.depth_mm;
+  job->window_u=o.window_u; job->u_min=o.u_min; job->u_max=o.u_max;
+  job->window_v=o.window_v; job->v_min=o.v_min; job->v_max=o.v_max;
   return job;
 }
 void drawing_add(DrawingJob &job,const Shape &shape,bool hatch,bool cross,double angle,double spacing) {
@@ -53,6 +59,40 @@ static TopoDS_Shape common(const TopoDS_Shape &a,const TopoDS_Shape &b) {
 static double volume(const TopoDS_Shape &s) {GProp_GProps p;BRepGProp::VolumeProperties(s,p);return std::abs(p.Mass());}
 static gp_Pnt local(const gp_Pnt &p,const gp_Ax2 &f) {
   const gp_Vec d(f.Location(),p);return {d.Dot(gp_Vec(f.XDirection())),d.Dot(gp_Vec(f.YDirection())),0.};
+}
+// Frame-coordinate bounds (u, v, n) of every input, widened so that box faces
+// on unlimited sides never touch geometry.
+struct FrameBounds { double lo[3], hi[3]; };
+static FrameBounds frame_bounds(const DrawingJob &job) {
+  Bnd_Box box;for(const auto &input:job.inputs)BRepBndLib::Add(input.shape,box,false);
+  if(box.IsVoid())throw std::runtime_error("Drawing sources have no extent");
+  double x0,y0,z0,x1,y1,z1;box.Get(x0,y0,z0,x1,y1,z1);
+  FrameBounds b{{1e300,1e300,1e300},{-1e300,-1e300,-1e300}};
+  const gp_Dir axes[3]={job.frame.XDirection(),job.frame.YDirection(),job.frame.Direction()};
+  for(int c=0;c<8;++c) {
+    const gp_Vec d(job.frame.Location(),gp_Pnt(c&1?x1:x0,c&2?y1:y0,c&4?z1:z0));
+    for(int i=0;i<3;++i){const double t=d.Dot(gp_Vec(axes[i]));b.lo[i]=std::min(b.lo[i],t);b.hi[i]=std::max(b.hi[i],t);}
+  }
+  const double margin=1.+0.01*gp_Pnt(x0,y0,z0).Distance(gp_Pnt(x1,y1,z1));
+  for(int i=0;i<3;++i){b.lo[i]-=margin;b.hi[i]+=margin;}
+  return b;
+}
+static bool limited(const DrawingJob &job) {return job.section_only||job.depth||job.window_u||job.window_v;}
+static void lateral(const DrawingJob &job,const FrameBounds &b,double u[2],double v[2]) {
+  u[0]=job.window_u?job.u_min:b.lo[0];u[1]=job.window_u?job.u_max:b.hi[0];
+  v[0]=job.window_v?job.v_min:b.lo[1];v[1]=job.window_v?job.v_max:b.hi[1];
+}
+static gp_Pnt frame_point(const DrawingJob &job,double u,double v,double n) {
+  return job.frame.Location().Translated(gp_Vec(job.frame.XDirection())*u+gp_Vec(job.frame.YDirection())*v+gp_Vec(job.frame.Direction())*n);
+}
+// The retained region of a finite-depth or windowed section: a box from the
+// far limit (or beyond all geometry) up to the cut plane.
+static TopoDS_Shape limited_section(const TopoDS_Shape &shape,const DrawingJob &job,const FrameBounds &b) {
+  double u[2],v[2];lateral(job,b,u,v);
+  const double far=job.depth?job.offset-job.depth_mm:b.lo[2];
+  if(job.offset-far<=1e-9 || u[1]-u[0]<=1e-9 || v[1]-v[0]<=1e-9 || u[0]>=b.hi[0] || u[1]<=b.lo[0] || v[0]>=b.hi[1] || v[1]<=b.lo[1]) return TopoDS_Compound();
+  const gp_Ax2 axes(frame_point(job,u[0],v[0],far),job.frame.Direction(),job.frame.XDirection());
+  return common(shape,BRepPrimAPI_MakeBox(axes,u[1]-u[0],v[1]-v[0],job.offset-far).Solid());
 }
 static TopoDS_Shape section_shape(const TopoDS_Shape &shape,const DrawingJob &job) {
   const auto origin=job.frame.Location().Translated(gp_Vec(job.frame.Direction())*job.offset);
@@ -153,13 +193,45 @@ static void hatch_face(Collector &out,const TopoDS_Face &face,const DrawingInput
 // document workers must share this boundary; a per-job mutex cannot protect it.
 // Keep compilation and the asynchronous Rust job/cancellation lifecycle outside.
 static std::mutex drawing_projection_mutex;
+// World to view-frame coordinates, so section faces project onto paper exactly.
+static gp_Trsf to_frame(const gp_Ax2 &f) {
+  const auto &u=f.XDirection(), &v=f.YDirection(), &n=f.Direction();
+  const gp_Vec origin(gp::Origin(),f.Location());
+  gp_Trsf transform;
+  transform.SetValues(u.X(),u.Y(),u.Z(),-origin.Dot(gp_Vec(u)),v.X(),v.Y(),v.Z(),-origin.Dot(gp_Vec(v)),n.X(),n.Y(),n.Z(),-origin.Dot(gp_Vec(n)));
+  return transform;
+}
+// Section only: each solid's exact intersection with the bounded cut plane.
+// Nothing behind or in front of the plane is drawn.
+static rust::Vec<DrawingCurveData> section_only(DrawingJob &job) {
+  Collector out(job);
+  const auto bounds=frame_bounds(job);
+  double u[2],v[2];lateral(job,bounds,u,v);
+  if(u[1]-u[0]<=1e-9||v[1]-v[0]<=1e-9)return {};
+  const gp_Pln plane(gp_Ax3(frame_point(job,0.,0.,job.offset),job.frame.Direction(),job.frame.XDirection()));
+  const auto cut=BRepBuilderAPI_MakeFace(plane,u[0],u[1],v[0],v[1]).Face();
+  const auto transform=to_frame(job.frame);
+  for(uint32_t i=0;i<job.inputs.size();++i) {
+    const auto &input=job.inputs[i];
+    const auto section=common(input.shape,cut);
+    for(TopExp_Explorer it(section,TopAbs_FACE);it.More();it.Next()) {
+      const auto face=TopoDS::Face(it.Current());
+      out.add(BRepBuilderAPI_Transform(face,transform,true).Shape(),i,2);
+      if(input.hatch)hatch_face(out,face,input,i);
+    }
+  }
+  return std::move(out.result);
+}
 rust::Vec<DrawingCurveData> drawing_run(DrawingJob &job) {
   const std::lock_guard<std::mutex> guard(drawing_projection_mutex);
   try {
+    if(job.section&&job.section_only)return section_only(job);
     Collector out(job);Handle(HLRBRep_Algo) algo=new HLRBRep_Algo();
     std::vector<TopoDS_Shape> shapes; bool any=false;
+    const bool bounded=job.section&&limited(job);
+    const FrameBounds bounds=bounded?frame_bounds(job):FrameBounds{};
     for(const auto &input:job.inputs) {
-      auto shape=job.section?section_shape(input.shape,job):input.shape;
+      auto shape=bounded?limited_section(input.shape,job,bounds):job.section?section_shape(input.shape,job):input.shape;
       shapes.push_back(shape);
       if(volume(shape)>0.) {algo->Add(shape,0);any=true;}
     }
@@ -180,11 +252,7 @@ rust::Vec<DrawingCurveData> drawing_run(DrawingJob &job) {
         if(surface.GetType()!=GeomAbs_Plane)continue;
         const auto plane=surface.Plane();
         if(!plane.Axis().Direction().IsParallel(job.frame.Direction(),1e-10)||plane.Distance(plane_origin)>1e-7)continue;
-        const auto &f=job.frame; const auto &u=f.XDirection(), &v=f.YDirection(), &n=f.Direction();
-        const gp_Vec origin(gp::Origin(),f.Location());
-        gp_Trsf transform;
-        transform.SetValues(u.X(),u.Y(),u.Z(),-origin.Dot(gp_Vec(u)),v.X(),v.Y(),v.Z(),-origin.Dot(gp_Vec(v)),n.X(),n.Y(),n.Z(),-origin.Dot(gp_Vec(n)));
-        out.add(BRepBuilderAPI_Transform(face,transform,true).Shape(),i,2);
+        out.add(BRepBuilderAPI_Transform(face,to_frame(job.frame),true).Shape(),i,2);
         if(input.hatch)hatch_face(out,face,input,i);
       }
     }

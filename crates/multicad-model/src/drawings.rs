@@ -250,7 +250,29 @@ impl Model {
                 v: view.frame.v,
             },
             section_offset_mm: match view.kind {
-                ViewKind::Section { offset_mm } => Some(offset_mm),
+                ViewKind::Section { offset_mm, .. } => Some(offset_mm),
+                _ => None,
+            },
+            section_only: matches!(
+                view.kind,
+                ViewKind::Section {
+                    range: SectionRange::SectionOnly,
+                    ..
+                }
+            ),
+            section_depth_mm: match view.kind {
+                ViewKind::Section {
+                    range: SectionRange::Depth { depth_mm },
+                    ..
+                } => Some(depth_mm),
+                _ => None,
+            },
+            section_u_mm: match view.kind {
+                ViewKind::Section { window, .. } => window.u_mm,
+                _ => None,
+            },
+            section_v_mm: match view.kind {
+                ViewKind::Section { window, .. } => window.v_mm,
                 _ => None,
             },
             detail: match view.kind {

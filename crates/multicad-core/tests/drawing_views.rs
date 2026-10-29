@@ -165,3 +165,108 @@ fn stale_view_replacement_cannot_commit_and_paper_coordinates_preserve_independe
     session.commit(other).unwrap();
     assert!(session.commit(edit).is_err());
 }
+
+#[test]
+fn section_guides_appear_edge_on_in_parent_views_trimmed_to_the_window() {
+    use multicad_core::drawings::{SectionRange, SectionWindow, section_guide};
+    let base = |u: [f64; 3], v: [f64; 3], kind: ViewKind| DrawingView {
+        id: EntityId::new(),
+        name: "v".into(),
+        source: ViewSource::Model {
+            entities: vec![EntityId::new()],
+        },
+        frame: multicad_core::references::ReferenceFrame {
+            origin_mm: [0.; 3],
+            u,
+            v,
+        },
+        kind,
+        position_mm: [0.; 2],
+        scale: Scale {
+            numerator: 1,
+            denominator: 1,
+        },
+        hidden_lines: false,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+    };
+    // Top view (looking down Z) and a front section looking along +Y, cut at
+    // y = 5 with a 20 mm depth and a window x in [10, 30].
+    let top = base([1., 0., 0.], [0., 1., 0.], ViewKind::Projection);
+    let section = base(
+        [1., 0., 0.],
+        [0., 0., 1.],
+        ViewKind::Section {
+            offset_mm: -5.,
+            range: SectionRange::Depth { depth_mm: 20. },
+            window: SectionWindow {
+                u_mm: Some([10., 30.]),
+                v_mm: None,
+            },
+        },
+    );
+    let guide = section_guide(&top, &section, ([0., 0.], [100., 50.])).unwrap();
+    let mut xs = [guide.cut[0][0], guide.cut[1][0]];
+    xs.sort_by(f64::total_cmp);
+    let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} != {b}");
+    near(xs[0], 10.);
+    near(xs[1], 30.);
+    near(guide.cut[0][1], 5.);
+    near(guide.cut[1][1], 5.);
+    let far = guide.far.unwrap();
+    near(far[0][1], 25.);
+    // Without a window the guide spans the parent's bounds plus a margin.
+    let unbounded = base(
+        [1., 0., 0.],
+        [0., 0., 1.],
+        ViewKind::Section {
+            offset_mm: -5.,
+            range: SectionRange::Unlimited,
+            window: SectionWindow::default(),
+        },
+    );
+    let guide = section_guide(&top, &unbounded, ([0., 0.], [100., 50.])).unwrap();
+    let mut xs = [guide.cut[0][0], guide.cut[1][0]];
+    xs.sort_by(f64::total_cmp);
+    near(xs[0], -5.);
+    near(xs[1], 105.);
+    assert!(guide.far.is_none());
+    // A parent looking along the section normal sees no line.
+    let front = base([1., 0., 0.], [0., 0., 1.], ViewKind::Projection);
+    assert!(section_guide(&front, &section, ([0., 0.], [1., 1.])).is_none());
+    assert!(section_guide(&top, &front, ([0., 0.], [1., 1.])).is_none());
+}
+
+#[test]
+fn section_limits_keep_old_wire_form_and_validate() {
+    use multicad_core::drawings::{SectionRange, SectionWindow};
+    let legacy: ViewKind = serde_json::from_str(r#"{"kind":"section","offset_mm":4.0}"#).unwrap();
+    assert_eq!(
+        legacy,
+        ViewKind::Section {
+            offset_mm: 4.,
+            range: SectionRange::Unlimited,
+            window: SectionWindow::default()
+        }
+    );
+    assert_eq!(
+        serde_json::to_string(&legacy).unwrap(),
+        r#"{"kind":"section","offset_mm":4.0}"#
+    );
+    let limited = ViewKind::Section {
+        offset_mm: 4.,
+        range: SectionRange::Depth { depth_mm: 12.5 },
+        window: SectionWindow {
+            u_mm: Some([-1., 2.]),
+            v_mm: None,
+        },
+    };
+    let wire = serde_json::to_string(&limited).unwrap();
+    assert_eq!(serde_json::from_str::<ViewKind>(&wire).unwrap(), limited);
+    assert!(
+        serde_json::from_str::<ViewKind>(
+            r#"{"kind":"section","offset_mm":1,"range":{"kind":"depth","depth_mm":1},"extra":1}"#
+        )
+        .is_err()
+    );
+}

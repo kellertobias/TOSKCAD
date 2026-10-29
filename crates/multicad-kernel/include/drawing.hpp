@@ -15,6 +15,10 @@ struct DrawingJob {
   gp_Ax2 frame;
   bool section, detail, hidden, tangents;
   double offset, cx, cy, radius, tolerance;
+  // Section limits; see DrawingProjection. Unlimited sections keep the
+  // original half-space path.
+  bool section_only = false, depth = false, window_u = false, window_v = false;
+  double depth_mm = 0, u_min = 0, u_max = 0, v_min = 0, v_max = 0;
   uint32_t max_curves, max_points;
   std::vector<DrawingInput> inputs;
 };
