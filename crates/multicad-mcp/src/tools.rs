@@ -36,9 +36,12 @@ use std::{
     },
 };
 
+mod guides;
 mod levels;
 mod reference_repair;
 mod walls;
+use guides::set_drawing_guide;
+pub use guides::{GuideArgs, GuideKindArg};
 pub use levels::{EnvelopeArgs, LevelArgs, SlabArgs, StairArgs};
 use levels::{check_clearances, create_envelope, create_slab, set_level, set_stair};
 pub use reference_repair::{
@@ -211,6 +214,9 @@ tools! {
     "check_clearances" => NoArgs, "Check service clearances", true,
         "Evaluate every service envelope against the final model solids and report each box and the entities it overlaps, with overlap volume.",
         check_clearances;
+    "set_drawing_guide" => GuideArgs, "Create or edit drawing guide", false,
+        "Create or edit a floor plan (cut height and view depth above each listed level), section (plan line, optional depth, limited to the levels' extent) or elevation (plan direction) guide, and optionally generate or update its linked drawing views in the same transaction. Rerunning updates the views it made before; views whose level left the guide are reported as stale. Generated views are evaluated natively before commit.",
+        set_drawing_guide;
     "create_wall_type" => WallTypeArgs, "Create wall type", false,
         "Create a reusable wall type: thickness, height, justification (center, left or right of the drawn path) and an optional material for new walls. Commits one transaction.",
         create_wall_type;
