@@ -1,5 +1,5 @@
 //! Schedules over MCP: the BOM, panel cut list, machining, member cut list
-//! and weld schedule as rows, optionally written as CSV into the export
+//! weld schedule and bend schedule as rows, optionally written as CSV into the export
 //! folder in scope.
 use super::{Request, ToolResult, compile, snapshot};
 use crate::{error::ToolError, host::Host};
@@ -16,6 +16,7 @@ pub enum ScheduleKindArg {
     Machining,
     MemberCutList,
     WeldSchedule,
+    BendSchedule,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +83,9 @@ pub(super) fn schedule(host: &dyn Host, call: &Request, args: ScheduleArgs) -> T
             revision,
             &group_cuts(&model.member_cut_list(&document)?),
         )?,
+        ScheduleKindArg::BendSchedule => {
+            schedules::bend_schedule(&document, revision, &model.sheet_metal(&document)?)?
+        }
         ScheduleKindArg::WeldSchedule => {
             schedules::weld_schedule(&document, revision, &model.weld_schedule(&document)?)?
         }

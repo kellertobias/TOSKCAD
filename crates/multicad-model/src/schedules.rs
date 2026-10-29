@@ -488,3 +488,53 @@ pub fn weld_schedule(
             .collect(),
     })
 }
+/// The bend schedule: every bend of every sheet part in feature order, the
+/// proposed bending order, from the folded and developed records.
+pub fn bend_schedule(
+    document: &Document,
+    revision: u64,
+    sheets: &[crate::SheetRecord],
+) -> Result<Schedule, ModelError> {
+    let mut rows = vec![];
+    for s in sheets {
+        for (order, b) in s.bends.iter().enumerate() {
+            rows.push(vec![
+                s.name.clone(),
+                format!("flange.{}.bend.{}", b.flange, b.bend),
+                (order + 1).to_string(),
+                b.direction.to_uppercase(),
+                mm(b.angle_deg),
+                mm(b.inside_radius_mm),
+                mm(s.thickness_mm),
+                mm(s.k_factor),
+                mm(b.allowance_mm),
+                mm(b.length_mm),
+            ]);
+        }
+    }
+    Ok(Schedule {
+        kind: "bend_schedule",
+        title: "Bend schedule".into(),
+        revision,
+        source: ContentHash::document(document).map_err(|e| error(None, e))?,
+        notes: vec![
+            "Millimeters and degrees; allowance = angle × (inside radius + K × thickness)".into(),
+            "Order is the feature order, not a press-brake sequence; no tooling data".into(),
+        ],
+        columns: [
+            "Part",
+            "Bend",
+            "Order",
+            "Direction",
+            "Angle",
+            "Radius",
+            "T",
+            "K",
+            "Allowance",
+            "Length",
+        ]
+        .map(String::from)
+        .to_vec(),
+        rows,
+    })
+}

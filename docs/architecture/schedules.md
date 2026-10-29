@@ -62,6 +62,7 @@ A `Schedule` holds:
 | `cut_list_schedule` | Each panel: role, stock, thickness, finished and core sizes along and across the grain, grain rule, bands, sheet fit, stack and issues ([cabinetry](cabinetry.md)) |
 | `machining_schedule` | Each groove, rabbet or pocket, and each hole size per operation and panel with its count |
 | `member_cut_schedule` | Each group of identical member cuts: quantity, section, overall length and both end treatments ([weldments](weldments.md)) |
+| `bend_schedule` | Each bend of each sheet part: id, proposed order, direction, angle, inside radius, thickness, K-factor, allowance and length ([sheet metal](sheet-metal.md)) |
 | `weld_schedule` | Each weld: sequence step and mark, joint kind, members, symbol, size, process and notes |
 
 Lengths are millimeters, rounded to 0.001 mm.
@@ -91,7 +92,7 @@ reports it as stale when its cells differ.
 
 ## Access
 
-- **MCP.** `schedule` returns any of the five schedules as columns and rows
+- **MCP.** `schedule` returns any of the six schedules as columns and rows
   with their revision and source hash. With `file_name`, it also writes the
   CSV into the export folder in scope, through a partial file and a rename.
 - **API.** `Model::bom` and the builders in `multicad_model::schedules`.
@@ -100,8 +101,6 @@ reports it as stale when its cells differ.
 
 - **Classification.** Supply classes come from Part tags and import
   features. There is no purchasing catalog, supplier, part number or cost.
-- **Sheet metal.** There is no bend schedule yet; it waits for the
-  sheet-metal workbench.
 - **No live tables.** Tables are not regenerated automatically, and no
   window command places a schedule table yet.
 - **No export sets.** Export sets have no CSV recipe yet; CSV files are

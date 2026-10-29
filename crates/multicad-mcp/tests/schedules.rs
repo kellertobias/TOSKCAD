@@ -116,3 +116,54 @@ fn mcp_schedules_for_a_welded_frame_and_csv_files() {
     .unwrap_err();
     assert_eq!(e.code, "out_of_scope");
 }
+
+#[test]
+fn mcp_bend_schedule_lists_each_bend_with_its_allowance() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Channel").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let mm = |v: f64| json!({ "value": v, "unit": "mm" });
+    let steel = run(
+        "create_sheet_stock",
+        json!({ "expected_revision": 0, "name": "DC01 2.0", "material_name": "DC01",
+        "thickness_mm": 2, "sheet_length_mm": 2000, "sheet_width_mm": 1000,
+        "inside_bend_radius_mm": 2, "k_factor": 0.5 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let feature = run(
+        "set_sheet_part",
+        json!({ "expected_revision": 1, "name": "Channel", "stock": steel,
+        "plane": "xy", "length": mm(100.), "width": mm(60.) }),
+    )
+    .unwrap()["feature"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 2, "feature": feature,
+        "flanges": [
+            { "edge": 0, "kind": "bend", "angle_deg": 90, "length": mm(20.) },
+            { "edge": 2, "kind": "bend", "angle_deg": 90, "length": mm(20.), "direction": "down" }
+        ] }),
+    )
+    .unwrap();
+    let bends = run("schedule", json!({ "kind": "bend_schedule" })).unwrap();
+    let rows = bends["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{bends}");
+    assert_eq!(rows[0][0], "Channel");
+    assert_eq!(rows[0][1], "flange.0.bend.0");
+    assert_eq!(rows[0][2], "1");
+    assert_eq!(rows[0][3], "UP");
+    assert_eq!(rows[1][3], "DOWN");
+    assert_eq!(rows[0][4], "90");
+    // Allowance = π/2 × (2 + 0.5 × 2) = 4.712 mm.
+    assert_eq!(rows[0][8], "4.712");
+    assert_eq!(rows[0][9], "100");
+}
