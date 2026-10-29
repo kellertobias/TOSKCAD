@@ -54,9 +54,13 @@ pub struct SheetLayout {
     /// Flanges on their base edges, in base-frame coordinates.
     pub flanges: Vec<PlacedFlange>,
     pub cutouts: Vec<ResolvedCutout>,
+    pub patterns: Vec<model::ResolvedPattern>,
 }
 impl SheetLayout {
-    fn space(&self) -> SheetSpace {
+    pub(crate) fn space(&self) -> SheetSpace {
+        self.space_inner()
+    }
+    fn space_inner(&self) -> SheetSpace {
         SheetSpace {
             frame: self.frame,
             thickness_direction: self.thickness_direction,
@@ -189,6 +193,7 @@ pub(crate) fn build(
         base: base.clone(),
         flanges,
         cutouts: sheet.cutouts.clone(),
+        patterns: sheet.patterns.clone(),
     };
     let space = layout.space();
     let mut solid = Solid::extrude_curved_profile_vector_named(
@@ -233,18 +238,18 @@ pub(crate) fn build(
                 .map_err(|r| m(format!("Flange {} relief: {r}", f.flange.index + 1)))?;
         }
     }
-    for (i, cutout) in layout.cutouts.iter().enumerate() {
+    for cutout in &layout.cutouts {
         let tool = space
             .cutout_solid(cutout, &layout.flanges, policy)
             .map_err(m)?;
         let before = solid.volume_mm3().map_err(g)?;
-        solid = subtract(solid, &tool, policy).map_err(|r| m(format!("Cutout {}: {r}", i + 1)))?;
+        let which = cutout.source.id();
+        solid = subtract(solid, &tool, policy).map_err(|r| m(format!("{which}: {r}")))?;
         let removed = before - solid.volume_mm3().map_err(g)?;
         let expected = cutout.shape.area_mm2() * t;
         if (removed - expected).abs() > 1e-6 * expected.max(1.) {
             return Err(m(format!(
-                "Cutout {} is not fully inside its face: it removes {removed:.3} mm³ instead of {expected:.3} mm³",
-                i + 1
+                "{which} is not fully inside its face: it removes {removed:.3} mm³ instead of {expected:.3} mm³"
             )));
         }
     }
@@ -753,6 +758,7 @@ impl ConversionAnalysis {
                 k_factor: None,
                 flanges: vec![],
                 cutouts: vec![],
+                fasteners: vec![],
             },
         ))
     }

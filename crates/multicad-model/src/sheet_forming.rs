@@ -301,6 +301,33 @@ impl SheetSpace {
             policy,
         )
     }
+    /// A face's frame on its side A, and the unit normal toward side B.
+    /// Base coordinates are (u, v); flange leg coordinates run along the
+    /// edge and along the leg.
+    pub fn face_frame(
+        &self,
+        face: CutoutFace,
+        flanges: &[PlacedFlange],
+    ) -> Result<(PlaneFrame, [f64; 3]), String> {
+        match face {
+            CutoutFace::Base => Ok((self.frame, self.thickness_direction)),
+            CutoutFace::Flange { index } => {
+                let f = flanges
+                    .iter()
+                    .find(|f| f.flange.index == index as usize)
+                    .ok_or_else(|| format!("Flange {} does not exist", index + 1))?;
+                let leg = section(&f.flange, self.thickness_mm).leg_start;
+                Ok((
+                    PlaneFrame {
+                        origin: self.section_point(f, 0., leg.point),
+                        u: self.vector(f.along),
+                        v: self.section_vector(f, leg.tangent),
+                    },
+                    self.section_vector(f, leg.normal),
+                ))
+            }
+        }
+    }
     /// The cutting prism of a cutout in folded coordinates.
     pub fn cutout_solid(
         &self,
@@ -308,30 +335,9 @@ impl SheetSpace {
         flanges: &[PlacedFlange],
         policy: GeometryPolicy,
     ) -> Result<Solid, String> {
-        let t = self.thickness_mm;
-        match cutout.face {
-            CutoutFace::Base => self.prism(
-                self.frame,
-                shape_edges(&cutout.shape),
-                self.thickness_direction.map(|c| c * t),
-                policy,
-            ),
-            CutoutFace::Flange { index } => {
-                let f = flanges
-                    .iter()
-                    .find(|f| f.flange.index == index as usize)
-                    .ok_or("Cutout names a missing flange")?;
-                let leg = section(&f.flange, t).leg_start;
-                let origin = self.section_point(f, 0., leg.point);
-                let frame = PlaneFrame {
-                    origin,
-                    u: self.vector(f.along),
-                    v: self.section_vector(f, leg.tangent),
-                };
-                let through = self.section_vector(f, mul(leg.normal, t));
-                self.prism(frame, shape_edges(&cutout.shape), through, policy)
-            }
-        }
+        let (frame, normal) = self.face_frame(cutout.face, flanges)?;
+        let through = normal.map(|c| c * self.thickness_mm);
+        self.prism(frame, shape_edges(&cutout.shape), through, policy)
     }
 }
 pub fn polygon_edges(points: &[[f64; 2]]) -> Vec<CurvedEdge2d> {

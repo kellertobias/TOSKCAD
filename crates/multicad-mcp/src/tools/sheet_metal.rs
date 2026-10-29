@@ -276,6 +276,7 @@ pub(super) fn set_sheet_part(host: &dyn Host, call: &Request, args: SheetPartArg
         }),
         flanges: vec![],
         cutouts: vec![],
+        fasteners: vec![],
     };
     // An edit keeps the part's flanges and cutouts.
     let mut sheet = sheet;

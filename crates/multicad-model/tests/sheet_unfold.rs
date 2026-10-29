@@ -119,6 +119,7 @@ fn unfolding_links_bends_and_drills_and_reports_scoped_diagnostics() {
                 circle(CutoutFace::Base, 50., 30., 8.),
                 circle(CutoutFace::Flange { index: 0 }, 50., 12., 5.),
             ],
+            fasteners: vec![],
         },
     );
     let p = model::prepare_sheet(&s, s.revision(), actor(), &request).unwrap();

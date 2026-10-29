@@ -27,7 +27,7 @@ pub struct BendLine {
 /// A circular cutout's center, for drilling or punching.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrillPoint {
-    /// Stable within the feature: `cutout.<i>`.
+    /// Stable within the feature: `cutout.<i>` or `fastener.<p>.<j>`.
     pub id: String,
     pub center: [f64; 2],
     pub diameter_mm: f64,
@@ -132,7 +132,7 @@ impl Model {
             .collect();
         let mut drills = vec![];
         let mut outlines = vec![];
-        for (i, c) in layout.cutouts.iter().enumerate() {
+        for c in &layout.cutouts {
             let outline = flat_cutout(c, &layout.flanges, t, k)
                 .ok_or_else(|| error(Some(feature), "A cutout names a missing flange"))?;
             if let (
@@ -141,12 +141,12 @@ impl Model {
             ) = (c.shape, outline.first())
             {
                 drills.push(DrillPoint {
-                    id: format!("cutout.{i}"),
+                    id: c.source.id(),
                     center: *center,
                     diameter_mm,
                 });
             }
-            outlines.push((format!("cutout.{i}"), c.face, outline));
+            outlines.push((c.source.id(), c.face, outline));
         }
         let mut diagnostics = vec![];
         // Hole-to-bend proximity in flat coordinates.

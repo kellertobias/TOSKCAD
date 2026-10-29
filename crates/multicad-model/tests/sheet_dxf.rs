@@ -240,6 +240,7 @@ fn developed_sheet_dxf_reopens_with_cut_bend_and_drill_layers() {
                     },
                 },
             ],
+            fasteners: vec![],
         },
     );
     let p = model::prepare_sheet(&s, s.revision(), actor(), &request).unwrap();

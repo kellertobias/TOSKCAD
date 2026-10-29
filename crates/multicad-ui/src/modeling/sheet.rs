@@ -14,8 +14,8 @@ use multicad_core::{
     document::{Document, EntityId},
     materials::{self, LibraryDefinition, StockKind},
     model::{
-        self, BendDirection, BodyOutput, Cutout, Flange, FlangeKind, ModelPrepared, PanelPlane,
-        SheetBase, SheetDefinition, SheetRequest,
+        self, BendDirection, BodyOutput, Cutout, Flange, FlangeKind, ModelPrepared,
+        MountingPattern, PanelPlane, SheetBase, SheetDefinition, SheetRequest,
     },
 };
 
@@ -239,6 +239,8 @@ pub(super) struct SheetPanel {
     kept_base: Option<SheetBase>,
     /// Flanges and cutouts kept unchanged by this form.
     kept_forming: (Vec<Flange>, Vec<Cutout>),
+    /// Mounting patterns kept unchanged by this form.
+    kept_fasteners: Vec<MountingPattern>,
     /// Flanges on the four rectangle edges, when the form can edit them.
     rows: Option<[FlangeRow; 4]>,
     plane: PanelPlane,
@@ -265,6 +267,7 @@ impl SheetPanel {
             stock: first.map(|s| s.0),
             kept_base: None,
             kept_forming: (vec![], vec![]),
+            kept_fasteners: vec![],
             rows: Some(std::array::from_fn(|_| FlangeRow::new())),
             plane: PanelPlane::Xy,
             origin: [field(0., "mm"), field(0., "mm"), field(0., "mm")],
@@ -310,6 +313,7 @@ impl SheetPanel {
         }
         form.reverse = sheet.reverse;
         form.kept_forming = (sheet.flanges.clone(), sheet.cutouts.clone());
+        form.kept_fasteners = sheet.fasteners.clone();
         form.rows = None;
         if form.kept_base.is_none() {
             let mut rows: [FlangeRow; 4] = std::array::from_fn(|_| FlangeRow::new());
@@ -391,6 +395,7 @@ impl SheetPanel {
                     None => self.kept_forming.0.clone(),
                 },
                 cutouts: self.kept_forming.1.clone(),
+                fasteners: self.kept_fasteners.clone(),
             },
         })
     }

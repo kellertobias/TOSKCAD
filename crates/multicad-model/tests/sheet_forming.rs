@@ -125,6 +125,7 @@ fn tray(f: &Fixture) -> SheetDefinition {
         k_factor: None,
         flanges: vec![bend(0, side.clone(), 20.), bend(2, side, 20.)],
         cutouts: vec![],
+        fasteners: vec![],
     }
 }
 /// Volume of one bend zone: angle/2 · ((r + t)² − r²) · width.
