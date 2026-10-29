@@ -215,6 +215,82 @@ A cut that would split a panel is refused by the native evaluator. Stock or
 position changes that break a corner make the model fail to evaluate with
 the same reason; they are not silently mis-cut.
 
+## Machining
+
+A **machining operation** is a `cabinetry.machining` extension that targets
+one or more rectangular panel Parts. Each target gets one
+`cabinetry.machining_cut` feature, chained onto its history like a joint
+cut. Positions are in the panel's face coordinates, so an operation follows
+its panel when the panel moves or is resized.
+
+### Faces
+
+- **Top.** The face at the full thickness, cut downward.
+- **Bottom.** The panel plane, cut upward.
+
+Both faces use the panel's (u, v) coordinates. Drilling can also enter an
+**edge face**. There the first coordinate runs along the edge from its
+start, and the second up the thickness from the bottom face.
+
+### Kinds
+
+| Kind | Defined by |
+| --- | --- |
+| Groove or dado | Runs the full panel length along u or v, at an offset from the start edge of the other axis, with a width and depth |
+| Rabbet | Along one edge, with a width and depth |
+| Pocket | A rectangle with a center, size and depth |
+| Drilling | Holes of one diameter, blind with a depth or through |
+| Hardware | A placed hardware pattern, turned in quarter turns |
+
+All dimensions can be parameter expressions. Grooves, rabbets and pockets
+are cut into the top or bottom face only.
+
+### Hardware patterns
+
+A **hardware pattern** is a reusable `cabinetry.hardware` extension. It
+holds hole positions, diameters and blind or through depths, plus
+per-material allowances. An allowance adds to the diameter and blind depth
+in panels whose stock has that Material. Each placement links to its
+pattern, so editing the pattern rebuilds every placement.
+
+### Holes from other parts
+
+Holes that come from other parts use the general transfer engine
+([associative feature transfer](0021-associative-feature-transfer.md)), not
+a cabinetry copy. A drawer rail's screw holes, for example, reach a cabinet
+side panel this way. A panel used as an assembly component definition stays
+in the cut list.
+
+### Edits and refusals
+
+Editing an operation changes its kind, sizes or face. Its targets are fixed
+when it is created. Deleting an operation removes its cuts, re-attaching
+later cuts on the same Part.
+
+The resolver refuses:
+
+- a blind groove, rabbet, pocket or hole as deep as the material there;
+- a groove that does not fit across the panel;
+- a rabbet that leaves no material;
+- a pocket or hole that leaves its face;
+- a groove, rabbet or pocket on an edge face.
+
+These are modeled solids, not CNC toolpaths, tool-access checks or
+machining certification.
+
+### Machining records
+
+`Model::machining` lists every machining cut with:
+
+- the Part, operation, kind, face, Material and stock;
+- each hole's world center, axis into the material, diameter, depth and
+  whether it goes through;
+- each groove, rabbet or pocket's size and depth;
+- the volume measurably removed from the solid before the cut.
+
+The MCP `cut_list` tool includes these records, and each cut record lists
+its panel's operations.
+
 ## Cut list
 
 `Model::cut_list` lists every evaluated panel Part. It measures the Part's
@@ -243,8 +319,11 @@ the producer contract for BOM and cut-list exports (CAD-89).
   pairs. Opening a joint cut reopens its joint to change the kind, count or
   fit.
 - **MCP.** `create_panel_stock`, `set_carcass`, `create_panel`,
-  `create_panel_stack`, `set_panel_joint`, `delete_panel_joint` and
+  `create_panel_stack`, `set_panel_joint`, `delete_panel_joint`,
+  `set_hardware_pattern`, `set_machining`, `delete_machining` and
   `cut_list`.
+- **Machining in the window.** Model → Wood → **Drill / pocket**. Hardware
+  patterns are created through MCP for now.
 
 ## Limits
 
@@ -264,7 +343,12 @@ the producer contract for BOM and cut-list exports (CAD-89).
   - There are no angled (non-90°) corner miters, T-joints, dados or
     through-tenons.
   - A joint's panel pairs cannot be changed after creation.
-  - Grooves, rabbets and drilling are CAD-75; back recesses are positions,
-    not cut rabbets.
+  - A carcass back recess is a position; cut a rabbet or groove for it
+    with a machining operation.
+- **Machining geometry.**
+  - Grooves run the full panel length; there are no stopped grooves.
+  - Pockets have square corners, with no tool radius.
+  - There are no countersinks or counterbores, and no tool-access or
+    collision checks.
 - **No outputs.** The cut list is a measured record, not a nesting, yield,
   machining or BOM output.
