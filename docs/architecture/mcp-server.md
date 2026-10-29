@@ -161,6 +161,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `set_stair` | yes | Straight, quarter-turn or half-turn stair between levels, with geometric riser/going notes |
 | `create_envelope` | yes | Service envelope around a placed Part or Instance |
 | `check_clearances` | no | Overlap of every service envelope with final model solids |
+| `set_drawing_guide` | yes | Floor plan, section or elevation guide, optionally generating or updating its linked drawing views (see [drawing guides](drawing-guides.md)) |
 | `create_wall_type`, `edit_wall_type` | yes | Reusable wall types; a type edit rebuilds every wall that does not override the value (see [walls](walls.md)) |
 | `create_opening_type` | yes | Reusable door (hinge, swing) or window type with width, height and sill |
 | `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit |

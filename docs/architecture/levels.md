@@ -85,13 +85,16 @@ the clearances. It moves and rotates with the target's placement.
 
 - **Window.** Model → Common → Create → **Levels & stairs**. The Room tab
   entry opens the same tool. The Inspector chooses Level, Floor slab,
-  Pedestal, Stair or Service envelope.
+  Pedestal, Stair, Service envelope or Drawing guide.
   - An existing level or envelope can be chosen to edit it.
   - Applied slabs and stairs reopen from the model tree as feature edits
     that keep their Part.
   - The stair form shows its geometric check live.
 - **MCP:** `set_level`, `create_slab`, `set_stair`, `create_envelope` and
   `check_clearances`. Mutations are evaluated natively before commit.
+
+Floor plans, sections and elevations linked to levels are authored as
+[drawing guides](drawing-guides.md).
 
 ## Limits
 
