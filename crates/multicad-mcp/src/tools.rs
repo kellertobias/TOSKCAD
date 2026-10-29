@@ -37,12 +37,15 @@ use std::{
 };
 
 mod cabinetry;
+mod fdm;
 mod guides;
 mod levels;
 mod reference_repair;
 mod walls;
 pub use cabinetry::{CarcassArgs, PanelArgs, PanelStockArgs, StackArgs};
 use cabinetry::{create_panel, create_panel_stack, create_panel_stock, cut_list, set_carcass};
+pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs};
+use fdm::{fdm_aid_report, remove_fdm_aid, set_fdm_aid, set_fdm_process};
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
 pub use levels::{EnvelopeArgs, LevelArgs, SlabArgs, StairArgs};
@@ -250,6 +253,18 @@ tools! {
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;
+    "set_fdm_process" => ProcessArgs, "Set FDM process allowances", false,
+        "Create or edit an FDM process allowance record: layer height, line width, minimum aid thickness in layers, minimum aid width in lines, support Z gap and fit clearance to Parts an aid does not serve. Used only to inspect aids; not a slicer profile.",
+        set_fdm_process;
+    "set_fdm_aid" => AidArgs, "Create or edit FDM aid", false,
+        "Create or edit a removable FDM aid as its own Part serving a finished target Part: a breakaway tab (origin, angle, length, width, thickness, overlap), a thin bridge (start, end, width, thickness, optional second Part) or a flat-topped support (footprint corner, angle, length, width, base, gap) whose height is derived from the target's solid. The target is never changed. Evaluated natively before commit.",
+        set_fdm_aid;
+    "remove_fdm_aid" => RemoveAidArgs, "Remove FDM aid", false,
+        "Remove an FDM aid feature and its Part; the target Part is untouched.",
+        remove_fdm_aid;
+    "fdm_aid_report" => NoArgs, "FDM aid report", true,
+        "Every FDM aid measured from the evaluated solids: bounds, volume, contact with its target and bridge partner (separated, contact or overlapping, distance and common volume), neighbouring Parts inside the fit clearance, and findings against its process allowances.",
+        fdm_aid_report;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;
