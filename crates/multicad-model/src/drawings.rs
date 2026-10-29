@@ -358,6 +358,7 @@ impl Model {
             })
             .collect();
         crate::walls::plan_vectors(document, view, &bodies, &mut vectors)?;
+        crate::levels::plan_vectors(document, self, view, &bodies, &mut vectors)?;
         let warnings = properties
             .iter()
             .flat_map(|p| p.diagnostics.iter().map(|d| d.message.clone()))

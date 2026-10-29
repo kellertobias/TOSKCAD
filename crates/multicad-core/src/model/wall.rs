@@ -102,6 +102,9 @@ pub struct WallDefinition {
     pub path: Vec<[Dimension; 2]>,
     #[serde(default)]
     pub closed: bool,
+    /// Optional hosting level; `base_z` is then measured from its elevation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<EntityId>,
     pub base_z: Dimension,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thickness: Option<Dimension>,
@@ -210,6 +213,7 @@ impl WallDefinition {
     pub fn inputs(&self) -> Vec<Link> {
         let mut links = parameter_links(self.dimensions());
         links.push(Link::new(self.wall_type, "wall_type"));
+        links.extend(self.level.map(|l| Link::new(l, "level")));
         let types: BTreeSet<_> = self.openings.iter().map(|o| o.opening_type).collect();
         links.extend(
             types
@@ -363,10 +367,14 @@ pub fn resolve_wall(
             sill_mm: mm(o.sill.as_ref().unwrap_or(&t.sill))?,
         });
     }
+    let level_z = match wall.level {
+        Some(level) => super::resolve_level(document, parameters, level)?.elevation_mm,
+        None => 0.,
+    };
     Ok(ResolvedWall {
         points,
         closed: wall.closed,
-        base_z_mm: mm(&wall.base_z)?,
+        base_z_mm: level_z + mm(&wall.base_z)?,
         thickness_mm,
         height_mm,
         justification: wall.justification.unwrap_or(ty.justification),
@@ -1172,6 +1180,7 @@ mod tests {
                 [super::super::length(3000.), super::super::length(0.)],
             ],
             closed: false,
+            level: None,
             base_z: super::super::length(0.),
             thickness: None,
             height: None,

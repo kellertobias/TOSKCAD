@@ -644,6 +644,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::assembly::validate_document(document)?;
     super::transfer::validate_document(document)?;
     super::wall::validate_document(document)?;
+    super::level::validate_document(document)?;
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
@@ -704,6 +705,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::TRANSFER_TYPE,
                     super::ALIGN_TYPE,
                     super::WALL_TYPE,
+                    super::SLAB_TYPE,
+                    super::STAIR_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {
@@ -723,6 +726,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::TRANSFER_GROUP_TYPE,
                     super::WALL_TYPE_KIND,
                     super::OPENING_TYPE_KIND,
+                    super::LEVEL_KIND,
+                    super::ENVELOPE_KIND,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {

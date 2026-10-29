@@ -138,6 +138,7 @@ fn l_wall(f: &Fixture) -> WallDefinition {
         wall_type: f.wall_type,
         path: vec![point(0., 0.), point(4000., 0.), point(4000., 3000.)],
         closed: false,
+        level: None,
         base_z: length(0.),
         thickness: None,
         height: None,

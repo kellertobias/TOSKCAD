@@ -107,6 +107,7 @@ pub(super) struct WallPanel {
     override_size: bool,
     path: String,
     closed: bool,
+    level: Option<EntityId>,
     base_z: DimensionField,
     openings: Vec<OpeningRow>,
     error: Option<String>,
@@ -135,6 +136,7 @@ impl WallPanel {
             override_size: false,
             path: "0, 0\n4000, 0".into(),
             closed: false,
+            level: model::levels(document).next().map(|e| e.id),
             base_z: DimensionField::from_dimension(&length(0.), "mm")?,
             openings: vec![],
             error: None,
@@ -161,6 +163,7 @@ impl WallPanel {
             .collect::<Vec<_>>()
             .join("\n");
         panel.closed = wall.closed;
+        panel.level = wall.level;
         panel.base_z = DimensionField::from_dimension(&wall.base_z, "mm")?;
         for o in &wall.openings {
             let t =
@@ -284,6 +287,7 @@ impl WallPanel {
                 wall_type,
                 path: self.points()?,
                 closed: self.closed,
+                level: self.level,
                 base_z: self.base_z.resolve(document)?,
                 thickness: overrides
                     .then(|| self.thickness.resolve(document))

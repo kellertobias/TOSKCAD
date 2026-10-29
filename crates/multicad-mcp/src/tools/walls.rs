@@ -116,7 +116,10 @@ pub struct WallArgs {
     /// Close the path into a loop (a room).
     #[serde(default)]
     pub closed: bool,
-    /// Elevation of the wall base in millimeters (default 0).
+    /// Hosting level; the base offset is then measured from its elevation.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Elevation of the wall base in millimeters above its level or Z = 0 (default 0).
     #[serde(default)]
     pub base_z_mm: f64,
     /// Instance overrides of the type values.
@@ -200,6 +203,7 @@ fn wall_value(
             .map(|[x, y]| [length(*x), length(*y)])
             .collect(),
         closed: args.closed,
+        level: args.level.as_deref().map(id).transpose()?,
         base_z: length(args.base_z_mm),
         thickness: opt(&args.thickness)?,
         height: opt(&args.height)?,

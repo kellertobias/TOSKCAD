@@ -578,6 +578,12 @@ impl Compiler {
                     )
                     .map_err(|e| error(Some(id), e))?
                 }
+                (model::SLAB_TYPE, 1) => {
+                    crate::levels::build_slab(document, context.parameters(), id, self.policy)?
+                }
+                (model::STAIR_TYPE, 1) => {
+                    crate::levels::build_stair(document, context.parameters(), id, self.policy)?
+                }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
                 }
