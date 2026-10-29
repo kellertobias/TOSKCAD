@@ -156,6 +156,11 @@ schema is generated from the Rust argument types with schemars and returned by
 | `save_project` | yes | Save to the scoped project file |
 | `export_step` | no | STEP of one final part into the export folder, with readback volume and SHA-256 |
 | `import_sketch_artwork` | yes | DXF or SVG text into an existing or new sketch, with provenance (see [sketch import](sketch-import.md)) |
+| `set_level` | yes | Create or edit a building level; hosted slabs, stairs and walls rebuild (see [levels and stairs](levels.md)) |
+| `create_slab` | yes | Slab or pedestal from a closed outline on a level |
+| `set_stair` | yes | Straight, quarter-turn or half-turn stair between levels, with geometric riser/going notes |
+| `create_envelope` | yes | Service envelope around a placed Part or Instance |
+| `check_clearances` | no | Overlap of every service envelope with final model solids |
 | `create_wall_type`, `edit_wall_type` | yes | Reusable wall types; a type edit rebuilds every wall that does not override the value (see [walls](walls.md)) |
 | `create_opening_type` | yes | Reusable door (hinge, swing) or window type with width, height and sill |
 | `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit |

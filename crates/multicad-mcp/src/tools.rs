@@ -36,8 +36,11 @@ use std::{
     },
 };
 
+mod levels;
 mod reference_repair;
 mod walls;
+pub use levels::{EnvelopeArgs, LevelArgs, SlabArgs, StairArgs};
+use levels::{check_clearances, create_envelope, create_slab, set_level, set_stair};
 pub use reference_repair::{
     CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
 };
@@ -193,6 +196,21 @@ tools! {
     "export_step" => ExportStep, "Export STEP", true,
         "Write one final part as a STEP B-rep into the export folder in scope (bare file name ending .step or .stp). The written file is read back and its volume reported. Does not change the document.",
         export_step;
+    "set_level" => LevelArgs, "Create or edit level", false,
+        "Create a building level (elevation, floor-to-floor height, slab thickness) or edit one by ID. Every hosted slab, pedestal, stair and wall rebuilds and is evaluated natively before commit.",
+        set_level;
+    "create_slab" => SlabArgs, "Create slab or pedestal", false,
+        "Create a slab (top at the level, down by the slab thickness) or a pedestal (standing on the level, thickness = height) from a closed outline. Evaluated natively before commit.",
+        create_slab;
+    "set_stair" => StairArgs, "Create or edit stair", false,
+        "Create a straight, quarter-turn or half-turn stair from a level to the next (or by its floor-to-floor height), or edit one by ID. Returns geometric riser/going/2R+G notes that are not a code approval. Evaluated natively before commit.",
+        set_stair;
+    "create_envelope" => EnvelopeArgs, "Add service envelope", false,
+        "Add a service/clearance envelope around a placed Part or Instance: its own bounds plus front/back/left/right/top clearances in its local frame, moving with it.",
+        create_envelope;
+    "check_clearances" => NoArgs, "Check service clearances", true,
+        "Evaluate every service envelope against the final model solids and report each box and the entities it overlaps, with overlap volume.",
+        check_clearances;
     "create_wall_type" => WallTypeArgs, "Create wall type", false,
         "Create a reusable wall type: thickness, height, justification (center, left or right of the drawn path) and an optional material for new walls. Commits one transaction.",
         create_wall_type;
