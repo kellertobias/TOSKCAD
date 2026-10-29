@@ -169,6 +169,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `set_carcass` | yes | Create or edit a parametric carcass; every panel is evaluated natively before commit |
 | `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |
 | `create_panel_stack` | yes | Face-to-face panel layers kept as their own Parts, optionally grouped |
+| `set_panel_joint`, `delete_panel_joint` | yes | Butt (A or B through), miter or finger joints on panel pairs overlapping at a corner; each panel gets its own cut |
 | `cut_list` | no | Finished and core panel sizes measured from the solids, stock fit and stack contact |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |

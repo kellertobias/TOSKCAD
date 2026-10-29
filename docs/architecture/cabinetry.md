@@ -148,6 +148,73 @@ The native evaluator checks each stack:
 
 A stack whose layers have moved apart is reported, not regrouped.
 
+## Joints
+
+A **joint** is a `cabinetry.joint` extension with a kind and one or more
+pairs of rectangular panel Parts (A and B). All pairs share the kind.
+
+### The corner block
+
+The two panels of a pair must overlap at a right-angle corner. Both panels
+reach the outside corner, so they share a **corner block**: the region
+inside both finished panels.
+
+- The block must be one full thickness of each panel. Its length runs along
+  the corner.
+- Each panel must continue past the block on its own side.
+
+### Kinds
+
+| Kind | Panel A | Panel B |
+| --- | --- | --- |
+| Butt, A through | Keeps the whole block | Loses the block and is shortened by A's thickness |
+| Butt, B through | Loses the block and is shortened by B's thickness | Keeps the whole block |
+| Miter | Keeps the half beside its body | Keeps the other half; the split runs from the outside corner to the inside corner |
+| Fingers | Keeps fingers 1, 3, 5… | Keeps fingers 2, 4… |
+
+A finger joint splits the block into `count` equal fingers along the corner.
+Its `fit` is the total gap at each finger face, split between the two
+panels. A miter between panels of different thickness follows the block
+diagonal, so it is 45° only for equal thicknesses.
+
+### Cut features
+
+Creating a joint adds one `cabinetry.joint_cut` feature per panel and pair,
+in one transaction. Each cut:
+
+- removes the other panel's share from its own Part;
+- builds on the Part's previous head, so a panel can take part in several
+  joints.
+
+Each cut depends on the joint, and the joint depends on both panel
+features. A change to either panel or its stock therefore rebuilds both
+sides. The cut list then measures the changed solids, so a butt-joined panel
+reports its shortened finished size.
+
+- **Edits.** Editing a joint changes its kind, finger count or fit for every
+  pair. Its pairs are fixed when it is created.
+- **Deletion.** Deleting a joint removes its cuts and restores the panels.
+  A later joint cut on the same Part is re-attached to the feature before
+  it; any other later feature must be removed first.
+- **Removed panels.** A carcass edit refuses to remove a panel that a joint
+  uses.
+
+### What a joint refuses
+
+A joint refuses these cases before staging anything:
+
+- panels that do not overlap;
+- parallel panels;
+- a block that is not one full thickness of each panel;
+- a panel that ends inside the block;
+- sketch-region panels;
+- a finger count outside 2–128;
+- fingers no wider than the fit plus 0.5 mm.
+
+A cut that would split a panel is refused by the native evaluator. Stock or
+position changes that break a corner make the model fail to evaluate with
+the same reason; they are not silently mis-cut.
+
 ## Cut list
 
 `Model::cut_list` lists every evaluated panel Part. It measures the Part's
@@ -172,8 +239,12 @@ the producer contract for BOM and cut-list exports (CAD-89).
   or places a rectangular panel; Preview builds the native solids and Apply
   commits them. Opening any carcass panel opens its carcass; opening a
   rectangle panel edits it in place.
+- **Joints in the window.** Model → Wood → **Panel joint** joins panel
+  pairs. Opening a joint cut reopens its joint to change the kind, count or
+  fit.
 - **MCP.** `create_panel_stock`, `set_carcass`, `create_panel`,
-  `create_panel_stack` and `cut_list`.
+  `create_panel_stack`, `set_panel_joint`, `delete_panel_joint` and
+  `cut_list`.
 
 ## Limits
 
@@ -188,8 +259,12 @@ the producer contract for BOM and cut-list exports (CAD-89).
   - Carcass grain follows the fixed rule above.
 - **Stacks in the window.** The form does not create stacks; use
   `create_panel_stack`.
-- **No joinery or machining.** There are no joints, grooves, dados or
-  drilling yet; those are CAD-74 and CAD-75. Back recesses are positions,
-  not cut rabbets.
+- **Joint geometry.**
+  - Joints need square, overlapping rectangular panels.
+  - There are no angled (non-90°) corner miters, T-joints, dados or
+    through-tenons.
+  - A joint's panel pairs cannot be changed after creation.
+  - Grooves, rabbets and drilling are CAD-75; back recesses are positions,
+    not cut rabbets.
 - **No outputs.** The cut list is a measured record, not a nesting, yield,
   machining or BOM output.
