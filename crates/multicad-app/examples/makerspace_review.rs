@@ -201,6 +201,7 @@ pub struct Scenario {
     pub room_dimension: EntityId,
     pub bench_dimension: EntityId,
     pub set: EntityId,
+    pub scene_set: EntityId,
 }
 impl Scenario {
     pub fn equipment(&self, label: &str) -> &Equipment {
@@ -785,6 +786,31 @@ pub fn build() -> Result<Scenario, Error> {
         &definition_set,
     )?;
     session.commit(prepared)?;
+    // A second set hands the whole project to Blender as one GLB scene.
+    let scene_set = EntityId::new();
+    let prepared = prepare_set(
+        &session,
+        session.revision(),
+        actor(),
+        scene_set,
+        "Makerspace scene",
+        &SetDefinition {
+            recipes: vec![Recipe {
+                id: EntityId::new(),
+                name: "GLB".into(),
+                output: RecipeOutput::Mesh {
+                    format: MeshFormat::Glb,
+                    units: LengthUnit::Meter,
+                    hierarchy: HierarchyMode::PreserveAssembly,
+                    names: NameHandling::ProductNames,
+                    aids: AidPolicy::IncludeAll,
+                    quality: MeshQuality::default(),
+                },
+            }],
+            ..Default::default()
+        },
+    )?;
+    session.commit(prepared)?;
     Ok(Scenario {
         session,
         room_width: room_width.id,
@@ -810,6 +836,7 @@ pub fn build() -> Result<Scenario, Error> {
         room_dimension: ids.0,
         bench_dimension: ids.1,
         set,
+        scene_set,
     })
 }
 
@@ -887,6 +914,7 @@ pub fn generate(directory: &Path) -> Result<serde_json::Value, Error> {
     std::fs::create_dir(&exports)?;
     let exports = exports.canonicalize()?;
     let receipt = export(&scenario.session, scenario.set, &exports)?;
+    let scene = export(&scenario.session, scenario.scene_set, &exports)?;
     let manifest = serde_json::json!({
         "generator": "makerspace_review",
         "project": project,
@@ -894,6 +922,7 @@ pub fn generate(directory: &Path) -> Result<serde_json::Value, Error> {
         "clearances": clearances,
         "exports": receipt.files.iter().map(|f| &f.artifact.output.filename).collect::<Vec<_>>(),
         "export_directory": receipt.directory,
+        "scene": scene.files.iter().map(|f| Path::new(&scene.directory).join(&f.artifact.output.filename)).collect::<Vec<_>>(),
         "verification": {
             "native_geometry": true,
             "interactive_macos": false,
