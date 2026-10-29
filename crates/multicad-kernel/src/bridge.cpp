@@ -41,6 +41,13 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
+#include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
+#include <StepRepr_RepresentationItem.hxx>
+#include <TCollection_HAsciiString.hxx>
+#include <XSControl_TransferReader.hxx>
+#include <XSControl_WorkSession.hxx>
+#include <sstream>
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
@@ -349,6 +356,56 @@ std::unique_ptr<Shape> read_step(rust::Str path) {
     if (reader.TransferRoots() == 0)
       throw std::runtime_error("STEP contains no transferable geometry");
     return checked(reader.OneShape());
+  });
+}
+// Every solid of a STEP file in millimeters, located as in the file, with the
+// name of the STEP representation item that produced it when there is one.
+rust::Vec<StepSolidData> step_solids(rust::Str path) {
+  return guard([&] {
+    const std::lock_guard<std::mutex> exchange_lock(step_exchange_mutex);
+    STEPControl_Reader reader;
+    if (reader.ReadFile(std::string(path).c_str()) != IFSelect_RetDone)
+      throw std::runtime_error("STEP read failed");
+    reader.SetSystemLengthUnit(1.0);
+    if (reader.TransferRoots() == 0)
+      throw std::runtime_error("STEP contains no transferable geometry");
+    const TopoDS_Shape all = reader.OneShape();
+    const Handle(XSControl_TransferReader) transfer =
+        reader.WS()->TransferReader();
+    rust::Vec<StepSolidData> out;
+    for (TopExp_Explorer e(all, TopAbs_SOLID); e.More(); e.Next()) {
+      if (!BRepCheck_Analyzer(e.Current()).IsValid())
+        throw std::runtime_error("STEP contains an invalid solid");
+      std::string name;
+      if (!transfer.IsNull()) {
+        const auto item = Handle(StepRepr_RepresentationItem)::DownCast(
+            transfer->EntityFromShapeResult(e.Current(), 1));
+        if (!item.IsNull() && !item->Name().IsNull())
+          name = item->Name()->ToCString();
+      }
+      std::ostringstream text;
+      BRepTools::Write(e.Current(), text);
+      out.push_back(StepSolidData{rust::String(name), rust::String(text.str())});
+    }
+    return out;
+  });
+}
+rust::String shape_to_brep(const Shape &s) {
+  return guard([&] {
+    std::ostringstream text;
+    BRepTools::Write(s.value, text);
+    return rust::String(text.str());
+  });
+}
+std::unique_ptr<Shape> shape_from_brep(rust::Str text) {
+  return guard([&] {
+    std::istringstream stream{std::string(text)};
+    TopoDS_Shape shape;
+    BRep_Builder builder;
+    BRepTools::Read(shape, stream, builder);
+    if (shape.IsNull())
+      throw std::runtime_error("BRep text holds no shape");
+    return checked(shape);
   });
 }
 static gp_Pnt point(const Point3 &p) { return gp_Pnt(p.x, p.y, p.z); }

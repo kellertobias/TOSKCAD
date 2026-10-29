@@ -730,6 +730,28 @@ impl Solid {
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
         ffi::write_step(&self.native.0, path).map_err(|e| native("write STEP", e))
     }
+    /// Every solid in a STEP file as (representation name, exact BRep text).
+    pub fn step_solids(path: &Path) -> Result<Vec<(String, String)>, GeometryError> {
+        let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
+        Ok(ffi::step_solids(path)
+            .map_err(|e| native("read STEP", e))?
+            .into_iter()
+            .map(|s| (s.name, s.brep))
+            .collect())
+    }
+    /// The exact shape as OCCT BRep text.
+    pub fn to_brep(&self) -> Result<String, GeometryError> {
+        ffi::shape_to_brep(&self.native.0).map_err(|e| native("write BRep", e))
+    }
+    /// Rebuild an exact shape from OCCT BRep text.
+    pub fn from_brep(text: &str, policy: GeometryPolicy) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        Self::adopt(
+            ffi::shape_from_brep(text).map_err(|e| native("read BRep", e))?,
+            policy,
+            "read BRep",
+        )
+    }
     pub fn read_step(path: &Path, policy: GeometryPolicy) -> Result<Self, GeometryError> {
         policy.validate()?;
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;

@@ -35,6 +35,12 @@ mod ffi {
         pub min: Point3,
         pub max: Point3,
     }
+    /// One solid read from a STEP file: its representation item name, if
+    /// any, and its exact located B-rep as OCCT BRep text.
+    pub struct StepSolidData {
+        pub name: String,
+        pub brep: String,
+    }
     pub struct SweepLimits {
         tolerance: f64,
         minimum_feature: f64,
@@ -288,6 +294,9 @@ mod ffi {
         fn valid(shape: &Shape) -> Result<bool>;
         fn write_step(shape: &Shape, path: &str) -> Result<()>;
         fn read_step(path: &str) -> Result<UniquePtr<Shape>>;
+        fn step_solids(path: &str) -> Result<Vec<StepSolidData>>;
+        fn shape_to_brep(shape: &Shape) -> Result<String>;
+        fn shape_from_brep(text: &str) -> Result<UniquePtr<Shape>>;
         fn route_native_output_to_stderr();
         fn cylinder(frame: &Frame3, radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn profile_extrude(
