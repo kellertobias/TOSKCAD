@@ -164,29 +164,65 @@ impl DrawingSourceProvider for ModelDrawingSource {
         if selected.is_empty() {
             return Err(error(None, "Drawing source contains no final solid Parts"));
         }
-        selected
-            .into_iter()
-            .map(|id| {
-                let (producer, part) =
-                    if let Some(occurrence) = model.snapshot().occurrences.get(&id) {
-                        (id, occurrence.component)
-                    } else {
-                        (
-                            *model.snapshot().bodies.get(&id).ok_or_else(|| {
-                                error(Some(id), "Drawing Part has no current native solid")
+        let mut bodies = vec![];
+        for id in selected {
+            // A placed Assembly, such as a symbol, projects its world-placed
+            // leaf Parts so each keeps its own material and section hatch.
+            if let Some(occurrence) = model.snapshot().occurrences.get(&id)
+                && !matches!(
+                    document.get(occurrence.component).map(|e| &e.data),
+                    Some(EntityData::Part { .. })
+                )
+            {
+                let leaves: Vec<_> = model
+                    .snapshot()
+                    .leaf_occurrences
+                    .values()
+                    .filter(|leaf| leaf.path.root == id)
+                    .collect();
+                if leaves.is_empty() {
+                    return Err(error(Some(id), "Placed component has no leaf Parts"));
+                }
+                for leaf in leaves {
+                    bodies.push(DrawingBody {
+                        identity: id,
+                        material_part: leaf.component,
+                        shape: DrawingShape::Borrowed(
+                            model.leaf_solid(&leaf.path).ok_or_else(|| {
+                                error(Some(id), "Placed leaf solid is unavailable")
                             })?,
-                            id,
-                        )
-                    };
-                Ok(DrawingBody {
-                    identity: id,
-                    material_part: part,
-                    shape: DrawingShape::Borrowed(model.solid(producer).ok_or_else(|| {
-                        error(Some(producer), "Drawing source solid is unavailable")
-                    })?),
-                })
-            })
-            .collect()
+                        ),
+                    });
+                }
+                continue;
+            }
+            bodies.push(Self::body(model, id)?);
+        }
+        Ok(bodies)
+    }
+}
+impl ModelDrawingSource {
+    fn body(model: &Model, id: EntityId) -> Result<DrawingBody<'_>, ModelError> {
+        let (producer, part) =
+            if let Some(occurrence) = model.snapshot().occurrences.get(&id) {
+                (id, occurrence.component)
+            } else {
+                (
+                    *model.snapshot().bodies.get(&id).ok_or_else(|| {
+                        error(Some(id), "Drawing Part has no current native solid")
+                    })?,
+                    id,
+                )
+            };
+        Ok(DrawingBody {
+            identity: id,
+            material_part: part,
+            shape: DrawingShape::Borrowed(
+                model
+                    .solid(producer)
+                    .ok_or_else(|| error(Some(producer), "Drawing source solid is unavailable"))?,
+            ),
+        })
     }
 }
 impl Model {
