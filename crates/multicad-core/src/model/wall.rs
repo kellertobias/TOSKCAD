@@ -6,7 +6,7 @@
 //! native evaluator and plan symbols; the kernel builds the exact solid.
 use super::{
     CreatedBody, ModelPrepared,
-    common::{error, number, parameter_links, prepare_edit, revision},
+    common::{error, number, parameter_links, revision},
     source::{BodyOutput, check_dimension, invalid},
 };
 use crate::{
@@ -871,52 +871,13 @@ pub fn prepare_wall(
     actor: Actor,
     request: &WallRequest,
 ) -> Result<ModelPrepared, CommandError> {
-    revision(session, expected_revision)?;
-    if request.wall.output.body != request.body {
-        return Err(error("Wall output must name the requested Part"));
-    }
-    let resolved = resolve_wall(session.document(), session.parameters(), &request.wall)?;
-    resolved.check_openings(&resolved.plan()?)?;
-    let ty = read_wall_type(session.document(), request.wall.wall_type)?;
-    for id in [request.feature, request.body] {
-        if id.is_nil() || session.document().get(id).is_some() || request.feature == request.body {
-            return Err(error("Wall identities must be new, distinct and non-nil"));
-        }
-    }
-    if request.name.trim().is_empty() || request.name.len() > 1000 {
-        return Err(error("Wall name must contain 1–1000 bytes"));
-    }
-    let mut feature = Entity::new(
-        format!("{} feature", request.name),
-        EntityData::Feature {
-            definition: request.wall.definition()?,
-            inputs: request.wall.inputs(),
-            suppressed: false,
-        },
-    );
-    feature.id = request.feature;
-    let mut body = Entity::new(
-        request.name.clone(),
-        EntityData::Part {
-            features: vec![request.feature],
-            material: ty.material,
-            tags: BTreeSet::new(),
-        },
-    );
-    body.id = request.body;
-    let prepared = session.prepare_scoped(Request {
+    prepare_wall_change(
+        session,
         expected_revision,
         actor,
-        label: "Create wall".into(),
-        edits: vec![Mutation::Insert(feature), Mutation::Insert(body)],
-    })?;
-    Ok(ModelPrepared {
-        prepared,
-        outputs: vec![CreatedBody {
-            feature: request.feature,
-            body: request.body,
-        }],
-    })
+        &[],
+        &WallChange::Create(request),
+    )
 }
 pub fn prepare_wall_edit(
     session: &Session,
@@ -925,24 +886,170 @@ pub fn prepare_wall_edit(
     feature: EntityId,
     wall: &WallDefinition,
 ) -> Result<ModelPrepared, CommandError> {
-    let current = read_wall(session.document(), feature)?;
-    if current.output != wall.output {
-        return Err(error("A wall edit keeps its output Part"));
-    }
-    let resolved = resolve_wall(session.document(), session.parameters(), wall)?;
-    resolved.check_openings(&resolved.plan()?)?;
-    prepare_edit(
+    prepare_wall_change(
         session,
         expected_revision,
         actor,
-        "Edit wall",
-        CreatedBody {
-            feature,
-            body: wall.output.body,
-        },
-        wall.definition()?,
-        wall.inputs(),
+        &[],
+        &WallChange::Edit { feature, wall },
     )
+}
+
+/// A wall, door or window type created in the same transaction as a wall.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NewTypeKind {
+    Wall(WallTypeDefinition),
+    Opening(OpeningTypeDefinition),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewType {
+    pub id: EntityId,
+    pub name: String,
+    pub kind: NewTypeKind,
+}
+impl NewType {
+    pub fn new(name: impl Into<String>, kind: NewTypeKind) -> Self {
+        Self {
+            id: EntityId::new(),
+            name: name.into(),
+            kind,
+        }
+    }
+    fn entity(&self) -> Result<Entity, CommandError> {
+        if self.name.trim().is_empty() || self.name.len() > 256 {
+            return Err(error("Type name must contain 1–256 bytes"));
+        }
+        let data = match &self.kind {
+            NewTypeKind::Wall(v) => {
+                v.validate()?;
+                EntityData::Extension {
+                    definition: definition(WALL_TYPE_KIND, v)?,
+                    inputs: v.inputs(),
+                }
+            }
+            NewTypeKind::Opening(v) => {
+                v.validate()?;
+                EntityData::Extension {
+                    definition: definition(OPENING_TYPE_KIND, v)?,
+                    inputs: v.inputs(),
+                }
+            }
+        };
+        let mut entity = Entity::new(self.name.clone(), data);
+        entity.id = self.id;
+        Ok(entity)
+    }
+}
+pub enum WallChange<'a> {
+    Create(&'a WallRequest),
+    Edit {
+        feature: EntityId,
+        wall: &'a WallDefinition,
+    },
+}
+/// Create or edit a wall together with any new types it uses, as one
+/// transaction. The wall is planned against the candidate including the new
+/// types; a native evaluator still builds and checks the solid.
+pub fn prepare_wall_change(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    new_types: &[NewType],
+    change: &WallChange<'_>,
+) -> Result<ModelPrepared, CommandError> {
+    revision(session, expected_revision)?;
+    let mut edits = vec![];
+    for t in new_types {
+        if session.document().get(t.id).is_some() {
+            return Err(error("New type identities must be new"));
+        }
+        edits.push(Mutation::Insert(t.entity()?));
+    }
+    let candidate = session.document().edited(&edits)?;
+    let parameters = crate::parameters::evaluate(&candidate)?;
+    let (wall, output, label) = match change {
+        WallChange::Create(request) => {
+            if request.wall.output.body != request.body {
+                return Err(error("Wall output must name the requested Part"));
+            }
+            (
+                &request.wall,
+                CreatedBody {
+                    feature: request.feature,
+                    body: request.body,
+                },
+                "Create wall",
+            )
+        }
+        WallChange::Edit { feature, wall } => {
+            if read_wall(&candidate, *feature)?.output != wall.output {
+                return Err(error("A wall edit keeps its output Part"));
+            }
+            (
+                *wall,
+                CreatedBody {
+                    feature: *feature,
+                    body: wall.output.body,
+                },
+                "Edit wall",
+            )
+        }
+    };
+    let resolved = resolve_wall(&candidate, &parameters, wall)?;
+    resolved.check_openings(&resolved.plan()?)?;
+    match change {
+        WallChange::Create(request) => {
+            for id in [request.feature, request.body] {
+                if id.is_nil() || candidate.get(id).is_some() || request.feature == request.body {
+                    return Err(error("Wall identities must be new, distinct and non-nil"));
+                }
+            }
+            if request.name.trim().is_empty() || request.name.len() > 1000 {
+                return Err(error("Wall name must contain 1–1000 bytes"));
+            }
+            let mut feature = Entity::new(
+                format!("{} feature", request.name),
+                EntityData::Feature {
+                    definition: wall.definition()?,
+                    inputs: wall.inputs(),
+                    suppressed: false,
+                },
+            );
+            feature.id = request.feature;
+            let mut body = Entity::new(
+                request.name.clone(),
+                EntityData::Part {
+                    features: vec![request.feature],
+                    material: read_wall_type(&candidate, wall.wall_type)?.material,
+                    tags: BTreeSet::new(),
+                },
+            );
+            body.id = request.body;
+            edits.extend([Mutation::Insert(feature), Mutation::Insert(body)]);
+        }
+        WallChange::Edit { feature, .. } => {
+            let mut entity = candidate
+                .get(*feature)
+                .ok_or_else(|| error("Wall is missing"))?
+                .clone();
+            entity.data = EntityData::Feature {
+                definition: wall.definition()?,
+                inputs: wall.inputs(),
+                suppressed: false,
+            };
+            edits.push(Mutation::Replace(entity));
+        }
+    }
+    let prepared = session.prepare_scoped(Request {
+        expected_revision,
+        actor,
+        label: label.into(),
+        edits,
+    })?;
+    Ok(ModelPrepared {
+        prepared,
+        outputs: vec![output],
+    })
 }
 
 #[cfg(test)]
@@ -1030,6 +1137,86 @@ mod tests {
         );
         let zero = wall(&[[0., 0.], [0., 0.]], false, Justification::Center);
         assert!(zero.plan().is_err());
+    }
+    #[test]
+    fn a_wall_and_its_new_types_commit_as_one_transaction() {
+        let session = Session::new(Document::new("Types").unwrap()).unwrap();
+        let ty = NewType::new(
+            "Stud 100",
+            NewTypeKind::Wall(WallTypeDefinition {
+                thickness: super::super::length(100.),
+                height: super::super::length(2400.),
+                justification: Justification::Center,
+                material: None,
+            }),
+        );
+        let door = NewType::new(
+            "Door",
+            NewTypeKind::Opening(OpeningTypeDefinition {
+                kind: OpeningKind::Door {
+                    hinge: Hinge::End,
+                    swing: Swing::Right,
+                },
+                width: super::super::length(800.),
+                height: super::super::length(2000.),
+                sill: super::super::length(0.),
+            }),
+        );
+        let wall = WallDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            wall_type: ty.id,
+            path: vec![
+                [super::super::length(0.), super::super::length(0.)],
+                [super::super::length(3000.), super::super::length(0.)],
+            ],
+            closed: false,
+            base_z: super::super::length(0.),
+            thickness: None,
+            height: None,
+            justification: None,
+            openings: vec![Opening {
+                id: EntityId::new(),
+                opening_type: door.id,
+                segment: 0,
+                offset: super::super::length(1000.),
+                width: None,
+                height: None,
+                sill: None,
+            }],
+        };
+        let request = WallRequest::new("Partition", wall);
+        let prepared = prepare_wall_change(
+            &session,
+            0,
+            crate::commands::Actor::local(crate::commands::Channel::Ui),
+            &[ty.clone(), door.clone()],
+            &WallChange::Create(&request),
+        )
+        .unwrap();
+        let doc = prepared.prepared.document();
+        assert!(read_wall_type(doc, ty.id).is_ok() && read_opening_type(doc, door.id).is_ok());
+        assert_eq!(walls(doc).count(), 1);
+        // An opening that does not fit is refused before anything is staged.
+        let mut bad = read_wall(doc, prepared.outputs[0].feature).unwrap();
+        bad.openings[0].offset = super::super::length(2500.);
+        let mut s = session;
+        s.commit(prepared.prepared).unwrap();
+        let feature = walls(s.document()).next().unwrap().id;
+        assert!(
+            prepare_wall_change(
+                &s,
+                1,
+                crate::commands::Actor::local(crate::commands::Channel::Ui),
+                &[],
+                &WallChange::Edit {
+                    feature,
+                    wall: &bad
+                }
+            )
+            .is_err()
+        );
     }
     #[test]
     fn openings_must_fit_their_segment_and_leave_wall_above() {
