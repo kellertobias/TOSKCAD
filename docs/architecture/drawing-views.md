@@ -109,6 +109,11 @@ clipping. Curve, point, source and hatch budgets produce explicit errors.
 These bounds constrain output size; they do not establish a low-power timing
 budget or cancellation inside a running OCCT operation.
 
+## Annotations
+
+Dimensions, notes, leaders, weld symbols, tables and sheet drafting are
+described in [drawing annotations](drawing-annotations.md).
+
 ## Producers and verification
 
 The default source provider resolves selected final Parts, placed Part
