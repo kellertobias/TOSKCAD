@@ -41,8 +41,13 @@ mod guides;
 mod levels;
 mod reference_repair;
 mod walls;
-pub use cabinetry::{CarcassArgs, PanelArgs, PanelStockArgs, StackArgs};
-use cabinetry::{create_panel, create_panel_stack, create_panel_stock, cut_list, set_carcass};
+pub use cabinetry::{
+    CarcassArgs, DeleteJointArgs, PanelArgs, PanelJointArgs, PanelStockArgs, StackArgs,
+};
+use cabinetry::{
+    create_panel, create_panel_stack, create_panel_stock, cut_list, delete_panel_joint,
+    set_carcass, set_panel_joint,
+};
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
 pub use levels::{EnvelopeArgs, LevelArgs, SlabArgs, StairArgs};
@@ -247,6 +252,12 @@ tools! {
     "create_panel_stack" => StackArgs, "Create panel stack", false,
         "Record panel Parts as face-to-face stack layers in order, keeping each layer's Part, material and stock; optionally group them as one assembly. Contact is checked by cut_list.",
         create_panel_stack;
+    "set_panel_joint" => PanelJointArgs, "Create or edit panel joint", false,
+        "Join panel pairs that overlap at a right-angle corner (the corner block must be both panels' full thickness): butt with A or B through, a 45° miter, or fingers with a count and fit. Each panel gets its own cut feature; an edit changes the kind, count or fit of every pair. Both sides of every pair are evaluated natively before commit.",
+        set_panel_joint;
+    "delete_panel_joint" => DeleteJointArgs, "Delete panel joint", false,
+        "Delete a panel joint and its cuts, restoring the panels. Later joint cuts on the same Parts are re-attached.",
+        delete_panel_joint;
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;

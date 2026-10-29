@@ -13,8 +13,8 @@ use multicad_core::{
     materials::{self, Grain, LibraryDefinition, Stock, StockKind},
     model::{
         self, Back, Band, BodyOutput, CarcassDefinition, CarcassRequest, Construction, GrainAxis,
-        PanelDefinition, PanelEdges, PanelPlane, PanelRequest, PanelSource, ShelfLayout, Shelves,
-        angle, length,
+        PanelDefinition, PanelEdges, PanelJointDefinition, PanelJointKind, PanelJointPair,
+        PanelPlane, PanelRequest, PanelSource, ShelfLayout, Shelves, angle, length,
     },
     parameters::EvaluatedParameters,
 };
@@ -442,6 +442,126 @@ pub(super) fn create_panel_stack(host: &dyn Host, call: &Request, args: StackArg
     })?
 }
 
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JointKindArg {
+    ButtAThrough,
+    ButtBThrough,
+    Miter,
+    Finger,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PanelJointArgs {
+    pub expected_revision: u64,
+    /// Joint ID to change; omit to create a new joint.
+    #[serde(default)]
+    pub joint: Option<String>,
+    /// Name of a new joint.
+    #[serde(default)]
+    pub name: Option<String>,
+    pub kind: JointKindArg,
+    /// Finger joints: number of fingers along the corner (2–128).
+    #[serde(default)]
+    pub finger_count: Option<u32>,
+    /// Finger joints: total gap at each finger face (default 0).
+    #[serde(default)]
+    pub fit: Option<Quantity>,
+    /// New joints: [panel A Part, panel B Part] pairs that overlap at a corner.
+    #[serde(default)]
+    pub pairs: Vec<[String; 2]>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteJointArgs {
+    pub expected_revision: u64,
+    pub joint: String,
+}
+
+pub(super) fn set_panel_joint(host: &dyn Host, call: &Request, args: PanelJointArgs) -> ToolResult {
+    let (document, revision, evaluated) = snapshot(host)?;
+    if revision != args.expected_revision {
+        return Err(ToolError::new(
+            "stale_revision",
+            format!(
+                "Request is based on revision {}, but the document is at {revision}",
+                args.expected_revision
+            ),
+        )
+        .at_revision(revision));
+    }
+    let kind = match args.kind {
+        JointKindArg::ButtAThrough => PanelJointKind::ButtAThrough,
+        JointKindArg::ButtBThrough => PanelJointKind::ButtBThrough,
+        JointKindArg::Miter => PanelJointKind::Miter,
+        JointKindArg::Finger => PanelJointKind::Finger {
+            count: args
+                .finger_count
+                .ok_or_else(|| ToolError::invalid("A finger joint needs finger_count"))?,
+            fit: opt(&args.fit, &document, &evaluated)?.unwrap_or_else(|| length(0.)),
+        },
+    };
+    let existing = args.joint.as_deref().map(id).transpose()?;
+    let pairs = args
+        .pairs
+        .iter()
+        .map(|[a, b]| {
+            Ok(PanelJointPair {
+                a: id(a)?,
+                b: id(b)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ToolError>>()?;
+    let name = args.name.clone();
+    let call_owned = call.clone();
+    let prepared = with(host, move |target| {
+        revision_guard(target, revision)?;
+        let session = target.session();
+        let actor = call_owned.actor.clone();
+        Ok::<_, ToolError>(match existing {
+            Some(joint) => model::prepare_panel_joint_edit(session, revision, actor, joint, &kind)?,
+            None => model::prepare_panel_joint(
+                session,
+                revision,
+                actor,
+                name.as_deref()
+                    .ok_or_else(|| ToolError::invalid("A new joint needs a name"))?,
+                &PanelJointDefinition { kind, pairs },
+            )?,
+        })
+    })??;
+    let out = json!({
+        "joint": prepared.joint,
+        "cuts": prepared.model.outputs.iter().map(|o| json!({ "part": o.body, "feature": o.feature })).collect::<Vec<_>>(),
+    });
+    finish(host, call, prepared.model.prepared, revision, out)
+}
+
+pub(super) fn delete_panel_joint(
+    host: &dyn Host,
+    call: &Request,
+    args: DeleteJointArgs,
+) -> ToolResult {
+    let joint = id(&args.joint)?;
+    let call_owned = call.clone();
+    let prepared = with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        Ok::<_, ToolError>(model::prepare_panel_joint_delete(
+            target.session(),
+            args.expected_revision,
+            call_owned.actor.clone(),
+            joint,
+        )?)
+    })??;
+    finish(
+        host,
+        call,
+        prepared,
+        args.expected_revision,
+        json!({ "deleted": joint }),
+    )
+}
+
 pub(super) fn cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> ToolResult {
     let (document, revision, _) = snapshot(host)?;
     let model = compile(&document, revision, call)?;
@@ -452,7 +572,7 @@ pub(super) fn cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> Too
         "scope": "Sizes measured from the evaluated panel solids. Core = finished − band thickness + band allowance per banded edge, + oversize. Not a nesting, yield or machining plan.",
         "panels": records.iter().map(|r| json!({
             "part": r.part, "name": r.name, "carcass": r.carcass,
-            "role": r.role.map(|role| role.label()), "stack": r.stack,
+            "role": r.role.map(|role| role.label()), "stack": r.stack, "joints": r.joints,
             "material": r.material, "stock": r.stock, "stock_name": r.stock_name,
             "thickness_mm": r.cut.thickness_mm,
             "finished_mm": r.cut.finished_mm, "core_mm": r.cut.core_mm,

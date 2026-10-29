@@ -125,3 +125,74 @@ fn mcp_builds_a_carcass_panels_and_stack_and_reads_the_cut_list() {
     assert_eq!(s["total_thickness_mm"], 24.0);
     assert_eq!(s["layers"][0]["stock"], json!(hdf));
 }
+
+#[test]
+fn mcp_joins_a_corner_changes_the_joint_and_deletes_it() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Joints").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let ply = run(
+        "create_panel_stock",
+        json!({ "expected_revision": 0, "name": "Ply 18", "material_name": "Birch",
+        "thickness_mm": 18, "sheet_length_mm": 2500, "sheet_width_mm": 1250 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let side = run(
+        "create_panel",
+        json!({ "expected_revision": 1, "name": "Side", "stock": ply, "plane": "yz",
+        "origin_mm": [0, 0, 0], "length": mm(400.), "width": mm(300.) }),
+    )
+    .unwrap()["part"]
+        .clone();
+    let bottom = run(
+        "create_panel",
+        json!({ "expected_revision": 2, "name": "Bottom", "stock": ply, "plane": "xy",
+        "origin_mm": [0, 0, 0], "length": mm(600.), "width": mm(400.) }),
+    )
+    .unwrap()["part"]
+        .clone();
+    let created = run(
+        "set_panel_joint",
+        json!({ "expected_revision": 3, "name": "Corner", "kind": "butt_a_through",
+        "pairs": [[side, bottom]] }),
+    )
+    .unwrap();
+    assert_eq!(created["cuts"].as_array().unwrap().len(), 2);
+    let joint = created["joint"].as_str().unwrap().to_owned();
+    let list = run("cut_list", json!({})).unwrap();
+    assert_eq!(panel(&list, "Bottom")["finished_mm"], json!([582.0, 400.0]));
+    assert_eq!(panel(&list, "Bottom")["joints"], json!([joint]));
+
+    // Too many fingers for the fit is refused; nothing changes.
+    let before = host.document();
+    assert!(
+        run(
+            "set_panel_joint",
+            json!({ "expected_revision": 4, "joint": joint, "kind": "finger",
+            "finger_count": 100, "fit": mm(4.) }),
+        )
+        .is_err()
+    );
+    assert_eq!(host.document(), before);
+    run(
+        "set_panel_joint",
+        json!({ "expected_revision": 4, "joint": joint, "kind": "finger", "finger_count": 5 }),
+    )
+    .unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    let volume = panel(&list, "Bottom")["volume_mm3"].as_f64().unwrap();
+    assert!((volume - (600. * 400. * 18. - 3. * 80. * 324.)).abs() < 1e-3);
+    run(
+        "delete_panel_joint",
+        json!({ "expected_revision": 5, "joint": joint }),
+    )
+    .unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    assert_eq!(panel(&list, "Bottom")["finished_mm"], json!([600.0, 400.0]));
+}
