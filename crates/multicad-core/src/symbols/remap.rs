@@ -22,6 +22,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::INSTANCE_PLACEMENT_TYPE => {
             model::InstancePlacementDefinition::from_definition(d)?;
         }
+        model::INSTANCE_ALIGNMENT_TYPE => {
+            model::InstanceAlignmentDefinition::from_definition(d)?;
+        }
         model::JOINT_TYPE => {
             model::JointDefinition::from_definition(d)?;
         }

@@ -16,3 +16,6 @@ pub use materialize::{owned_entities, validate};
 
 mod prepare;
 pub use prepare::*;
+
+mod copying;
+pub(crate) use copying::{copy_owned_variant, rekey_copied_driver};

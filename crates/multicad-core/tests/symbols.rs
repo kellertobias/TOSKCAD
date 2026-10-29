@@ -569,3 +569,105 @@ fn unrelated_extensions_are_ignored_but_assigned_unsupported_metadata_is_never_s
     assert!(error.message.contains("materials.part_properties"));
     assert_eq!(library.document(), &before);
 }
+
+#[test]
+fn ordinary_move_copy_materializes_independent_symbols_and_rekeys_private_pose_bindings() {
+    let (_, def, width, _) = author_fixture(SymbolKind::Dynamic);
+    let (mut s, id) = host(&def);
+    let place = SymbolPlaceRequest::new(
+        s.document(),
+        id,
+        "Original",
+        value(width, 100.),
+        Placement::default(),
+    )
+    .unwrap();
+    s.commit(
+        prepare_place(&s, s.revision(), actor(), &place)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let private_name = s.document().get(place.ids[&width]).unwrap().name.clone();
+    let mut movement = NumericTransform::default();
+    movement.translation[0] = Dimension::Expression {
+        expression: BoundExpression::bind(s.document(), &format!("=${private_name}"), "mm", None)
+            .unwrap(),
+    };
+    let move_request = InstanceMoveRequest::new(place.instance, movement);
+    s.commit(
+        prepare_instance_moves(&s, s.revision(), actor(), &[move_request])
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let mut delta = NumericTransform::default();
+    delta.translation[1] = length(50.);
+    let copy = InstanceCopyRequest::new(
+        InstanceCopySource::Instance {
+            instance: place.instance,
+        },
+        delta,
+    );
+    let before = s.document().clone();
+    let preview =
+        prepare_instance_copies(&s, s.revision(), actor(), std::slice::from_ref(&copy)).unwrap();
+    assert_eq!(s.document(), &before);
+    let candidate = preview.prepared.document().clone();
+    s.commit(preview.prepared).unwrap();
+    let copied = read_instance(s.document(), copy.instance).unwrap();
+    assert_ne!(copied.wrapper, place.wrapper);
+    assert_ne!(copied.ids[&width], place.ids[&width]);
+    assert_eq!(copied.overrides, value(width, 100.));
+    assert_eq!(
+        resolve_instance_pose(s.document(), copy.instance, s.parameters())
+            .unwrap()
+            .translation_mm,
+        [100., 50., 0.]
+    );
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &before);
+    s.redo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &candidate);
+    let edit = prepare_edit(
+        &s,
+        s.revision(),
+        actor(),
+        &SymbolEditRequest {
+            record: place.record,
+            overrides: value(width, 200.),
+        },
+    )
+    .unwrap();
+    s.commit(edit.prepared).unwrap();
+    assert_eq!(
+        resolve_instance_pose(s.document(), place.instance, s.parameters())
+            .unwrap()
+            .translation_mm,
+        [200., 0., 0.]
+    );
+    assert_eq!(
+        resolve_instance_pose(s.document(), copy.instance, s.parameters())
+            .unwrap()
+            .translation_mm,
+        [100., 50., 0.]
+    );
+    assert_eq!(
+        s.parameters()
+            .value(copied.ids[&width], Unit::Millimeter)
+            .unwrap(),
+        100.
+    );
+    let reopened: Document =
+        serde_json::from_slice(&serde_json::to_vec(s.document()).unwrap()).unwrap();
+    assert_eq!(reopened, *s.document());
+    let alias = Entity::new(
+        "Unowned alias",
+        EntityData::Instance {
+            component: place.wrapper,
+            placement: Placement::default(),
+            placement_source: None,
+        },
+    );
+    assert!(s.document().edited(&[Mutation::Insert(alias)]).is_err());
+}

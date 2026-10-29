@@ -187,6 +187,9 @@ pub fn validate(doc: &Document) -> Result<(), DocumentError> {
                     "Symbol outer Instance must retain its owned component",
                 ));
             }
+            if doc.entities().any(|e|e.id!=value.instance&&matches!(&e.data,EntityData::Instance{component,..}if *component==value.wrapper)){
+                return Err(invalid("A symbol copy requires its own private source graph and ownership record; use Move/Copy or place it from the Library"));
+            }
             for (entity_id, expected) in generated(def, &value)? {
                 if !owned.insert(entity_id) || doc.get(entity_id) != Some(&expected) {
                     return Err(invalid(format!(

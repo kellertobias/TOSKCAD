@@ -219,8 +219,34 @@ pub fn prepare_instance_copies(
                 )
             }
             InstanceCopySource::Instance { instance } => {
-                let (component, placement, base) =
+                let copied_driver_start = edits.len();
+                let (mut component, placement, base) =
                     copy_base(document, *instance, request.instance, &mut ids, &mut edits)?;
+                if let Some((wrapper, owned, private_rekey)) = crate::symbols::copy_owned_variant(
+                    document,
+                    *instance,
+                    request.instance,
+                    &request.name,
+                )? {
+                    for edit in &mut edits[copied_driver_start..] {
+                        let Mutation::Insert(entity) = edit else {
+                            return Err(error(
+                                "Copied symbol placement has an unexpected source edit",
+                            ));
+                        };
+                        *entity = crate::symbols::rekey_copied_driver(entity, &private_rekey)?;
+                    }
+                    for edit in owned {
+                        let Mutation::Insert(entity) = &edit else {
+                            return Err(error(
+                                "Copied symbol variant has an unexpected source edit",
+                            ));
+                        };
+                        fresh(document, entity.id, &mut ids)?;
+                        edits.push(edit);
+                    }
+                    component = wrapper;
+                }
                 (
                     component,
                     placement,
