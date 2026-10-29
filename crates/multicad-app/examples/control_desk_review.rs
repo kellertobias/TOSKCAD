@@ -1440,9 +1440,9 @@ fn drawings(s: &mut Scenario) -> Result<(), Error> {
         numerator: 1,
         denominator: 2,
     };
-    let front = view("Front", stack.clone(), FRONT, [110., 230.], 2);
-    let top_view = view("Top", desk.clone(), TOP, [110., 120.], 2);
-    let side = view("Side", stack, SIDE, [310., 230.], 2);
+    let front = view("Front", stack.clone(), FRONT, [110., 200.], 2);
+    let top_view = view("Top", desk.clone(), TOP, [110., 150.], 2);
+    let side = view("Side", stack, SIDE, [300., 150.], 2);
     let w = face(&model, s.sheet.body, [-1., 0., 0.], 0.)?;
     let e = face(&model, s.sheet.body, [1., 0., 0.], 240.)?;
     let width = Annotation {
