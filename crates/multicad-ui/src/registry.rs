@@ -370,7 +370,6 @@ impl Default for Registry {
             ("support", "Thin support", Icon::Box),
             ("tab", "Breakaway tab", Icon::Edge),
             ("materials", "Materials", Icon::Library),
-            ("wall", "Wall", Icon::Box),
             ("door", "Door", Icon::Page),
             ("window-tool", "Window", Icon::Page),
             ("stairs", "Stairs", Icon::Edge),

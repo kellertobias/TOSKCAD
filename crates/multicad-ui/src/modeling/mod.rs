@@ -26,6 +26,7 @@ mod scale_gizmo;
 mod scaling;
 mod split;
 mod termination;
+mod wall;
 
 pub use advanced::{AdvancedCommand, AdvancedKind, AdvancedSelection};
 pub use alignment_panel::AlignmentCommand;
@@ -55,12 +56,14 @@ pub enum ModelingTool {
     Align,
     Scale,
     EdgeTreatment,
+    Wall,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Box,
         Self::Cylinder,
+        Self::Wall,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -97,6 +100,7 @@ impl ModelingTool {
             Self::Align => "align",
             Self::Scale => "scale",
             Self::EdgeTreatment => "edge-treatment",
+            Self::Wall => "wall",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -121,6 +125,7 @@ impl ModelingTool {
             Self::Align => "Align",
             Self::Scale => "Scale",
             Self::EdgeTreatment => "Fillet / Chamfer",
+            Self::Wall => "Wall",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -145,6 +150,7 @@ impl ModelingTool {
             Self::Align => crate::icons::Icon::Link,
             Self::Scale => crate::icons::Icon::Scale,
             Self::EdgeTreatment => crate::icons::Icon::Edge,
+            Self::Wall => crate::icons::Icon::Box,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -169,6 +175,7 @@ impl ModelingTool {
             Self::Align => &["align-body", "mate", "align-part"],
             Self::Scale => &["scale-body", "resize-solid"],
             Self::EdgeTreatment => &["fillet", "chamfer", "edge"],
+            Self::Wall => &["walls", "architectural-wall", "doors-windows"],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -184,6 +191,9 @@ impl ModelingTool {
         match self {
             Self::Advanced(_) => {
                 "Usage: choose explicit source geometry and controls in the Inspector, then Preview and Apply"
+            }
+            Self::Wall => {
+                "Usage: wall (choose or define a wall type, enter path points and doors/windows in the Inspector, then Preview and Apply)"
             }
             Self::EdgeTreatment => {
                 "Usage: edge-treatment (choose Part edges, a Fillet radius or Chamfer distances/angle and explicit adjacent faces, then Preview and Apply)"
@@ -222,6 +232,9 @@ impl ModelingTool {
             }
             Self::Advanced(_) => {
                 "Choose one current Part definition. Linked Instances follow its editable source; face-based tools capture native geometry explicitly. Patterns create a compound Part."
+            }
+            Self::Wall => {
+                "Requires native modeling and no pending edits. Wall and opening types are created with the wall or reused from the project."
             }
             Self::EdgeTreatment => {
                 "Select native edges of one Part definition. Sided Chamfer distances/angles use explicit adjacent face captures. Linked Instances follow the definition."

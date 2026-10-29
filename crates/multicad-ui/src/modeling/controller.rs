@@ -156,7 +156,7 @@ impl ModelToolController {
         {
             return true;
         }
-        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE))
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE))
     }
     pub fn begin_existing(
         &mut self,
@@ -264,6 +264,16 @@ impl ModelToolController {
                     parameters: source.parameters,
                 })?))
             }
+            model::WALL_TYPE => ModelForm::Wall(Box::new(super::wall::WallPanel::existing(
+                document,
+                feature,
+                body_name(
+                    model::read_wall(document, feature)
+                        .map_err(|error| error.to_string())?
+                        .output
+                        .body,
+                )?,
+            )?)),
             model::REVOLVE_TYPE => {
                 let source =
                     model::read_revolve(document, feature).map_err(|error| error.to_string())?;
@@ -358,6 +368,23 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Primitive(Box::new(PrimitivePanel::new(request)?)),
+        )
+    }
+    pub fn begin_wall(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Wall", " feature");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Wall(Box::new(super::wall::WallPanel::new(
+                session.document(),
+                name,
+            )?)),
         )
     }
     pub fn begin_revolve(

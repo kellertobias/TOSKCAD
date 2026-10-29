@@ -95,6 +95,9 @@ impl SketchEditor {
         if matches!(tool, ModelingTool::Box | ModelingTool::Cylinder) {
             return self.begin_primitive(session, resources, tool, channel);
         }
+        if tool == ModelingTool::Wall {
+            return self.begin_wall(session, resources, channel);
+        }
         if let Some(
             kind @ (crate::modeling::AdvancedKind::Sweep | crate::modeling::AdvancedKind::Loft),
         ) = tool.advanced_kind()

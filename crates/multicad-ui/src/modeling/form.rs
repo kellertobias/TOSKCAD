@@ -11,6 +11,7 @@ use super::{
     revolve::RevolvePanel,
     scaling::ScalePanel,
     split::{SplitEvent, SplitPanel},
+    wall::{WallCommand, WallPanel},
 };
 use crate::egui;
 use multicad_core::{
@@ -38,6 +39,7 @@ pub enum ModelRequest {
     EdgeTreatment(Box<super::EdgeTreatmentCommand>),
     Advanced(Box<super::AdvancedCommand>),
     Alignment(Box<super::AlignmentCommand>),
+    Wall(Box<WallCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -78,6 +80,12 @@ impl ModelRequest {
             Self::Alignment(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Alignment edit changed its saved producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Wall(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Wall edit changed its producer identity".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -150,6 +158,12 @@ impl ModelRequest {
             Self::Alignment(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved alignment before editing its source".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Wall(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved wall before editing it".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -260,6 +274,7 @@ pub(super) enum ModelForm {
     EdgeTreatment(Box<EdgeTreatmentPanel>),
     Advanced(Box<AdvancedPanel>),
     Alignment(Box<AlignmentPanel>),
+    Wall(Box<WallPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -276,6 +291,7 @@ impl ModelForm {
             Self::EdgeTreatment(panel) => panel.stamp(),
             Self::Advanced(panel) => panel.stamp(),
             Self::Alignment(panel) => panel.stamp(),
+            Self::Wall(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -292,6 +308,7 @@ impl ModelForm {
             Self::EdgeTreatment(panel) => panel.label(),
             Self::Advanced(panel) => panel.label(),
             Self::Alignment(_) => "Referenced alignment",
+            Self::Wall(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -309,6 +326,9 @@ impl ModelForm {
             Self::Alignment(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Alignment(Box::new(command))),
+            Self::Wall(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Wall(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -378,6 +398,7 @@ impl ModelForm {
             Self::EdgeTreatment(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Advanced(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Alignment(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Wall(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {
