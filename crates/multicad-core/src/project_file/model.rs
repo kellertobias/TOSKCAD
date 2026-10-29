@@ -263,6 +263,21 @@ pub struct ProjectResources {
     pub metadata: BTreeMap<String, Value>,
     pub required_capabilities: BTreeSet<String>,
 }
+impl ProjectResources {
+    /// A digest of authored resources: payload descriptors and bytes, project
+    /// metadata and required capabilities. Derived caches are excluded.
+    pub fn fingerprint(&self) -> String {
+        let mut hash = Sha256::new();
+        for (id, payload) in &self.payloads {
+            hash.update(id.to_string());
+            hash.update(serde_json::to_vec(&payload.descriptor).unwrap_or_default());
+            hash.update(ContentHash::of(&payload.bytes).0);
+        }
+        hash.update(serde_json::to_vec(&self.metadata).unwrap_or_default());
+        hash.update(serde_json::to_vec(&self.required_capabilities).unwrap_or_default());
+        ContentHash(hash.finalize().into()).to_string()
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectFile {
     pub document: Document,

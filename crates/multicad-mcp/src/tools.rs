@@ -36,6 +36,12 @@ use std::{
     },
 };
 
+mod reference_repair;
+pub use reference_repair::{
+    CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
+};
+use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
+
 pub type ToolResult = Result<Value, ToolError>;
 
 /// Per-call context: who acts and whether the client has cancelled.
@@ -182,6 +188,15 @@ tools! {
     "export_step" => ExportStep, "Export STEP", true,
         "Write one final part as a STEP B-rep into the export folder in scope (bare file name ending .step or .stp). The written file is read back and its volume reported. Does not change the document.",
         export_step;
+    "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
+        "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
+        reference_candidates;
+    "preview_reference_repairs" => PreviewArgs, "Preview reference repairs", true,
+        "Stage several sketch-reference repairs (rebind, rebind_occurrence, remove, remove_sketch_items, source_edit rows, applied in order) on the current source without changing it. Reports each row's old binding, replacement, affected entities and error, plus blockers. can_apply is true only when every row staged, the full model rebuilds, every driving reference resolves and every affected sketch solves.",
+        preview_reference_repairs;
+    "apply_reference_repairs" => RepairArgs, "Apply reference repairs", false,
+        "Stage and check the same rows as preview_reference_repairs and, only if the complete candidate passes, commit every row as one transaction. A blocked, stale or changed-resource request changes nothing.",
+        apply_reference_repairs;
     "import_sketch_artwork" => ImportArtwork, "Import DXF/SVG artwork", false,
         "Import DXF or SVG text as exact sketch lines, arcs, circles and splines into an existing sketch or a new sketch on a datum plane. Unsupported content is reported. Commits one transaction with a provenance record.",
         import_sketch_artwork;
