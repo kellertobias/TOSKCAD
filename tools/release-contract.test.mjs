@@ -87,3 +87,14 @@ test('version and repository inputs cannot escape their intended scope',()=>{
   for(const repository of ['owner/repo/extra','../repo','https://example.invalid/repo'])assert.throws(()=>githubRepositoryUrl({GITHUB_REPOSITORY:repository}));
   assert.equal(githubRepositoryUrl({GITHUB_REPOSITORY:'owner/repo'}),'https://github.com/owner/repo.git');
 });
+
+test('native regression suites are read-only and gate publication on every platform',()=>{
+  const regression=readFileSync(new URL('../.github/workflows/native-regression.yml',import.meta.url),'utf8');
+  const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  assert.match(regression,/^permissions:\n {2}contents: read$/m);
+  assert.doesNotMatch(regression,/secrets\.|: *write|npm publish|semantic-release|git push|git tag/);
+  for(const os of ['ubuntu-24\\.04','macos-15','windows-2025'])assert.match(regression,new RegExp(`- os: ${os}\\n`));
+  for(const suite of ['--bin multicad files::','--test release_hardening','--test project_file','--test drawing_exports','--test control_desk','cargo test --workspace --locked --no-fail-fast'])assert(regression.includes(suite),suite);
+  assert.match(release,/regression:\n {4}name: Native regression suites\n {4}uses: \.\/\.github\/workflows\/native-regression\.yml/);
+  assert.match(release,/needs: \[metadata, quality, build, foundation, regression\]/);
+});

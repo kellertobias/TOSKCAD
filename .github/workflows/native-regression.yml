@@ -1,0 +1,93 @@
+name: Native regression suites
+
+# Read-only build/test evidence on three operating systems. No publication,
+# credentials, tags or tracked-file changes. Each suite is a named step so a
+# failure identifies the area (file recovery, cancellation, exporters, ...)
+# before the full workspace run; logs and headless budget reports are kept.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Native regression / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: macos-15
+            target: macos-arm64
+          - os: windows-2025
+            target: windows-x64
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: rustup show active-toolchain
+      - name: Linux native window development libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev
+      - name: Bootstrap pinned native dependency sources
+        run: node tools/foundation-deps.mjs
+      - name: Build every workspace target
+        run: cargo build --workspace --all-targets --locked
+      - name: Project file round trip, recovery, compatibility and damage (scenario projects)
+        run: "cargo test -p multicad-app --locked --no-fail-fast --bin multicad files::"
+      - name: Project container codec and recovery identity
+        run: cargo test -p multicad-core --locked --no-fail-fast --test project_file
+      - name: Cancellation, runtime supersession and incremental status
+        run: cargo test -p multicad-app --locked --no-fail-fast --test release_hardening
+      - name: Model runtime and geometry worker cancellation
+        run: >-
+          cargo test --locked --no-fail-fast
+          -p multicad-model --test runtime --test drawing_concurrency
+          -p multicad-kernel --test worker --test advanced_concurrency
+      - name: Geometry validity (native kernel)
+        run: cargo test -p multicad-kernel --locked --no-fail-fast
+      - name: Exporter validation
+        run: >-
+          cargo test -p multicad-model --locked --no-fail-fast
+          --test drawing_exports --test mesh_exports --test export_sets
+          --test assembly_exports --test sheet_dxf --test planar_dxf
+          --test render_handoff
+      - name: Acceptance scenarios (makerspace, cabinetry/table, tool case, control desk)
+        run: >-
+          cargo test -p multicad-app --locked --no-fail-fast
+          --test makerspace --test cabinetry_table --test tool_case --test control_desk
+      - name: UI workflow state and MCP tools
+        run: cargo test --locked --no-fail-fast -p multicad-ui -p multicad-mcp
+      - name: Application CLI, MCP server and shared workflow
+        run: >-
+          cargo test -p multicad-app --locked --no-fail-fast
+          --test mcp --test cli --test shared_workflow
+      - name: Complete workspace tests
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Headless budget smoke (dev profile, one run; not a performance result)
+        if: success() || failure()
+        run: node tools/release-budgets.mjs --profile dev --repeat 1 --label ci-${{ matrix.target }}
+      - name: Keep budget reports and generated scenario deliverables
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-regression-${{ matrix.target }}-${{ github.sha }}
+          path: artifacts/benchmarks/
+          if-no-files-found: warn
+          retention-days: 7
