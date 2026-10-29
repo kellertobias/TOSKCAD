@@ -45,6 +45,64 @@ material hatching. Exact line/face intersections clip hatches around holes.
 An uncut Part behind the section plane receives no hatch. Material spacing and
 line width use paper units; view scale changes the corresponding model spacing.
 
+### Section ranges and windows
+
+A section view also stores how much lies behind the cut, and an optional
+lateral window. Both are omitted from the wire form when unused, so older
+sections are unchanged. Projects that use either require
+`drawings.sections.1`.
+
+| Range | Output |
+| --- | --- |
+| Unlimited (default) | Every retained solid behind the plane: the original half-space path |
+| Finite depth | Uncut geometry only between the cut plane and a far plane `depth_mm` behind it. Solids crossing the far plane are clipped there, and farther solids are excluded. |
+| Section only | Only the exact plane intersection of each solid, outlined and hatched. Nothing in front of or behind the plane is drawn. |
+
+The window limits the section in view-frame u (right) and v (up)
+coordinates, measured from the view origin, so it describes a finite section
+line or region. Geometry outside the window is not shown.
+
+Finite and windowed sections clip each solid with one box in the view frame.
+An unlimited side extends past every source by a margin, so its faces never
+touch geometry. Section only uses the exact common of each solid with a
+bounded face on the cut plane.
+
+Hatching follows the existing rule: only planar faces at the cut plane, on
+solids that lost volume, are hatched. A solid inside the range behind the cut,
+or one clipped only at the far plane or the window, has visible and hidden
+edges but no hatch. Window clipping leaves straight boundary lines where it
+cuts a solid. An empty range or window is an unresolved view with an explicit
+message.
+
+**Pick section line** on a projection takes two clicks on the page.
+`section_from_line` turns the picked segment into a section frame:
+
+- the cut plane contains the line and the parent's view direction;
+- the section looks toward the left of the picked direction and keeps the
+  parent's normal up;
+- the window spans exactly the picked segment.
+
+The new view shares the parent's sources and scale. Picking the points in the
+reverse order flips the viewing side.
+
+`section_guide` places a section's cut line in another view of the same page
+when that view sees the plane edge-on. The line is trimmed to the window along
+the section's u axis, and a finite depth adds the far limit. The page canvas
+draws the cut solid with the section's name and the far limit dashed, so the
+chosen cut and range are visible before Apply. A changed section still needs a
+current native preview before Apply, and Undo, Redo and save/reopen keep its
+settings.
+
+### Exterior views
+
+The inspector offers the six principal directions and isometric. It also
+offers a custom look direction: the camera looks along that direction with
+world Z up, or world Y when looking vertically. Every exterior view projects
+the selected Parts, occurrences or components through the same hidden-line
+path.
+
+### Details
+
 Circular details intersect projected curves with the authored region. The
 adapter builds the projected curves' spatial representation before Boolean
 clipping. Curve, point, source and hatch budgets produce explicit errors.
@@ -68,9 +126,15 @@ flattening or exploded assembly authoring.
 Native coverage is in
 [`kernel/tests/drawing.rs`](../../crates/multicad-kernel/tests/drawing.rs) and
 [`model/tests/drawings.rs`](../../crates/multicad-model/tests/drawings.rs).
-It checks model dimensions, hidden edges, exact circles/ellipses, finite detail
-crops, section holes, material paper spacing, placement and parameter updates,
-save/reopen, unavailable producers and stale-result rejection. Page editing and
+It checks:
+
+- model dimensions, hidden edges and exact circles/ellipses;
+- finite detail crops, section holes and material paper spacing;
+- placement and parameter updates, save/reopen, unavailable producers and
+  stale-result rejection;
+- section-only, finite-depth and windowed sections against fixtures at the
+  cut, within range, crossing the far limit (a ramp whose clipped height
+  proves the cut position) and beyond range. Page editing and
 identity tests remain in
 [`core/tests/drawing_views.rs`](../../crates/multicad-core/tests/drawing_views.rs).
 Native page rendering and PDF/DXF writers require their own UI and output checks.
