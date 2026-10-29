@@ -52,8 +52,10 @@ pub use reference_repair::{
     CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
-pub use sheet_metal::{ConvertSheetArgs, SheetPartArgs, SheetStockArgs};
-use sheet_metal::{convert_to_sheet, create_sheet_stock, set_sheet_part, sheet_metal};
+pub use sheet_metal::{ConvertSheetArgs, SheetFormingArgs, SheetPartArgs, SheetStockArgs};
+use sheet_metal::{
+    convert_to_sheet, create_sheet_stock, set_sheet_forming, set_sheet_part, sheet_metal,
+};
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
@@ -262,6 +264,9 @@ tools! {
     "convert_to_sheet" => ConvertSheetArgs, "Convert solid to sheet part", false,
         "Analyze a Part's current solid as a constant-thickness plate and, if supported, create a sheet Part whose base is the captured stationary face. Inclined faces, steps, thickness that differs from the stock and curved bend regions are refused with their measurements. The source Part is unchanged.",
         convert_to_sheet;
+    "set_sheet_forming" => SheetFormingArgs, "Set sheet flanges and cutouts", false,
+        "Replace a sheet part's flanges, hems and jogs (on straight base edges, with angle, direction, leg length, inside radius, corner insets and reliefs) and its through-cutouts (circle or rectangle in the base or a flange leg). Overlapping or touching flanges, cutouts outside their face and flanges running into the base are refused with the failing feature; the document is unchanged. Evaluated natively before commit.",
+        set_sheet_forming;
     "sheet_metal" => NoArgs, "Sheet-metal records", true,
         "Every sheet Part measured from its evaluated solid: thickness and measured thickness, inside radius and K-factor with their source, volume, and the developed flat pattern of the same feature with its size and area.",
         sheet_metal;

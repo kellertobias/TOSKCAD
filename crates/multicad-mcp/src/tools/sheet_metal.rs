@@ -12,7 +12,8 @@ use multicad_core::{
     document::{Document, Entity, EntityData, EntityId},
     materials::{self, LibraryDefinition, Stock, StockKind},
     model::{
-        self, BodyOutput, PanelPlane, ProfileSource, SheetBase, SheetDefinition, SheetRequest,
+        self, BendDirection, BodyOutput, Cutout, CutoutFace, CutoutShape, Flange, FlangeKind,
+        PanelPlane, ProfileSource, Relief, SheetBase, SheetDefinition, SheetRequest,
     },
     parameters::EvaluatedParameters,
 };
@@ -271,7 +272,16 @@ pub(super) fn set_sheet_part(host: &dyn Host, call: &Request, args: SheetPartArg
             value,
             unit: "ratio".into(),
         }),
+        flanges: vec![],
+        cutouts: vec![],
     };
+    // An edit keeps the part's flanges and cutouts.
+    let mut sheet = sheet;
+    if let Some(feature) = edit {
+        let previous = model::read_sheet(&document, feature)?;
+        sheet.flanges = previous.flanges;
+        sheet.cutouts = previous.cutouts;
+    }
     let name = args.name.clone();
     let call_owned = call.clone();
     let (prepared, out) = with(host, move |target| {
@@ -297,6 +307,206 @@ pub(super) fn set_sheet_part(host: &dyn Host, call: &Request, args: SheetPartArg
                 )
             }
         })
+    })??;
+    finish(host, call, prepared, revision, out)
+}
+
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FlangeKindArg {
+    Bend,
+    Hem,
+    Jog,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BendDirectionArg {
+    Up,
+    Down,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FlangeArg {
+    /// Straight base edge index; rectangle edges are 0: v = 0, 1: u = length, 2: v = width, 3: u = 0.
+    pub edge: u32,
+    pub kind: FlangeKindArg,
+    /// Bend and jog angle in degrees (bend: 0–180, jog: 0–90; default 90).
+    #[serde(default)]
+    pub angle_deg: Option<f64>,
+    /// Hem: gap between the hem leg and the base face.
+    #[serde(default)]
+    pub gap: Option<Quantity>,
+    /// Jog: offset between the base face and the leg's matching face.
+    #[serde(default)]
+    pub offset: Option<Quantity>,
+    /// Up bends toward the material side (default), down away from it.
+    #[serde(default)]
+    pub direction: Option<BendDirectionArg>,
+    /// Straight leg beyond the last bend.
+    pub length: Quantity,
+    /// Inside radius for this flange; omit to use the part value.
+    #[serde(default)]
+    pub inside_radius: Option<Quantity>,
+    /// Gap from the edge start to the flange (corner or seam gap).
+    #[serde(default)]
+    pub start_inset: Option<Quantity>,
+    /// Gap from the flange to the edge end.
+    #[serde(default)]
+    pub end_inset: Option<Quantity>,
+    /// Rectangular relief at each inset end: width along the edge.
+    #[serde(default)]
+    pub relief_width: Option<Quantity>,
+    /// Relief depth into the base.
+    #[serde(default)]
+    pub relief_depth: Option<Quantity>,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CutoutShapeArg {
+    Circle,
+    Rectangle,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CutoutArg {
+    /// Flange index (zero-based) for a cutout in a flange leg; omit for the base.
+    #[serde(default)]
+    pub flange: Option<u32>,
+    pub shape: CutoutShapeArg,
+    /// Center in the face's coordinates: base (u, v), or flange (along the
+    /// edge from the flange start, along the leg from its last bend).
+    pub center_mm: [f64; 2],
+    /// Circle diameter.
+    #[serde(default)]
+    pub diameter: Option<Quantity>,
+    /// Rectangle size: along u (or the edge) and along v (or the leg).
+    #[serde(default)]
+    pub size: Option<[Quantity; 2]>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SheetFormingArgs {
+    pub expected_revision: u64,
+    /// The sheet feature whose flanges and cutouts are replaced.
+    pub feature: String,
+    #[serde(default)]
+    pub flanges: Vec<FlangeArg>,
+    #[serde(default)]
+    pub cutouts: Vec<CutoutArg>,
+}
+
+fn opt(
+    v: &Option<Quantity>,
+    d: &Document,
+    e: &EvaluatedParameters,
+) -> Result<Option<Dimension>, ToolError> {
+    v.as_ref().map(|v| q(v, d, e)).transpose()
+}
+fn need(
+    v: &Option<Quantity>,
+    what: &str,
+    d: &Document,
+    e: &EvaluatedParameters,
+) -> Result<Dimension, ToolError> {
+    opt(v, d, e)?.ok_or_else(|| ToolError::invalid(format!("This needs {what}")))
+}
+fn flange(f: &FlangeArg, d: &Document, e: &EvaluatedParameters) -> Result<Flange, ToolError> {
+    let angle = model::angle(f.angle_deg.unwrap_or(90.));
+    Ok(Flange {
+        edge: f.edge,
+        kind: match f.kind {
+            FlangeKindArg::Bend => FlangeKind::Bend { angle },
+            FlangeKindArg::Hem => FlangeKind::Hem {
+                gap: need(&f.gap, "a hem gap", d, e)?,
+            },
+            FlangeKindArg::Jog => FlangeKind::Jog {
+                angle,
+                offset: need(&f.offset, "a jog offset", d, e)?,
+            },
+        },
+        direction: match f.direction {
+            Some(BendDirectionArg::Down) => BendDirection::Down,
+            _ => BendDirection::Up,
+        },
+        length: q(&f.length, d, e)?,
+        inside_radius: opt(&f.inside_radius, d, e)?,
+        start_inset: opt(&f.start_inset, d, e)?,
+        end_inset: opt(&f.end_inset, d, e)?,
+        relief: match (&f.relief_width, &f.relief_depth) {
+            (None, None) => None,
+            (Some(w), Some(depth)) => Some(Relief {
+                width: q(w, d, e)?,
+                depth: q(depth, d, e)?,
+            }),
+            _ => {
+                return Err(ToolError::invalid(
+                    "A relief needs both relief_width and relief_depth",
+                ));
+            }
+        },
+    })
+}
+fn cutout(c: &CutoutArg, d: &Document, e: &EvaluatedParameters) -> Result<Cutout, ToolError> {
+    let center = c.center_mm.map(model::length);
+    Ok(Cutout {
+        face: match c.flange {
+            Some(index) => CutoutFace::Flange { index },
+            None => CutoutFace::Base,
+        },
+        shape: match c.shape {
+            CutoutShapeArg::Circle => CutoutShape::Circle {
+                center,
+                diameter: need(&c.diameter, "a diameter", d, e)?,
+            },
+            CutoutShapeArg::Rectangle => {
+                let [a, b] = c
+                    .size
+                    .as_ref()
+                    .ok_or_else(|| ToolError::invalid("A rectangle cutout needs a size"))?;
+                CutoutShape::Rectangle {
+                    center,
+                    size: [q(a, d, e)?, q(b, d, e)?],
+                }
+            }
+        },
+    })
+}
+
+pub(super) fn set_sheet_forming(
+    host: &dyn Host,
+    call: &Request,
+    args: SheetFormingArgs,
+) -> ToolResult {
+    let (document, revision, evaluated) = snapshot(host)?;
+    if revision != args.expected_revision {
+        return Err(stale(args.expected_revision, revision));
+    }
+    let feature = id(&args.feature)?;
+    let mut sheet = model::read_sheet(&document, feature)?;
+    sheet.flanges = args
+        .flanges
+        .iter()
+        .map(|f| flange(f, &document, &evaluated))
+        .collect::<Result<_, _>>()?;
+    sheet.cutouts = args
+        .cutouts
+        .iter()
+        .map(|c| cutout(c, &document, &evaluated))
+        .collect::<Result<_, _>>()?;
+    let out = json!({ "feature": feature, "part": sheet.output.body });
+    let call_owned = call.clone();
+    let prepared = with(host, move |target| {
+        revision_guard(target, revision)?;
+        Ok::<_, ToolError>(
+            model::prepare_sheet_edit(
+                target.session(),
+                revision,
+                call_owned.actor.clone(),
+                feature,
+                &sheet,
+            )?
+            .prepared,
+        )
     })??;
     finish(host, call, prepared, revision, out)
 }
@@ -371,6 +581,12 @@ pub(super) fn sheet_metal(host: &dyn Host, call: &Request, _: super::NoArgs) -> 
             "volume_mm3": r.volume_mm3, "solid_count": r.solid_count,
             "flat_size_mm": r.flat_size_mm, "flat_area_mm2": r.flat_area_mm2,
             "flat": r.flat,
+            "bends": r.bends.iter().map(|b| json!({
+                "flange": b.flange, "bend": b.bend, "edge": b.edge, "direction": b.direction,
+                "angle_deg": b.angle_deg, "inside_radius_mm": b.inside_radius_mm,
+                "allowance_mm": b.allowance_mm, "zone_mm": b.zone_mm, "line_mm": b.line,
+                "length_mm": b.length_mm,
+            })).collect::<Vec<_>>(),
             "issues": r.issues,
         })).collect::<Vec<_>>(),
     }))

@@ -147,3 +147,73 @@ fn mcp_builds_edits_and_converts_sheet_parts() {
     assert!(error.message.contains("differs"), "{}", error.message);
     assert_eq!(host.document(), before);
 }
+
+#[test]
+fn mcp_sets_flanges_and_cutouts_and_refuses_touching_corners() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Forming").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let steel = run(
+        "create_sheet_stock",
+        json!({ "expected_revision": 0, "name": "DC01 2.0", "material_name": "DC01",
+        "thickness_mm": 2, "sheet_length_mm": 2000, "sheet_width_mm": 1000,
+        "inside_bend_radius_mm": 2, "k_factor": 0.5 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let feature = run(
+        "set_sheet_part",
+        json!({ "expected_revision": 1, "name": "Channel", "stock": steel,
+        "plane": "xy", "length": mm(100.), "width": mm(60.) }),
+    )
+    .unwrap()["feature"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let formed = run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 2, "feature": feature,
+        "flanges": [
+            { "edge": 0, "kind": "bend", "angle_deg": 90, "length": mm(20.) },
+            { "edge": 2, "kind": "hem", "gap": mm(1.), "length": mm(10.), "direction": "down" }
+        ],
+        "cutouts": [
+            { "shape": "circle", "center_mm": [50, 30], "diameter": mm(8.) },
+            { "flange": 0, "shape": "rectangle", "center_mm": [50, 10], "size": [mm(20.), mm(4.)] }
+        ] }),
+    )
+    .unwrap();
+    assert_eq!(formed["revision"], 3);
+    let list = run("sheet_metal", json!({})).unwrap();
+    let c = sheet(&list, "Channel");
+    let pi = std::f64::consts::PI;
+    let volume = 100. * 60. * 2.
+        + (pi / 4. * 12. * 100. + 100. * 20. * 2.)
+        + (pi / 2. * (2.5f64.powi(2) - 0.25) * 100. + 100. * 10. * 2.)
+        - pi * 16. * 2.
+        - 80. * 2.;
+    near(&c["volume_mm3"], volume);
+    assert_eq!(c["bends"].as_array().unwrap().len(), 2);
+    assert_eq!(c["bends"][1]["direction"], "down");
+    near(&c["bends"][1]["angle_deg"], 180.);
+    // K = 0.5: the flat area times thickness equals the folded volume.
+    near(&json!(c["flat_area_mm2"].as_f64().unwrap() * 2.), volume);
+
+    // Flanges on all four edges touch at the corners and are refused.
+    let before = host.document();
+    let flanges: Vec<Value> = (0..4)
+        .map(|e| json!({ "edge": e, "kind": "bend", "length": mm(10.) }))
+        .collect();
+    let error = run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 3, "feature": feature, "flanges": flanges }),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("touch"), "{}", error.message);
+    assert_eq!(host.document(), before);
+}
