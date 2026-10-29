@@ -13,8 +13,8 @@ use multicad_core::{
     document::{Document, EntityData, EntityId},
     materials::{self, LibraryDefinition, StockKind},
     model::{
-        self, AxisAnchor, BodyOutput, MemberDefinition, MemberPath, MemberRequest, ModelPrepared,
-        angle, length,
+        self, AxisAnchor, BodyOutput, ConnectionDefinition, CreatedBody, MemberDefinition,
+        MemberPath, MemberRequest, ModelPrepared, angle, length,
     },
 };
 
@@ -29,6 +29,12 @@ pub enum WeldmentCommand {
         feature: EntityId,
         member: Box<MemberDefinition>,
     },
+    /// Create a connection, or edit an existing one by ID.
+    Connection {
+        existing: Option<EntityId>,
+        name: String,
+        connection: ConnectionDefinition,
+    },
 }
 impl WeldmentCommand {
     pub(super) fn prepare(&self, session: &Session, actor: Actor) -> Result<ModelPrepared, String> {
@@ -39,6 +45,33 @@ impl WeldmentCommand {
             }
             Self::EditMember { feature, member } => {
                 model::prepare_member_edit(session, revision, actor, *feature, member)
+            }
+            Self::Connection {
+                existing,
+                name,
+                connection,
+            } => {
+                let prepared = match existing {
+                    Some(id) => {
+                        model::prepare_connection_edit(session, revision, actor, *id, connection)
+                    }
+                    None => model::prepare_connection(session, revision, actor, name, connection)
+                        .map(|(_, p)| p),
+                }
+                .map_err(|e| e.to_string())?;
+                // Both connected members rebuild; preview them.
+                let document = session.document();
+                let outputs = connection
+                    .members
+                    .iter()
+                    .filter_map(|part| {
+                        Some(CreatedBody {
+                            feature: model::member_feature(document, *part)?,
+                            body: *part,
+                        })
+                    })
+                    .collect();
+                return Ok(ModelPrepared { prepared, outputs });
             }
         }
         .map_err(|e| e.to_string())

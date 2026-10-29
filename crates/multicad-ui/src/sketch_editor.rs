@@ -1069,6 +1069,25 @@ impl SketchEditor {
                 .into();
         Ok(())
     }
+    pub fn begin_weld_connection(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before connecting members"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model
+            .begin_weld_connection(session, resources, channel)?;
+        self.message =
+            "Miter / cope · choose the joint and two members in the Inspector, then Preview".into();
+        Ok(())
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,

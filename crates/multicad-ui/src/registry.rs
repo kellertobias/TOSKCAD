@@ -362,7 +362,6 @@ impl Default for Registry {
             ("fastener", "Attached fastener", Icon::Link),
             ("flat", "Flat pattern", Icon::Page),
             ("bend-list", "Bend schedule", Icon::Page),
-            ("cope", "Miter / cope", Icon::Cut),
             ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
             ("support", "Thin support", Icon::Box),
@@ -448,7 +447,10 @@ impl Default for Registry {
                             .filter(|tool| {
                                 !matches!(
                                     tool,
-                                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Member
+                                    ModelingTool::Copy
+                                        | ModelingTool::Panel
+                                        | ModelingTool::Member
+                                        | ModelingTool::Connection
                                 )
                             })
                             .map(ModelingTool::id)
@@ -761,11 +763,14 @@ mod tests {
                     .contains(&tool.id()),
                 !matches!(
                     tool,
-                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Member
+                    ModelingTool::Copy
+                        | ModelingTool::Panel
+                        | ModelingTool::Member
+                        | ModelingTool::Connection
                 ),
                 "Copy shares the Move / Copy ribbon entry; Panel and Member live on the Wood and Weld tabs"
             );
-            if tool == ModelingTool::Member {
+            if matches!(tool, ModelingTool::Member | ModelingTool::Connection) {
                 let weld = registry
                     .workspace(Mode::Model)
                     .tabs

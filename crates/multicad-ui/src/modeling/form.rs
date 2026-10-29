@@ -14,6 +14,7 @@ use super::{
     scaling::ScalePanel,
     split::{SplitEvent, SplitPanel},
     wall::{WallCommand, WallPanel},
+    weld_connection::ConnectionPanel,
     weldment::{WeldmentCommand, WeldmentPanel},
 };
 use crate::egui;
@@ -320,6 +321,7 @@ pub(super) enum ModelForm {
     Architecture(Box<ArchitecturePanel>),
     Cabinet(Box<CabinetPanel>),
     Weldment(Box<WeldmentPanel>),
+    WeldConnection(Box<ConnectionPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -340,6 +342,7 @@ impl ModelForm {
             Self::Architecture(panel) => panel.stamp(),
             Self::Cabinet(panel) => panel.stamp(),
             Self::Weldment(panel) => panel.stamp(),
+            Self::WeldConnection(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -360,6 +363,7 @@ impl ModelForm {
             Self::Architecture(panel) => panel.label(),
             Self::Cabinet(panel) => panel.label(),
             Self::Weldment(panel) => panel.label(),
+            Self::WeldConnection(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -387,6 +391,9 @@ impl ModelForm {
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Cabinet(Box::new(command))),
             Self::Weldment(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Weldment(Box::new(command))),
+            Self::WeldConnection(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Weldment(Box::new(command))),
             Self::Placement(panel) => panel
@@ -462,6 +469,7 @@ impl ModelForm {
             Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Weldment(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::WeldConnection(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

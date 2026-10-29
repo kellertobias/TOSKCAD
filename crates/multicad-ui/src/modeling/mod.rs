@@ -30,6 +30,7 @@ mod scaling;
 mod split;
 mod termination;
 mod wall;
+mod weld_connection;
 mod weldment;
 
 pub use advanced::{AdvancedCommand, AdvancedKind, AdvancedSelection};
@@ -64,16 +65,18 @@ pub enum ModelingTool {
     Level,
     Panel,
     Member,
+    Connection,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
         Self::Level,
         Self::Panel,
         Self::Member,
+        Self::Connection,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -114,6 +117,7 @@ impl ModelingTool {
             Self::Level => "level",
             Self::Panel => "panel",
             Self::Member => "tube",
+            Self::Connection => "cope",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -142,6 +146,7 @@ impl ModelingTool {
             Self::Level => "Levels & stairs",
             Self::Panel => "Panel / carcass",
             Self::Member => "Tube / profile",
+            Self::Connection => "Miter / cope",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -170,6 +175,7 @@ impl ModelingTool {
             Self::Level => crate::icons::Icon::Edge,
             Self::Panel => crate::icons::Icon::Box,
             Self::Member => crate::icons::Icon::Box,
+            Self::Connection => crate::icons::Icon::Cut,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -198,6 +204,7 @@ impl ModelingTool {
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
             Self::Member => &["member", "profile", "frame-member", "structural-member"],
+            Self::Connection => &["miter", "butt-joint", "notch", "end-cut"],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -216,6 +223,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
+            }
+            Self::Connection => {
+                "Usage: cope (choose miter, butt or cope, the two members and a gap in the Inspector; Preview and Apply)"
             }
             Self::Member => {
                 "Usage: tube (choose profile stock, then a sketch whose lines become members or two points, and the section placement in the Inspector; Preview and Apply)"
@@ -266,6 +276,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Requires native modeling and no pending edits. Slabs and stairs are placed on an existing level; editing a level rebuilds everything on it. Stair figures are geometric notes, not code approval."
+            }
+            Self::Connection => {
+                "Requires native modeling, two weldment members and no pending edits. Cuts are derived from both members; unsupported joints are refused with a reason."
             }
             Self::Member => {
                 "Requires native modeling, profile stock defined in Model → Materials and no pending edits. Members follow straight sketch lines or point pairs."

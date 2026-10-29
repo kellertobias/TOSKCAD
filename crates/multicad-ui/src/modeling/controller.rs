@@ -458,6 +458,23 @@ impl ModelToolController {
             ))),
         )
     }
+    pub fn begin_weld_connection(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Joint", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::WeldConnection(Box::new(super::weld_connection::ConnectionPanel::new(
+                session.document(),
+                name,
+            ))),
+        )
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,
