@@ -98,6 +98,15 @@ impl SketchEditor {
         if tool == ModelingTool::Wall {
             return self.begin_wall(session, resources, channel);
         }
+        if tool == ModelingTool::Weld {
+            return self.begin_weld(session, resources, channel);
+        }
+        if tool == ModelingTool::Connection {
+            return self.begin_weld_connection(session, resources, channel);
+        }
+        if tool == ModelingTool::Member {
+            return self.begin_weldment(session, resources, channel);
+        }
         if tool == ModelingTool::Panel {
             return self.begin_cabinet(session, resources, channel);
         }

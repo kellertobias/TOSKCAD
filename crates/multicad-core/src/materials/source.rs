@@ -52,6 +52,26 @@ pub enum Grain {
     AlongLength,
     AcrossLength,
 }
+/// Cross-section family of profile stock. Width and height are the section
+/// bounding box; `wall_mm` is the tube wall, or the leg thickness of an angle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileShape {
+    /// Square or rectangular hollow section (SHS/RHS) with a wall, or a
+    /// solid flat/square bar without one.
+    #[default]
+    Rectangular,
+    /// Circular hollow section (CHS) with a wall, or a round bar without one.
+    /// Width and height are both the outside diameter.
+    Round,
+    /// Angle (L) section: legs of width and height, wall = leg thickness.
+    Angle,
+}
+impl ProfileShape {
+    pub fn is_rectangular(&self) -> bool {
+        *self == Self::Rectangular
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StockKind {
@@ -74,6 +94,8 @@ pub enum StockKind {
         width_mm: f64,
         height_mm: f64,
         wall_mm: Option<f64>,
+        #[serde(default, skip_serializing_if = "ProfileShape::is_rectangular")]
+        shape: ProfileShape,
     },
     Print {
         process: String,
@@ -239,6 +261,7 @@ impl LibraryDefinition {
                             width_mm,
                             height_mm,
                             wall_mm,
+                            shape,
                         } => {
                             !designation.trim().is_empty()
                                 && designation.len() <= 256
@@ -248,6 +271,11 @@ impl LibraryDefinition {
                                 && wall_mm.is_none_or(|v| {
                                     positive(v) && v * 2.0 <= width_mm.min(*height_mm)
                                 })
+                                && match shape {
+                                    ProfileShape::Rectangular => true,
+                                    ProfileShape::Round => width_mm == height_mm,
+                                    ProfileShape::Angle => wall_mm.is_some(),
+                                }
                         }
                         StockKind::Print {
                             process,

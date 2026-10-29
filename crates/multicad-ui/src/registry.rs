@@ -360,9 +360,6 @@ impl Default for Registry {
             ("fastener", "Attached fastener", Icon::Link),
             ("flat", "Flat pattern", Icon::Page),
             ("bend-list", "Bend schedule", Icon::Page),
-            ("tube", "Tube / profile", Icon::Box),
-            ("cope", "Miter / cope", Icon::Cut),
-            ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
             ("materials", "Materials", Icon::Library),
             ("door", "Door", Icon::Page),
@@ -451,6 +448,9 @@ impl Default for Registry {
                                         | ModelingTool::Joint
                                         | ModelingTool::Machining
                                         | ModelingTool::FdmAid
+                                        | ModelingTool::Member
+                                        | ModelingTool::Connection
+                                        | ModelingTool::Weld
                                 )
                             })
                             .map(ModelingTool::id)
@@ -463,7 +463,7 @@ impl Default for Registry {
                         "Sheet metal",
                         &["sheet", "bend", "fastener", "flat", "bend-list"],
                     ),
-                    tab("Weld", &["tube", "cope", "weld", "weld-list"]),
+                    tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     RibbonTab {
                         title: "Relationships",
                         tools: crate::assembly::AssemblyTool::ALL
@@ -768,9 +768,23 @@ mod tests {
                         | ModelingTool::Joint
                         | ModelingTool::Machining
                         | ModelingTool::FdmAid
+                        | ModelingTool::Member
+                        | ModelingTool::Connection
+                        | ModelingTool::Weld
                 ),
-                "Copy shares the Move / Copy ribbon entry; Panel, Joint and Drill live on the Wood tab and print aids on the FDM aids tab"
+                "Copy shares the Move / Copy ribbon entry; workbench tools live on their Wood, Weld and FDM aids tabs"
             );
+            if matches!(
+                tool,
+                ModelingTool::Member | ModelingTool::Connection | ModelingTool::Weld
+            ) {
+                let weld = registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .find(|t| t.title == "Weld");
+                assert!(weld.unwrap().tools.contains(&tool.id()));
+            }
             if tool == ModelingTool::FdmAid {
                 let fdm = registry
                     .workspace(Mode::Model)

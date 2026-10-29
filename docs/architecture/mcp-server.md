@@ -183,6 +183,15 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_appearance` | yes | Render appearance definition (base color, roughness, metallic), separate from Materials, stock and hatch |
 | `assign_appearance` | yes | Give one Part an appearance, or clear it, keeping its Material, stock and hatch |
 | `blender_handoff` | no | Write NAME.glb with the scene camera and lights and NAME.render.json into the export folder |
+| `create_profile_stock` | yes | Rectangular, round or angle profile stock on an existing or new Material (see [weldments](weldments.md)) |
+| `create_members` | yes | One member Part per sketch line or point pair, with section anchor, rotation and end extensions |
+| `edit_member` | yes | Member stock, point path, anchor, rotation or extensions, keeping its Part |
+| `connect_members` | yes | Miter, butt or cope connection between two members, with gap; cuts derived from both members |
+| `weldment_cut_list` | no | Member lengths, sections, orientation and both end treatments measured from the solids |
+| `set_weld` | yes | Weld on a member connection: mark, symbol, size, process and notes |
+| `set_weld_sequence` | yes | Authored weld order, created or reordered without losing references |
+| `weld_schedule` | no | Welds in sequence order with joint positions, and grouped member cuts with quantities |
+| `place_weld_plan` | yes | Weld symbols at projected joints and a weld sequence table on a drawing page |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
 | `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |

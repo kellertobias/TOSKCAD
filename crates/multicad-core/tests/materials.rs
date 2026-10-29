@@ -392,6 +392,7 @@ fn every_stock_family_is_reusable_and_changed_material_requires_acknowledgement(
             width_mm: 30.,
             height_mm: 20.,
             wall_mm: Some(2.),
+            shape: ProfileShape::Rectangular,
         },
         StockKind::Print {
             process: "Resin".into(),

@@ -33,6 +33,9 @@ mod scaling;
 mod split;
 mod termination;
 mod wall;
+mod weld_connection;
+mod weld_form;
+mod weldment;
 
 pub use advanced::{AdvancedCommand, AdvancedKind, AdvancedSelection};
 pub use alignment_panel::AlignmentCommand;
@@ -68,10 +71,13 @@ pub enum ModelingTool {
     Joint,
     Machining,
     FdmAid,
+    Member,
+    Connection,
+    Weld,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 27] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
@@ -80,6 +86,9 @@ impl ModelingTool {
         Self::Joint,
         Self::Machining,
         Self::FdmAid,
+        Self::Member,
+        Self::Connection,
+        Self::Weld,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -122,6 +131,9 @@ impl ModelingTool {
             Self::Joint => "joint",
             Self::Machining => "drill",
             Self::FdmAid => "fdm-aid",
+            Self::Member => "tube",
+            Self::Connection => "cope",
+            Self::Weld => "weld-joint",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -152,6 +164,9 @@ impl ModelingTool {
             Self::Joint => "Panel joint",
             Self::Machining => "Drill / pocket",
             Self::FdmAid => "Tab / bridge / support",
+            Self::Member => "Tube / profile",
+            Self::Connection => "Miter / cope",
+            Self::Weld => "Weld joint",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -182,6 +197,9 @@ impl ModelingTool {
             Self::Joint => crate::icons::Icon::Link,
             Self::Machining => crate::icons::Icon::Cut,
             Self::FdmAid => crate::icons::Icon::Edge,
+            Self::Member => crate::icons::Icon::Box,
+            Self::Connection => crate::icons::Icon::Cut,
+            Self::Weld => crate::icons::Icon::Link,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -218,6 +236,9 @@ impl ModelingTool {
                 "sacrificial-bridge",
                 "fdm",
             ],
+            Self::Member => &["member", "profile", "frame-member", "structural-member"],
+            Self::Connection => &["miter", "member-butt", "notch", "end-cut"],
+            Self::Weld => &["weld-definition", "weld-mark", "weld-order"],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -245,6 +266,15 @@ impl ModelingTool {
             }
             Self::FdmAid => {
                 "Usage: fdm-aid (choose tab, bridge or support, the finished Part and process allowances in the Inspector, then Preview and Apply)"
+            }
+            Self::Weld => {
+                "Usage: weld (attach a weld to a member connection with mark, symbol, size, process and notes, or order the weld sequence, in the Inspector; Preview and Apply)"
+            }
+            Self::Connection => {
+                "Usage: cope (choose miter, butt or cope, the two members and a gap in the Inspector; Preview and Apply)"
+            }
+            Self::Member => {
+                "Usage: tube (choose profile stock, then a sketch whose lines become members or two points, and the section placement in the Inspector; Preview and Apply)"
             }
             Self::Panel => {
                 "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
@@ -301,6 +331,15 @@ impl ModelingTool {
             }
             Self::FdmAid => {
                 "Requires native modeling, a finished Part and no pending edits. Each aid is its own Part; the finished Part is not changed. No slicer, support generation or G-code."
+            }
+            Self::Weld => {
+                "Requires native modeling, a member connection and no pending edits. Welds and sequences are documentation, not welding procedures or calculations."
+            }
+            Self::Connection => {
+                "Requires native modeling, two weldment members and no pending edits. Cuts are derived from both members; unsupported joints are refused with a reason."
+            }
+            Self::Member => {
+                "Requires native modeling, profile stock defined in Model → Materials and no pending edits. Members follow straight sketch lines or point pairs."
             }
             Self::Panel => {
                 "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."

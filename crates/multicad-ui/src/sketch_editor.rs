@@ -1087,6 +1087,63 @@ impl SketchEditor {
             "Panel / carcass · choose stock and sizes in the Inspector, then Preview".into();
         Ok(())
     }
+    pub fn begin_weldment(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before adding members"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_weldment(session, resources, channel)?;
+        self.message =
+            "Tube / profile · choose stock and a sketch or two points in the Inspector, then Preview"
+                .into();
+        Ok(())
+    }
+    pub fn begin_weld(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before adding welds"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_weld(session, resources, channel)?;
+        self.message =
+            "Weld joint · choose the connection and weld details in the Inspector, then Preview"
+                .into();
+        Ok(())
+    }
+    pub fn begin_weld_connection(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before connecting members"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model
+            .begin_weld_connection(session, resources, channel)?;
+        self.message =
+            "Miter / cope · choose the joint and two members in the Inspector, then Preview".into();
+        Ok(())
+    }
     pub fn begin_fdm_aid(
         &mut self,
         session: &Session,

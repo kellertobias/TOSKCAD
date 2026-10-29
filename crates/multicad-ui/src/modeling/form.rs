@@ -17,6 +17,9 @@ use super::{
     scaling::ScalePanel,
     split::{SplitEvent, SplitPanel},
     wall::{WallCommand, WallPanel},
+    weld_connection::ConnectionPanel,
+    weld_form::WeldPanel,
+    weldment::{WeldmentCommand, WeldmentPanel},
 };
 use crate::egui;
 use multicad_core::{
@@ -50,6 +53,7 @@ pub enum ModelRequest {
     Joint(Box<JointCommand>),
     Machining(Box<MachiningCommand>),
     FdmAid(Box<FdmAidCommand>),
+    Weldment(Box<WeldmentCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -114,6 +118,12 @@ impl ModelRequest {
             Self::FdmAid(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Aid edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Weldment(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Member edit changed its producer identity".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -212,6 +222,12 @@ impl ModelRequest {
             Self::FdmAid(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved aid before editing it".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Weldment(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved member before editing it".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -328,6 +344,9 @@ pub(super) enum ModelForm {
     Joint(Box<JointPanel>),
     Machining(Box<MachiningPanel>),
     FdmAid(Box<FdmAidPanel>),
+    Weldment(Box<WeldmentPanel>),
+    WeldConnection(Box<ConnectionPanel>),
+    Weld(Box<WeldPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -350,6 +369,9 @@ impl ModelForm {
             Self::Joint(panel) => panel.stamp(),
             Self::Machining(panel) => panel.stamp(),
             Self::FdmAid(panel) => panel.stamp(),
+            Self::Weldment(panel) => panel.stamp(),
+            Self::WeldConnection(panel) => panel.stamp(),
+            Self::Weld(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -372,6 +394,9 @@ impl ModelForm {
             Self::Joint(panel) => panel.label(),
             Self::Machining(panel) => panel.label(),
             Self::FdmAid(panel) => panel.label(),
+            Self::Weldment(panel) => panel.label(),
+            Self::WeldConnection(panel) => panel.label(),
+            Self::Weld(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -407,6 +432,15 @@ impl ModelForm {
             Self::FdmAid(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::FdmAid(Box::new(command))),
+            Self::Weldment(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Weldment(Box::new(command))),
+            Self::WeldConnection(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Weldment(Box::new(command))),
+            Self::Weld(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Weldment(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -482,6 +516,9 @@ impl ModelForm {
             Self::Joint(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Machining(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::FdmAid(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Weldment(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::WeldConnection(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Weld(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

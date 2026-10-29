@@ -72,6 +72,8 @@ pub struct ModelSnapshot {
     pub guide_outlines: BTreeMap<EntityId, Vec<[[f64; 3]; 4]>>,
     /// Cabinetry panel frames by panel feature: thickness runs along u × v.
     pub panel_frames: BTreeMap<EntityId, PlaneFrame>,
+    /// Solved weldment member path segments by member feature.
+    pub member_paths: BTreeMap<EntityId, model::PathSegment>,
 }
 impl ModelSnapshot {
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
@@ -382,6 +384,8 @@ impl Compiler {
         let mut occurrences = BTreeMap::new();
         let mut transfer_counts = BTreeMap::new();
         let mut panel_frames = BTreeMap::new();
+        let mut member_paths = BTreeMap::new();
+        let mut weld_paths = crate::weldment::Paths::new(&context);
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
@@ -639,6 +643,18 @@ impl Compiler {
                         .target;
                     let target = bodies.get(&target).and_then(|head| solids.get(head));
                     crate::fdm::build(document, context.parameters(), id, self.policy, target)?
+                }
+                (model::MEMBER_TYPE, model::MEMBER_SCHEMA) => {
+                    let (solid, member) = crate::weldment::build(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        &mut weld_paths,
+                        interrupt,
+                    )?;
+                    member_paths.insert(id, member.path);
+                    solid
                 }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
@@ -990,6 +1006,7 @@ impl Compiler {
                 envelope_boxes: BTreeMap::new(),
                 guide_outlines: BTreeMap::new(),
                 panel_frames,
+                member_paths,
             },
         };
         if full {

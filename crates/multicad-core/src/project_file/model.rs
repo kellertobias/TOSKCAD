@@ -510,5 +510,9 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::AID_CAPABILITY.into(),
         crate::model::PROCESS_CAPABILITY.into(),
         crate::model::RENDER_SCENE_CAPABILITY.into(),
+        crate::model::MEMBER_CAPABILITY.into(),
+        crate::model::CONNECTION_CAPABILITY.into(),
+        crate::model::WELD_CAPABILITY.into(),
+        crate::model::SEQUENCE_CAPABILITY.into(),
     ])
 }

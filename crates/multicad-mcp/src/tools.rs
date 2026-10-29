@@ -54,6 +54,7 @@ use cabinetry::{
 };
 pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs};
 use fdm::{fdm_aid_report, remove_fdm_aid, set_fdm_aid, set_fdm_process};
+mod weldment;
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
 pub use imports::{KicadImportArgs, StepImportArgs};
@@ -70,6 +71,14 @@ pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
 use walls::{create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type};
+pub use weldment::{
+    ConnectArgs, EditMemberArgs, MembersArgs, ProfileStockArgs, SequenceArgs, WeldArgs,
+    WeldPlanArgs,
+};
+use weldment::{
+    connect_members, create_members, create_profile_stock, edit_member, place_weld_plan, set_weld,
+    set_weld_sequence, weld_schedule, weldment_cut_list,
+};
 
 pub type ToolResult = Result<Value, ToolError>;
 
@@ -310,6 +319,33 @@ tools! {
     "blender_handoff" => HandoffArgs, "Blender handoff", true,
         "Write a render scene's Parts as NAME.glb (glTF 2.0 in meters, assembly groups, shared instance meshes, appearances, the scene camera and KHR_lights_punctual lights) and NAME.render.json (scope, units, revision, lights in Blender units, excluded aids, notes) into the export folder, built from the current native model. MultiCAD does not render; Blender does.",
         blender_handoff;
+    "create_profile_stock" => ProfileStockArgs, "Create profile stock", false,
+        "Create tube, bar or angle profile stock (rectangular SHS/RHS or flat bar, round CHS or round bar, angle) with section size, optional wall and bar length, on an existing Material or a new one. Commits one transaction.",
+        create_profile_stock;
+    "create_members" => MembersArgs, "Create weldment members", false,
+        "Create straight tube/profile members from profile stock, one Part each: from every (or selected) solid line of a sketch, following those lines through later sketch edits, or from explicit point pairs. Section anchor, rotation about the axis and end extensions apply to all; optionally grouped. Every member is evaluated natively before commit.",
+        create_members;
+    "edit_member" => EditMemberArgs, "Edit weldment member", false,
+        "Change a member's stock, point-pair path, section anchor, rotation or end extensions, keeping its Part. Evaluated natively before commit.",
+        edit_member;
+    "connect_members" => ConnectArgs, "Connect weldment members", false,
+        "Create or edit a connection between two members: a paired miter on the bisector plane (sections must mirror), a square butt joint (first member terminates against a flat face of the continuing second member, which is cut square to cover a corner), or a cope fitting the first member to the actual outside of the second, with an optional gap. Cuts follow later path edits. Both members are evaluated natively before commit; unsupported geometry is refused with a reason.",
+        connect_members;
+    "weldment_cut_list" => NoArgs, "Weldment cut list", true,
+        "Every weldment member measured from its evaluated solid: section, material and stock, overall length along the axis, rotation, anchor and world orientation, volume and whether it fits one stock bar.",
+        weldment_cut_list;
+    "set_weld" => WeldArgs, "Add or edit weld", false,
+        "Attach a weld to a member connection, or edit one by ID: unique mark (its ID on drawings), symbol and side, size, length, all-around and field flags, process and access/orientation notes. Documentation only, not a welding procedure.",
+        set_weld;
+    "set_weld_sequence" => SequenceArgs, "Create or reorder weld sequence", false,
+        "Create a weld sequence listing welds in the order they are to be made, with optional step notes, or replace an existing sequence's steps to reorder them. Welds and their connections keep their identities. Documentation only; no distortion or heat-input calculation.",
+        set_weld_sequence;
+    "weld_schedule" => NoArgs, "Weld schedule", true,
+        "Welds in authored sequence order with marks, connections, members, joint positions and plane-cut joint perimeters resolved from the current members, plus identical member cuts grouped with quantities, lengths and end treatments.",
+        weld_schedule;
+    "place_weld_plan" => WeldPlanArgs, "Place weld plan", false,
+        "Place weld symbols pointing at each weld's joint in a drawing view, tailed with the weld mark and process, and a weld sequence table on the page. Replaces earlier symbols with the same marks and earlier weld sequence tables by default. Placed annotations are page content and are refreshed by placing the plan again.",
+        place_weld_plan;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;

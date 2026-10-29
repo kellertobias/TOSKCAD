@@ -396,6 +396,7 @@ fn stock_summary(stock: &StockKind) -> String {
             width_mm,
             height_mm,
             wall_mm,
+            ..
         } => format!(
             "{designation} · {length_mm} mm long · {width_mm} × {height_mm} mm{}",
             wall_mm.map_or(String::new(), |v| format!(" · wall {v} mm"))
