@@ -377,6 +377,33 @@ impl ConversionAnalysis {
     pub fn convertible(&self) -> bool {
         self.issues.is_empty() && self.stationary.is_some()
     }
+    /// The sheet request for a convertible solid: its stationary face as a
+    /// captured contour base of `stock`. Refused with the findings otherwise.
+    pub fn request(&self, name: &str, stock: EntityId) -> Result<SheetRequest, CommandError> {
+        let Some((frame, loops)) = self.stationary.clone().filter(|_| self.convertible()) else {
+            return Err(refused(format!(
+                "The Part cannot be converted: {}",
+                self.issues.join("; ")
+            )));
+        };
+        Ok(SheetRequest::new(
+            name,
+            SheetDefinition {
+                output: BodyOutput {
+                    body: EntityId::new(),
+                },
+                stock,
+                base: SheetBase::Contour {
+                    frame,
+                    loops,
+                    converted_from: Some(self.part),
+                },
+                reverse: false,
+                inside_radius: None,
+                k_factor: None,
+            },
+        ))
+    }
 }
 /// A frame on a face with outward normal `outward`: the thickness (u × v)
 /// runs into the material, and u is the world axis closest to the plane.
@@ -617,33 +644,7 @@ pub fn prepare_conversion(
     let analysis = model
         .analyze_sheet_conversion(part, thickness)
         .map_err(|e| refused(e.message))?;
-    let Some((frame, loops)) = analysis
-        .stationary
-        .clone()
-        .filter(|_| analysis.convertible())
-    else {
-        return Err(refused(format!(
-            "The Part cannot be converted: {}",
-            analysis.issues.join("; ")
-        )));
-    };
-    let request = SheetRequest::new(
-        name,
-        SheetDefinition {
-            output: BodyOutput {
-                body: EntityId::new(),
-            },
-            stock,
-            base: SheetBase::Contour {
-                frame,
-                loops,
-                converted_from: Some(part),
-            },
-            reverse: false,
-            inside_radius: None,
-            k_factor: None,
-        },
-    );
+    let request = analysis.request(name, stock)?;
     let prepared = model::prepare_sheet(session, expected_revision, actor, &request)?;
     Ok((prepared, analysis))
 }

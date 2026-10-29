@@ -40,6 +40,7 @@ mod cabinetry;
 mod guides;
 mod levels;
 mod reference_repair;
+mod sheet_metal;
 mod walls;
 pub use cabinetry::{CarcassArgs, PanelArgs, PanelStockArgs, StackArgs};
 use cabinetry::{create_panel, create_panel_stack, create_panel_stock, cut_list, set_carcass};
@@ -51,6 +52,8 @@ pub use reference_repair::{
     CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
+pub use sheet_metal::{ConvertSheetArgs, SheetPartArgs, SheetStockArgs};
+use sheet_metal::{convert_to_sheet, create_sheet_stock, set_sheet_part, sheet_metal};
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
@@ -250,6 +253,18 @@ tools! {
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;
+    "create_sheet_stock" => SheetStockArgs, "Create sheet stock", false,
+        "Create a sheet-metal stock definition (thickness, sheet size, default inside bend radius and K-factor) on an existing Material or a new one. Commits one transaction.",
+        create_sheet_stock;
+    "set_sheet_part" => SheetPartArgs, "Create or edit sheet part", false,
+        "Create a sheet-metal Part from sheet stock with a rectangle base on a principal plane or a sketch-region base, or edit one by feature ID (omitting the base keeps it). Thickness comes from the stock; the inside radius and K-factor come from the stock unless given here. Evaluated natively before commit.",
+        set_sheet_part;
+    "convert_to_sheet" => ConvertSheetArgs, "Convert solid to sheet part", false,
+        "Analyze a Part's current solid as a constant-thickness plate and, if supported, create a sheet Part whose base is the captured stationary face. Inclined faces, steps, thickness that differs from the stock and curved bend regions are refused with their measurements. The source Part is unchanged.",
+        convert_to_sheet;
+    "sheet_metal" => NoArgs, "Sheet-metal records", true,
+        "Every sheet Part measured from its evaluated solid: thickness and measured thickness, inside radius and K-factor with their source, volume, and the developed flat pattern of the same feature with its size and area.",
+        sheet_metal;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;
