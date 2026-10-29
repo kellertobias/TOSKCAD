@@ -244,8 +244,17 @@ pub struct AidInspection {
 }
 
 impl Model {
+    /// The Part's current exact solid. A Part that is only a reusable
+    /// Assembly component definition has no world body, so it is measured
+    /// in its definition frame, the frame its aids are built in.
     fn part_solid(&self, part: EntityId) -> Option<&Solid> {
-        self.solid(*self.snapshot().bodies.get(&part)?)
+        let snapshot = self.snapshot();
+        let head = snapshot.bodies.get(&part).or_else(|| {
+            (!snapshot.consumed_bodies.contains(&part))
+                .then(|| snapshot.body_sources.get(&part))
+                .flatten()
+        })?;
+        self.solid(*head)
     }
     fn contact(&self, aid: &Solid, part: EntityId) -> Result<Option<AidContact>, ModelError> {
         let Some(solid) = self.part_solid(part) else {

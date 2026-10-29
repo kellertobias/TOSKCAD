@@ -105,6 +105,10 @@ The findings are:
 - a neighbouring finished Part inside the fit clearance. Aids are not
   checked against each other.
 
+A target that is only a reusable Assembly component, such as a printed
+drawer on its slide, has no world body. It is measured as its component
+definition, the same solid and frame its aids are built from.
+
 ## Export
 
 Every STEP, planar DXF and mesh recipe has an aid policy:
@@ -148,4 +152,6 @@ orientation.
 - **Process records in the window.** The form chooses an existing process
   record; create or edit process records with `set_fdm_process`.
 - **Instances.** Aids serve Parts. They are not created per Instance or
-  occurrence.
+  occurrence. An aid on a component definition stays where it was modeled
+  when the component moves to another pose, and the fit-clearance check
+  covers only world Parts, not component occurrences.
