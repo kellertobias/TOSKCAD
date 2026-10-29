@@ -442,6 +442,8 @@ impl Default for Registry {
                                 !matches!(
                                     tool,
                                     ModelingTool::Copy
+                                        | ModelingTool::Wall
+                                        | ModelingTool::Level
                                         | ModelingTool::Panel
                                         | ModelingTool::Joint
                                         | ModelingTool::Machining
@@ -457,6 +459,7 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: false,
                     },
+                    tab("Architecture", &["wall", "level"]),
                     tab("Wood", &["panel", "drill", "joint", "cut-list"]),
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
@@ -760,6 +763,8 @@ mod tests {
                 !matches!(
                     tool,
                     ModelingTool::Copy
+                        | ModelingTool::Wall
+                        | ModelingTool::Level
                         | ModelingTool::Panel
                         | ModelingTool::Joint
                         | ModelingTool::Machining
@@ -769,7 +774,7 @@ mod tests {
                         | ModelingTool::Weld
                         | ModelingTool::Sheet
                 ),
-                "Copy shares the Move / Copy ribbon entry; workbench tools live on their Wood, Weld and FDM aids tabs"
+                "Copy shares the Move / Copy ribbon entry; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM aids tabs"
             );
             if matches!(
                 tool,
@@ -781,6 +786,14 @@ mod tests {
                     .iter()
                     .find(|t| t.title == "Weld");
                 assert!(weld.unwrap().tools.contains(&tool.id()));
+            }
+            if matches!(tool, ModelingTool::Wall | ModelingTool::Level) {
+                let architecture = registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .find(|t| t.title == "Architecture");
+                assert!(architecture.unwrap().tools.contains(&tool.id()));
             }
             if tool == ModelingTool::Sheet {
                 let tab = registry

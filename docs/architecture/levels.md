@@ -83,7 +83,7 @@ the clearances. It moves and rotates with the target's placement.
 
 ## Access
 
-- **Window.** Model → Common → Create → **Levels & stairs**. The Room tab
+- **Window.** Model → Architecture → **Levels & stairs**. The Room tab
   entry opens the same tool. The Inspector chooses Level, Floor slab,
   Pedestal, Stair, Service envelope or Drawing guide.
   - An existing level or envelope can be chosen to edit it.

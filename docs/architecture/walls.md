@@ -83,7 +83,7 @@ shared page render.
 
 ## Access
 
-- **Window.** Model → Common → Create → **Wall**. The Room tab entry opens the
+- **Window.** Model → Architecture → **Wall**. The Room tab entry opens the
   same tool. Preview builds the native wall, Apply commits it, and an applied
   wall reopens in the same form for editing.
 - **MCP:** `create_wall_type`, `edit_wall_type`, `create_opening_type`,
