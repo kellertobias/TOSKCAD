@@ -264,6 +264,17 @@ impl ModelToolController {
                     parameters: source.parameters,
                 })?))
             }
+            model::SLAB_TYPE | model::STAIR_TYPE => {
+                let body = model::read_slab(document, feature)
+                    .map(|s| s.output.body)
+                    .or_else(|_| model::read_stair(document, feature).map(|s| s.output.body))
+                    .map_err(|error| error.to_string())?;
+                ModelForm::Architecture(Box::new(super::architecture::ArchitecturePanel::existing(
+                    document,
+                    feature,
+                    body_name(body)?,
+                )?))
+            }
             model::WALL_TYPE => ModelForm::Wall(Box::new(super::wall::WallPanel::existing(
                 document,
                 feature,
@@ -382,6 +393,27 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Wall(Box::new(super::wall::WallPanel::new(
+                session.document(),
+                name,
+            )?)),
+        )
+    }
+    pub fn begin_architecture(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = if multicad_core::model::levels(session.document()).next().is_none() {
+            "Ground floor".to_owned()
+        } else {
+            GeneratedNames::new(session.document()).numbered("Slab", " feature")
+        };
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(super::architecture::ArchitecturePanel::new(
                 session.document(),
                 name,
             )?)),

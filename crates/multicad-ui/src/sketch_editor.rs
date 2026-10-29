@@ -1030,6 +1030,25 @@ impl SketchEditor {
                 .into();
         Ok(())
     }
+    pub fn begin_architecture(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before placing levels"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_architecture(session, resources, channel)?;
+        self.message =
+            "Levels & stairs · define a level or place a slab, stair or envelope, then Preview"
+                .into();
+        Ok(())
+    }
     pub fn set_display_style(&mut self, style: DisplayStyle) {
         self.style = style;
     }

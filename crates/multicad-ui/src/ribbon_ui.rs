@@ -36,6 +36,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                 Entry::Tool("extrude"),
                 Entry::Tool("revolve"),
                 Entry::Tool("wall"),
+                Entry::Tool("level"),
                 Entry::Tool("sweep"),
                 Entry::Tool("loft"),
             ],

@@ -372,7 +372,6 @@ impl Default for Registry {
             ("materials", "Materials", Icon::Library),
             ("door", "Door", Icon::Page),
             ("window-tool", "Window", Icon::Page),
-            ("stairs", "Stairs", Icon::Edge),
             ("text", "Text / leader", Icon::Sketch),
             ("export-3d", "STEP / OBJ", Icon::Export),
             ("export-2d", "DXF / PDF", Icon::Page),
@@ -438,7 +437,7 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: true,
                     },
-                    tab("Room", &["wall", "door", "window-tool", "stairs"]),
+                    tab("Room", &["wall", "door", "window-tool", "level"]),
                 ],
             },
             Workspace {

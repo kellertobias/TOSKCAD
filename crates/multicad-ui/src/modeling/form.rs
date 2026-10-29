@@ -2,6 +2,7 @@ use super::{
     ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel, FormStamp, PreviewState,
     advanced::AdvancedPanel,
     alignment_panel::AlignmentPanel,
+    architecture::{ArchitectureCommand, ArchitecturePanel},
     boolean::BooleanPanel,
     boolean_edit::BooleanEditPanel,
     edge_treatment::EdgeTreatmentPanel,
@@ -40,6 +41,7 @@ pub enum ModelRequest {
     Advanced(Box<super::AdvancedCommand>),
     Alignment(Box<super::AlignmentCommand>),
     Wall(Box<WallCommand>),
+    Architecture(Box<ArchitectureCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -86,6 +88,12 @@ impl ModelRequest {
             Self::Wall(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Wall edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Architecture(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Slab or stair edit changed its producer identity".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -164,6 +172,12 @@ impl ModelRequest {
             Self::Wall(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved wall before editing it".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Architecture(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved slab or stair before editing it".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -275,6 +289,7 @@ pub(super) enum ModelForm {
     Advanced(Box<AdvancedPanel>),
     Alignment(Box<AlignmentPanel>),
     Wall(Box<WallPanel>),
+    Architecture(Box<ArchitecturePanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -292,6 +307,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.stamp(),
             Self::Alignment(panel) => panel.stamp(),
             Self::Wall(panel) => panel.stamp(),
+            Self::Architecture(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -309,6 +325,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.label(),
             Self::Alignment(_) => "Referenced alignment",
             Self::Wall(panel) => panel.label(),
+            Self::Architecture(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -329,6 +346,9 @@ impl ModelForm {
             Self::Wall(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Wall(Box::new(command))),
+            Self::Architecture(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Architecture(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -399,6 +419,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Alignment(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Wall(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

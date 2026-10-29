@@ -2,6 +2,7 @@
 //! composition root; painting a form never changes the canonical document.
 mod advanced;
 mod alignment_panel;
+mod architecture;
 mod body_choices;
 mod boolean;
 mod boolean_edit;
@@ -57,13 +58,15 @@ pub enum ModelingTool {
     Scale,
     EdgeTreatment,
     Wall,
+    Level,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
+        Self::Level,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -101,6 +104,7 @@ impl ModelingTool {
             Self::Scale => "scale",
             Self::EdgeTreatment => "edge-treatment",
             Self::Wall => "wall",
+            Self::Level => "level",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -126,6 +130,7 @@ impl ModelingTool {
             Self::Scale => "Scale",
             Self::EdgeTreatment => "Fillet / Chamfer",
             Self::Wall => "Wall",
+            Self::Level => "Levels & stairs",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -151,6 +156,7 @@ impl ModelingTool {
             Self::Scale => crate::icons::Icon::Scale,
             Self::EdgeTreatment => crate::icons::Icon::Edge,
             Self::Wall => crate::icons::Icon::Box,
+            Self::Level => crate::icons::Icon::Edge,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -176,6 +182,7 @@ impl ModelingTool {
             Self::Scale => &["scale-body", "resize-solid"],
             Self::EdgeTreatment => &["fillet", "chamfer", "edge"],
             Self::Wall => &["walls", "architectural-wall", "doors-windows"],
+            Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -191,6 +198,9 @@ impl ModelingTool {
         match self {
             Self::Advanced(_) => {
                 "Usage: choose explicit source geometry and controls in the Inspector, then Preview and Apply"
+            }
+            Self::Level => {
+                "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
             }
             Self::Wall => {
                 "Usage: wall (choose or define a wall type, enter path points and doors/windows in the Inspector, then Preview and Apply)"
@@ -232,6 +242,9 @@ impl ModelingTool {
             }
             Self::Advanced(_) => {
                 "Choose one current Part definition. Linked Instances follow its editable source; face-based tools capture native geometry explicitly. Patterns create a compound Part."
+            }
+            Self::Level => {
+                "Requires native modeling and no pending edits. Slabs and stairs are placed on an existing level; editing a level rebuilds everything on it. Stair figures are geometric notes, not code approval."
             }
             Self::Wall => {
                 "Requires native modeling and no pending edits. Wall and opening types are created with the wall or reused from the project."
