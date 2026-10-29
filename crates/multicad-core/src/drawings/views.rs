@@ -201,10 +201,24 @@ pub fn view_inputs(book: &super::DrawingBook) -> Vec<Link> {
         .iter()
         .flat_map(|p| &p.views)
         .flat_map(|v| v.source.entities())
+        .chain(
+            book.pages
+                .iter()
+                .flat_map(|p| &p.annotations)
+                .flat_map(|a| match &a.kind {
+                    super::AnnotationKind::Dimension { measure, .. } => {
+                        measure.references().iter().map(|r| r.source).collect()
+                    }
+                    _ => vec![],
+                }),
+        )
         .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|id| Link::new(id, "drawing.view.source"))
         .collect()
+}
+pub fn has_annotations(book: &super::DrawingBook) -> bool {
+    book.pages.iter().any(|p| !p.annotations.is_empty())
 }
 pub fn has_views(book: &super::DrawingBook) -> bool {
     book.pages.iter().any(|p| !p.views.is_empty())
@@ -301,6 +315,9 @@ pub enum ViewEvaluation {
 pub struct DrawingEvaluation {
     pub stamp: DrawingStamp,
     pub views: std::collections::BTreeMap<EntityId, ViewEvaluation>,
+    /// Evaluated model dimensions, by annotation identity.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub annotations: std::collections::BTreeMap<EntityId, super::AnnotationEvaluation>,
 }
 impl DrawingEvaluation {
     pub fn checked_page<'a>(
@@ -317,6 +334,17 @@ impl DrawingEvaluation {
             .iter()
             .find(|p| p.id == page)
             .ok_or("Drawing page is missing")?;
+        for annotation in &page.annotations {
+            if let super::AnnotationKind::Dimension { .. } = annotation.kind {
+                match self.annotations.get(&annotation.id) {
+                    Some(super::AnnotationEvaluation::Ready { .. }) => {}
+                    Some(super::AnnotationEvaluation::Detached { message }) => {
+                        return Err(format!("Detached dimension: {message}"));
+                    }
+                    None => return Err("Drawing dimension has not been evaluated".into()),
+                }
+            }
+        }
         page.views
             .iter()
             .map(|view| {

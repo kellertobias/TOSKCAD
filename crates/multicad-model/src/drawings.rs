@@ -387,6 +387,17 @@ impl Model {
                 views.insert(view.id, evaluation);
             }
         }
+        let mut annotations = BTreeMap::new();
+        for id in books(document) {
+            let book = read(document, id).map_err(|e| error(Some(id), e))?;
+            for page in &book.pages {
+                for annotation in &page.annotations {
+                    if matches!(annotation.kind, AnnotationKind::Dimension { .. }) {
+                        annotations.insert(annotation.id, self.dimension(page, annotation));
+                    }
+                }
+            }
+        }
         Ok(DrawingEvaluation {
             stamp: DrawingStamp {
                 document: document.id(),
@@ -395,6 +406,111 @@ impl Model {
                     .map_err(|e| error(None, e))?,
             },
             views,
+            annotations,
         })
+    }
+    /// Evaluate a model dimension from its current persistent references.
+    /// Unresolvable references detach it; the previous value is never kept.
+    pub fn dimension(&self, page: &Page, annotation: &Annotation) -> AnnotationEvaluation {
+        let AnnotationKind::Dimension {
+            view,
+            measure,
+            offset_mm,
+            precision,
+            reference,
+        } = &annotation.kind
+        else {
+            return AnnotationEvaluation::Detached {
+                message: "Not a model dimension".into(),
+            };
+        };
+        let detached = |message: String| AnnotationEvaluation::Detached { message };
+        let Some(view) = page.views.iter().find(|v| v.id == *view) else {
+            return detached("The dimension's view is no longer on this page".into());
+        };
+        let resolve = |r: &multicad_core::inspection::GeometryReference| {
+            crate::inspection::resolved(self, r)
+                .map(|(_, _, geometry)| geometry)
+                .map_err(|f| f.message)
+        };
+        let graphic = match measure.as_ref() {
+            DimensionMeasure::Linear { a, b, direction } => {
+                let query = multicad_core::inspection::MeasurementQuery {
+                    a: a.clone(),
+                    b: b.clone(),
+                };
+                match crate::inspection::measure_model(self, &query).result {
+                    Ok(values) => {
+                        let w = values.witnesses[0];
+                        linear_dimension(
+                            view, w.a_mm, w.b_mm, *direction, *offset_mm, *precision, *reference,
+                        )
+                    }
+                    Err(failure) => return detached(failure.message),
+                }
+            }
+            DimensionMeasure::Radius { edge } | DimensionMeasure::Diameter { edge } => {
+                match resolve(edge) {
+                    Ok(Some(multicad_core::references::AnalyticGeometry::CircularArc {
+                        frame,
+                        radius_mm,
+                        start_rad,
+                        sweep_rad,
+                    })) => {
+                        let full = sweep_rad.abs() >= std::f64::consts::TAU - 1e-9;
+                        let angle = if full {
+                            std::f64::consts::FRAC_PI_4
+                        } else {
+                            start_rad + sweep_rad / 2.
+                        };
+                        let (s, c) = angle.sin_cos();
+                        let rim = std::array::from_fn(|i| {
+                            frame.origin_mm[i] + radius_mm * (c * frame.u[i] + s * frame.v[i])
+                        });
+                        radial_dimension(
+                            view,
+                            frame.origin_mm,
+                            rim,
+                            radius_mm,
+                            matches!(measure.as_ref(), DimensionMeasure::Diameter { .. }),
+                            *offset_mm,
+                            *precision,
+                            *reference,
+                        )
+                    }
+                    Ok(_) => return detached("The reference is not a circular edge".into()),
+                    Err(message) => return detached(message),
+                }
+            }
+            DimensionMeasure::Angle { a, b } => match (resolve(a), resolve(b)) {
+                (
+                    Ok(Some(multicad_core::references::AnalyticGeometry::Line {
+                        a_mm: a0,
+                        b_mm: a1,
+                    })),
+                    Ok(Some(multicad_core::references::AnalyticGeometry::Line {
+                        a_mm: b0,
+                        b_mm: b1,
+                    })),
+                ) => {
+                    let da: [f64; 3] = std::array::from_fn(|i| a1[i] - a0[i]);
+                    let db: [f64; 3] = std::array::from_fn(|i| b1[i] - b0[i]);
+                    let dot = |x: [f64; 3], y: [f64; 3]| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+                    let cos = (dot(da, db).abs() / (dot(da, da) * dot(db, db)).sqrt()).min(1.);
+                    angle_dimension(
+                        view,
+                        (a0, a1),
+                        (b0, b1),
+                        cos.acos().to_degrees(),
+                        *offset_mm,
+                        *precision,
+                        *reference,
+                    )
+                }
+                (Err(message), _) | (_, Err(message)) => return detached(message),
+                _ => return detached("Angle dimensions need two straight edges".into()),
+            },
+        };
+        AnnotationEvaluation::Ready { graphic }
     }
 }

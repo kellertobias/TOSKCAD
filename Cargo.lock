@@ -2175,6 +2175,7 @@ dependencies = [
  "multicad-core",
  "multicad-kernel",
  "multicad-solver",
+ "quick-xml",
  "serde",
  "serde_json",
  "tempfile",

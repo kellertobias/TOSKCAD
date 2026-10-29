@@ -108,6 +108,9 @@ pub struct Page {
     pub notes: Vec<TextNote>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<super::DrawingView>,
+    /// Dimensions, notes, leaders, weld symbols, tables and drafting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<super::Annotation>,
 }
 impl Page {
     pub fn new(number: impl Into<String>) -> Self {
@@ -118,6 +121,7 @@ impl Page {
             info: DrawingInfo::default(),
             notes: vec![],
             views: vec![],
+            annotations: vec![],
         }
     }
 }
@@ -214,6 +218,15 @@ impl DrawingBook {
                     ));
                 }
             }
+            if page.annotations.len() > super::MAX_ANNOTATIONS {
+                return Err(invalid("Too many annotations on a drawing page"));
+            }
+            for annotation in &page.annotations {
+                annotation.validate(page)?;
+                if !ids.insert(annotation.id) {
+                    return Err(invalid("Duplicate drawing content identity"));
+                }
+            }
         }
         Ok(())
     }
@@ -249,6 +262,7 @@ pub fn validate(document: &Document) -> Result<(), DocumentError> {
             for nested in std::iter::once(page.id)
                 .chain(page.notes.iter().map(|note| note.id))
                 .chain(page.views.iter().map(|view| view.id))
+                .chain(page.annotations.iter().map(|a| a.id))
             {
                 if !identities.insert(nested) {
                     return Err(invalid(

@@ -17,7 +17,7 @@ fn fail(
         message: message.to_string(),
     }
 }
-fn resolved<'a>(
+pub(crate) fn resolved<'a>(
     model: &'a Model,
     r: &GeometryReference,
 ) -> Result<(&'a Solid, TopologyKey, Option<AnalyticGeometry>), MeasurementFailure> {
