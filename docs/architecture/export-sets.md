@@ -24,7 +24,9 @@ The native provider supports:
 - [explicit planar-face DXF](planar-dxf.md) with declared units and exact closed contours;
 - [OBJ and 3MF](#mesh-output) in millimeters, centimeters, meters or inches, as separate parts or one assembly file.
 
-Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, aid filtering, STL and GLB (CAD-131), drawing DXF and PDF report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
+- [multi-page PDF and per-page drawing DXF](drawing-exports.md) from checked drawing pages.
+
+Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, aid filtering, and STL and GLB (CAD-131) report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
 
 ## Mesh output
 
