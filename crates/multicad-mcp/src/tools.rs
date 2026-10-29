@@ -36,10 +36,13 @@ use std::{
     },
 };
 
+mod cabinetry;
 mod guides;
 mod levels;
 mod reference_repair;
 mod walls;
+pub use cabinetry::{CarcassArgs, PanelArgs, PanelStockArgs, StackArgs};
+use cabinetry::{create_panel, create_panel_stack, create_panel_stock, cut_list, set_carcass};
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
 pub use levels::{EnvelopeArgs, LevelArgs, SlabArgs, StairArgs};
@@ -232,6 +235,21 @@ tools! {
     "edit_wall" => EditWallArgs, "Edit wall", false,
         "Replace a wall's path, overrides and openings, keeping its Part and the identities of openings at the same positions. Evaluated natively before commit.",
         edit_wall;
+    "create_panel_stock" => PanelStockArgs, "Create panel stock", false,
+        "Create a panel stock definition (thickness, sheet size, grain relative to the sheet length) on an existing Material or a new one. Commits one transaction.",
+        create_panel_stock;
+    "set_carcass" => CarcassArgs, "Create or edit carcass", false,
+        "Create a cabinet carcass from an envelope (width, height, depth, panel stock) or edit one by ID: sides, top and bottom, an optional inset or overlay back, evenly spaced or offset shelves with setback and clearance, and optional front-edge banding. Each panel is a named editable Part; an edit keeps panels whose role remains and adds or removes shelves and backs. Every panel is evaluated natively before commit.",
+        set_carcass;
+    "create_panel" => PanelArgs, "Create panel", false,
+        "Create a rectangular panel Part from panel stock on a principal plane, with grain axis, per-edge banding (thickness and allowance) and cut oversize. Evaluated natively before commit.",
+        create_panel;
+    "create_panel_stack" => StackArgs, "Create panel stack", false,
+        "Record panel Parts as face-to-face stack layers in order, keeping each layer's Part, material and stock; optionally group them as one assembly. Contact is checked by cut_list.",
+        create_panel_stack;
+    "cut_list" => NoArgs, "Panel cut list", true,
+        "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
+        cut_list;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;
