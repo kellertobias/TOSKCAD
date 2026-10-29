@@ -244,14 +244,20 @@ mod tests {
                 .map(|p| json!({ "volume": p["volume_mm3"], "bounds": p["bounds_mm"], "solids": p["solid_count"] }))
                 .collect::<Vec<_>>()
         };
+        // Entity IDs are random, so list order is not part of equivalence.
+        let mut rows: Vec<Value> = parameters["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| json!([p["name"], p["expression"], p["value"], p["role"]]))
+            .collect();
+        rows.sort_by_key(|r| r.to_string());
         json!({
             "edited": strip(&edited),
             "undone": strip(&undone),
             "revision": info["revision"],
             "counts": info["entity_counts"],
-            "parameters": parameters["parameters"].as_array().unwrap().iter()
-                .map(|p| json!([p["name"], p["expression"], p["value"], p["role"]]))
-                .collect::<Vec<_>>(),
+            "parameters": rows,
         })
     }
 
