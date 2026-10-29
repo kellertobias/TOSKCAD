@@ -140,7 +140,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `document_info` | no | Name, identity, revision, dirty state, undo/redo, entity counts, units and scope |
 | `list_entities` | no | IDs, names, kinds and references, optionally filtered by kind |
 | `get_entity` | no | The complete canonical source record |
-| `list_parameters` | no | Expression, unit, evaluated value, role and exposure |
+| `list_parameters` | no | Expression, unit, evaluated value, role and exposure of project parameters; symbol-private parameters are omitted |
 | `set_parameter` | yes | Create a parameter, or edit the one with that name |
 | `create_sketch` | yes | Empty sketch on the `xy`, `xz` or `yz` origin plane |
 | `sketch_add_rectangle` | yes | Fully constrained rectangle with a fixed corner and driving width and height |
@@ -148,7 +148,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `set_sketch_dimension` | yes | New literal or formula for an existing driving dimension |
 | `inspect_sketch` | no | Solve state, degrees of freedom, conflicts, geometry, constraints, measurements, and regions with index and area |
 | `extrude` | yes | Extrude regions by a distance as `new_body`, or `join`, `cut` or `intersect` a `target_part` |
-| `evaluate_model` | no | Native evaluation of every final part, plus reference diagnostics |
+| `evaluate_model` | no | Native evaluation of every final part and placed instance, plus reference diagnostics |
 | `undo`, `redo` | yes | The most recent transaction on any channel |
 | `history` | no | Recent activity with actor, channel, label, kind and changed IDs |
 | `review_status` | no | State of a queued change |
@@ -161,7 +161,8 @@ schema is generated from the Rust argument types with schemars and returned by
 | `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |
 
 `evaluate_model` reports each part's producing feature, solid count, volume
-and bounds.
+and bounds, and each placed instance's component, solid count, volume and
+bounds.
 
 ### Values and units
 

@@ -141,7 +141,7 @@ tools! {
         "The complete canonical source record of one entity, exactly as stored in the project.",
         get_entity;
     "list_parameters" => NoArgs, "List parameters", true,
-        "Every parameter with its expression, declared unit, evaluated value in that unit, role (driving or derived) and exposure.",
+        "Every project parameter with its expression, declared unit, evaluated value in that unit, role (driving or derived) and exposure. Parameters private to placed symbols are omitted; change them through the instance's exposed overrides.",
         list_parameters;
     "set_parameter" => SetParameter, "Create or edit parameter", false,
         "Create a parameter, or edit the one with this name. Literal values are plain numbers ('40'); formulas start with '=' and reference parameters with '$' ('=$width/2'). The unit is required. Commits one transaction.",
@@ -165,7 +165,7 @@ tools! {
         "Extrude regions of a sketch (indices from inspect_sketch at the same revision) by a distance. operation new_body creates parts; join, cut and intersect modify target_part. The candidate is evaluated natively before it commits.",
         extrude;
     "evaluate_model" => NoArgs, "Evaluate model", true,
-        "Evaluate the complete model with the native kernel and report every final part: producing feature, solid count, volume (mm³) and bounds (mm), plus reference diagnostics. Evaluation failures are returned as structured errors.",
+        "Evaluate the complete model with the native kernel and report every final part (producing feature, solid count, volume in mm³, bounds in mm) and every placed instance (component, solid count, volume, bounds), plus reference diagnostics. Evaluation failures are returned as structured errors.",
         evaluate_model;
     "undo" => RevisionArgs, "Undo", false,
         "Undo the most recent committed transaction, from any channel, if expected_revision is current.",
@@ -743,9 +743,13 @@ fn list_parameters(host: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     with(host, move |target| {
         let session = target.session();
         let evaluated = session.parameters();
+        // Parameters owned by placed symbols are private, as in the window;
+        // instances change them only through their exposed overrides.
+        let owned = multicad_core::symbols::owned_entities(session.document()).unwrap_or_default();
         let rows: Vec<_> = session
             .document()
             .entities()
+            .filter(|e| !owned.contains(&e.id))
             .filter_map(|e| match &e.data {
                 EntityData::Parameter {
                     expression,
@@ -1267,6 +1271,21 @@ fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
             })
         })
         .collect();
+    let instances: Vec<_> = snapshot
+        .occurrences
+        .iter()
+        .map(|(instance, occurrence)| {
+            let solid = model.solid(*instance);
+            json!({
+                "instance": instance,
+                "name": document.get(*instance).map(|e| e.name.as_str()),
+                "component": occurrence.component,
+                "solid_count": solid.and_then(|s| s.solid_count().ok()),
+                "volume_mm3": solid.and_then(|s| s.volume_mm3().ok()),
+                "bounds_mm": json!({ "min": occurrence.bounds.min, "max": occurrence.bounds.max }),
+            })
+        })
+        .collect();
     let references: Vec<_> = snapshot
         .references
         .entries
@@ -1284,6 +1303,7 @@ fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
         "revision": revision,
         "scope": "full",
         "parts": parts,
+        "instances": instances,
         "consumed_parts": snapshot.consumed_bodies,
         "references": references,
     }))

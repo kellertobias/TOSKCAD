@@ -338,8 +338,28 @@ fn mcp_edits_the_shared_project_with_attribution_and_ui_equivalent_results() {
 
     let info = run("document_info", json!({})).unwrap();
     assert_eq!(info["revision"], 0);
+    // Only project parameters are listed; symbol-private ones stay hidden.
     let parameters = run("list_parameters", json!({})).unwrap();
-    assert!(parameters.to_string().contains("plate_thickness"));
+    let mut names: Vec<_> = parameters["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["plate_thickness", "width"]);
+    // Placed symbol instances are reported with their native solids.
+    let evaluated = run("evaluate_model", json!({})).unwrap();
+    let mut volumes: Vec<f64> = evaluated["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["volume_mm3"].as_f64().unwrap())
+        .collect();
+    volumes.sort_by(f64::total_cmp);
+    assert_eq!(volumes.len(), 2, "{evaluated}");
+    near(volumes[0], 150. * 90. * 8., 1e-3);
+    near(volumes[1], 200. * 100. * 12., 1e-3);
 
     // A cancelled request commits nothing.
     let cancelled = dispatch(
