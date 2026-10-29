@@ -438,6 +438,12 @@ impl Application {
                     .into(),
             );
         }
+        if !matches!(
+            command,
+            Command::Apply | Command::Preview | Command::Discard | Command::Extension("library")
+        ) {
+            self.current_mut().sketch.close_symbol_browser();
+        }
         if self.export_blocks(command) {
             return Err("Save or discard export-set edits first".into());
         }
@@ -810,6 +816,14 @@ impl Application {
                         .into();
             }
             Command::Extension("symbol" | "library") => {
+                if command == Command::Extension("library")
+                    && self.current().sketch.symbol_active()
+                    && !self.current().pending_edits()
+                {
+                    self.current_mut().sketch.close_symbol_browser();
+                    self.message = "Symbol library closed".into();
+                    return Ok(());
+                }
                 if self.current().editor.dirty() {
                     return Err("Apply or discard parameter edits before opening symbols".into());
                 }
@@ -1151,9 +1165,7 @@ impl Application {
             }
             Command::Extension("materials") => !pending(),
             Command::Extension("symbol" | "library") => {
-                !pending()
-                    && !self.current().sketch.symbol_active()
-                    && self.current().sketch.has_symbol_backend()
+                !pending() && self.current().sketch.has_symbol_backend()
             }
             Command::Extension(_) => false,
             _ => true,

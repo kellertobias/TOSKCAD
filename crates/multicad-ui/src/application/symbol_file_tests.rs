@@ -289,3 +289,34 @@ fn generated_symbol_source_is_not_offered_as_an_independent_sketch_or_feature_ed
     ));
     assert!(!editor.feature_edit_ready(&session, &Default::default(), feature));
 }
+
+#[test]
+fn another_tool_closes_read_only_library_without_leaving_a_hidden_inspector_owner() {
+    let (session, _, _, _) = seed();
+    let (mut app, _) = app(session.document().clone());
+    let factory: crate::viewport::BackendFactory =
+        Arc::new(|| Box::new(crate::modeling::native_fixture::NativeBackend::new()));
+    app.set_scene_backends(factory.clone());
+    app.set_model_backends(factory);
+    app.mode = Mode::Model;
+    app.invoke(Command::Extension("library"), &[], Channel::Ui)
+        .unwrap();
+    assert!(app.current().sketch.symbol_active());
+    assert!(!app.current().pending_edits());
+    assert!(app.enabled(Command::Extension("symbol")));
+    app.invoke(Command::Extension("symbol"), &[], Channel::Ui)
+        .unwrap();
+    assert!(app.current().sketch.symbol_active());
+    assert!(app.current().pending_edits());
+    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    app.invoke(Command::Extension("library"), &[], Channel::Ui)
+        .unwrap();
+    app.invoke(
+        Command::Modeling(crate::modeling::ModelingTool::Box),
+        &[],
+        Channel::Ui,
+    )
+    .unwrap();
+    assert!(!app.current().sketch.symbol_active());
+    assert!(app.current().sketch.model_active());
+}
