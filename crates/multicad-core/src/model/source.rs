@@ -646,6 +646,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::wall::validate_document(document)?;
     super::level::validate_document(document)?;
     super::cabinetry::validate_document(document)?;
+    super::sheet_metal::validate_document(document)?;
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
@@ -709,6 +710,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::SLAB_TYPE,
                     super::STAIR_TYPE,
                     super::PANEL_TYPE,
+                    super::SHEET_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {
