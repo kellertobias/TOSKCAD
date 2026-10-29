@@ -170,6 +170,10 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |
 | `create_panel_stack` | yes | Face-to-face panel layers kept as their own Parts, optionally grouped |
 | `cut_list` | no | Finished and core panel sizes measured from the solids, stock fit and stack contact |
+| `set_fdm_process` | yes | FDM process allowances (layer height, line width, minimum layers and lines, support gap, fit clearance) used to inspect aids (see [FDM aids](fdm-aids.md)) |
+| `set_fdm_aid` | yes | Create or edit a breakaway tab, thin bridge or derived-height support as its own Part serving a finished Part |
+| `remove_fdm_aid` | yes | Remove an aid feature and its Part; the target is untouched |
+| `fdm_aid_report` | no | Aid bounds, contact with target and bridge partner, fit-clearance neighbours and allowance findings measured from the solids |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
 | `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |

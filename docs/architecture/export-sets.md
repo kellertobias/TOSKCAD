@@ -20,14 +20,15 @@ The [native provider](../../crates/multicad-model/src/export/mod.rs) compiles an
 
 The native provider supports:
 
-- separate STEP files in millimeters, with filename-only naming and all design aids included;
+- separate STEP files in millimeters, with filename-only naming;
+- removable FDM aids included or excluded by their aid feature, for STEP, planar DXF and mesh recipes;
 - [explicit planar-face DXF](planar-dxf.md) with declared units and exact closed contours;
 - [OBJ, 3MF and STL](#mesh-output) in millimeters, centimeters, meters or inches, as separate parts or one assembly file;
 - [GLB scenes](#glb-scenes) in meters, for Blender and other scene tools.
 
 - [multi-page PDF and per-page drawing DXF](drawing-exports.md) from checked drawing pages.
 
-Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, aid filtering, and GLB in units other than meters report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
+Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, and GLB in units other than meters report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
 
 ## Mesh output
 
@@ -51,7 +52,7 @@ The [mesh writers](../../crates/multicad-model/src/export/mesh.rs) tessellate ex
   - world bounds within twice the chord of the exact solid's bounds;
   - a volume within the chord allowance of the exact solid's volume, so an open or mis-oriented mesh fails.
   - STL and GLB store single-precision coordinates, so their bounds and volume comparisons allow for that precision.
-- **Removable aids.** Removable-aid exclusion stays Unsupported until a typed aid provider classifies such geometry. Ordinary geometry exports with `IncludeAll`.
+- **Removable aids.** A recipe with `ExcludeRemovable` leaves out Parts produced by `fdm.aid` features and lists them in the recipe report's `excluded_aids`; see [FDM aids](fdm-aids.md). Names and tags never classify an aid.
 
 ### GLB scenes
 
