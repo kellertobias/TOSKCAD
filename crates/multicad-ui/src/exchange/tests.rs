@@ -156,6 +156,7 @@ fn preview(state: &Rc<RefCell<State>>, index: usize) -> ExportReply {
         }],
         artifacts: vec![ExportArtifact {
             planar: None,
+            mesh: None,
             output: files[0].clone(),
             producer: EntityId::new(),
             solid: EntityId::new(),

@@ -14,6 +14,7 @@ multicad-solver.workspace = true
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 tempfile = "=3.27.0"
+crc32fast = "=1.5.3"
 
 [lints]
 workspace = true
@@ -21,3 +22,4 @@ workspace = true
 [dev-dependencies]
 dxf = "=0.6.2"
 quick-xml = "=0.41.0"
+crc32fast = "=1.5.3"

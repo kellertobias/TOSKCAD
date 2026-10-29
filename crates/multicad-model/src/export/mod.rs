@@ -1,6 +1,7 @@
 //! Native output jobs rebuild an immutable source snapshot. No Scene, display
 //! mesh, retained viewport state or foreign native handle is an export input.
 pub mod dxf;
+pub mod mesh;
 mod planar;
 pub use planar::DevelopedContourProvider;
 mod publish;
@@ -23,7 +24,8 @@ pub struct Exporter {
 struct Built {
     model: Option<Model>,
     preview: ExportPreview,
-    planar_bytes: BTreeMap<String, Vec<u8>>,
+    /// Bytes generated during the build (planar DXF, OBJ, 3MF), by filename.
+    generated: BTreeMap<String, Vec<u8>>,
 }
 fn failure(kind: ErrorKind, id: Option<EntityId>, message: impl ToString) -> ExportError {
     ExportError::new(kind, id, message.to_string())
@@ -105,11 +107,184 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
                 dxf::layer_names(layers).err()
             }
         }
+        RecipeOutput::Mesh {
+            format,
+            aids,
+            quality,
+            ..
+        } => {
+            if !matches!(format, MeshFormat::Obj | MeshFormat::ThreeMf) {
+                Some("STL and GLB providers are separate work (CAD-131)".into())
+            } else if *aids != AidPolicy::IncludeAll {
+                Some("Removable-aid exclusion requires a typed aid provider; no aid geometry is classified yet".into())
+            } else if !(0.001..=10.).contains(&quality.chord_deviation_mm)
+                || !(0.6..=57.).contains(&quality.angular_deviation_deg)
+            {
+                Some("Mesh quality needs a chord deviation of 0.001–10 mm and an angular deviation of 0.6–57°".into())
+            } else {
+                None
+            }
+        }
         _ => Some(format!(
             "{} output provider is not installed",
             output.extension().to_ascii_uppercase()
         )),
     }
+}
+/// Solid, producer, world bounds, volume and solid count of a selected Part.
+type Availability = (EntityId, EntityId, [[f64; 3]; 2], f64, u32);
+type Selected = BTreeMap<PartRef, Availability>;
+/// Tessellate one mesh output. Separate files hold one Part in world
+/// coordinates. An assembly 3MF holds one object per component definition
+/// placed by build items; an assembly OBJ holds one world-space object per
+/// Part, since OBJ has no instancing.
+fn mesh_output(
+    model: &Model,
+    selection: &ResolvedSet,
+    output: &RecipeOutput,
+    named: &NamedOutput,
+    selected: &Selected,
+) -> Result<(Vec<u8>, MeshEvidence, Availability), ExportError> {
+    let RecipeOutput::Mesh {
+        format,
+        units,
+        names,
+        quality,
+        ..
+    } = output
+    else {
+        return Err(failure(ErrorKind::Invalid, None, "Not a mesh recipe"));
+    };
+    let parts: Vec<&PartRef> = match &named.subject {
+        OutputSubject::Part(p) => vec![p],
+        OutputSubject::Parts(ps) => ps.iter().collect(),
+        _ => {
+            return Err(failure(
+                ErrorKind::Invalid,
+                None,
+                "Mesh output needs Part subjects",
+            ));
+        }
+    };
+    let label = |p: &PartRef, index: usize| match names {
+        NameHandling::ProductNames => selection
+            .parts
+            .iter()
+            .find(|s| s.reference == *p)
+            .map(|s| {
+                if s.occurrence_names.is_empty() {
+                    s.name.clone()
+                } else {
+                    format!("{} {}", s.name, s.occurrence_names.join("/"))
+                }
+            })
+            .unwrap_or_else(|| format!("part-{}", index + 1)),
+        NameHandling::FileNamesOnly => format!("object-{}", index + 1),
+    };
+    let mut objects = vec![];
+    let mut items = vec![];
+    let mut definitions: BTreeMap<EntityId, usize> = BTreeMap::new();
+    let mut aggregate: Option<Availability> = None;
+    for (index, part) in parts.iter().enumerate() {
+        let &(solid, producer, bounds, volume, count) = selected.get(*part).ok_or_else(|| {
+            failure(
+                ErrorKind::Invalid,
+                Some(part.part),
+                "Current output availability was not evaluated",
+            )
+        })?;
+        aggregate = Some(match aggregate {
+            None => (solid, producer, bounds, volume, count),
+            Some((s, p, b, v, c)) => (
+                s,
+                p,
+                [
+                    std::array::from_fn(|i| b[0][i].min(bounds[0][i])),
+                    std::array::from_fn(|i| b[1][i].max(bounds[1][i])),
+                ],
+                v + volume,
+                c + count,
+            ),
+        });
+        let name = label(part, index);
+        let assembly = matches!(named.subject, OutputSubject::Parts(_));
+        let occurrence =
+            part.occurrence_path
+                .first()
+                .map(|root| multicad_core::model::OccurrencePath {
+                    root: *root,
+                    members: part.occurrence_path[1..].to_vec(),
+                });
+        let placed = if assembly && *format == MeshFormat::ThreeMf {
+            occurrence
+                .as_ref()
+                .and_then(|path| model.leaf_snapshot(path))
+                .and_then(|leaf| {
+                    model
+                        .solid(leaf.producer)
+                        .map(|local| (leaf.producer, local, leaf.pose))
+                })
+        } else {
+            None
+        };
+        match placed {
+            Some((definition, local, pose)) => {
+                let object = match definitions.get(&definition) {
+                    Some(object) => *object,
+                    None => {
+                        let mesh = mesh::tessellate(local, quality, &name)
+                            .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?;
+                        objects.push(mesh);
+                        definitions.insert(definition, objects.len() - 1);
+                        objects.len() - 1
+                    }
+                };
+                items.push(mesh::BuildItem {
+                    object,
+                    rotation: pose.rotation,
+                    translation_mm: pose.translation_mm,
+                });
+            }
+            None => {
+                let world = subject_solid(model, part, solid)?;
+                objects.push(
+                    mesh::tessellate(world, quality, &name)
+                        .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?,
+                );
+                items.push(mesh::BuildItem::identity(objects.len() - 1));
+            }
+        }
+    }
+    let aggregate =
+        aggregate.ok_or_else(|| failure(ErrorKind::Empty, None, "Mesh output has no Parts"))?;
+    let placed_volume: f64 = items
+        .iter()
+        .map(|item| {
+            let object = &objects[item.object];
+            let world: Vec<_> = object.vertices.iter().map(|p| item.apply(*p)).collect();
+            mesh::volume(&world, &object.triangles)
+        })
+        .sum();
+    let triangles = items
+        .iter()
+        .map(|i| objects[i.object].triangles.len())
+        .sum();
+    let bytes = match format {
+        MeshFormat::Obj => mesh::obj(&objects, *units),
+        _ => mesh::three_mf(&objects, &items, *units),
+    };
+    Ok((
+        bytes,
+        MeshEvidence {
+            units: *units,
+            objects: objects.len(),
+            build_items: items.len(),
+            triangles,
+            mesh_volume_mm3: placed_volume,
+            chord_deviation_mm: quality.chord_deviation_mm,
+        },
+        aggregate,
+    ))
 }
 impl Exporter {
     pub fn preview(
@@ -134,7 +309,7 @@ impl Exporter {
             });
         let p = self.compiler.policy;
         format!(
-            "step-files.1;planar-dxf.1;build:{build};occt:{};policy:{:?}",
+            "step-files.1;planar-dxf.1;mesh-obj-3mf.1;build:{build};occt:{};policy:{:?}",
             multicad_kernel::source_identity(),
             [
                 p.linear_tolerance_mm,
@@ -251,7 +426,7 @@ impl Exporter {
         let names = filenames(&effective, document.name())?;
         let mut recipes = Vec::new();
         let mut artifacts = Vec::new();
-        let mut planar_bytes = BTreeMap::new();
+        let mut generated = BTreeMap::new();
         for recipe in &selection.recipes {
             let requested: Vec<_> = names.iter().filter(|n| n.recipe == recipe.id).collect();
             let mut status = if let Some(reason) = unsupported(&recipe.output) {
@@ -263,7 +438,41 @@ impl Exporter {
             };
             let mut recipe_artifacts = vec![];
             let mut recipe_bytes = BTreeMap::new();
-            if status == RecipeStatus::Ready {
+            if status == RecipeStatus::Ready && matches!(recipe.output, RecipeOutput::Mesh { .. }) {
+                let model = model.as_ref().ok_or_else(|| {
+                    failure(
+                        ErrorKind::Invalid,
+                        Some(set),
+                        "No owned current model for mesh output",
+                    )
+                })?;
+                for output in requested.iter() {
+                    checkpoint(interrupt)?;
+                    match mesh_output(model, &selection, &recipe.output, output, &selected) {
+                        Ok((
+                            bytes,
+                            evidence,
+                            (solid, producer, bounds_mm, volume_mm3, solid_count),
+                        )) => {
+                            recipe_bytes.insert(output.filename.clone(), bytes);
+                            recipe_artifacts.push(ExportArtifact {
+                                output: (*output).clone(),
+                                producer,
+                                solid,
+                                bounds_mm,
+                                volume_mm3,
+                                solid_count,
+                                planar: None,
+                                mesh: Some(evidence),
+                            });
+                        }
+                        Err(e) => {
+                            status = RecipeStatus::Unsupported(e.message);
+                            break;
+                        }
+                    }
+                }
+            } else if status == RecipeStatus::Ready {
                 for output in requested.iter() {
                     let OutputSubject::Part(part) = &output.subject else {
                         return Err(failure(
@@ -326,12 +535,13 @@ impl Exporter {
                         volume_mm3,
                         solid_count,
                         planar,
+                        mesh: None,
                     });
                 }
             }
             if status == RecipeStatus::Ready {
                 artifacts.extend(recipe_artifacts);
-                planar_bytes.extend(recipe_bytes);
+                generated.extend(recipe_bytes);
             }
             recipes.push(RecipeReport {
                 recipe: recipe.id,
@@ -349,7 +559,16 @@ impl Exporter {
         let provider = self.provider();
         let identity: Vec<_> = artifacts
             .iter()
-            .map(|a| (&a.output, a.producer, a.solid, a.solid_count, &a.planar))
+            .map(|a| {
+                (
+                    &a.output,
+                    a.producer,
+                    a.solid,
+                    a.solid_count,
+                    &a.planar,
+                    &a.mesh,
+                )
+            })
             .collect();
         let bytes = serde_json::to_vec(&(
             &provider,
@@ -367,7 +586,7 @@ impl Exporter {
         };
         Ok(Built {
             model,
-            planar_bytes,
+            generated,
             preview: ExportPreview {
                 requested_by: actor.clone(),
                 key,

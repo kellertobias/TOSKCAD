@@ -50,6 +50,20 @@ pub struct ExportArtifact {
     pub solid_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planar: Option<PlanarEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<MeshEvidence>,
+}
+/// What a mesh output contains: resource objects, placed build items and the
+/// tessellation actually written, in millimeters.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshEvidence {
+    pub units: super::LengthUnit,
+    pub objects: usize,
+    pub build_items: usize,
+    pub triangles: usize,
+    pub mesh_volume_mm3: f64,
+    pub chord_deviation_mm: f64,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

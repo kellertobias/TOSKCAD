@@ -11,6 +11,8 @@ use std::collections::BTreeSet;
 )]
 pub enum OutputSubject {
     Part(PartRef),
+    /// Every selected Part in one file, for assembly-preserving mesh output.
+    Parts(Vec<PartRef>),
     Page(PageRef),
     Pages(Vec<PageRef>),
 }
@@ -77,6 +79,18 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
                 .iter()
                 .map(|p| OutputSubject::Page(p.reference.clone()))
                 .collect(),
+            RecipeOutput::Mesh {
+                hierarchy: HierarchyMode::PreserveAssembly,
+                ..
+            } => {
+                if plan.parts.is_empty() {
+                    vec![]
+                } else {
+                    vec![OutputSubject::Parts(
+                        plan.parts.iter().map(|p| p.reference.clone()).collect(),
+                    )]
+                }
+            }
             _ => plan
                 .parts
                 .iter()
@@ -117,6 +131,7 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
                     )
                 }
                 OutputSubject::Pages(_) => ("drawings".into(), plan.set, "pages".into()),
+                OutputSubject::Parts(_) => (plan.name.clone(), plan.set, String::new()),
             };
             let mut stem = plan.naming.template.clone();
             for (token, value) in [
