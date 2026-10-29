@@ -57,6 +57,55 @@ Neither mode opens a network port, and remote control is not offered.
   parameter row, sketch edit, page draft or export draft, commits, Undo, Redo
   and saves fail with `busy`. Inspection stays available.
 
+## Review and activity
+
+Each document keeps a
+[`ControlLedger`](../../crates/multicad-core/src/control.rs) with an audit log
+and a review queue.
+
+**Review policy**
+
+- Headless clients are trusted: their changes commit directly.
+- Window clients are reviewed unless they are trusted for the window session.
+  Trust is set with **Apply without review** next to each connected client.
+
+**What a reviewed change does**
+
+1. The tool prepares and checks the full candidate, then queues it. It returns
+   `status: "pending_review"`, a `review` ID and the unchanged base
+   `revision`; the document does not change. Undo and Redo are queued the same
+   way.
+2. The window's **Pending review** section shows each change: client, tool,
+   arguments, base revision, affected entities, and whether it is stale.
+3. **Preview in viewport** evaluates the candidate with the native kernel and
+   shows it in Model without committing.
+4. **Accept** applies it as one undoable transaction attributed to the client.
+   **Reject** discards it.
+5. A change whose base revision moved becomes `stale`: it is closed and never
+   rebased, and the client must prepare it again.
+
+Applied calls carry `status: "applied"`. `review_status` reports a review as
+`pending` (with `stale`), `applied` with its revision, `rejected`, `stale` or
+`failed`.
+
+**Activity**
+
+`activity` returns the audit, newest first. Each entry records:
+
+- the outcome: `inspected`, `previewed`, `applied`, `rejected`, `cancelled`,
+  `failed`, `undone`, `redone` or `stale`;
+- actor and channel, tool and arguments;
+- base and resulting revision, and affected IDs;
+- the review ID, if any.
+
+Window edits, Undo and Redo on any channel are imported in revision order.
+Moving history backwards adds entries and never removes them. The log keeps
+10,000 entries and reports how many older ones were dropped. The queue holds
+64 changes.
+
+Command and MCP history shows Connections (permissions), Pending review and
+Activity as separate sections. There is no chat or prompt composer.
+
 ## Transactions
 
 Every mutating tool requires `expected_revision`. A request based on another
@@ -102,6 +151,8 @@ schema is generated from the Rust argument types with schemars and returned by
 | `evaluate_model` | no | Native evaluation of every final part, plus reference diagnostics |
 | `undo`, `redo` | yes | The most recent transaction on any channel |
 | `history` | no | Recent activity with actor, channel, label, kind and changed IDs |
+| `review_status` | no | State of a queued change |
+| `activity` | no | Append-only control audit and the review queue |
 | `save_project` | yes | Save to the scoped project file |
 | `export_step` | no | STEP of one final part into the export folder, with readback volume and SHA-256 |
 | `import_sketch_artwork` | yes | DXF or SVG text into an existing or new sketch, with provenance (see [sketch import](sketch-import.md)) |
@@ -134,7 +185,7 @@ and bounds.
 | `invalid_sketch`, `solve_failed` | The sketch cannot be read, or the edit does not solve |
 | `model_failed` | Native evaluation failed; `involved` names the entity |
 | `not_found` | The ID does not exist or has the wrong kind |
-| `read_only`, `out_of_scope`, `busy`, `unavailable` | Scope or owner refusals |
+| `read_only`, `out_of_scope`, `busy`, `unavailable` | Scope or owner refusals; `busy` also when 64 changes await review |
 | `save_failed`, `export_failed`, `import_failed` | File operations |
 | `cancelled` | Cancelled before commit; nothing changed |
 | `unknown_tool` | The tool name is not in the catalog |
@@ -168,7 +219,10 @@ and bounds.
   patterns, assemblies and joints, drawings, symbols, materials, or exports
   other than STEP. They will use the same tool layer as their shared commands
   become available.
-- **Review before commit.** MCP edits commit directly. CAD-96 owns pending
-  review and richer attributable history.
+- **Review limits.**
+  - Each queued change is its own transaction; several calls cannot be merged
+    into one group.
+  - Undo and Redo have no geometry preview.
+  - Trust lasts for the window session and is not saved.
 - **No push updates.** There are no MCP resources, prompts or progress
   notifications. Clients poll `document_info` for the revision.
