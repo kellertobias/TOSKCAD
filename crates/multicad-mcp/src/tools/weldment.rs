@@ -11,7 +11,10 @@ use multicad_core::{
     constraint_sketch::Dimension,
     document::{Document, Entity, EntityData, EntityId},
     materials::{self, LibraryDefinition, ProfileShape, Stock, StockKind},
-    model::{self, AxisAnchor, BodyOutput, MemberDefinition, MemberPath, MemberRequest, angle},
+    model::{
+        self, AxisAnchor, BodyOutput, ConnectionDefinition, ConnectionKind, MemberDefinition,
+        MemberPath, MemberRequest, angle,
+    },
     parameters::EvaluatedParameters,
 };
 use schemars::JsonSchema;
@@ -131,6 +134,32 @@ pub struct EditMemberArgs {
     pub extend_start: Option<Quantity>,
     #[serde(default)]
     pub extend_end: Option<Quantity>,
+}
+
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionKindArg {
+    Miter,
+    Butt,
+    Cope,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectArgs {
+    pub expected_revision: u64,
+    /// Connection ID to edit; omit to create a new connection.
+    #[serde(default)]
+    pub connection: Option<String>,
+    /// Name of a new connection.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// miter (both members end at the joint, cut on the bisector plane), butt (first ends square against a flat face of the second, which continues) or cope (first is fitted to the actual outside of the second).
+    pub kind: ConnectionKindArg,
+    /// Member Parts (or member features): miter either order; butt terminating then continuing; cope branch then receiving.
+    pub members: [String; 2],
+    /// Clearance between the cut end and the face it meets (default 0).
+    #[serde(default)]
+    pub gap: Option<Quantity>,
 }
 
 fn q(q: &Quantity, d: &Document, e: &EvaluatedParameters) -> Result<Dimension, ToolError> {
@@ -376,13 +405,69 @@ pub(super) fn edit_member(host: &dyn Host, call: &Request, args: EditMemberArgs)
     finish(host, call, prepared, revision, out)
 }
 
+pub(super) fn connect_members(host: &dyn Host, call: &Request, args: ConnectArgs) -> ToolResult {
+    let (document, revision, evaluated) = snapshot(host)?;
+    stale(args.expected_revision, revision)?;
+    let (d, e) = (&document, &evaluated);
+    let part = |value: &str| -> Result<EntityId, ToolError> {
+        let feature = member_id(d, value)?;
+        Ok(model::read_member(d, feature)
+            .map_err(ToolError::from)?
+            .output
+            .body)
+    };
+    let connection = ConnectionDefinition {
+        kind: match args.kind {
+            ConnectionKindArg::Miter => ConnectionKind::Miter,
+            ConnectionKindArg::Butt => ConnectionKind::Butt,
+            ConnectionKindArg::Cope => ConnectionKind::Cope,
+        },
+        members: [part(&args.members[0])?, part(&args.members[1])?],
+        gap: opt(&args.gap, d, e)?,
+    };
+    let edit = args.connection.as_deref().map(id).transpose()?;
+    let name = args.name.clone();
+    let call_owned = call.clone();
+    let (connection_id, prepared) = with(host, move |target| {
+        revision_guard(target, revision)?;
+        let session = target.session();
+        let actor = call_owned.actor.clone();
+        Ok::<_, ToolError>(match edit {
+            Some(id) => (
+                id,
+                model::prepare_connection_edit(session, revision, actor, id, &connection)?,
+            ),
+            None => {
+                let name =
+                    name.ok_or_else(|| ToolError::invalid("A new connection needs a name"))?;
+                model::prepare_connection(session, revision, actor, &name, &connection)?
+            }
+        })
+    })??;
+    finish(
+        host,
+        call,
+        prepared,
+        revision,
+        json!({ "connection": connection_id }),
+    )
+}
+
+fn end_json(e: &multicad_model::EndRecord) -> Value {
+    json!({
+        "treatment": e.kind.map_or("square", |k| k.label()),
+        "connection": e.connection, "partner": e.partner,
+        "angle_deg": e.angle_deg, "terminates": e.terminates,
+    })
+}
+
 pub(super) fn weldment_cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> ToolResult {
     let (document, revision, _) = snapshot(host)?;
     let model = compile(&document, revision, call)?;
     let records = model.member_cut_list(&document)?;
     Ok(json!({
         "revision": revision,
-        "scope": "Lengths measured from the evaluated member solids along each member axis (overall length, farthest point to farthest point). Sections are modeled with sharp corners. A geometric record, not a nesting plan, certified procedure or structural check.",
+        "scope": "Lengths measured from the evaluated member solids along each member axis (overall length, farthest point to farthest point; span is the measured axial range from the path start). End angles: plane cuts from square (0 = square, 45 = right-angle miter); copes give the branch angle to the receiving axis. Sections are modeled with sharp corners. A geometric record, not a nesting plan, certified procedure or structural check.",
         "members": records.iter().map(|r| json!({
             "part": r.part, "feature": r.feature, "name": r.name,
             "material": r.material, "stock": r.stock, "stock_name": r.stock_name,
@@ -396,6 +481,8 @@ pub(super) fn weldment_cut_list(host: &dyn Host, call: &Request, _: super::NoArg
             "rotation_deg": r.rotation_deg,
             "anchor": r.anchor.map(|a| format!("{a:?}").to_lowercase()),
             "axis": r.frame.axis, "width_direction": r.frame.x, "height_direction": r.frame.y,
+            "span_mm": r.span_mm,
+            "start": end_json(&r.ends[0]), "end": end_json(&r.ends[1]),
             "volume_mm3": r.volume_mm3, "fits_stock": r.fits_stock, "issues": r.issues,
         })).collect::<Vec<_>>(),
     }))

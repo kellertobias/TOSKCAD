@@ -118,4 +118,45 @@ fn mcp_creates_members_edits_them_and_reads_the_cut_list() {
     .unwrap_err();
     assert!(e.message.contains("zero length"), "{}", e.message);
     assert_eq!(host.document(), before);
+
+    // Butt the round leg (terminating) into the rail, which continues; the
+    // leg stops 1 mm below the rail's lower face.
+    let rail = created["parts"][0]["part"].clone();
+    let butt = run(
+        "connect_members",
+        json!({ "expected_revision": 4, "name": "Leg to rail", "kind": "butt",
+        "members": [leg_part(&list), rail], "gap": { "value": 1, "unit": "mm" } }),
+    )
+    .unwrap();
+    assert_eq!(butt["revision"], 5);
+    let list = run("weldment_cut_list", json!({})).unwrap();
+    let leg = member(&list, "Leg");
+    assert_eq!(leg["start"]["treatment"], "butt");
+    assert_eq!(leg["start"]["connection"], butt["connection"]);
+    assert_eq!(leg["start"]["partner"], rail);
+    assert_eq!(leg["start"]["terminates"], true);
+    near(&leg["span_mm"][0], 21.);
+    // The rail starts at the joint, so it is cut square to cover the leg.
+    let rail_start = &member(&list, "Rail")["start"];
+    assert_eq!(rail_start["treatment"], "butt");
+    assert_eq!(rail_start["terminates"], false);
+    near(&member(&list, "Rail")["span_mm"][0], -33.7 / 2.);
+
+    // A cope of the rail onto the leg is refused: the rail passes through.
+    let before = host.document();
+    let e = run(
+        "connect_members",
+        json!({ "expected_revision": 5, "connection": butt["connection"], "kind": "cope",
+        "members": [rail, leg_part(&list)] }),
+    )
+    .unwrap_err();
+    assert!(
+        e.message.contains("must end at the joint") || e.message.contains("wide"),
+        "{}",
+        e.message
+    );
+    assert_eq!(host.document(), before);
+}
+fn leg_part(list: &Value) -> Value {
+    member(list, "Leg")["part"].clone()
 }

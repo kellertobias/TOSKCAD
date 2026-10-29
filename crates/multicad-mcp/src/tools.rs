@@ -56,8 +56,10 @@ pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
 use walls::{create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type};
-pub use weldment::{EditMemberArgs, MembersArgs, ProfileStockArgs};
-use weldment::{create_members, create_profile_stock, edit_member, weldment_cut_list};
+pub use weldment::{ConnectArgs, EditMemberArgs, MembersArgs, ProfileStockArgs};
+use weldment::{
+    connect_members, create_members, create_profile_stock, edit_member, weldment_cut_list,
+};
 
 pub type ToolResult = Result<Value, ToolError>;
 
@@ -262,6 +264,9 @@ tools! {
     "edit_member" => EditMemberArgs, "Edit weldment member", false,
         "Change a member's stock, point-pair path, section anchor, rotation or end extensions, keeping its Part. Evaluated natively before commit.",
         edit_member;
+    "connect_members" => ConnectArgs, "Connect weldment members", false,
+        "Create or edit a connection between two members: a paired miter on the bisector plane (sections must mirror), a square butt joint (first member terminates against a flat face of the continuing second member, which is cut square to cover a corner), or a cope fitting the first member to the actual outside of the second, with an optional gap. Cuts follow later path edits. Both members are evaluated natively before commit; unsupported geometry is refused with a reason.",
+        connect_members;
     "weldment_cut_list" => NoArgs, "Weldment cut list", true,
         "Every weldment member measured from its evaluated solid: section, material and stock, overall length along the axis, rotation, anchor and world orientation, volume and whether it fits one stock bar.",
         weldment_cut_list;
