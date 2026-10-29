@@ -368,6 +368,7 @@ fn stock_default(i: usize) -> StockKind {
             width_mm: 30.,
             height_mm: 30.,
             wall_mm: Some(2.),
+            shape: ProfileShape::Rectangular,
         },
         _ => StockKind::Print {
             process: "FDM".into(),
@@ -414,8 +415,20 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
             width_mm,
             height_mm,
             wall_mm,
+            shape,
         } => {
             ui.text_edit_singleline(designation);
+            egui::ComboBox::from_id_salt("profile-shape")
+                .selected_text(format!("{shape:?}"))
+                .show_ui(ui, |ui| {
+                    for s in [
+                        ProfileShape::Rectangular,
+                        ProfileShape::Round,
+                        ProfileShape::Angle,
+                    ] {
+                        ui.selectable_value(shape, s, format!("{s:?}"));
+                    }
+                });
             number(ui, "Stock length", length_mm, " mm");
             number(ui, "Width", width_mm, " mm");
             number(ui, "Height", height_mm, " mm");
