@@ -593,13 +593,50 @@ pub fn prepare_repair(
     selected: TopologyKey,
     anchor: Option<Origin>,
 ) -> Result<RepairPreview, CommandError> {
-    if session.revision() != revision || snapshot.revision != revision {
+    if session.revision() != revision {
         return Err(command_error(
             ErrorCode::StaleRevision,
             "Reference repair requires the current source revision",
         ));
     }
-    if session.document().get(snapshot.owner).is_none() {
+    let edit = repair_edit(
+        session.document(),
+        revision,
+        address,
+        snapshot,
+        selected,
+        anchor,
+    )?;
+    let affected = session.document().affected([address.owner])?;
+    let prepared = session.prepare(Request {
+        expected_revision: revision,
+        actor,
+        label: "Repair geometry reference".into(),
+        edits: vec![edit],
+    })?;
+    Ok(RepairPreview {
+        prepared,
+        affected,
+        selected,
+    })
+}
+/// The replacement of one reference owner that binds `selected`. `document`
+/// may be an uncommitted candidate at `revision`, such as a staged repair set.
+pub fn repair_edit(
+    document: &Document,
+    revision: u64,
+    address: ReferenceAddress,
+    snapshot: &TopologySnapshot,
+    selected: TopologyKey,
+    anchor: Option<Origin>,
+) -> Result<Mutation, CommandError> {
+    if snapshot.revision != revision {
+        return Err(command_error(
+            ErrorCode::StaleRevision,
+            "Reference repair requires the current source revision",
+        ));
+    }
+    if document.get(snapshot.owner).is_none() {
         return Err(command_error(
             ErrorCode::InvalidRequest,
             "Replacement source is missing",
@@ -615,8 +652,7 @@ pub fn prepare_repair(
         .ok_or_else(|| {
             command_error(ErrorCode::InvalidRequest, "Replacement topology is missing")
         })?;
-    let mut entity = session
-        .document()
+    let mut entity = document
         .get(address.owner)
         .ok_or_else(|| command_error(ErrorCode::InvalidRequest, "Reference owner is missing"))?
         .clone();
@@ -674,16 +710,5 @@ pub fn prepare_repair(
     }
     old.target = snapshot.owner;
     old.geometry = Some(replacement);
-    let affected = session.document().affected([address.owner])?;
-    let prepared = session.prepare(Request {
-        expected_revision: revision,
-        actor,
-        label: "Repair geometry reference".into(),
-        edits: vec![Mutation::Replace(entity)],
-    })?;
-    Ok(RepairPreview {
-        prepared,
-        affected,
-        selected,
-    })
+    Ok(Mutation::Replace(entity))
 }
