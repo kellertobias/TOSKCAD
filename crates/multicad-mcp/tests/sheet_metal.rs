@@ -204,6 +204,24 @@ fn mcp_sets_flanges_and_cutouts_and_refuses_touching_corners() {
     // K = 0.5: the flat area times thickness equals the folded volume.
     near(&json!(c["flat_area_mm2"].as_f64().unwrap() * 2.), volume);
 
+    // Unfolding the selected Part links bends and drills to its feature.
+    let part = formed["part"].as_str().unwrap().to_owned();
+    let pattern = run("unfold_sheet", json!({ "part": part })).unwrap();
+    assert_eq!(pattern["feature"], json!(feature));
+    assert_eq!(pattern["units"], "mm");
+    assert_eq!(pattern["bends"][0]["id"], "flange.0.bend.0");
+    assert_eq!(pattern["bends"][1]["direction"], "down");
+    assert_eq!(pattern["drills"][0]["id"], "cutout.0");
+    near(&pattern["area_mm2"], c["flat_area_mm2"].as_f64().unwrap());
+    let diagnostics = pattern["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.last().unwrap()["scope"], "needs_data");
+    let error = run("unfold_sheet", json!({ "part": feature })).unwrap_err();
+    assert!(
+        error.message.contains("not a sheet part"),
+        "{}",
+        error.message
+    );
+
     // Flanges on all four edges touch at the corners and are refused.
     let before = host.document();
     let flanges: Vec<Value> = (0..4)

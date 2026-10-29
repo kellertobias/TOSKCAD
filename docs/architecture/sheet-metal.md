@@ -176,6 +176,52 @@ or the base, when the blank falls apart, or when the extracted area differs
 from the developed area. `Model::sheet_flat_pattern` returns the contours
 for one feature.
 
+## Unfolding a selected Part
+
+`Model::unfold(document, part)` develops one sheet Part. It reads the model
+and changes nothing: the Part keeps its folded geometry. It refuses:
+
+- a Part that is not a sheet part;
+- a sheet Part whose final solid comes from a later feature, because that
+  feature would not be developed.
+
+The result, `DevelopedPattern`, is the producer contract for flat outputs
+such as DXF (CAD-105). It carries:
+
+- the Part, feature, name and `units` (always `mm`);
+- the base frame that places the pattern in the world;
+- the thickness and the K-factor with its source;
+- **cut loops**: closed exact loops, outer counterclockwise and openings
+  (cutouts, base holes) clockwise. Relief notches are part of the outer
+  loop.
+- **bend lines**: each with a stable id `flange.<i>.bend.<j>`, a proposed
+  order, its up or down direction, angle, inside radius, allowance,
+  developed zone and center line;
+- **drill points**: each circular cutout's id `cutout.<i>`, center and
+  diameter;
+- the size and area;
+- diagnostics.
+
+The ids are stable within the feature, so an output can name the bend or
+hole it came from. The proposed order follows the feature order: flanges in
+order, then the bends within each flange. It is not a press-brake sequence.
+
+### Diagnostics and their scope
+
+Each diagnostic states its scope:
+
+| Kind | Scope | Finding |
+| --- | --- | --- |
+| `hole_near_bend` | rule of thumb | A cutout is closer than 2·t + r to a bend zone and may distort |
+| `short_leg` | rule of thumb | A leg is shorter than 2·t + r; the real minimum depends on the die opening |
+| `tight_radius` | rule of thumb | An inside radius is below the thickness; check the material's minimum |
+| `missing_relief` | rule of thumb | An inset flange has no relief and may tear the base |
+| `shallow_relief` | rule of thumb | A relief is shallower than r + t |
+| `exceeds_stock` | model | The blank does not fit the stock sheet in either orientation |
+| `tooling` | needs data | Always present: no press-brake, die, punch or springback data is defined |
+
+None of these diagnostics guarantees machine or process feasibility.
+
 ## Converting a solid
 
 `Model::analyze_sheet_conversion` checks whether a Part's current solid is
@@ -215,7 +261,7 @@ nothing.
   Sketch-region or converted bases, flanges the form cannot show and
   cutouts are kept unchanged.
 - **MCP.** `create_sheet_stock`, `set_sheet_part`, `set_sheet_forming`,
-  `convert_to_sheet` and `sheet_metal`.
+  `convert_to_sheet`, `sheet_metal` and `unfold_sheet`.
 
 ## Limits
 
@@ -229,6 +275,11 @@ nothing.
 - **Missing forming features.** There are no rip or seam features on
   converted closed shapes, no sketched or contour flanges, no louvres or
   formed features, and no punch tool library.
+- **Unfolding in the window.** The Flat pattern and Bend schedule ribbon
+  entries are still placeholders. Unfolding is available through
+  `Model::unfold` and the MCP `unfold_sheet` tool.
+- **Bend allowance.** Bend allowance uses the K-factor model only. There are
+  no bend tables or bend deduction data.
 - **Window flange editor.** The form edits one flange per rectangle edge
   with equal insets. Reliefs, per-flange radii, cutouts and sketch-region
   bases are API and MCP only.

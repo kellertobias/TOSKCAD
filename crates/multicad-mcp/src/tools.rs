@@ -52,9 +52,12 @@ pub use reference_repair::{
     CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
-pub use sheet_metal::{ConvertSheetArgs, SheetFormingArgs, SheetPartArgs, SheetStockArgs};
+pub use sheet_metal::{
+    ConvertSheetArgs, SheetFormingArgs, SheetPartArgs, SheetStockArgs, UnfoldSheetArgs,
+};
 use sheet_metal::{
     convert_to_sheet, create_sheet_stock, set_sheet_forming, set_sheet_part, sheet_metal,
+    unfold_sheet,
 };
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
@@ -270,6 +273,9 @@ tools! {
     "sheet_metal" => NoArgs, "Sheet-metal records", true,
         "Every sheet Part measured from its evaluated solid: thickness and measured thickness, inside radius and K-factor with their source, volume, and the developed flat pattern of the same feature with its size and area.",
         sheet_metal;
+    "unfold_sheet" => UnfoldSheetArgs, "Unfold sheet part", true,
+        "Develop one sheet Part without changing it: closed cut loops, bend lines (id, order, up/down, angle, inside radius, allowance, flat line), drill points for circular cutouts, size and area in explicit millimeters, and scoped diagnostics (hole-to-bend proximity, short legs, tight radii, missing or shallow reliefs as rules of thumb; stock-sheet fit against the model; tooling data that is not defined). Parts that are not sheet parts, or that later features change, are refused.",
+        unfold_sheet;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;

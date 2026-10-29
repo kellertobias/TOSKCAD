@@ -591,3 +591,49 @@ pub(super) fn sheet_metal(host: &dyn Host, call: &Request, _: super::NoArgs) -> 
         })).collect::<Vec<_>>(),
     }))
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UnfoldSheetArgs {
+    /// The sheet Part to unfold; its folded geometry is kept.
+    pub part: String,
+}
+
+/// The developed pattern as JSON: the producer contract for flat outputs.
+pub(super) fn pattern_json(p: &multicad_model::DevelopedPattern) -> Value {
+    json!({
+        "part": p.part, "feature": p.feature, "name": p.name, "units": p.units,
+        "frame": { "origin_mm": p.frame.origin_mm, "u": p.frame.u, "v": p.frame.v },
+        "thickness_mm": p.thickness_mm, "k_factor": p.k_factor,
+        "k_factor_source": p.k_factor_source,
+        "size_mm": p.size_mm, "area_mm2": p.area_mm2,
+        "cut": p.cut,
+        "bends": p.bends.iter().map(|b| json!({
+            "id": b.id, "order": b.order, "flange": b.record.flange, "edge": b.record.edge,
+            "direction": b.record.direction, "angle_deg": b.record.angle_deg,
+            "inside_radius_mm": b.record.inside_radius_mm,
+            "allowance_mm": b.record.allowance_mm, "zone_mm": b.record.zone_mm,
+            "line_mm": b.record.line, "length_mm": b.record.length_mm,
+        })).collect::<Vec<_>>(),
+        "drills": p.drills.iter().map(|d| json!({
+            "id": d.id, "center_mm": d.center, "diameter_mm": d.diameter_mm,
+        })).collect::<Vec<_>>(),
+        "diagnostics": p.diagnostics.iter().map(|d| json!({
+            "kind": d.kind, "scope": d.scope.label(), "subject": d.subject,
+            "message": d.message,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+pub(super) fn unfold_sheet(host: &dyn Host, call: &Request, args: UnfoldSheetArgs) -> ToolResult {
+    let (document, revision, _) = snapshot(host)?;
+    let part = id(&args.part)?;
+    let model = compile(&document, revision, call)?;
+    let pattern = model.unfold(&document, part)?;
+    let mut out = pattern_json(&pattern);
+    out["revision"] = json!(revision);
+    out["scope"] = json!(
+        "Developed from the sheet feature with the stated K-factor and inside radii. Cut loops are closed (outer counterclockwise, openings clockwise) in base-frame millimeters. The bend order follows the feature order and is not a press-brake sequence. Rule-of-thumb diagnostics are not machine or process approval."
+    );
+    Ok(out)
+}
