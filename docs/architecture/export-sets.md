@@ -18,7 +18,33 @@ Pages refer to stable drawing-book and nested page IDs. Explicit pages retain se
 
 The [native provider](../../crates/multicad-model/src/export/mod.rs) compiles an owned current `Model` on its worker thread. It selects exact local Part solids or exact world-space occurrence solids. It publishes plain metadata: matched identities, selected pages, recipe status, exclusions, filenames, world bounds, solid count and volume.
 
-The native provider supports separate STEP files in millimeters with filename-only naming and all design aids included. It also supports [explicit planar-face DXF](planar-dxf.md) with declared units and exact closed contours. Other STEP units, product-name attributes, preserved assembly hierarchies, aid filtering, mesh formats, drawing DXF and PDF report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
+The native provider supports:
+
+- separate STEP files in millimeters, with filename-only naming and all design aids included;
+- [explicit planar-face DXF](planar-dxf.md) with declared units and exact closed contours;
+- [OBJ and 3MF](#mesh-output) in millimeters, centimeters, meters or inches, as separate parts or one assembly file.
+
+Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, aid filtering, STL and GLB (CAD-131), drawing DXF and PDF report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
+
+## Mesh output
+
+The [mesh writers](../../crates/multicad-model/src/export/mesh.rs) tessellate exact native solids at the recipe's chord and angular deviation. Viewport tessellation and display meshes are never inputs.
+
+| Hierarchy | OBJ | 3MF |
+| --- | --- | --- |
+| Separate parts | One file per Part or occurrence, in world coordinates | One file per Part or occurrence: one object and one identity build item |
+| Preserve assembly | One file with one world-space object per Part, since OBJ has no instancing | One file with one object per component definition (the producing feature) and one build item per occurrence, carrying its rigid pose |
+
+- **Units.** OBJ states its unit in a `# units:` header and scales coordinates. 3MF declares `unit` on the model. Translations in 3MF build items use the same unit.
+- **Names.** Product names use the Part and occurrence names; filename-only naming writes `object-N`.
+- **Packaging.** 3MF packages contain `[Content_Types].xml`, `_rels/.rels` and `3D/3dmodel.model` as stored ZIP entries with a fixed timestamp, so identical source produces identical bytes.
+- **Evidence.** Each artifact records objects, build items, triangles, chord deviation and the placed tessellated volume.
+- **Readback.** Publication reads every OBJ and 3MF back and requires:
+  - the same bytes as generated, and the same objects, build items and triangles;
+  - a matching tessellated volume;
+  - world bounds within twice the chord of the exact solid's bounds;
+  - a volume within the chord allowance of the exact solid's volume, so an open or mis-oriented mesh fails.
+- **Removable aids.** Removable-aid exclusion stays Unsupported until a typed aid provider classifies such geometry. Ordinary geometry exports with `IncludeAll`.
 
 Run receives an immutable document snapshot and the exact accepted key. It resolves and compiles again, checks the key, and writes only the requested snapshot. Later edits leave an older preview available for inspection but disable its Run action. An already accepted Run retains its original source and actor attribution even if the user edits or switches documents.
 
