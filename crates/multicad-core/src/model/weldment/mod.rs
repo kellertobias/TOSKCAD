@@ -14,9 +14,11 @@
 mod connection;
 mod prepare;
 mod resolve;
+mod weld;
 pub use connection::*;
 pub use prepare::*;
 pub use resolve::*;
+pub use weld::*;
 
 use super::{
     common::parameter_links,
@@ -264,5 +266,6 @@ pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError
             )));
         }
     }
-    validate_connections(document)
+    validate_connections(document)?;
+    validate_welds(document)
 }

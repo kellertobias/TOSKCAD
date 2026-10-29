@@ -735,6 +735,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::CARCASS_KIND,
                     super::STACK_KIND,
                     super::CONNECTION_KIND,
+                    super::WELD_KIND,
+                    super::SEQUENCE_KIND,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {

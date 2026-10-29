@@ -349,3 +349,101 @@ pub fn prepare_connection_edit(
         edits: vec![Mutation::Replace(entity)],
     })
 }
+
+fn check_weld(document: &Document, weld: &WeldDefinition) -> Result<(), CommandError> {
+    weld.validate()?;
+    read_connection(document, weld.connection)
+        .map_err(|_| error("A weld attaches to a member connection; connect the members first"))?;
+    Ok(())
+}
+/// Attach a weld to a member connection.
+pub fn prepare_weld(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    weld: &WeldDefinition,
+) -> Result<(EntityId, crate::commands::Prepared), CommandError> {
+    revision(session, expected_revision)?;
+    let document = session.document();
+    check_weld(document, weld)?;
+    let entity = Entity::new(format!("Weld {}", weld.mark.trim()), weld.entity_data()?);
+    let id = entity.id;
+    let prepared = session.prepare(Request {
+        expected_revision,
+        actor,
+        label: format!("Add weld {}", weld.mark.trim()),
+        edits: vec![Mutation::Insert(entity)],
+    })?;
+    Ok((id, prepared))
+}
+/// Change a weld, keeping its identity and its place in any sequence.
+pub fn prepare_weld_edit(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    id: EntityId,
+    weld: &WeldDefinition,
+) -> Result<crate::commands::Prepared, CommandError> {
+    revision(session, expected_revision)?;
+    let document = session.document();
+    read_weld(document, id)?;
+    check_weld(document, weld)?;
+    let mut entity = document
+        .get(id)
+        .cloned()
+        .ok_or_else(|| error("Weld is missing"))?;
+    entity.name = format!("Weld {}", weld.mark.trim());
+    entity.data = weld.entity_data()?;
+    session.prepare(Request {
+        expected_revision,
+        actor,
+        label: format!("Edit weld {}", weld.mark.trim()),
+        edits: vec![Mutation::Replace(entity)],
+    })
+}
+/// Create a weld sequence (`existing` none) or replace an existing
+/// sequence's steps, for example to reorder them.
+pub fn prepare_sequence(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    existing: Option<EntityId>,
+    name: &str,
+    sequence: &SequenceDefinition,
+) -> Result<(EntityId, crate::commands::Prepared), CommandError> {
+    revision(session, expected_revision)?;
+    let document = session.document();
+    sequence.validate()?;
+    for step in &sequence.steps {
+        read_weld(document, step.weld)
+            .map_err(|_| error("Sequence steps must name existing welds"))?;
+    }
+    let entity = match existing {
+        Some(id) => {
+            read_sequence(document, id)?;
+            let mut entity = document
+                .get(id)
+                .cloned()
+                .ok_or_else(|| error("Sequence is missing"))?;
+            entity.data = sequence.entity_data()?;
+            entity
+        }
+        None => {
+            check_name(name, "Sequence")?;
+            Entity::new(name, sequence.entity_data()?)
+        }
+    };
+    let id = entity.id;
+    let (label, edit) = if existing.is_some() {
+        ("Edit weld sequence", Mutation::Replace(entity))
+    } else {
+        ("Create weld sequence", Mutation::Insert(entity))
+    };
+    let prepared = session.prepare(Request {
+        expected_revision,
+        actor,
+        label: label.into(),
+        edits: vec![edit],
+    })?;
+    Ok((id, prepared))
+}

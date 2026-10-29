@@ -6,13 +6,18 @@ use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     constraint_sketch::{Dimension, source::Source},
     document::{Document, Entity, EntityData, EntityId, Mutation},
+    drawings::{
+        AnnotationKind, DrawingView, Page, Scale, ViewKind, ViewSource, WeldSide, WeldSymbol,
+        prepare_create, read, svg, view_coordinates,
+    },
     materials::*,
     model::{
         self, AxisAnchor, BodyOutput, ConnectionDefinition, ConnectionKind, MemberDefinition,
-        MemberPath, MemberRequest, angle, length,
+        MemberPath, MemberRequest, SequenceDefinition, SequenceStep, WeldDefinition, angle, length,
     },
     parameters::BoundExpression,
     project_file::{self, ProjectFile},
+    references::ReferenceFrame,
     sketch::Datum,
 };
 use multicad_model::{Compiler, MemberRecord, Model};
@@ -923,4 +928,259 @@ fn copes_fit_the_actual_receiving_member_with_clearance() {
     )
     .unwrap_err();
     assert!(e.message.contains("not a weldment member"), "{}", e.message);
+}
+
+// ---- Welds, sequence, cut groups and weld plans ----------------------------
+
+fn weld(connection: EntityId, mark: &str, size: f64) -> WeldDefinition {
+    WeldDefinition {
+        connection,
+        mark: mark.into(),
+        symbol: WeldSymbol::Fillet,
+        side: WeldSide::Arrow,
+        size: Some(length(size)),
+        length: None,
+        all_around: true,
+        field: false,
+        process: "135 MAG".into(),
+        notes: String::new(),
+    }
+}
+fn add_weld(f: &mut Fixture, w: &WeldDefinition) -> EntityId {
+    let (id, p) = model::prepare_weld(&f.s, f.s.revision(), actor(), w).unwrap();
+    checked(&mut f.s, p);
+    id
+}
+fn steps(welds: &[EntityId]) -> SequenceDefinition {
+    SequenceDefinition {
+        steps: welds
+            .iter()
+            .map(|w| SequenceStep {
+                weld: *w,
+                note: String::new(),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn welds_follow_their_connections_in_authored_order_with_cut_groups_and_a_plan() {
+    let mut f = fixture();
+    let (sketch, pts, _) = path_sketch(
+        &mut f.s,
+        Datum::Xy,
+        &[[0., 0.], [1000., 0.], [1000., 600.], [0., 600.]],
+        true,
+    );
+    let rails =
+        model::frame_member_requests(f.s.document(), sketch, "Rail", &template(f.shs)).unwrap();
+    create(&mut f, &rails);
+    let post = MemberRequest::new("Post", points(f.shs, [500., 0., 0.], [500., 0., 700.]));
+    create(&mut f, std::slice::from_ref(&post));
+    let corners: Vec<EntityId> = (0..4)
+        .map(|i| {
+            connect(
+                &mut f,
+                &format!("Corner {}", i + 1),
+                ConnectionKind::Miter,
+                [rails[i].body, rails[(i + 1) % 4].body],
+                0.,
+            )
+        })
+        .collect();
+    let tee = connect(
+        &mut f,
+        "Post foot",
+        ConnectionKind::Butt,
+        [post.body, rails[0].body],
+        0.,
+    );
+
+    // Cut groups: a mitered rectangle gives two pairs of identical rails.
+    let m = compile(&f.s);
+    let list = m.member_cut_list(f.s.document()).unwrap();
+    near(record(&list, "Rail 1").length_mm, 1040.);
+    near(record(&list, "Rail 2").length_mm, 640.);
+    let groups = multicad_model::group_cuts(&list);
+    let long = groups
+        .iter()
+        .find(|g| (g.length_mm - 1040.).abs() < 1e-6)
+        .unwrap();
+    assert_eq!(long.quantity, 2);
+    assert_eq!(long.ends[0].0, "miter");
+    near(long.ends[0].1, 45.);
+    assert_eq!(long.ends[1].0, "miter");
+    assert_eq!(
+        groups
+            .iter()
+            .find(|g| (g.length_mm - 640.).abs() < 1e-6)
+            .unwrap()
+            .quantity,
+        2
+    );
+    let posts = groups.iter().find(|g| g.names == ["Post"]).unwrap();
+    assert_eq!(posts.quantity, 1);
+    near(posts.length_mm, 680.);
+
+    // Two welds and a sequence that is then reordered.
+    let mut w1 = weld(corners[0], "W1", 4.);
+    w1.notes = "Outside corner first, flat position".into();
+    let w1 = add_weld(&mut f, &w1);
+    let w2 = add_weld(&mut f, &weld(tee, "W2", 3.));
+    let (sequence, p) = model::prepare_sequence(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        None,
+        "Frame sequence",
+        &steps(&[w2, w1]),
+    )
+    .unwrap();
+    checked(&mut f.s, p);
+    let schedule = compile(&f.s).weld_schedule(f.s.document()).unwrap();
+    assert_eq!(
+        schedule.iter().map(|r| r.mark.as_str()).collect::<Vec<_>>(),
+        ["W2", "W1"]
+    );
+    let mut reordered = steps(&[w1, w2]);
+    reordered.steps[1].note = "After the frame cools".into();
+    let (same, p) = model::prepare_sequence(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        Some(sequence),
+        "",
+        &reordered,
+    )
+    .unwrap();
+    assert_eq!(same, sequence);
+    checked(&mut f.s, p);
+    let schedule = compile(&f.s).weld_schedule(f.s.document()).unwrap();
+    let (r1, r2) = (&schedule[0], &schedule[1]);
+    assert_eq!((r1.weld, r1.step, r1.connection), (w1, Some(1), corners[0]));
+    assert_eq!((r2.weld, r2.step, r2.connection), (w2, Some(2), tee));
+    assert_eq!(r2.step_note, "After the frame cools");
+    assert_eq!(r1.kind, ConnectionKind::Miter);
+    assert_eq!(r1.members, [rails[0].body, rails[1].body]);
+    assert_eq!(r1.member_names, ["Rail 1".to_owned(), "Rail 2".to_owned()]);
+    near(r1.size_mm.unwrap(), 4.);
+    assert_eq!(r1.process, "135 MAG");
+    // Positions are the joints; the joint perimeter is measured on the cut.
+    assert_eq!(r1.position, [1000., 0., 0.]);
+    near(r1.joint_perimeter_mm.unwrap(), 80. + 80. * 2_f64.sqrt());
+    assert_eq!(r2.position, [500., 0., 0.]);
+    near(r2.joint_perimeter_mm.unwrap(), 160.);
+
+    // Moving the frame corner moves the weld position; references stay.
+    move_points(
+        &mut f.s,
+        sketch,
+        &[(pts[1], [1100., 0.]), (pts[2], [1100., 600.])],
+    );
+    let schedule = compile(&f.s).weld_schedule(f.s.document()).unwrap();
+    assert_eq!(schedule[0].position, [1100., 0., 0.]);
+    assert_eq!(schedule[0].connection, corners[0]);
+
+    // Duplicate marks, welds without a connection and repeated steps are refused.
+    let e = model::prepare_weld(&f.s, f.s.revision(), actor(), &weld(corners[1], "W1", 4.))
+        .unwrap_err();
+    assert!(e.message.contains("used twice"), "{}", e.message);
+    let e = model::prepare_weld(&f.s, f.s.revision(), actor(), &weld(f.shs, "W9", 4.)).unwrap_err();
+    assert!(e.message.contains("connect the members"), "{}", e.message);
+    let e = model::prepare_sequence(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        Some(sequence),
+        "",
+        &steps(&[w1, w1]),
+    )
+    .unwrap_err();
+    assert!(e.message.contains("once"), "{}", e.message);
+
+    // A weld plan on a top view: symbols point at the projected joints and
+    // a sequence table lists the authored order.
+    let view = DrawingView {
+        id: EntityId::new(),
+        name: "Top".into(),
+        source: ViewSource::Model {
+            entities: rails.iter().map(|r| r.body).chain([post.body]).collect(),
+        },
+        frame: ReferenceFrame {
+            origin_mm: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+        },
+        kind: ViewKind::Projection,
+        position_mm: [40., 150.],
+        scale: Scale {
+            numerator: 1,
+            denominator: 10,
+        },
+        hidden_lines: false,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+        guide: None,
+    };
+    let m = compile(&f.s);
+    let schedule = m.weld_schedule(f.s.document()).unwrap();
+    let annotations = multicad_model::weld_plan_annotations(&schedule, &view, [20., 165.]);
+    assert_eq!(annotations.len(), 3);
+    let AnnotationKind::Weld {
+        points_mm,
+        tail,
+        size,
+        ..
+    } = &annotations[0].kind
+    else {
+        panic!("weld symbol first")
+    };
+    let expected = view.paper_point(view_coordinates(&view, [1100., 0., 0.]));
+    assert_eq!(points_mm[0], expected);
+    assert_eq!(tail, "W1 135 MAG");
+    assert_eq!(size, "4");
+    let AnnotationKind::Table { rows, .. } = &annotations[2].kind else {
+        panic!("table last")
+    };
+    assert_eq!(rows[0][0..3], ["1", "W1", "miter"]);
+    assert!(rows[1][7].contains("After the frame cools"));
+    let mut page = Page::new("1");
+    page.views.push(view);
+    page.annotations = annotations.clone();
+    let (book, p) = prepare_create(&f.s, f.s.revision(), actor(), "Weld plan", Some(page)).unwrap();
+    checked(&mut f.s, p);
+    let e = compile(&f.s)
+        .drawings(f.s.document(), f.s.revision(), &Default::default())
+        .unwrap();
+    // Sheet annotations are validated with the page and drawn by the SVG
+    // page writer.
+    let page_id = read(f.s.document(), book).unwrap().pages[0].id;
+    let svg = svg::page_svg(f.s.document(), f.s.revision(), book, page_id, &e).unwrap();
+    assert!(svg.contains("W1 135 MAG") && svg.contains("Weld sequence"));
+
+    // Save and reopen keep welds and the sequence.
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(f.s.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert!(opened.capabilities().contains(model::WELD_CAPABILITY));
+    assert!(opened.capabilities().contains(model::SEQUENCE_CAPABILITY));
+    assert_eq!(
+        Compiler::default()
+            .compile(&opened.document, 0)
+            .unwrap()
+            .weld_schedule(&opened.document)
+            .unwrap(),
+        schedule
+    );
 }
