@@ -155,7 +155,64 @@ pub(super) fn show(
             }
         }
     }
+    section_guides(&view_painter, page, evaluation, paper.min, scale);
     ui.allocate_rect(available, egui::Sense::hover())
         .on_hover_text("Drawing paper with source-linked native vector views");
     clicked
+}
+
+/// Draw each section's cut line, and its far limit dashed, in the other views
+/// of the page that see the cut plane edge-on.
+fn section_guides(
+    painter: &egui::Painter,
+    page: &Page,
+    evaluation: Option<&DrawingEvaluation>,
+    origin: egui::Pos2,
+    scale: f32,
+) {
+    let color = egui::Color32::from_rgb(30, 110, 180);
+    for parent in &page.views {
+        let Some(ViewEvaluation::Ready { vectors, .. }) =
+            evaluation.and_then(|e| e.views.get(&parent.id))
+        else {
+            continue;
+        };
+        let mut min = [f64::INFINITY; 2];
+        let mut max = [f64::NEG_INFINITY; 2];
+        for p in vectors.iter().flat_map(|v| &v.preview_mm) {
+            for i in 0..2 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
+        }
+        if !min[0].is_finite() {
+            continue;
+        }
+        let screen = |p: [f64; 2]| {
+            let p = parent.paper_point(p);
+            origin + egui::vec2(p[0] as f32, p[1] as f32) * scale
+        };
+        for section in page.views.iter().filter(|v| v.id != parent.id) {
+            let Some(guide) = drawings::section_guide(parent, section, (min, max)) else {
+                continue;
+            };
+            let cut = guide.cut.map(screen);
+            painter.line_segment(cut, egui::Stroke::new(1.4, color));
+            painter.text(
+                cut[1],
+                egui::Align2::LEFT_BOTTOM,
+                &section.name,
+                egui::FontId::proportional(10.),
+                color,
+            );
+            if let Some(far) = guide.far {
+                painter.extend(egui::Shape::dashed_line(
+                    &far.map(screen),
+                    egui::Stroke::new(1., color),
+                    4.,
+                    3.,
+                ));
+            }
+        }
+    }
 }

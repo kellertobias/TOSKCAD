@@ -526,3 +526,117 @@ fn asynchronous_drawing_completion_requests_a_frame_to_refresh_inspector_and_rib
     );
     output.drop_without_applying_deltas();
 }
+/// Text painted in one headless frame of `draw`.
+fn painted_text(mut draw: impl FnMut(&mut egui::Ui)) -> String {
+    let context = egui::Context::default();
+    let mut text = String::new();
+    for _ in 0..3 {
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400., 1000.),
+                )),
+                ..Default::default()
+            },
+            |ui| draw(ui),
+        );
+        text.clear();
+        for shape in &output.shapes {
+            if let egui::epaint::Shape::Text(t) = &shape.shape {
+                text.push_str(t.galley.text());
+                text.push('\n');
+            }
+        }
+        output.drop_without_applying_deltas();
+    }
+    text
+}
+#[test]
+fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_guide() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    editor
+        .invoke(&mut session, DrawingTool::Section, Channel::Ui)
+        .unwrap();
+    let section = editor.selected_view.unwrap();
+    {
+        let page = editor.draft.as_mut().unwrap();
+        for view in &mut page.views {
+            view.source = drawings::ViewSource::Model {
+                entities: vec![source],
+            };
+        }
+        // A top projection and a front section that the top view sees edge-on.
+        page.views[0].name = "Plan".into();
+        let s = &mut page.views[1];
+        s.name = "Section A-A".into();
+        s.frame.u = [1., 0., 0.];
+        s.frame.v = [0., 0., 1.];
+    }
+    publish_editor(&mut editor, &session);
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    let applied = session.revision();
+    editor.selected_view = Some(section);
+    let inspector = painted_text(|ui| editor.inspector(ui, &mut session));
+    assert!(inspector.contains("Shown behind the cut"), "{inspector}");
+    assert!(inspector.contains("Everything behind"));
+
+    let kind = drawings::ViewKind::Section {
+        offset_mm: -5.,
+        range: drawings::SectionRange::Depth { depth_mm: 40. },
+        window: drawings::SectionWindow {
+            u_mm: Some([0., 200.]),
+            v_mm: None,
+        },
+    };
+    editor.draft.as_mut().unwrap().views[1].kind = kind;
+    assert!(
+        !editor.enabled(DrawingTool::Apply, &session),
+        "a changed section needs a current preview"
+    );
+    publish_editor(&mut editor, &session);
+    let inspector = painted_text(|ui| editor.inspector(ui, &mut session));
+    assert!(
+        inspector.contains("View depth behind the cut"),
+        "{inspector}"
+    );
+    assert!(inspector.contains("within 40 mm behind"));
+    let page = editor.draft.clone().unwrap();
+    let result = editor.feed.result.clone();
+    let canvas = painted_text(|ui| {
+        canvas::show(ui, &page, 0, 1, result.as_deref(), None);
+    });
+    assert!(
+        canvas.contains("Section A-A"),
+        "the plan view shows the section guide label: {canvas}"
+    );
+    // A plan looking along the section normal cannot see the cut edge-on.
+    let mut facing = page.clone();
+    facing.views[0].frame = facing.views[1].frame;
+    let canvas = painted_text(|ui| {
+        canvas::show(ui, &facing, 0, 1, result.as_deref(), None);
+    });
+    assert!(!canvas.contains("Section A-A"), "{canvas}");
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    assert_eq!(session.revision(), applied + 1);
+    let stored = drawings::read(session.document(), editor.book.unwrap()).unwrap();
+    assert_eq!(stored.pages[0].views[1].kind, kind);
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    let stored = drawings::read(session.document(), editor.book.unwrap()).unwrap();
+    assert!(matches!(
+        stored.pages[0].views[1].kind,
+        drawings::ViewKind::Section {
+            range: drawings::SectionRange::Unlimited,
+            ..
+        }
+    ));
+}

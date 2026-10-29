@@ -1,7 +1,9 @@
 use super::*;
 use multicad_core::{
     document::{Document, EntityData},
-    drawings::{DrawingView, Scale, ViewEvaluation, ViewKind, ViewSource},
+    drawings::{
+        DrawingView, Scale, SectionRange, SectionWindow, ViewEvaluation, ViewKind, ViewSource,
+    },
     references::ReferenceFrame,
 };
 impl DrawingEditor {
@@ -254,6 +256,7 @@ impl DrawingEditor {
                     }
                 }
             });
+        custom_direction(ui, view);
         ui.label("View origin X / Y / Z (model mm)");
         ui.horizontal_wrapped(|ui| {
             for x in &mut view.frame.origin_mm {
@@ -284,13 +287,11 @@ impl DrawingEditor {
             ViewKind::Projection => {
                 ui.label("Orthographic projection");
             }
-            ViewKind::Section { offset_mm } => {
-                ui.label("Section offset (model mm)");
-                ui.add(egui::DragValue::new(offset_mm).speed(1.))
-                    .on_hover_text(
-                        "Cut along the view normal and retain the material behind the plane",
-                    );
-            }
+            ViewKind::Section {
+                offset_mm,
+                range,
+                window,
+            } => section_controls(ui, offset_mm, range, window),
             ViewKind::Detail {
                 center_mm,
                 radius_mm,
@@ -375,5 +376,179 @@ impl DrawingEditor {
         {
             self.error = Some(error);
         }
+    }
+}
+
+/// An exterior elevation or projection along any direction: the camera looks
+/// along `direction`, with world Z (or Y when looking vertically) kept up.
+pub(super) fn frame_for_direction(direction: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    let length = direction.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !length.is_finite() || length < 1e-9 {
+        return None;
+    }
+    let n = direction.map(|v| -v / length);
+    let up = if n[2].abs() > 0.999 {
+        [0., 1., 0.]
+    } else {
+        [0., 0., 1.]
+    };
+    let along = up[0] * n[0] + up[1] * n[1] + up[2] * n[2];
+    let v = [
+        up[0] - along * n[0],
+        up[1] - along * n[1],
+        up[2] - along * n[2],
+    ];
+    let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let v = v.map(|x| x / norm);
+    let u = [
+        v[1] * n[2] - v[2] * n[1],
+        v[2] * n[0] - v[0] * n[2],
+        v[0] * n[1] - v[1] * n[0],
+    ];
+    Some((u, v))
+}
+fn custom_direction(ui: &mut egui::Ui, view: &mut DrawingView) {
+    let id = ui.id().with(("view-look", view.id));
+    let mut look = ui
+        .data(|d| d.get_temp::<[f64; 3]>(id))
+        .unwrap_or([0., 1., 0.]);
+    ui.label("Custom look direction X / Y / Z");
+    ui.horizontal_wrapped(|ui| {
+        for v in &mut look {
+            ui.add(egui::DragValue::new(v).speed(0.05).range(-1.0..=1.0))
+                .on_hover_text("Direction the camera looks along, in world coordinates");
+        }
+        if ui
+            .button("Apply")
+            .on_hover_text("Orient this exterior view along the custom direction, world Z up")
+            .clicked()
+            && let Some((u, v)) = frame_for_direction(look)
+        {
+            view.frame.u = u;
+            view.frame.v = v;
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, look));
+}
+fn section_controls(
+    ui: &mut egui::Ui,
+    offset_mm: &mut f64,
+    range: &mut SectionRange,
+    window: &mut SectionWindow,
+) {
+    ui.label("Section offset (model mm)");
+    ui.add(egui::DragValue::new(offset_mm).speed(1.))
+        .on_hover_text("Cut plane position along the view normal from the view origin");
+    ui.label("Shown behind the cut");
+    let label = match range {
+        SectionRange::Unlimited => "Everything behind",
+        SectionRange::Depth { .. } => "Finite depth",
+        SectionRange::SectionOnly => "Section only",
+    };
+    crate::controls::inspector_combo(ui, "section-range")
+        .selected_text(label)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(
+                    matches!(range, SectionRange::Unlimited),
+                    "Everything behind",
+                )
+                .on_hover_text("Show all retained material behind the cut plane")
+                .clicked()
+            {
+                *range = SectionRange::Unlimited;
+            }
+            if ui
+                .selectable_label(matches!(range, SectionRange::Depth { .. }), "Finite depth")
+                .on_hover_text(
+                    "Show uncut geometry only within a depth behind the cut; clip at the far limit",
+                )
+                .clicked()
+                && !matches!(range, SectionRange::Depth { .. })
+            {
+                *range = SectionRange::Depth { depth_mm: 100. };
+            }
+            if ui
+                .selectable_label(matches!(range, SectionRange::SectionOnly), "Section only")
+                .on_hover_text("Show only the exact plane intersection and its hatching")
+                .clicked()
+            {
+                *range = SectionRange::SectionOnly;
+            }
+        });
+    if let SectionRange::Depth { depth_mm } = range {
+        ui.label("View depth behind the cut (model mm)");
+        ui.add(egui::DragValue::new(depth_mm).speed(1.).range(0.001..=1e7))
+            .on_hover_text("Far limit of the viewing interval, measured from the cut plane");
+    }
+    for (axis, limits, hint) in [
+        (
+            "U (across)",
+            &mut window.u_mm,
+            "Limit the section line along the view's right axis",
+        ),
+        (
+            "V (height)",
+            &mut window.v_mm,
+            "Limit the section along the view's up axis",
+        ),
+    ] {
+        let mut limited = limits.is_some();
+        if ui
+            .checkbox(&mut limited, format!("Limit section {axis}"))
+            .on_hover_text(hint)
+            .changed()
+        {
+            *limits = limited.then_some([-50., 50.]);
+        }
+        if let Some([lo, hi]) = limits {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::DragValue::new(lo).speed(1.))
+                    .on_hover_text("Window start from the view origin (model mm)");
+                ui.label("…");
+                ui.add(egui::DragValue::new(hi).speed(1.))
+                    .on_hover_text("Window end from the view origin (model mm)");
+            });
+        }
+    }
+    ui.small(match range {
+        SectionRange::Unlimited => "Cut faces are hatched; all material behind is drawn.".to_string(),
+        SectionRange::Depth { depth_mm } => format!(
+            "Cut faces are hatched; geometry within {depth_mm} mm behind is drawn and clipped at the far limit."
+        ),
+        SectionRange::SectionOnly => "Only the cut faces and their hatching are drawn.".into(),
+    });
+}
+
+#[cfg(test)]
+mod direction_tests {
+    use super::frame_for_direction;
+    #[test]
+    fn custom_directions_give_right_handed_frames_with_world_up() {
+        let near = |a: [f64; 3], b: [f64; 3]| {
+            assert!(
+                a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-12),
+                "{a:?} != {b:?}"
+            )
+        };
+        // Looking along +Y matches the Front (−Y) preset.
+        let (u, v) = frame_for_direction([0., 1., 0.]).unwrap();
+        near(u, [1., 0., 0.]);
+        near(v, [0., 0., 1.]);
+        // Looking straight down keeps +Y up, like the Top preset.
+        let (u, v) = frame_for_direction([0., 0., -2.]).unwrap();
+        near(u, [1., 0., 0.]);
+        near(v, [0., 1., 0.]);
+        // An oblique elevation stays orthonormal and looks along the input.
+        let (u, v) = frame_for_direction([1., 1., -0.5]).unwrap();
+        let n = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let d = 1.5;
+        near(n, [-1. / d, -1. / d, 0.5 / d]);
+        assert!((u[0] * v[0] + u[1] * v[1] + u[2] * v[2]).abs() < 1e-12);
+        assert!(frame_for_direction([0.; 3]).is_none());
     }
 }

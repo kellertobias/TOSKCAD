@@ -227,7 +227,11 @@ impl DrawingEditor {
         }
         let view_kind = match tool {
             DrawingTool::Projection => Some(drawings::ViewKind::Projection),
-            DrawingTool::Section => Some(drawings::ViewKind::Section { offset_mm: 10. }),
+            DrawingTool::Section => Some(drawings::ViewKind::Section {
+                offset_mm: 10.,
+                range: Default::default(),
+                window: Default::default(),
+            }),
             DrawingTool::Detail => Some(drawings::ViewKind::Detail {
                 center_mm: [0.; 2],
                 radius_mm: 25.,
