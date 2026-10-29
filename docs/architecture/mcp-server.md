@@ -156,6 +156,9 @@ schema is generated from the Rust argument types with schemars and returned by
 | `save_project` | yes | Save to the scoped project file |
 | `export_step` | no | STEP of one final part into the export folder, with readback volume and SHA-256 |
 | `import_sketch_artwork` | yes | DXF or SVG text into an existing or new sketch, with provenance (see [sketch import](sketch-import.md)) |
+| `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
+| `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
+| `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |
 
 `evaluate_model` reports each part's producing feature, solid count, volume
 and bounds.
