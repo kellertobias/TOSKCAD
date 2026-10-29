@@ -53,7 +53,8 @@ test('native development layout includes a copied executable, identity pin and n
     const readme=readFileSync(join(stage,'README.txt'),'utf8');
     assert.match(readme,/constrained sketches and initial native solid extrusion/);
     assert.match(readme,/Native \.multicad projects support save\/open/);
-    assert.match(readme,/MCP server remain under development/);
+    assert.match(readme,/workflows remain under development/);
+    assert.match(readme,/multicad --mcp serves a local MCP client over stdin\/stdout; it opens no network port/);
     assert.doesNotMatch(readme,/project format.*not implemented|CAD workspaces.*not implemented|unsigned native development host/);
     if(process.platform!=='win32')assert(statSync(layout.executable).mode&0o111);
   }finally{rmSync(directory,{recursive:true,force:true});}

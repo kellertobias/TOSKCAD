@@ -1,0 +1,1313 @@
+//! Typed MCP tools over the shared Session, solver and native model. Every
+//! mutation names the revision it was based on and commits one attributable
+//! transaction; failures and cancellation leave the document unchanged.
+use crate::{
+    error::ToolError,
+    host::{Host, Target, with},
+};
+use multicad_core::{
+    commands::{Actor, Prepared, Request},
+    constraint_sketch::{
+        Axis, Constraint, ConstraintKind, Curve, CurveKind, Dimension, Point,
+        binding::{DimensionInput, DimensionRequest},
+        source::Source,
+    },
+    document::{Entity, EntityData, EntityId, Mutation},
+    model::{
+        self, BodyInput, Direction, Extent, ExtrudeBooleanRequest, ExtrudeParameters,
+        ExtrudeRequest, Operation, Termination,
+    },
+    parameters::{self, BoundExpression, Unit},
+    sketch::Datum,
+    sketch_import::{self, Format, ImportOptions, SourceUnit, UnitChoice},
+};
+use multicad_kernel::NativeRegionQueries;
+use multicad_model::Compiler;
+use schemars::JsonSchema;
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+pub type ToolResult = Result<Value, ToolError>;
+
+/// Per-call context: who acts and whether the client has cancelled.
+#[derive(Clone)]
+pub struct Call {
+    pub actor: Actor,
+    pub cancel: Arc<AtomicBool>,
+}
+impl Call {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+    /// Interrupted native work reports cancellation, not its own failure.
+    fn finish<T, E: Into<ToolError>>(&self, result: Result<T, E>) -> Result<T, ToolError> {
+        self.check()?;
+        result.map_err(Into::into)
+    }
+    fn check(&self) -> Result<(), ToolError> {
+        if self.cancelled() {
+            Err(ToolError::cancelled())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub struct ToolInfo {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub read_only: bool,
+    pub schema: Value,
+}
+
+macro_rules! tools {
+    ($( $name:literal => $args:ty, $title:literal, $read_only:expr, $description:literal, $run:path; )*) => {
+        /// Stable tool catalog. Names and argument schemas are a compatibility
+        /// contract documented in docs/architecture/mcp-server.md.
+        pub fn catalog() -> Vec<ToolInfo> {
+            vec![$(ToolInfo {
+                name: $name,
+                title: $title,
+                description: $description,
+                read_only: $read_only,
+                schema: serde_json::to_value(schemars::schema_for!($args)).expect("schema serializes"),
+            }),*]
+        }
+        /// Run a tool synchronously. Callers execute this off the async runtime.
+        pub fn dispatch(host: &dyn Host, call: &Call, name: &str, arguments: Value) -> ToolResult {
+            match name {
+                $($name => {
+                    if !$read_only && host.scope().read_only {
+                        return Err(ToolError::new("read_only", "This server was started read-only; mutating tools are refused"));
+                    }
+                    $run(host, call, parse::<$args>(arguments)?)
+                })*
+                _ => Err(ToolError::new("unknown_tool", format!("Unknown tool '{name}'"))),
+            }
+        }
+    };
+}
+
+tools! {
+    "document_info" => NoArgs, "Document information", true,
+        "Name, identity and current revision of the controlled document, undo/redo availability, entity counts and the access scope (project file, export folder, read-only, transport).",
+        document_info;
+    "list_entities" => ListEntities, "List entities", true,
+        "Canonical entities with persistent IDs, names, kinds and references. Optionally filter by kind (parameter, plane, sketch, feature, part, assembly, instance, material, drawing, export_set, extension, group).",
+        list_entities;
+    "get_entity" => EntityArgs, "Get entity", true,
+        "The complete canonical source record of one entity, exactly as stored in the project.",
+        get_entity;
+    "list_parameters" => NoArgs, "List parameters", true,
+        "Every parameter with its expression, declared unit, evaluated value in that unit, role (driving or derived) and exposure.",
+        list_parameters;
+    "set_parameter" => SetParameter, "Create or edit parameter", false,
+        "Create a parameter, or edit the one with this name. Literal values are plain numbers ('40'); formulas start with '=' and reference parameters with '$' ('=$width/2'). The unit is required. Commits one transaction.",
+        set_parameter;
+    "create_sketch" => CreateSketch, "Create sketch", false,
+        "Create an empty constrained sketch on an origin datum plane (xy, xz or yz). Commits one transaction and returns the sketch ID.",
+        create_sketch;
+    "sketch_add_rectangle" => AddRectangle, "Add rectangle", false,
+        "Add a fully constrained axis-aligned rectangle: the first corner is fixed at origin_mm (sketch coordinates, mm), width along sketch U and height along sketch V are driving dimensions (literal or parameter formula). Commits one transaction.",
+        sketch_add_rectangle;
+    "sketch_add_circle" => AddCircle, "Add circle", false,
+        "Add a circle whose center is fixed at center_mm (sketch coordinates, mm) with a driving diameter dimension (literal or parameter formula). Commits one transaction.",
+        sketch_add_circle;
+    "set_sketch_dimension" => SetDimension, "Set sketch dimension", false,
+        "Change the value of an existing driving dimension constraint to a literal or parameter formula. The sketch is re-solved; a failed solve changes nothing.",
+        set_sketch_dimension;
+    "inspect_sketch" => SketchArgs, "Inspect sketch", true,
+        "Solve a sketch and report its state, degrees of freedom, conflicts, solved points, curves, constraints and the exact closed regions (with index and area in mm²) usable by extrude.",
+        inspect_sketch;
+    "extrude" => Extrude, "Extrude regions", false,
+        "Extrude regions of a sketch (indices from inspect_sketch at the same revision) by a distance. operation new_body creates parts; join, cut and intersect modify target_part. The candidate is evaluated natively before it commits.",
+        extrude;
+    "evaluate_model" => NoArgs, "Evaluate model", true,
+        "Evaluate the complete model with the native kernel and report every final part: producing feature, solid count, volume (mm³) and bounds (mm), plus reference diagnostics. Evaluation failures are returned as structured errors.",
+        evaluate_model;
+    "undo" => RevisionArgs, "Undo", false,
+        "Undo the most recent committed transaction, from any channel, if expected_revision is current.",
+        undo;
+    "redo" => RevisionArgs, "Redo", false,
+        "Redo the most recently undone transaction if expected_revision is current.",
+        redo;
+    "history" => HistoryArgs, "Activity history", true,
+        "Recent committed activity: actor, channel, label, kind (apply, undo, redo) and changed entities.",
+        history;
+    "save_project" => RevisionArgs, "Save project", false,
+        "Save the document to the project file in scope, if expected_revision is current. Never writes elsewhere.",
+        save_project;
+    "export_step" => ExportStep, "Export STEP", true,
+        "Write one final part as a STEP B-rep into the export folder in scope (bare file name ending .step or .stp). The written file is read back and its volume reported. Does not change the document.",
+        export_step;
+    "import_sketch_artwork" => ImportArtwork, "Import DXF/SVG artwork", false,
+        "Import DXF or SVG text as exact sketch lines, arcs, circles and splines into an existing sketch or a new sketch on a datum plane. Unsupported content is reported. Commits one transaction with a provenance record.",
+        import_sketch_artwork;
+}
+
+fn parse<T: DeserializeOwned>(arguments: Value) -> Result<T, ToolError> {
+    let arguments = if arguments.is_null() {
+        json!({})
+    } else {
+        arguments
+    };
+    serde_json::from_value(arguments).map_err(|e| ToolError::invalid(e.to_string()))
+}
+fn id(value: &str) -> Result<EntityId, ToolError> {
+    EntityId::parse(value).map_err(|_| ToolError::invalid(format!("'{value}' is not an entity ID")))
+}
+
+// ---- Argument types -------------------------------------------------------
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoArgs {}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListEntities {
+    /// Optional entity kind filter, e.g. "sketch" or "part".
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EntityArgs {
+    /// Persistent entity ID.
+    pub id: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RevisionArgs {
+    /// The document revision this request is based on. Stale requests fail.
+    pub expected_revision: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryArgs {
+    /// Most recent entries to return (default 20, at most 200).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// A unit-bearing value. Give exactly one of `value` (a number) or
+/// `expression` (a formula such as "=$width/2"). `unit` is always required.
+#[derive(Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Quantity {
+    #[serde(default)]
+    pub value: Option<f64>,
+    #[serde(default)]
+    pub expression: Option<String>,
+    /// mm, cm, m, in or ft for lengths.
+    pub unit: String,
+}
+impl Quantity {
+    fn length_unit(&self) -> Result<Unit, ToolError> {
+        match Unit::parse(&self.unit) {
+            Some(unit) if unit.dimension() == parameters::Dimension::LENGTH => Ok(unit),
+            _ => Err(ToolError::invalid(format!(
+                "'{}' is not a length unit; use mm, cm, m, in or ft",
+                self.unit
+            ))),
+        }
+    }
+    fn input(&self) -> Result<DimensionInput, ToolError> {
+        self.length_unit()?;
+        match (self.value, &self.expression) {
+            (Some(value), None) if value.is_finite() => Ok(DimensionInput::Literal {
+                value,
+                unit: self.unit.clone(),
+            }),
+            (None, Some(text)) => Ok(DimensionInput::Expression {
+                text: text.clone(),
+                unit: self.unit.clone(),
+            }),
+            _ => Err(ToolError::invalid(
+                "Give exactly one finite 'value' or one 'expression'",
+            )),
+        }
+    }
+    /// The source dimension and its current value in millimeters.
+    fn dimension(
+        &self,
+        document: &multicad_core::document::Document,
+        evaluated: &parameters::EvaluatedParameters,
+    ) -> Result<(Dimension, f64), ToolError> {
+        let unit = self.length_unit()?;
+        match self.input()? {
+            DimensionInput::Literal { value, unit: u } => Ok((
+                Dimension::Literal { value, unit: u },
+                value * unit.scale() / Unit::Millimeter.scale(),
+            )),
+            DimensionInput::Expression { text, unit: u } => {
+                let expression = BoundExpression::bind(document, &text, &u, None)?;
+                let mm = expression
+                    .evaluate(evaluated)?
+                    .in_unit(Unit::Millimeter)
+                    .ok_or_else(|| ToolError::invalid("Expression is not a length"))?;
+                Ok((Dimension::Expression { expression }, mm))
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetParameter {
+    pub expected_revision: u64,
+    /// Identifier: letters, digits and underscore, not starting with a digit.
+    pub name: String,
+    /// A number ("40") or a formula starting with '=' ("=$width*2").
+    pub expression: String,
+    /// mm, cm, m, in, ft, deg, rad, count, ratio or %.
+    pub unit: String,
+    #[serde(default)]
+    pub exposed: Option<bool>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Plane {
+    Xy,
+    Xz,
+    Yz,
+}
+impl From<Plane> for Datum {
+    fn from(plane: Plane) -> Self {
+        match plane {
+            Plane::Xy => Datum::Xy,
+            Plane::Xz => Datum::Xz,
+            Plane::Yz => Datum::Yz,
+        }
+    }
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateSketch {
+    pub expected_revision: u64,
+    pub plane: Plane,
+    pub name: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddRectangle {
+    pub expected_revision: u64,
+    pub sketch: String,
+    /// First corner in sketch coordinates, millimeters.
+    pub origin_mm: [f64; 2],
+    pub width: Quantity,
+    pub height: Quantity,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddCircle {
+    pub expected_revision: u64,
+    pub sketch: String,
+    /// Center in sketch coordinates, millimeters.
+    pub center_mm: [f64; 2],
+    pub diameter: Quantity,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetDimension {
+    pub expected_revision: u64,
+    pub sketch: String,
+    /// ID of a driving dimension constraint (from inspect_sketch).
+    pub constraint: String,
+    pub value: Quantity,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchArgs {
+    pub sketch: String,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtrudeOperation {
+    NewBody,
+    Join,
+    Cut,
+    Intersect,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Extrude {
+    pub expected_revision: u64,
+    pub sketch: String,
+    /// Region indices reported by inspect_sketch at expected_revision.
+    pub regions: Vec<usize>,
+    pub distance: Quantity,
+    pub operation: ExtrudeOperation,
+    /// Required for join, cut and intersect: the part to modify.
+    #[serde(default)]
+    pub target_part: Option<String>,
+    /// Extrude against the sketch normal.
+    #[serde(default)]
+    pub reverse: bool,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportStep {
+    pub part: String,
+    /// Bare file name ending in .step or .stp; written inside the export folder.
+    pub file_name: String,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtworkFormat {
+    Dxf,
+    Svg,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewSketch {
+    pub plane: Plane,
+    pub name: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportArtwork {
+    pub expected_revision: u64,
+    pub format: ArtworkFormat,
+    /// Source name recorded in provenance; any directories are dropped.
+    pub file_name: String,
+    /// The complete ASCII DXF or SVG text.
+    pub content: String,
+    /// Append to this existing sketch...
+    #[serde(default)]
+    pub sketch: Option<String>,
+    /// ...or create a new sketch on a datum plane.
+    #[serde(default)]
+    pub new_sketch: Option<NewSketch>,
+    /// mm, cm, m, in, ft, pt or px. Omit to use the file's declared units.
+    #[serde(default)]
+    pub source_unit: Option<String>,
+    #[serde(default)]
+    pub scale: Option<f64>,
+    #[serde(default)]
+    pub insertion_mm: Option<[f64; 2]>,
+    #[serde(default)]
+    pub rotation_deg: Option<f64>,
+    /// Layers (DXF) or top-level groups (SVG) to import; omit for all.
+    #[serde(default)]
+    pub layers: Option<Vec<String>>,
+}
+
+// ---- Shared helpers -------------------------------------------------------
+
+fn revision_guard(target: &dyn Target, expected: u64) -> Result<(), ToolError> {
+    let current = target.session().revision();
+    if current == expected {
+        Ok(())
+    } else {
+        Err(ToolError::new(
+            "stale_revision",
+            format!("Request is based on revision {expected}, but the document is at {current}"),
+        )
+        .at_revision(current))
+    }
+}
+/// Commit a checked candidate unless the call was cancelled meanwhile.
+fn commit(target: &mut dyn Target, call: &Call, prepared: Prepared) -> Result<u64, ToolError> {
+    call.check()?;
+    let change = target
+        .session_mut()
+        .commit(prepared)
+        .map_err(|e| ToolError::from(e).at_revision(target.session().revision()))?;
+    Ok(change.revision)
+}
+fn kind_name(entity: &Entity) -> Value {
+    serde_json::to_value(entity.data.kind()).unwrap_or(Value::Null)
+}
+fn sketch_entity(target: &dyn Target, sketch: EntityId) -> Result<(), ToolError> {
+    match target.session().document().get(sketch).map(|e| &e.data) {
+        Some(EntityData::Sketch { .. }) => Ok(()),
+        Some(_) => Err(ToolError::invalid(format!("{sketch} is not a sketch")).involving(sketch)),
+        None => Err(ToolError::not_found(sketch, "Sketch")),
+    }
+}
+fn edit_sketch(
+    target: &mut dyn Target,
+    call: &Call,
+    expected: u64,
+    sketch: EntityId,
+    source: Source,
+) -> Result<u64, ToolError> {
+    let edit = multicad_solver::prepare_edit(
+        target.session(),
+        expected,
+        call.actor.clone(),
+        sketch,
+        source,
+    )?;
+    let Some(preview) = edit.preview else {
+        return Err(solve_failure(sketch, &edit.evaluation.diagnostics));
+    };
+    commit(target, call, preview)
+}
+fn solve_failure(sketch: EntityId, diagnostics: &multicad_solver::Diagnostics) -> ToolError {
+    let mut error = ToolError::new(
+        "solve_failed",
+        format!(
+            "The sketch does not solve ({:?}); the document is unchanged",
+            diagnostics.state
+        ),
+    )
+    .involving(sketch);
+    error.involved.extend(
+        diagnostics
+            .conflicts
+            .iter()
+            .chain(&diagnostics.unmet)
+            .copied(),
+    );
+    error
+}
+fn diagnostics_json(d: &multicad_solver::Diagnostics) -> Value {
+    json!({
+        "state": format!("{:?}", d.state),
+        "degrees_of_freedom": d.degrees_of_freedom,
+        "free_entities": d.free_entities,
+        "conflicts": d.conflicts,
+        "redundant": d.redundant,
+        "unmet": d.unmet,
+        "residual_mm": d.residual_mm,
+    })
+}
+
+// ---- Tools ----------------------------------------------------------------
+
+fn document_info(host: &dyn Host, _: &Call, _: NoArgs) -> ToolResult {
+    let scope = host.scope().clone();
+    with(host, move |target| {
+        let session = target.session();
+        let document = session.document();
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for entity in document.entities() {
+            *counts
+                .entry(kind_name(entity).as_str().unwrap_or("unknown").into())
+                .or_default() += 1;
+        }
+        json!({
+            "document": document.id(),
+            "name": document.name(),
+            "revision": session.revision(),
+            "dirty": session.dirty(),
+            "can_undo": session.can_undo(),
+            "can_redo": session.can_redo(),
+            "entity_counts": counts,
+            "units": { "length": "mm", "angle": "deg", "area": "mm2", "volume": "mm3" },
+            "project_path": target.project_path(),
+            "scope": scope,
+        })
+    })
+}
+
+fn list_entities(host: &dyn Host, _: &Call, args: ListEntities) -> ToolResult {
+    with(host, move |target| {
+        let session = target.session();
+        let entities: Vec<_> = session
+            .document()
+            .entities()
+            .filter(|e| {
+                args.kind
+                    .as_deref()
+                    .is_none_or(|k| kind_name(e).as_str() == Some(k))
+            })
+            .map(|e| {
+                json!({
+                    "id": e.id,
+                    "name": e.name,
+                    "kind": kind_name(e),
+                    "references": e.references().iter().map(|l| json!({"target": l.target, "role": l.role})).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        json!({ "revision": session.revision(), "entities": entities })
+    })
+}
+
+fn get_entity(host: &dyn Host, _: &Call, args: EntityArgs) -> ToolResult {
+    let entity_id = id(&args.id)?;
+    with(host, move |target| {
+        let session = target.session();
+        let entity = session
+            .document()
+            .get(entity_id)
+            .ok_or_else(|| ToolError::not_found(entity_id, "Entity"))?;
+        Ok(json!({
+            "revision": session.revision(),
+            "kind": kind_name(entity),
+            "entity": entity,
+        }))
+    })?
+}
+
+fn list_parameters(host: &dyn Host, _: &Call, _: NoArgs) -> ToolResult {
+    with(host, move |target| {
+        let session = target.session();
+        let evaluated = session.parameters();
+        let rows: Vec<_> = session
+            .document()
+            .entities()
+            .filter_map(|e| match &e.data {
+                EntityData::Parameter {
+                    expression,
+                    unit,
+                    exposed,
+                    ..
+                } => {
+                    let value = evaluated.values.get(&e.id);
+                    Some(json!({
+                        "id": e.id,
+                        "name": e.name,
+                        "description": e.description,
+                        "expression": expression,
+                        "unit": unit,
+                        "value": value.and_then(|v| v.quantity.in_unit(v.unit)),
+                        "role": value.map(|v| format!("{:?}", v.role).to_lowercase()),
+                        "exposed": exposed,
+                    }))
+                }
+                _ => None,
+            })
+            .collect();
+        json!({ "revision": session.revision(), "parameters": rows })
+    })
+}
+
+fn set_parameter(host: &dyn Host, call: &Call, args: SetParameter) -> ToolResult {
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        let document = target.session().document();
+        let existing = document
+            .entities()
+            .find(|e| e.name == args.name && matches!(e.data, EntityData::Parameter { .. }))
+            .cloned();
+        let (mutation, parameter, created) = match existing {
+            Some(mut entity) => {
+                let EntityData::Parameter {
+                    expression,
+                    unit,
+                    exposed,
+                    ..
+                } = &mut entity.data
+                else {
+                    unreachable!("filtered to parameters");
+                };
+                *expression = args.expression.clone();
+                *unit = args.unit.clone();
+                if let Some(value) = args.exposed {
+                    *exposed = value;
+                }
+                if let Some(description) = &args.description {
+                    entity.description = description.clone();
+                }
+                let id = entity.id;
+                (Mutation::Replace(entity), id, false)
+            }
+            None => {
+                let mut entity = Entity::new(
+                    args.name.clone(),
+                    EntityData::Parameter {
+                        expression: args.expression.clone(),
+                        unit: args.unit.clone(),
+                        exposed: args.exposed.unwrap_or(false),
+                        inputs: vec![],
+                    },
+                );
+                entity.description = args.description.clone().unwrap_or_default();
+                let id = entity.id;
+                (Mutation::Insert(entity), id, true)
+            }
+        };
+        let prepared = target.session().prepare(Request {
+            expected_revision: args.expected_revision,
+            actor: call.actor.clone(),
+            label: format!("Set parameter {}", args.name),
+            edits: vec![mutation],
+        })?;
+        let value = prepared.parameters().values.get(&parameter).cloned();
+        let revision = commit(target, &call, prepared)?;
+        Ok(json!({
+            "revision": revision,
+            "parameter": parameter,
+            "created": created,
+            "value": value.as_ref().and_then(|v| v.quantity.in_unit(v.unit)),
+            "unit": args.unit,
+        }))
+    })?
+}
+
+fn create_sketch(host: &dyn Host, call: &Call, args: CreateSketch) -> ToolResult {
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        let (sketch, edits) = Source::create(args.plane.into(), &args.name)?;
+        let prepared = target.session().prepare(Request {
+            expected_revision: args.expected_revision,
+            actor: call.actor.clone(),
+            label: format!("Create sketch {}", args.name),
+            edits,
+        })?;
+        let revision = commit(target, &call, prepared)?;
+        Ok(json!({ "revision": revision, "sketch": sketch }))
+    })?
+}
+
+fn point(source: &mut Source, position_mm: [f64; 2]) -> EntityId {
+    let id = EntityId::new();
+    source.sketch.points.push(Point { id, position_mm });
+    id
+}
+fn curve(source: &mut Source, kind: CurveKind) -> EntityId {
+    let id = EntityId::new();
+    source.sketch.curves.push(Curve {
+        id,
+        construction: false,
+        kind,
+    });
+    id
+}
+fn constrain(source: &mut Source, kind: ConstraintKind) -> EntityId {
+    let id = EntityId::new();
+    source.sketch.constraints.push(Constraint {
+        id,
+        reference: false,
+        kind,
+    });
+    id
+}
+fn read_source(target: &dyn Target, sketch: EntityId, revision: u64) -> Result<Source, ToolError> {
+    sketch_entity(target, sketch)?;
+    Ok(Source::read_for_evaluation(target.session().document(), sketch, revision, None)?.0)
+}
+
+fn sketch_add_rectangle(host: &dyn Host, call: &Call, args: AddRectangle) -> ToolResult {
+    let call = call.clone();
+    let sketch = id(&args.sketch)?;
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        let session = target.session();
+        let (width, w) = args
+            .width
+            .dimension(session.document(), session.parameters())?;
+        let (height, h) = args
+            .height
+            .dimension(session.document(), session.parameters())?;
+        if !(w > 0. && h > 0.) {
+            return Err(ToolError::invalid("Width and height must be positive"));
+        }
+        let mut source = read_source(target, sketch, args.expected_revision)?;
+        let [x, y] = args.origin_mm;
+        let corners = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+            .map(|position| point(&mut source, position));
+        let lines = [0, 1, 2, 3].map(|i| {
+            curve(
+                &mut source,
+                CurveKind::Line {
+                    start: corners[i],
+                    end: corners[(i + 1) % 4],
+                },
+            )
+        });
+        let mut constraints = vec![
+            constrain(&mut source, ConstraintKind::Fix { point: corners[0] }),
+            constrain(&mut source, ConstraintKind::Horizontal { line: lines[0] }),
+            constrain(&mut source, ConstraintKind::Vertical { line: lines[1] }),
+            constrain(&mut source, ConstraintKind::Horizontal { line: lines[2] }),
+            constrain(&mut source, ConstraintKind::Vertical { line: lines[3] }),
+        ];
+        let width_constraint = constrain(
+            &mut source,
+            ConstraintKind::Distance {
+                a: corners[0],
+                b: corners[1],
+                axis: Axis::X,
+                dimension: width,
+            },
+        );
+        let height_constraint = constrain(
+            &mut source,
+            ConstraintKind::Distance {
+                a: corners[0],
+                b: corners[3],
+                axis: Axis::Y,
+                dimension: height,
+            },
+        );
+        constraints.extend([width_constraint, height_constraint]);
+        let revision = edit_sketch(target, &call, args.expected_revision, sketch, source)?;
+        Ok(json!({
+            "revision": revision,
+            "sketch": sketch,
+            "points": corners,
+            "lines": lines,
+            "constraints": constraints,
+            "width_constraint": width_constraint,
+            "height_constraint": height_constraint,
+        }))
+    })?
+}
+
+fn sketch_add_circle(host: &dyn Host, call: &Call, args: AddCircle) -> ToolResult {
+    let call = call.clone();
+    let sketch = id(&args.sketch)?;
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        let session = target.session();
+        let (diameter, d) = args
+            .diameter
+            .dimension(session.document(), session.parameters())?;
+        if d <= 0. {
+            return Err(ToolError::invalid("Diameter must be positive"));
+        }
+        let mut source = read_source(target, sketch, args.expected_revision)?;
+        let center = point(&mut source, args.center_mm);
+        let circle = curve(
+            &mut source,
+            CurveKind::Circle {
+                center,
+                radius_mm: d / 2.,
+            },
+        );
+        let fix = constrain(&mut source, ConstraintKind::Fix { point: center });
+        let diameter_constraint = constrain(
+            &mut source,
+            ConstraintKind::Diameter {
+                curve: circle,
+                dimension: diameter,
+            },
+        );
+        let revision = edit_sketch(target, &call, args.expected_revision, sketch, source)?;
+        Ok(json!({
+            "revision": revision,
+            "sketch": sketch,
+            "center": center,
+            "circle": circle,
+            "constraints": [fix, diameter_constraint],
+            "diameter_constraint": diameter_constraint,
+        }))
+    })?
+}
+
+fn set_sketch_dimension(host: &dyn Host, call: &Call, args: SetDimension) -> ToolResult {
+    let call = call.clone();
+    let sketch = id(&args.sketch)?;
+    let constraint = id(&args.constraint)?;
+    let input = args.value.input()?;
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        sketch_entity(target, sketch)?;
+        let edit = multicad_solver::prepare_dimension(
+            target.session(),
+            args.expected_revision,
+            call.actor.clone(),
+            sketch,
+            None,
+            &DimensionRequest {
+                constraint,
+                input,
+                rebind: false,
+            },
+        )?;
+        let Some(preview) = edit.preview else {
+            return Err(solve_failure(sketch, &edit.evaluation.diagnostics));
+        };
+        let revision = commit(target, &call, preview)?;
+        Ok(json!({ "revision": revision, "sketch": sketch, "constraint": constraint }))
+    })?
+}
+
+/// Snapshot what native work needs, without holding the document owner.
+fn snapshot(
+    host: &dyn Host,
+) -> Result<
+    (
+        multicad_core::document::Document,
+        u64,
+        parameters::EvaluatedParameters,
+    ),
+    ToolError,
+> {
+    with(host, |target| {
+        let session = target.session();
+        (
+            session.document().clone(),
+            session.revision(),
+            session.parameters().clone(),
+        )
+    })
+}
+
+fn inspect_sketch(host: &dyn Host, call: &Call, args: SketchArgs) -> ToolResult {
+    let sketch = id(&args.sketch)?;
+    let (document, revision, evaluated) = snapshot(host)?;
+    match document.get(sketch).map(|e| &e.data) {
+        Some(EntityData::Sketch { .. }) => {}
+        Some(_) => return Err(ToolError::invalid(format!("{sketch} is not a sketch"))),
+        None => return Err(ToolError::not_found(sketch, "Sketch")),
+    }
+    let source = Source::read_for_evaluation(&document, sketch, revision, None)?.0;
+    let result = multicad_solver::evaluate_document_sketch_with_parameters(
+        &document, revision, sketch, None, &evaluated,
+    )?;
+    let interrupt = || call.cancelled();
+    let regions = match result.solved() {
+        Some(_) => {
+            let extraction = call.finish(result.regions_with_queries_and_interrupt(
+                &NativeRegionQueries::default(),
+                Some(&interrupt),
+            ))?;
+            json!({
+                "regions": extraction.regions.iter().enumerate().map(|(index, r)| json!({
+                    "index": index,
+                    "area_mm2": r.area_mm2,
+                    "holes": r.holes.len(),
+                    "outer_curves": r.outer.intent.curves,
+                })).collect::<Vec<_>>(),
+                "region_diagnostics": extraction.diagnostics.iter().map(|d| format!("{d:?}")).collect::<Vec<_>>(),
+            })
+        }
+        None => json!({ "regions": [], "region_diagnostics": ["Sketch does not solve"] }),
+    };
+    let solved = result.solved().unwrap_or(&source.sketch);
+    let measurements: serde_json::Map<String, Value> = result
+        .evaluation
+        .measurements
+        .iter()
+        .map(|(id, m)| (id.to_string(), json!({ "value": m.value, "unit": m.unit })))
+        .collect();
+    Ok(json!({
+        "revision": revision,
+        "sketch": sketch,
+        "solve": diagnostics_json(&result.evaluation.diagnostics),
+        "solved": result.solved().is_some(),
+        "points": solved.points,
+        "curves": solved.curves,
+        "constraints": source.sketch.constraints,
+        "measurements": measurements,
+        "regions": regions["regions"],
+        "region_diagnostics": regions["region_diagnostics"],
+    }))
+}
+
+/// The Part's final unsuppressed feature, as the desktop body choices use it.
+fn current_producer(
+    document: &multicad_core::document::Document,
+    part: EntityId,
+) -> Result<EntityId, ToolError> {
+    let Some(EntityData::Part { features, .. }) = document.get(part).map(|e| &e.data) else {
+        return Err(ToolError::not_found(part, "Part"));
+    };
+    let producer = features
+        .iter()
+        .rev()
+        .copied()
+        .find(|id| {
+            matches!(
+                document.get(*id).map(|e| &e.data),
+                Some(EntityData::Feature {
+                    suppressed: false,
+                    ..
+                })
+            )
+        })
+        .ok_or_else(|| ToolError::invalid("The part has no active feature").involving(part))?;
+    Ok(BodyInput {
+        body: part,
+        producer,
+    }
+    .resolve_producer(document)?)
+}
+
+fn compile(
+    document: &multicad_core::document::Document,
+    revision: u64,
+    call: &Call,
+) -> Result<multicad_model::Model, ToolError> {
+    let interrupt = || call.cancelled();
+    call.finish(Compiler::default().compile_interruptible(document, revision, Some(&interrupt)))
+}
+
+fn extrude(host: &dyn Host, call: &Call, args: Extrude) -> ToolResult {
+    let sketch = id(&args.sketch)?;
+    let target_part = args.target_part.as_deref().map(id).transpose()?;
+    if args.regions.is_empty() {
+        return Err(ToolError::invalid("Choose at least one region"));
+    }
+    let (document, revision, evaluated) = snapshot(host)?;
+    if revision != args.expected_revision {
+        return Err(ToolError::new(
+            "stale_revision",
+            format!(
+                "Request is based on revision {}, but the document is at {revision}",
+                args.expected_revision
+            ),
+        )
+        .at_revision(revision));
+    }
+    let evaluated_sketch = multicad_solver::evaluate_document_sketch_with_parameters(
+        &document, revision, sketch, None, &evaluated,
+    )?;
+    let interrupt = || call.cancelled();
+    let extraction = call.finish(
+        evaluated_sketch
+            .regions_with_queries_and_interrupt(&NativeRegionQueries::default(), Some(&interrupt)),
+    )?;
+    let mut intents = vec![];
+    for index in &args.regions {
+        let region = extraction.regions.get(*index).ok_or_else(|| {
+            ToolError::invalid(format!(
+                "Region {index} does not exist; the sketch has {} regions",
+                extraction.regions.len()
+            ))
+            .involving(sketch)
+        })?;
+        intents.push(region.intent());
+    }
+    let (distance, _) = args.distance.dimension(&document, &evaluated)?;
+    let parameters = ExtrudeParameters {
+        direction: Direction {
+            reverse: args.reverse,
+            ..Default::default()
+        },
+        extent: Extent::OneSided {
+            end: Termination::Distance { distance },
+        },
+        ..Default::default()
+    };
+    let request = ExtrudeRequest::new(sketch, intents, parameters);
+    let call_owned = call.clone();
+    let operation = args.operation;
+    let (prepared, created, results) = with(host, move |target| {
+        revision_guard(target, revision)?;
+        let session = target.session();
+        if operation == ExtrudeOperation::NewBody {
+            let prepared =
+                model::prepare_extrude(session, revision, call_owned.actor.clone(), &request)?;
+            let created: Vec<_> = prepared
+                .outputs
+                .iter()
+                .map(|o| json!({ "part": o.body, "feature": o.feature }))
+                .collect();
+            let results = prepared
+                .outputs
+                .iter()
+                .map(|o| (o.body, o.feature))
+                .collect();
+            Ok::<_, ToolError>((prepared.prepared, created, results))
+        } else {
+            let part = target_part
+                .ok_or_else(|| ToolError::invalid("join, cut and intersect require target_part"))?;
+            let producer = current_producer(session.document(), part)?;
+            let op = match operation {
+                ExtrudeOperation::Join => Operation::Join,
+                ExtrudeOperation::Cut => Operation::Cut,
+                _ => Operation::Intersect,
+            };
+            let boolean = ExtrudeBooleanRequest::new(
+                request,
+                op,
+                vec![BodyInput {
+                    body: part,
+                    producer,
+                }],
+                false,
+            );
+            let prepared = model::prepare_extrude_boolean(
+                session,
+                revision,
+                call_owned.actor.clone(),
+                &boolean,
+            )?;
+            let feature = boolean.booleans[0].feature;
+            Ok((
+                prepared.prepared,
+                vec![json!({ "part": part, "feature": feature })],
+                vec![(part, feature)],
+            ))
+        }
+    })??;
+    // The source-only candidate must evaluate natively before it may commit.
+    let model = compile(prepared.document(), revision, call)?;
+    let mut bodies = vec![];
+    for (part, feature) in &results {
+        let shape = model
+            .snapshot()
+            .shapes
+            .get(feature)
+            .ok_or_else(|| ToolError::new("model_failed", "Extrusion produced no solid"))?;
+        bodies.push(json!({
+            "part": part,
+            "feature": feature,
+            "volume_mm3": shape.volume_mm3,
+            "solid_count": shape.solid_count,
+        }));
+    }
+    let call_owned = call.clone();
+    let new_revision = with(host, move |target| commit(target, &call_owned, prepared))??;
+    Ok(json!({ "revision": new_revision, "created": created, "bodies": bodies }))
+}
+
+fn evaluate_model(host: &dyn Host, call: &Call, _: NoArgs) -> ToolResult {
+    let (document, revision, _) = snapshot(host)?;
+    let model = compile(&document, revision, call)?;
+    let snapshot = model.snapshot();
+    let parts: Vec<_> = snapshot
+        .bodies
+        .iter()
+        .filter(|(part, _)| !snapshot.consumed_bodies.contains(part))
+        .map(|(part, feature)| {
+            let shape = snapshot.shapes.get(feature);
+            json!({
+                "part": part,
+                "name": document.get(*part).map(|e| e.name.as_str()),
+                "feature": feature,
+                "solid_count": shape.map(|s| s.solid_count),
+                "volume_mm3": shape.map(|s| s.volume_mm3),
+                "bounds_mm": shape.map(|s| json!({ "min": s.bounds.min, "max": s.bounds.max })),
+            })
+        })
+        .collect();
+    let references: Vec<_> = snapshot
+        .references
+        .entries
+        .iter()
+        .map(|d| {
+            json!({
+                "source": d.source,
+                "role": d.role,
+                "resolution": d.resolution,
+                "affected": d.affected,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "revision": revision,
+        "scope": "full",
+        "parts": parts,
+        "consumed_parts": snapshot.consumed_bodies,
+        "references": references,
+    }))
+}
+
+fn undo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        call.check()?;
+        let change = target
+            .session_mut()
+            .undo(args.expected_revision, call.actor.clone())?;
+        Ok(json!({ "revision": change.revision, "changed": change.changed }))
+    })?
+}
+
+fn redo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        call.check()?;
+        let change = target
+            .session_mut()
+            .redo(args.expected_revision, call.actor.clone())?;
+        Ok(json!({ "revision": change.revision, "changed": change.changed }))
+    })?
+}
+
+fn history(host: &dyn Host, _: &Call, args: HistoryArgs) -> ToolResult {
+    let limit = args.limit.unwrap_or(20).min(200);
+    with(host, move |target| {
+        let session = target.session();
+        let all: Vec<_> = session.activity().collect();
+        let entries: Vec<_> = all
+            .iter()
+            .rev()
+            .take(limit)
+            .map(|a| {
+                json!({
+                    "revision": a.change.revision,
+                    "actor": a.actor.id,
+                    "channel": a.actor.channel,
+                    "label": a.label,
+                    "kind": format!("{:?}", a.kind).to_lowercase(),
+                    "changed": a.change.changed,
+                })
+            })
+            .collect();
+        json!({ "revision": session.revision(), "entries": entries })
+    })
+}
+
+fn save_project(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, args.expected_revision)?;
+        call.check()?;
+        let path = target
+            .save()
+            .map_err(|e| ToolError::new("save_failed", e))?;
+        Ok(json!({ "revision": args.expected_revision, "path": path }))
+    })?
+}
+
+fn export_step(host: &dyn Host, call: &Call, args: ExportStep) -> ToolResult {
+    let directory = host.scope().export_directory.clone().ok_or_else(|| {
+        ToolError::new(
+            "out_of_scope",
+            "No export folder is in scope; start the server with --export-dir",
+        )
+    })?;
+    let name = &args.file_name;
+    let valid = !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', ':', '\0'])
+        && [".step", ".stp"]
+            .iter()
+            .any(|e| name.to_ascii_lowercase().ends_with(e));
+    if !valid {
+        return Err(ToolError::new(
+            "out_of_scope",
+            "file_name must be a bare name ending in .step or .stp",
+        ));
+    }
+    let part = id(&args.part)?;
+    let (document, revision, _) = snapshot(host)?;
+    if !matches!(
+        document.get(part).map(|e| &e.data),
+        Some(EntityData::Part { .. })
+    ) {
+        return Err(ToolError::not_found(part, "Part"));
+    }
+    let model = compile(&document, revision, call)?;
+    let feature = *model.snapshot().bodies.get(&part).ok_or_else(|| {
+        ToolError::new("model_failed", "The part has no final solid").involving(part)
+    })?;
+    let solid = model.solid(feature).ok_or_else(|| {
+        ToolError::new("model_failed", "The part has no final solid").involving(part)
+    })?;
+    let path: PathBuf = directory.join(name);
+    let partial = directory.join(format!(".{name}.partial.step"));
+    let written = solid
+        .write_step(&partial)
+        .map_err(|e| ToolError::new("export_failed", e.to_string()))
+        .and_then(|()| {
+            multicad_kernel::Solid::read_step(&partial, multicad_kernel::GeometryPolicy::default())
+                .and_then(|s| s.volume_mm3())
+                .map_err(|e| ToolError::new("export_failed", format!("STEP readback failed: {e}")))
+        })
+        .and_then(|volume| {
+            call.check()?;
+            std::fs::rename(&partial, &path)
+                .map_err(|e| ToolError::new("export_failed", e.to_string()))?;
+            Ok(volume)
+        });
+    let volume = match written {
+        Ok(volume) => volume,
+        Err(error) => {
+            let _ = std::fs::remove_file(&partial);
+            return Err(error);
+        }
+    };
+    let bytes = std::fs::read(&path).map_err(|e| ToolError::new("export_failed", e.to_string()))?;
+    Ok(json!({
+        "revision": revision,
+        "part": part,
+        "feature": feature,
+        "path": path,
+        "bytes": bytes.len(),
+        "sha256": sketch_import::provenance::sha256_hex(&bytes),
+        "units": "mm",
+        "model_volume_mm3": model.snapshot().shapes.get(&feature).map(|s| s.volume_mm3),
+        "readback_volume_mm3": volume,
+    }))
+}
+
+fn import_sketch_artwork(host: &dyn Host, call: &Call, args: ImportArtwork) -> ToolResult {
+    let format = match args.format {
+        ArtworkFormat::Dxf => Format::Dxf,
+        ArtworkFormat::Svg => Format::Svg,
+    };
+    let units = match args.source_unit.as_deref() {
+        None => UnitChoice::FromFile,
+        Some(label) => UnitChoice::Explicit(
+            SourceUnit::ALL
+                .into_iter()
+                .find(|u| u.label() == label)
+                .ok_or_else(|| ToolError::invalid(format!("Unknown source unit '{label}'")))?,
+        ),
+    };
+    let target = match (&args.sketch, args.new_sketch) {
+        (Some(sketch), None) => multicad_solver::import::ImportTarget::Existing(id(sketch)?),
+        (None, Some(new)) => multicad_solver::import::ImportTarget::New {
+            datum: new.plane.into(),
+            name: new.name,
+        },
+        _ => {
+            return Err(ToolError::invalid(
+                "Give exactly one of 'sketch' or 'new_sketch'",
+            ));
+        }
+    };
+    let defaults = ImportOptions::default();
+    let options = ImportOptions {
+        units,
+        scale: args.scale.unwrap_or(defaults.scale),
+        insertion_mm: args.insertion_mm.unwrap_or(defaults.insertion_mm),
+        rotation_deg: args.rotation_deg.unwrap_or(defaults.rotation_deg),
+        layers: args.layers.map(|l| l.into_iter().collect::<BTreeSet<_>>()),
+        ..defaults
+    };
+    let bytes = args.content.into_bytes();
+    let artwork = sketch_import::parse(format, &bytes, units)
+        .map_err(|e| ToolError::new("import_failed", e.to_string()))?;
+    let plan = sketch_import::plan::plan(&artwork, &options)
+        .map_err(|e| ToolError::new("import_failed", e.to_string()))?;
+    let unsupported: Vec<_> = plan.unsupported.iter().map(|d| format!("{d:?}")).collect();
+    let call = call.clone();
+    let file_name = args.file_name;
+    let expected = args.expected_revision;
+    with(host, move |target_owner| {
+        revision_guard(target_owner, expected)?;
+        let edit = multicad_solver::import::prepare_import(
+            target_owner.session(),
+            expected,
+            call.actor.clone(),
+            &target,
+            None,
+            &plan,
+            &multicad_solver::import::ImportSource {
+                file_name: &file_name,
+                bytes: &bytes,
+            },
+        )?;
+        let Some(preview) = edit.edit.preview else {
+            return Err(solve_failure(
+                edit.sketch,
+                &edit.edit.evaluation.diagnostics,
+            ));
+        };
+        let revision = commit(target_owner, &call, preview)?;
+        Ok(json!({
+            "revision": revision,
+            "sketch": edit.sketch,
+            "curves": edit.curves,
+            "provenance": edit.provenance,
+            "unsupported": unsupported,
+        }))
+    })?
+}

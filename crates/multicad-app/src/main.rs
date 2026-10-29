@@ -6,6 +6,7 @@ mod external_queries;
 mod file_picker;
 mod files;
 mod inspection;
+mod mcp;
 mod modeling;
 mod recent_projects;
 mod self_test;
@@ -19,9 +20,13 @@ enum Action {
     Version,
     Diagnostics,
     SelfTest(PathBuf),
+    Mcp(mcp::Options),
 }
 fn parse_action(arguments: impl Iterator<Item = OsString>) -> Result<Action, String> {
     let arguments: Vec<_> = arguments.collect();
+    if arguments.first().is_some_and(|a| a == "--mcp") {
+        return mcp::parse(&arguments[1..]).map(Action::Mcp);
+    }
     match arguments.as_slice() {
         [] => Ok(Action::Run),
         [option] => match option.to_str() {
@@ -50,7 +55,7 @@ fn main() -> ExitCode {
         Action::Run => run_application().inspect_err(|error| record_startup_error(error)),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n\nLaunches the native application host with no arguments.\nIncludes Parameters, constrained Sketch and initial New body extrusion. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Advanced modeling, manufacturing exports and MCP server remain under development.",
+                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.multicad] [--export-dir DIRECTORY] [--read-only]\n\nLaunches the native application host with no arguments.\nIncludes Parameters, constrained Sketch and initial New body extrusion. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. No network port is opened.",
                 build.product, build.version
             );
             Ok(())
@@ -61,7 +66,7 @@ fn main() -> ExitCode {
         }
         Action::Diagnostics => {
             println!(
-                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters; constrained Sketch; initial New body extrusion\nNative project format: versioned .multicad container; atomic saves and explicit recovery copies\nMCP server: not implemented\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
+                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters; constrained Sketch; initial New body extrusion\nNative project format: versioned .multicad container; atomic saves and explicit recovery copies\nMCP server: local stdio (multicad --mcp), rmcp 3.8.0\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
                 build.product,
                 build.version,
                 build.target_os,
@@ -72,6 +77,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Action::SelfTest(path) => self_test::run(&path).map_err(|e| e.to_string()),
+        Action::Mcp(options) => mcp::run(options),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

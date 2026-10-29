@@ -39,7 +39,7 @@ fn version_is_machine_readable_and_has_no_extra_diagnostics() {
 }
 
 #[test]
-fn diagnostics_report_the_compiled_target_and_unimplemented_capabilities() {
+fn diagnostics_report_the_compiled_target_and_capabilities() {
     let output = run(&["--diagnostics"]);
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -56,7 +56,7 @@ fn diagnostics_report_the_compiled_target_and_unimplemented_capabilities() {
     )));
     assert!(text.contains("CAD kernel: OCCT 7.9.3"));
     assert!(text.contains("Native UI: eframe 0.36.2 / wgpu"));
-    assert!(text.contains("MCP server: not implemented"));
+    assert!(text.contains("MCP server: local stdio (multicad --mcp)"));
 }
 
 #[test]
