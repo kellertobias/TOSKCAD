@@ -25,7 +25,7 @@ mod transfer;
 mod transform;
 mod walls;
 pub use assemblies::LeafOccurrenceSnapshot;
-pub use cabinetry::{CutRecord, PANEL_EDGE_ROLES, StackEvaluation, StackLayer};
+pub use cabinetry::{CutRecord, MachiningRecord, PANEL_EDGE_ROLES, StackEvaluation, StackLayer};
 pub use compiler::*;
 pub use drawings::*;
 pub use external::*;

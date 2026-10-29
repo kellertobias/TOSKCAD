@@ -710,6 +710,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::STAIR_TYPE,
                     super::PANEL_TYPE,
                     super::PANEL_JOINT_CUT_TYPE,
+                    super::MACHINING_CUT_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {
@@ -734,6 +735,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::CARCASS_KIND,
                     super::STACK_KIND,
                     super::PANEL_JOINT_KIND,
+                    super::MACHINING_KIND,
+                    super::HARDWARE_KIND,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {

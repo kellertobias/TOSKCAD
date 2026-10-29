@@ -8,7 +8,6 @@ use super::*;
 use crate::{
     commands::{Actor, CommandError, Request, Session},
     document::Mutation,
-    hierarchy,
     model::{
         BodyInput, CreatedBody, ModelPrepared,
         common::{error, number, revision},
@@ -214,6 +213,8 @@ pub struct CutPrism {
     pub u: [f64; 3],
     pub v: [f64; 3],
     pub polygon: Vec<[f64; 2]>,
+    /// A circle (center, radius) instead of the polygon, for drilled holes.
+    pub circle: Option<([f64; 2], f64)>,
     pub sweep: [f64; 3],
 }
 /// The resolved corner of one joint pair.
@@ -226,7 +227,7 @@ pub struct PanelJointCorner {
     pub cut_b: Vec<CutPrism>,
 }
 
-fn panel_box(
+pub(super) fn panel_box(
     document: &Document,
     parameters: &EvaluatedParameters,
     part: EntityId,
@@ -372,6 +373,7 @@ pub fn resolve_panel_joint_pair(
             } else {
                 polygon
             },
+            circle: None,
             sweep: dir(ee.map(|c| c * (to - from))),
         }
     };
@@ -445,15 +447,6 @@ pub struct PanelJointPrepared {
     pub joint: EntityId,
     pub model: ModelPrepared,
 }
-fn head(document: &Document, part: EntityId) -> Result<EntityId, CommandError> {
-    match document.get(part).map(|e| &e.data) {
-        Some(EntityData::Part { features, .. }) => features
-            .last()
-            .copied()
-            .ok_or_else(|| error("The panel has no features")),
-        _ => Err(error("A joint panel is missing")),
-    }
-}
 /// Append one joint cut feature to a panel Part.
 fn add_cut(
     document: &mut Document,
@@ -463,45 +456,16 @@ fn add_cut(
     side: PanelJointSide,
     part: EntityId,
 ) -> Result<CreatedBody, CommandError> {
-    let cut = PanelJointCutDefinition {
-        joint,
-        pair: pair as u32,
-        side,
-        input: BodyInput {
-            body: part,
-            producer: head(document, part)?,
-        },
-        output: BodyOutput { body: part },
-    };
     let name = document.get(part).map_or(String::new(), |e| e.name.clone());
-    let feature = Entity::new(
-        format!("{name} joint"),
-        EntityData::Feature {
-            definition: cut.definition()?,
-            inputs: cut.inputs(),
-            suppressed: false,
-        },
-    );
-    let id = feature.id;
-    let mut entity = document.get(part).cloned().expect("panel Part");
-    let EntityData::Part { features, .. } = &mut entity.data else {
-        unreachable!()
-    };
-    features.push(id);
-    let step = [Mutation::Insert(feature), Mutation::Replace(entity)];
-    *document = document.edited(&step)?;
-    edits.extend(step);
-    let index = hierarchy::Index::new(document).map_err(|e| error(e.to_string()))?;
-    if let Some(parent) = index.parent(part).map_err(|e| error(e.to_string()))? {
-        let mut state = document.hierarchy().clone();
-        state.members.entry(parent).or_default().push(id);
-        let step = Mutation::SetHierarchy(state);
-        *document = document.edited(std::slice::from_ref(&step))?;
-        edits.push(step);
-    }
-    Ok(CreatedBody {
-        feature: id,
-        body: part,
+    super::chain::append_cut(document, edits, part, format!("{name} joint"), |input| {
+        let cut = PanelJointCutDefinition {
+            joint,
+            pair: pair as u32,
+            side,
+            input,
+            output: BodyOutput { body: part },
+        };
+        Ok((cut.definition()?, cut.inputs()))
     })
 }
 
@@ -604,59 +568,10 @@ pub fn prepare_panel_joint_delete(
     let mut candidate = document.clone();
     let mut edits = vec![];
     let cuts: Vec<_> = panel_joint_cuts(document)
-        .filter_map(|e| {
-            read_panel_joint_cut(document, e.id)
-                .ok()
-                .filter(|c| c.joint == id)
-                .map(|c| (e.id, c))
-        })
+        .filter(|e| read_panel_joint_cut(document, e.id).is_ok_and(|c| c.joint == id))
+        .map(|e| e.id)
         .collect();
-    for (feature, cut) in cuts {
-        for later in panel_joint_cuts(&candidate)
-            .map(|e| e.id)
-            .collect::<Vec<_>>()
-        {
-            let Ok(mut next) = read_panel_joint_cut(&candidate, later) else {
-                continue;
-            };
-            if next.input.producer == feature {
-                next.input.producer = cut.input.producer;
-                let mut e = candidate.get(later).cloned().expect("cut");
-                e.data = EntityData::Feature {
-                    definition: next.definition()?,
-                    inputs: next.inputs(),
-                    suppressed: false,
-                };
-                let step = Mutation::Replace(e);
-                candidate = candidate.edited(std::slice::from_ref(&step))?;
-                edits.push(step);
-            }
-        }
-        if candidate.entities().any(|e| {
-            e.id != feature
-                && !matches!(&e.data, EntityData::Part { .. })
-                && e.references().iter().any(|l| l.target == feature)
-        }) {
-            return Err(error(
-                "A later feature builds on this joint's cut; remove it before deleting the joint",
-            ));
-        }
-        let mut part = candidate.get(cut.output.body).cloned().expect("Part");
-        if let EntityData::Part { features, .. } = &mut part.data {
-            features.retain(|f| *f != feature);
-        }
-        let mut state = candidate.hierarchy().clone();
-        for members in state.members.values_mut() {
-            members.retain(|m| *m != feature);
-        }
-        let mut steps = vec![Mutation::Replace(part)];
-        if &state != candidate.hierarchy() {
-            steps.push(Mutation::SetHierarchy(state));
-        }
-        steps.push(Mutation::Remove(feature));
-        candidate = candidate.edited(&steps)?;
-        edits.extend(steps);
-    }
+    super::chain::remove_cuts(&mut candidate, &mut edits, &cuts, "joint")?;
     edits.push(Mutation::Remove(id));
     session.prepare(Request {
         expected_revision,

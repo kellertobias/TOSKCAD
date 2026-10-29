@@ -615,6 +615,15 @@ impl Compiler {
                         &solids,
                     )?
                 }
+                (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA) => {
+                    crate::cabinetry::build_machining_cut(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        &solids,
+                    )?
+                }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
                 }

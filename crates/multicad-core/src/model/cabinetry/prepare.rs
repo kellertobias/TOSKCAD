@@ -102,9 +102,12 @@ fn remove_panel(
     feature: EntityId,
     body: EntityId,
 ) -> Result<Vec<Mutation>, CommandError> {
-    if let Some(joint) = panel_joints_of(document, body).first() {
+    if let Some(joint) = panel_joints_of(document, body)
+        .first()
+        .or(machinings_of(document, body).first())
+    {
         return Err(error(format!(
-            "{} is joined by {}; delete the joint before removing the panel",
+            "{} is joined by {}; delete it before removing the panel",
             document
                 .get(body)
                 .map_or("A panel".into(), |e| e.name.clone()),

@@ -99,6 +99,70 @@ pub(crate) fn build(
     Ok((solid, profile.frame))
 }
 
+/// Subtract cut prisms from the solid before a cut feature. A cut with no
+/// prisms still returns its own copy of the input.
+fn subtract(
+    base: &Solid,
+    prisms: &[model::CutPrism],
+    id: EntityId,
+    role: &str,
+    policy: GeometryPolicy,
+    what: &str,
+) -> Result<Solid, ModelError> {
+    let mut current: Option<Solid> = None;
+    for (k, prism) in prisms.iter().enumerate() {
+        let outer: Vec<_> = match prism.circle {
+            Some((center, radius_mm)) => vec![CurvedEdge2d::Circle { center, radius_mm }],
+            None => {
+                let n = prism.polygon.len();
+                (0..n)
+                    .map(|i| CurvedEdge2d::Line {
+                        a: prism.polygon[i],
+                        b: prism.polygon[(i + 1) % n],
+                    })
+                    .collect()
+            }
+        };
+        let origins: Vec<_> = (0..outer.len())
+            .map(|i| Origin {
+                source: id,
+                role: format!("{role}.{k}.{i}"),
+            })
+            .collect();
+        let profile = CurvedProfile {
+            frame: PlaneFrame {
+                origin: prism.origin,
+                u: prism.u,
+                v: prism.v,
+            },
+            outer,
+            holes: vec![],
+        };
+        let tool =
+            Solid::extrude_curved_profile_vector_named(&profile, prism.sweep, id, &origins, policy)
+                .map_err(|e| error(Some(id), e))?;
+        let source = current.as_ref().unwrap_or(base);
+        current = source
+            .boolean(&tool, BooleanOperation::Subtract, policy)
+            .map_err(|e| error(Some(id), e))?
+            .map(Some)
+            .ok_or_else(|| error(Some(id), format!("The {what} removed the whole panel")))?;
+    }
+    let solid = match current {
+        Some(solid) => solid,
+        None => base
+            .transformed(RigidTransform::default())
+            .map_err(|e| error(Some(id), e))?,
+    };
+    if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
+        return Err(error(
+            Some(id),
+            format!("The {what} splits the panel into pieces"),
+        ));
+    }
+    Ok(solid)
+}
+
 /// Remove the other panel's share of each joint corner from a panel solid.
 pub(crate) fn build_joint_cut(
     document: &Document,
@@ -115,57 +179,43 @@ pub(crate) fn build_joint_cut(
     let base = solids
         .get(&cut.input.producer)
         .ok_or_else(|| error(Some(id), "The panel before this joint has no solid"))?;
-    let mut current: Option<Solid> = None;
     let prisms = match cut.side {
         model::PanelJointSide::A => &corner.cut_a,
         model::PanelJointSide::B => &corner.cut_b,
     };
-    for (k, prism) in prisms.iter().enumerate() {
-        let n = prism.polygon.len();
-        let profile = CurvedProfile {
-            frame: PlaneFrame {
-                origin: prism.origin,
-                u: prism.u,
-                v: prism.v,
-            },
-            outer: (0..n)
-                .map(|i| CurvedEdge2d::Line {
-                    a: prism.polygon[i],
-                    b: prism.polygon[(i + 1) % n],
-                })
-                .collect(),
-            holes: vec![],
-        };
-        let origins: Vec<_> = (0..n)
-            .map(|i| Origin {
-                source: id,
-                role: format!("joint.{}.{k}.{i}", cut.joint),
-            })
-            .collect();
-        let tool =
-            Solid::extrude_curved_profile_vector_named(&profile, prism.sweep, id, &origins, policy)
-                .map_err(|e| error(Some(id), e))?;
-        let source = current.as_ref().unwrap_or(base);
-        current = source
-            .boolean(&tool, BooleanOperation::Subtract, policy)
-            .map_err(|e| error(Some(id), e))?
-            .map(Some)
-            .ok_or_else(|| error(Some(id), "The joint removed the whole panel"))?;
-    }
-    // The through panel keeps its corner; it still gets its own copy.
-    let solid = match current {
-        Some(solid) => solid,
-        None => base
-            .transformed(RigidTransform::default())
-            .map_err(|e| error(Some(id), e))?,
-    };
-    if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
-        return Err(error(
-            Some(id),
-            "The joint splits the panel into pieces; check the panel overlap at the corner",
-        ));
-    }
-    Ok(solid)
+    subtract(
+        base,
+        prisms,
+        id,
+        &format!("joint.{}", cut.joint),
+        policy,
+        "joint",
+    )
+}
+/// Cut one machining operation into one target panel.
+pub(crate) fn build_machining_cut(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    id: EntityId,
+    policy: GeometryPolicy,
+    solids: &BTreeMap<EntityId, Solid>,
+) -> Result<Solid, ModelError> {
+    let e = |e: DocumentError| error(Some(id), e);
+    let cut = model::read_machining_cut(document, id).map_err(e)?;
+    let op = model::read_machining(document, cut.operation).map_err(e)?;
+    let resolved =
+        model::resolve_machining(document, parameters, &op, cut.output.body).map_err(e)?;
+    let base = solids
+        .get(&cut.input.producer)
+        .ok_or_else(|| error(Some(id), "The panel before this operation has no solid"))?;
+    subtract(
+        base,
+        &resolved.prisms,
+        id,
+        &format!("machining.{}", cut.operation),
+        policy,
+        op.label(),
+    )
 }
 
 /// The world-to-frame transform: frame u, v and u × v become X, Y and Z.
@@ -192,6 +242,8 @@ pub struct CutRecord {
     pub stack: Option<EntityId>,
     /// Cabinetry joints this panel takes part in.
     pub joints: Vec<EntityId>,
+    /// Machining operations cut into this panel.
+    pub operations: Vec<EntityId>,
     pub material: Option<EntityId>,
     pub stock: EntityId,
     pub stock_name: String,
@@ -228,11 +280,84 @@ pub struct StackLayer {
     pub span_mm: [f64; 2],
 }
 
+/// One machining operation as cut into one panel, with the volume it
+/// measurably removed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MachiningRecord {
+    pub part: EntityId,
+    pub feature: EntityId,
+    pub operation: EntityId,
+    pub name: String,
+    pub kind: &'static str,
+    pub face: model::MachiningFace,
+    pub material: Option<EntityId>,
+    pub stock: EntityId,
+    pub holes: Vec<model::ResolvedHole>,
+    pub recesses: Vec<model::ResolvedRecess>,
+    pub removed_mm3: f64,
+}
+
 impl Model {
+    /// Every machining cut, measured from its native solids.
+    pub fn machining(&self, document: &Document) -> Result<Vec<MachiningRecord>, ModelError> {
+        let parameters =
+            multicad_core::parameters::evaluate(document).map_err(|e| error(None, e))?;
+        let mut out = vec![];
+        for entity in model::machining_cuts(document) {
+            let id = entity.id;
+            let e = |e: DocumentError| error(Some(id), e);
+            let cut = model::read_machining_cut(document, id).map_err(e)?;
+            let (Some(before), Some(after)) = (self.solid(cut.input.producer), self.solid(id))
+            else {
+                continue;
+            };
+            let op = model::read_machining(document, cut.operation).map_err(e)?;
+            let part = cut.output.body;
+            let resolved = model::resolve_machining(document, &parameters, &op, part).map_err(e)?;
+            let panel = model::resolve_panel(
+                document,
+                &parameters,
+                &model::read_panel(
+                    document,
+                    model::panel_feature(document, part)
+                        .ok_or_else(|| error(Some(id), "The machined Part is not a panel"))?,
+                )
+                .map_err(e)?,
+            )
+            .map_err(e)?;
+            let volume = |s: &Solid| s.volume_mm3().map_err(|e| error(Some(id), e));
+            out.push(MachiningRecord {
+                part,
+                feature: id,
+                operation: cut.operation,
+                name: document
+                    .get(cut.operation)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default(),
+                kind: op.label(),
+                face: op.face,
+                material: Some(panel.stock_spec.material),
+                stock: panel.stock,
+                holes: resolved.holes,
+                recesses: resolved.recesses,
+                removed_mm3: volume(before)? - volume(after)?,
+            });
+        }
+        Ok(out)
+    }
     /// The frame of an evaluated panel and its Part's final solid.
     fn panel_solid(&self, feature: EntityId, part: EntityId) -> Option<(PlaneFrame, &Solid)> {
         let frame = *self.snapshot().panel_frames.get(&feature)?;
-        let head = self.snapshot().bodies.get(&part)?;
+        // A Part used as a component definition is not a final body itself
+        // but is still a panel to cut; a Part consumed by a Boolean is not.
+        if self.snapshot().consumed_bodies.contains(&part) {
+            return None;
+        }
+        let head = self
+            .snapshot()
+            .bodies
+            .get(&part)
+            .or_else(|| self.snapshot().body_sources.get(&part))?;
         Some((frame, self.solid(*head)?))
     }
     /// Cut records for every evaluated panel Part, in document order. Parts
@@ -297,6 +422,7 @@ impl Model {
                 role,
                 stack: stacks.get(&part).copied(),
                 joints: model::panel_joints_of(document, part),
+                operations: model::machinings_of(document, part),
                 material: *material,
                 stock: panel.stock,
                 stock_name: document
