@@ -61,6 +61,7 @@ fn mcp_previews_blocks_and_applies_a_staged_repair_set() {
         b,
         replacement_a,
         replacement_b,
+        ..
     } = broken(true);
     let base = session.revision();
     let original = session.document().clone();

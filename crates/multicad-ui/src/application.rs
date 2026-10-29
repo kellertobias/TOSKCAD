@@ -163,6 +163,7 @@ pub struct Application {
     assembly_queries: Option<crate::assembly::AssemblyInspectionBackendFactory>,
     export_backends: Option<crate::exchange::BackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
+    repair_set_checker: Option<crate::reference_repair_set::RepairSetChecker>,
     external_control: Option<Box<dyn external_control::ExternalControl>>,
     control_bindings: BTreeMap<u64, EntityId>,
     /// Client actor IDs whose changes apply without review in this window.
@@ -227,6 +228,7 @@ impl Application {
             trusted_clients: Default::default(),
             review_preview: None,
             sketch_queries: None,
+            repair_set_checker: None,
         };
         app.discover_recoveries()?;
         Ok(app)
@@ -307,6 +309,15 @@ impl Application {
                     | Command::New
                     | Command::NewWindow
             )
+    }
+    pub fn set_repair_set_checker(
+        &mut self,
+        checker: crate::reference_repair_set::RepairSetChecker,
+    ) {
+        for project in &mut self.projects {
+            project.sketch.set_repair_set_checker(checker.clone());
+        }
+        self.repair_set_checker = Some(checker);
     }
     pub fn set_sketch_queries(&mut self, factory: crate::sketch_evaluation::RegionQueryFactory) {
         for project in &mut self.projects {
@@ -1923,6 +1934,13 @@ impl Application {
             for project in &mut self.projects {
                 if !project.scene.has_backend() {
                     project.scene.set_backend(factory());
+                }
+            }
+        }
+        if let Some(checker) = &self.repair_set_checker {
+            for project in &mut self.projects {
+                if !project.sketch.has_repair_set_checker() {
+                    project.sketch.set_repair_set_checker(checker.clone());
                 }
             }
         }

@@ -190,6 +190,8 @@ pub struct Fixture {
     pub session: Session,
     pub a: Consumer,
     pub b: Consumer,
+    pub original_a: PrimitiveRequest,
+    pub original_b: PrimitiveRequest,
     pub replacement_a: PrimitiveRequest,
     pub replacement_b: PrimitiveRequest,
 }
@@ -221,6 +223,8 @@ pub fn broken(with_replacement_b: bool) -> Fixture {
         session,
         a,
         b,
+        original_a,
+        original_b,
         replacement_a,
         replacement_b,
     }

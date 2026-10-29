@@ -166,6 +166,7 @@ pub struct SketchEditor {
     queued_profile_clicks: VecDeque<ProfileClick>,
     solid: crate::viewport::Interaction,
     repair: crate::reference_repair::RepairPanel,
+    repair_set: crate::reference_repair_set::RepairSetPanel,
     evaluated: Option<multicad_core::references::ReferenceReport>,
     creation_evaluation: Option<(EntityId, multicad_core::references::ReferenceReport)>,
     pub viewport_rect: Option<Rect>,
@@ -249,6 +250,7 @@ impl Default for SketchEditor {
             queued_profile_clicks: VecDeque::new(),
             solid: Default::default(),
             repair: Default::default(),
+            repair_set: Default::default(),
             evaluated: None,
             creation_evaluation: None,
             viewport_rect: None,
@@ -308,6 +310,15 @@ impl SketchEditor {
     }
     pub fn has_query_factory(&self) -> bool {
         self.sketch_evaluation.has_query_factory()
+    }
+    pub fn set_repair_set_checker(
+        &mut self,
+        checker: crate::reference_repair_set::RepairSetChecker,
+    ) {
+        self.repair_set.set_checker(checker);
+    }
+    pub fn has_repair_set_checker(&self) -> bool {
+        self.repair_set.has_checker()
     }
     pub fn set_query_factory(&mut self, factory: crate::sketch_evaluation::RegionQueryFactory) {
         self.reset_profile_clicks();
@@ -1040,6 +1051,7 @@ impl SketchEditor {
         self.preview.is_some()
             || self.constraints.dirty()
             || self.repair.has_pending()
+            || self.repair_set.has_pending()
             || self.tree.tool_active()
             || self.model.active()
             || self.assembly.dirty()
@@ -1070,6 +1082,7 @@ impl SketchEditor {
         self.cancel_operation();
         self.tree.cancel_tool();
         self.repair.cancel();
+        self.repair_set.discard();
         self.solid.clear();
         self.moving = false;
         self.picking = false;
@@ -2275,7 +2288,7 @@ impl SketchEditor {
                     else if self.model.active(){Some(Owner::Model)}
                     else if self.acquisition.is_some(){Some(Owner::Targets)}
                     else if self.tree.tool_active(){Some(Owner::Tree)}
-                    else if self.repair.has_pending(){Some(Owner::Repair)}
+                    else if self.repair.has_pending() || self.repair_set.has_pending(){Some(Owner::Repair)}
                     else if self.external.active(){Some(Owner::External)}
                     else if self.constraints.dirty(){Some(Owner::Constraints)}
                     else if self.picking{Some(Owner::Plane)}
@@ -2348,6 +2361,8 @@ impl SketchEditor {
                         if let Some(error)=feed.quality_error() {ui.colored_label(Color32::LIGHT_YELLOW,error);if ui.button("Retry display refinement").clicked(){feed.retry_quality();}}
                         if let Some(evaluation)=feed.references() {
                             self.repair.show(ui,session,evaluation);
+                            let failed=self.sketch_evaluation.errors().keys().copied().collect();
+                            self.repair_set.show(ui,session,resources,evaluation,&failed);
                         }
                         if self.repair.has_pending() {self.tool=None;self.clear_drawing_progress();self.moving=false;self.cancel_move();}
                         if self.editing && let Some(id)=self.selected {

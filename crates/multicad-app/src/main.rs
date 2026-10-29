@@ -10,6 +10,7 @@ mod inspection;
 mod mcp;
 mod modeling;
 mod recent_projects;
+mod reference_repairs;
 mod self_test;
 
 use multicad_core::BuildInfo;
@@ -117,6 +118,7 @@ fn run_application() -> Result<(), String> {
     app.set_external_query_backends(std::sync::Arc::new(|| {
         Ok(Box::new(external_queries::Backend::new()))
     }))?;
+    app.set_repair_set_checker(std::sync::Arc::new(reference_repairs::check));
     app.set_measurement_backends(std::sync::Arc::new(|| Box::new(inspection::Backend::new())));
     app.set_assembly_query_backends(std::sync::Arc::new(|| {
         Box::new(assembly_inspection::Backend::new())

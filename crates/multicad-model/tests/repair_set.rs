@@ -32,6 +32,7 @@ fn two_broken_references_repair_in_one_checked_transaction() {
         b,
         replacement_a,
         replacement_b,
+        ..
     } = broken(true);
     let broken = session.document().clone();
     let base = session.revision();
