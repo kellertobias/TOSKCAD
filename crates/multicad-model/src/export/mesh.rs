@@ -353,7 +353,8 @@ pub struct SceneNode {
     pub rotation: [[f64; 3]; 3],
     pub translation_mm: [f64; 3],
 }
-fn linear(channel: u8) -> f64 {
+/// An sRGB 8-bit channel as a linear factor.
+pub fn linear(channel: u8) -> f64 {
     let c = f64::from(channel) / 255.;
     if c <= 0.04045 {
         c / 12.92
@@ -370,6 +371,80 @@ pub fn glb(
     materials: &[Appearance],
     nodes: &[SceneNode],
     title: &str,
+) -> Vec<u8> {
+    glb_scene(objects, materials, nodes, title, None)
+}
+/// A glTF camera placed in the Z-up model frame (millimeters).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GlbProjection {
+    Perspective { yfov_rad: f64 },
+    Orthographic { height_mm: f64 },
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlbCamera {
+    pub name: String,
+    pub eye_mm: [f64; 3],
+    pub target_mm: [f64; 3],
+    pub projection: GlbProjection,
+}
+/// A KHR_lights_punctual light: `intensity` is in lux for directional
+/// lights and candela for point lights; `color` is linear RGB.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GlbLight {
+    Directional {
+        name: String,
+        direction: [f64; 3],
+        color: [f64; 3],
+        intensity_lux: f64,
+    },
+    Point {
+        name: String,
+        position_mm: [f64; 3],
+        color: [f64; 3],
+        intensity_cd: f64,
+    },
+}
+/// Render additions to a GLB scene: a camera, lights and scene extras.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlbRender {
+    pub camera: GlbCamera,
+    pub lights: Vec<GlbLight>,
+    pub scene_extras: serde_json::Value,
+}
+fn unit3(a: [f64; 3]) -> [f64; 3] {
+    let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    a.map(|c| c / n)
+}
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+/// The column-major glTF matrix of a node at `at_mm` whose local −Z looks
+/// along `direction`, keeping +Z (model up) as close to local +Y as possible.
+fn look_matrix(at_mm: [f64; 3], direction: [f64; 3]) -> Vec<f64> {
+    let d = unit3(direction);
+    let mut right = cross3(d, [0., 0., 1.]);
+    if right.iter().map(|c| c * c).sum::<f64>() < 1e-12 {
+        right = cross3(d, [0., 1., 0.]);
+    }
+    let x = unit3(right);
+    let y = cross3(x, d);
+    let z = d.map(|c| -c);
+    let t = at_mm.map(|c| c * 0.001);
+    vec![
+        x[0], x[1], x[2], 0., y[0], y[1], y[2], 0., z[0], z[1], z[2], 0., t[0], t[1], t[2], 1.,
+    ]
+}
+/// glTF 2.0 binary with optional render additions.
+pub fn glb_scene(
+    objects: &[MeshObject],
+    materials: &[Appearance],
+    nodes: &[SceneNode],
+    title: &str,
+    render: Option<&GlbRender>,
 ) -> Vec<u8> {
     use serde_json::json;
     let mut bin: Vec<u8> = vec![];
@@ -476,12 +551,61 @@ pub fn glb(
         json_nodes.push(value);
         children[node.parent.map_or(0, |p| p + 1)].push(index + 1);
     }
+    // Cameras and lights are children of the root, so they sit in the
+    // Z-up model frame like the parts.
+    let (mut cameras, mut lights) = (vec![], vec![]);
+    if let Some(render) = render {
+        let c = &render.camera;
+        cameras.push(match c.projection {
+            GlbProjection::Perspective { yfov_rad } => json!({
+                "name": c.name, "type": "perspective",
+                "perspective": {"yfov": yfov_rad, "znear": 0.01},
+            }),
+            GlbProjection::Orthographic { height_mm } => json!({
+                "name": c.name, "type": "orthographic",
+                "orthographic": {"xmag": height_mm * 0.0005, "ymag": height_mm * 0.0005, "znear": 0.01, "zfar": 10000.0},
+            }),
+        });
+        let view = std::array::from_fn(|i| c.target_mm[i] - c.eye_mm[i]);
+        json_nodes
+            .push(json!({"name": c.name, "camera": 0, "matrix": look_matrix(c.eye_mm, view)}));
+        children[0].push(json_nodes.len() - 1);
+        for (index, light) in render.lights.iter().enumerate() {
+            let (value, matrix) = match light {
+                GlbLight::Directional {
+                    name,
+                    direction,
+                    color,
+                    intensity_lux,
+                } => (
+                    json!({"name": name, "type": "directional", "color": color, "intensity": intensity_lux}),
+                    look_matrix([0.; 3], *direction),
+                ),
+                GlbLight::Point {
+                    name,
+                    position_mm,
+                    color,
+                    intensity_cd,
+                } => (
+                    json!({"name": name, "type": "point", "color": color, "intensity": intensity_cd}),
+                    look_matrix(*position_mm, [0., 0., -1.]),
+                ),
+            };
+            let name = value["name"].clone();
+            lights.push(value);
+            json_nodes.push(json!({
+                "name": name, "matrix": matrix,
+                "extensions": {"KHR_lights_punctual": {"light": index}},
+            }));
+            children[0].push(json_nodes.len() - 1);
+        }
+    }
     for (index, list) in children.into_iter().enumerate() {
         if !list.is_empty() {
             json_nodes[index]["children"] = json!(list);
         }
     }
-    let document = json!({
+    let mut document = json!({
         "asset": {"version": "2.0", "generator": "MultiCAD"},
         "scene": 0,
         "scenes": [{"name": title, "nodes": [0]}],
@@ -492,6 +616,14 @@ pub fn glb(
         "bufferViews": views,
         "buffers": [{"byteLength": bin.len()}],
     });
+    if let Some(render) = render {
+        document["cameras"] = json!(cameras);
+        document["scenes"][0]["extras"] = render.scene_extras.clone();
+        if !lights.is_empty() {
+            document["extensionsUsed"] = json!(["KHR_lights_punctual"]);
+            document["extensions"] = json!({"KHR_lights_punctual": {"lights": lights}});
+        }
+    }
     let mut text = serde_json::to_vec(&document).expect("glTF JSON is serializable");
     while !text.len().is_multiple_of(4) {
         text.push(b' ');
