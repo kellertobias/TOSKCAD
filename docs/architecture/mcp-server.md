@@ -172,6 +172,8 @@ schema is generated from the Rust argument types with schemars and returned by
 | `set_panel_joint`, `delete_panel_joint` | yes | Butt (A or B through), miter or finger joints on panel pairs overlapping at a corner; each panel gets its own cut |
 | `set_hardware_pattern` | yes | Reusable hardware hole pattern with per-material diameter and depth allowances |
 | `set_machining`, `delete_machining` | yes | Groove, rabbet, pocket, drilling or placed hardware pattern on one or more panels |
+| `import_step` | yes | Import or update a STEP file's solids from the exchange folder (see [imports](imports.md)) |
+| `import_kicad` | yes | Import or update a KiCad board, its holes and footprint components from the exchange folder |
 | `cut_list` | no | Finished and core panel sizes measured from the solids, stock fit and stack contact |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
