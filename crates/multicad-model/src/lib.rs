@@ -13,6 +13,7 @@ mod external;
 mod external_geometry;
 mod external_repair;
 mod extrude;
+pub mod imports;
 pub mod inspection;
 mod levels;
 mod occurrences;

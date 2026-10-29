@@ -624,6 +624,15 @@ impl Compiler {
                         &solids,
                     )?
                 }
+                (model::imports::STEP_BODY_TYPE, 1) => {
+                    crate::imports::build_step_body(document, id, self.policy)?
+                }
+                (model::imports::BOARD_TYPE, 1) => {
+                    crate::imports::build_board(document, id, self.policy)?
+                }
+                (model::imports::COMPONENT_TYPE, 1) => {
+                    crate::imports::build_component(document, id, self.policy)?
+                }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
                 }

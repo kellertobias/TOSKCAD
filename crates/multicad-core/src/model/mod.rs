@@ -11,6 +11,7 @@ mod edge_treatment;
 mod evaluation;
 mod extrude_boolean;
 mod extrude_group;
+pub mod imports;
 mod level;
 mod placement;
 mod prepare;
