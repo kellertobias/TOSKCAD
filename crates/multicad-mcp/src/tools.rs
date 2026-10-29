@@ -37,10 +37,15 @@ use std::{
 };
 
 mod reference_repair;
+mod walls;
 pub use reference_repair::{
     CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
+pub use walls::{
+    CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
+};
+use walls::{create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type};
 
 pub type ToolResult = Result<Value, ToolError>;
 
@@ -188,6 +193,21 @@ tools! {
     "export_step" => ExportStep, "Export STEP", true,
         "Write one final part as a STEP B-rep into the export folder in scope (bare file name ending .step or .stp). The written file is read back and its volume reported. Does not change the document.",
         export_step;
+    "create_wall_type" => WallTypeArgs, "Create wall type", false,
+        "Create a reusable wall type: thickness, height, justification (center, left or right of the drawn path) and an optional material for new walls. Commits one transaction.",
+        create_wall_type;
+    "edit_wall_type" => EditWallTypeArgs, "Edit wall type", false,
+        "Change a wall type. Every wall of the type rebuilds unless it overrides the changed value; walls still using the previous type material follow a material change. All affected walls are evaluated natively before the edit commits.",
+        edit_wall_type;
+    "create_opening_type" => OpeningTypeArgs, "Create door or window type", false,
+        "Create a reusable door (hinge start/end, swing left/right) or window type with width, height and sill. Commits one transaction.",
+        create_opening_type;
+    "create_wall" => CreateWallArgs, "Create wall", false,
+        "Draw a wall of a wall type along a path (world X/Y mm, optionally closed into a room) with optional thickness/height/justification overrides and door/window openings placed by segment and offset. The mitered wall and its cut openings are evaluated natively before the transaction commits; unsupported joints or openings are refused with a reason.",
+        create_wall;
+    "edit_wall" => EditWallArgs, "Edit wall", false,
+        "Replace a wall's path, overrides and openings, keeping its Part and the identities of openings at the same positions. Evaluated natively before commit.",
+        edit_wall;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;
