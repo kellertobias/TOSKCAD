@@ -2,6 +2,7 @@
 use crate::host::{Host, Job, Scope, Target};
 use multicad_core::{
     commands::Session,
+    control::ControlLedger,
     document::Document,
     project_file::{ProjectFile, ProjectResources},
 };
@@ -22,6 +23,9 @@ pub struct Workspace {
     resources: ProjectResources,
     path: Option<PathBuf>,
     storage: Option<Box<dyn Storage>>,
+    /// Headless clients are trusted: there is no reviewer, but every request
+    /// is still audited.
+    ledger: ControlLedger,
 }
 impl Workspace {
     /// An unsaved document; `save_project` is unavailable.
@@ -31,6 +35,7 @@ impl Workspace {
             resources: ProjectResources::default(),
             path: None,
             storage: None,
+            ledger: ControlLedger::default(),
         })
     }
     /// Open `path`, or start a new document saved there on first save.
@@ -54,6 +59,7 @@ impl Workspace {
             resources,
             path: Some(path),
             storage: Some(storage),
+            ledger: ControlLedger::default(),
         })
     }
 }
@@ -69,6 +75,12 @@ impl Target for Workspace {
     }
     fn project_path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+    fn control(&mut self) -> (&mut Session, &mut ControlLedger) {
+        (&mut self.session, &mut self.ledger)
+    }
+    fn ledger(&self) -> &ControlLedger {
+        &self.ledger
     }
     fn save(&mut self) -> Result<PathBuf, String> {
         let (Some(path), Some(storage)) = (self.path.as_ref(), self.storage.as_mut()) else {

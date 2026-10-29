@@ -172,6 +172,9 @@ pub struct SketchEditor {
     plane_picker: PlanePicker,
     occurrence: Option<EntityId>,
     display_scene: Option<std::sync::Arc<crate::viewport::Scene>>,
+    /// A pending external change shown for review instead of the canonical
+    /// scene while no tool shows its own candidate.
+    review_scene: Option<std::sync::Arc<crate::viewport::Scene>>,
     context_key: Option<(crate::viewport::SceneStamp, u64, Option<EntityId>)>,
     contexts: std::collections::BTreeMap<EntityId, crate::viewport::Transform>,
 }
@@ -252,6 +255,7 @@ impl Default for SketchEditor {
             plane_picker: Default::default(),
             occurrence: None,
             display_scene: None,
+            review_scene: None,
             context_key: None,
             contexts: Default::default(),
         }
@@ -2041,6 +2045,12 @@ impl SketchEditor {
     ) {
         self.show_project(ui, session, sketch_mode, feed, &Default::default());
     }
+    pub fn set_review_scene(&mut self, scene: Option<std::sync::Arc<crate::viewport::Scene>>) {
+        self.review_scene = scene;
+    }
+    pub fn review_scene_shown(&self) -> bool {
+        self.review_scene.is_some()
+    }
     pub fn show_project(
         &mut self,
         ui: &mut egui::Ui,
@@ -2623,6 +2633,14 @@ impl SketchEditor {
                 }
                 Err(error) => self.message = error,
             }
+        }
+        if !self.measurement.active()
+            && !model_view
+            && let Some(review) = &self.review_scene
+        {
+            scene = Some(review.clone());
+            current = false;
+            model_view = true;
         }
         if !self.measurement.active()
             && !model_view

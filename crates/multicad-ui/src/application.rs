@@ -50,6 +50,8 @@ pub struct Project {
     measure_return_view: Option<(Mode, usize)>,
     pub path: Option<PathBuf>,
     pub scene: crate::viewport::SceneFeed,
+    /// External control audit and the changes awaiting review.
+    pub control: multicad_core::control::ControlLedger,
 }
 impl Project {
     pub fn new(document: Document) -> Result<Self, String> {
@@ -74,6 +76,7 @@ impl Project {
             measure_return_view: None,
             path: None,
             scene: Default::default(),
+            control: Default::default(),
         })
     }
     fn snapshot(&self) -> Result<ProjectFile, String> {
@@ -162,6 +165,9 @@ pub struct Application {
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
     external_control: Option<Box<dyn external_control::ExternalControl>>,
     control_bindings: BTreeMap<u64, EntityId>,
+    /// Client actor IDs whose changes apply without review in this window.
+    trusted_clients: std::collections::BTreeSet<String>,
+    review_preview: Option<external_control::ReviewPreview>,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -218,6 +224,8 @@ impl Application {
             export_backends: None,
             external_control: None,
             control_bindings: BTreeMap::new(),
+            trusted_clients: Default::default(),
+            review_preview: None,
             sketch_queries: None,
         };
         app.discover_recoveries()?;
@@ -1842,6 +1850,9 @@ impl Application {
         if self.run_external_jobs() {
             ctx.request_repaint();
         }
+        if self.tick_reviews() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
         if !self.welcome
             && self.current().view_restore_pending
             && ctx.input(|i| {
@@ -2073,12 +2084,6 @@ impl Application {
                 .open(&mut open)
                 .show(&ctx, |ui| {
                     self.external_control_panel(ui);
-                    for entry in self.projects[self.active].session.activity() {
-                        ui.label(format!(
-                            "r{} · {:?} · {} · {}",
-                            entry.change.revision, entry.actor.channel, entry.actor.id, entry.label
-                        ));
-                    }
                 });
             self.history_open = open;
         }

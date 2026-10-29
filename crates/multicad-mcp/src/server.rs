@@ -4,7 +4,6 @@ use crate::{
     host::Host,
     tools::{self, Call},
 };
-use multicad_core::commands::{Actor, Channel};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     model::{
@@ -79,13 +78,9 @@ impl ServerHandler for Server {
             .peer
             .peer_info()
             .map(|info| info.client_info.name.clone())
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "unnamed".into());
+            .unwrap_or_default();
         let call = Call {
-            actor: Actor {
-                id: format!("mcp:{}", client.chars().take(64).collect::<String>()),
-                channel: Channel::Mcp,
-            },
+            actor: multicad_core::control::mcp_actor(&client),
             cancel: Arc::new(AtomicBool::new(false)),
         };
         let cancel = Arc::clone(&call.cancel);

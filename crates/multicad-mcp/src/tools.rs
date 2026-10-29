@@ -6,12 +6,13 @@ use crate::{
     host::{Host, Target, with},
 };
 use multicad_core::{
-    commands::{Actor, Prepared, Request},
+    commands::{Actor, Prepared, Request as SessionRequest},
     constraint_sketch::{
         Axis, Constraint, ConstraintKind, Curve, CurveKind, Dimension, Point,
         binding::{DimensionInput, DimensionRequest},
         source::Source,
     },
+    control::{AuditOutcome, AuditRecord, PendingAction, PendingChange, ReviewPolicy},
     document::{Entity, EntityData, EntityId, Mutation},
     model::{
         self, BodyInput, Direction, Extent, ExtrudeBooleanRequest, ExtrudeParameters,
@@ -42,6 +43,21 @@ pub type ToolResult = Result<Value, ToolError>;
 pub struct Call {
     pub actor: Actor,
     pub cancel: Arc<AtomicBool>,
+}
+/// One dispatched request: its call, tool and arguments, and the review it
+/// was queued as, if the owner required review.
+#[derive(Clone)]
+struct Request {
+    call: Call,
+    tool: &'static str,
+    arguments: Value,
+    review: Arc<std::sync::Mutex<Option<u64>>>,
+}
+impl std::ops::Deref for Request {
+    type Target = Call;
+    fn deref(&self) -> &Call {
+        &self.call
+    }
 }
 impl Call {
     fn cancelled(&self) -> bool {
@@ -82,17 +98,28 @@ macro_rules! tools {
                 schema: serde_json::to_value(schemars::schema_for!($args)).expect("schema serializes"),
             }),*]
         }
-        /// Run a tool synchronously. Callers execute this off the async runtime.
+        /// Run a tool synchronously and record its outcome in the owner's
+        /// audit. Callers execute this off the async runtime.
         pub fn dispatch(host: &dyn Host, call: &Call, name: &str, arguments: Value) -> ToolResult {
-            match name {
-                $($name => {
-                    if !$read_only && host.scope().read_only {
-                        return Err(ToolError::new("read_only", "This server was started read-only; mutating tools are refused"));
-                    }
-                    $run(host, call, parse::<$args>(arguments)?)
-                })*
-                _ => Err(ToolError::new("unknown_tool", format!("Unknown tool '{name}'"))),
-            }
+            let (tool, read_only) = match name {
+                $($name => ($name, $read_only),)*
+                _ => return Err(ToolError::new("unknown_tool", format!("Unknown tool '{name}'"))),
+            };
+            let request = Request {
+                call: call.clone(),
+                tool,
+                arguments: arguments.clone(),
+                review: Arc::default(),
+            };
+            let result = if !read_only && host.scope().read_only {
+                Err(ToolError::new("read_only", "This server was started read-only; mutating tools are refused"))
+            } else {
+                match tool {
+                    $($name => parse::<$args>(arguments).and_then(|args| $run(host, &request, args)),)*
+                    _ => unreachable!("matched above"),
+                }
+            };
+            finish(host, &request, read_only, result)
         }
     };
 }
@@ -143,6 +170,12 @@ tools! {
     "history" => HistoryArgs, "Activity history", true,
         "Recent committed activity: actor, channel, label, kind (apply, undo, redo) and changed entities.",
         history;
+    "review_status" => ReviewArgs, "Review status", true,
+        "State of a change queued for review: pending (with whether it is stale), applied with its revision, rejected, stale (the document moved; prepare it again) or failed.",
+        review_status;
+    "activity" => HistoryArgs, "Control activity", true,
+        "The append-only audit of this document: every external request (inspected, previewed, applied, rejected, cancelled, failed, undone, redone, stale) and imported window actions, with actor, tool, arguments, base and resulting revision and affected IDs. Undo never removes entries.",
+        activity;
     "save_project" => RevisionArgs, "Save project", false,
         "Save the document to the project file in scope, if expected_revision is current. Never writes elsewhere.",
         save_project;
@@ -190,6 +223,12 @@ pub struct EntityArgs {
 pub struct RevisionArgs {
     /// The document revision this request is based on. Stale requests fail.
     pub expected_revision: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewArgs {
+    /// Review ID returned with status "pending_review".
+    pub review: u64,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -427,14 +466,136 @@ fn editable(target: &dyn Target) -> Result<(), ToolError> {
     }
 }
 /// Commit a checked candidate unless the call was cancelled meanwhile.
-fn commit(target: &mut dyn Target, call: &Call, prepared: Prepared) -> Result<u64, ToolError> {
+/// Commit a checked candidate, or queue it for review when the owner reviews
+/// this client. A queued change returns the unchanged base revision.
+fn commit(target: &mut dyn Target, call: &Request, prepared: Prepared) -> Result<u64, ToolError> {
     call.check()?;
     editable(target)?;
+    if target.review_policy(&call.actor) == ReviewPolicy::Reviewed {
+        let affected = affected(target.session().document(), prepared.document());
+        let label = prepared.label().to_owned();
+        return queue(
+            target,
+            call,
+            label,
+            PendingAction::Commit(Box::new(prepared)),
+            affected,
+        );
+    }
     let change = target
         .session_mut()
         .commit(prepared)
         .map_err(|e| ToolError::from(e).at_revision(target.session().revision()))?;
     Ok(change.revision)
+}
+fn queue(
+    target: &mut dyn Target,
+    call: &Request,
+    label: String,
+    action: PendingAction,
+    affected: Vec<EntityId>,
+) -> Result<u64, ToolError> {
+    let base = target.session().revision();
+    let change = PendingChange {
+        id: 0,
+        actor: call.actor.clone(),
+        tool: call.tool.into(),
+        arguments: call.arguments.clone(),
+        label,
+        base_revision: base,
+        action,
+        affected,
+    };
+    let (session, ledger) = target.control();
+    let id = ledger
+        .queue(change, session)
+        .map_err(|e| ToolError::new("busy", e).at_revision(base))?;
+    *call.review.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+    Ok(base)
+}
+fn affected(
+    before: &multicad_core::document::Document,
+    after: &multicad_core::document::Document,
+) -> Vec<EntityId> {
+    let ids: BTreeSet<_> = before
+        .entities()
+        .chain(after.entities())
+        .map(|e| e.id)
+        .collect();
+    ids.into_iter()
+        .filter(|id| before.get(*id) != after.get(*id))
+        .collect()
+}
+/// Mark queued results, then record the outcome in the owner's audit.
+fn finish(host: &dyn Host, request: &Request, read_only: bool, result: ToolResult) -> ToolResult {
+    let review = *request.review.lock().unwrap_or_else(|e| e.into_inner());
+    let result = result.map(|mut value| {
+        if let Some(object) = value.as_object_mut() {
+            match review {
+                Some(id) => {
+                    object.insert("status".into(), json!("pending_review"));
+                    object.insert("review".into(), json!(id));
+                }
+                None if !read_only => {
+                    object.insert("status".into(), json!("applied"));
+                }
+                None => {}
+            }
+        }
+        value
+    });
+    if review.is_some() {
+        // The ledger already recorded the preview when it queued the change.
+        return result;
+    }
+    let outcome = match (&result, request.tool) {
+        (Ok(_), _) if read_only => AuditOutcome::Inspected,
+        (Ok(_), "undo") => AuditOutcome::Undone,
+        (Ok(_), "redo") => AuditOutcome::Redone,
+        (Ok(_), _) => AuditOutcome::Applied,
+        (Err(e), _) if e.code == "cancelled" => AuditOutcome::Cancelled,
+        (Err(_), _) => AuditOutcome::Failed,
+    };
+    let revision = match &result {
+        Ok(value) if !read_only => value.get("revision").and_then(Value::as_u64),
+        _ => None,
+    };
+    let message = result
+        .as_ref()
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    let (actor, tool, arguments) = (
+        request.actor.clone(),
+        request.tool.to_string(),
+        request.arguments.clone(),
+    );
+    let _ = with(host, move |target| {
+        let session_revision = target.session().revision();
+        let changed = revision
+            .and_then(|r| target.session().activity().find(|a| a.change.revision == r))
+            .map(|a| (a.label.clone(), a.change.changed.clone()));
+        let base = arguments
+            .get("expected_revision")
+            .and_then(Value::as_u64)
+            .unwrap_or(session_revision);
+        let (label, affected) = changed.unwrap_or_default();
+        let (session, ledger) = target.control();
+        ledger.sync_below(session, revision);
+        ledger.record(AuditRecord {
+            actor,
+            tool,
+            arguments,
+            label,
+            base_revision: base,
+            revision: revision.filter(|r| *r > base),
+            outcome,
+            review: None,
+            affected,
+            message,
+        });
+    });
+    result
 }
 fn kind_name(entity: &Entity) -> Value {
     serde_json::to_value(entity.data.kind()).unwrap_or(Value::Null)
@@ -448,7 +609,7 @@ fn sketch_entity(target: &dyn Target, sketch: EntityId) -> Result<(), ToolError>
 }
 fn edit_sketch(
     target: &mut dyn Target,
-    call: &Call,
+    call: &Request,
     expected: u64,
     sketch: EntityId,
     source: Source,
@@ -497,7 +658,7 @@ fn diagnostics_json(d: &multicad_solver::Diagnostics) -> Value {
 
 // ---- Tools ----------------------------------------------------------------
 
-fn document_info(host: &dyn Host, _: &Call, _: NoArgs) -> ToolResult {
+fn document_info(host: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     let scope = host.scope();
     with(host, move |target| {
         let session = target.session();
@@ -523,7 +684,7 @@ fn document_info(host: &dyn Host, _: &Call, _: NoArgs) -> ToolResult {
     })
 }
 
-fn list_entities(host: &dyn Host, _: &Call, args: ListEntities) -> ToolResult {
+fn list_entities(host: &dyn Host, _: &Request, args: ListEntities) -> ToolResult {
     with(host, move |target| {
         let session = target.session();
         let entities: Vec<_> = session
@@ -547,7 +708,7 @@ fn list_entities(host: &dyn Host, _: &Call, args: ListEntities) -> ToolResult {
     })
 }
 
-fn get_entity(host: &dyn Host, _: &Call, args: EntityArgs) -> ToolResult {
+fn get_entity(host: &dyn Host, _: &Request, args: EntityArgs) -> ToolResult {
     let entity_id = id(&args.id)?;
     with(host, move |target| {
         let session = target.session();
@@ -563,7 +724,7 @@ fn get_entity(host: &dyn Host, _: &Call, args: EntityArgs) -> ToolResult {
     })?
 }
 
-fn list_parameters(host: &dyn Host, _: &Call, _: NoArgs) -> ToolResult {
+fn list_parameters(host: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     with(host, move |target| {
         let session = target.session();
         let evaluated = session.parameters();
@@ -596,7 +757,7 @@ fn list_parameters(host: &dyn Host, _: &Call, _: NoArgs) -> ToolResult {
     })
 }
 
-fn set_parameter(host: &dyn Host, call: &Call, args: SetParameter) -> ToolResult {
+fn set_parameter(host: &dyn Host, call: &Request, args: SetParameter) -> ToolResult {
     let call = call.clone();
     with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
@@ -642,7 +803,7 @@ fn set_parameter(host: &dyn Host, call: &Call, args: SetParameter) -> ToolResult
                 (Mutation::Insert(entity), id, true)
             }
         };
-        let prepared = target.session().prepare(Request {
+        let prepared = target.session().prepare(SessionRequest {
             expected_revision: args.expected_revision,
             actor: call.actor.clone(),
             label: format!("Set parameter {}", args.name),
@@ -660,12 +821,12 @@ fn set_parameter(host: &dyn Host, call: &Call, args: SetParameter) -> ToolResult
     })?
 }
 
-fn create_sketch(host: &dyn Host, call: &Call, args: CreateSketch) -> ToolResult {
+fn create_sketch(host: &dyn Host, call: &Request, args: CreateSketch) -> ToolResult {
     let call = call.clone();
     with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
         let (sketch, edits) = Source::create(args.plane.into(), &args.name)?;
-        let prepared = target.session().prepare(Request {
+        let prepared = target.session().prepare(SessionRequest {
             expected_revision: args.expected_revision,
             actor: call.actor.clone(),
             label: format!("Create sketch {}", args.name),
@@ -704,7 +865,7 @@ fn read_source(target: &dyn Target, sketch: EntityId, revision: u64) -> Result<S
     Ok(Source::read_for_evaluation(target.session().document(), sketch, revision, None)?.0)
 }
 
-fn sketch_add_rectangle(host: &dyn Host, call: &Call, args: AddRectangle) -> ToolResult {
+fn sketch_add_rectangle(host: &dyn Host, call: &Request, args: AddRectangle) -> ToolResult {
     let call = call.clone();
     let sketch = id(&args.sketch)?;
     with(host, move |target| {
@@ -771,7 +932,7 @@ fn sketch_add_rectangle(host: &dyn Host, call: &Call, args: AddRectangle) -> Too
     })?
 }
 
-fn sketch_add_circle(host: &dyn Host, call: &Call, args: AddCircle) -> ToolResult {
+fn sketch_add_circle(host: &dyn Host, call: &Request, args: AddCircle) -> ToolResult {
     let call = call.clone();
     let sketch = id(&args.sketch)?;
     with(host, move |target| {
@@ -812,7 +973,7 @@ fn sketch_add_circle(host: &dyn Host, call: &Call, args: AddCircle) -> ToolResul
     })?
 }
 
-fn set_sketch_dimension(host: &dyn Host, call: &Call, args: SetDimension) -> ToolResult {
+fn set_sketch_dimension(host: &dyn Host, call: &Request, args: SetDimension) -> ToolResult {
     let call = call.clone();
     let sketch = id(&args.sketch)?;
     let constraint = id(&args.constraint)?;
@@ -861,7 +1022,7 @@ fn snapshot(
     })
 }
 
-fn inspect_sketch(host: &dyn Host, call: &Call, args: SketchArgs) -> ToolResult {
+fn inspect_sketch(host: &dyn Host, call: &Request, args: SketchArgs) -> ToolResult {
     let sketch = id(&args.sketch)?;
     let (document, revision, evaluated) = snapshot(host)?;
     match document.get(sketch).map(|e| &e.data) {
@@ -951,7 +1112,7 @@ fn compile(
     call.finish(Compiler::default().compile_interruptible(document, revision, Some(&interrupt)))
 }
 
-fn extrude(host: &dyn Host, call: &Call, args: Extrude) -> ToolResult {
+fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
     let sketch = id(&args.sketch)?;
     let target_part = args.target_part.as_deref().map(id).transpose()?;
     if args.regions.is_empty() {
@@ -1071,7 +1232,7 @@ fn extrude(host: &dyn Host, call: &Call, args: Extrude) -> ToolResult {
     Ok(json!({ "revision": new_revision, "created": created, "bodies": bodies }))
 }
 
-fn evaluate_model(host: &dyn Host, call: &Call, _: NoArgs) -> ToolResult {
+fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     let (document, revision, _) = snapshot(host)?;
     let model = compile(&document, revision, call)?;
     let snapshot = model.snapshot();
@@ -1113,12 +1274,19 @@ fn evaluate_model(host: &dyn Host, call: &Call, _: NoArgs) -> ToolResult {
     }))
 }
 
-fn undo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
+fn undo(host: &dyn Host, call: &Request, args: RevisionArgs) -> ToolResult {
     let call = call.clone();
     with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
         call.check()?;
         editable(target)?;
+        if target.review_policy(&call.actor) == ReviewPolicy::Reviewed {
+            if !target.session().can_undo() {
+                return Err(ToolError::new("no_history", "Nothing to undo"));
+            }
+            let revision = queue(target, &call, "Undo".into(), PendingAction::Undo, vec![])?;
+            return Ok(json!({ "revision": revision }));
+        }
         let change = target
             .session_mut()
             .undo(args.expected_revision, call.actor.clone())?;
@@ -1126,12 +1294,19 @@ fn undo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
     })?
 }
 
-fn redo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
+fn redo(host: &dyn Host, call: &Request, args: RevisionArgs) -> ToolResult {
     let call = call.clone();
     with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
         call.check()?;
         editable(target)?;
+        if target.review_policy(&call.actor) == ReviewPolicy::Reviewed {
+            if !target.session().can_redo() {
+                return Err(ToolError::new("no_history", "Nothing to redo"));
+            }
+            let revision = queue(target, &call, "Redo".into(), PendingAction::Redo, vec![])?;
+            return Ok(json!({ "revision": revision }));
+        }
         let change = target
             .session_mut()
             .redo(args.expected_revision, call.actor.clone())?;
@@ -1139,7 +1314,7 @@ fn redo(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
     })?
 }
 
-fn history(host: &dyn Host, _: &Call, args: HistoryArgs) -> ToolResult {
+fn history(host: &dyn Host, _: &Request, args: HistoryArgs) -> ToolResult {
     let limit = args.limit.unwrap_or(20).min(200);
     with(host, move |target| {
         let session = target.session();
@@ -1163,7 +1338,7 @@ fn history(host: &dyn Host, _: &Call, args: HistoryArgs) -> ToolResult {
     })
 }
 
-fn save_project(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult {
+fn save_project(host: &dyn Host, call: &Request, args: RevisionArgs) -> ToolResult {
     let call = call.clone();
     with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
@@ -1175,7 +1350,7 @@ fn save_project(host: &dyn Host, call: &Call, args: RevisionArgs) -> ToolResult 
     })?
 }
 
-fn export_step(host: &dyn Host, call: &Call, args: ExportStep) -> ToolResult {
+fn export_step(host: &dyn Host, call: &Request, args: ExportStep) -> ToolResult {
     let directory = host.scope().export_directory.ok_or_else(|| {
         ToolError::new(
             "out_of_scope",
@@ -1248,7 +1423,7 @@ fn export_step(host: &dyn Host, call: &Call, args: ExportStep) -> ToolResult {
     }))
 }
 
-fn import_sketch_artwork(host: &dyn Host, call: &Call, args: ImportArtwork) -> ToolResult {
+fn import_sketch_artwork(host: &dyn Host, call: &Request, args: ImportArtwork) -> ToolResult {
     let format = match args.format {
         ArtworkFormat::Dxf => Format::Dxf,
         ArtworkFormat::Svg => Format::Svg,
@@ -1321,4 +1496,47 @@ fn import_sketch_artwork(host: &dyn Host, call: &Call, args: ImportArtwork) -> T
             "unsupported": unsupported,
         }))
     })?
+}
+
+fn review_status(host: &dyn Host, _: &Request, args: ReviewArgs) -> ToolResult {
+    with(host, move |target| {
+        let ledger = target.ledger();
+        let state = ledger.state(args.review).ok_or_else(|| {
+            ToolError::new(
+                "not_found",
+                format!("Review {} does not exist", args.review),
+            )
+        })?;
+        let pending = ledger.pending().iter().find(|c| c.id == args.review);
+        Ok(json!({
+            "review": args.review,
+            "revision": target.session().revision(),
+            "state": state,
+            "base_revision": pending.map(|c| c.base_revision),
+            "stale": pending.map(|c| c.is_stale(target.session())),
+        }))
+    })?
+}
+
+fn activity(host: &dyn Host, _: &Request, args: HistoryArgs) -> ToolResult {
+    let limit = args.limit.unwrap_or(20).min(200);
+    with(host, move |target| {
+        let (session, ledger) = target.control();
+        ledger.sync(session);
+        let revision = session.revision();
+        let ledger = target.ledger();
+        let entries: Vec<_> = ledger.entries().rev().take(limit).collect();
+        json!({
+            "revision": revision,
+            "entries": entries,
+            "dropped": ledger.dropped(),
+            "pending": ledger.pending().iter().map(|c| json!({
+                "review": c.id,
+                "actor": c.actor.id,
+                "tool": c.tool,
+                "label": c.label,
+                "base_revision": c.base_revision,
+            })).collect::<Vec<_>>(),
+        })
+    })
 }

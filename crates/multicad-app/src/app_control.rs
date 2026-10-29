@@ -332,6 +332,8 @@ mod tests {
         assert_eq!(mode(&socket), 0o600);
         let mut app = Application::new(Box::new(crate::files::SnapshotStore)).unwrap();
         app.set_external_control(Box::new(control));
+        // Equivalence is about results, so this client applies without review.
+        app.set_client_trusted("window-test", true);
 
         let path = socket.clone();
         let window = pump(&mut app, move || {
@@ -380,6 +382,170 @@ mod tests {
         assert_eq!(
             canonical(session.document()),
             canonical(&headless.document())
+        );
+    }
+
+    #[test]
+    fn reviewed_window_changes_preview_natively_and_apply_only_when_accepted() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("private").join("app.sock");
+        let mut control = WindowControl::new(egui::Context::default(), Ok(socket.clone()));
+        control.set_enabled(true).unwrap();
+        let mut app = Application::new(Box::new(crate::files::SnapshotStore)).unwrap();
+        app.set_external_control(Box::new(control));
+        app.set_scene_backends(Arc::new(|| Box::new(crate::modeling::Backend::new())));
+        let path = socket.clone();
+        let (mut wire, sketch) = pump(&mut app, move || {
+            let mut wire = connect(&path);
+            // Set up a rectangle while trusted (see below), then review.
+            let sketch = wire.call(
+                "create_sketch",
+                json!({ "expected_revision": 0, "plane": "xy", "name": "Base" }),
+            );
+            (wire, sketch)
+        });
+        // The first call was reviewed: nothing changed until it is accepted.
+        assert_eq!(sketch["status"], "pending_review");
+        assert_eq!(app.current().session.revision(), 0);
+        let review = sketch["review"].as_u64().unwrap();
+        assert_eq!(app.accept_review(review).unwrap(), 1);
+        let sketch = sketch["sketch"].as_str().unwrap().to_owned();
+        app.set_client_trusted("window-test", true);
+        let mut wire = pump(&mut app, move || {
+            wire.call(
+                "sketch_add_rectangle",
+                json!({ "expected_revision": 1, "sketch": sketch, "origin_mm": [0, 0],
+                        "width": { "value": 30, "unit": "mm" }, "height": { "value": 20, "unit": "mm" } }),
+            );
+            wire
+        });
+        assert_eq!(
+            app.current().session.revision(),
+            2,
+            "trusted calls apply directly"
+        );
+        app.set_client_trusted("window-test", false);
+        let sketch_id = app
+            .current()
+            .session
+            .document()
+            .entities()
+            .find(|e| e.name == "Base")
+            .unwrap()
+            .id
+            .to_string();
+        let (mut wire, extrude) = pump(&mut app, move || {
+            let extrude = wire.call(
+                "extrude",
+                json!({ "expected_revision": 2, "sketch": sketch_id, "regions": [0],
+                        "distance": { "value": 10, "unit": "mm" }, "operation": "new_body" }),
+            );
+            (wire, extrude)
+        });
+        assert_eq!(extrude["status"], "pending_review", "{extrude}");
+        let review = extrude["review"].as_u64().unwrap();
+        assert_eq!(app.current().session.revision(), 2);
+
+        // Preview the candidate natively in the viewport without committing.
+        app.preview_review(review).unwrap();
+        for _ in 0..2000 {
+            app.tick_reviews();
+            if app.review_preview_scene().is_some() || app.review_preview_error().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(
+            app.review_preview_error().is_none(),
+            "{:?}",
+            app.review_preview_error()
+        );
+        let scene = app.review_preview_scene().expect("native preview scene");
+        let bounds = scene
+            .native_instance_bounds(scene.instances()[0].id)
+            .unwrap();
+        assert!((bounds[1][0] - bounds[0][0] - 30.).abs() < 1e-6);
+        assert!((bounds[1][2] - bounds[0][2] - 10.).abs() < 1e-6);
+        assert!(app.current().sketch.review_scene_shown());
+        assert_eq!(
+            app.current().session.revision(),
+            2,
+            "a preview never commits"
+        );
+
+        assert_eq!(app.accept_review(review).unwrap(), 3);
+        app.tick_reviews();
+        assert!(
+            !app.current().sketch.review_scene_shown(),
+            "the preview closes on accept"
+        );
+        let accepted = app.current().session.activity().last().unwrap().clone();
+        assert_eq!(accepted.actor.id, "mcp:window-test");
+
+        // A queued change goes stale when the window edits first.
+        let (mut wire, queued) = pump(&mut app, move || {
+            let queued = wire.call(
+                "set_parameter",
+                json!({ "expected_revision": 3, "name": "w", "expression": "1", "unit": "mm" }),
+            );
+            (wire, queued)
+        });
+        let stale = queued["review"].as_u64().unwrap();
+        app.current_mut()
+            .session
+            .undo(
+                3,
+                multicad_core::commands::Actor::local(multicad_core::commands::Channel::Ui),
+            )
+            .unwrap();
+        app.tick_reviews();
+        assert!(app.accept_review(stale).is_err());
+        let (mut wire, rejected) = pump(&mut app, move || {
+            let rejected = wire.call(
+                "set_parameter",
+                json!({ "expected_revision": 4, "name": "w", "expression": "1", "unit": "mm" }),
+            );
+            (wire, rejected)
+        });
+        let rejected = rejected["review"].as_u64().unwrap();
+        app.reject_review(rejected).unwrap();
+        let (states, activity) = pump(&mut app, move || {
+            let states = [stale, rejected].map(|review| {
+                wire.call("review_status", json!({ "review": review }))["state"]["state"].clone()
+            });
+            (states, wire.call("activity", json!({ "limit": 100 })))
+        });
+        assert_eq!(states, [json!("stale"), json!("rejected")]);
+        let outcomes: Vec<_> = activity["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .map(|e| {
+                format!(
+                    "{}:{}",
+                    e["outcome"].as_str().unwrap(),
+                    e["actor"]["id"].as_str().unwrap()
+                )
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                "previewed:mcp:window-test",
+                "applied:mcp:window-test",
+                "applied:mcp:window-test",
+                "previewed:mcp:window-test",
+                "applied:mcp:window-test",
+                "previewed:mcp:window-test",
+                "undone:local-user",
+                "stale:mcp:window-test",
+                "previewed:mcp:window-test",
+                "rejected:mcp:window-test",
+                "inspected:mcp:window-test",
+                "inspected:mcp:window-test",
+            ],
+            "Undo in the window added an entry and removed none"
         );
     }
 
