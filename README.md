@@ -19,7 +19,7 @@ Windows uses `./build.ps1`. The wrapper acquires the pinned native/Cargo depende
 
 The native application includes Parameters, constrained Sketch and initial modeling tools. The [canonical document](docs/architecture/0004-canonical-document.md) provides stable identities, typed units, transactional commands and a dependency graph. The [native model evaluator](docs/architecture/0012-native-model-evaluation.md) owns exact OCCT solids on a bounded worker; the UI uses a separate candidate lane for checked Preview, Apply and Cancel. [Native project containers](docs/architecture/project-files.md) preserve source and provider payloads, with atomic saves, migrations and explicit recovery copies.
 
-The [native modeling checkpoint](docs/verification/native-modeling-2026-10-28.md) records shared-sketch extrusion, Undo/Redo, saved-project regeneration and the remaining limits. Advanced modeling controls, manufacturing exports, specialized workspaces and MCP transport remain under development. The foundation laboratory is a separate reference.
+The [native modeling checkpoint](docs/verification/native-modeling-2026-10-28.md) records shared-sketch extrusion, Undo/Redo, saved-project regeneration and the remaining limits. Advanced modeling controls, manufacturing exports and specialized workspaces remain under development. The [local MCP server](docs/architecture/mcp-server.md) (`multicad --mcp`) controls a headless project or the open window through the same transaction API. The foundation laboratory is a separate reference.
 
 The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow-2026-10-28.md) records table editing, expression diagnostics, stable renamed bindings, native solid rebuilding and save/reopen behavior.
 
