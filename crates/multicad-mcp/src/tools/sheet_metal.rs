@@ -10,6 +10,7 @@ use multicad_core::{
     commands::Prepared,
     constraint_sketch::Dimension,
     document::{Document, Entity, EntityData, EntityId},
+    exchange::LengthUnit,
     materials::{self, LibraryDefinition, Stock, StockKind},
     model::{
         self, BendDirection, BodyOutput, Cutout, CutoutFace, CutoutShape, Flange, FlangeKind,
@@ -18,6 +19,7 @@ use multicad_core::{
     parameters::EvaluatedParameters,
 };
 use multicad_kernel::NativeRegionQueries;
+use multicad_model::export::{Exporter, sheet_dxf::SheetDxfLayers};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -635,5 +637,107 @@ pub(super) fn unfold_sheet(host: &dyn Host, call: &Request, args: UnfoldSheetArg
     out["scope"] = json!(
         "Developed from the sheet feature with the stated K-factor and inside radii. Cut loops are closed (outer counterclockwise, openings clockwise) in base-frame millimeters. The bend order follows the feature order and is not a press-brake sequence. Rule-of-thumb diagnostics are not machine or process approval."
     );
+    Ok(out)
+}
+
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DxfUnitArg {
+    Mm,
+    Cm,
+    M,
+    In,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SheetDxfArgs {
+    /// The sheet Part whose developed blank is exported.
+    pub part: String,
+    /// Bare file name ending in .dxf; written inside the export folder.
+    pub file_name: String,
+    /// File units (default mm). Coordinates are scaled 1:1 into them.
+    #[serde(default)]
+    pub units: Option<DxfUnitArg>,
+}
+
+pub(super) fn export_sheet_dxf(host: &dyn Host, call: &Request, args: SheetDxfArgs) -> ToolResult {
+    let directory = host.scope().export_directory.ok_or_else(|| {
+        ToolError::new(
+            "out_of_scope",
+            "No export folder is in scope; start the server with --export-dir",
+        )
+    })?;
+    let name = &args.file_name;
+    let valid = !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', ':', '\0'])
+        && name.to_ascii_lowercase().ends_with(".dxf");
+    if !valid {
+        return Err(ToolError::new(
+            "out_of_scope",
+            "file_name must be a bare name ending in .dxf",
+        ));
+    }
+    let part = id(&args.part)?;
+    let units = match args.units {
+        Some(DxfUnitArg::Cm) => LengthUnit::Centimeter,
+        Some(DxfUnitArg::M) => LengthUnit::Meter,
+        Some(DxfUnitArg::In) => LengthUnit::Inch,
+        _ => LengthUnit::Millimeter,
+    };
+    let (document, revision, _) = snapshot(host)?;
+    let interrupt = || call.cancelled();
+    let file = Exporter::default()
+        .developed_sheet_dxf(
+            &document,
+            revision,
+            part,
+            units,
+            &SheetDxfLayers::default(),
+            Some(&interrupt),
+        )
+        .map_err(|e| ToolError::new("export_failed", e.message.clone()))?;
+    // Publish only bytes made from the current source.
+    let (current, current_revision, _) = snapshot(host)?;
+    file.check_current(&current, current_revision)
+        .map_err(|e| ToolError::new("stale_revision", e.message.clone()))?;
+    call.check()?;
+    let path = directory.join(name);
+    let partial = directory.join(format!(".{name}.partial"));
+    let written = std::fs::write(&partial, &file.bytes)
+        .and_then(|()| std::fs::read(&partial))
+        .map_err(|e| ToolError::new("export_failed", e.to_string()))
+        .and_then(|back| {
+            if back == file.bytes {
+                std::fs::rename(&partial, &path)
+                    .map_err(|e| ToolError::new("export_failed", e.to_string()))
+            } else {
+                Err(ToolError::new(
+                    "export_failed",
+                    "DXF readback differs from the developed output",
+                ))
+            }
+        });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
+    let mut out = pattern_json(&file.pattern);
+    out["revision"] = json!(revision);
+    out["path"] = json!(path);
+    out["bytes"] = json!(file.bytes.len());
+    out["file_units"] = json!(match units {
+        LengthUnit::Millimeter => "mm",
+        LengthUnit::Centimeter => "cm",
+        LengthUnit::Meter => "m",
+        LengthUnit::Inch => "in",
+    });
+    out["layers"] = json!({
+        "CUT": "outer cut contour", "CUT_INNER": "openings, holes",
+        "BEND_UP": "bend center lines bending toward the material side",
+        "BEND_DOWN": "bend center lines bending away from it",
+        "DRILL": "circular cutout centers", "LABEL": "bend, cutout and part labels (non-cut)",
+    });
     Ok(out)
 }

@@ -222,6 +222,58 @@ Each diagnostic states its scope:
 
 None of these diagnostics guarantees machine or process feasibility.
 
+## Developed DXF
+
+`Exporter::developed_sheet_dxf` writes the developed blank of one sheet Part
+as a 1:1 DXF in millimeters, centimeters, meters or inches. The code is in
+`crates/multicad-model/src/export/sheet_dxf.rs`, separate from the planar
+panel DXF.
+
+The exporter works in three steps:
+
+1. It evaluates the document afresh at the given revision.
+2. It unfolds the Part.
+3. It encodes the `DevelopedPattern`.
+
+A failed evaluation or unfolding returns an error and no bytes. The result
+carries the source stamp. `SheetDxf::check_current` refuses bytes made from
+an older or different source, and the MCP tool runs that check before
+writing.
+
+| Layer | Content | Cut |
+| --- | --- | --- |
+| `CUT` | The closed outer contour, relief notches included, as an `LWPOLYLINE` with exact arc bulges | yes |
+| `CUT_INNER` | Closed openings: cutouts and base holes | yes |
+| `BEND_UP` | `LINE` center lines of bends toward the material side | no |
+| `BEND_DOWN` | `LINE` center lines of bends away from it | no |
+| `DRILL` | `POINT` at each circular cutout center | no |
+| `LABEL` | `TEXT` naming each bend and drill point, and the part | no |
+
+The labels carry the source ids from the pattern:
+
+- a bend reads `flange.<i>.bend.<j> UP|DOWN <angle> R<radius> #<order>`;
+- a drill point reads `cutout.<i> D<diameter>`;
+- the part label holds the name, thickness, K-factor and feature id.
+
+Layer names are configurable but must be distinct. The file contains no
+nesting, kerf, tool offset or machine-specific data.
+
+The [test](../../crates/multicad-model/tests/sheet_dxf.rs) reopens the files
+with the independent `dxf` reader. It compares them with the editable part's
+unfolding:
+
+- the contour areas, including openings and reliefs;
+- the bend lines by direction;
+- the drill points and the labels for every id.
+
+The test also covers:
+
+- inch scaling;
+- regeneration after a K-factor and direction edit;
+- stale receipts;
+- refusals: touching flanges in a candidate document, a non-sheet entity,
+  and clashing layer names.
+
 ## Converting a solid
 
 `Model::analyze_sheet_conversion` checks whether a Part's current solid is
@@ -261,7 +313,8 @@ nothing.
   Sketch-region or converted bases, flanges the form cannot show and
   cutouts are kept unchanged.
 - **MCP.** `create_sheet_stock`, `set_sheet_part`, `set_sheet_forming`,
-  `convert_to_sheet`, `sheet_metal` and `unfold_sheet`.
+  `convert_to_sheet`, `sheet_metal`, `unfold_sheet` and `export_sheet_dxf`.
+  `export_sheet_dxf` writes into the server's export folder.
 
 ## Limits
 
@@ -278,6 +331,9 @@ nothing.
 - **Unfolding in the window.** The Flat pattern and Bend schedule ribbon
   entries are still placeholders. Unfolding is available through
   `Model::unfold` and the MCP `unfold_sheet` tool.
+- **Developed DXF routes.** The window's Export mode has no developed sheet
+  DXF recipe yet. The DXF is written by the exporter API and the MCP
+  `export_sheet_dxf` tool.
 - **Bend allowance.** Bend allowance uses the K-factor model only. There are
   no bend tables or bend deduction data.
 - **Window flange editor.** The form edits one flange per rectangle edge

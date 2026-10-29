@@ -53,11 +53,12 @@ pub use reference_repair::{
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
 pub use sheet_metal::{
-    ConvertSheetArgs, SheetFormingArgs, SheetPartArgs, SheetStockArgs, UnfoldSheetArgs,
+    ConvertSheetArgs, SheetDxfArgs, SheetFormingArgs, SheetPartArgs, SheetStockArgs,
+    UnfoldSheetArgs,
 };
 use sheet_metal::{
-    convert_to_sheet, create_sheet_stock, set_sheet_forming, set_sheet_part, sheet_metal,
-    unfold_sheet,
+    convert_to_sheet, create_sheet_stock, export_sheet_dxf, set_sheet_forming, set_sheet_part,
+    sheet_metal, unfold_sheet,
 };
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
@@ -276,6 +277,9 @@ tools! {
     "unfold_sheet" => UnfoldSheetArgs, "Unfold sheet part", true,
         "Develop one sheet Part without changing it: closed cut loops, bend lines (id, order, up/down, angle, inside radius, allowance, flat line), drill points for circular cutouts, size and area in explicit millimeters, and scoped diagnostics (hole-to-bend proximity, short legs, tight radii, missing or shallow reliefs as rules of thumb; stock-sheet fit against the model; tooling data that is not defined). Parts that are not sheet parts, or that later features change, are refused.",
         unfold_sheet;
+    "export_sheet_dxf" => SheetDxfArgs, "Export developed sheet DXF", true,
+        "Unfold one sheet Part from a fresh evaluation and write its developed blank as a 1:1 DXF in the export folder: CUT and CUT_INNER closed contours (reliefs and openings included), BEND_UP and BEND_DOWN center lines, DRILL points for circular cutouts and LABEL texts naming each bend and cutout id. Failed unfolding or a source that changed during the export writes nothing.",
+        export_sheet_dxf;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;

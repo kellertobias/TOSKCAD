@@ -235,3 +235,77 @@ fn mcp_sets_flanges_and_cutouts_and_refuses_touching_corners() {
     assert!(error.message.contains("touch"), "{}", error.message);
     assert_eq!(host.document(), before);
 }
+
+#[test]
+fn mcp_exports_a_developed_sheet_dxf_into_the_export_folder() {
+    let folder = tempfile::tempdir().unwrap();
+    let host = Headless::new(
+        Workspace::new(Document::new("Sheet DXF").unwrap()).unwrap(),
+        Some(folder.path().to_path_buf()),
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let steel = run(
+        "create_sheet_stock",
+        json!({ "expected_revision": 0, "name": "DC01 1.0", "material_name": "DC01",
+        "thickness_mm": 1, "sheet_length_mm": 2000, "sheet_width_mm": 1000,
+        "inside_bend_radius_mm": 1, "k_factor": 0.4 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = run(
+        "set_sheet_part",
+        json!({ "expected_revision": 1, "name": "Lid", "stock": steel,
+        "plane": "xy", "length": mm(80.), "width": mm(50.) }),
+    )
+    .unwrap();
+    let feature = created["feature"].as_str().unwrap().to_owned();
+    let part = created["part"].as_str().unwrap().to_owned();
+    run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 2, "feature": feature,
+        "flanges": [
+            { "edge": 0, "kind": "bend", "length": mm(10.) },
+            { "edge": 2, "kind": "bend", "length": mm(10.), "direction": "down" }
+        ],
+        "cutouts": [{ "shape": "circle", "center_mm": [40, 25], "diameter": mm(6.) }] }),
+    )
+    .unwrap();
+    let out = run(
+        "export_sheet_dxf",
+        json!({ "part": part, "file_name": "lid.dxf" }),
+    )
+    .unwrap();
+    let path = folder.path().join("lid.dxf");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(out["bytes"], bytes.len());
+    assert_eq!(out["file_units"], "mm");
+    let text = String::from_utf8(bytes).unwrap();
+    for layer in ["CUT", "CUT_INNER", "BEND_UP", "BEND_DOWN", "DRILL", "LABEL"] {
+        assert!(
+            text.contains(&format!("\n8\n{layer}\n")),
+            "no entity on {layer}"
+        );
+    }
+    assert!(text.contains("flange.1.bend.0 DOWN"));
+    assert!(text.contains("cutout.0 D6.000"));
+
+    // Bad names and non-sheet Parts write nothing.
+    assert!(
+        run(
+            "export_sheet_dxf",
+            json!({ "part": part, "file_name": "../x.dxf" })
+        )
+        .is_err()
+    );
+    let error = run(
+        "export_sheet_dxf",
+        json!({ "part": steel, "file_name": "stock.dxf" }),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "export_failed");
+    assert!(!folder.path().join("stock.dxf").exists());
+    assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 1);
+}

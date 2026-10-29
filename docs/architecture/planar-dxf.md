@@ -86,9 +86,11 @@ labels before publishing the owned bundle. Reuse checks those bytes again.
 `DevelopedContourProvider` is an optional owner-thread module contract. It receives
 the current complete native Model and returns `StampedPlanarContours` for the
 requested feature. The wrapper checks source identity, full revision/hash,
-cancellation and the exact-loop contract. No developed-sheet provider or recipe
-route is installed by default. A projected folded solid cannot stand in for an
-unfolded sheet.
+cancellation and the exact-loop contract. The sheet-metal module supplies
+`SheetFlatProvider`, which returns the cut loops of an unfolded sheet part. No
+export-set recipe route uses it yet; the developed sheet DXF has its own
+exporter, described in [sheet metal](sheet-metal.md#developed-dxf). A projected
+folded solid cannot stand in for an unfolded sheet.
 
 The [native tests](../../crates/multicad-model/tests/planar_dxf.rs) reopen actual
 files with the pinned developer-only Rust `dxf` reader. They verify panel holes,
