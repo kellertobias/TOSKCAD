@@ -1,4 +1,4 @@
-# Weldment members and connections
+# Weldment members, connections and welds
 
 Weldments are built from ordinary model features in the canonical document.
 The window and the MCP server use the same core API.
@@ -7,8 +7,10 @@ The window and the MCP server use the same core API.
 | --- | --- |
 | `crates/multicad-core/src/model/weldment/` | Source types, section and member-frame resolution, connection geometry and transactions |
 | `crates/multicad-model/src/weldment.rs` | Native member solids and end cuts, solved sketch paths and the member cut list |
+| `crates/multicad-model/src/weld_schedule.rs` | Weld schedule, cut groups and weld-plan annotations |
 | `crates/multicad-ui/src/modeling/weldment.rs` | The window's Tube / profile form |
 | `crates/multicad-ui/src/modeling/weld_connection.rs` | The window's Miter / cope form |
+| `crates/multicad-ui/src/modeling/weld_form.rs` | The window's Weld joint form and sequence order |
 | `crates/multicad-mcp/src/tools/weldment.rs` | MCP tools |
 
 ## Profile stock
@@ -173,6 +175,66 @@ Cut faces carry the provenance role `connection.<id>.…` of their
 connection. A cut that removes the whole member, or leaves it in separate
 pieces, is refused.
 
+## Welds and the weld sequence
+
+Welds and sequences are documentation for drawings and schedules. Nothing
+here is a welding procedure, and nothing computes distortion, strength,
+heat input or structural safety.
+
+### Welds
+
+A **weld** is a `weldment.weld` extension attached to one connection. It
+holds:
+
+- a **mark**, its ID on drawings and schedules, for example "W1". Marks are
+  unique in the document;
+- the drawing weld **symbol** (fillet, square groove, V groove, bevel
+  groove, plug, spot or seam) and the arrow, other or both **side**;
+- an optional authored **size** and **length**; no length means the full
+  joint. Both can be parameter expressions;
+- **all-around** and **field** flags;
+- a **process** annotation, for example "135 MAG";
+- **notes** on access, welding position and orientation.
+
+A connection can carry more than one weld.
+
+### Sequence
+
+A **sequence** is a `weldment.sequence` extension listing welds in the
+order they are to be made, each with an optional step note. Reordering
+replaces the steps. The welds keep their identities, so their connection
+and member references are unchanged. A weld appears at most once in one
+sequence and in at most one sequence.
+
+### Weld schedule
+
+`Model::weld_schedule` lists every weld: sequenced welds by sequence and
+step, then the others in document order. Each record holds:
+
+- the weld, its mark, sequence, step and step note;
+- the connection, its kind, and both member Parts and names, in connection
+  order;
+- the **position**: where the member paths meet, resolved from the current
+  members, so it follows path edits;
+- the **joint perimeter** for plane cuts: the first member's outside
+  perimeter on its cut plane. A round tube uses Ramanujan's ellipse
+  approximation. Copes report none;
+- the symbol, side, size, length, flags, process and notes.
+
+### Weld plans on drawings
+
+`weld_plan_annotations` turns the schedule into page annotations for one
+drawing view, using the existing drawing weld symbol and table kinds:
+
+- one weld symbol per weld, with its arrow at the joint projected into the
+  view, its size and length, and a tail with the mark and process;
+- a "Weld sequence" table with the step, mark, joint kind, members,
+  symbol, size, process and notes.
+
+The annotations are page content placed from the current schedule. They do
+not follow later geometry edits; placing the plan again replaces the weld
+symbols with current marks and earlier weld sequence tables.
+
 ## Member cut list
 
 `Model::member_cut_list` lists every evaluated member Part. It measures the
@@ -197,8 +259,14 @@ Part are included. Each record contains:
 - review issues: a measured section that differs from the stock, or a Part
   stock assignment that differs from the member stock.
 
-The MCP `weldment_cut_list` tool returns these records. They are the
-producer contract for BOM and cut-list exports (CAD-89).
+`group_cuts` groups identical cuts: the same stock, an overall length
+within 0.01 mm and the same end treatments within 0.01°, in either
+direction. Each group has a quantity, its Parts and names, the length and
+both end treatments.
+
+The MCP `weldment_cut_list` and `weld_schedule` tools return these
+records. The member records, cut groups and weld schedule are the producer
+contract for BOM, cut-list and weld schedule exports (CAD-89).
 
 ## Access
 
@@ -209,8 +277,12 @@ producer contract for BOM and cut-list exports (CAD-89).
 - **Window.** Model → Weld → **Miter / cope**. Choose the kind, the two
   members and the gap. An existing connection can be picked from the form
   and edited.
+- **Window.** Model → Weld → **Weld joint**. Attach a weld to a
+  connection, or reopen one; switch to Sequence to order the welds with Up,
+  Down, Remove and Add. Weld plans are placed through MCP for now.
 - **MCP.** `create_profile_stock`, `create_members`, `edit_member`,
-  `connect_members` and `weldment_cut_list`.
+  `connect_members`, `weldment_cut_list`, `set_weld`, `set_weld_sequence`,
+  `weld_schedule` and `place_weld_plan`.
 
 ## Limits
 
@@ -231,5 +303,13 @@ producer contract for BOM and cut-list exports (CAD-89).
   - A cope's envelope covers the receiving member's nominal length, not its
     own end cuts.
   - Connections are picked in the form, not in the viewport.
+- **Welds.**
+  - Weld positions are joint points, not modeled weld beads; there is no
+    weld bead geometry or filler mass.
+  - Joint perimeters are computed for plane cuts only, not for copes.
+  - Placed weld plans are static page content; the window has no Place
+    weld plan command yet, and the ribbon's Weld sequence entry remains a
+    placeholder (the sequence is ordered in the Weld joint form).
+  - No weld schedule, BOM or cut-list export files; those are CAD-89.
 - **Not a structural tool.** Members, records and lengths are geometric
   aids. They are not structural, strength or code checks.
