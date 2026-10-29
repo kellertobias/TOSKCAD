@@ -458,7 +458,10 @@ fn flat_solid(layout: &SheetLayout, policy: GeometryPolicy) -> Result<(Solid, f6
     Ok((solid, area))
 }
 /// Exact developed contours on the base plane, in base-frame coordinates.
-fn flat_contours(layout: &SheetLayout, policy: GeometryPolicy) -> Result<PlanarContours, String> {
+pub(crate) fn flat_contours(
+    layout: &SheetLayout,
+    policy: GeometryPolicy,
+) -> Result<PlanarContours, String> {
     let (solid, area) = flat_solid(layout, policy)?;
     let outward = scale(layout.thickness_direction, -1.);
     let faces = solid.faces().map_err(|e| e.to_string())?;
@@ -503,7 +506,7 @@ fn flat_contours(layout: &SheetLayout, policy: GeometryPolicy) -> Result<PlanarC
     Ok(contours)
 }
 /// Bend records of every flange, in flange order.
-fn bend_records(layout: &SheetLayout) -> Vec<BendRecord> {
+pub(crate) fn bend_records(layout: &SheetLayout) -> Vec<BendRecord> {
     let (t, k) = (layout.thickness_mm, layout.k_factor);
     let mut out = vec![];
     for f in &layout.flanges {
