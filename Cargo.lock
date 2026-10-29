@@ -2114,6 +2114,7 @@ dependencies = [
 name = "multicad-app"
 version = "0.1.0-dev"
 dependencies = [
+ "dxf",
  "multicad-core",
  "multicad-kernel",
  "multicad-mcp",
