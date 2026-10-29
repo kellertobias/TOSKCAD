@@ -35,4 +35,4 @@ pub use levels::EnvelopeEvaluation;
 pub use occurrences::{MAX_MODEL_OCCURRENCES, OccurrenceSnapshot};
 pub use runtime::*;
 pub use targets::*;
-pub use weldment::MemberRecord;
+pub use weldment::{EndRecord, MemberRecord};

@@ -11,8 +11,10 @@
 //! section bounding box lies on the path, and a rotation turns the section
 //! about the axis. The native evaluator builds the solids and measures cut
 //! records from them.
+mod connection;
 mod prepare;
 mod resolve;
+pub use connection::*;
 pub use prepare::*;
 pub use resolve::*;
 
@@ -262,5 +264,5 @@ pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError
             )));
         }
     }
-    Ok(())
+    validate_connections(document)
 }

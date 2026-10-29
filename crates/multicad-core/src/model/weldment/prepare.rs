@@ -282,3 +282,70 @@ fn restock(
     }
     Ok(edits)
 }
+
+fn check_connection(
+    document: &Document,
+    connection: &ConnectionDefinition,
+) -> Result<(), CommandError> {
+    connection.validate()?;
+    for part in connection.members {
+        let feature = member_feature(document, part).ok_or_else(|| {
+            error(format!(
+                "{} is not a weldment member; connect member Parts only",
+                document
+                    .get(part)
+                    .map_or("A Part".into(), |e| e.name.clone())
+            ))
+        })?;
+        read_member(document, feature)?;
+    }
+    Ok(())
+}
+/// Connect two members with a miter, butt joint or cope. The cuts are
+/// derived natively from both members' geometry; this transaction is
+/// source-only until both members are evaluated.
+pub fn prepare_connection(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    name: &str,
+    connection: &ConnectionDefinition,
+) -> Result<(EntityId, crate::commands::Prepared), CommandError> {
+    revision(session, expected_revision)?;
+    check_name(name, "Connection")?;
+    let document = session.document();
+    check_connection(document, connection)?;
+    let entity = Entity::new(name, connection.entity_data()?);
+    let id = entity.id;
+    let prepared = session.prepare(Request {
+        expected_revision,
+        actor,
+        label: format!("Create {} connection", connection.kind.label()),
+        edits: vec![Mutation::Insert(entity)],
+    })?;
+    Ok((id, prepared))
+}
+/// Change a connection's kind, member order or gap, keeping its identity.
+pub fn prepare_connection_edit(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    id: EntityId,
+    connection: &ConnectionDefinition,
+) -> Result<crate::commands::Prepared, CommandError> {
+    revision(session, expected_revision)?;
+    let document = session.document();
+    read_connection(document, id)?;
+    check_connection(document, connection)?;
+    let mut entity = document
+        .get(id)
+        .cloned()
+        .ok_or_else(|| error("Connection is missing"))?;
+    entity.data = connection.entity_data()?;
+    session.prepare(Request {
+        expected_revision,
+        actor,
+        label: "Edit connection".into(),
+        edits: vec![Mutation::Replace(entity)],
+    })
+}

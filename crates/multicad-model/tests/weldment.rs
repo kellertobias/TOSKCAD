@@ -8,7 +8,8 @@ use multicad_core::{
     document::{Document, Entity, EntityData, EntityId, Mutation},
     materials::*,
     model::{
-        self, AxisAnchor, BodyOutput, MemberDefinition, MemberPath, MemberRequest, angle, length,
+        self, AxisAnchor, BodyOutput, ConnectionDefinition, ConnectionKind, MemberDefinition,
+        MemberPath, MemberRequest, angle, length,
     },
     parameters::BoundExpression,
     project_file::{self, ProjectFile},
@@ -619,4 +620,307 @@ fn invalid_paths_and_stock_are_diagnosed() {
         .err()
         .unwrap();
     assert!(err.message.contains("no longer exists"), "{}", err.message);
+}
+
+// ---- Connections -----------------------------------------------------------
+
+fn create(f: &mut Fixture, requests: &[MemberRequest]) {
+    let p = model::prepare_members(&f.s, f.s.revision(), actor(), requests, None).unwrap();
+    checked(&mut f.s, p.prepared);
+}
+fn connect(
+    f: &mut Fixture,
+    name: &str,
+    kind: ConnectionKind,
+    members: [EntityId; 2],
+    gap: f64,
+) -> EntityId {
+    let (id, p) = model::prepare_connection(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        name,
+        &ConnectionDefinition {
+            kind,
+            members,
+            gap: (gap != 0.).then(|| length(gap)),
+        },
+    )
+    .unwrap();
+    checked(&mut f.s, p);
+    id
+}
+/// Stage a connection and return the native evaluator's refusal.
+fn refused(f: &Fixture, kind: ConnectionKind, members: [EntityId; 2]) -> String {
+    let (_, p) = model::prepare_connection(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "Refused",
+        &ConnectionDefinition {
+            kind,
+            members,
+            gap: None,
+        },
+    )
+    .unwrap();
+    Compiler::default()
+        .compile(p.document(), f.s.revision() + 1)
+        .err()
+        .expect("the connection should be refused")
+        .message
+}
+
+#[test]
+fn paired_miter_follows_the_meeting_angle_and_records_both_end_angles() {
+    let mut f = fixture();
+    let (sketch, pts, _) = path_sketch(
+        &mut f.s,
+        Datum::Xy,
+        &[[0., 0.], [800., 0.], [800., 500.]],
+        false,
+    );
+    let requests =
+        model::frame_member_requests(f.s.document(), sketch, "Rail", &template(f.shs)).unwrap();
+    create(&mut f, &requests);
+    let (a, b) = (requests[0].body, requests[1].body);
+    let before = f.s.document().clone();
+    let miter = connect(&mut f, "Corner", ConnectionKind::Miter, [a, b], 0.);
+    let m = compile(&f.s);
+    let list = m.member_cut_list(f.s.document()).unwrap();
+    let (ra, rb) = (record(&list, "Rail 1"), record(&list, "Rail 2"));
+    // A right-angle miter: both ends cut 45° from square, long points at
+    // the outside corner, and the centerline length kept.
+    for (r, partner) in [(ra, b), (rb, a)] {
+        assert!(r.issues.is_empty(), "{:?}", r.issues);
+        assert_eq!(r.ends[0].kind.is_some(), r.name == "Rail 2");
+        let joint = &r.ends[usize::from(r.name == "Rail 1")];
+        assert_eq!(joint.kind, Some(ConnectionKind::Miter));
+        assert_eq!(joint.connection, Some(miter));
+        assert_eq!(joint.partner, Some(partner));
+        near(joint.angle_deg, 45.);
+        assert!(joint.terminates);
+    }
+    near(ra.length_mm, 820.);
+    near(rb.length_mm, 520.);
+    rel(ra.volume_mm3, SHS_AREA * 800.);
+    rel(rb.volume_mm3, SHS_AREA * 500.);
+    near(bounds(&m, a).max[0], 820.);
+    near(bounds(&m, b).min[1], -20.);
+    // The two members touch on the miter plane without overlapping.
+    let solid = |p: EntityId| m.solid(m.snapshot().bodies[&p]).unwrap();
+    let overlap = solid(a)
+        .boolean(
+            solid(b),
+            multicad_kernel::BooleanOperation::Intersect,
+            Default::default(),
+        )
+        .unwrap();
+    assert!(overlap.is_none_or(|s| s.volume_mm3().unwrap() < 1e-6));
+
+    // Opening the corner to 135° updates both cuts and both records.
+    move_points(&mut f.s, sketch, &[(pts[2], [1300., 500.])]);
+    let m = compile(&f.s);
+    let list = m.member_cut_list(f.s.document()).unwrap();
+    let (ra, rb) = (record(&list, "Rail 1"), record(&list, "Rail 2"));
+    near(ra.ends[1].angle_deg, 22.5);
+    near(rb.ends[0].angle_deg, 22.5);
+    near(ra.length_mm, 800. + 20. * 22.5_f64.to_radians().tan());
+    rel(ra.volume_mm3, SHS_AREA * 800.);
+    rel(rb.volume_mm3, SHS_AREA * 500. * 2_f64.sqrt());
+
+    // A 2 mm weld gap is shared by both members along the miter normal.
+    let mut gapped = model::read_connection(f.s.document(), miter).unwrap();
+    gapped.gap = Some(length(2.));
+    let p = model::prepare_connection_edit(&f.s, f.s.revision(), actor(), miter, &gapped).unwrap();
+    checked(&mut f.s, p);
+    let list = compile(&f.s).member_cut_list(f.s.document()).unwrap();
+    let shift = 1. / 22.5_f64.to_radians().cos();
+    rel(
+        record(&list, "Rail 1").volume_mm3,
+        SHS_AREA * (800. - shift),
+    );
+
+    // Save and reopen keep the connection and the measured records.
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(f.s.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert!(opened.capabilities().contains(model::CONNECTION_CAPABILITY));
+    let reopened = Compiler::default()
+        .compile(&opened.document, 0)
+        .unwrap()
+        .member_cut_list(&opened.document)
+        .unwrap();
+    assert_eq!(reopened, list);
+    // Undo back to the unconnected members restores square ends.
+    while f.s.document() != &before {
+        f.s.undo(f.s.revision(), actor()).unwrap();
+    }
+    let list = compile(&f.s).member_cut_list(f.s.document()).unwrap();
+    assert!(list.iter().all(|r| r.ends.iter().all(|e| e.kind.is_none())));
+}
+
+#[test]
+fn butt_joints_identify_the_continuing_member_and_trim_square() {
+    let mut f = fixture();
+    let rail = MemberRequest::new("Rail", points(f.rhs, [0., 0., 0.], [1000., 0., 0.]));
+    let post = MemberRequest::new("Post", points(f.shs, [500., 0., 0.], [500., 600., 0.]));
+    let end_rail = MemberRequest::new("End rail", points(f.rhs, [2000., 0., 0.], [3000., 0., 0.]));
+    let end_post = MemberRequest::new(
+        "End post",
+        points(f.shs, [3000., 0., 0.], [3000., 600., 0.]),
+    );
+    let slanted = MemberRequest::new("Slant", points(f.shs, [200., 0., 0.], [500., 300., 0.]));
+    let brace = MemberRequest::new("Brace", points(f.chs, [0., 2000., 0.], [800., 2000., 0.]));
+    let stub = MemberRequest::new("Stub", points(f.shs, [400., 2000., 0.], [400., 2400., 0.]));
+    let all = [rail, post, end_rail, end_post, slanted, brace, stub];
+    create(&mut f, &all);
+    let id = |i: usize| all[i].body;
+    // T joint: the post stops 1 mm short of the rail's 30 mm face.
+    let tee = connect(&mut f, "Tee", ConnectionKind::Butt, [id(1), id(0)], 1.);
+    // Corner: the end post butts the end rail, which is cut square to cover it.
+    let corner = connect(&mut f, "Corner", ConnectionKind::Butt, [id(3), id(2)], 0.);
+    let m = compile(&f.s);
+    let list = m.member_cut_list(f.s.document()).unwrap();
+    let post = record(&list, "Post");
+    near(post.span_mm[0], 31.);
+    near(post.length_mm, 569.);
+    rel(post.volume_mm3, SHS_AREA * 569.);
+    assert_eq!(post.ends[0].kind, Some(ConnectionKind::Butt));
+    assert_eq!(post.ends[0].partner, Some(id(0)));
+    assert_eq!(post.ends[0].connection, Some(tee));
+    near(post.ends[0].angle_deg, 0.);
+    assert!(post.ends[0].terminates);
+    let rail = record(&list, "Rail");
+    assert!(rail.ends.iter().all(|e| e.kind.is_none()));
+    rel(rail.volume_mm3, (2400. - 54. * 34.) * 1000.);
+    let end_rail = record(&list, "End rail");
+    near(end_rail.length_mm, 1020.);
+    assert_eq!(end_rail.ends[1].kind, Some(ConnectionKind::Butt));
+    assert!(!end_rail.ends[1].terminates);
+    assert_eq!(end_rail.ends[1].connection, Some(corner));
+    near(bounds(&m, id(2)).max[0], 3020.);
+    near(record(&list, "End post").span_mm[0], 30.);
+
+    // A slanted member is not square to the face; round members have none.
+    let msg = refused(&f, ConnectionKind::Butt, [id(4), id(0)]);
+    assert!(msg.contains("square to a flat face"), "{msg}");
+    let msg = refused(&f, ConnectionKind::Butt, [id(6), id(5)]);
+    assert!(msg.contains("cope"), "{msg}");
+    // Different sections cannot be mitered with a bisector cut.
+    let mitered = MemberRequest::new("Mitered", points(f.shs, [0., 3000., 0.], [500., 3000., 0.]));
+    let other = MemberRequest::new("Other", points(f.rhs, [500., 3000., 0.], [500., 3500., 0.]));
+    create(&mut f, &[mitered.clone(), other.clone()]);
+    let msg = refused(&f, ConnectionKind::Miter, [mitered.body, other.body]);
+    assert!(msg.contains("mirror"), "{msg}");
+    // The post's start end is already cut by the tee.
+    let crossing = MemberRequest::new("Crossing", points(f.rhs, [300., 0., 0.], [800., 0., 0.]));
+    create(&mut f, std::slice::from_ref(&crossing));
+    let msg = refused(&f, ConnectionKind::Butt, [id(1), crossing.body]);
+    assert!(msg.contains("both cut the start of"), "{msg}");
+}
+
+#[test]
+fn copes_fit_the_actual_receiving_member_with_clearance() {
+    let mut f = fixture();
+    let r: f64 = 33.7 / 2.;
+    let (c, s) = (60_f64.to_radians().cos(), 60_f64.to_radians().sin());
+    let main = MemberRequest::new("Main", points(f.chs, [0., 0., 0.], [600., 0., 0.]));
+    let branch = MemberRequest::new("Branch", points(f.chs, [300., 0., 0.], [300., 0., 400.]));
+    let angled = MemberRequest::new(
+        "Angled",
+        points(f.chs, [100., 0., 0.], [100. + 300. * c, 0., 300. * s]),
+    );
+    let beam = MemberRequest::new("Beam", points(f.rhs, [0., 1000., 0.], [1000., 1000., 0.]));
+    let stud = MemberRequest::new("Stud", points(f.shs, [500., 1000., 0.], [500., 1500., 0.]));
+    let wide = MemberRequest::new("Wide", points(f.rhs, [500., 0., 0.], [500., -300., 0.]));
+    let skew = MemberRequest::new("Skew", points(f.chs, [200., 100., 50.], [200., 400., 50.]));
+    let all = [main, branch, angled, beam, stud, wide, skew];
+    create(&mut f, &all);
+    let id = |i: usize| all[i].body;
+    let uncoped = record(
+        &compile(&f.s).member_cut_list(f.s.document()).unwrap(),
+        "Branch",
+    )
+    .volume_mm3;
+    // A fish-mouth cope of a round branch onto an equal round tube, 1 mm clear.
+    connect(&mut f, "Saddle", ConnectionKind::Cope, [id(1), id(0)], 1.);
+    connect(
+        &mut f,
+        "Angled saddle",
+        ConnectionKind::Cope,
+        [id(2), id(0)],
+        0.,
+    );
+    // A square stud onto a rectangular beam: the cope is a square notch at
+    // the beam face.
+    connect(
+        &mut f,
+        "Stud notch",
+        ConnectionKind::Cope,
+        [id(4), id(3)],
+        0.,
+    );
+    let m = compile(&f.s);
+    let list = m.member_cut_list(f.s.document()).unwrap();
+    let b = bounds(&m, id(1));
+    // The saddle reaches down the sides of the clearance envelope.
+    near(b.min[2], ((r + 1.).powi(2) - r * r).sqrt());
+    near(b.max[2], 400.);
+    let branch = record(&list, "Branch");
+    assert!(branch.volume_mm3 < uncoped);
+    assert_eq!(branch.ends[0].kind, Some(ConnectionKind::Cope));
+    near(branch.ends[0].angle_deg, 90.);
+    assert_eq!(branch.ends[0].partner, Some(id(0)));
+    // Nothing of either branch is left inside the receiving tube.
+    let solid = |p: EntityId| m.solid(m.snapshot().bodies[&p]).unwrap();
+    for coped in [id(1), id(2)] {
+        let overlap = solid(coped)
+            .boolean(
+                solid(id(0)),
+                multicad_kernel::BooleanOperation::Intersect,
+                Default::default(),
+            )
+            .unwrap();
+        assert!(overlap.is_none_or(|s| s.volume_mm3().unwrap() < 1e-6));
+    }
+    near(record(&list, "Angled").ends[0].angle_deg, 60.);
+    let stud = record(&list, "Stud");
+    near(stud.span_mm[0], 30.);
+    rel(stud.volume_mm3, SHS_AREA * 470.);
+    // The receiving member is unchanged.
+    let main = record(&list, "Main");
+    assert!(main.ends.iter().all(|e| e.kind.is_none()));
+
+    // A branch wider than the receiving tube, and members that pass each
+    // other without meeting, are refused.
+    let msg = refused(&f, ConnectionKind::Cope, [id(5), id(0)]);
+    assert!(msg.contains("wide"), "{msg}");
+    let msg = refused(&f, ConnectionKind::Cope, [id(6), id(0)]);
+    assert!(msg.contains("do not meet"), "{msg}");
+    // Only member Parts can be connected.
+    let e = model::prepare_connection(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "Bad",
+        &ConnectionDefinition {
+            kind: ConnectionKind::Cope,
+            members: [id(1), f.steel],
+            gap: None,
+        },
+    )
+    .unwrap_err();
+    assert!(e.message.contains("not a weldment member"), "{}", e.message);
 }

@@ -6,14 +6,16 @@ use multicad_core::{
     document::{Document, DocumentError, EntityData, EntityId},
     materials::{self, ProfileShape},
     model::{
-        self, MemberDefinition, MemberFrame, MemberPath, PathSegment, ResolvedMember, SectionLoop,
+        self, EndCut, EndTreatment, MemberDefinition, MemberFrame, MemberPath, PathSegment,
+        ResolvedConnection, ResolvedMember, SectionLoop,
     },
     parameters::EvaluatedParameters,
     references::Origin,
     sketch::{Frame, Geometry},
 };
 use multicad_kernel::{
-    CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform, Solid,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
+    Solid,
 };
 use multicad_solver::SketchEvaluationContext;
 use std::collections::BTreeMap;
@@ -91,13 +93,16 @@ fn edges(section_loop: &SectionLoop) -> Vec<CurvedEdge2d> {
     }
 }
 /// The member section placed at axial distance `s` from the path start.
-/// `grow_mm` enlarges the outside for clearance envelopes, which never have
-/// holes.
-pub(crate) fn section_profile(member: &ResolvedMember, s: f64, grow_mm: f64) -> CurvedProfile {
-    let holes = if grow_mm == 0. {
-        member.section.holes().iter().map(edges).collect()
-    } else {
-        vec![]
+/// With `envelope`, the solid outside grown by that clearance, without the
+/// bore; otherwise the real section with its holes.
+pub(crate) fn section_profile(
+    member: &ResolvedMember,
+    s: f64,
+    envelope: Option<f64>,
+) -> CurvedProfile {
+    let holes = match envelope {
+        None => member.section.holes().iter().map(edges).collect(),
+        Some(_) => vec![],
     };
     CurvedProfile {
         frame: PlaneFrame {
@@ -105,7 +110,7 @@ pub(crate) fn section_profile(member: &ResolvedMember, s: f64, grow_mm: f64) -> 
             u: member.frame.x,
             v: member.frame.y,
         },
-        outer: edges(&member.section.outer(grow_mm)),
+        outer: edges(&member.section.outer(envelope.unwrap_or(0.))),
         holes,
     }
 }
@@ -131,12 +136,12 @@ pub(crate) fn prism(
     member: &ResolvedMember,
     from: f64,
     length: f64,
-    grow_mm: f64,
+    envelope: Option<f64>,
     owner: EntityId,
     prefix: &str,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
-    let profile = section_profile(member, from, grow_mm);
+    let profile = section_profile(member, from, envelope);
     Solid::extrude_curved_profile_vector_named(
         &profile,
         member.frame.axis.map(|a| a * length),
@@ -161,7 +166,142 @@ pub(crate) fn resolve(
     model::resolve_member(document, parameters, &source, segment).map_err(e)
 }
 
-/// Build a member solid; returns it with its resolved member.
+/// One connection treating an end of a member.
+#[derive(Clone, Debug)]
+pub(crate) struct Joint {
+    pub connection: EntityId,
+    pub partner: EntityId,
+    pub partner_member: ResolvedMember,
+    pub resolved: ResolvedConnection,
+    pub treatment: EndTreatment,
+}
+/// Every connection that cuts an end of the member Part `part`. Two
+/// connections cutting the same end are refused.
+pub(crate) fn joints(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    part: EntityId,
+    member: &ResolvedMember,
+    other: &mut dyn FnMut(EntityId) -> Result<ResolvedMember, ModelError>,
+) -> Result<Vec<Joint>, ModelError> {
+    let mut out: Vec<Joint> = vec![];
+    for (id, connection) in
+        model::member_connections(document, part).map_err(|e| error(Some(part), e))?
+    {
+        let e = |e: DocumentError| error(Some(id), e);
+        let index = usize::from(connection.members[1] == part);
+        let partner = connection.members[1 - index];
+        let feature = model::member_feature(document, partner).ok_or_else(|| {
+            error(
+                Some(id),
+                "The connected Part is no longer a weldment member",
+            )
+        })?;
+        let partner_member = other(feature)?;
+        let gap = connection.gap_mm(parameters).map_err(e)?;
+        let (a, b) = if index == 0 {
+            (member, &partner_member)
+        } else {
+            (&partner_member, member)
+        };
+        let resolved = model::resolve_connection(connection.kind, a, b, gap).map_err(e)?;
+        let Some(treatment) = resolved.treatments[index] else {
+            continue;
+        };
+        if let Some(previous) = out.iter().find(|j| j.treatment.end == treatment.end) {
+            let name = |id: EntityId| document.get(id).map_or("".into(), |e| e.name.clone());
+            return Err(error(
+                Some(id),
+                format!(
+                    "{} and {} both cut the {:?} end of {}; remove one connection",
+                    name(previous.connection),
+                    name(id),
+                    treatment.end,
+                    name(part)
+                )
+                .replace("Start end", "start")
+                .replace("End end", "end"),
+            ));
+        }
+        out.push(Joint {
+            connection: id,
+            partner,
+            partner_member,
+            resolved,
+            treatment,
+        });
+    }
+    Ok(out)
+}
+fn diagonal(m: &ResolvedMember) -> f64 {
+    m.section.width_mm.hypot(m.section.height_mm)
+}
+/// Remove the half-space behind a plane: material on the side `normal`
+/// points to is kept.
+fn cut_plane(
+    solid: Solid,
+    point: [f64; 3],
+    normal: [f64; 3],
+    size: f64,
+    owner: EntityId,
+    role: &str,
+    policy: GeometryPolicy,
+) -> Result<Option<Solid>, ModelError> {
+    let seed = if normal[0].abs() < 0.9 {
+        [1., 0., 0.]
+    } else {
+        [0., 1., 0.]
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let d = dot(seed, normal);
+    let u = [
+        seed[0] - normal[0] * d,
+        seed[1] - normal[1] * d,
+        seed[2] - normal[2] * d,
+    ];
+    let len = dot(u, u).sqrt();
+    let u = u.map(|c| c / len);
+    let v = [
+        normal[1] * u[2] - normal[2] * u[1],
+        normal[2] * u[0] - normal[0] * u[2],
+        normal[0] * u[1] - normal[1] * u[0],
+    ];
+    let corners = [[-size, -size], [size, -size], [size, size], [-size, size]];
+    let profile = CurvedProfile {
+        frame: PlaneFrame {
+            origin: point,
+            u,
+            v,
+        },
+        outer: (0..4)
+            .map(|i| CurvedEdge2d::Line {
+                a: corners[i],
+                b: corners[(i + 1) % 4],
+            })
+            .collect(),
+        holes: vec![],
+    };
+    let origins: Vec<_> = (0..4)
+        .map(|i| Origin {
+            source: owner,
+            role: format!("{role}.side.{i}"),
+        })
+        .collect();
+    let tool = Solid::extrude_curved_profile_vector_named(
+        &profile,
+        normal.map(|n| -n * size),
+        owner,
+        &origins,
+        policy,
+    )
+    .map_err(|e| error(Some(owner), e))?;
+    solid
+        .boolean(&tool, BooleanOperation::Subtract, policy)
+        .map_err(|e| error(Some(owner), e))
+}
+
+/// Build a member solid with its connection end cuts; returns it with its
+/// resolved member.
 pub(crate) fn build(
     document: &Document,
     parameters: &EvaluatedParameters,
@@ -171,15 +311,72 @@ pub(crate) fn build(
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<(Solid, ResolvedMember), ModelError> {
     let member = resolve(document, parameters, id, paths, interrupt)?;
-    let solid = prism(
+    let source = model::read_member(document, id).map_err(|e| error(Some(id), e))?;
+    let joints = joints(
+        document,
+        parameters,
+        source.output.body,
         &member,
-        member.start_offset_mm(),
-        member.length_mm(),
-        0.,
-        id,
-        "member",
-        policy,
+        &mut |feature| resolve(document, parameters, feature, paths, interrupt),
     )?;
+    // Connected ends start long enough to be cut back to their joint.
+    let mut from = member.start_offset_mm();
+    let mut to = from + member.length_mm();
+    let mut size = member.length_mm() + diagonal(&member);
+    for joint in &joints {
+        let sin = (joint.resolved.angle_deg.to_radians().sin()).max(0.25);
+        let margin = 2. * (diagonal(&member) + diagonal(&joint.partner_member)) / sin
+            + joint.resolved.gap_mm
+            + 1.;
+        match joint.treatment.end {
+            model::MemberEnd::Start => from = from.min(-margin),
+            model::MemberEnd::End => to = to.max(member.path_length_mm + margin),
+        }
+        size = size.max(joint.partner_member.length_mm() + 4. * margin);
+    }
+    let mut solid = prism(&member, from, to - from, None, id, "member", policy)?;
+    let size = 2. * size + 100.;
+    for joint in &joints {
+        let role = format!("connection.{}", joint.connection);
+        let removed = || {
+            error(
+                Some(joint.connection),
+                "The connection cut removes the whole member",
+            )
+        };
+        solid = match joint.treatment.cut {
+            EndCut::Plane { point, normal } => {
+                cut_plane(solid, point, normal, size, id, &role, policy)?.ok_or_else(removed)?
+            }
+            EndCut::Cope {
+                grow_mm,
+                point,
+                normal,
+            } => {
+                let partner = &joint.partner_member;
+                let envelope = prism(
+                    partner,
+                    partner.start_offset_mm(),
+                    partner.length_mm(),
+                    Some(grow_mm),
+                    id,
+                    &format!("{role}.cope"),
+                    policy,
+                )?;
+                let coped = solid
+                    .boolean(&envelope, BooleanOperation::Subtract, policy)
+                    .map_err(|e| error(Some(joint.connection), e))?
+                    .ok_or_else(removed)?;
+                cut_plane(coped, point, normal, size, id, &role, policy)?.ok_or_else(removed)?
+            }
+        };
+    }
+    if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
+        return Err(error(
+            Some(id),
+            "Connection cuts split the member into separate pieces; check the joint geometry",
+        ));
+    }
     Ok((solid, member))
 }
 
@@ -190,6 +387,32 @@ pub(crate) fn into_member(frame: &MemberFrame, start: [f64; 3]) -> RigidTransfor
     RigidTransform {
         rotation: [frame.x, frame.y, frame.axis],
         translation_mm: [d(frame.x), d(frame.y), d(frame.axis)],
+    }
+}
+
+/// How one end of a member is finished.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EndRecord {
+    /// None for a square end without a connection.
+    pub kind: Option<model::ConnectionKind>,
+    pub connection: Option<EntityId>,
+    /// The member Part at the other side of the connection.
+    pub partner: Option<EntityId>,
+    /// Plane cuts: the cut face angle from square (0 = square, 45 = a
+    /// right-angle miter). Copes: the branch angle to the receiving axis.
+    pub angle_deg: f64,
+    /// False for a continuing member cut square to cover its partner.
+    pub terminates: bool,
+}
+impl EndRecord {
+    fn square() -> Self {
+        Self {
+            kind: None,
+            connection: None,
+            partner: None,
+            angle_deg: 0.,
+            terminates: true,
+        }
     }
 }
 
@@ -215,6 +438,10 @@ pub struct MemberRecord {
     /// length from the farthest point of one end to the farthest point of
     /// the other.
     pub length_mm: f64,
+    /// Measured axial range of the solid from the path start.
+    pub span_mm: [f64; 2],
+    /// The start and end treatments.
+    pub ends: [EndRecord; 2],
     /// Measured section size in the member frame.
     pub measured_section_mm: [f64; 2],
     /// Section rotation about the axis, and the anchor on the path.
@@ -261,6 +488,26 @@ impl Model {
                 .bounds()
                 .map_err(|e| error(Some(id), e))?;
             let length = b.max[2] - b.min[2];
+            let snapshot = self.snapshot();
+            let joints = joints(document, &parameters, part, &member, &mut |feature| {
+                let e = |e: DocumentError| error(Some(feature), e);
+                let other = model::read_member(document, feature).map_err(e)?;
+                let segment = snapshot
+                    .member_paths
+                    .get(&feature)
+                    .ok_or_else(|| error(Some(feature), "Connected member was not evaluated"))?;
+                model::resolve_member(document, &parameters, &other, *segment).map_err(e)
+            })?;
+            let mut ends = [EndRecord::square(), EndRecord::square()];
+            for j in &joints {
+                ends[usize::from(j.treatment.end == model::MemberEnd::End)] = EndRecord {
+                    kind: Some(j.treatment.kind),
+                    connection: Some(j.connection),
+                    partner: Some(j.partner),
+                    angle_deg: j.treatment.angle_deg,
+                    terminates: j.treatment.terminates,
+                };
+            }
             let measured = [b.max[0] - b.min[0], b.max[1] - b.min[1]];
             let section = &member.section;
             let mut issues = vec![];
@@ -301,6 +548,8 @@ impl Model {
                 path: source.path.clone(),
                 nominal_length_mm: member.length_mm(),
                 length_mm: length,
+                span_mm: [b.min[2], b.max[2]],
+                ends,
                 measured_section_mm: measured,
                 rotation_deg: member.rotation_rad.to_degrees(),
                 anchor: source.anchor,
