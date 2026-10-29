@@ -95,33 +95,33 @@ capability.
 | Spline editing, exact trim and bounded extension | `multicad-model/tests/spline_trim.rs` | `native-spline-editing-2026-10-28.md`, `hierarchy-spline-2026-10-27.md` |
 | Sketch references, projection, intersection, single repair | `sketch_external.rs`, `source_repair.rs`, `occurrence_external.rs` | `native-sketch-references-2026-10-28.md`, `native-occurrence-references-2026-10-29.md` |
 | Staged multi-reference repair sets | `repair_set.rs`; `multicad-mcp/tests/reference_repair.rs`; `multicad-ui` `reference_repair_set_tests` | — |
-| DXF/SVG import as editable geometry | `sketch_import.rs`; checkpoint plate | — (`native-sketch-import-2026-10-29.md` records no launch) |
+| DXF/SVG import as editable geometry | `sketch_import.rs`; checkpoint plate | Imported plate edited and rebuilt in `native-shared-workflow-2026-10-29.md`; the import dialog itself was not driven |
 | Dynamic and static symbols, independent overrides, pinned definition, explicit update, save/reopen, Undo/Redo | `symbols.rs`, `symbol_definition_gate.rs`; checkpoint | `native-symbols-2026-10-29.md` |
 | Modeling features: extrude, Boolean, treatments, advanced, move/copy, transfer | `extrude_group*.rs`, `booleans.rs`, `edge_treatment.rs`, `advanced.rs`, `transform.rs`, `transfer.rs` | `native-modeling*.md`, `native-extrusion-*.md`, `native-move-copy-2026-10-28.md`, `native-feature-*.md` |
 | Assemblies, placement, hierarchy, measurements, materials | `assemblies.rs`, `placement_batch.rs`, `measurements.rs`; core material tests | `native-assemblies-*.md`, `native-placement-2026-10-28.md`, `native-measurements-2026-10-28.md`, `native-material-properties-2026-10-28.md` |
 | Drawing pages and projected views | `drawings.rs`; checkpoint W-101 | `native-drawing-pages-2026-10-28.md`, `native-drawing-views-2026-10-28.md` |
-| Exterior, section-only and finite-depth views | `drawings.rs`, `drawing_exports.rs`; checkpoint W-102 | — (`native-section-views-2026-10-29.md` records none) |
-| Associative dimensions, notes, leaders, welds, tables | `drawing_annotations.rs`; checkpoint dimensions | — (`native-drawing-annotations-2026-10-29.md` records none) |
-| Multi-page PDF and drawing DXF | `drawing_exports.rs`; checkpoint files | — |
+| Exterior, section-only and finite-depth views | `drawings.rs`, `drawing_exports.rs`; checkpoint W-102 | Displayed in `native-shared-workflow-2026-10-29.md`; the creation controls were not driven |
+| Associative dimensions, notes, leaders, welds, tables | `drawing_annotations.rs`; checkpoint dimensions | Dimensions updated 150.0 → 175.0, plus Undo/Redo, in `native-shared-workflow-2026-10-29.md`; the table defect was fixed in `9d81a61` |
+| Multi-page PDF and drawing DXF | `drawing_exports.rs`; checkpoint files | Window export run in `native-shared-workflow-2026-10-29.md` |
 | STEP export | `multicad-model` export tests | `native-step-export-2026-10-28.md` |
-| OBJ and 3MF export | `mesh_exports.rs`; checkpoint files | — |
+| OBJ and 3MF export | `mesh_exports.rs`; checkpoint files | Window export run with checked OBJ volumes in `native-shared-workflow-2026-10-29.md` |
 | Planar 1:1 DXF | `planar_dxf.rs` | `native-planar-dxf-2026-10-28.md` |
-| MCP inspect, preview, commit, stale and cancel, attribution | `multicad-mcp/tests/*.rs`, `multicad-app/tests/mcp.rs`; checkpoint MCP test | — (stdio client processes ran; no window session recorded) |
-| MCP review queue and audit | `multicad-mcp/tests/tools.rs` | — |
+| MCP inspect, preview, commit, stale and cancel, attribution | `multicad-mcp/tests/*.rs`, `multicad-app/tests/mcp.rs`; checkpoint MCP test | `--mcp --app` against the window in `native-shared-workflow-2026-10-29.md` |
+| MCP review queue and audit | `multicad-mcp/tests/tools.rs` | Queue, Accept and automatic stale in `native-shared-workflow-2026-10-29.md` |
 | Project files: save, reopen, recovery | `multicad-core` project file tests; checkpoint reopen | `project-files-2026-10-27.md` |
 
 ## Gaps
 
-- **Interactive macOS review.** The bundle has not been launched yet, because
-  launching it needs the user's approval. This covers:
-  - the integrated checkpoint project;
-  - the newer features with no interactive record: import, section ranges,
-    annotations, PDF/DXF/OBJ/3MF export, MCP against the window, and repair
-    sets.
+- **Not yet driven interactively:**
+  - the DXF/SVG import dialog;
+  - section-view creation controls;
+  - the staged reference repair panel.
 
-  CAD-132 owns this review, and it is not complete.
+  Automated native tests cover them.
+- **The rebuilt bundle.** The bundle with the review fixes (`9d81a61`,
+  `4889068`, `3ee3f00`) has not been launched.
 - **Occurrence rebinding in the window.** The staged repair window can rebind
   only feature-source references. Occurrence references are rebound through
-  the API. The limit is recorded in `reference-repair-sets.md`.
+  the API, as recorded in `reference-repair-sets.md`.
 - **Windows and Linux.** Interaction and low-power performance remain separate
   evidence.
