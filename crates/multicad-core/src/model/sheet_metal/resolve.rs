@@ -35,6 +35,81 @@ pub enum ResolvedBase {
         loops: Vec<PlanarLoop>,
     },
 }
+/// One step along a flange's cross-section. A positive bend angle turns
+/// toward the material side of the strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StripSegment {
+    Straight { length_mm: f64 },
+    Bend { angle_rad: f64, radius_mm: f64 },
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedFlange {
+    pub index: usize,
+    pub edge: usize,
+    /// "bend", "hem" or "jog".
+    pub kind: &'static str,
+    pub direction: BendDirection,
+    pub segments: Vec<StripSegment>,
+    pub inside_radius_mm: f64,
+    pub leg_mm: f64,
+    pub start_inset_mm: f64,
+    pub end_inset_mm: f64,
+    /// Relief width along the edge and depth into the base.
+    pub relief_mm: Option<[f64; 2]>,
+}
+impl ResolvedFlange {
+    /// Developed length from the base edge to the leg end: straight
+    /// lengths plus the bend allowance of every bend.
+    pub fn developed_mm(&self, thickness_mm: f64, k: f64) -> f64 {
+        self.segments
+            .iter()
+            .map(|s| match *s {
+                StripSegment::Straight { length_mm } => length_mm,
+                StripSegment::Bend {
+                    angle_rad,
+                    radius_mm,
+                } => angle_rad.abs() * (radius_mm + k * thickness_mm),
+            })
+            .sum()
+    }
+    /// Developed distance from the base edge to the start of the leg.
+    pub fn leg_offset_mm(&self, thickness_mm: f64, k: f64) -> f64 {
+        self.developed_mm(thickness_mm, k) - self.leg_mm
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResolvedShape {
+    Circle { center: [f64; 2], diameter_mm: f64 },
+    Rectangle { center: [f64; 2], size_mm: [f64; 2] },
+}
+impl ResolvedShape {
+    pub fn area_mm2(&self) -> f64 {
+        match *self {
+            Self::Circle { diameter_mm, .. } => std::f64::consts::PI * diameter_mm.powi(2) / 4.,
+            Self::Rectangle { size_mm, .. } => size_mm[0] * size_mm[1],
+        }
+    }
+    pub fn moved(&self, by: [f64; 2]) -> Self {
+        match *self {
+            Self::Circle {
+                center,
+                diameter_mm,
+            } => Self::Circle {
+                center: [center[0] + by[0], center[1] + by[1]],
+                diameter_mm,
+            },
+            Self::Rectangle { center, size_mm } => Self::Rectangle {
+                center: [center[0] + by[0], center[1] + by[1]],
+                size_mm,
+            },
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedCutout {
+    pub face: CutoutFace,
+    pub shape: ResolvedShape,
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedSheet {
     pub stock: EntityId,
@@ -46,6 +121,8 @@ pub struct ResolvedSheet {
     pub k_factor_source: ValueSource,
     pub reverse: bool,
     pub base: ResolvedBase,
+    pub flanges: Vec<ResolvedFlange>,
+    pub cutouts: Vec<ResolvedCutout>,
 }
 impl ResolvedSheet {
     /// Bend allowance: the developed length of the neutral axis through a
@@ -125,6 +202,146 @@ pub fn resolve_sheet(
             loops: loops.clone(),
         },
     };
+    let deg = |d: &Dimension| number(d, Unit::Radian, parameters);
+    let mut flanges = vec![];
+    for (index, f) in sheet.flanges.iter().enumerate() {
+        let what = |m: &str| invalid(format!("Flange {}: {m}", index + 1));
+        let radius = match &f.inside_radius {
+            Some(d) => mm(d)?,
+            None => inside_radius_mm,
+        };
+        let leg = mm(&f.length)?;
+        let start = f.start_inset.as_ref().map_or(Ok(0.), mm)?;
+        let end = f.end_inset.as_ref().map_or(Ok(0.), mm)?;
+        if radius < 0. || leg < 0. || start < 0. || end < 0. {
+            return Err(what("radius, length and insets cannot be negative"));
+        }
+        let sign = match f.direction {
+            BendDirection::Up => 1.,
+            BendDirection::Down => -1.,
+        };
+        let pi = std::f64::consts::PI;
+        let (kind, radius, segments) = match &f.kind {
+            FlangeKind::Bend { angle } => {
+                let a = deg(angle)?;
+                if !(a > 1e-9 && a <= pi + 1e-12) {
+                    return Err(what("the bend angle must be above 0° and at most 180°"));
+                }
+                if (a - pi).abs() < 1e-12 && radius <= 0. {
+                    return Err(what("a 180° bend needs an inside radius; use a hem"));
+                }
+                (
+                    "bend",
+                    radius,
+                    vec![StripSegment::Bend {
+                        angle_rad: sign * a,
+                        radius_mm: radius,
+                    }],
+                )
+            }
+            FlangeKind::Hem { gap } => {
+                let gap = mm(gap)?;
+                if gap <= 0. {
+                    return Err(what("a hem needs a positive gap"));
+                }
+                (
+                    "hem",
+                    gap / 2.,
+                    vec![StripSegment::Bend {
+                        angle_rad: sign * pi,
+                        radius_mm: gap / 2.,
+                    }],
+                )
+            }
+            FlangeKind::Jog { angle, offset } => {
+                let a = deg(angle)?;
+                let h = mm(offset)?;
+                if !(a > 1e-9 && a <= pi / 2. + 1e-12) {
+                    return Err(what("a jog angle must be above 0° and at most 90°"));
+                }
+                let t = thickness_mm;
+                let straight = (h - t - 2. * radius + (2. * radius + t) * a.cos()) / a.sin();
+                if straight < -1e-9 {
+                    return Err(what(&format!(
+                        "a {h} mm jog offset is too small for its bends; it needs at least {:.3} mm",
+                        t + 2. * radius - (2. * radius + t) * a.cos()
+                    )));
+                }
+                (
+                    "jog",
+                    radius,
+                    vec![
+                        StripSegment::Bend {
+                            angle_rad: sign * a,
+                            radius_mm: radius,
+                        },
+                        StripSegment::Straight {
+                            length_mm: straight.max(0.),
+                        },
+                        StripSegment::Bend {
+                            angle_rad: -sign * a,
+                            radius_mm: radius,
+                        },
+                    ],
+                )
+            }
+        };
+        let mut segments = segments;
+        segments.push(StripSegment::Straight { length_mm: leg });
+        let relief_mm = match &f.relief {
+            Some(r) => {
+                let w = mm(&r.width)?;
+                let d = mm(&r.depth)?;
+                if w <= 0. || d <= 0. {
+                    return Err(what("relief width and depth must be positive"));
+                }
+                if start <= 0. && end <= 0. {
+                    return Err(what("a relief needs an inset flange end"));
+                }
+                Some([w, d])
+            }
+            None => None,
+        };
+        flanges.push(ResolvedFlange {
+            index,
+            edge: f.edge as usize,
+            kind,
+            direction: f.direction,
+            segments,
+            inside_radius_mm: radius,
+            leg_mm: leg,
+            start_inset_mm: start,
+            end_inset_mm: end,
+            relief_mm,
+        });
+    }
+    let mut cutouts = vec![];
+    for (i, c) in sheet.cutouts.iter().enumerate() {
+        let shape = match &c.shape {
+            CutoutShape::Circle { center, diameter } => ResolvedShape::Circle {
+                center: [mm(&center[0])?, mm(&center[1])?],
+                diameter_mm: mm(diameter)?,
+            },
+            CutoutShape::Rectangle { center, size } => ResolvedShape::Rectangle {
+                center: [mm(&center[0])?, mm(&center[1])?],
+                size_mm: [mm(&size[0])?, mm(&size[1])?],
+            },
+        };
+        let positive = match shape {
+            ResolvedShape::Circle { diameter_mm, .. } => diameter_mm > 0.,
+            ResolvedShape::Rectangle { size_mm, .. } => size_mm[0] > 0. && size_mm[1] > 0.,
+        };
+        if !positive {
+            return Err(invalid(format!(
+                "Cutout {}: its size must be positive",
+                i + 1
+            )));
+        }
+        cutouts.push(ResolvedCutout {
+            face: c.face,
+            shape,
+        });
+    }
     Ok(ResolvedSheet {
         stock: sheet.stock,
         stock_spec: spec,
@@ -135,5 +352,7 @@ pub fn resolve_sheet(
         k_factor_source,
         reverse: sheet.reverse,
         base,
+        flanges,
+        cutouts,
     })
 }

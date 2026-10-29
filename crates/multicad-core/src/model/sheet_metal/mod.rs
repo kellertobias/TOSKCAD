@@ -33,6 +33,8 @@ pub const SHEET_CAPABILITY: &str = "sheet_metal.part.1";
 /// Captured contour budget for converted bases.
 pub const MAX_CONTOUR_LOOPS: usize = 64;
 pub const MAX_CONTOUR_EDGES: usize = 4096;
+pub const MAX_FLANGES: usize = 64;
+pub const MAX_CUTOUTS: usize = 256;
 
 /// A captured plane: `u` and `v` are orthonormal; the sheet thickness runs
 /// along u × v from the base face.
@@ -106,6 +108,126 @@ pub struct SheetDefinition {
     /// value when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub k_factor: Option<Dimension>,
+    /// Flanges, hems and jogs on straight edges of the base outline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flanges: Vec<Flange>,
+    /// Through-cuts in the base or a flange leg, in that face's coordinates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cutouts: Vec<Cutout>,
+}
+
+/// Which way a flange bends from the base: `Up` toward the material side
+/// (along the thickness direction), `Down` away from it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BendDirection {
+    #[default]
+    Up,
+    Down,
+}
+/// The forming intent of a flange. Each kind keeps its own editable values.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FlangeKind {
+    /// One bend of `angle` (0–180°, exclusive of 0) followed by a straight leg.
+    Bend { angle: Dimension },
+    /// A 180° fold whose leg lies `gap` from the base face; the inside
+    /// radius is half the gap.
+    Hem { gap: Dimension },
+    /// Two opposite bends of `angle` that offset the leg by `offset`,
+    /// measured between the base face and the leg's matching face.
+    Jog { angle: Dimension, offset: Dimension },
+}
+/// A rectangular relief cut into the base at each inset end of a flange:
+/// `width` along the edge beyond the flange end, `depth` into the base.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Relief {
+    pub width: Dimension,
+    pub depth: Dimension,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Flange {
+    /// Index of a straight edge in the base outer loop. Rectangle edges are
+    /// 0: v = 0, 1: u = length, 2: v = width, 3: u = 0.
+    pub edge: u32,
+    pub kind: FlangeKind,
+    #[serde(default)]
+    pub direction: BendDirection,
+    /// Straight leg beyond the last bend.
+    pub length: Dimension,
+    /// Inside radius for this flange's bends; the part value when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inside_radius: Option<Dimension>,
+    /// Gaps from the edge's start and end to the flange, for corners and
+    /// seams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_inset: Option<Dimension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_inset: Option<Dimension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relief: Option<Relief>,
+}
+impl Flange {
+    fn lengths(&self) -> Vec<&Dimension> {
+        let mut out = vec![&self.length];
+        match &self.kind {
+            FlangeKind::Hem { gap } => out.push(gap),
+            FlangeKind::Jog { offset, .. } => out.push(offset),
+            FlangeKind::Bend { .. } => {}
+        }
+        out.extend(&self.inside_radius);
+        out.extend(&self.start_inset);
+        out.extend(&self.end_inset);
+        if let Some(r) = &self.relief {
+            out.extend([&r.width, &r.depth]);
+        }
+        out
+    }
+    fn angles(&self) -> Vec<&Dimension> {
+        match &self.kind {
+            FlangeKind::Bend { angle } | FlangeKind::Jog { angle, .. } => vec![angle],
+            FlangeKind::Hem { .. } => vec![],
+        }
+    }
+}
+/// The face a cutout goes through. Base coordinates are the base frame's
+/// (u, v); flange coordinates run along the edge from the flange start (x)
+/// and along the leg from the end of its last bend (y).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CutoutFace {
+    Base,
+    Flange { index: u32 },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CutoutShape {
+    Circle {
+        center: [Dimension; 2],
+        diameter: Dimension,
+    },
+    Rectangle {
+        center: [Dimension; 2],
+        size: [Dimension; 2],
+    },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cutout {
+    pub face: CutoutFace,
+    pub shape: CutoutShape,
+}
+impl Cutout {
+    fn lengths(&self) -> Vec<&Dimension> {
+        match &self.shape {
+            CutoutShape::Circle { center, diameter } => vec![&center[0], &center[1], diameter],
+            CutoutShape::Rectangle { center, size } => {
+                vec![&center[0], &center[1], &size[0], &size[1]]
+            }
+        }
+    }
 }
 
 pub(super) fn definition<T: Serialize>(
@@ -178,8 +300,32 @@ impl SheetDefinition {
             }
             SheetBase::Rectangle { .. } => {}
         }
+        if self.flanges.len() > MAX_FLANGES || self.cutouts.len() > MAX_CUTOUTS {
+            return Err(invalid(format!(
+                "A sheet part holds at most {MAX_FLANGES} flanges and {MAX_CUTOUTS} cutouts"
+            )));
+        }
+        let mut edges = std::collections::BTreeSet::new();
+        for f in &self.flanges {
+            if !edges.insert(f.edge) {
+                return Err(invalid(format!(
+                    "Base edge {} carries more than one flange",
+                    f.edge
+                )));
+            }
+        }
+        for c in &self.cutouts {
+            if let CutoutFace::Flange { index } = c.face
+                && index as usize >= self.flanges.len()
+            {
+                return Err(invalid(format!("Cutout names missing flange {index}")));
+            }
+        }
         for d in self.lengths() {
             check_dimension(d, Unit::Millimeter)?;
+        }
+        for d in self.flanges.iter().flat_map(Flange::angles) {
+            check_dimension(d, Unit::Degree)?;
         }
         if let Some(k) = &self.k_factor {
             check_dimension(k, Unit::Ratio)?;
@@ -199,11 +345,14 @@ impl SheetDefinition {
             out.extend([length, width]);
         }
         out.extend(&self.inside_radius);
+        out.extend(self.flanges.iter().flat_map(Flange::lengths));
+        out.extend(self.cutouts.iter().flat_map(Cutout::lengths));
         out
     }
     fn dimensions(&self) -> Vec<&Dimension> {
         let mut out = self.lengths();
         out.extend(&self.k_factor);
+        out.extend(self.flanges.iter().flat_map(Flange::angles));
         out
     }
     pub fn definition(&self) -> Result<Definition, DocumentError> {
