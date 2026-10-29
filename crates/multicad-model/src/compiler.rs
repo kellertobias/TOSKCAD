@@ -72,6 +72,8 @@ pub struct ModelSnapshot {
     pub guide_outlines: BTreeMap<EntityId, Vec<[[f64; 3]; 4]>>,
     /// Cabinetry panel frames by panel feature: thickness runs along u × v.
     pub panel_frames: BTreeMap<EntityId, PlaneFrame>,
+    /// Sheet-metal base layouts by sheet feature.
+    pub sheet_layouts: BTreeMap<EntityId, crate::sheet_metal::SheetLayout>,
 }
 impl ModelSnapshot {
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
@@ -382,6 +384,7 @@ impl Compiler {
         let mut occurrences = BTreeMap::new();
         let mut transfer_counts = BTreeMap::new();
         let mut panel_frames = BTreeMap::new();
+        let mut sheet_layouts = BTreeMap::new();
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
@@ -604,6 +607,19 @@ impl Compiler {
                         },
                     )?;
                     panel_frames.insert(id, frame);
+                    solid
+                }
+                (model::SHEET_TYPE, model::SHEET_SCHEMA) => {
+                    let (solid, layout) = crate::sheet_metal::build(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        |sketch, region| {
+                            profiles.get(sketch, region, id, &solids, &topologies, interrupt)
+                        },
+                    )?;
+                    sheet_layouts.insert(id, layout);
                     solid
                 }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
@@ -956,6 +972,7 @@ impl Compiler {
                 envelope_boxes: BTreeMap::new(),
                 guide_outlines: BTreeMap::new(),
                 panel_frames,
+                sheet_layouts,
             },
         };
         if full {
