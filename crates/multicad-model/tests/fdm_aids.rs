@@ -464,6 +464,43 @@ fn aids_save_reopen_and_are_removed_without_touching_the_target() {
     assert!(model::aid_parts(f.s.document()).contains(&body));
 }
 
+/// A printed Part used as a reusable Assembly component (a drawer on its
+/// slide) has no world body; its aids are inspected against its definition
+/// solid, the frame they are built in, instead of reporting it missing.
+#[test]
+fn aids_on_an_assembly_component_part_are_inspected_against_its_definition() {
+    let mut f = fixture();
+    set_lift(&mut f.s, f.lift, "0");
+    let (_, tab_body) = create(
+        &mut f.s,
+        "Tab right",
+        aid(f.process, f.block.body, tab([40., 10., 0.], 0., 0.4)),
+    );
+    let member = model::ComponentPlacementRequest::new(f.block.body, Default::default());
+    let p = model::prepare_place_component(&f.s, f.s.revision(), actor(), &member).unwrap();
+    checked(&mut f.s, p.prepared);
+    let assembly = model::AssemblyRequest::new("Drawer", vec![member.instance], vec![f.block.body]);
+    let p = model::prepare_assembly(&f.s, f.s.revision(), actor(), &assembly).unwrap();
+    checked(&mut f.s, p.prepared);
+    let root = model::ComponentPlacementRequest::new(
+        assembly.assembly,
+        model::NumericTransform {
+            translation: xyz([100., 0., 0.]),
+            ..Default::default()
+        },
+    );
+    let p = model::prepare_place_component(&f.s, f.s.revision(), actor(), &root).unwrap();
+    checked(&mut f.s, p.prepared);
+    let m = compile(&f.s);
+    assert!(!m.snapshot().bodies.contains_key(&f.block.body));
+    let list = m.fdm_aids(f.s.document()).unwrap();
+    let right = inspection(&list, "Tab right");
+    assert_eq!(right.part, tab_body);
+    assert_eq!(right.target.relation, SolidPairRelation::Overlapping);
+    near(right.target.common_volume_mm3, 2. * 6. * 0.4);
+    assert!(right.issues.is_empty(), "{:?}", right.issues);
+}
+
 /// Export the whole project with one recipe and return the preview, the
 /// receipt and the written files by name.
 fn export(
