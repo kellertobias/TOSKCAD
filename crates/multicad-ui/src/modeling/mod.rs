@@ -27,6 +27,7 @@ mod primitive;
 mod revolve;
 mod scale_gizmo;
 mod scaling;
+mod sheet;
 mod split;
 mod termination;
 mod wall;
@@ -62,15 +63,17 @@ pub enum ModelingTool {
     Wall,
     Level,
     Panel,
+    Sheet,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
         Self::Level,
         Self::Panel,
+        Self::Sheet,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -110,6 +113,7 @@ impl ModelingTool {
             Self::Wall => "wall",
             Self::Level => "level",
             Self::Panel => "panel",
+            Self::Sheet => "sheet",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -137,6 +141,7 @@ impl ModelingTool {
             Self::Wall => "Wall",
             Self::Level => "Levels & stairs",
             Self::Panel => "Panel / carcass",
+            Self::Sheet => "Base sheet",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -164,6 +169,7 @@ impl ModelingTool {
             Self::Wall => crate::icons::Icon::Box,
             Self::Level => crate::icons::Icon::Edge,
             Self::Panel => crate::icons::Icon::Box,
+            Self::Sheet => crate::icons::Icon::Page,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -191,6 +197,7 @@ impl ModelingTool {
             Self::Wall => &["walls", "architectural-wall", "doors-windows"],
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
+            Self::Sheet => &["sheet-metal", "base-sheet", "sheet-part"],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -212,6 +219,9 @@ impl ModelingTool {
             }
             Self::Panel => {
                 "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
+            }
+            Self::Sheet => {
+                "Usage: sheet (choose sheet stock and base size, optionally override the inside radius and K-factor in the Inspector, then Preview and Apply)"
             }
             Self::Wall => {
                 "Usage: wall (choose or define a wall type, enter path points and doors/windows in the Inspector, then Preview and Apply)"
@@ -259,6 +269,9 @@ impl ModelingTool {
             }
             Self::Panel => {
                 "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."
+            }
+            Self::Sheet => {
+                "Requires native modeling, sheet stock defined in Model → Materials and no pending edits. Sketch-region bases and solid conversion are available through MCP."
             }
             Self::Wall => {
                 "Requires native modeling and no pending edits. Wall and opening types are created with the wall or reused from the project."

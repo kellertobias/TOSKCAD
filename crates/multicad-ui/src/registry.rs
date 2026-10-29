@@ -357,7 +357,6 @@ impl Default for Registry {
             ("joint", "Finger / miter joint", Icon::Link),
             ("drill", "Drill / pocket", Icon::Cut),
             ("cut-list", "Cut list", Icon::Page),
-            ("sheet", "Base sheet", Icon::Page),
             ("bend", "Flange / bend", Icon::Edge),
             ("fastener", "Attached fastener", Icon::Link),
             ("flat", "Flat pattern", Icon::Page),
@@ -447,7 +446,10 @@ impl Default for Registry {
                         tools: ModelingTool::ALL
                             .into_iter()
                             .filter(|tool| {
-                                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel)
+                                !matches!(
+                                    tool,
+                                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Sheet
+                                )
                             })
                             .map(ModelingTool::id)
                             .chain(["symbol"])
@@ -757,16 +759,24 @@ mod tests {
                 registry.workspace(Mode::Model).tabs[0]
                     .tools
                     .contains(&tool.id()),
-                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel),
-                "Copy shares the Move / Copy ribbon entry; Panel lives on the Wood tab"
+                !matches!(
+                    tool,
+                    ModelingTool::Copy | ModelingTool::Panel | ModelingTool::Sheet
+                ),
+                "Copy shares the Move / Copy ribbon entry; Panel and Sheet live on their tabs"
             );
-            if tool == ModelingTool::Panel {
-                let wood = registry
-                    .workspace(Mode::Model)
-                    .tabs
-                    .iter()
-                    .find(|t| t.title == "Wood");
-                assert!(wood.unwrap().tools.contains(&tool.id()));
+            for (owned, title) in [
+                (ModelingTool::Panel, "Wood"),
+                (ModelingTool::Sheet, "Sheet metal"),
+            ] {
+                if tool == owned {
+                    let tab = registry
+                        .workspace(Mode::Model)
+                        .tabs
+                        .iter()
+                        .find(|t| t.title == title);
+                    assert!(tab.unwrap().tools.contains(&tool.id()));
+                }
             }
             for alias in tool.aliases() {
                 assert_eq!(

@@ -101,6 +101,9 @@ impl SketchEditor {
         if tool == ModelingTool::Panel {
             return self.begin_cabinet(session, resources, channel);
         }
+        if tool == ModelingTool::Sheet {
+            return self.begin_sheet(session, resources, channel);
+        }
         if tool == ModelingTool::Level {
             return self.begin_architecture(session, resources, channel);
         }
