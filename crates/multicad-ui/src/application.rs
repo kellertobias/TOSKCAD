@@ -1,6 +1,7 @@
 //! Native application composition over canonical sessions and declarative tools.
 pub use crate::storage::DocumentStorage;
 mod closing;
+pub mod external_control;
 #[cfg(test)]
 #[path = "external_reference_app_tests.rs"]
 mod external_reference_tests;
@@ -159,6 +160,8 @@ pub struct Application {
     assembly_queries: Option<crate::assembly::AssemblyInspectionBackendFactory>,
     export_backends: Option<crate::exchange::BackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
+    external_control: Option<Box<dyn external_control::ExternalControl>>,
+    control_bindings: BTreeMap<u64, EntityId>,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -213,6 +216,8 @@ impl Application {
             measurement_backends: None,
             assembly_queries: None,
             export_backends: None,
+            external_control: None,
+            control_bindings: BTreeMap::new(),
             sketch_queries: None,
         };
         app.discover_recoveries()?;
@@ -1834,6 +1839,9 @@ impl Application {
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if self.run_external_jobs() {
+            ctx.request_repaint();
+        }
         if !self.welcome
             && self.current().view_restore_pending
             && ctx.input(|i| {
@@ -2060,7 +2068,19 @@ impl Application {
         self.poll_symbol_actions();
         self.file_windows(&ctx);
         if self.history_open {
-            egui::Window::new("Command and MCP history").open(&mut self.history_open).show(&ctx,|ui|{ui.label("External MCP transport is not connected. UI and command-line actions use the shared transaction API.");for entry in self.projects[self.active].session.activity(){ui.label(format!("r{} · {:?} · {} · {}",entry.change.revision,entry.actor.channel,entry.actor.id,entry.label));}});
+            let mut open = self.history_open;
+            egui::Window::new("Command and MCP history")
+                .open(&mut open)
+                .show(&ctx, |ui| {
+                    self.external_control_panel(ui);
+                    for entry in self.projects[self.active].session.activity() {
+                        ui.label(format!(
+                            "r{} · {:?} · {} · {}",
+                            entry.change.revision, entry.actor.channel, entry.actor.id, entry.label
+                        ));
+                    }
+                });
+            self.history_open = open;
         }
         if self.shortcut_help {
             egui::Window::new("Keyboard shortcuts").open(&mut self.shortcut_help).show(&ctx,|ui|{

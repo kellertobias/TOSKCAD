@@ -6,6 +6,7 @@
 pub mod assembly_inspection;
 pub mod commands;
 pub mod constraint_sketch;
+pub mod control;
 pub mod document;
 pub mod drawings;
 pub mod exchange;
