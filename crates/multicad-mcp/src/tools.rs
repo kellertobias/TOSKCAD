@@ -41,6 +41,7 @@ mod fdm;
 mod guides;
 mod levels;
 mod reference_repair;
+mod render;
 mod walls;
 pub use cabinetry::{CarcassArgs, PanelArgs, PanelStockArgs, StackArgs};
 use cabinetry::{create_panel, create_panel_stack, create_panel_stock, cut_list, set_carcass};
@@ -54,6 +55,8 @@ pub use reference_repair::{
     CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
+pub use render::{AssignAppearanceArgs, CreateAppearanceArgs, HandoffArgs, RenderSceneArgs};
+use render::{assign_appearance, blender_handoff, create_appearance, set_render_scene};
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
@@ -265,6 +268,18 @@ tools! {
     "fdm_aid_report" => NoArgs, "FDM aid report", true,
         "Every FDM aid measured from the evaluated solids: bounds, volume, contact with its target and bridge partner (separated, contact or overlapping, distance and common volume), neighbouring Parts inside the fit clearance, and findings against its process allowances.",
         fdm_aid_report;
+    "set_render_scene" => RenderSceneArgs, "Create or edit render scene", false,
+        "Create or replace a render scene stored in the document: camera eye and target in millimeters (+Z up) with a vertical field of view or orthographic height, background color, sun (W/m²) and point (W) lights, display style (shaded, shaded_edges, xray, wireframe), an optional Part scope and whether removable FDM aids are left out. Holds no geometry.",
+        set_render_scene;
+    "create_appearance" => CreateAppearanceArgs, "Create appearance", false,
+        "Create a render appearance definition (base color, roughness, metallic). Appearances are separate from manufacturing Materials, stock and section hatches.",
+        create_appearance;
+    "assign_appearance" => AssignAppearanceArgs, "Assign appearance", false,
+        "Give one Part an appearance, or clear it, keeping the Part's Material, stock and hatch.",
+        assign_appearance;
+    "blender_handoff" => HandoffArgs, "Blender handoff", true,
+        "Write a render scene's Parts as NAME.glb (glTF 2.0 in meters, assembly groups, shared instance meshes, appearances, the scene camera and KHR_lights_punctual lights) and NAME.render.json (scope, units, revision, lights in Blender units, excluded aids, notes) into the export folder, built from the current native model. MultiCAD does not render; Blender does.",
+        blender_handoff;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;
