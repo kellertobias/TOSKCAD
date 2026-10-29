@@ -261,7 +261,18 @@ fn library_place_edit_failure_and_cancel_keep_per_instance_values_source_neutral
     }
     c.preview(&s, &Default::default(), Channel::Ui).unwrap();
     wait(&mut c, &s, &Default::default());
-    c.apply(&mut s, &Default::default()).unwrap();
+    let SymbolOutcome::Applied {
+        selected: second, ..
+    } = c.apply(&mut s, &Default::default()).unwrap()
+    else {
+        panic!()
+    };
+    let native = c.display_scene(&s, &Default::default()).unwrap();
+    let first_bounds = native.native_instance_bounds(instance).unwrap();
+    let second_bounds = native.native_instance_bounds(second[0]).unwrap();
+    assert!(((first_bounds[1][0] - first_bounds[0][0]) - 30.).abs() < 1e-7);
+    assert!(((second_bounds[1][0] - second_bounds[0][0]) - 50.).abs() < 1e-7);
+    assert!((second_bounds[0][0] - 100.).abs() < 1e-7);
     assert_eq!(
         symbols::read_instance(s.document(), record)
             .unwrap()
@@ -730,4 +741,47 @@ fn static_inputs_are_fixed_and_incompatible_override_reset_reloads_the_authored_
             .0
             .is_empty()
     );
+}
+
+#[test]
+fn actual_native_geometry_without_physical_occurrence_receipt_cannot_authorize_symbol_apply() {
+    use crate::viewport::Scene;
+    let (mut s, part, width) = fixture();
+    let definition = embed(&mut s, part.body, width);
+    let mut c = controller();
+    begin(&mut c, &s, SymbolTool::Place, Default::default());
+    c.form
+        .as_mut()
+        .unwrap()
+        .place(s.document(), definition)
+        .unwrap();
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    wait(&mut c, &s, &Default::default());
+    assert!(c.can_apply(&s, &Default::default()));
+    let native = c.display_scene(&s, &Default::default()).unwrap();
+    // Retain genuinely native triangles, source hash and full-scope marker while
+    // deliberately withholding the independent physical occurrence receipt.
+    let incomplete = Scene::new(
+        native.stamp(),
+        native.geometries().values().cloned().collect(),
+        native.instances().to_vec(),
+    )
+    .unwrap()
+    .with_model_evaluation(native.model_evaluation().unwrap().clone())
+    .unwrap();
+    let request = c.form.as_mut().unwrap().prepare(&s, actor()).unwrap();
+    let baseline = s.document().clone();
+    let error = super::proof::validate(request.prepared.document(), native.stamp(), &incomplete)
+        .unwrap_err();
+    assert!(error.contains("leaf-occurrence"), "{error}");
+    assert_eq!(s.document(), &baseline);
+    let mut resources = ProjectResources::default();
+    resources
+        .metadata
+        .insert("new".into(), serde_json::json!(true));
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    c.poll(&s, &resources);
+    assert!(!c.can_apply(&s, &resources));
+    assert!(!c.pending());
+    assert_eq!(s.document(), &baseline);
 }
