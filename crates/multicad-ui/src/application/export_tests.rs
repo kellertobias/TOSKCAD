@@ -38,6 +38,7 @@ impl ExportBackend for Backend {
                 recipe,
                 status: RecipeStatus::Ready,
                 files: 1,
+                excluded_aids: vec![],
             }],
             artifacts: vec![ExportArtifact {
                 planar: None,

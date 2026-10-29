@@ -1087,6 +1087,25 @@ impl SketchEditor {
             "Panel / carcass · choose stock and sizes in the Inspector, then Preview".into();
         Ok(())
     }
+    pub fn begin_fdm_aid(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before adding print aids"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_fdm_aid(session, resources, channel)?;
+        self.message =
+            "Tab / bridge / support · choose the finished Part and sizes in the Inspector, then Preview"
+                .into();
+        Ok(())
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,
@@ -1105,6 +1124,9 @@ impl SketchEditor {
             "Levels & stairs · define a level or place a slab, stair or envelope, then Preview"
                 .into();
         Ok(())
+    }
+    pub fn display_style(&self) -> DisplayStyle {
+        self.style
     }
     pub fn set_display_style(&mut self, style: DisplayStyle) {
         self.style = style;

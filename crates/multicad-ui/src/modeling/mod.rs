@@ -12,6 +12,7 @@ pub(crate) mod dimension;
 mod edge_treatment;
 mod extrude;
 mod extrude_operation;
+mod fdm_aid;
 mod form;
 mod gizmo;
 mod group_edit;
@@ -66,10 +67,11 @@ pub enum ModelingTool {
     Panel,
     Joint,
     Machining,
+    FdmAid,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
@@ -77,6 +79,7 @@ impl ModelingTool {
         Self::Panel,
         Self::Joint,
         Self::Machining,
+        Self::FdmAid,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -118,6 +121,7 @@ impl ModelingTool {
             Self::Panel => "panel",
             Self::Joint => "joint",
             Self::Machining => "drill",
+            Self::FdmAid => "fdm-aid",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -147,6 +151,7 @@ impl ModelingTool {
             Self::Panel => "Panel / carcass",
             Self::Joint => "Panel joint",
             Self::Machining => "Drill / pocket",
+            Self::FdmAid => "Tab / bridge / support",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -176,6 +181,7 @@ impl ModelingTool {
             Self::Panel => crate::icons::Icon::Box,
             Self::Joint => crate::icons::Icon::Link,
             Self::Machining => crate::icons::Icon::Cut,
+            Self::FdmAid => crate::icons::Icon::Edge,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -205,6 +211,13 @@ impl ModelingTool {
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
             Self::Machining => &["groove", "dado", "rabbet", "pocket", "hardware-holes"],
+            Self::FdmAid => &[
+                "support",
+                "tab",
+                "breakaway-tab",
+                "sacrificial-bridge",
+                "fdm",
+            ],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -229,6 +242,9 @@ impl ModelingTool {
             }
             Self::Joint => {
                 "Usage: joint (choose panel pairs that overlap at a corner and a butt, miter or finger joint in the Inspector, then Preview and Apply)"
+            }
+            Self::FdmAid => {
+                "Usage: fdm-aid (choose tab, bridge or support, the finished Part and process allowances in the Inspector, then Preview and Apply)"
             }
             Self::Panel => {
                 "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
@@ -282,6 +298,9 @@ impl ModelingTool {
             }
             Self::Joint => {
                 "Requires rectangular panels that overlap at a right-angle corner, one full thickness of each, and no pending edits."
+            }
+            Self::FdmAid => {
+                "Requires native modeling, a finished Part and no pending edits. Each aid is its own Part; the finished Part is not changed. No slicer, support generation or G-code."
             }
             Self::Panel => {
                 "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."

@@ -647,6 +647,8 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::level::validate_document(document)?;
     super::cabinetry::validate_document(document)?;
     super::imports::validate_document(document)?;
+    super::fdm::validate_document(document)?;
+    super::render::validate_document(document)?;
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
@@ -715,6 +717,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::imports::STEP_BODY_TYPE,
                     super::imports::BOARD_TYPE,
                     super::imports::COMPONENT_TYPE,
+                    super::AID_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {
@@ -742,6 +745,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::MACHINING_KIND,
                     super::HARDWARE_KIND,
                     super::imports::STEP_SOURCE_KIND,
+                    super::PROCESS_KIND,
+                    super::RENDER_SCENE_KIND,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {

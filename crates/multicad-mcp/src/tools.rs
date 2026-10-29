@@ -37,10 +37,12 @@ use std::{
 };
 
 mod cabinetry;
+mod fdm;
 mod guides;
 mod imports;
 mod levels;
 mod reference_repair;
+mod render;
 mod walls;
 pub use cabinetry::{
     CarcassArgs, DeleteJointArgs, DeleteMachiningArgs, HardwareArgs, MachiningArgs, PanelArgs,
@@ -50,6 +52,8 @@ use cabinetry::{
     create_panel, create_panel_stack, create_panel_stock, cut_list, delete_machining,
     delete_panel_joint, set_carcass, set_hardware_pattern, set_machining, set_panel_joint,
 };
+pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs};
+use fdm::{fdm_aid_report, remove_fdm_aid, set_fdm_aid, set_fdm_process};
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
 pub use imports::{KicadImportArgs, StepImportArgs};
@@ -60,6 +64,8 @@ pub use reference_repair::{
     CandidateArgs, ElementArg, ElementKind, PreviewArgs, RepairArgs, StepArg,
 };
 use reference_repair::{apply_reference_repairs, preview_reference_repairs, reference_candidates};
+pub use render::{AssignAppearanceArgs, CreateAppearanceArgs, HandoffArgs, RenderSceneArgs};
+use render::{assign_appearance, blender_handoff, create_appearance, set_render_scene};
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
 };
@@ -280,6 +286,30 @@ tools! {
     "cut_list" => NoArgs, "Panel cut list", true,
         "Every panel Part measured from its evaluated solid: finished and core sizes along and across the grain, thickness, banded edges, stock and whether the core fits one stock sheet, plus each stack's layers and whether they touch face to face.",
         cut_list;
+    "set_fdm_process" => ProcessArgs, "Set FDM process allowances", false,
+        "Create or edit an FDM process allowance record: layer height, line width, minimum aid thickness in layers, minimum aid width in lines, support Z gap and fit clearance to Parts an aid does not serve. Used only to inspect aids; not a slicer profile.",
+        set_fdm_process;
+    "set_fdm_aid" => AidArgs, "Create or edit FDM aid", false,
+        "Create or edit a removable FDM aid as its own Part serving a finished target Part: a breakaway tab (origin, angle, length, width, thickness, overlap), a thin bridge (start, end, width, thickness, optional second Part) or a flat-topped support (footprint corner, angle, length, width, base, gap) whose height is derived from the target's solid. The target is never changed. Evaluated natively before commit.",
+        set_fdm_aid;
+    "remove_fdm_aid" => RemoveAidArgs, "Remove FDM aid", false,
+        "Remove an FDM aid feature and its Part; the target Part is untouched.",
+        remove_fdm_aid;
+    "fdm_aid_report" => NoArgs, "FDM aid report", true,
+        "Every FDM aid measured from the evaluated solids: bounds, volume, contact with its target and bridge partner (separated, contact or overlapping, distance and common volume), neighbouring Parts inside the fit clearance, and findings against its process allowances.",
+        fdm_aid_report;
+    "set_render_scene" => RenderSceneArgs, "Create or edit render scene", false,
+        "Create or replace a render scene stored in the document: camera eye and target in millimeters (+Z up) with a vertical field of view or orthographic height, background color, sun (W/m²) and point (W) lights, display style (shaded, shaded_edges, xray, wireframe), an optional Part scope and whether removable FDM aids are left out. Holds no geometry.",
+        set_render_scene;
+    "create_appearance" => CreateAppearanceArgs, "Create appearance", false,
+        "Create a render appearance definition (base color, roughness, metallic). Appearances are separate from manufacturing Materials, stock and section hatches.",
+        create_appearance;
+    "assign_appearance" => AssignAppearanceArgs, "Assign appearance", false,
+        "Give one Part an appearance, or clear it, keeping the Part's Material, stock and hatch.",
+        assign_appearance;
+    "blender_handoff" => HandoffArgs, "Blender handoff", true,
+        "Write a render scene's Parts as NAME.glb (glTF 2.0 in meters, assembly groups, shared instance meshes, appearances, the scene camera and KHR_lights_punctual lights) and NAME.render.json (scope, units, revision, lights in Blender units, excluded aids, notes) into the export folder, built from the current native model. MultiCAD does not render; Blender does.",
+        blender_handoff;
     "reference_candidates" => CandidateArgs, "Reference repair candidates", true,
         "The current exact topology elements (face, edge, vertex) of a source feature with their analytic geometry, for choosing a replacement in a reference repair. Element keys are valid only at the reported revision.",
         reference_candidates;

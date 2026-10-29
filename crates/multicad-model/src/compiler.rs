@@ -633,6 +633,13 @@ impl Compiler {
                 (model::imports::COMPONENT_TYPE, 1) => {
                     crate::imports::build_component(document, id, self.policy)?
                 }
+                (model::AID_TYPE, model::AID_SCHEMA) => {
+                    let target = model::read_aid(document, id)
+                        .map_err(|e| error(Some(id), e))?
+                        .target;
+                    let target = bodies.get(&target).and_then(|head| solids.get(head));
+                    crate::fdm::build(document, context.parameters(), id, self.policy, target)?
+                }
                 (model::WALL_TYPE, model::WALL_SCHEMA) => {
                     crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
                 }

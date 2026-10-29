@@ -26,6 +26,10 @@ pub struct RecipeReport {
     pub recipe: EntityId,
     pub status: RecipeStatus,
     pub files: usize,
+    /// Selected Parts this recipe left out because they are removable FDM
+    /// aids and the recipe excludes removable aids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_aids: Vec<PartRef>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

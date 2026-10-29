@@ -175,6 +175,14 @@ schema is generated from the Rust argument types with schemars and returned by
 | `import_step` | yes | Import or update a STEP file's solids from the exchange folder (see [imports](imports.md)) |
 | `import_kicad` | yes | Import or update a KiCad board, its holes and footprint components from the exchange folder |
 | `cut_list` | no | Finished and core panel sizes measured from the solids, stock fit and stack contact |
+| `set_fdm_process` | yes | FDM process allowances (layer height, line width, minimum layers and lines, support gap, fit clearance) used to inspect aids (see [FDM aids](fdm-aids.md)) |
+| `set_fdm_aid` | yes | Create or edit a breakaway tab, thin bridge or derived-height support as its own Part serving a finished Part |
+| `remove_fdm_aid` | yes | Remove an aid feature and its Part; the target is untouched |
+| `fdm_aid_report` | no | Aid bounds, contact with target and bridge partner, fit-clearance neighbours and allowance findings measured from the solids |
+| `set_render_scene` | yes | Render scene stored in the document: camera, background, sun and point lights, display style, Part scope and aid exclusion (see [render handoff](render-handoff.md)) |
+| `create_appearance` | yes | Render appearance definition (base color, roughness, metallic), separate from Materials, stock and hatch |
+| `assign_appearance` | yes | Give one Part an appearance, or clear it, keeping its Material, stock and hatch |
+| `blender_handoff` | no | Write NAME.glb with the scene camera and lights and NAME.render.json into the export folder |
 | `reference_candidates` | no | Current exact faces, edges and vertices of a source feature, with element keys and analytic geometry |
 | `preview_reference_repairs` | no | Stage several reference repair rows on the current source and report rows, blockers and `can_apply` (see [reference repair sets](reference-repair-sets.md)) |
 | `apply_reference_repairs` | yes | The same rows, committed as one transaction only when the complete candidate passes |

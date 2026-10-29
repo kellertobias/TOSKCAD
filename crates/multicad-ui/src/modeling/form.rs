@@ -7,6 +7,7 @@ use super::{
     boolean_edit::BooleanEditPanel,
     cabinet::{CabinetCommand, CabinetPanel},
     edge_treatment::EdgeTreatmentPanel,
+    fdm_aid::{FdmAidCommand, FdmAidPanel},
     group_edit::GroupEditPanel,
     joint::{JointCommand, JointPanel},
     machining::{MachiningCommand, MachiningPanel},
@@ -48,6 +49,7 @@ pub enum ModelRequest {
     Cabinet(Box<CabinetCommand>),
     Joint(Box<JointCommand>),
     Machining(Box<MachiningCommand>),
+    FdmAid(Box<FdmAidCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -106,6 +108,12 @@ impl ModelRequest {
             Self::Cabinet(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Panel edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::FdmAid(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Aid edit changed its producer identity".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -201,6 +209,12 @@ impl ModelRequest {
             }
             Self::Joint(command) => return command.prepare(session, actor),
             Self::Machining(command) => return command.prepare(session, actor),
+            Self::FdmAid(command) => {
+                if command.edit_id().is_some() {
+                    return Err("Reopen the saved aid before editing it".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Extrude(request) => {
                 model::prepare_extrude(session, session.revision(), actor, request)
             }
@@ -313,6 +327,7 @@ pub(super) enum ModelForm {
     Cabinet(Box<CabinetPanel>),
     Joint(Box<JointPanel>),
     Machining(Box<MachiningPanel>),
+    FdmAid(Box<FdmAidPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -334,6 +349,7 @@ impl ModelForm {
             Self::Cabinet(panel) => panel.stamp(),
             Self::Joint(panel) => panel.stamp(),
             Self::Machining(panel) => panel.stamp(),
+            Self::FdmAid(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -355,6 +371,7 @@ impl ModelForm {
             Self::Cabinet(panel) => panel.label(),
             Self::Joint(panel) => panel.label(),
             Self::Machining(panel) => panel.label(),
+            Self::FdmAid(panel) => panel.label(),
         }
     }
     pub fn request(
@@ -387,6 +404,9 @@ impl ModelForm {
             Self::Machining(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Machining(Box::new(command))),
+            Self::FdmAid(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::FdmAid(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -461,6 +481,7 @@ impl ModelForm {
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Joint(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Machining(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::FdmAid(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

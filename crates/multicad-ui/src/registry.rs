@@ -364,8 +364,6 @@ impl Default for Registry {
             ("cope", "Miter / cope", Icon::Cut),
             ("weld", "Weld joint", Icon::Link),
             ("weld-list", "Weld sequence", Icon::Page),
-            ("support", "Thin support", Icon::Box),
-            ("tab", "Breakaway tab", Icon::Edge),
             ("materials", "Materials", Icon::Library),
             ("door", "Door", Icon::Page),
             ("window-tool", "Window", Icon::Page),
@@ -373,7 +371,8 @@ impl Default for Registry {
             ("export-3d", "STEP / OBJ", Icon::Export),
             ("export-2d", "DXF / PDF", Icon::Page),
             ("print", "3MF package", Icon::Export),
-            ("appearance", "Render scene", Icon::Box),
+            ("appearance", "Capture render view", Icon::Box),
+            ("render-view", "Show render view", Icon::Box),
             ("blender", "Blender handoff", Icon::Export),
         ] {
             registry.tools.push(Tool {
@@ -451,6 +450,7 @@ impl Default for Registry {
                                         | ModelingTool::Panel
                                         | ModelingTool::Joint
                                         | ModelingTool::Machining
+                                        | ModelingTool::FdmAid
                                 )
                             })
                             .map(ModelingTool::id)
@@ -473,7 +473,7 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: false,
                     },
-                    tab("FDM aids", &["support", "tab"]),
+                    tab("FDM aids", &["fdm-aid"]),
                     tab("Materials", &["materials"]),
                 ],
             },
@@ -534,7 +534,7 @@ impl Default for Registry {
                         ],
                     ),
                     tab("Print", &["print"]),
-                    tab("Render", &["appearance", "blender"]),
+                    tab("Render", &["appearance", "render-view", "blender"]),
                 ],
             },
         ];
@@ -767,9 +767,19 @@ mod tests {
                         | ModelingTool::Panel
                         | ModelingTool::Joint
                         | ModelingTool::Machining
+                        | ModelingTool::FdmAid
                 ),
-                "Copy shares the Move / Copy ribbon entry; Panel and Joint live on the Wood tab"
+                "Copy shares the Move / Copy ribbon entry; Panel, Joint and Drill live on the Wood tab and print aids on the FDM aids tab"
             );
+            if tool == ModelingTool::FdmAid {
+                let fdm = registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .find(|t| t.title == "FDM aids");
+                assert!(fdm.unwrap().tools.contains(&tool.id()));
+                assert_eq!(registry.resolve("support").unwrap().id, tool.id());
+            }
             if matches!(
                 tool,
                 ModelingTool::Panel | ModelingTool::Joint | ModelingTool::Machining

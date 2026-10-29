@@ -691,5 +691,5 @@ fn units_control(ui: &mut egui::Ui, units: &mut LengthUnit) {
 }
 fn aids_control(ui: &mut egui::Ui, aids: &mut AidPolicy) {
     let mut exclude = *aids == AidPolicy::ExcludeRemovable;
-    if ui.checkbox(&mut exclude,"Exclude removable design aids").on_hover_text("Removable-aid exclusion is not available yet. Run reports Unsupported instead of guessing from names or tags").changed(){*aids=if exclude{AidPolicy::ExcludeRemovable}else{AidPolicy::IncludeAll};}
+    if ui.checkbox(&mut exclude,"Exclude removable design aids").on_hover_text("Leave out Parts produced by FDM aid features (tabs, bridges, supports). Aids are classified by their feature, never by name or tag; the preview lists what was left out").changed(){*aids=if exclude{AidPolicy::ExcludeRemovable}else{AidPolicy::IncludeAll};}
 }

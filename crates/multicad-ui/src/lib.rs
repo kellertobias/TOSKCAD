@@ -19,6 +19,7 @@ pub mod recent_projects;
 pub mod reference_repair;
 pub mod reference_repair_set;
 pub mod registry;
+pub mod render_view;
 pub mod ribbon_ui;
 mod selection_input;
 pub mod storage;
