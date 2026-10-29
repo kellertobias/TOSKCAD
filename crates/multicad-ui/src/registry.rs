@@ -354,7 +354,6 @@ impl Default for Registry {
         for (id, label, icon) in [
             ("symbol", "Create symbol", Icon::Library),
             ("library", "Symbol library", Icon::Library),
-            ("panel", "Panel", Icon::Box),
             ("joint", "Finger / miter joint", Icon::Link),
             ("drill", "Drill / pocket", Icon::Cut),
             ("cut-list", "Cut list", Icon::Page),
@@ -447,7 +446,9 @@ impl Default for Registry {
                         title: "Common",
                         tools: ModelingTool::ALL
                             .into_iter()
-                            .filter(|tool| *tool != ModelingTool::Copy)
+                            .filter(|tool| {
+                                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel)
+                            })
                             .map(ModelingTool::id)
                             .chain(["symbol"])
                             .collect(),
@@ -756,9 +757,17 @@ mod tests {
                 registry.workspace(Mode::Model).tabs[0]
                     .tools
                     .contains(&tool.id()),
-                tool != ModelingTool::Copy,
-                "Copy keeps a separate command but shares the Move / Copy ribbon entry"
+                !matches!(tool, ModelingTool::Copy | ModelingTool::Panel),
+                "Copy shares the Move / Copy ribbon entry; Panel lives on the Wood tab"
             );
+            if tool == ModelingTool::Panel {
+                let wood = registry
+                    .workspace(Mode::Model)
+                    .tabs
+                    .iter()
+                    .find(|t| t.title == "Wood");
+                assert!(wood.unwrap().tools.contains(&tool.id()));
+            }
             for alias in tool.aliases() {
                 assert_eq!(
                     registry.resolve(alias).unwrap().action,

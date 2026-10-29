@@ -1032,6 +1032,24 @@ impl SketchEditor {
                 .into();
         Ok(())
     }
+    pub fn begin_cabinet(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before adding panels"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_cabinet(session, resources, channel)?;
+        self.message =
+            "Panel / carcass · choose stock and sizes in the Inspector, then Preview".into();
+        Ok(())
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,

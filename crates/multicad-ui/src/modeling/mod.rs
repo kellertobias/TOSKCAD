@@ -6,6 +6,7 @@ mod architecture;
 mod body_choices;
 mod boolean;
 mod boolean_edit;
+mod cabinet;
 mod controller;
 pub(crate) mod dimension;
 mod edge_treatment;
@@ -60,14 +61,16 @@ pub enum ModelingTool {
     EdgeTreatment,
     Wall,
     Level,
+    Panel,
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
         Self::Level,
+        Self::Panel,
         Self::Extrude,
         Self::Revolve,
         Self::Boolean,
@@ -106,6 +109,7 @@ impl ModelingTool {
             Self::EdgeTreatment => "edge-treatment",
             Self::Wall => "wall",
             Self::Level => "level",
+            Self::Panel => "panel",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "shell",
                 AdvancedKind::Sweep => "sweep",
@@ -132,6 +136,7 @@ impl ModelingTool {
             Self::EdgeTreatment => "Fillet / Chamfer",
             Self::Wall => "Wall",
             Self::Level => "Levels & stairs",
+            Self::Panel => "Panel / carcass",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
@@ -158,6 +163,7 @@ impl ModelingTool {
             Self::EdgeTreatment => crate::icons::Icon::Edge,
             Self::Wall => crate::icons::Icon::Box,
             Self::Level => crate::icons::Icon::Edge,
+            Self::Panel => crate::icons::Icon::Box,
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => crate::icons::Icon::Shell,
                 AdvancedKind::Sweep => crate::icons::Icon::Sweep,
@@ -184,6 +190,7 @@ impl ModelingTool {
             Self::EdgeTreatment => &["fillet", "chamfer", "edge"],
             Self::Wall => &["walls", "architectural-wall", "doors-windows"],
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
+            Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => &["thickness", "hollow-body"],
                 AdvancedKind::Sweep => &["sweep-body", "pipe-body"],
@@ -202,6 +209,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
+            }
+            Self::Panel => {
+                "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
             }
             Self::Wall => {
                 "Usage: wall (choose or define a wall type, enter path points and doors/windows in the Inspector, then Preview and Apply)"
@@ -246,6 +256,9 @@ impl ModelingTool {
             }
             Self::Level => {
                 "Requires native modeling and no pending edits. Slabs and stairs are placed on an existing level; editing a level rebuilds everything on it. Stair figures are geometric notes, not code approval."
+            }
+            Self::Panel => {
+                "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."
             }
             Self::Wall => {
                 "Requires native modeling and no pending edits. Wall and opening types are created with the wall or reused from the project."

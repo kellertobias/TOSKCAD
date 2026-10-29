@@ -1,0 +1,821 @@
+//! Cabinet inspector: build or edit a parametric carcass from an envelope, or
+//! place a rectangular panel from panel stock with grain, banding and
+//! oversize. Panel stock is defined in Model → Materials.
+use super::{
+    FormStamp, PreviewState,
+    dimension::DimensionField,
+    form::{self, FormAction, ModelEvent, ModelRequest},
+};
+use crate::{controls, egui};
+use multicad_core::{
+    commands::{Actor, Session},
+    constraint_sketch::Dimension,
+    document::{Document, EntityId},
+    materials::{self, LibraryDefinition, StockKind},
+    model::{
+        self, Back, Band, BodyOutput, CarcassDefinition, CarcassRequest, Construction, GrainAxis,
+        ModelPrepared, PanelDefinition, PanelEdges, PanelPlane, PanelRequest, PanelSource,
+        ShelfLayout, Shelves, angle, length,
+    },
+};
+
+/// The typed intent sent to native preview and Apply.
+#[derive(Clone, Debug)]
+pub enum CabinetCommand {
+    Carcass {
+        existing: Option<EntityId>,
+        request: CarcassRequest,
+    },
+    Panel {
+        editing: bool,
+        feature: EntityId,
+        name: String,
+        panel: PanelDefinition,
+    },
+}
+impl CabinetCommand {
+    pub(super) fn prepare(&self, session: &Session, actor: Actor) -> Result<ModelPrepared, String> {
+        let revision = session.revision();
+        match self {
+            Self::Carcass {
+                existing: Some(id),
+                request,
+            } => model::prepare_carcass_edit(session, revision, actor, *id, &request.definition)
+                .map(|p| p.model),
+            Self::Carcass {
+                existing: None,
+                request,
+            } => model::prepare_carcass(session, revision, actor, request).map(|p| p.model),
+            Self::Panel {
+                editing: true,
+                feature,
+                panel,
+                ..
+            } => model::prepare_panel_edit(session, revision, actor, *feature, panel),
+            Self::Panel {
+                editing: false,
+                feature,
+                name,
+                panel,
+            } => model::prepare_panel(
+                session,
+                revision,
+                actor,
+                &PanelRequest {
+                    feature: *feature,
+                    body: panel.output.body,
+                    name: name.clone(),
+                    panel: panel.clone(),
+                },
+            ),
+        }
+        .map_err(|e| e.to_string())
+    }
+    /// Panel edits keep their feature; carcass edits add or remove panels and
+    /// run as source changes like levels.
+    pub fn edit_id(&self) -> Option<EntityId> {
+        match self {
+            Self::Panel {
+                editing: true,
+                feature,
+                ..
+            } => Some(*feature),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Carcass,
+    Panel,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackKind {
+    None,
+    Inset,
+    Overlay,
+}
+
+fn field(value: f64, unit: &'static str) -> DimensionField {
+    let d = if unit == "deg" {
+        angle(value)
+    } else {
+        length(value)
+    };
+    DimensionField::from_dimension(&d, unit).expect("literal field")
+}
+fn of(d: &Dimension, unit: &'static str) -> Result<DimensionField, String> {
+    DimensionField::from_dimension(d, unit)
+}
+/// Panel stock entries: (stock, name, thickness).
+fn panel_stocks(document: &Document) -> Vec<(EntityId, String, f64)> {
+    document
+        .entities()
+        .filter_map(|e| match materials::read(e).ok().flatten() {
+            Some(LibraryDefinition::Stock(s)) => match s.specification {
+                StockKind::Panel { thickness_mm, .. } => Some((e.id, e.name.clone(), thickness_mm)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+fn stock_combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    stocks: &[(EntityId, String, f64)],
+    value: &mut Option<EntityId>,
+) -> bool {
+    let selected = value
+        .and_then(|v| stocks.iter().find(|(s, ..)| *s == v))
+        .map_or("Choose panel stock".into(), |(_, n, t)| {
+            format!("{n} · {t} mm")
+        });
+    let mut changed = false;
+    controls::inspector_combo(ui, id)
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            for (s, n, t) in stocks {
+                changed |= ui
+                    .selectable_value(value, Some(*s), format!("{n} · {t} mm"))
+                    .changed();
+            }
+        });
+    changed
+}
+
+pub(super) struct CabinetPanel {
+    stamp: FormStamp,
+    kind: Kind,
+    /// The carcass or panel feature being edited.
+    existing: Option<EntityId>,
+    feature: EntityId,
+    body: EntityId,
+    name: String,
+    stock: Option<EntityId>,
+    origin: [DimensionField; 3],
+    // Carcass
+    rotation: DimensionField,
+    width: DimensionField,
+    height: DimensionField,
+    depth: DimensionField,
+    construction: Construction,
+    back: BackKind,
+    back_stock: Option<EntityId>,
+    recess: DimensionField,
+    offsets: bool,
+    shelf_count: u32,
+    shelf_offsets: String,
+    setback: DimensionField,
+    clearance: DimensionField,
+    group: bool,
+    // Both: front band on carcasses, chosen edges on panels.
+    banded: bool,
+    band: DimensionField,
+    allowance: DimensionField,
+    // Panel
+    plane: PanelPlane,
+    length: DimensionField,
+    panel_width: DimensionField,
+    grain: GrainAxis,
+    edges: [bool; 4],
+    oversize: DimensionField,
+    error: Option<String>,
+}
+impl CabinetPanel {
+    pub fn new(document: &Document, name: String) -> Self {
+        let stocks = panel_stocks(document);
+        let thinnest = stocks
+            .iter()
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .map(|s| s.0);
+        let thickest = stocks
+            .iter()
+            .max_by(|a, b| a.2.total_cmp(&b.2))
+            .map(|s| s.0);
+        Self {
+            stamp: FormStamp::new(),
+            kind: Kind::Carcass,
+            existing: None,
+            feature: EntityId::new(),
+            body: EntityId::new(),
+            name,
+            stock: thickest,
+            origin: [field(0., "mm"), field(0., "mm"), field(0., "mm")],
+            rotation: field(0., "deg"),
+            width: field(600., "mm"),
+            height: field(720., "mm"),
+            depth: field(560., "mm"),
+            construction: Construction::SidesFullHeight,
+            back: if thinnest.is_some() && thinnest != thickest {
+                BackKind::Inset
+            } else {
+                BackKind::None
+            },
+            back_stock: thinnest,
+            recess: field(10., "mm"),
+            offsets: false,
+            shelf_count: 1,
+            shelf_offsets: "250, 450".into(),
+            setback: field(20., "mm"),
+            clearance: field(1., "mm"),
+            group: true,
+            banded: true,
+            band: field(2., "mm"),
+            allowance: field(0., "mm"),
+            plane: PanelPlane::Xy,
+            length: field(800., "mm"),
+            panel_width: field(400., "mm"),
+            grain: GrainAxis::U,
+            edges: [false; 4],
+            oversize: field(0., "mm"),
+            error: None,
+        }
+    }
+    /// Open an applied panel: a carcass panel opens its carcass.
+    pub fn existing(document: &Document, feature: EntityId) -> Result<Self, String> {
+        let panel = model::read_panel(document, feature).map_err(|e| e.to_string())?;
+        let name = |id| document.get(id).map(|e| e.name.clone()).unwrap_or_default();
+        let mut form = Self::new(document, String::new());
+        match &panel.source {
+            PanelSource::Carcass { carcass, .. } => {
+                let c = model::read_carcass(document, *carcass).map_err(|e| e.to_string())?;
+                form.kind = Kind::Carcass;
+                form.existing = Some(*carcass);
+                form.name = name(*carcass);
+                form.stock = Some(c.stock);
+                form.origin = [
+                    of(&c.origin[0], "mm")?,
+                    of(&c.origin[1], "mm")?,
+                    of(&c.origin[2], "mm")?,
+                ];
+                form.rotation = of(&c.rotation, "deg")?;
+                form.width = of(&c.width, "mm")?;
+                form.height = of(&c.height, "mm")?;
+                form.depth = of(&c.depth, "mm")?;
+                form.construction = c.construction;
+                (form.back, form.back_stock) = match &c.back {
+                    Back::None => (BackKind::None, form.back_stock),
+                    Back::Inset { stock, recess } => {
+                        form.recess = of(recess, "mm")?;
+                        (BackKind::Inset, Some(*stock))
+                    }
+                    Back::Overlay { stock } => (BackKind::Overlay, Some(*stock)),
+                };
+                match &c.shelves.layout {
+                    ShelfLayout::Even { count } => {
+                        form.offsets = false;
+                        form.shelf_count = *count;
+                    }
+                    ShelfLayout::Offsets { offsets } => {
+                        form.offsets = true;
+                        form.shelf_offsets = offsets
+                            .iter()
+                            .map(|d| match d {
+                                Dimension::Literal { value, .. } => value.to_string(),
+                                Dimension::Expression { expression } => expression.text.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                    }
+                }
+                form.setback = of(&c.shelves.setback, "mm")?;
+                form.clearance = of(&c.shelves.clearance, "mm")?;
+                form.group = c.group.is_some();
+                form.banded = c.front_band.is_some();
+                if let Some(b) = &c.front_band {
+                    form.band = of(&b.thickness, "mm")?;
+                    form.allowance = of(b.allowance.as_ref().unwrap_or(&length(0.)), "mm")?;
+                }
+            }
+            PanelSource::Rectangle {
+                stock,
+                plane,
+                origin,
+                length: l,
+                width: w,
+            } => {
+                form.kind = Kind::Panel;
+                form.existing = Some(feature);
+                form.feature = feature;
+                form.body = panel.output.body;
+                form.name = name(panel.output.body);
+                form.stock = Some(*stock);
+                form.plane = *plane;
+                form.origin = [
+                    of(&origin[0], "mm")?,
+                    of(&origin[1], "mm")?,
+                    of(&origin[2], "mm")?,
+                ];
+                form.length = of(l, "mm")?;
+                form.panel_width = of(w, "mm")?;
+                form.grain = panel.grain;
+                let bands = panel.edges.bands();
+                form.edges = bands.map(|b| b.is_some());
+                form.banded = bands.iter().any(Option::is_some);
+                if let Some(b) = bands.into_iter().flatten().next() {
+                    form.band = of(&b.thickness, "mm")?;
+                    form.allowance = of(b.allowance.as_ref().unwrap_or(&length(0.)), "mm")?;
+                }
+                if let Some(o) = &panel.oversize {
+                    form.oversize = of(o, "mm")?;
+                }
+            }
+            PanelSource::Profile { .. } => {
+                return Err("Sketch-region panels are edited through the MCP API for now".into());
+            }
+        }
+        Ok(form)
+    }
+    pub fn stamp(&self) -> FormStamp {
+        self.stamp
+    }
+    pub fn label(&self) -> &'static str {
+        match self.kind {
+            Kind::Carcass => "Carcass",
+            Kind::Panel => "Panel",
+        }
+    }
+    fn band(&self, document: &Document) -> Result<Band, String> {
+        Ok(Band {
+            thickness: self.band.resolve(document)?,
+            allowance: Some(self.allowance.resolve(document)?),
+        })
+    }
+    pub fn request(&self, document: &Document, enabled: bool) -> Result<CabinetCommand, String> {
+        if !enabled {
+            return Err("The native modeling preview provider is unavailable".into());
+        }
+        if self.name.trim().is_empty() || self.name.len() > 1000 {
+            return Err("Enter a name with 1–1000 bytes".into());
+        }
+        let stock = self
+            .stock
+            .ok_or("Choose panel stock; define it in Model → Materials")?;
+        let origin = [
+            self.origin[0].resolve(document)?,
+            self.origin[1].resolve(document)?,
+            self.origin[2].resolve(document)?,
+        ];
+        match self.kind {
+            Kind::Carcass => {
+                let back_stock = || self.back_stock.ok_or("Choose the back panel stock");
+                let layout = if self.offsets {
+                    ShelfLayout::Offsets {
+                        offsets: self
+                            .shelf_offsets
+                            .split(',')
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| {
+                                s.trim().parse::<f64>().map(length).map_err(|_| {
+                                    format!("Shelf offset \"{}\" is not a number", s.trim())
+                                })
+                            })
+                            .collect::<Result<_, _>>()?,
+                    }
+                } else {
+                    ShelfLayout::Even {
+                        count: self.shelf_count,
+                    }
+                };
+                let definition = CarcassDefinition {
+                    origin,
+                    rotation: self.rotation.resolve(document)?,
+                    width: self.width.resolve(document)?,
+                    height: self.height.resolve(document)?,
+                    depth: self.depth.resolve(document)?,
+                    stock,
+                    construction: self.construction,
+                    back: match self.back {
+                        BackKind::None => Back::None,
+                        BackKind::Inset => Back::Inset {
+                            stock: back_stock()?,
+                            recess: self.recess.resolve(document)?,
+                        },
+                        BackKind::Overlay => Back::Overlay {
+                            stock: back_stock()?,
+                        },
+                    },
+                    shelves: Shelves {
+                        layout,
+                        setback: self.setback.resolve(document)?,
+                        clearance: self.clearance.resolve(document)?,
+                    },
+                    front_band: self.banded.then(|| self.band(document)).transpose()?,
+                    group: None,
+                };
+                Ok(CabinetCommand::Carcass {
+                    existing: self.existing,
+                    request: CarcassRequest {
+                        carcass: self.feature,
+                        name: self.name.clone(),
+                        definition,
+                        group: self.group,
+                    },
+                })
+            }
+            Kind::Panel => {
+                let band = self.banded.then(|| self.band(document)).transpose()?;
+                let pick = |i: usize| band.clone().filter(|_| self.edges[i]);
+                let oversize = self.oversize.resolve(document)?;
+                let zero = matches!(oversize, Dimension::Literal { value, .. } if value == 0.);
+                Ok(CabinetCommand::Panel {
+                    editing: self.existing.is_some(),
+                    feature: self.feature,
+                    name: self.name.clone(),
+                    panel: PanelDefinition {
+                        output: BodyOutput { body: self.body },
+                        source: PanelSource::Rectangle {
+                            stock,
+                            plane: self.plane,
+                            origin,
+                            length: self.length.resolve(document)?,
+                            width: self.panel_width.resolve(document)?,
+                        },
+                        grain: self.grain,
+                        edges: PanelEdges {
+                            u_start: pick(0),
+                            u_end: pick(1),
+                            v_start: pick(2),
+                            v_end: pick(3),
+                        },
+                        oversize: (!zero).then_some(oversize),
+                    },
+                })
+            }
+        }
+    }
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        document: &Document,
+        enabled: bool,
+        preview: PreviewState<'_>,
+    ) -> Option<ModelEvent> {
+        controls::inspector_layout(ui);
+        let mut changed = false;
+        if self.existing.is_none() {
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .radio_value(&mut self.kind, Kind::Carcass, "Carcass")
+                    .changed();
+                changed |= ui
+                    .radio_value(&mut self.kind, Kind::Panel, "Panel")
+                    .changed();
+            });
+        }
+        ui.strong(self.label());
+        ui.small(match (self.kind, self.existing.is_some()) {
+            (Kind::Carcass, false) => "Sides, top, bottom, back and shelves from an outside envelope. Each panel is a named Part you can select.",
+            (Kind::Carcass, true) => "Edit the carcass. Panels whose role remains keep their Parts; shelves and backs are added or removed.",
+            (Kind::Panel, _) => "A rectangular panel from panel stock. Thickness comes from the stock; banding and oversize change the core cut size.",
+        });
+        ui.label("Name");
+        changed |= ui
+            .add_enabled(
+                self.existing.is_none(),
+                egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
+            )
+            .changed();
+        let stocks = panel_stocks(document);
+        if stocks.is_empty() {
+            ui.colored_label(
+                egui::Color32::LIGHT_RED,
+                "No panel stock yet. Define panel stock in Model → Materials.",
+            );
+        }
+        ui.label(match self.kind {
+            Kind::Carcass => "Carcass stock",
+            Kind::Panel => "Panel stock",
+        });
+        changed |= stock_combo(ui, "cabinet-stock", &stocks, &mut self.stock);
+        ui.separator();
+        match self.kind {
+            Kind::Carcass => changed |= self.show_carcass(ui, &stocks),
+            Kind::Panel => changed |= self.show_panel(ui),
+        }
+        ui.separator();
+        form::preview_status(ui, self.stamp, preview);
+        let validation = self.request(document, enabled);
+        if let Err(error) = &validation {
+            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        }
+        let action = form::actions(ui, validation.is_ok(), changed, self.stamp, preview);
+        if let Some(error) = &self.error {
+            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        }
+        if action == Some(FormAction::Cancel) {
+            return Some(ModelEvent::Cancel);
+        }
+        if changed {
+            self.stamp.changed();
+            self.error = None;
+            if action != Some(FormAction::Preview) {
+                return Some(ModelEvent::Changed);
+            }
+        }
+        match action {
+            Some(FormAction::Preview) => match self.request(document, enabled) {
+                Ok(request) => Some(ModelEvent::Preview {
+                    stamp: self.stamp,
+                    request: ModelRequest::Cabinet(Box::new(request)),
+                }),
+                Err(error) => {
+                    self.error = Some(error);
+                    None
+                }
+            },
+            Some(FormAction::Apply)
+                if preview.ready(self.stamp) && self.request(document, enabled).is_ok() =>
+            {
+                Some(ModelEvent::Apply)
+            }
+            _ => None,
+        }
+    }
+    fn show_origin(&mut self, ui: &mut egui::Ui, help: &str) -> bool {
+        let mut changed = false;
+        for (axis, f) in ["X", "Y", "Z"].iter().zip(&mut self.origin) {
+            changed |= f.show(ui, &format!("Origin {axis}"), help);
+        }
+        changed
+    }
+    fn show_band(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = self.band.show(
+            ui,
+            "Band thickness",
+            "Outside the core; the finished size includes it",
+        );
+        changed |= self.allowance.show(
+            ui,
+            "Band allowance",
+            "Extra core per banded edge, trimmed flush after banding",
+        );
+        changed
+    }
+    fn show_carcass(&mut self, ui: &mut egui::Ui, stocks: &[(EntityId, String, f64)]) -> bool {
+        let mut changed = false;
+        changed |= self.width.show(ui, "Width", "Outside width");
+        changed |= self.height.show(ui, "Height", "Outside height");
+        changed |= self.depth.show(ui, "Depth", "Outside depth, back included");
+        changed |= self.show_origin(ui, "World position of the front-left-bottom corner");
+        changed |= self.rotation.show(
+            ui,
+            "Rotation",
+            "About +Z through the origin; unrotated, the front faces −Y",
+        );
+        ui.label("Construction");
+        changed |= ui
+            .radio_value(
+                &mut self.construction,
+                Construction::SidesFullHeight,
+                "Full-height sides",
+            )
+            .changed();
+        changed |= ui
+            .radio_value(
+                &mut self.construction,
+                Construction::TopBottomFullWidth,
+                "Full-width top and bottom",
+            )
+            .changed();
+        ui.separator();
+        ui.label("Back");
+        ui.horizontal(|ui| {
+            changed |= ui
+                .radio_value(&mut self.back, BackKind::None, "None")
+                .changed();
+            changed |= ui
+                .radio_value(&mut self.back, BackKind::Inset, "Inset")
+                .changed();
+            changed |= ui
+                .radio_value(&mut self.back, BackKind::Overlay, "Overlay")
+                .changed();
+        });
+        if self.back != BackKind::None {
+            changed |= stock_combo(ui, "cabinet-back-stock", stocks, &mut self.back_stock);
+        }
+        if self.back == BackKind::Inset {
+            changed |= self
+                .recess
+                .show(ui, "Back recess", "Distance in from the rear edges");
+        }
+        ui.separator();
+        ui.label("Shelves");
+        ui.horizontal(|ui| {
+            changed |= ui.radio_value(&mut self.offsets, false, "Even").changed();
+            changed |= ui.radio_value(&mut self.offsets, true, "Offsets").changed();
+        });
+        if self.offsets {
+            ui.label("Offsets from the interior bottom (mm, comma-separated)");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.shelf_offsets)
+                        .desired_width(ui.available_width()),
+                )
+                .changed();
+        } else {
+            ui.horizontal(|ui| {
+                ui.label("Count");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut self.shelf_count)
+                            .range(0..=model::MAX_SHELVES as u32),
+                    )
+                    .changed();
+            });
+        }
+        changed |= self.setback.show(
+            ui,
+            "Shelf setback",
+            "From the cabinet front to the shelf front",
+        );
+        changed |= self
+            .clearance
+            .show(ui, "Shelf clearance", "Gap at each shelf end");
+        ui.separator();
+        changed |= ui
+            .checkbox(&mut self.banded, "Band the front edges")
+            .changed();
+        if self.banded {
+            changed |= self.show_band(ui);
+        }
+        if self.existing.is_none() {
+            changed |= ui.checkbox(&mut self.group, "Group the panels").changed();
+        }
+        changed
+    }
+    fn show_panel(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.label("Plane");
+        controls::inspector_combo(ui, "panel-plane")
+            .selected_text(match self.plane {
+                PanelPlane::Xy => "XY · thickness up",
+                PanelPlane::Xz => "XZ · thickness toward −Y",
+                PanelPlane::Yz => "YZ · thickness toward +X",
+            })
+            .show_ui(ui, |ui| {
+                for (plane, label) in [
+                    (PanelPlane::Xy, "XY · thickness up"),
+                    (PanelPlane::Xz, "XZ · thickness toward −Y"),
+                    (PanelPlane::Yz, "YZ · thickness toward +X"),
+                ] {
+                    changed |= ui.selectable_value(&mut self.plane, plane, label).changed();
+                }
+            });
+        changed |= self.length.show(
+            ui,
+            "Length (u)",
+            "Finished size along the plane's first axis",
+        );
+        changed |= self.panel_width.show(
+            ui,
+            "Width (v)",
+            "Finished size along the plane's second axis",
+        );
+        changed |= self.show_origin(ui, "World position of the panel's minimum corner");
+        ui.label("Grain");
+        ui.horizontal(|ui| {
+            changed |= ui
+                .radio_value(&mut self.grain, GrainAxis::U, "Along length")
+                .changed();
+            changed |= ui
+                .radio_value(&mut self.grain, GrainAxis::V, "Along width")
+                .changed();
+            changed |= ui
+                .radio_value(&mut self.grain, GrainAxis::Free, "Any")
+                .changed();
+        });
+        changed |= ui.checkbox(&mut self.banded, "Edge banding").changed();
+        if self.banded {
+            ui.horizontal_wrapped(|ui| {
+                for (i, label) in ["Length start", "Length end", "Width start", "Width end"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    changed |= ui.checkbox(&mut self.edges[i], label).changed();
+                }
+            });
+            changed |= self.show_band(ui);
+        }
+        changed |= self.oversize.show(
+            ui,
+            "Oversize",
+            "Extra core added to both cut dimensions, for trimming",
+        );
+        changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use multicad_core::{
+        commands::{Actor, Channel},
+        document::{Entity, EntityData},
+        materials::{Grain, Stock, prepare_library},
+    };
+    use multicad_model::Compiler;
+
+    fn session() -> Session {
+        let mut s = Session::new(Document::new("Cabinet form").unwrap()).unwrap();
+        let birch = Entity::new(
+            "Birch",
+            EntityData::Material {
+                density_kg_m3: None,
+                color_rgba: [210, 180, 140, 255],
+                section_hatch: None,
+            },
+        );
+        let stock = |t: f64, name: &str| {
+            LibraryDefinition::Stock(Stock {
+                material: birch.id,
+                specification: StockKind::Panel {
+                    thickness_mm: t,
+                    length_mm: 2500.,
+                    width_mm: 1250.,
+                    grain: Grain::AlongLength,
+                },
+            })
+            .entity(EntityId::new(), name)
+            .unwrap()
+        };
+        let entities = [birch.clone(), stock(18., "Ply 18"), stock(6., "Ply 6")];
+        s.commit(prepare_library(&s, 0, Actor::local(Channel::Ui), &entities).unwrap())
+            .unwrap();
+        s
+    }
+
+    #[test]
+    fn form_builds_a_carcass_and_reopens_it_from_any_panel() {
+        let mut s = session();
+        let mut form = CabinetPanel::new(s.document(), "Base".into());
+        // Thickest stock for the carcass, thinnest for an inset back.
+        assert_eq!(form.back, BackKind::Inset);
+        form.shelf_count = 2;
+        let command = form.request(s.document(), true).unwrap();
+        assert_eq!(command.edit_id(), None);
+        let prepared = command.prepare(&s, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(prepared.outputs.len(), 7);
+        let model = Compiler::default()
+            .compile(prepared.prepared.document(), 1)
+            .unwrap();
+        let list = model.cut_list(prepared.prepared.document()).unwrap();
+        let top = list.iter().find(|r| r.name == "Base top").unwrap();
+        assert_eq!(top.cut.finished_mm, [564., 560.]);
+        assert_eq!(top.cut.core_mm, [564., 558.]);
+        let shelf_feature = list
+            .iter()
+            .find(|r| r.name == "Base shelf 2")
+            .unwrap()
+            .feature;
+        s.commit(prepared.prepared).unwrap();
+
+        // Opening a shelf opens the carcass; fewer shelves remove one Part.
+        let mut edit = CabinetPanel::existing(s.document(), shelf_feature).unwrap();
+        assert_eq!(edit.kind, Kind::Carcass);
+        assert_eq!(edit.shelf_count, 2);
+        edit.shelf_count = 1;
+        let prepared = edit
+            .request(s.document(), true)
+            .unwrap()
+            .prepare(&s, Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(prepared.outputs.len(), 6);
+        // Malformed offsets are reported, not guessed.
+        edit.offsets = true;
+        edit.shelf_offsets = "100, four".into();
+        assert!(
+            edit.request(s.document(), true)
+                .unwrap_err()
+                .contains("four")
+        );
+    }
+
+    #[test]
+    fn form_places_a_banded_panel_and_edits_it_in_place() {
+        let mut s = session();
+        let mut form = CabinetPanel::new(s.document(), "Shelf board".into());
+        form.kind = Kind::Panel;
+        form.edges = [false, false, true, false];
+        let command = form.request(s.document(), true).unwrap();
+        let prepared = command.prepare(&s, Actor::local(Channel::Ui)).unwrap();
+        let feature = prepared.outputs[0].feature;
+        let list = Compiler::default()
+            .compile(prepared.prepared.document(), 1)
+            .unwrap()
+            .cut_list(prepared.prepared.document())
+            .unwrap();
+        assert_eq!(list[0].cut.core_mm, [800., 398.]);
+        s.commit(prepared.prepared).unwrap();
+        let mut edit = CabinetPanel::existing(s.document(), feature).unwrap();
+        assert_eq!(edit.kind, Kind::Panel);
+        assert_eq!(edit.edges, [false, false, true, false]);
+        edit.length = field(900., "mm");
+        let command = edit.request(s.document(), true).unwrap();
+        assert_eq!(command.edit_id(), Some(feature));
+        let prepared = command.prepare(&s, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(prepared.outputs[0].feature, feature);
+    }
+}

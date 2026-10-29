@@ -156,7 +156,7 @@ impl ModelToolController {
         {
             return true;
         }
-        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE))
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE))
     }
     pub fn begin_existing(
         &mut self,
@@ -232,6 +232,21 @@ impl ModelToolController {
         }
         if !Self::editable(document, feature) {
             return Err("Choose a supported, unsuppressed applied model feature".into());
+        }
+        if let Ok(panel) = model::read_panel(document, feature) {
+            let form = super::cabinet::CabinetPanel::existing(document, feature)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Cabinet(Box::new(form)),
+            )?;
+            // A carcass edit adds and removes panels, so it runs as a source
+            // change; a rectangle panel edit keeps its feature.
+            if !matches!(panel.source, model::PanelSource::Carcass { .. }) {
+                self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            }
+            return Ok(());
         }
         if let Some(group) =
             model::extrude_group_owner(document, feature).map_err(|error| error.to_string())?
@@ -396,6 +411,23 @@ impl ModelToolController {
                 session.document(),
                 name,
             )?)),
+        )
+    }
+    pub fn begin_cabinet(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Cabinet", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Cabinet(Box::new(super::cabinet::CabinetPanel::new(
+                session.document(),
+                name,
+            ))),
         )
     }
     pub fn begin_architecture(
