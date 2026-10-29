@@ -41,4 +41,4 @@ pub use occurrences::{MAX_MODEL_OCCURRENCES, OccurrenceSnapshot};
 pub use runtime::*;
 pub use targets::*;
 pub use weld_schedule::{CutGroup, WeldRecord, group_cuts, weld_plan_annotations};
-pub use weldment::{EndRecord, MemberRecord};
+pub use weldment::{EndRecord, LongPoint, MemberRecord};

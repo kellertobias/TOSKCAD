@@ -546,6 +546,7 @@ fn end_json(e: &multicad_model::EndRecord) -> Value {
         "treatment": e.kind.map_or("square", |k| k.label()),
         "connection": e.connection, "partner": e.partner,
         "angle_deg": e.angle_deg, "terminates": e.terminates,
+        "long_point": e.long_point.map(|p| json!({ "face": p.face, "direction": p.direction })),
     })
 }
 
@@ -657,8 +658,9 @@ pub(super) fn weld_schedule(host: &dyn Host, call: &Request, _: super::NoArgs) -
         "cut_groups": groups.iter().map(|g| json!({
             "quantity": g.quantity, "parts": g.parts, "names": g.names,
             "stock": g.stock, "designation": g.designation, "length_mm": g.length_mm,
-            "start": { "treatment": g.ends[0].0, "angle_deg": g.ends[0].1 },
-            "end": { "treatment": g.ends[1].0, "angle_deg": g.ends[1].1 },
+            "start": { "treatment": g.ends[0].0, "angle_deg": g.ends[0].1, "long_point": g.long_faces[0] },
+            "end": { "treatment": g.ends[1].0, "angle_deg": g.ends[1].1, "long_point": g.long_faces[1] },
+            "long_points": g.long_points,
         })).collect::<Vec<_>>(),
     }))
 }

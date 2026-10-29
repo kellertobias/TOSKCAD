@@ -53,9 +53,28 @@ pub struct CutGroup {
     /// End treatments as (kind label, angle), start then end of the first
     /// member in the group.
     pub ends: [(String, f64); 2],
+    /// The long point section face of each angled plane-cut end, start then
+    /// end of the first member in the group.
+    pub long_faces: [Option<&'static str>; 2],
+    /// With two angled plane-cut ends: whether their long points lie on the
+    /// "same face", "opposite faces" or "adjacent faces" of the section. It
+    /// does not change when a member is turned end for end.
+    pub long_points: Option<&'static str>,
 }
 /// End treatment labels with angles in hundredths of a degree.
 type EndKey = [(String, i64); 2];
+/// How the long points of a member's two ends relate.
+fn long_points(r: &MemberRecord) -> Option<&'static str> {
+    let (a, b) = (r.ends[0].long_point?, r.ends[1].long_point?);
+    let d: f64 = (0..3).map(|i| a.direction[i] * b.direction[i]).sum();
+    Some(if d > 0.5 {
+        "same face"
+    } else if d < -0.5 {
+        "opposite faces"
+    } else {
+        "adjacent faces"
+    })
+}
 /// A sequenced weld's sequence, 1-based step and note.
 type Step = Option<(EntityId, usize, String)>;
 fn end_key(r: &MemberRecord) -> EndKey {
@@ -71,15 +90,16 @@ fn end_key(r: &MemberRecord) -> EndKey {
     ends
 }
 /// Group member records into identical cuts with a quantity. Lengths match
-/// within 0.01 mm and angles within 0.01°.
+/// within 0.01 mm, angles within 0.01° and the long points of two angled
+/// ends must relate the same way.
 pub fn group_cuts(records: &[MemberRecord]) -> Vec<CutGroup> {
     let mut groups: Vec<(CutGroup, EndKey, i64)> = vec![];
     for r in records {
         let (ends, length) = (end_key(r), (r.length_mm * 100.).round() as i64);
-        if let Some((g, ..)) = groups
-            .iter_mut()
-            .find(|(g, e, l)| g.stock == r.stock && *e == ends && *l == length)
-        {
+        let relation = long_points(r);
+        if let Some((g, ..)) = groups.iter_mut().find(|(g, e, l)| {
+            g.stock == r.stock && *e == ends && *l == length && g.long_points == relation
+        }) {
             g.quantity += 1;
             g.parts.push(r.part);
             g.names.push(r.name.clone());
@@ -100,6 +120,8 @@ pub fn group_cuts(records: &[MemberRecord]) -> Vec<CutGroup> {
                 designation: r.designation.clone(),
                 length_mm: r.length_mm,
                 ends: [label(&r.ends[0]), label(&r.ends[1])],
+                long_faces: r.ends.each_ref().map(|e| e.long_point.map(|p| p.face)),
+                long_points: relation,
             },
             ends,
             length,

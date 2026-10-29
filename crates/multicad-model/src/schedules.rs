@@ -411,9 +411,11 @@ pub fn member_cut_schedule(
     revision: u64,
     groups: &[crate::CutGroup],
 ) -> Result<Schedule, ModelError> {
-    let end = |(kind, angle): &(String, f64)| {
+    let end = |(kind, angle): &(String, f64), face: Option<&str>| {
         if kind == "square" {
             "square".to_owned()
+        } else if let Some(face) = face {
+            format!("{kind} {}° long point {face}", mm(*angle))
         } else {
             format!("{kind} {}°", mm(*angle))
         }
@@ -426,10 +428,20 @@ pub fn member_cut_schedule(
         notes: vec![
             "Millimeters; length is the overall length along the member axis, long point to long point".into(),
             "Plane-cut angles are measured from square; cope angles are branch angles".into(),
+            "Long point: the section face (x = width, y = height) where an angled cut reaches farthest, for the first member listed".into(),
         ],
-        columns: ["Mark", "Qty", "Section", "Length", "Start", "End", "Members"]
-            .map(String::from)
-            .to_vec(),
+        columns: [
+            "Mark",
+            "Qty",
+            "Section",
+            "Length",
+            "Start",
+            "End",
+            "Long points",
+            "Members",
+        ]
+        .map(String::from)
+        .to_vec(),
         rows: groups
             .iter()
             .enumerate()
@@ -439,8 +451,9 @@ pub fn member_cut_schedule(
                     g.quantity.to_string(),
                     g.designation.clone(),
                     mm(g.length_mm),
-                    end(&g.ends[0]),
-                    end(&g.ends[1]),
+                    end(&g.ends[0], g.long_faces[0]),
+                    end(&g.ends[1], g.long_faces[1]),
+                    g.long_points.unwrap_or_default().into(),
                     g.names.join("; "),
                 ]
             })

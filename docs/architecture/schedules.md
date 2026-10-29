@@ -61,7 +61,7 @@ A `Schedule` holds:
 | `bom_schedule` | Item, Part, quantity, Material, stock, supply, stack |
 | `cut_list_schedule` | Each panel: role, stock, thickness, finished and core sizes along and across the grain, grain rule, bands, sheet fit, stack and issues ([cabinetry](cabinetry.md)) |
 | `machining_schedule` | Each groove, rabbet or pocket, and each hole size per operation and panel with its count |
-| `member_cut_schedule` | Each group of identical member cuts: quantity, section, overall length and both end treatments ([weldments](weldments.md)) |
+| `member_cut_schedule` | Each group of identical member cuts: quantity, section, overall length, both end treatments with the long-point face of each angled cut, and whether two long points lie on the same, opposite or adjacent faces ([weldments](weldments.md)) |
 | `weld_schedule` | Each weld: sequence step and mark, joint kind, members, symbol, size, process and notes |
 
 Lengths are millimeters, rounded to 0.001 mm.

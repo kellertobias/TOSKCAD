@@ -251,6 +251,11 @@ Part are included. Each record contains:
   the angle. Plane cuts give the cut-face angle from square (0 = square,
   45 = a right-angle miter); copes give the branch angle to the receiving
   axis;
+- for an angled plane cut, the **long point**: the world direction from the
+  axis toward the side where the cut end reaches farthest, and the section
+  face it lies on (`+x`, `-x`, `+y` or `-y`, x being the width and y the
+  height direction; a corner such as `+x-y` for a diagonal cut). Square ends
+  and copes have none;
 - the nominal length (path length plus extensions; connected ends are cut
   to their joint instead);
 - the measured section size;
@@ -261,8 +266,12 @@ Part are included. Each record contains:
 
 `group_cuts` groups identical cuts: the same stock, an overall length
 within 0.01 mm and the same end treatments within 0.01°, in either
-direction. Each group has a quantity, its Parts and names, the length and
-both end treatments.
+direction. A member with two angled ends also needs the same long-point
+relation: "same face" (a picture-frame rail), "opposite faces" (a
+parallelogram) or "adjacent faces". The relation does not change when a
+member is turned end for end. Each group has a quantity, its Parts and
+names, the length, both end treatments with their long-point faces, and the
+relation.
 
 The MCP `weldment_cut_list` and `weld_schedule` tools return these
 records. The member records, cut groups and weld schedule are the producer
