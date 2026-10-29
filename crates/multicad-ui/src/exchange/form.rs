@@ -562,11 +562,15 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
             _ => RecipeOutput::Pdf,
         };
     }
-    if kind != 0 && kind != 5 {
+    // STL and GLB writers are not available yet; every other format runs.
+    if kind == 2 || kind == 4 {
         ui.colored_label(
             egui::Color32::LIGHT_YELLOW,
             "This format is not available yet. The recipe can be saved, but it blocks Run.",
         );
+    }
+    if kind == 6 {
+        ui.small("Drawing DXF writes fixed role layers (VIEW_VISIBLE, DIMENSIONS, …); the layer names below apply to planar DXF only.");
     }
     match output {
         RecipeOutput::Step {
