@@ -279,6 +279,7 @@ mod ffi {
         fn valid(shape: &Shape) -> Result<bool>;
         fn write_step(shape: &Shape, path: &str) -> Result<()>;
         fn read_step(path: &str) -> Result<UniquePtr<Shape>>;
+        fn route_native_output_to_stderr();
         fn cylinder(frame: &Frame3, radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn profile_extrude(
             frame: &Frame3,
@@ -445,6 +446,13 @@ pub use split::SolidSplit;
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")
+}
+
+/// Send OCCT messages and C++ `std::cout` to stderr, at warning level and
+/// above. Required when stdout carries a protocol, such as `multicad --mcp`;
+/// Rust's own stdout is unaffected. Idempotent and process-wide.
+pub fn route_native_output_to_stderr() {
+    ffi::route_native_output_to_stderr();
 }
 
 fn step_path(path: &std::path::Path) -> Result<&str, Error> {

@@ -37,6 +37,7 @@ double volume(const Shape &);
 bool valid(const Shape &);
 void write_step(const Shape &, rust::Str path);
 std::unique_ptr<Shape> read_step(rust::Str path);
+void route_native_output_to_stderr();
 std::unique_ptr<Shape> cylinder(const Frame3 &,double radius,double height);
 std::unique_ptr<Shape> profile_extrude(const Frame3 &,rust::Slice<const CurveEdge>,rust::Slice<const uint32_t>,double height);
 std::unique_ptr<Shape> boolean_shapes(const Shape &,const Shape &,uint8_t operation,double fuzzy);

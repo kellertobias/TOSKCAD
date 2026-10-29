@@ -34,6 +34,9 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Message_PrinterOStream.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -43,6 +46,7 @@
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <array>
+#include <iostream>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -318,6 +322,17 @@ void write_step(const Shape &s, rust::Str path) {
     if (writer.Transfer(s.value, STEPControl_AsIs) != IFSelect_RetDone ||
         writer.Write(std::string(path).c_str()) != IFSelect_RetDone)
       throw std::runtime_error("STEP write failed");
+  });
+}
+void route_native_output_to_stderr() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    const Handle(Message_Messenger) &messenger = Message::DefaultMessenger();
+    messenger->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+    messenger->AddPrinter(
+        new Message_PrinterOStream("cerr", Standard_False, Message_Warning));
+    // Direct C++ stream writes; Rust writes to the file descriptor itself.
+    std::cout.rdbuf(std::cerr.rdbuf());
   });
 }
 std::unique_ptr<Shape> read_step(rust::Str path) {
