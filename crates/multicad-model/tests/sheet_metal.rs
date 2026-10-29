@@ -153,6 +153,8 @@ fn rectangle(f: &Fixture, stock: EntityId) -> SheetDefinition {
         reverse: false,
         inside_radius: None,
         k_factor: None,
+        flanges: vec![],
+        cutouts: vec![],
     }
 }
 fn bounds(m: &Model, part: EntityId) -> multicad_kernel::Bounds {
@@ -342,6 +344,8 @@ fn sketch_region_sheet_keeps_openings_in_its_flat_pattern_and_reopens() {
             reverse: false,
             inside_radius: None,
             k_factor: None,
+            flanges: vec![],
+            cutouts: vec![],
         },
     );
     let p = model::prepare_sheet(&f.s, f.s.revision(), actor(), &request).unwrap();

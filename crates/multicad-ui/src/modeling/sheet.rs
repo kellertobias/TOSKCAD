@@ -14,7 +14,8 @@ use multicad_core::{
     document::{Document, EntityId},
     materials::{self, LibraryDefinition, StockKind},
     model::{
-        self, BodyOutput, ModelPrepared, PanelPlane, SheetBase, SheetDefinition, SheetRequest,
+        self, BodyOutput, Cutout, Flange, ModelPrepared, PanelPlane, SheetBase, SheetDefinition,
+        SheetRequest,
     },
 };
 
@@ -95,6 +96,8 @@ pub(super) struct SheetPanel {
     stock: Option<EntityId>,
     /// A sketch-region or converted base kept unchanged by this form.
     kept_base: Option<SheetBase>,
+    /// Flanges and cutouts kept unchanged by this form.
+    kept_forming: (Vec<Flange>, Vec<Cutout>),
     plane: PanelPlane,
     origin: [DimensionField; 3],
     length: DimensionField,
@@ -118,6 +121,7 @@ impl SheetPanel {
             name,
             stock: first.map(|s| s.0),
             kept_base: None,
+            kept_forming: (vec![], vec![]),
             plane: PanelPlane::Xy,
             origin: [field(0., "mm"), field(0., "mm"), field(0., "mm")],
             length: field(200., "mm"),
@@ -161,6 +165,7 @@ impl SheetPanel {
             other => form.kept_base = Some(other.clone()),
         }
         form.reverse = sheet.reverse;
+        form.kept_forming = (sheet.flanges.clone(), sheet.cutouts.clone());
         if let Some(r) = &sheet.inside_radius {
             form.radius_override = true;
             form.radius = of(r, "mm")?;
@@ -217,6 +222,8 @@ impl SheetPanel {
                     .k_override
                     .then(|| self.k_factor.resolve(document))
                     .transpose()?,
+                flanges: self.kept_forming.0.clone(),
+                cutouts: self.kept_forming.1.clone(),
             },
         })
     }
