@@ -141,12 +141,16 @@ impl TreeView {
         show_sources: bool,
     ) -> Result<Self, String> {
         let index = Index::new(document).map_err(|error| error.to_string())?;
+        let symbol_owned =
+            multicad_core::symbols::owned_entities(document).map_err(|error| error.to_string())?;
         let mut destinations = vec![Destination {
             id: None,
             path: format!("{} (root)", document.name()),
         }];
         for entity in document.entities() {
-            if hierarchy::container_kind(&entity.data).is_some() {
+            if hierarchy::container_kind(&entity.data).is_some()
+                && !symbol_owned.contains(&entity.id)
+            {
                 destinations.push(Destination {
                     id: Some(entity.id),
                     path: container_path(document, &index, Some(entity.id)),
@@ -175,6 +179,9 @@ impl TreeView {
         let mut rows = vec![];
         let mut pending = vec![(document.id(), 0usize, salt.with(document.id()))];
         while let Some((id, depth, key)) = pending.pop() {
+            if !show_sources && symbol_owned.contains(&id) {
+                continue;
+            }
             let root = id == document.id();
             let (name, node_kind) = if root {
                 (document.name().to_owned(), NodeKind::Root)
@@ -555,7 +562,7 @@ impl ModelTree {
             });
         });
         let mut show_sources = self.show_sources;
-        if ui.checkbox(&mut show_sources, "Show sources").on_hover_text("Show planes and feature sources in their actual owning containers; body history rows remain references").changed() {
+        if ui.checkbox(&mut show_sources, "Show sources").on_hover_text("Show planes, feature sources and private symbol content in their actual owning containers; body history rows remain references").changed() {
             self.set_show_sources(show_sources);
             if let Err(error) = self.ensure_view(session) {
                 return TreeEvents { error: Some(error), ..Default::default() };
@@ -1032,6 +1039,78 @@ mod tests {
         document::{Entity, Mutation},
         hierarchy::Hierarchy,
     };
+    #[test]
+    fn private_symbol_graph_is_source_inspection_and_never_a_destination() {
+        use multicad_core::{model, symbols::*};
+        let actor = multicad_core::commands::Actor::local(Channel::Ui);
+        let mut session = Session::new(Document::new("Symbol tree").unwrap()).unwrap();
+        let stock = model::PrimitiveRequest::new(
+            "Source",
+            model::PrimitiveParameters::Box {
+                size: [model::length(10.), model::length(20.), model::length(5.)],
+                frame: Default::default(),
+            },
+        );
+        session
+            .commit(
+                model::prepare_primitive(&session, 0, actor.clone(), &stock)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let author =
+            SymbolAuthorRequest::new("Pinned box", stock.body, SymbolKind::Static, vec![], None);
+        session
+            .commit(
+                prepare_author(&session, session.revision(), actor.clone(), &author)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let place = SymbolPlaceRequest::new(
+            session.document(),
+            author.definition,
+            "Placed box",
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        session
+            .commit(
+                prepare_place(&session, session.revision(), actor, &place)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let owned = owned_entities(session.document()).unwrap();
+        let build = |show_sources| {
+            TreeView::build(
+                session.document(),
+                session.revision(),
+                &Default::default(),
+                egui::Id::new("symbol tree"),
+                show_sources,
+            )
+            .unwrap()
+        };
+        let normal = build(false);
+        assert!(normal.rows.iter().any(|row| row.id == place.instance));
+        assert!(!normal.rows.iter().any(|row| owned.contains(&row.id)));
+        let sources = build(true);
+        assert!(sources.rows.iter().any(|row| row.id == place.wrapper));
+        assert!(
+            sources
+                .rows
+                .iter()
+                .any(|row| row.id == place.ids[&stock.body])
+        );
+        assert!(
+            !sources
+                .destinations
+                .iter()
+                .any(|destination| destination.id.is_some_and(|id| owned.contains(&id)))
+        );
+    }
     fn fixture() -> (Session, EntityId, EntityId, EntityId) {
         let component = Entity::new("Cabinet", EntityData::Assembly { instances: vec![] });
         let group = Entity::new("Panels", EntityData::Group {});
