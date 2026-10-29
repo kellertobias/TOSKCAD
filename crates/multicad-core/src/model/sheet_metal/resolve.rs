@@ -105,10 +105,27 @@ impl ResolvedShape {
         }
     }
 }
+/// Where a cut opening comes from: an explicit cutout or a mounting
+/// pattern's receiving hole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CutoutSource {
+    Cutout { index: usize },
+    Fastener { pattern: usize, point: usize },
+}
+impl CutoutSource {
+    /// Stable id within the feature: `cutout.<i>` or `fastener.<p>.<j>`.
+    pub fn id(self) -> String {
+        match self {
+            Self::Cutout { index } => format!("cutout.{index}"),
+            Self::Fastener { pattern, point } => format!("fastener.{pattern}.{point}"),
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedCutout {
     pub face: CutoutFace,
     pub shape: ResolvedShape,
+    pub source: CutoutSource,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedSheet {
@@ -122,7 +139,9 @@ pub struct ResolvedSheet {
     pub reverse: bool,
     pub base: ResolvedBase,
     pub flanges: Vec<ResolvedFlange>,
+    /// Explicit cutouts, then every mounting pattern's receiving holes.
     pub cutouts: Vec<ResolvedCutout>,
+    pub patterns: Vec<ResolvedPattern>,
 }
 impl ResolvedSheet {
     /// Bend allowance: the developed length of the neutral axis through a
@@ -340,7 +359,24 @@ pub fn resolve_sheet(
         cutouts.push(ResolvedCutout {
             face: c.face,
             shape,
+            source: CutoutSource::Cutout { index: i },
         });
+    }
+    let patterns = resolve_patterns(&sheet.fasteners, &mm)?;
+    for p in &patterns {
+        for (point, center) in p.points.iter().enumerate() {
+            cutouts.push(ResolvedCutout {
+                face: p.face,
+                shape: ResolvedShape::Circle {
+                    center: *center,
+                    diameter_mm: p.preset.hole_mm(),
+                },
+                source: CutoutSource::Fastener {
+                    pattern: p.index,
+                    point,
+                },
+            });
+        }
     }
     Ok(ResolvedSheet {
         stock: sheet.stock,
@@ -354,5 +390,6 @@ pub fn resolve_sheet(
         base,
         flanges,
         cutouts,
+        patterns,
     })
 }

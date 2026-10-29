@@ -711,6 +711,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::STAIR_TYPE,
                     super::PANEL_TYPE,
                     super::SHEET_TYPE,
+                    super::HARDWARE_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>
             {

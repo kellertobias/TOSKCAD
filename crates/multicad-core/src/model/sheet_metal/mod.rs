@@ -8,8 +8,10 @@
 //! Thickness comes from the stock. The inside bend radius and K-factor come
 //! from the stock unless the part overrides them; both values stay separate
 //! editable inputs and are never universal constants.
+mod hardware;
 mod prepare;
 mod resolve;
+pub use hardware::*;
 pub use prepare::*;
 pub use resolve::*;
 
@@ -114,6 +116,9 @@ pub struct SheetDefinition {
     /// Through-cuts in the base or a flange leg, in that face's coordinates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cutouts: Vec<Cutout>,
+    /// Mounting patterns of attached hardware; each cuts receiving holes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fasteners: Vec<MountingPattern>,
 }
 
 /// Which way a flange bends from the base: `Up` toward the material side
@@ -314,6 +319,14 @@ impl SheetDefinition {
                 )));
             }
         }
+        if self.fasteners.len() > MAX_PATTERNS {
+            return Err(invalid(format!(
+                "A sheet part holds at most {MAX_PATTERNS} mounting patterns"
+            )));
+        }
+        for p in &self.fasteners {
+            p.validate(self.flanges.len())?;
+        }
         for c in &self.cutouts {
             if let CutoutFace::Flange { index } = c.face
                 && index as usize >= self.flanges.len()
@@ -347,6 +360,7 @@ impl SheetDefinition {
         out.extend(&self.inside_radius);
         out.extend(self.flanges.iter().flat_map(Flange::lengths));
         out.extend(self.cutouts.iter().flat_map(Cutout::lengths));
+        out.extend(self.fasteners.iter().flat_map(MountingPattern::dimensions));
         out
     }
     fn dimensions(&self) -> Vec<&Dimension> {
@@ -439,5 +453,5 @@ pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError
     for e in sheet_parts(document) {
         read_sheet(document, e.id)?;
     }
-    Ok(())
+    validate_hardware(document)
 }
