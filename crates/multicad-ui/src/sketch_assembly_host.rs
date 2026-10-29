@@ -180,10 +180,13 @@ impl SketchEditor {
         if matches!(
             document.get(component).map(|e| &e.data),
             Some(EntityData::Assembly { .. })
-        ) && document.entities().any(|e| {
-            multicad_core::model::read_assembly(document, e.id)
-                .is_ok_and(|source| source.assembly == component)
-        }) {
+        ) && multicad_core::symbols::owned_entities(document)
+            .is_ok_and(|owned| !owned.contains(&component))
+            && document.entities().any(|e| {
+                multicad_core::model::read_assembly(document, e.id)
+                    .is_ok_and(|source| source.assembly == component)
+            })
+        {
             actions.push((component, "Edit assembly definition"));
         }
         actions
