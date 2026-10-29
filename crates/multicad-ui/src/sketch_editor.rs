@@ -119,6 +119,7 @@ pub struct SketchEditor {
     pub camera: Camera,
     style: DisplayStyle,
     grid: bool,
+    envelopes: bool,
     spacing: f64,
     snap: bool,
     pub moving: bool,
@@ -203,6 +204,7 @@ impl Default for SketchEditor {
             },
             style: DisplayStyle::VisibleEdges,
             grid: true,
+            envelopes: true,
             spacing: 10.,
             snap: true,
             moving: false,
@@ -3151,6 +3153,11 @@ impl SketchEditor {
                 self.selected = None;
             }
         }
+        if self.envelopes
+            && let Some(scene) = &scene
+        {
+            self.paint_envelopes(&painter, scene, rect);
+        }
         if !self.measurement.active()
             && let Some(context) = model_context
         {
@@ -3824,6 +3831,7 @@ impl SketchEditor {
         let mut coordinates = self.coordinates;
         let mut moving = self.moving;
         let mut grid = self.grid;
+        let mut envelopes = self.envelopes;
         let mut spacing = self.spacing;
         let mut snap = self.snap;
         egui::Area::new(ui.id().with("camera-toolbar"))
@@ -3842,6 +3850,7 @@ impl SketchEditor {
                             ui.add(egui::DragValue::new(&mut spacing).range(0.01..=10000.));
                         });
                         ui.checkbox(&mut snap, "Snap sketch points to spacing");
+                        ui.checkbox(&mut envelopes, "Service envelopes");
                     },
                     |ui| {
                         self.solid.filter_control(ui);
@@ -3898,8 +3907,23 @@ impl SketchEditor {
         self.coordinates = coordinates;
         self.moving = moving;
         self.grid = grid;
+        self.envelopes = envelopes;
         self.spacing = spacing;
         self.snap = snap;
+    }
+    /// Dashed service-envelope boxes over the model. They follow the
+    /// target's evaluated pose, so they stay visible while it is placed.
+    fn paint_envelopes(&self, painter: &egui::Painter, scene: &crate::viewport::Scene, rect: Rect) {
+        let stroke = Stroke::new(1.2, Color32::from_rgb(240, 170, 60));
+        for corners in scene.envelope_boxes().values() {
+            for k in 0..4 {
+                for (a, b) in [(k, (k + 1) % 4), (k + 4, (k + 1) % 4 + 4), (k, k + 4)] {
+                    if let Some(segment) = self.camera.segment(corners[a], corners[b], rect) {
+                        painter.extend(egui::Shape::dashed_line(&segment, stroke, 6., 4.));
+                    }
+                }
+            }
+        }
     }
     fn gizmo(&mut self, ui: &mut egui::Ui, session: &mut Session, rect: Rect) {
         let Some(id) = self.selected else {

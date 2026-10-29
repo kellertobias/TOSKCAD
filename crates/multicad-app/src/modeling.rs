@@ -260,6 +260,7 @@ fn scene(
             }))
         })
         .and_then(|scene| scene.with_native_bounds(model.stamp.source_hash, native_bounds))
+        .and_then(|scene| scene.with_envelope_boxes(model.envelope_boxes.clone()))
         .map(Arc::new)
         .map_err(invalid)
 }

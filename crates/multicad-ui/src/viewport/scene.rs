@@ -469,6 +469,7 @@ pub struct Scene {
     assembly_evaluation: Option<Arc<multicad_core::model::AssemblyEvaluationInfo>>,
     transfer_evaluation: Option<Arc<multicad_core::model::TransferEvaluationInfo>>,
     native_bounds: Option<Arc<NativeBounds>>,
+    envelope_boxes: Arc<BTreeMap<EntityId, [Point; 8]>>,
 }
 struct NativeBounds {
     source: multicad_core::project_file::ContentHash,
@@ -544,6 +545,7 @@ impl Scene {
             assembly_evaluation: None,
             transfer_evaluation: None,
             native_bounds: None,
+            envelope_boxes: Arc::new(BTreeMap::new()),
         })
     }
     /// Attach immutable results from this exact source evaluation. Structural
@@ -751,6 +753,29 @@ impl Scene {
         }
         self.native_bounds = Some(Arc::new(NativeBounds { source, entities }));
         Ok(self)
+    }
+    /// Service-envelope display boxes in world millimeters: corners 0-3 are
+    /// the bottom loop and 4-7 the top loop. Display only, not geometry.
+    pub fn with_envelope_boxes(
+        mut self,
+        boxes: BTreeMap<EntityId, [Point; 8]>,
+    ) -> Result<Self, String> {
+        if boxes.len() > 4096
+            || boxes.iter().any(|(id, corners)| {
+                id.is_nil()
+                    || corners
+                        .iter()
+                        .flatten()
+                        .any(|v| !v.is_finite() || v.abs() > 1e9)
+            })
+        {
+            return Err("Envelope display boxes contain an invalid identity or extent".into());
+        }
+        self.envelope_boxes = Arc::new(boxes);
+        Ok(self)
+    }
+    pub fn envelope_boxes(&self) -> &BTreeMap<EntityId, [Point; 8]> {
+        &self.envelope_boxes
     }
     /// Callers still verify this Scene's source hash and document/revision.
     /// Source-inspection views never authorize placement defaults.

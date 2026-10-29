@@ -64,6 +64,9 @@ pub struct ModelSnapshot {
     /// Actual native transfer profile count by evaluated receiving feature.
     pub transfer_counts: BTreeMap<EntityId, usize>,
     pub references: ReferenceReport,
+    /// Service envelope boxes in world millimeters (bottom four corners then
+    /// top four), for display. Clearance checks use `Model::envelopes`.
+    pub envelope_boxes: BTreeMap<EntityId, [[f64; 3]; 8]>,
 }
 impl ModelSnapshot {
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
@@ -914,7 +917,8 @@ impl Compiler {
                 ),
             ));
         }
-        Ok(Model {
+        let full = roots.is_none();
+        let mut model = Model {
             policy: self.policy,
             solids,
             leaves,
@@ -930,8 +934,13 @@ impl Compiler {
                 cut_targets: vec![],
                 transfer_counts,
                 references,
+                envelope_boxes: BTreeMap::new(),
             },
-        })
+        };
+        if full {
+            model.snapshot.envelope_boxes = model.envelope_boxes(document);
+        }
+        Ok(model)
     }
 }
 

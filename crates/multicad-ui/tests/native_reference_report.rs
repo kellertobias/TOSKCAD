@@ -134,3 +134,22 @@ fn scene_feed_keeps_native_diagnostics_instead_of_reconstructing_a_clean_display
     assert!(feed.visible().is_none());
     assert!(feed.error().is_some());
 }
+
+#[test]
+fn envelope_display_boxes_are_checked_and_kept_with_the_scene() {
+    let document = Document::new("Envelope display").unwrap();
+    let id = EntityId::new();
+    let corners = std::array::from_fn(|k| [k as f64, 0., 0.]);
+    let scene = scene(&document, stamp(&document))
+        .with_envelope_boxes([(id, corners)].into())
+        .unwrap();
+    assert_eq!(scene.envelope_boxes()[&id], corners);
+    let mut bad = corners;
+    bad[3][1] = f64::NAN;
+    assert!(
+        Scene::new(stamp(&document), vec![], vec![])
+            .unwrap()
+            .with_envelope_boxes([(id, bad)].into())
+            .is_err()
+    );
+}

@@ -143,78 +143,105 @@ impl Model {
         let producer = *self.snapshot().bodies.get(&target)?;
         Some((RigidPose::default(), self.solid(producer)?))
     }
-    /// Evaluate every service envelope against the current model. The box is
-    /// the target's own bounds in its local frame plus the clearances; it
-    /// rotates and moves with the target. Overlaps below 1 mm³ are ignored.
-    pub fn envelopes(&self, document: &Document) -> Result<Vec<EnvelopeEvaluation>, ModelError> {
-        let parameters =
-            multicad_core::parameters::evaluate(document).map_err(|e| error(None, e))?;
-        let mm = |d: &multicad_core::constraint_sketch::Dimension, id| {
+    /// One envelope's box solid and world corners. The box is the target's
+    /// own bounds in its local frame plus the clearances; it rotates and
+    /// moves with the target.
+    fn envelope_box(
+        &self,
+        document: &Document,
+        parameters: &EvaluatedParameters,
+        id: EntityId,
+    ) -> Result<(model::EnvelopeDefinition, Solid, [[f64; 3]; 8]), ModelError> {
+        let mm = |d: &multicad_core::constraint_sketch::Dimension| {
             d.value_in(
                 multicad_core::parameters::Unit::Millimeter,
-                Some(&parameters),
+                Some(parameters),
             )
             .map_err(|e| error(Some(id), e))
         };
+        let env = model::read_envelope(document, id).map_err(|e| error(Some(id), e))?;
+        let (pose, solid) = self
+            .target_pose_and_solid(env.target)
+            .ok_or_else(|| error(Some(id), "The envelope's target has no current solid"))?;
+        let inverse = pose.inverse().map_err(|e| error(Some(id), e))?;
+        let local = solid
+            .transformed(transform(inverse))
+            .map_err(|e| error(Some(id), e))?;
+        let b = local.bounds().map_err(|e| error(Some(id), e))?;
+        let min = [
+            b.min[0] - mm(&env.left)?,
+            b.min[1] - mm(&env.front)?,
+            b.min[2],
+        ];
+        let max = [
+            b.max[0] + mm(&env.right)?,
+            b.max[1] + mm(&env.back)?,
+            b.max[2] + mm(&env.top)?,
+        ];
+        if (0..3).any(|i| max[i] - min[i] <= 1e-3) {
+            return Err(error(Some(id), "Service envelope has no volume"));
+        }
+        let profile = CurvedProfile {
+            frame: PlaneFrame {
+                origin: [0., 0., min[2]],
+                u: [1., 0., 0.],
+                v: [0., 1., 0.],
+            },
+            outer: closed(&[
+                [min[0], min[1]],
+                [max[0], min[1]],
+                [max[0], max[1]],
+                [min[0], max[1]],
+            ]),
+            holes: vec![],
+        };
+        let boxed = Solid::extrude_curved_profile(&profile, max[2] - min[2], self.policy)
+            .and_then(|s| s.transformed(transform(pose)))
+            .map_err(|e| error(Some(id), e))?;
+        let mut corners = [[0.; 3]; 8];
+        for (k, c) in corners.iter_mut().enumerate() {
+            let p = [
+                if matches!(k % 4, 1 | 2) {
+                    max[0]
+                } else {
+                    min[0]
+                },
+                if matches!(k % 4, 2 | 3) {
+                    max[1]
+                } else {
+                    min[1]
+                },
+                if k < 4 { min[2] } else { max[2] },
+            ];
+            *c = pose.point(p);
+        }
+        Ok((env, boxed, corners))
+    }
+    /// Display boxes of every envelope whose target currently has a solid.
+    pub(crate) fn envelope_boxes(
+        &self,
+        document: &Document,
+    ) -> std::collections::BTreeMap<EntityId, [[f64; 3]; 8]> {
+        let Ok(parameters) = multicad_core::parameters::evaluate(document) else {
+            return Default::default();
+        };
+        model::envelopes(document)
+            .filter_map(|e| {
+                self.envelope_box(document, &parameters, e.id)
+                    .ok()
+                    .map(|(_, _, c)| (e.id, c))
+            })
+            .collect()
+    }
+    /// Evaluate every service envelope against the current model. Overlaps
+    /// below 1 mm³ are ignored.
+    pub fn envelopes(&self, document: &Document) -> Result<Vec<EnvelopeEvaluation>, ModelError> {
+        let parameters =
+            multicad_core::parameters::evaluate(document).map_err(|e| error(None, e))?;
         let mut out = vec![];
         for entity in model::envelopes(document) {
             let id = entity.id;
-            let env = model::read_envelope(document, id).map_err(|e| error(Some(id), e))?;
-            let (pose, solid) = self
-                .target_pose_and_solid(env.target)
-                .ok_or_else(|| error(Some(id), "The envelope's target has no current solid"))?;
-            let inverse = pose.inverse().map_err(|e| error(Some(id), e))?;
-            let local = solid
-                .transformed(transform(inverse))
-                .map_err(|e| error(Some(id), e))?;
-            let b = local.bounds().map_err(|e| error(Some(id), e))?;
-            let min = [
-                b.min[0] - mm(&env.left, id)?,
-                b.min[1] - mm(&env.front, id)?,
-                b.min[2],
-            ];
-            let max = [
-                b.max[0] + mm(&env.right, id)?,
-                b.max[1] + mm(&env.back, id)?,
-                b.max[2] + mm(&env.top, id)?,
-            ];
-            if (0..3).any(|i| max[i] - min[i] <= 1e-3) {
-                return Err(error(Some(id), "Service envelope has no volume"));
-            }
-            let profile = CurvedProfile {
-                frame: PlaneFrame {
-                    origin: [0., 0., min[2]],
-                    u: [1., 0., 0.],
-                    v: [0., 1., 0.],
-                },
-                outer: closed(&[
-                    [min[0], min[1]],
-                    [max[0], min[1]],
-                    [max[0], max[1]],
-                    [min[0], max[1]],
-                ]),
-                holes: vec![],
-            };
-            let boxed = Solid::extrude_curved_profile(&profile, max[2] - min[2], self.policy)
-                .and_then(|s| s.transformed(transform(pose)))
-                .map_err(|e| error(Some(id), e))?;
-            let mut corners = [[0.; 3]; 8];
-            for (k, c) in corners.iter_mut().enumerate() {
-                let p = [
-                    if matches!(k % 4, 1 | 2) {
-                        max[0]
-                    } else {
-                        min[0]
-                    },
-                    if matches!(k % 4, 2 | 3) {
-                        max[1]
-                    } else {
-                        min[1]
-                    },
-                    if k < 4 { min[2] } else { max[2] },
-                ];
-                *c = pose.point(p);
-            }
+            let (env, boxed, corners) = self.envelope_box(document, &parameters, id)?;
             let mut conflicts = vec![];
             let others = self
                 .snapshot()

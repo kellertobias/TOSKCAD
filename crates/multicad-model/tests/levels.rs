@@ -398,6 +398,7 @@ fn service_envelopes_report_model_clearance_and_show_in_plan() {
     near(env.corners[6][0], 3300., 1e-6);
     near(env.corners[6][1], 3000., 1e-6);
     near(env.corners[6][2], 1500., 1e-6);
+    assert_eq!(m.snapshot().envelope_boxes[&env.envelope], env.corners);
     near(env.volume_mm3, 1600. * 1600. * 1500., 1e-3);
     // The wall face occupies y 1400..1600 across the envelope's 1600 mm width.
     assert_eq!(env.conflicts.len(), 1);
