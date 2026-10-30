@@ -13,6 +13,11 @@ impl EntityId {
     pub fn is_nil(&self) -> bool {
         self.0.is_nil()
     }
+    /// The explicit nil identity, used where a source slot is intentionally
+    /// absent (for example a face-profile request without a sketch).
+    pub const fn nil() -> Self {
+        Self(Uuid::nil())
+    }
     pub fn parse(value: &str) -> Result<Self, DocumentError> {
         Uuid::parse_str(value)
             .map(Self)

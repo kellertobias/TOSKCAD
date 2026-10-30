@@ -214,16 +214,32 @@ impl Resolver<'_> {
                         .ok_or("Extrusion has no unique target coordinate frame")?;
                     self.feature(target.producer, seen)
                 } else {
-                    self.sketch(source.profile.sketch)
+                    self.profile(feature, &source.profile, seen)
                 }
             }
             model::REVOLVE_TYPE => {
                 let source = model::read_revolve(self.document, feature).map_err(error)?;
-                self.sketch(source.profile.sketch)
+                self.profile(feature, &source.profile, seen)
             }
             provider => Err(format!(
                 "Object coordinates are unavailable for feature provider {provider}; choose World or a custom datum"
             )),
+        }
+    }
+    /// A face profile inherits the object frame of its face's producer.
+    fn profile(
+        &self,
+        feature: EntityId,
+        profile: &model::ModelProfile,
+        seen: &mut BTreeSet<EntityId>,
+    ) -> Result<GizmoBasis, String> {
+        match profile.sketch_id() {
+            Some(sketch) => self.sketch(sketch),
+            None => {
+                let face = model::stored_profile_face(self.document, feature)
+                    .ok_or("The profile face reference is missing")?;
+                self.feature(face.source, seen)
+            }
         }
     }
     fn sketch(&self, id: EntityId) -> Result<GizmoBasis, String> {

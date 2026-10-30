@@ -4388,7 +4388,8 @@ mod tests {
             fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
                 let feature=document.entities().find(|entity|matches!(&entity.data,EntityData::Feature{definition,..} if definition.type_id==model::REVOLVE_TYPE)).unwrap();
                 let definition = model::read_revolve(document, feature.id).unwrap();
-                let (source, frame, _) = Source::read(document, definition.profile.sketch).unwrap();
+                let (source, frame, _) =
+                    Source::read(document, definition.profile.sketch_id().unwrap()).unwrap();
                 let geometry = source.display_geometry().unwrap();
                 let edges = geometry
                     .iter()

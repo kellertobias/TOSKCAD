@@ -170,7 +170,7 @@ pub(super) fn apply_state(
     for tool in &tools {
         let mut source = model::read_extrude(document, tool.producer)?;
         source.parameters = edit.parameters.clone();
-        let faces = match &edit.faces {
+        let mut faces: Vec<_> = match &edit.faces {
             Some(faces) => faces.clone(),
             None => {
                 let wanted = source.face_references();
@@ -180,6 +180,8 @@ pub(super) fn apply_state(
                     .collect()
             }
         };
+        // Each tool keeps its own link-owned profile face selector.
+        faces.extend(validation::profile_face(document, tool.producer)?);
         let inputs = source.inputs(&faces)?;
         termination_inputs(document, &source, &inputs)?;
         edits.push(validation::replace_feature(

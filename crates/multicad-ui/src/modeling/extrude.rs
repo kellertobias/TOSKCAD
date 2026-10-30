@@ -257,18 +257,29 @@ impl ExtrudePanel {
             return Err("This form currently edits independent new-body extrusions only; the original request was preserved".into());
         }
         let output = &request.outputs[0];
-        multicad_core::model::ExtrudeDefinition {
-            profile: multicad_core::model::ProfileSource {
+        let mut faces = request.faces.clone();
+        let profile = match &output.face {
+            Some(face) => {
+                faces.push(face.clone());
+                multicad_core::model::ModelProfile::Face(multicad_core::model::FaceProfile {
+                    face: face.intent.id,
+                })
+            }
+            None => multicad_core::model::ProfileSource {
                 sketch: request.sketch,
                 region: output.region.clone(),
-            },
+            }
+            .into(),
+        };
+        multicad_core::model::ExtrudeDefinition {
+            profile,
             output: multicad_core::model::BodyOutput { body: output.body },
             parameters: request.parameters.clone(),
             operation: request.operation,
             targets: request.targets.clone(),
             keep_tools: request.keep_tools,
         }
-        .inputs(&request.faces)
+        .inputs(&faces)
         .map_err(|error| error.to_string())?;
         let draft = Draft::new(request)?;
         let stamp = draft.stamp;

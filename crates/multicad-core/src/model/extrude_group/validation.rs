@@ -27,8 +27,10 @@ pub(super) fn faces(
     let Some(EntityData::Feature { inputs, .. }) = document.get(feature).map(|e| &e.data) else {
         return Err(DocumentError::Missing(feature));
     };
+    // Termination faces only; a profile face belongs to its own tool output.
     let faces: Vec<_> = inputs
         .iter()
+        .filter(|link| link.role != model::PROFILE_FACE_ROLE)
         .filter_map(|link| {
             link.geometry.as_ref().map(|intent| FaceInput {
                 source: link.target,
@@ -37,6 +39,18 @@ pub(super) fn faces(
         })
         .collect();
     Ok(faces)
+}
+/// The profile face input of a face-profile tool, if any.
+pub(super) fn profile_face(
+    document: &Document,
+    feature: EntityId,
+) -> Result<Option<FaceInput>, DocumentError> {
+    let Some(EntityData::Feature { inputs, .. }) = document.get(feature).map(|e| &e.data) else {
+        return Err(DocumentError::Missing(feature));
+    };
+    Ok(model::RevolveDefinition::stored_faces(inputs)
+        .into_iter()
+        .next())
 }
 fn known_part(document: &Document, body: EntityId, feature: EntityId) -> Result<(), DocumentError> {
     if let Some(entity) = document.get(body) {
@@ -76,7 +90,7 @@ pub(super) fn read(
             let mut common_faces = faces(document, tool.producer)?;
             common_faces.sort_by_key(|face| face.intent.id);
             let settings = (
-                tool_source.profile.sketch,
+                tool_source.profile.sketch_id(),
                 tool_source.parameters.clone(),
                 common_faces,
             );
@@ -86,12 +100,12 @@ pub(super) fn read(
                 ));
             }
             common = Some(settings);
-            if regions.contains(&tool_source.profile.region) {
+            if regions.contains(&tool_source.profile) {
                 return Err(invalid(
                     "Extrusion operation contains duplicate tool profile intents",
                 ));
             }
-            regions.push(tool_source.profile.region);
+            regions.push(tool_source.profile);
         }
     }
     let tools: BTreeSet<_> = source.tools.iter().map(|t| (t.body, t.producer)).collect();
@@ -193,7 +207,7 @@ pub(super) fn inspect(
         let source = model::read_extrude(document, tool.producer)?;
         if first.is_none() {
             first = Some((
-                source.profile.sketch,
+                source.profile.sketch_id().unwrap_or(EntityId::nil()),
                 source.parameters.clone(),
                 faces(document, tool.producer)?,
             ));
@@ -206,7 +220,12 @@ pub(super) fn inspect(
                 .ok_or(DocumentError::Missing(tool.body))?
                 .name
                 .clone(),
-            region: source.profile.region,
+            region: source
+                .profile
+                .sketch()
+                .map(|profile| profile.region.clone())
+                .unwrap_or_else(model::empty_region),
+            face: profile_face(document, tool.producer)?,
         });
     }
     let (sketch, parameters, faces) =

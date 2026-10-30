@@ -258,9 +258,9 @@ fn new_revolved_parts_reuse_one_sketch_and_keep_distinct_stable_output_ids() {
     assert_eq!(s.document(), &before);
     for output in &request.outputs {
         let source = read_revolve(first.prepared.document(), output.feature).unwrap();
-        assert_eq!(source.profile.sketch, sketch);
+        assert_eq!(source.profile.sketch_id(), Some(sketch));
         assert_eq!(source.output.body, output.body);
-        assert_eq!(source.profile.region, output.region);
+        assert_eq!(source.profile.sketch().unwrap().region, output.region);
     }
     s.commit(first.prepared).unwrap();
     assert_eq!(

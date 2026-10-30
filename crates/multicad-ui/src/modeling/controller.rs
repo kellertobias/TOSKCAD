@@ -359,12 +359,17 @@ impl ModelToolController {
                 let source =
                     model::read_revolve(document, feature).map_err(|error| error.to_string())?;
                 ModelForm::Revolve(Box::new(RevolvePanel::new(RevolveRequest {
-                    sketch: source.profile.sketch,
+                    sketch: source.profile.sketch_id().unwrap_or(EntityId::nil()),
                     outputs: vec![model::RevolveOutput {
                         feature,
                         body: source.output.body,
                         name: body_name(source.output.body)?,
-                        region: source.profile.region,
+                        region: source
+                            .profile
+                            .sketch()
+                            .map(|profile| profile.region.clone())
+                            .unwrap_or_else(model::empty_region),
+                        face: model::stored_profile_face(document, feature),
                     }],
                     parameters: source.parameters,
                 })?))

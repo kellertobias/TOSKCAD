@@ -485,7 +485,7 @@ fn revolve_creation_uses_checked_receipt_and_preserves_profiles_and_output_ident
     for out in output {
         let source = multicad_core::model::read_revolve(session.document(), out.feature).unwrap();
         assert_eq!(source.output.body, out.body);
-        assert_eq!(source.profile.sketch, sketch);
+        assert_eq!(source.profile.sketch_id(), Some(sketch));
     }
     assert_eq!(session.document().get(sketch), before.get(sketch));
     assert_eq!(session.revision(), 1);

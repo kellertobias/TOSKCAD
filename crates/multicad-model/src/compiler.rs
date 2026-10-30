@@ -189,6 +189,35 @@ impl Profiles<'_> {
             origins,
         ))
     }
+    /// Sketch regions or an exact current planar model face (CAD-146).
+    fn model(
+        &mut self,
+        profile: &model::ModelProfile,
+        feature: EntityId,
+        solids: &BTreeMap<EntityId, Solid>,
+        topologies: &BTreeMap<EntityId, TopologySnapshot>,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<(CurvedProfile, Vec<Origin>), ModelError> {
+        match profile {
+            model::ModelProfile::Sketch(source) => self.get(
+                source.sketch,
+                &source.region,
+                feature,
+                solids,
+                topologies,
+                interrupt,
+            ),
+            model::ModelProfile::Face(face) => crate::face_profile::FaceProfileInputs {
+                document: self.context.document(),
+                revision: self.context.stamp().revision,
+                feature,
+                solids,
+                topologies,
+                policy: self.policy,
+            }
+            .resolve(face.face),
+        }
+    }
 }
 
 /// An evaluated model owns genuine B-reps, never reconstructed display meshes.
@@ -539,14 +568,8 @@ impl Compiler {
                         .parameters
                         .resolve_controls(context.parameters())
                         .map_err(|e| error(Some(id), e))?;
-                    let (profile, origins) = profiles.get(
-                        source.profile.sketch,
-                        &source.profile.region,
-                        id,
-                        &solids,
-                        &topologies,
-                        interrupt,
-                    )?;
+                    let (profile, origins) =
+                        profiles.model(&source.profile, id, &solids, &topologies, interrupt)?;
                     crate::extrude::Extrusion {
                         document,
                         revision,
@@ -710,14 +733,8 @@ impl Compiler {
                         .parameters
                         .resolve(context.parameters())
                         .map_err(|e| error(Some(id), e))?;
-                    let (profile, origins) = profiles.get(
-                        source.profile.sketch,
-                        &source.profile.region,
-                        id,
-                        &solids,
-                        &topologies,
-                        interrupt,
-                    )?;
+                    let (profile, origins) =
+                        profiles.model(&source.profile, id, &solids, &topologies, interrupt)?;
                     let axis = RevolutionAxis {
                         origin_mm: profile.frame.point(resolved.axis_origin_mm),
                         direction: std::array::from_fn(|i| {

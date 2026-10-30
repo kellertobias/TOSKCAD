@@ -82,7 +82,7 @@ fn two_parts_reuse_one_unchanged_sketch_with_stable_preview_ids_and_one_undo() {
     let candidate = first.prepared.document();
     for output in &first.outputs {
         let source = read_extrude(candidate, output.feature).unwrap();
-        assert_eq!(source.profile.sketch, sketch);
+        assert_eq!(source.profile.sketch_id(), Some(sketch));
         assert_eq!(source.output.body, output.body);
         let EntityData::Part { features, .. } = &candidate.get(output.body).unwrap().data else {
             panic!("Part")
@@ -518,7 +518,8 @@ fn definition_face_references_follow_the_repaired_link_without_duplicated_source
         profile: ProfileSource {
             sketch,
             region: output.region.clone(),
-        },
+        }
+        .into(),
         output: BodyOutput { body: output.body },
         parameters: ExtrudeParameters {
             extent: Extent::OneSided {

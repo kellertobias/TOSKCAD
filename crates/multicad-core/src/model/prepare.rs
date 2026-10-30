@@ -16,6 +16,10 @@ pub struct ExtrudeOutput {
     pub body: EntityId,
     pub name: String,
     pub region: RegionIntent,
+    /// A planar model face profile instead of a sketch region (CAD-146);
+    /// `region` is then empty and the request needs no sketch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<FaceInput>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +48,7 @@ impl ExtrudeRequest {
                     body: EntityId::new(),
                     name: format!("Extruded part {}", index + 1),
                     region,
+                    face: None,
                 })
                 .collect(),
             parameters,
@@ -52,6 +57,27 @@ impl ExtrudeRequest {
             keep_tools: false,
             faces: vec![],
         }
+    }
+    /// One independent extrusion per captured planar face. The request has no
+    /// sketch; each output profile is its face's exact current boundary.
+    pub fn from_faces(faces: Vec<FaceInput>, parameters: ExtrudeParameters) -> Self {
+        let mut request = Self::new(EntityId::nil(), vec![], parameters);
+        request.outputs = faces
+            .into_iter()
+            .enumerate()
+            .map(|(index, face)| ExtrudeOutput {
+                feature: EntityId::new(),
+                body: EntityId::new(),
+                name: format!("Extruded part {}", index + 1),
+                region: empty_region(),
+                face: Some(face),
+            })
+            .collect();
+        request
+    }
+    /// Whether any output uses a planar model face profile.
+    pub fn has_face_profiles(&self) -> bool {
+        self.outputs.iter().any(|output| output.face.is_some())
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,7 +190,17 @@ pub fn prepare_extrude(
             vec![request.sketch],
         ));
     }
-    let curves = authored_curves(session.document(), request.sketch)?;
+    let curves = if request.outputs.iter().any(|o| o.face.is_none()) {
+        authored_curves(session.document(), request.sketch)?
+    } else {
+        BTreeSet::new()
+    };
+    let own: Vec<_> = request
+        .outputs
+        .iter()
+        .flat_map(|o| [o.feature, o.body])
+        .collect();
+    let mut profile_faces = vec![];
     let mut ids = BTreeSet::new();
     let mut regions = Vec::new();
     let mut edits = vec![];
@@ -188,25 +224,42 @@ pub fn prepare_extrude(
                 vec![output.body],
             ));
         }
-        if regions.contains(&output.region) {
-            return Err(error("Select each profile area once", vec![request.sketch]));
-        }
-        regions.push(output.region.clone());
-        if std::iter::once(&output.region.outer)
-            .chain(&output.region.holes)
-            .flat_map(|b| &b.curves)
-            .any(|id| !curves.contains(id))
-        {
-            return Err(error(
-                "Selected profile contains missing or construction curve identities",
-                vec![request.sketch],
-            ));
-        }
-        let source = ExtrudeDefinition {
-            profile: ProfileSource {
+        let mut faces = request.faces.clone();
+        let profile = if let Some(face) = &output.face {
+            check_face_output(
+                session.document(),
+                face,
+                &output.region,
+                &own,
+                &mut profile_faces,
+            )?;
+            faces.push(face.clone());
+            ModelProfile::Face(FaceProfile {
+                face: face.intent.id,
+            })
+        } else {
+            if regions.contains(&output.region) {
+                return Err(error("Select each profile area once", vec![request.sketch]));
+            }
+            regions.push(output.region.clone());
+            if std::iter::once(&output.region.outer)
+                .chain(&output.region.holes)
+                .flat_map(|b| &b.curves)
+                .any(|id| !curves.contains(id))
+            {
+                return Err(error(
+                    "Selected profile contains missing or construction curve identities",
+                    vec![request.sketch],
+                ));
+            }
+            ProfileSource {
                 sketch: request.sketch,
                 region: output.region.clone(),
-            },
+            }
+            .into()
+        };
+        let source = ExtrudeDefinition {
+            profile,
             output: BodyOutput { body: output.body },
             parameters: request.parameters.clone(),
             operation: request.operation,
@@ -214,7 +267,7 @@ pub fn prepare_extrude(
             keep_tools: request.keep_tools,
         };
         executable(&source, session)?;
-        let inputs = source.inputs(&request.faces)?;
+        let inputs = source.inputs(&faces)?;
         termination_inputs(session.document(), &source, &inputs)?;
         let mut feature = Entity::new(
             format!("{} extrusion", output.name),
@@ -261,7 +314,8 @@ pub fn prepare_extrude_edit(
     super::extrude_group::reject_individual_edit(session.document(), feature)?;
     let mut source = read_extrude(session.document(), feature)?;
     source.parameters = parameters.clone();
-    let wanted = source.face_references();
+    let mut wanted = source.face_references();
+    wanted.extend(source.profile.face());
     let EntityData::Feature { inputs, .. } =
         &session.document().get(feature).expect("read source").data
     else {
@@ -304,6 +358,16 @@ pub fn prepare_extrude_edit_with_faces(
     let mut source = read_extrude(session.document(), feature)?;
     source.parameters = parameters.clone();
     executable(&source, session)?;
+    // The profile face is not a termination input: keep its link-owned
+    // selector unless the caller explicitly supplies a replacement capture.
+    let mut faces = faces.to_vec();
+    if let Some(id) = source.profile.face()
+        && !faces.iter().any(|face| face.intent.id == id)
+        && let Some(EntityData::Feature { inputs, .. }) =
+            session.document().get(feature).map(|e| &e.data)
+    {
+        faces.extend(RevolveDefinition::stored_faces(inputs));
+    }
     let mut entity = session
         .document()
         .get(feature)
@@ -316,7 +380,7 @@ pub fn prepare_extrude_edit_with_faces(
         unreachable!()
     };
     *definition = source.definition()?;
-    *inputs = source.inputs(faces)?;
+    *inputs = source.inputs(&faces)?;
     termination_inputs(session.document(), &source, inputs)?;
     let prepared = session.prepare(Request {
         expected_revision,

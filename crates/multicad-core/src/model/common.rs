@@ -52,6 +52,8 @@ pub(super) fn validate_feature(
         if let Some(entity) = document.get(link.target) {
             let correct = if link.role == "profile" {
                 matches!(entity.data, EntityData::Sketch { .. })
+            } else if link.role == super::PROFILE_FACE_ROLE {
+                matches!(entity.data, EntityData::Feature { .. })
             } else {
                 matches!(entity.data, EntityData::Parameter { .. })
             };

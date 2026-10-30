@@ -139,8 +139,10 @@ fn changed_holes_and_invalid_boundary_intent_fail_without_adopting_a_different_r
     let mut fixture = SharedProfiles::new(Default::default());
     let feature = fixture.outer().feature;
     let mut source = model::read_extrude(fixture.session.document(), feature).unwrap();
-    source.profile.region.outer.curves = source
-        .profile
+    let model::ModelProfile::Sketch(profile) = &mut source.profile else {
+        panic!("Sketch profile")
+    };
+    profile.region.outer.curves = profile
         .region
         .outer
         .curves
@@ -148,7 +150,7 @@ fn changed_holes_and_invalid_boundary_intent_fail_without_adopting_a_different_r
         .copied()
         .take(1)
         .collect();
-    source.profile.region.holes.clear();
+    profile.region.holes.clear();
     let mut entity = fixture.session.document().get(feature).unwrap().clone();
     let EntityData::Feature { definition, .. } = &mut entity.data else {
         panic!("Feature")
