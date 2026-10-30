@@ -1,0 +1,4 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Vertical cutout</title>
+  <path d="M7 13h50v40H43V22H21v31H7Z" /><path d="M21 56V20h22v36" stroke-dasharray="2 5"/><path d="M32 4v9m-4-4 4 4 4-4" />
+</svg>

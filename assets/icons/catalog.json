@@ -1,0 +1,328 @@
+{
+  "icons": [
+    {
+      "group": "Shared",
+      "id": "apply-rebuild",
+      "label": "Apply and rebuild"
+    },
+    {
+      "group": "Shared",
+      "id": "discard",
+      "label": "Discard edits"
+    },
+    {
+      "group": "Shared",
+      "id": "preview-model",
+      "label": "Preview model"
+    },
+    {
+      "group": "Shared",
+      "id": "preview",
+      "label": "Preview"
+    },
+    {
+      "group": "Shared",
+      "id": "finish",
+      "label": "Finish / Apply page",
+      "success": true
+    },
+    {
+      "group": "Shared",
+      "id": "import",
+      "label": "Import DXF / SVG"
+    },
+    {
+      "group": "Shared",
+      "id": "erase",
+      "label": "Delete / erase"
+    },
+    {
+      "group": "Sketch",
+      "id": "wall-2d",
+      "label": "Brick wall"
+    },
+    {
+      "group": "Sketch",
+      "id": "levels-2d",
+      "label": "Levels and stairs"
+    },
+    {
+      "group": "Sketch",
+      "id": "door",
+      "label": "Door",
+      "status": "Proposed tool"
+    },
+    {
+      "group": "Sketch",
+      "id": "window",
+      "label": "Window",
+      "status": "Proposed tool"
+    },
+    {
+      "group": "Sketch",
+      "id": "vertical-cutout",
+      "label": "Vertical cutout",
+      "status": "Proposed tool"
+    },
+    {
+      "group": "Sketch",
+      "id": "project-reference",
+      "label": "Project reference"
+    },
+    {
+      "group": "Sketch",
+      "id": "trim",
+      "label": "Trim"
+    },
+    {
+      "group": "Sketch",
+      "id": "rectangle-corners",
+      "label": "Rectangle: corners"
+    },
+    {
+      "group": "Sketch",
+      "id": "rectangle-center",
+      "label": "Rectangle: center",
+      "status": "Proposed drawing mode"
+    },
+    {
+      "group": "Sketch",
+      "id": "rectangle-center-two",
+      "label": "Rectangle: center + 2",
+      "status": "Proposed drawing mode"
+    },
+    {
+      "group": "Sketch",
+      "id": "rectangle-three",
+      "label": "Rectangle: 3 points",
+      "status": "Proposed drawing mode"
+    },
+    {
+      "group": "Sketch",
+      "id": "circle-radius",
+      "label": "Circle: center / radius"
+    },
+    {
+      "group": "Sketch",
+      "id": "circle-two-radius",
+      "label": "Circle: 2 points / radius",
+      "status": "Proposed drawing mode"
+    },
+    {
+      "group": "Sketch",
+      "id": "circle-three",
+      "label": "Circle: 3 points",
+      "status": "Proposed drawing mode"
+    },
+    {
+      "group": "Sketch",
+      "id": "dimension",
+      "label": "Sketch dimension",
+      "status": "Proposal"
+    },
+    {
+      "group": "Sketch",
+      "id": "construction",
+      "label": "Construction",
+      "status": "Proposal: helper geometry"
+    },
+    {
+      "group": "Sketch",
+      "id": "fillet",
+      "label": "Fillet",
+      "status": "Sketch tool proposed"
+    },
+    {
+      "group": "Sketch",
+      "id": "chamfer",
+      "label": "Chamfer",
+      "status": "Sketch tool proposed"
+    },
+    {
+      "group": "Model",
+      "id": "extrude",
+      "label": "Extrude"
+    },
+    {
+      "group": "Model",
+      "id": "revolve",
+      "label": "Revolve"
+    },
+    {
+      "group": "Model",
+      "id": "wall-3d",
+      "label": "3D wall"
+    },
+    {
+      "group": "Model",
+      "id": "levels-3d",
+      "label": "3D levels and stairs"
+    },
+    {
+      "group": "Model",
+      "id": "boolean-union",
+      "label": "Boolean: Join"
+    },
+    {
+      "group": "Model",
+      "id": "boolean-subtract",
+      "label": "Boolean: Subtract"
+    },
+    {
+      "group": "Model",
+      "id": "boolean-intersect",
+      "label": "Boolean: Intersect"
+    },
+    {
+      "group": "Model",
+      "id": "fillet-model",
+      "label": "Fillet / Chamfer"
+    },
+    {
+      "group": "Model",
+      "id": "draft",
+      "label": "Draft / taper",
+      "status": "Proposal"
+    },
+    {
+      "group": "Model",
+      "id": "align-frames",
+      "label": "Align geometry",
+      "status": "Proposal: CAD alignment"
+    },
+    {
+      "group": "Model",
+      "id": "align-row",
+      "label": "Align row alternative",
+      "status": "Photoshop-style alternative"
+    },
+    {
+      "group": "Fabrication",
+      "id": "drill",
+      "label": "Drill / pocket"
+    },
+    {
+      "group": "Fabrication",
+      "id": "finger-joint",
+      "label": "Panel finger joint"
+    },
+    {
+      "group": "Fabrication",
+      "id": "weld-joint",
+      "label": "Weld joint"
+    },
+    {
+      "group": "Fabrication",
+      "id": "tube",
+      "label": "Tube / profile"
+    },
+    {
+      "group": "Fabrication",
+      "id": "miter",
+      "label": "Miter / cope"
+    },
+    {
+      "group": "Relationships",
+      "id": "place-component",
+      "label": "Place component",
+      "status": "Proposal"
+    },
+    {
+      "group": "Relationships",
+      "id": "create-assembly",
+      "label": "Create assembly",
+      "status": "Proposal"
+    },
+    {
+      "group": "Relationships",
+      "id": "relationship",
+      "label": "Relationship",
+      "status": "Proposal"
+    },
+    {
+      "group": "Relationships",
+      "id": "joint-motion",
+      "label": "Joint motion",
+      "status": "Proposal"
+    },
+    {
+      "group": "Relationships",
+      "id": "named-pose",
+      "label": "Named pose",
+      "status": "Proposal"
+    },
+    {
+      "group": "Relationships",
+      "id": "interference",
+      "label": "Interference / clearance",
+      "status": "Proposal"
+    },
+    {
+      "group": "Relationships",
+      "id": "motion-range",
+      "label": "Sample motion range",
+      "status": "Proposal"
+    },
+    {
+      "group": "Relationships",
+      "id": "explode",
+      "label": "Exploded view",
+      "status": "Proposal"
+    },
+    {
+      "group": "Drawings",
+      "id": "new-drawing",
+      "label": "New drawing"
+    },
+    {
+      "group": "Drawings",
+      "id": "add-page",
+      "label": "Add page"
+    },
+    {
+      "group": "Drawings",
+      "id": "duplicate-page",
+      "label": "Duplicate page"
+    },
+    {
+      "group": "Drawings",
+      "id": "remove-page",
+      "label": "Remove page"
+    },
+    {
+      "group": "Drawings",
+      "id": "page-setup",
+      "label": "Page setup"
+    },
+    {
+      "group": "Drawings",
+      "id": "model-dimension",
+      "label": "Model dimension"
+    }
+  ],
+  "retained": [
+    "Undo / Redo",
+    "Library",
+    "Measure",
+    "MCP history",
+    "New sketch",
+    "Move",
+    "Rotate",
+    "Mirror",
+    "Linear pattern",
+    "Circular pattern",
+    "Line",
+    "Arc",
+    "Polyline",
+    "Spline",
+    "Intersect plane",
+    "Sweep",
+    "Loft",
+    "Boolean operand motif",
+    "Split",
+    "Shell / Thickness",
+    "Move / Copy",
+    "Scale",
+    "Pattern"
+  ]
+}
