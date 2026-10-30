@@ -683,8 +683,9 @@ mod tests {
     #[test]
     fn unitless_dxf_requires_an_explicit_unit_layers_filter_and_cancel_changes_nothing() {
         let mut s = session();
-        let unitless =
-            String::from_utf8_lossy(DXF).replace("$INSUNITS\r\n70\r\n4", "$INSUNITS\r\n70\r\n0");
+        let unitless = String::from_utf8_lossy(DXF)
+            .replace("\r\n", "\n")
+            .replace("$INSUNITS\n70\n4", "$INSUNITS\n70\n0");
         let mut c = ImportController::default();
         c.begin_bytes("plate.dxf", unitless.into_bytes(), None)
             .unwrap();
