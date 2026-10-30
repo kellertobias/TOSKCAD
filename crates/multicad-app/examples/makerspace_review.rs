@@ -721,6 +721,7 @@ pub fn build() -> Result<Scenario, Error> {
             ],
             widths_mm: vec![30., 34.],
             row_height_mm: 5.,
+            schedule: None,
         },
     });
     let info = page.info.clone();

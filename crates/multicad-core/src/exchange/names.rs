@@ -15,6 +15,8 @@ pub enum OutputSubject {
     Parts(Vec<PartRef>),
     Page(PageRef),
     Pages(Vec<PageRef>),
+    /// One schedule of the whole project.
+    Schedule(crate::schedules::ScheduleSpec),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +67,9 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
     let mut names = BTreeSet::new();
     for recipe in &plan.recipes {
         let subjects: Vec<_> = match recipe.output {
+            RecipeOutput::ScheduleCsv { schedule } => {
+                vec![OutputSubject::Schedule(schedule.normalized())]
+            }
             RecipeOutput::Pdf => {
                 if plan.pages.is_empty() {
                     vec![]
@@ -131,6 +136,9 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
                     )
                 }
                 OutputSubject::Pages(_) => ("drawings".into(), plan.set, "pages".into()),
+                OutputSubject::Schedule(spec) => {
+                    (spec.kind.token().into(), plan.set, String::new())
+                }
                 OutputSubject::Parts(_) => (plan.name.clone(), plan.set, String::new()),
             };
             let mut stem = plan.naming.template.clone();

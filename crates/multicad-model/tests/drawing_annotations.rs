@@ -277,6 +277,7 @@ fn dimensions_follow_parameters_at_any_scale_detach_and_sheet_edits_never_drive_
                 ],
                 widths_mm: vec![30., 12.],
                 row_height_mm: 5.,
+                schedule: None,
             },
         },
         Annotation {

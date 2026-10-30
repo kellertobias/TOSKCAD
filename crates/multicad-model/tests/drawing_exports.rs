@@ -243,6 +243,7 @@ impl Fixture {
                 rows: vec![vec!["Block".into(), "1".into()]],
                 widths_mm: vec![30., 12.],
                 row_height_mm: 5.,
+                schedule: None,
             },
         });
         first.views.push(front);

@@ -132,6 +132,11 @@ pub enum RecipeOutput {
         layers: Layers,
     },
     Pdf,
+    /// One schedule of the whole project as RFC 4180 CSV, independent of
+    /// the Part scope and pages.
+    ScheduleCsv {
+        schedule: crate::schedules::ScheduleSpec,
+    },
 }
 impl RecipeOutput {
     pub fn extension(&self) -> &'static str {
@@ -145,6 +150,7 @@ impl RecipeOutput {
             },
             Self::PlanarDxf { .. } | Self::DrawingDxf { .. } => "dxf",
             Self::Pdf => "pdf",
+            Self::ScheduleCsv { .. } => "csv",
         }
     }
     pub fn uses_pages(&self) -> bool {

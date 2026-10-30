@@ -18,6 +18,7 @@ pub mod model;
 pub mod parameters;
 pub mod project_file;
 pub mod references;
+pub mod schedules;
 pub mod sketch;
 pub mod sketch_corner;
 pub mod sketch_draw;

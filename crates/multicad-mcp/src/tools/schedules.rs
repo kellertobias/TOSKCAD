@@ -3,7 +3,8 @@
 //! folder in scope.
 use super::{Request, ToolResult, compile, snapshot};
 use crate::{error::ToolError, host::Host};
-use multicad_model::{group_cuts, schedules};
+use multicad_core::schedules::{ScheduleKind, ScheduleSpec};
+use multicad_model::schedules;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -60,36 +61,24 @@ pub(super) fn schedule(host: &dyn Host, call: &Request, args: ScheduleArgs) -> T
     };
     let (document, revision, _) = snapshot(host)?;
     let model = compile(&document, revision, call)?;
-    let schedule = match args.kind {
-        ScheduleKindArg::Bom => {
-            let bom = model.bom(
-                &document,
-                &schedules::BomOptions {
-                    include_aids: args.include_aids,
-                    include_purchased: args.include_purchased.unwrap_or(true),
-                    roots: None,
-                },
-            )?;
-            schedules::bom_schedule(&bom)
-        }
-        ScheduleKindArg::PanelCutList => {
-            schedules::cut_list_schedule(&document, revision, &model.cut_list(&document)?)?
-        }
-        ScheduleKindArg::Machining => {
-            schedules::machining_schedule(&document, revision, &model.machining(&document)?)?
-        }
-        ScheduleKindArg::MemberCutList => schedules::member_cut_schedule(
-            &document,
-            revision,
-            &group_cuts(&model.member_cut_list(&document)?),
-        )?,
-        ScheduleKindArg::BendSchedule => {
-            schedules::bend_schedule(&document, revision, &model.sheet_metal(&document)?)?
-        }
-        ScheduleKindArg::WeldSchedule => {
-            schedules::weld_schedule(&document, revision, &model.weld_schedule(&document)?)?
-        }
+    let kind = match args.kind {
+        ScheduleKindArg::Bom => ScheduleKind::Bom,
+        ScheduleKindArg::PanelCutList => ScheduleKind::PanelCutList,
+        ScheduleKindArg::Machining => ScheduleKind::Machining,
+        ScheduleKindArg::MemberCutList => ScheduleKind::MemberCutList,
+        ScheduleKindArg::WeldSchedule => ScheduleKind::WeldSchedule,
+        ScheduleKindArg::BendSchedule => ScheduleKind::BendSchedule,
     };
+    let schedule = schedules::build(
+        &model,
+        &document,
+        revision,
+        ScheduleSpec {
+            kind,
+            include_aids: args.include_aids,
+            include_purchased: args.include_purchased.unwrap_or(true),
+        },
+    )?;
     let csv = schedule.csv();
     if let Some(path) = &target {
         let partial = path.with_extension("csv.partial");

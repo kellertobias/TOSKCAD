@@ -26,7 +26,8 @@ The native provider supports:
 - [OBJ, 3MF and STL](#mesh-output) in millimeters, centimeters, meters or inches, as separate parts or one assembly file;
 - [GLB scenes](#glb-scenes) in meters, for Blender and other scene tools.
 
-- [multi-page PDF and per-page drawing DXF](drawing-exports.md) from checked drawing pages.
+- [multi-page PDF and per-page drawing DXF](drawing-exports.md) from checked drawing pages;
+- [schedule CSV](#schedule-csv): one BOM, cut list or other schedule per recipe.
 
 Export → Print builds a single [3MF print package](print-packaging.md) from chosen Parts and their removable aids, without a saved export set.
 
@@ -68,6 +69,41 @@ GLB is glTF 2.0 binary, for handing a model to Blender or other scene tools.
 
 [`tools/blender/glb_import_report.py`](../../tools/blender/glb_import_report.py) imports a GLB in background Blender and reports objects, parents, world bounds, shared meshes and base colors. It is a developer check, not part of the application.
 
+### Schedule CSV
+
+A `ScheduleCsv` recipe names a `ScheduleSpec`: the BOM (with its aid and
+purchased options), panel cut list, machining, member cut list, weld or bend
+schedule.
+
+- **Subject.** Each recipe writes one file for the whole project. The Part
+  scope and pages do not apply. The `{part}` naming token is the schedule
+  kind, for example `bom`.
+- **Content.** The provider builds the schedule with `schedules::build` from
+  the owned current model. The bytes are exactly `Schedule::csv`; see
+  [schedules](schedules.md#csv).
+- **Evidence.** The artifact's `schedule` evidence records:
+  - the spec and title;
+  - the revision;
+  - the row and column counts;
+  - the hash of the CSV bytes.
+
+  The evidence is part of the plan hash, so a changed schedule makes an older
+  preview stale.
+- **Readback.** Publication and bundle reuse compare the written bytes and
+  hash with the generated CSV. They also parse the file back and check its
+  kind and revision comments, the header and one record per row with every
+  column.
+- **Failure.** A schedule that cannot be built makes the recipe Unsupported,
+  with the reason.
+
+The direct **Export → Common → Schedule CSV** command uses the same builder
+through `ExportWorker::schedule`. It writes a single file chosen in the
+native save dialog, and only when the rebuilt CSV hashes to the accepted
+preview. See [schedules](schedules.md#access).
+
+Drawing recipes refuse a page whose linked schedule table is stale; see
+[drawing tables](schedules.md#drawing-tables).
+
 Run receives an immutable document snapshot and the exact accepted key. It resolves and compiles again, checks the key, and writes only the requested snapshot. Later edits leave an older preview available for inspection but disable its Run action. An already accepted Run retains its original source and actor attribution even if the user edits or switches documents.
 
 ## Publication and job lifecycle
@@ -84,7 +120,7 @@ The [Export workspace](../../crates/multicad-ui/src/exchange/mod.rs) polls jobs 
 
 ## Verification and limits
 
-[Core tests](../../crates/multicad-core/tests/export_sets.rs) cover dynamic tag changes, added parts, rename/reopen, missing scopes, page order, filename collisions and transaction guards. [Native integration tests](../../crates/multicad-model/tests/export_sets.rs) write and read STEP solids, check transformed occurrence bounds, consumed exclusions, repeated publication and failed/cancelled runs. Worker tests exercise overflow, FIFO order, cancellation and exit failure.
+[Core tests](../../crates/multicad-core/tests/export_sets.rs) cover dynamic tag changes, added parts, rename/reopen, missing scopes, page order, filename collisions and transaction guards. [Schedule output tests](../../crates/multicad-model/tests/schedule_outputs.rs) cover CSV recipes, stale schedule tables in drawing recipes and direct CSV writes. [Native integration tests](../../crates/multicad-model/tests/export_sets.rs) write and read STEP solids, check transformed occurrence bounds, consumed exclusions, repeated publication and failed/cancelled runs. Worker tests exercise overflow, FIFO order, cancellation and exit failure.
 
 [Workspace tests](../../crates/multicad-ui/src/exchange/tests.rs) cover source-neutral drafts, stale/foreign replies and actual egui actions. [Application tests](../../crates/multicad-ui/src/application/export_tests.rs) cover file-dialog guards and pending writes across hidden tabs. The production adapter test exports a real solid through the workspace and verifies its STEP volume independently.
 

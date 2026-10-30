@@ -1,6 +1,7 @@
 //! Saved output sets and nonblocking, attributable export jobs.
 mod backend;
 mod form;
+mod schedule_csv;
 use crate::{egui, icons::Icon};
 pub use backend::*;
 use form::{Catalog, Draft};
@@ -9,6 +10,8 @@ use multicad_core::{
     document::EntityId,
     exchange::*,
 };
+#[cfg(test)]
+pub(crate) use schedule_csv::tests::Service as ScheduleTestService;
 use std::{
     collections::{BTreeMap, VecDeque},
     path::Path,
@@ -21,15 +24,17 @@ pub enum ExportTool {
     Preview,
     Run,
     Cancel,
+    ScheduleCsv,
 }
 impl ExportTool {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::NewSet,
         Self::SaveSet,
         Self::Discard,
         Self::Preview,
         Self::Run,
         Self::Cancel,
+        Self::ScheduleCsv,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -39,6 +44,7 @@ impl ExportTool {
             Self::Preview => "export-preview",
             Self::Run => "export-run",
             Self::Cancel => "export-cancel",
+            Self::ScheduleCsv => "export-schedule-csv",
         }
     }
     pub fn label(self) -> &'static str {
@@ -49,6 +55,7 @@ impl ExportTool {
             Self::Preview => "Preview outputs",
             Self::Run => "Run export set",
             Self::Cancel => "Cancel jobs",
+            Self::ScheduleCsv => "Schedule CSV",
         }
     }
     pub fn icon(self) -> Icon {
@@ -58,6 +65,7 @@ impl ExportTool {
             Self::Discard | Self::Cancel => Icon::Undo,
             Self::Preview => Icon::Library,
             Self::Run => Icon::Export,
+            Self::ScheduleCsv => Icon::Grid,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -68,6 +76,7 @@ impl ExportTool {
             Self::Preview => &["previewexport"],
             Self::Run => &["runexport"],
             Self::Cancel => &["cancelexport"],
+            Self::ScheduleCsv => &["schedulecsv", "bomcsv", "csv"],
         }
     }
 }
@@ -103,6 +112,7 @@ pub struct ExportWorkspace {
     catalog: Catalog,
     catalog_key: Option<(EntityId, u64)>,
     planar_catalog: Option<PlanarCatalog>,
+    schedule: schedule_csv::ScheduleCsv,
 }
 impl ExportWorkspace {
     pub fn has_backend(&self) -> bool {
@@ -121,7 +131,7 @@ impl ExportWorkspace {
         self.draft != self.original
     }
     pub fn writing(&self) -> bool {
-        self.pending.values().any(|p| p.run)
+        self.pending.values().any(|p| p.run) || self.writing_schedule()
     }
     pub fn pending(&self) -> bool {
         !self.pending.is_empty() || self.backend.as_ref().is_some_and(|b| b.pending())
@@ -286,6 +296,7 @@ impl ExportWorkspace {
                     && !self.pending()
             }
             ExportTool::Cancel => self.pending(),
+            ExportTool::ScheduleCsv => self.backend.is_some(),
         }
     }
     pub fn execute(
@@ -355,9 +366,10 @@ impl ExportWorkspace {
                     s.revision()
                 ))
             }
+            ExportTool::ScheduleCsv => self.schedule_csv(s, path, channel),
             ExportTool::Cancel => {
                 if let Some(b) = self.backend.as_mut() {
-                    for id in self.pending.keys() {
+                    for id in self.pending.keys().chain(self.schedule.jobs.keys()) {
                         b.cancel(*id);
                     }
                 }
@@ -384,6 +396,10 @@ impl ExportWorkspace {
             }
         }
         for reply in replies {
+            if let Some(job) = self.schedule.jobs.remove(&reply.id) {
+                self.accept_schedule(job, reply, s);
+                continue;
+            }
             let Some(p) = self.pending.remove(&reply.id) else {
                 self.error = Some("Output service returned an unknown job identity".into());
                 continue;
@@ -555,6 +571,7 @@ impl ExportWorkspace {
             self.error = Some(error);
             self.scheduled = None;
         }
+        self.tick_schedule(s, allow_io);
         if self.pending() || self.scheduled.is_some() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
@@ -592,6 +609,7 @@ impl ExportWorkspace {
                         }
                     }
                 });
+                self.schedule_section(ui, s, allow_io);
             });
         egui::Panel::right("export-set-inspector").default_size(325.).resizable(true).show(ui,|ui|{
    crate::controls::inspector_layout(ui);ui.heading("Export set");egui::ScrollArea::vertical().show(ui,|ui|{if let Some(draft)=&mut self.draft{load_planar=draft.show(ui,s,&self.captured,&self.catalog,self.planar_catalog.as_ref());}else{ui.label("Choose a saved set or create one.");}

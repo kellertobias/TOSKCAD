@@ -196,6 +196,7 @@ fn hatches_clip_to_their_boundary_and_tables_and_welds_lay_out() {
             ],
             widths_mm: vec![30., 12.],
             row_height_mm: 5.,
+            schedule: None,
         },
     };
     assert_eq!(table_bounds(&table), Some([20., 20., 62., 40.]));
@@ -287,6 +288,7 @@ fn annotations_validate_join_the_book_and_require_their_capability() {
                 rows: vec![vec!["1".into()]; 10],
                 widths_mm: vec![100.],
                 row_height_mm: 5.,
+                schedule: None,
             },
         },
         Annotation {

@@ -11,6 +11,7 @@ mod mechanical_imports;
 mod native_picker;
 mod print;
 mod save_preview;
+mod schedule_files;
 mod symbol_files;
 mod welcome;
 #[cfg(test)]
@@ -116,6 +117,7 @@ enum FileAction {
     PreviewImage,
     Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
     PrintPackage,
+    ScheduleCsv,
 }
 struct CommandRecord {
     input: String,
@@ -615,13 +617,21 @@ impl Application {
                         "Apply or discard other pending edits before changing export sets".into(),
                     );
                 }
-                if args.len() > 1 || (!args.is_empty() && tool != crate::exchange::ExportTool::Run)
+                if args.len() > 1
+                    || (!args.is_empty()
+                        && !matches!(
+                            tool,
+                            crate::exchange::ExportTool::Run
+                                | crate::exchange::ExportTool::ScheduleCsv
+                        ))
                 {
-                    return Err("Only Run export set accepts one absolute output directory".into());
+                    return Err("Only Run export set accepts one absolute output directory, and Schedule CSV one absolute .csv path".into());
                 }
                 if matches!(
                     tool,
-                    crate::exchange::ExportTool::Preview | crate::exchange::ExportTool::Run
+                    crate::exchange::ExportTool::Preview
+                        | crate::exchange::ExportTool::Run
+                        | crate::exchange::ExportTool::ScheduleCsv
                 ) && !self.export_io_allowed()
                 {
                     return Err("Finish the file operation before starting an export job".into());
@@ -636,6 +646,7 @@ impl Application {
                 self.mode = Mode::Export;
                 self.tab = 0;
                 self.message = message;
+                self.start_schedule_save();
             }
             Command::Print(tool) => self.invoke_print(tool, channel)?,
             Command::Drawing(tool) => {
@@ -2228,6 +2239,7 @@ impl Application {
                         self.message = message;
                         self.message_error = error;
                     }
+                    self.start_schedule_save();
                 } else if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     let before = p.session.revision();

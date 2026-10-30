@@ -12,6 +12,8 @@ pub enum Kind {
     PreviewImage,
     /// Save a 3MF print package from Export → Print.
     SavePrintPackage,
+    /// A schedule CSV destination.
+    SaveCsv,
 }
 #[derive(Clone, Debug)]
 pub struct Request {

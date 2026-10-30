@@ -346,6 +346,7 @@ pub fn weld_plan_annotations(
             rows,
             widths_mm: vec![10., 12., 14., 44., 22., 10., 18., 40.],
             row_height_mm: 6.,
+            schedule: None,
         },
     });
     out

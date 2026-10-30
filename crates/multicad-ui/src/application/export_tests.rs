@@ -44,6 +44,7 @@ impl ExportBackend for Backend {
                 planar: None,
                 mesh: None,
                 drawing: None,
+                schedule: None,
                 output: file,
                 producer: EntityId::new(),
                 solid: EntityId::new(),

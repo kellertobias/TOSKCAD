@@ -155,6 +155,10 @@ pub enum AnnotationKind {
         rows: Vec<Vec<String>>,
         widths_mm: Vec<f64>,
         row_height_mm: f64,
+        /// The model schedule this table was placed from. Its cells are a
+        /// copy: a fresh schedule reports it stale and Refresh replaces them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<crate::schedules::ScheduleSpec>,
     },
     Draft {
         geometry: DraftGeometry,
@@ -850,6 +854,7 @@ pub fn sheet_graphic(annotation: &Annotation) -> AnnotationGraphic {
             rows,
             widths_mm,
             row_height_mm,
+            ..
         } => {
             let [x0, y0, x1, y1] = table_bounds(annotation).expect("table");
             let lines = rows.len() + 1 + usize::from(!title.is_empty());

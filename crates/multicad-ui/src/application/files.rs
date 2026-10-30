@@ -191,6 +191,7 @@ impl Application {
             }
             FileAction::PreviewImage => self.read_preview_image(path),
             FileAction::PrintPackage => self.submit_print_package(path),
+            FileAction::ScheduleCsv => self.write_schedule_csv(path),
         };
         if let Err(error) = result {
             self.message = error;

@@ -71,6 +71,7 @@ impl DrawingEditor {
                 rows: vec![vec![String::new(), String::new()]],
                 widths_mm: vec![30., 12.],
                 row_height_mm: 5.,
+                schedule: None,
             },
             DrawingTool::DraftLine => AnnotationKind::Draft {
                 geometry: DraftGeometry::Line {
@@ -396,6 +397,7 @@ impl DrawingEditor {
                 rows,
                 widths_mm,
                 row_height_mm,
+                schedule,
             } => {
                 ui.text_edit_singleline(title).on_hover_text("Table title");
                 point(ui, "Top left", position_mm);
@@ -405,34 +407,43 @@ impl DrawingEditor {
                         .prefix("Row height ")
                         .suffix(" mm"),
                 );
-                egui::Grid::new(("table-cells", id)).show(ui, |ui| {
-                    for (c, w) in columns.iter_mut().zip(widths_mm.iter_mut()) {
-                        ui.vertical(|ui| {
-                            ui.add(egui::TextEdit::singleline(c).desired_width(60.));
-                            ui.add(egui::DragValue::new(w).range(2.0..=500.).suffix(" mm"));
-                        });
-                    }
-                    ui.end_row();
-                    for row in rows.iter_mut() {
-                        for cell in row.iter_mut() {
-                            ui.add(egui::TextEdit::singleline(cell).desired_width(60.));
+                if let Some(spec) = schedule {
+                    ui.small(format!(
+                        "{} rows × {} columns from the {} schedule. Refresh replaces the cells; edit the model, not the table.",
+                        rows.len(),
+                        columns.len(),
+                        spec.label()
+                    ));
+                } else {
+                    egui::Grid::new(("table-cells", id)).show(ui, |ui| {
+                        for (c, w) in columns.iter_mut().zip(widths_mm.iter_mut()) {
+                            ui.vertical(|ui| {
+                                ui.add(egui::TextEdit::singleline(c).desired_width(60.));
+                                ui.add(egui::DragValue::new(w).range(2.0..=500.).suffix(" mm"));
+                            });
                         }
                         ui.end_row();
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Add row").clicked() && rows.len() < 256 {
-                        rows.push(vec![String::new(); columns.len()]);
-                    }
-                    if ui.button("Remove row").clicked() {
-                        rows.pop();
-                    }
-                    if ui.button("Add column").clicked() && columns.len() < 32 {
-                        columns.push(String::new());
-                        widths_mm.push(20.);
-                        rows.iter_mut().for_each(|r| r.push(String::new()));
-                    }
-                });
+                        for row in rows.iter_mut() {
+                            for cell in row.iter_mut() {
+                                ui.add(egui::TextEdit::singleline(cell).desired_width(60.));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Add row").clicked() && rows.len() < 256 {
+                            rows.push(vec![String::new(); columns.len()]);
+                        }
+                        if ui.button("Remove row").clicked() {
+                            rows.pop();
+                        }
+                        if ui.button("Add column").clicked() && columns.len() < 32 {
+                            columns.push(String::new());
+                            widths_mm.push(20.);
+                            rows.iter_mut().for_each(|r| r.push(String::new()));
+                        }
+                    });
+                }
             }
             AnnotationKind::Draft {
                 geometry,

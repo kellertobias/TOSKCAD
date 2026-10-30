@@ -3,6 +3,7 @@
 //! document revision and source hash it was produced from, so a placed
 //! table can be checked against a fresh one.
 use crate::{CutRecord, MachiningRecord, Model, ModelError, error};
+use multicad_core::schedules::{ScheduleKind, ScheduleSpec};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     drawings::AnnotationKind,
@@ -11,6 +12,44 @@ use multicad_core::{
     project_file::ContentHash,
 };
 use std::collections::BTreeMap;
+
+/// Build one schedule of the whole evaluated model. Every window command,
+/// export recipe and MCP call goes through this, so a CSV file, a drawing
+/// table and an MCP reply for the same source always agree.
+pub fn build(
+    model: &Model,
+    document: &Document,
+    revision: u64,
+    spec: ScheduleSpec,
+) -> Result<Schedule, ModelError> {
+    Ok(match spec.kind {
+        ScheduleKind::Bom => bom_schedule(&model.bom(
+            document,
+            &BomOptions {
+                include_aids: spec.include_aids,
+                include_purchased: spec.include_purchased,
+                roots: None,
+            },
+        )?),
+        ScheduleKind::PanelCutList => {
+            cut_list_schedule(document, revision, &model.cut_list(document)?)?
+        }
+        ScheduleKind::Machining => {
+            machining_schedule(document, revision, &model.machining(document)?)?
+        }
+        ScheduleKind::MemberCutList => member_cut_schedule(
+            document,
+            revision,
+            &crate::group_cuts(&model.member_cut_list(document)?),
+        )?,
+        ScheduleKind::WeldSchedule => {
+            weld_schedule(document, revision, &model.weld_schedule(document)?)?
+        }
+        ScheduleKind::BendSchedule => {
+            bend_schedule(document, revision, &model.sheet_metal(document)?)?
+        }
+    })
+}
 
 /// How a Part is supplied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -234,7 +273,17 @@ impl Schedule {
             rows: self.rows.clone(),
             widths_mm,
             row_height_mm: 5.,
+            schedule: None,
         }
+    }
+    /// [`Schedule::table`] linked to the schedule it was built from, so the
+    /// placed table can be checked and refreshed later.
+    pub fn placed_table(&self, spec: ScheduleSpec, position_mm: [f64; 2]) -> AnnotationKind {
+        let mut table = self.table(position_mm);
+        if let AnnotationKind::Table { schedule, .. } = &mut table {
+            *schedule = Some(spec.normalized());
+        }
+        table
     }
     /// Whether a placed table still shows this schedule's cells. A table
     /// from an older revision with different content is stale.
@@ -550,4 +599,84 @@ pub fn bend_schedule(
         .to_vec(),
         rows,
     })
+}
+
+/// Parse CSV written by [`Schedule::csv`]: the leading `#` comment lines
+/// (without `# `) and the RFC 4180 records that follow.
+pub fn read_csv(text: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    let mut comments = vec![];
+    let mut rest = text;
+    while let Some(line) = rest.strip_prefix('#') {
+        let (comment, tail) = line.split_once('\n').ok_or("Unterminated CSV comment")?;
+        comments.push(comment.strip_prefix(' ').unwrap_or(comment).to_owned());
+        rest = tail;
+    }
+    let mut records = vec![];
+    let mut record = vec![];
+    let mut cell = String::new();
+    let mut quoted = false;
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (true, '"') if chars.peek() == Some(&'"') => {
+                chars.next();
+                cell.push('"');
+            }
+            (true, '"') => quoted = false,
+            (true, c) => cell.push(c),
+            (false, '"') if cell.is_empty() => quoted = true,
+            (false, ',') => record.push(std::mem::take(&mut cell)),
+            (false, '\n') => {
+                record.push(std::mem::take(&mut cell));
+                records.push(std::mem::take(&mut record));
+            }
+            (false, '"') => return Err("A quote inside an unquoted CSV cell".into()),
+            (false, c) => cell.push(c),
+        }
+    }
+    if quoted {
+        return Err("Unterminated quoted CSV cell".into());
+    }
+    if !cell.is_empty() || !record.is_empty() {
+        return Err("The last CSV record has no line end".into());
+    }
+    Ok((comments, records))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn csv_reads_back_quoted_cells_and_linked_tables_check() {
+        let schedule = Schedule {
+            kind: "bom",
+            title: "Bill of materials".into(),
+            revision: 7,
+            source: ContentHash::of(b"x"),
+            notes: vec!["Note, with comma".into()],
+            columns: vec!["Part".into(), "Qty".into()],
+            rows: vec![
+                vec!["Shelf, \"oak\"".into(), "2".into()],
+                vec!["=SUM(A1)".into(), "line\nbreak".into()],
+            ],
+        };
+        let (comments, records) = read_csv(&schedule.csv()).unwrap();
+        assert_eq!(comments[0], "MultiCAD bom schedule");
+        assert_eq!(comments[1], "revision 7");
+        assert_eq!(comments[3], "Note, with comma");
+        assert_eq!(records[0], schedule.columns);
+        assert_eq!(&records[1..], &schedule.rows[..]);
+        assert!(read_csv("a,\"b\n").is_err());
+        assert!(read_csv("a,b").is_err());
+        let spec = ScheduleSpec::new(ScheduleKind::Bom);
+        let table = schedule.placed_table(spec, [10., 10.]);
+        assert!(matches!(
+            &table,
+            AnnotationKind::Table { schedule: Some(s), .. } if *s == spec
+        ));
+        assert!(schedule.check_table(&table).is_ok());
+        let mut changed = schedule.clone();
+        changed.rows[0][1] = "3".into();
+        assert!(changed.check_table(&table).unwrap_err().contains("stale"));
+    }
 }

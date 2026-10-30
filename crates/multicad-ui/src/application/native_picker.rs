@@ -69,6 +69,7 @@ impl Application {
                 }
                 FileAction::PreviewImage => Kind::PreviewImage,
                 FileAction::PrintPackage => Kind::SavePrintPackage,
+                FileAction::ScheduleCsv => Kind::SaveCsv,
             },
             directory: self
                 .current()
@@ -80,6 +81,11 @@ impl Application {
                 FileAction::SymbolSave(id) => Some(self.symbol_filename(id)?),
                 FileAction::Save => Some(suggested),
                 FileAction::PrintPackage => Some(self.print_package_name()?),
+                FileAction::ScheduleCsv => Some(
+                    self.current()
+                        .exchange
+                        .schedule_file_name(&self.current().session),
+                ),
                 _ => None,
             },
         };
@@ -142,6 +148,7 @@ impl Application {
                     }
                     FileAction::PreviewImage => self.read_preview_image(path),
                     FileAction::PrintPackage => self.submit_print_package(path),
+                    FileAction::ScheduleCsv => self.write_schedule_csv(path),
                 }
             }
             Ok(None) => {
