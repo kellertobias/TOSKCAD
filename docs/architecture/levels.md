@@ -41,11 +41,29 @@ restores the exact document.
 ## Native solids
 
 - **Slabs and pedestals** are the outline extruded to their thickness. The
-  outline must have area and must not self-intersect.
+  outline must have area and must not self-intersect. Holes are subtracted
+  through the full thickness; their sides carry the roles
+  `cutout.<id>.side.0`–`3`.
 - **Stairs** are built flight by flight. Each flight is a stepped profile
   extruded across the stair width, and each piece reaches down to the base
   level so the stair is one solid. Landings are added for turning forms, and
   the union must be one connected solid.
+
+### Slab holes
+
+A slab or pedestal can carry rectangular holes, each with a center, width,
+depth and rotation, all parameter expressions apart from the rotation. Each
+hole names the vertical cutout it belongs to, so one shaft shares its
+identity across the slabs of several levels and with a wall cutout. Holes are
+placed and edited through the vertical-cutout operation (see
+[walls](walls.md#vertical-cutouts-through-slabs)); a slab edit keeps them.
+
+- A hole must lie strictly inside the outline, with slab material all
+  around. One that crosses, touches or lies outside the edge, or wraps an
+  inner corner of a concave outline, is refused. This also refuses a slab
+  edit that would leave a hole outside the new outline.
+- Holes in one slab may not overlap or touch.
+- Slabs with holes require the `architecture.slab_hole.1` capability.
 
 ### Stair check
 
@@ -98,7 +116,8 @@ Floor plans, sections and elevations linked to levels are authored as
 
 ## Limits
 
-- **Shapes.** Slab outlines are straight-segment polygons without holes.
+- **Shapes.** Slab outlines are straight-segment polygons. Slab holes are
+  rectangles.
   Stairs have straight flights only; there are no winders, spirals or
   railings.
 - **Envelopes.**

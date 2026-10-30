@@ -168,8 +168,10 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit; an edit keeps vertical cutouts |
 | `inspect_wall` | no | A wall's resolved segments, doors, windows and vertical cutouts with IDs, plus any placement diagnostic |
 | `set_wall_opening` | yes | Add a door or window to one segment at an offset, or edit one by ID, with an existing or new opening type |
-| `set_vertical_cutout` | yes | Add or edit a full-height cutout: through the wall, or a chase of a given depth from one face |
-| `remove_wall_opening` | yes | Remove one door, window or vertical cutout by ID |
+| `set_vertical_cutout` | yes | Add or edit a vertical cutout and choose what it cuts: a full-height wall cutout (through, or a chase from one face), holes in floor slabs (`slabs`, or `from_level`/`to_level` for a shaft) with a `plan` rectangle or the wall footprint, or both, in one transaction |
+| `remove_wall_opening` | yes | Remove one door, window or vertical cutout by ID, including the cutout's slab holes |
+| `remove_vertical_cutout` | yes | Remove a vertical cutout from its wall and every slab |
+| `inspect_vertical_cutout` | no | What a cutout cuts (wall, slabs with level, span and hole corners), or every slab-cutting cutout |
 | `create_panel_stock` | yes | Panel stock (thickness, sheet size, grain) on an existing or new Material (see [cabinetry](cabinetry.md)) |
 | `set_carcass` | yes | Create or edit a parametric carcass; every panel is evaluated natively before commit |
 | `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |

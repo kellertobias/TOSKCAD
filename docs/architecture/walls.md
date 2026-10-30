@@ -42,9 +42,10 @@ Cutouts belong to the wall, not to a type. A wall with cutouts makes the
 project require the `architecture.wall_cutout.1` capability, so a build that
 does not know cutouts refuses the file instead of dropping them.
 
-**Interpretation.** "Vertical cutout" is read as a full-height wall cutout or
-chase. Slab penetrations are not implemented; slabs keep outlines without
-holes (see [levels](levels.md)).
+**What it cuts.** A vertical cutout chooses what it cuts: this wall, the
+floor slabs under it, or both. The slab part is a rectangular hole with the
+same cutout identity in every slab it cuts, so one tool makes shafts and floor
+penetrations too. See [vertical cutouts through slabs](#vertical-cutouts-through-slabs).
 
 Every dimension can be a parameter expression.
 
@@ -98,6 +99,39 @@ geometry:
   cut touching an open end only shortens the wall), a second one in a closed
   room, or one removing the whole wall.
 
+### Vertical cutouts through slabs
+
+Slabs and pedestals carry rectangular holes (see [levels](levels.md#slab-holes)).
+Each hole names the vertical cutout it belongs to. One cutout identity can
+appear in one wall (as the record above) and in any number of slabs.
+
+- **Wall and slabs.** The slab hole is the wall cutout's plan footprint: its
+  span along the segment by its depth across the wall (the whole thickness
+  for a through cut). It is stored on each slab as literal millimeters at
+  placement time.
+- **Slabs only.** A shaft or floor penetration needs no wall. It is placed by
+  a plan rectangle: center, width, depth and rotation.
+- **Which slabs.** A level range picks every floor slab (not pedestals) on
+  the levels from the lower to the upper one whose outline the footprint
+  touches. The API and MCP also accept an explicit slab list.
+- **One transaction.** `prepare_vertical_cutout` rewrites the wall and every
+  affected slab feature in a single transaction labeled "Place vertical
+  cutout", "Edit vertical cutout" or "Remove vertical cutout". An edit makes
+  the cutout cut exactly the given wall and slabs: it removes the hole from
+  slabs it no longer cuts and the record from a wall it leaves.
+  `plan_vertical_cutout` runs the same checks without staging.
+- **Refused.** The change is refused, and nothing is staged, when:
+  - it cuts nothing;
+  - it names the same slab twice, or something that is not a slab;
+  - a hole is not strictly inside its slab outline, meaning it crosses,
+    touches or lies outside the edge, or wraps an inner corner of a concave
+    slab (a cutout may not notch or split a slab);
+  - a hole overlaps or touches another hole in the same slab;
+  - the wall rules above are broken, for example a through cut that splits
+    an open wall.
+- **Capability.** Slabs with holes make the project require
+  `architecture.slab_hole.1`.
+
 ## Plan representation
 
 A drawing view whose frame looks straight down or up gets extra vectors for
@@ -119,8 +153,17 @@ shared page render.
   wall reopens in the same form for editing. The wall form keeps the wall's
   vertical cutouts and says how many there are.
 - **Room tools.** Sketch → Room and Model → Architecture → **Door**,
-  **Window** and **Vertical cutout** work on an existing wall. A wall Part
-  selected in the tree is the starting wall, otherwise the first wall.
+  **Window** and **Vertical cutout** work on an existing wall; the vertical
+  cutout also works on floor slabs alone. A wall Part selected in the tree is
+  the starting wall, otherwise the first wall.
+  - **What the cutout cuts.** The vertical-cutout Inspector has **Wall** and
+    **Floor slabs** checkboxes and a **From level** / **To level** range
+    (default: the wall's level only). With the wall unchecked it becomes a
+    slab-only shaft: a click on a slab centers its rectangle there (snapped
+    to 10 mm) and takes the slab's level. Center, width, depth and rotation
+    can also be entered. The live note names the wall and slabs it will cut.
+    Applying it is one transaction on the wall and every cut slab. Existing
+    shafts appear in the same list for editing or removal.
   - **Placing.** Click a wall face in the viewport. The tool finds the
     segment under the click and centers the opening there, snapped to
     10 mm; an orange outline previews the footprint while hovering. The
@@ -143,8 +186,10 @@ shared page render.
   staging, and `locate_on_wall` maps a plan point to a segment and distance.
 - **MCP:** `create_wall_type`, `edit_wall_type`, `create_opening_type`,
   `create_wall`, `edit_wall` (keeps cutouts), `inspect_wall`,
-  `set_wall_opening`, `set_vertical_cutout` and `remove_wall_opening`. Each
-  mutation is evaluated natively before commit.
+  `set_wall_opening`, `set_vertical_cutout` (wall, `slabs` or
+  `from_level`/`to_level`, and `plan`), `remove_wall_opening`,
+  `remove_vertical_cutout` and `inspect_vertical_cutout`. Each mutation is
+  evaluated natively before commit.
 
 ## Limits
 
@@ -156,9 +201,15 @@ shared page render.
   - Openings are rectangular.
   - Door and window types carry no frame, leaf or glazing solids. The plan
     symbols are drawing graphics only.
-  - Vertical cutouts are rectangular, full height and wall-only. They get no
-    plan symbol of their own; the plan shows them through the cut solid.
-    They do not cut slabs.
+  - Vertical cutouts are rectangular and run the full wall height. They get
+    no plan symbol of their own; the plan shows them through the cut wall
+    and slab solids.
+  - A wall-and-slab cutout stores its slab footprint as numbers when it is
+    placed. Editing the wall path or thickness later does not move the slab
+    holes; reapply the cutout from the tool or MCP to resync them.
+  - The window's Preview proves the rebuild of the anchor feature (the wall,
+    or the first slab of a shaft). The other cut slabs are rebuilt by the
+    same native evaluation but are not individually proven by the preview.
 - **Room-tool picking.** The click is mapped through the wall's plan, so it
   works on any wall face; the outline preview is drawn on the wall's left
   face. Centering uses literal widths; a width written as an expression
