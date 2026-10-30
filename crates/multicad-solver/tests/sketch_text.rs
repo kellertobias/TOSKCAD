@@ -5,7 +5,7 @@ use multicad_core::{
     commands::{Actor, Channel, Session},
     constraint_sketch::{
         source::Source,
-        text::{CAPABILITY, TextOperation, TextStyle},
+        text::{CAPABILITY, TextAlignment, TextAnchor, TextFont, TextOperation, TextStyle},
     },
     document::*,
     project_file::{self, ProjectFile},
@@ -178,6 +178,12 @@ fn project_file_round_trips_text_and_requires_its_capability() {
     let (mut session, sketch) = setup();
     let mut style = TextStyle::new("Lid 2", 7.5, [-3.25, 1.]);
     style.rotation_deg = 33.;
+    apply(&mut session, sketch, TextOperation::Add { style });
+    // CAD-149 placement: multi-line, anchor, alignment and the second font.
+    let mut style = TextStyle::new("Top\nside B", 4., [20., -8.5]);
+    style.anchor = TextAnchor::RightCenter;
+    style.alignment = TextAlignment::Right;
+    style.font = TextFont::HackRegular;
     apply(&mut session, sketch, TextOperation::Add { style });
     let document = session.document().clone();
     let project = ProjectFile::new(document.clone()).unwrap();

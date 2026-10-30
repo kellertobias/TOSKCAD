@@ -8,7 +8,7 @@ use crate::{
     host::{Host, with},
 };
 use multicad_core::constraint_sketch::text::{
-    SketchText, TextAlignment, TextFont, TextOperation, TextStyle,
+    SketchText, TextAlignment, TextAnchor, TextFont, TextOperation, TextStyle,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -17,28 +17,55 @@ use serde_json::json;
 #[derive(Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TextAlignmentArg {
+    /// Lines start at the left edge of the text block.
     #[default]
     Left,
+    /// Lines are centered in the text block.
     Center,
+    /// Lines end at the right edge of the text block.
     Right,
 }
 #[derive(Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TextFontArg {
-    /// Hack Regular, bundled in the application.
+    /// Cantarell Regular, a proportional sans-serif outline font (OFL-1.1).
     #[default]
+    CantarellRegular,
+    /// Hack Regular, a monospaced outline font (MIT / Bitstream Vera).
     HackRegular,
+}
+/// The point of the text block box that sits at `position_mm`. The box spans
+/// the widest line's advance width, and from the first line's cap height to
+/// the last line's baseline.
+#[derive(Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAnchorArg {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    LeftCenter,
+    Center,
+    RightCenter,
+    #[default]
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextStyleArgs {
-    /// One line of printable ASCII or the listed Latin-1 letters (ÄÖÜäöüßéèàç°±µ).
+    /// Printable ASCII or the listed Latin-1 letters (ÄÖÜäöüßéèàç°±µ); "\n"
+    /// starts a new line. Cantarell refuses | and ç (use Hack Regular).
     pub text: String,
-    /// Cap height in mm (0.1 to 10000).
+    /// Size: the cap height in mm (0.1 to 10000).
     pub height_mm: f64,
-    /// Baseline anchor in sketch coordinates, mm.
-    pub origin_mm: [f64; 2],
-    /// Counterclockwise baseline rotation from sketch U, degrees.
+    /// Sketch position of the anchor point, mm. `origin_mm` is accepted as
+    /// an alias.
+    #[serde(alias = "origin_mm")]
+    pub position_mm: [f64; 2],
+    #[serde(default)]
+    pub anchor: TextAnchorArg,
+    /// Counterclockwise rotation about the anchor, from sketch U, degrees.
     #[serde(default)]
     pub rotation_deg: f64,
     #[serde(default)]
@@ -51,10 +78,22 @@ impl TextStyleArgs {
         TextStyle {
             text: self.text,
             font: match self.font {
+                TextFontArg::CantarellRegular => TextFont::CantarellRegular,
                 TextFontArg::HackRegular => TextFont::HackRegular,
             },
             height_mm: self.height_mm,
-            origin_mm: self.origin_mm,
+            position_mm: self.position_mm,
+            anchor: match self.anchor {
+                TextAnchorArg::TopLeft => TextAnchor::TopLeft,
+                TextAnchorArg::TopCenter => TextAnchor::TopCenter,
+                TextAnchorArg::TopRight => TextAnchor::TopRight,
+                TextAnchorArg::LeftCenter => TextAnchor::LeftCenter,
+                TextAnchorArg::Center => TextAnchor::Center,
+                TextAnchorArg::RightCenter => TextAnchor::RightCenter,
+                TextAnchorArg::BottomLeft => TextAnchor::BottomLeft,
+                TextAnchorArg::BottomCenter => TextAnchor::BottomCenter,
+                TextAnchorArg::BottomRight => TextAnchor::BottomRight,
+            },
             rotation_deg: self.rotation_deg,
             alignment: match self.alignment {
                 TextAlignmentArg::Left => TextAlignment::Left,
@@ -69,13 +108,18 @@ impl TextStyleArgs {
 pub struct AddTextArgs {
     pub expected_revision: u64,
     pub sketch: String,
-    /// One line of printable ASCII or the listed Latin-1 letters (ÄÖÜäöüßéèàç°±µ).
+    /// Printable ASCII or the listed Latin-1 letters (ÄÖÜäöüßéèàç°±µ); "\n"
+    /// starts a new line. Cantarell refuses | and ç (use Hack Regular).
     pub text: String,
-    /// Cap height in mm (0.1 to 10000).
+    /// Size: the cap height in mm (0.1 to 10000).
     pub height_mm: f64,
-    /// Baseline anchor in sketch coordinates, mm.
-    pub origin_mm: [f64; 2],
-    /// Counterclockwise baseline rotation from sketch U, degrees.
+    /// Sketch position of the anchor point, mm. `origin_mm` is accepted as
+    /// an alias.
+    #[serde(alias = "origin_mm")]
+    pub position_mm: [f64; 2],
+    #[serde(default)]
+    pub anchor: TextAnchorArg,
+    /// Counterclockwise rotation about the anchor, from sketch U, degrees.
     #[serde(default)]
     pub rotation_deg: f64,
     #[serde(default)]
@@ -156,7 +200,8 @@ pub(super) fn sketch_add_text(host: &dyn Host, call: &Request, args: AddTextArgs
             style: TextStyleArgs {
                 text: args.text,
                 height_mm: args.height_mm,
-                origin_mm: args.origin_mm,
+                position_mm: args.position_mm,
+                anchor: args.anchor,
                 rotation_deg: args.rotation_deg,
                 alignment: args.alignment,
                 font: args.font,

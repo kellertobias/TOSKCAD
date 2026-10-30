@@ -67,7 +67,9 @@ impl DrawTool {
             (Self::Chamfer, _) => {
                 "Click a corner of two lines or arcs to chamfer it by the Inspector setback · Esc ends"
             }
-            (Self::Text, _) => "Click the baseline origin to place the Inspector text · Esc ends",
+            (Self::Text, _) => {
+                "Click to place the Inspector text at its anchor · click a letter to edit it · Esc ends"
+            }
             _ => "Click the first point, then the second point · Esc cancels",
         }
     }

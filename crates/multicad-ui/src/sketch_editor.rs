@@ -4125,7 +4125,21 @@ impl SketchEditor {
             });
             let modifiers = crate::selection_input::click_modifiers(ui, &response);
             let extend = modifiers.shift || modifiers.command;
+            // CAD-149: a plain click on a letter selects its text element and
+            // opens it in the Text tool; Shift-click still picks profiles.
+            let text_curve = match hit {
+                Some(Hit::Curve(curve)) => Some(curve),
+                _ => None,
+            };
+            let opened = !extend
+                && !matches!(hit, Some(Hit::Point(_)))
+                && self.select_text_at(
+                    session,
+                    text_curve,
+                    self.camera.on_plane(pointer, rect, frame),
+                );
             match hit {
+                _ if opened => {}
                 Some(Hit::Point(point)) => {
                     self.reset_profile_clicks();
                     self.element = None;
@@ -6376,8 +6390,8 @@ mod tests {
         assert_eq!(placed.len(), 1);
         assert_eq!(placed[0].style.text, "ABO");
         assert_eq!(placed[0].style.height_mm, 8.);
-        assert!((placed[0].style.origin_mm[0] - 10.).abs() < 1e-6);
-        assert!((placed[0].style.origin_mm[1] - 5.).abs() < 1e-6);
+        assert!((placed[0].style.position_mm[0] - 10.).abs() < 1e-6);
+        assert!((placed[0].style.position_mm[1] - 5.).abs() < 1e-6);
         assert_eq!(editor.text_tool.editing, Some(placed[0].id));
         let after_place = session.document().clone();
         // An Inspector edit is one further transaction.
@@ -6418,6 +6432,70 @@ mod tests {
             assert!(editor.message.contains(needle), "{}", editor.message);
         }
         assert!(DrawTool::Text.parse(&[], false).is_err());
+    }
+    #[test]
+    fn clicking_a_letter_selects_its_text_and_opens_it_for_editing() {
+        use multicad_core::constraint_sketch::text::{SketchText, TextAnchor, TextFont};
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.snap = false;
+        let id = editor.selected.unwrap();
+        editor.set_tool(DrawTool::Text).unwrap();
+        assert_eq!(editor.text_tool.draft.anchor, TextAnchor::Center);
+        editor.text_tool.draft.text = "HI\nH".into();
+        editor.text_tool.draft.height_mm = 10.;
+        editor.text_tool.draft.font = TextFont::HackRegular;
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        click_sketch(&ctx, &mut editor, &mut session, [20., 10.]);
+        let texts = |session: &Session| {
+            Source::read_for_evaluation(session.document(), id, session.revision(), None)
+                .unwrap()
+                .0
+                .sketch
+                .texts
+        };
+        let placed: Vec<SketchText> = texts(&session);
+        assert_eq!(placed.len(), 1, "{}", editor.message);
+        let at = placed[0].style.position_mm;
+        assert!(
+            (at[0] - 20.).abs() < 1e-6 && (at[1] - 10.).abs() < 1e-6,
+            "{at:?}"
+        );
+        assert_eq!(placed[0].style.anchor, TextAnchor::Center);
+        // A point inside the first H's left stem.
+        let h = &placed[0].contours().unwrap()[0];
+        let xs = h.poles.iter().map(|p| p[0]);
+        let ys = h.poles.iter().map(|p| p[1]);
+        let (x0, x1) = (
+            xs.clone().fold(f64::MAX, f64::min),
+            xs.fold(f64::MIN, f64::max),
+        );
+        let (y0, y1) = (
+            ys.clone().fold(f64::MAX, f64::min),
+            ys.fold(f64::MIN, f64::max),
+        );
+        let stem = [x0 + (x1 - x0) * 0.08, (y0 + y1) / 2.];
+        assert!(placed[0].contains(stem));
+        // With no tool active, a click on the letter opens the text.
+        editor.tool = None;
+        editor.text_tool.editing = None;
+        let before = session.document().clone();
+        click_sketch(&ctx, &mut editor, &mut session, stem);
+        assert_eq!(editor.tool, Some(DrawTool::Text), "{}", editor.message);
+        assert_eq!(editor.text_tool.editing, Some(placed[0].id));
+        assert_eq!(editor.text_tool.draft, placed[0].style);
+        assert_eq!(session.document(), &before, "selection changes nothing");
+        // With the Text tool active, clicking a letter selects instead of
+        // placing a second text; empty space still places one.
+        editor.text_tool.editing = None;
+        click_sketch(&ctx, &mut editor, &mut session, stem);
+        assert_eq!(texts(&session).len(), 1);
+        assert_eq!(editor.text_tool.editing, Some(placed[0].id));
+        click_sketch(&ctx, &mut editor, &mut session, [-60., -40.]);
+        assert_eq!(texts(&session).len(), 2, "{}", editor.message);
     }
     #[test]
     fn pointer_corner_fillet_and_chamfer_apply_once_and_misses_change_nothing() {

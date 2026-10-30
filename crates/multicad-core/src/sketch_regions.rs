@@ -872,7 +872,7 @@ fn extract_impl(
             Err(e) => diagnostics.push(diagnostic(
                 Problem::InvalidSource,
                 vec![text.id],
-                Some(text.style.origin_mm),
+                Some(text.style.position_mm),
                 e.to_string(),
             )),
         }
