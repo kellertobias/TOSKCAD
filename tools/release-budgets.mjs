@@ -1,9 +1,14 @@
 // Developer-only release-budget driver (Node.js is not a runtime dependency).
 // Builds the `release_budgets` example, generates the four acceptance
-// scenario projects once, then measures each scenario in fresh processes and
-// records wall-clock phases plus peak resident memory from /usr/bin/time.
+// scenario projects plus the generated `large_plate_field` once, then
+// measures each scenario in fresh processes and records wall-clock phases
+// (plain and cached/incremental compiles) plus peak resident memory from
+// /usr/bin/time.
 //
-//   node tools/release-budgets.mjs [--profile release|dev] [--repeat N] [--label NAME]
+//   node tools/release-budgets.mjs [--profile release|dev] [--repeat N] [--label NAME] [--large ROWSxCOLUMNS]
+//
+// The large field defaults to 10x20 plates (600 features) for the release
+// profile and 4x5 for the slower dev profile.
 //
 // Output: artifacts/benchmarks/<label>/report.json (git-ignored). This is a
 // headless measurement; GUI frame times and idle CPU are not covered.
@@ -14,16 +19,19 @@ import {fileURLToPath} from 'node:url';
 import os from 'node:os';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const scenarios=['makerspace','cabinetry_table','tool_case','control_desk'];
-const options={profile:'release',repeat:3,label:new Date().toISOString().slice(0,10)};
+const scenarios=['makerspace','cabinetry_table','tool_case','control_desk','large_plate_field'];
+const options={profile:'release',repeat:3,label:new Date().toISOString().slice(0,10),large:null};
 const argv=process.argv.slice(2);
 for(let i=0;i<argv.length;i+=2){
   const [flag,value]=[argv[i],argv[i+1]];
   if(flag==='--profile'&&['release','dev'].includes(value))options.profile=value;
   else if(flag==='--repeat'&&Number(value)>=1)options.repeat=Number(value);
   else if(flag==='--label'&&/^[\w.-]+$/.test(value??''))options.label=value;
-  else{console.error('Usage: release-budgets.mjs [--profile release|dev] [--repeat N] [--label NAME]');process.exit(2);}
+  else if(flag==='--large'&&/^[1-9]\d*x[1-9]\d*$/.test(value??''))options.large=value;
+  else{console.error('Usage: release-budgets.mjs [--profile release|dev] [--repeat N] [--label NAME] [--large ROWSxCOLUMNS]');process.exit(2);}
 }
+options.large??=options.profile==='release'?'10x20':'4x5';
+process.env.MULTICAD_LARGE_FIELD=options.large;
 const capture=(command,args)=>{try{return execFileSync(command,args,{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch{return null;}};
 function machine(){
   const info={platform:process.platform,arch:process.arch,os_release:os.release(),cpus:os.cpus().length,memory_bytes:os.totalmem(),cpu_model:os.cpus()[0]?.model??null};
@@ -67,6 +75,7 @@ const report={
   generated_at:new Date().toISOString(),
   profile:options.profile,
   repeat:options.repeat,
+  large_plate_field:options.large,
   commit:capture('git',['rev-parse','HEAD']),
   dirty:Boolean(capture('git',['status','--porcelain','--untracked-files=no'])),
   rustc:capture('rustc',['--version']),

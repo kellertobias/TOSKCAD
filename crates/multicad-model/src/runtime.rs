@@ -1,5 +1,7 @@
 //! Bounded latest-source worker. A request supersedes queued work and active
 //! work stops at the next Rust/native boundary. UI polling never waits.
+//! Unchanged feature results are reused from earlier requests through a
+//! worker-owned [`crate::EvaluationCache`].
 use crate::{Compiler, Model, ModelError, ModelSnapshot};
 use multicad_core::{
     document::Document,
@@ -117,6 +119,10 @@ impl<T: Send + 'static> Runtime<T> {
                     shared: Arc::clone(&worker),
                 };
                 let mut retained: Option<Model> = None;
+                // Exact results reused across requests (CAD-150). Entries are
+                // keyed by complete source content, so a superseded request
+                // only leaves results that are valid for any later request.
+                let mut cache = crate::EvaluationCache::default();
                 loop {
                     let job = {
                         let Ok(mut slots) = worker.slots.lock() else {
@@ -135,13 +141,15 @@ impl<T: Send + 'static> Runtime<T> {
                     };
                     let superseded = || worker.latest.load(Ordering::Acquire) != job.generation;
                     let result = match &job.sources {
-                        Some(roots) => compiler.compile_sources_interruptible(
+                        Some(roots) => compiler.compile_sources_cached(
+                            &mut cache,
                             &job.document,
                             job.revision,
                             roots,
                             Some(&superseded),
                         ),
-                        None => compiler.compile_interruptible(
+                        None => compiler.compile_cached(
+                            &mut cache,
                             &job.document,
                             job.revision,
                             Some(&superseded),

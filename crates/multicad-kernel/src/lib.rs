@@ -312,6 +312,7 @@ mod ffi {
             fuzzy: f64,
         ) -> Result<UniquePtr<Shape>>;
         fn inspection_union(shape: &Shape) -> Result<UniquePtr<Shape>>;
+        fn share_shape(shape: &Shape) -> Result<UniquePtr<Shape>>;
         fn transform_shape(
             shape: &Shape,
             rotation: &[f64],

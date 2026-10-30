@@ -126,6 +126,14 @@ was not attempted here; `incremental_status_parameter_edit_reevaluates_the_whole
 in `crates/multicad-app/tests/release_hardening.rs` pins the current behavior so
 an incremental engine must update it together with this report.
 
+**Update (CAD-150, same day):** the model runtime now compiles through a
+cross-compile `EvaluationCache`. A cached edit rebuild re-runs only the
+affected features plus providers that are never cached. The pin was replaced
+by `incremental_status_parameter_edit_reevaluates_only_affected_features`.
+Measurements, design and limits are in
+[`incremental-rebuild-2026-10-30.md`](incremental-rebuild-2026-10-30.md). The
+plain compile path measured above is unchanged.
+
 ## Cancellation: evidence and finding
 
 `crates/multicad-app/tests/release_hardening.rs` interrupts the makerspace and

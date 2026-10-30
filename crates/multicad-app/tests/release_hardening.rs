@@ -4,10 +4,11 @@
 //! the background model runtime publishes only the latest edit, honors
 //! cancellation and never blocks its poller while a native rebuild runs.
 //!
-//! Incremental-rebuild status is measured, not assumed: the compiler has no
-//! cross-call cache, so a single parameter edit re-runs every evaluation
-//! step. `incremental_status_*` pins that observable fact so a future
-//! incremental engine has to update this test and the release-budget report.
+//! Incremental-rebuild status is measured, not assumed (CAD-150): a plain
+//! compile still re-runs every evaluation step, while a compile through an
+//! `EvaluationCache` (as the model runtime does) re-runs only the features an
+//! edit affects plus providers that are never cached, and publishes exactly
+//! the cold result. `incremental_status_*` pins that observable behavior.
 #[path = "../examples/makerspace_review.rs"]
 #[allow(dead_code)]
 mod makerspace;
@@ -20,7 +21,7 @@ use multicad_core::{
     commands::Session,
     document::{Document, EntityId},
 };
-use multicad_model::{Compiler, Model, Runtime, is_superseded};
+use multicad_model::{Compiler, EvaluationCache, Model, Runtime, is_superseded};
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicUsize, Ordering},
@@ -183,27 +184,66 @@ fn runtime_publishes_only_the_latest_edit_and_never_blocks_polling() {
 }
 
 #[test]
-fn incremental_status_parameter_edit_reevaluates_the_whole_graph() {
+fn incremental_status_parameter_edit_reevaluates_only_affected_features() {
     let mut s = makerspace::build().unwrap();
-    let before = Compiler::default()
-        .compile(s.session.document(), s.session.revision())
+    let mut cache = EvaluationCache::default();
+    let compiler = Compiler::default();
+    let before = compiler
+        .compile_cached(&mut cache, s.session.document(), s.session.revision(), None)
         .unwrap();
+    let first = cache.last_compile().clone();
     let steps_before = checkpoints(s.session.document(), s.session.revision());
     makerspace::set_parameter(&mut s.session, s.room_width, "9600").unwrap();
-    let after = Compiler::default()
+    let after = compiler
+        .compile_cached(&mut cache, s.session.document(), s.session.revision(), None)
+        .unwrap();
+    let edit = cache.last_compile().clone();
+    let cold = compiler
         .compile(s.session.document(), s.session.revision())
         .unwrap();
+    // The cached rebuild publishes exactly the cold result.
+    assert_eq!(
+        format!("{:?}", after.snapshot()),
+        format!("{:?}", cold.snapshot())
+    );
     let (before, after) = (fingerprints(&before), fingerprints(&after));
-    let changed = after
-        .iter()
-        .filter(|(id, print)| before.get(id) != Some(print))
-        .count();
+    let changed: Vec<_> = after
+        .keys()
+        .filter(|id| before.get(id) != after.get(id))
+        .copied()
+        .collect();
     // The edit changes only the walls and the floor slab ...
-    assert_eq!(changed, 2, "{after:?}");
+    assert_eq!(changed.len(), 2, "{after:?}");
     assert_eq!(after.len(), 10);
-    // ... yet the rebuild performs every evaluation step again.
+    // ... and the cached rebuild re-runs only the architecture providers,
+    // which are never cached (they look up related entities by scanning the
+    // document); the three equipment features are reused.
+    assert_eq!(edit.evaluated, first.uncacheable);
+    assert_eq!((edit.evaluated.len(), edit.reused.len()), (4, 3));
+    assert!(changed.iter().all(|id| edit.evaluated.contains(id)));
+    // A plain compile still performs every evaluation step.
     assert_eq!(
         checkpoints(s.session.document(), s.session.revision()),
         steps_before
     );
+}
+
+#[test]
+fn runtime_rebuilds_after_edits_publish_exactly_the_cold_result() {
+    let mut s = tool_case::build().unwrap();
+    let mut runtime = Runtime::new(Compiler::default()).unwrap();
+    for pitch in ["96", "80", "88", "96"] {
+        tool_case::set_parameter(&mut s.session, s.rail_pitch, pitch).unwrap();
+        let (document, revision) = (s.session.document().clone(), s.session.revision());
+        let generation = runtime.request(&document, revision).unwrap();
+        let reply = wait(&mut runtime);
+        assert_eq!(reply.generation, generation);
+        let published = reply.result.unwrap();
+        let cold = Compiler::default().compile(&document, revision).unwrap();
+        assert_eq!(
+            format!("{:?}", published),
+            format!("{:?}", cold.snapshot()),
+            "rail pitch {pitch}"
+        );
+    }
 }

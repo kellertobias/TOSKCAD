@@ -52,7 +52,7 @@ void drawing_add(DrawingJob &job,const Shape &shape,bool hatch,bool cross,double
   job.inputs.push_back({shape.value,hatch,cross,angle,spacing});
 }
 static TopoDS_Shape common(const TopoDS_Shape &a,const TopoDS_Shape &b) {
-  BRepAlgoAPI_Common op(a,b); op.SetRunParallel(false); op.Build();
+  BRepAlgoAPI_Common op(a,b); op.SetNonDestructive(true); op.SetRunParallel(false); op.Build();
   if(!op.IsDone() || op.HasErrors()) throw std::runtime_error("Drawing intersection failed");
   return op.Shape();
 }
