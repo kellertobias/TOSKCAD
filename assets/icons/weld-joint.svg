@@ -1,4 +1,4 @@
 <svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
   <title>Weld joint</title>
-  <path d="M6 20h18M29 30v21H6m52-31H40M35 30v21h23"/><path d="M24 20c0-15 16-15 16 0l-5 8q-3 7-6 0Z"/><path d="m26 20 6-10m0 16 6-12"/>
+  <path d="M6 20h19M29 27v24H6m52-31H39M35 27v24h23"/><path d="M25 21c1-10 4-12 7-12s6 2 7 12h-4l-3 8-3-8Z"/><path d="m28 19 5-8m-1 10 5-8"/>
 </svg>
