@@ -214,6 +214,32 @@ fn offsets_tilt_and_symmetric_total_have_real_sweep_bounds_and_volumes() {
             [WIDTH, HEIGHT, 7.],
             10. * s,
         ),
+        // A signed negative one-sided distance sweeps the same magnitude in
+        // the opposite direction, measured from the offset start plane.
+        (
+            90.,
+            false,
+            Extent::OneSided {
+                end: Termination::Distance {
+                    distance: length(-25.),
+                },
+            },
+            [0., 0., -18.],
+            [WIDTH, HEIGHT, 7.],
+            25.,
+        ),
+        (
+            45.,
+            false,
+            Extent::OneSided {
+                end: Termination::Distance {
+                    distance: length(-10.),
+                },
+            },
+            [-10. * s, 0., 7. - 10. * s],
+            [WIDTH, HEIGHT, 7.],
+            10. * s,
+        ),
         (
             45.,
             false,

@@ -657,3 +657,105 @@ fn body_input_resolves_a_real_upstream_producer_without_a_final_part_dependency(
         definition
     );
 }
+#[test]
+fn signed_one_sided_distance_reverses_the_sweep_and_zero_is_rejected() {
+    let (session, _, _) = fixture();
+    let one_sided = |value: f64, reverse: bool| ExtrudeParameters {
+        direction: Direction {
+            reverse,
+            ..Default::default()
+        },
+        start_offset: length(4.),
+        taper: angle(3.),
+        extent: Extent::OneSided {
+            end: Termination::Distance {
+                distance: length(value),
+            },
+        },
+    };
+    let positive = one_sided(25., false)
+        .resolve_controls(session.parameters())
+        .unwrap();
+    let negative = one_sided(-25., false)
+        .resolve_controls(session.parameters())
+        .unwrap();
+    assert_eq!(
+        negative.extent,
+        ResolvedExtent::OneSided {
+            end: ResolvedTermination::Distance { distance_mm: 25. }
+        }
+    );
+    for axis in 0..3 {
+        near(negative.direction[axis], -positive.direction[axis]);
+    }
+    // Offset and taper are independent of the distance sign.
+    near(negative.start_offset_mm, 4.);
+    near(negative.taper_rad, positive.taper_rad);
+    // Reverse plus a negative distance flips twice.
+    let both = one_sided(-25., true)
+        .resolve_controls(session.parameters())
+        .unwrap();
+    for axis in 0..3 {
+        near(both.direction[axis], positive.direction[axis]);
+    }
+    let error = one_sided(0., false)
+        .resolve_controls(session.parameters())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("nonzero"), "{error}");
+    // Two-sided ends remain positive magnitudes on their named sides.
+    let two = ExtrudeParameters {
+        extent: Extent::TwoSided {
+            forward: Termination::Distance {
+                distance: length(-5.),
+            },
+            backward: Termination::Distance {
+                distance: length(5.),
+            },
+        },
+        ..Default::default()
+    };
+    assert!(two.resolve_controls(session.parameters()).is_err());
+}
+#[test]
+fn negative_extrusion_survives_commit_undo_redo_and_project_reopen() {
+    let (mut session, _, mut request) = fixture();
+    request.outputs.truncate(1);
+    request.parameters.extent = Extent::OneSided {
+        end: Termination::Distance {
+            distance: length(-25.),
+        },
+    };
+    let draft = prepare_extrude(&session, 0, actor(), &request).unwrap();
+    let feature = draft.outputs[0].feature;
+    session.commit(draft.prepared).unwrap();
+    let stored = read_extrude(session.document(), feature).unwrap();
+    assert_eq!(stored.parameters, request.parameters);
+    session.undo(session.revision(), actor()).unwrap();
+    assert!(read_extrude(session.document(), feature).is_err());
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(
+        read_extrude(session.document(), feature)
+            .unwrap()
+            .parameters,
+        request.parameters
+    );
+    let project = ProjectFile::new(session.document().clone()).unwrap();
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let opened = project_file::read(
+        &mut &bytes[..],
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let reopened = read_extrude(&opened.project.document, feature).unwrap();
+    assert_eq!(
+        reopened.parameters.extent,
+        Extent::OneSided {
+            end: Termination::Distance {
+                distance: length(-25.)
+            }
+        }
+    );
+}

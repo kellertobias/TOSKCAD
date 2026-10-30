@@ -364,7 +364,8 @@ fn readable_group_source_can_open_after_a_parameter_makes_geometry_invalid_and_n
     let EntityData::Parameter { expression, .. } = &mut invalid.data else {
         panic!()
     };
-    *expression = "-5".into();
+    // Zero is invalid; a negative one-sided depth is a valid reversed sweep.
+    *expression = "0".into();
     fixture
         .session
         .apply(Request {

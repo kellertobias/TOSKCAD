@@ -64,6 +64,156 @@ impl Acquisition {
     }
 }
 impl SketchEditor {
+    /// Display guide for the Extrude arrow / Revolve handle and the straight
+    /// sketch lines offered as explicit revolution axes. Display-only.
+    pub(super) fn profile_guide(
+        &self,
+        document: &Document,
+        revision: u64,
+        sketch: EntityId,
+        profiles: &[multicad_core::sketch_regions::RegionIntent],
+    ) -> Result<crate::modeling::ProfileGuide, String> {
+        let (solved, frame, _) = self
+            .read_sketch(document, sketch, revision)
+            .map_err(|error| error.to_string())?;
+        let mut points = vec![];
+        let mut lines = vec![];
+        for geometry in &solved.geometry {
+            let id = geometry.id();
+            match geometry {
+                Geometry::Line { a, b, .. } => {
+                    points.extend([(id, *a), (id, *b)]);
+                    lines.push(crate::modeling::GuideLine { id, a: *a, b: *b });
+                }
+                Geometry::Rectangle { a, b, .. } => {
+                    let corners = [*a, [b[0], a[1]], *b, [a[0], b[1]]];
+                    for i in 0..4 {
+                        points.push((id, corners[i]));
+                        lines.push(crate::modeling::GuideLine {
+                            id,
+                            a: corners[i],
+                            b: corners[(i + 1) % 4],
+                        });
+                    }
+                }
+                Geometry::Circle {
+                    center, radius_mm, ..
+                } => {
+                    for (du, dv) in [(1., 0.), (-1., 0.), (0., 1.), (0., -1.)] {
+                        points.push((id, [center[0] + du * radius_mm, center[1] + dv * radius_mm]));
+                    }
+                }
+                Geometry::Arc { a, b, .. } => points.extend([(id, *a), (id, *b)]),
+                Geometry::BSpline { poles, .. } => points.extend(poles.iter().map(|p| (id, *p))),
+            }
+        }
+        let selected: Vec<EntityId> = profiles
+            .iter()
+            .flat_map(|region| region.outer.curves.iter().copied())
+            .collect();
+        let anchor = crate::modeling::profile_anchor(&points, &selected)
+            .ok_or("The selected sketch has no solved geometry for the operation handle")?;
+        Ok(crate::modeling::ProfileGuide {
+            sketch,
+            frame,
+            anchor,
+            lines,
+        })
+    }
+    #[cfg(test)]
+    pub(super) fn model_request_for_tests(
+        &self,
+        session: &Session,
+    ) -> Option<crate::modeling::ModelRequest> {
+        self.model.request_for_tests(session)
+    }
+    /// Extrude arrow / Revolve handle hosting. Returns whether the gizmo owns
+    /// this pointer gesture so it is not also used for target acquisition.
+    pub(super) fn operation_viewport(
+        &mut self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+        session: &mut Session,
+        resources: &ProjectResources,
+        rect: Rect,
+    ) -> bool {
+        let label = self.model.label();
+        let result = self.model.operation_viewport(
+            ui,
+            session,
+            resources,
+            crate::modeling::OperationViewport {
+                camera: self.camera,
+                rect,
+                start_allowed: response.hovered()
+                    || response.dragged_by(egui::PointerButton::Primary),
+            },
+        );
+        let owned = match result {
+            Ok(result) => {
+                match result.outcome {
+                    Some(crate::modeling::ModelToolOutcome::Applied(parts)) => {
+                        self.accept_model_outputs(parts, label, true);
+                    }
+                    Some(crate::modeling::ModelToolOutcome::Cancelled) => self.cancel_model(),
+                    Some(crate::modeling::ModelToolOutcome::Placed { parts, .. }) => {
+                        self.accept_model_outputs(parts, "Modeling", true)
+                    }
+                    None => {}
+                }
+                result.input_owned
+            }
+            Err(error) => {
+                self.message = error;
+                true
+            }
+        };
+        if self.model.pending() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        owned
+    }
+    /// Profiles for Extrude / Revolve: the explicitly chosen closed areas, or
+    /// every closed area of a sketch selected as a whole.
+    pub(super) fn profile_inputs(
+        &self,
+        document: &Document,
+        revision: u64,
+    ) -> Result<(EntityId, Vec<multicad_core::sketch_regions::RegionIntent>), String> {
+        match self.selected_profiles(document, revision) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let Some(id) = self.selected else {
+                    return Err(error);
+                };
+                // Only a sketch explicitly selected as a whole (tree or
+                // viewer), not merely the open sketch, means all its areas.
+                if self.whole_sketch != Some(id)
+                    || !self.profiles.selected().is_empty()
+                    || self.pending_profile_pick.is_some()
+                    || !self.queued_profile_clicks.is_empty()
+                {
+                    return Err(error);
+                }
+                let presentation = self
+                    .sketch_evaluation
+                    .current(id)
+                    .filter(|p| p.evaluated.is_current(document, revision))
+                    .ok_or(error)?;
+                let all: Vec<_> = presentation
+                    .regions
+                    .regions
+                    .iter()
+                    .map(|region| region.intent())
+                    .collect();
+                if all.is_empty() {
+                    return Err("The selected sketch has no closed profile areas".into());
+                }
+                Ok((id, all))
+            }
+        }
+    }
     /// Capability and conflict check, deliberately independent of selection.
     pub fn modeling_available(&self) -> bool {
         self.primitive_ready()
@@ -131,6 +281,20 @@ impl SketchEditor {
         {
             return self.begin_advanced_model(session, resources, feed, kind, channel);
         }
+        // A sketch selected in the tree or viewer outside sketch editing means
+        // all of its closed areas; an open sketch still asks for its areas.
+        let sketches: Vec<EntityId> = self
+            .tree_selection
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(
+                    session.document().get(*id).map(|e| &e.data),
+                    Some(EntityData::Sketch { .. })
+                )
+            })
+            .collect();
+        self.whole_sketch = (!self.editing && sketches.len() == 1).then(|| sketches[0]);
         self.finish()?;
         let acquisition = Acquisition {
             tool,
@@ -148,23 +312,46 @@ impl SketchEditor {
                 .map_err(|e| e.to_string())?,
             started: false,
         };
+        let before = self.tree_selection.len();
         self.tree_selection
             .retain(|id| acquisition.accepts(session.document(), *id));
+        let incompatible = before - self.tree_selection.len();
+        let mut notice = None;
         if acquisition.profiles() {
-            self.selected = self
-                .tree_selection
-                .first()
-                .copied()
-                .or(self.selected)
-                .filter(|id| acquisition.accepts(session.document(), *id));
-            if let Some(id) = self.selected {
-                self.tree_selection = BTreeSet::from([id]);
+            if self.tree_selection.len() > 1 {
+                // One Extrude / Revolve feature reads profiles of one sketch.
+                // Keep the whole selection visible and ask, never drop silently.
+                notice = Some(format!(
+                    "{} · {} sketches are selected; one feature uses the closed areas of one sketch. Keep one sketch selected (or choose its areas), then Apply",
+                    tool.label(),
+                    self.tree_selection.len()
+                ));
+                self.selected = None;
+            } else {
+                self.selected = self
+                    .tree_selection
+                    .first()
+                    .copied()
+                    .or(self.selected)
+                    .filter(|id| acquisition.accepts(session.document(), *id));
+                if let Some(id) = self.selected {
+                    self.tree_selection = BTreeSet::from([id]);
+                }
+            }
+            if incompatible > 0 && notice.is_none() {
+                notice = Some(format!(
+                    "{} · {incompatible} selected item(s) are not sketch profiles and were not used; planar model faces are not a supported {} input",
+                    tool.label(),
+                    tool.label()
+                ));
             }
         } else {
             self.selected = None;
         }
         self.acquisition = Some(acquisition);
-        self.message = if tool == ModelingTool::EdgeTreatment {
+        self.message = if let Some(notice) = notice.clone() {
+            notice
+        } else if tool == ModelingTool::EdgeTreatment {
             "Fillet / Chamfer · select one Part definition, then its edges. Linked occurrences follow; Instance-only treatment is unsupported".into()
         } else {
             format!(
@@ -173,6 +360,11 @@ impl SketchEditor {
             )
         };
         self.advance_model_targets(session, resources, feed, true);
+        if let Some(notice) = notice
+            && !self.message.starts_with(&notice)
+        {
+            self.message = format!("{notice}\n{}", self.message);
+        }
         Ok(())
     }
     pub(super) fn reconcile_acquisition(&mut self, session: &Session) {
@@ -281,7 +473,7 @@ impl SketchEditor {
             self.tree_selection.len() >= a.minimum() && self.tree_selection.len() <= a.maximum();
         let profiles_ready = a.profiles()
             && self
-                .selected_profiles(session.document(), session.revision())
+                .profile_inputs(session.document(), session.revision())
                 .is_ok();
         let ready = if a.profiles() {
             confirm && profiles_ready
@@ -413,7 +605,7 @@ impl SketchEditor {
             .as_ref()
             .is_some_and(|a| self.tree_selection.len() >= a.minimum());
         let ready = if profiles {
-            self.selected_profiles(session.document(), session.revision())
+            self.profile_inputs(session.document(), session.revision())
                 .is_ok()
         } else {
             enough && feed.is_current(session.document().id(), session.revision())
@@ -470,7 +662,7 @@ impl SketchEditor {
                     session.revision(),
                     id,
                     point,
-                    modifiers.shift || modifiers.command,
+                    modifiers.shift || modifiers.command || modifiers.ctrl,
                 )
             {
                 self.message = error;
@@ -498,7 +690,7 @@ impl SketchEditor {
             return;
         };
         let id = hit.instance;
-        let mut selection = if modifiers.shift || modifiers.command {
+        let mut selection = if modifiers.shift || modifiers.command || modifiers.ctrl {
             self.tree_selection.clone()
         } else {
             BTreeSet::new()

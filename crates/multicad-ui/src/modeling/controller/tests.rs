@@ -455,6 +455,8 @@ fn revolve_creation_uses_checked_receipt_and_preserves_profiles_and_output_ident
             Channel::Ui,
         )
         .unwrap();
+    // New revolves require an explicit axis; choose the sketch V axis.
+    controller.choose_revolve_axis([0., 0.], 90.);
     let ModelRequest::Revolve(request) = controller
         .form
         .as_ref()
