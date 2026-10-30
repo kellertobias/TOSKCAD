@@ -24,6 +24,7 @@ macro_rules! artwork {
 /// not require changes here; only newly bound tools do.
 pub static SOURCES: &[(&str, &str)] = artwork![
     "apply-rebuild",
+    "engraving",
     "discard",
     "preview-model",
     "preview",
@@ -136,6 +137,7 @@ pub fn artwork_id(mode: Mode, tool: &str) -> Option<&'static str> {
         (_, "page-setup") => "page-setup",
         (_, "drawing-dimension") => "model-dimension",
         (_, "panel") => "wood-panel",
+        (_, "engraving") => "engraving",
         (_, "fdm-aid") => "fdm-support",
         _ => return None,
     })
@@ -158,6 +160,9 @@ pub fn description(tool: &str) -> Option<&'static str> {
             "Discard the pending edits; the canonical document stays unchanged."
         }
         "abort-sketch" => "Abort the sketch session without applying its pending edits.",
+        "engraving" => {
+            "Create engraving: opens a sketch on the planar face selected in the 3D view. It defines only the sketch; no depth or material removal."
+        }
         "boolean-join" => "Boolean Join: unite the tool bodies with each target body.",
         "boolean-subtract" => "Boolean Subtract: remove the tool bodies from each target body.",
         "boolean-intersect" => {
