@@ -550,6 +550,29 @@ impl Default for Registry {
                 ],
             },
         ];
+        // Drawing modes follow their default tool on Sketch → Common; the
+        // ribbon groups each family under one menu.
+        if let Some(common) = registry
+            .workspaces
+            .iter_mut()
+            .find(|w| w.mode == Mode::Sketch)
+            .and_then(|w| w.tabs.iter_mut().find(|t| t.title == "Common"))
+        {
+            for family in [&DrawTool::RECTANGLE_MODES[..], &DrawTool::CIRCLE_MODES[..]] {
+                let base = family[0].id();
+                let mut at = common
+                    .tools
+                    .iter()
+                    .position(|id| *id == base)
+                    .map_or(common.tools.len(), |i| i + 1);
+                for mode in &family[1..] {
+                    if !common.tools.contains(&mode.id()) {
+                        common.tools.insert(at, mode.id());
+                        at += 1;
+                    }
+                }
+            }
+        }
         registry
     }
 }
@@ -628,7 +651,8 @@ mod tests {
                 .iter()
                 .map(|t| t.action)
                 .collect::<Vec<_>>(),
-            vec![Command::Draw(DrawTool::Rectangle)]
+            DrawTool::RECTANGLE_MODES.map(Command::Draw).to_vec(),
+            "the finder lists every rectangle mode, default first"
         );
         assert_eq!(
             registry

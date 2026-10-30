@@ -17,7 +17,58 @@ pub struct Group {
     pub label: &'static str,
     pub entries: Vec<Entry>,
 }
+/// Sketch → Common keeps its order but folds each drawing-mode family into
+/// one menu at the position of its first member.
+fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
+    use crate::sketch_editor::DrawTool;
+    let families: [(&'static str, Icon, Vec<&'static str>); 2] = [
+        (
+            "Rectangle",
+            Icon::Rectangle,
+            DrawTool::RECTANGLE_MODES.map(DrawTool::id).to_vec(),
+        ),
+        (
+            "Circle",
+            Icon::Circle,
+            DrawTool::CIRCLE_MODES.map(DrawTool::id).to_vec(),
+        ),
+    ];
+    let mut entries = vec![];
+    for id in &tab.tools {
+        match families.iter().find(|(_, _, tools)| tools.contains(id)) {
+            Some((label, icon, tools)) => {
+                if !entries
+                    .iter()
+                    .any(|e| matches!(e, Entry::Menu { label: l, .. } if l == label))
+                {
+                    let present: Vec<_> = tools
+                        .iter()
+                        .copied()
+                        .filter(|tool| tab.tools.contains(tool))
+                        .collect();
+                    entries.push(if present.len() == 1 {
+                        Entry::Tool(present[0])
+                    } else {
+                        Entry::Menu {
+                            label,
+                            icon: *icon,
+                            tools: present,
+                        }
+                    });
+                }
+            }
+            None => entries.push(Entry::Tool(id)),
+        }
+    }
+    entries
+}
 pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
+    if mode == Mode::Sketch && tab.title == "Common" {
+        return vec![Group {
+            label: "",
+            entries: sketch_entries(tab),
+        }];
+    }
     if mode != Mode::Model || tab.title != "Common" {
         return vec![Group {
             label: "",
@@ -258,7 +309,18 @@ pub fn show_selectable(
                                         }
                                     }
                                     Entry::Menu { label, icon, tools } => {
-                                        let choice = menu_choice(ui.ctx(), mode, label, tools);
+                                        // The active mode, else the last choice.
+                                        let choice = tools
+                                            .iter()
+                                            .copied()
+                                            .find(|id| {
+                                                registry
+                                                    .tool(id)
+                                                    .is_some_and(|tool| selected(tool.action))
+                                            })
+                                            .unwrap_or_else(|| {
+                                                menu_choice(ui.ctx(), mode, label, tools)
+                                            });
                                         let glyph = registry
                                             .tool(choice)
                                             .map(|tool| tool_glyph(mode, choice, tool.icon))
@@ -609,6 +671,37 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn sketch_drawing_modes_fold_into_rectangle_and_circle_menus_in_place() {
+        let registry = Registry::default();
+        let tab = &registry.workspace(Mode::Sketch).tabs[0];
+        let entries = &groups(Mode::Sketch, tab)[0].entries;
+        let menu = |name: &str| {
+            entries.iter().find_map(|entry| match entry {
+                Entry::Menu { label, tools, .. } if *label == name => Some(tools.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            menu("Rectangle").unwrap(),
+            vec![
+                "rectangle",
+                "rectangle-center",
+                "rectangle-center-two",
+                "rectangle-three"
+            ]
+        );
+        assert_eq!(
+            menu("Circle").unwrap(),
+            vec!["circle", "circle-two-radius", "circle-three"]
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|e| matches!(e, Entry::Tool("rectangle" | "circle-three")))
+        );
+        assert!(entries.iter().any(|e| matches!(e, Entry::Tool("line"))));
     }
     #[test]
     fn additional_catalog_tools_are_not_lost_by_common_grouping() {

@@ -23,6 +23,8 @@ mod assembly_host;
 #[cfg(test)]
 #[path = "sketch_assembly_host_tests.rs"]
 mod assembly_host_tests;
+#[path = "sketch_draw_modes.rs"]
+mod draw_modes;
 #[path = "sketch_edge_host.rs"]
 mod edge_host;
 #[cfg(test)]
@@ -66,6 +68,11 @@ pub enum DrawTool {
     Arc,
     Polyline,
     Spline,
+    RectangleCenter,
+    RectangleCenterTwo,
+    RectangleThree,
+    CircleTwoRadius,
+    CircleThree,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coordinates {
@@ -1829,6 +1836,7 @@ impl SketchEditor {
             DrawTool::Spline => {
                 "Click control poles · Enter finishes · click the first pole to close · Esc cancels"
             }
+            tool if tool.multi_point() => tool.mode_prompt(0),
             _ => "Click the first point, then the second point · Esc cancels",
         }
         .into();
@@ -2068,6 +2076,16 @@ impl SketchEditor {
             DrawTool::Arc => return Err("An arc needs a center, start and end point".into()),
             DrawTool::Spline => {
                 return Err("A cubic spline needs at least four control poles".into());
+            }
+            DrawTool::RectangleCenter => DrawInput::CenterRectangle {
+                center: a,
+                corner: point(b),
+            },
+            DrawTool::RectangleCenterTwo
+            | DrawTool::RectangleThree
+            | DrawTool::CircleTwoRadius
+            | DrawTool::CircleThree => {
+                return Err(format!("{} needs three points", tool.label()));
             }
         };
         self.draw(
@@ -3735,7 +3753,20 @@ impl SketchEditor {
                     },
                 ),
             );
-            if tool == DrawTool::Spline {
+            if tool.multi_point() {
+                self.mode_pointer(
+                    &painter,
+                    session,
+                    tool,
+                    draw_modes::ModePointer {
+                        frame,
+                        rect,
+                        point: p,
+                        anchor,
+                        clicked: response.clicked(),
+                    },
+                );
+            } else if tool == DrawTool::Spline {
                 self.spline_pointer(
                     &painter,
                     session,
@@ -3772,6 +3803,13 @@ impl SketchEditor {
                             radius_mm: (p[0] - a[0]).hypot(p[1] - a[1]),
                         },
                         DrawTool::Spline => unreachable!("Spline uses the control-pole gesture"),
+                        DrawTool::RectangleCenter
+                        | DrawTool::RectangleCenterTwo
+                        | DrawTool::RectangleThree
+                        | DrawTool::CircleTwoRadius
+                        | DrawTool::CircleThree => {
+                            unreachable!("multi-click modes use their own gesture")
+                        }
                         DrawTool::Arc => {
                             if let Some((start, _)) = self.arc_start {
                                 Geometry::Arc {
@@ -3825,6 +3863,13 @@ impl SketchEditor {
                                 },
                                 DrawTool::Spline => {
                                     unreachable!("Spline uses the control-pole gesture")
+                                }
+                                DrawTool::RectangleCenter
+                                | DrawTool::RectangleCenterTwo
+                                | DrawTool::RectangleThree
+                                | DrawTool::CircleTwoRadius
+                                | DrawTool::CircleThree => {
+                                    unreachable!("multi-click modes use their own gesture")
                                 }
                                 DrawTool::Arc => {
                                     let (b, anchor) = self.arc_start.expect("arc start chosen");
@@ -6038,6 +6083,88 @@ mod tests {
             panic!("line missing")
         };
         assert_eq!(start, center);
+    }
+    #[test]
+    fn pointer_rectangle_and_circle_modes_commit_once_and_cancel_keeps_source() {
+        use multicad_core::constraint_sketch::CurveKind;
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.snap = false;
+        let cases: [(DrawTool, &[[f64; 2]], usize); 4] = [
+            (
+                DrawTool::RectangleThree,
+                &[[0., 0.], [20., 10.], [10., 30.]],
+                4,
+            ),
+            (DrawTool::RectangleCenter, &[[50., 0.], [60., 8.]], 4),
+            (
+                DrawTool::CircleThree,
+                &[[100., 0.], [110., 10.], [120., 0.]],
+                1,
+            ),
+            (
+                DrawTool::CircleTwoRadius,
+                &[[150., 0.], [158., 0.], [154., 3.]],
+                1,
+            ),
+        ];
+        for (tool, clicks, curves) in cases {
+            editor.set_tool(tool).unwrap();
+            gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+            gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+            let before = session.document().clone();
+            // Partial gestures are UI state; cancelling never commits.
+            for point in &clicks[..clicks.len() - 1] {
+                click_sketch(&ctx, &mut editor, &mut session, *point);
+            }
+            assert_eq!(session.document(), &before, "{tool:?} committed early");
+            editor.cancel();
+            assert_eq!(session.document(), &before);
+            editor.set_tool(tool).unwrap();
+            let id = editor.selected.unwrap();
+            let count = Source::read(session.document(), id)
+                .unwrap()
+                .0
+                .sketch
+                .curves
+                .len();
+            let revision = session.revision();
+            let undone = session.document().clone();
+            for point in clicks {
+                click_sketch(&ctx, &mut editor, &mut session, *point);
+            }
+            assert_eq!(
+                session.revision(),
+                revision + 1,
+                "{tool:?}: one transaction"
+            );
+            let (source, _, _) = Source::read(session.document(), id).unwrap();
+            assert_eq!(source.sketch.curves.len(), count + curves, "{tool:?}");
+            if tool == DrawTool::CircleTwoRadius {
+                let CurveKind::Circle { center, radius_mm } = source.sketch.curves[count].kind
+                else {
+                    panic!("circle expected")
+                };
+                let center = source
+                    .sketch
+                    .points
+                    .iter()
+                    .find(|p| p.id == center)
+                    .unwrap()
+                    .position_mm;
+                assert!((center[0] - 154.).abs() < 1e-4 && (center[1] - 3.).abs() < 1e-4);
+                assert!((radius_mm - 5.).abs() < 1e-4);
+            }
+            session
+                .undo(session.revision(), Actor::local(Channel::Ui))
+                .unwrap();
+            assert_eq!(session.document(), &undone, "{tool:?}: one undo restores");
+            for point in clicks {
+                click_sketch(&ctx, &mut editor, &mut session, *point);
+            }
+        }
     }
     #[test]
     fn pointer_arc_center_start_end_projects_radius_and_cancel_never_commits_partial_arc() {
