@@ -21,6 +21,10 @@ pub const LEVEL_KIND: &str = "architecture.level";
 pub const LEVEL_CAPABILITY: &str = "architecture.level.1";
 pub const SLAB_TYPE: &str = "architecture.slab";
 pub const SLAB_CAPABILITY: &str = "architecture.slab.1";
+/// Required by documents whose slabs carry vertical-cutout holes, so a build
+/// that does not know holes refuses the file instead of building solid slabs.
+pub const SLAB_HOLE_CAPABILITY: &str = "architecture.slab_hole.1";
+pub const MAX_SLAB_HOLES: usize = 256;
 pub const STAIR_TYPE: &str = "architecture.stair";
 pub const STAIR_CAPABILITY: &str = "architecture.stair.1";
 pub const ENVELOPE_KIND: &str = "architecture.envelope";
@@ -54,6 +58,33 @@ pub struct SlabDefinition {
     /// Slab thickness override, or pedestal height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thickness: Option<Dimension>,
+    /// Rectangular holes cut by vertical cutouts (shafts, floor
+    /// penetrations). Omitted from the file when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<SlabHole>,
+}
+/// One rectangular hole through a slab or pedestal, from its bottom to its
+/// top. `id` names the vertical cutout it belongs to; a shaft shares one
+/// identity across every slab it cuts, and with the wall cutout when it also
+/// cuts a wall.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlabHole {
+    pub id: EntityId,
+    /// Rectangle center in world X/Y millimeters.
+    pub center: [Dimension; 2],
+    /// Size along the rotated X direction.
+    pub width: Dimension,
+    /// Size along the rotated Y direction.
+    pub depth: Dimension,
+    /// Rotation of the rectangle's width direction, degrees from +X.
+    #[serde(default)]
+    pub rotation_deg: f64,
+}
+impl SlabHole {
+    fn dimensions(&self) -> [&Dimension; 4] {
+        [&self.center[0], &self.center[1], &self.width, &self.depth]
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,13 +164,34 @@ impl SlabDefinition {
         if self.outline.len() < 3 || self.outline.len() > 256 {
             return Err(invalid("A slab outline needs 3–256 points"));
         }
+        if self.holes.len() > MAX_SLAB_HOLES {
+            return Err(invalid(format!(
+                "A slab carries at most {MAX_SLAB_HOLES} cutout holes"
+            )));
+        }
+        let mut ids = BTreeSet::new();
+        for hole in &self.holes {
+            if hole.id.is_nil() || !ids.insert(hole.id) {
+                return Err(invalid("Slab cutout holes need distinct identities"));
+            }
+            if !hole.rotation_deg.is_finite() {
+                return Err(invalid("Slab cutout rotation must be finite"));
+            }
+        }
+        check_all(&self.dimensions())
+    }
+    fn dimensions(&self) -> Vec<&Dimension> {
         let mut dims: Vec<&Dimension> = self.outline.iter().flatten().collect();
         dims.extend(&self.thickness);
-        check_all(&dims)
+        dims.extend(self.holes.iter().flat_map(SlabHole::dimensions));
+        dims
+    }
+    /// Whether this slab carries a hole of the vertical cutout `id`.
+    pub fn has_hole(&self, id: EntityId) -> bool {
+        self.holes.iter().any(|h| h.id == id)
     }
     pub fn inputs(&self) -> Vec<Link> {
-        let mut dims: Vec<&Dimension> = self.outline.iter().flatten().collect();
-        dims.extend(&self.thickness);
+        let dims = self.dimensions();
         let mut links = parameter_links(dims);
         links.push(Link::new(self.level, "level"));
         links
@@ -302,6 +354,17 @@ fn features_of<'a>(
 ) -> impl Iterator<Item = &'a Entity> + 'a {
     document.entities().filter(move |e| matches!(&e.data, EntityData::Feature{definition,..} if definition.type_id==type_id))
 }
+/// Every slab and pedestal feature.
+pub fn slabs(document: &Document) -> impl Iterator<Item = &Entity> {
+    features_of(document, SLAB_TYPE)
+}
+impl SlabDefinition {
+    /// The canonical feature definition of this slab.
+    pub fn definition(&self) -> Result<Definition, DocumentError> {
+        self.validate()?;
+        definition(SLAB_TYPE, self)
+    }
+}
 pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError> {
     for e in levels(document) {
         read_level(document, e.id)?;
@@ -349,6 +412,26 @@ pub struct ResolvedSlab {
     pub outline: Vec<[f64; 2]>,
     pub bottom_mm: f64,
     pub top_mm: f64,
+    pub holes: Vec<ResolvedSlabHole>,
+}
+/// A slab hole as its four plan corners, counterclockwise.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedSlabHole {
+    pub id: EntityId,
+    pub corners: [[f64; 2]; 4],
+}
+/// The counterclockwise corners of a `width` x `depth` rectangle centered at
+/// `center` whose width runs `rotation_deg` from +X.
+pub fn rectangle_corners(
+    center: [f64; 2],
+    width: f64,
+    depth: f64,
+    rotation_deg: f64,
+) -> [[f64; 2]; 4] {
+    let (s, c) = rotation_deg.to_radians().sin_cos();
+    let at = |u: f64, v: f64| [center[0] + c * u - s * v, center[1] + s * u + c * v];
+    let (u, v) = (width / 2., depth / 2.);
+    [at(-u, -v), at(u, -v), at(u, v), at(-u, v)]
 }
 pub fn resolve_slab(
     document: &Document,
@@ -408,11 +491,130 @@ pub fn resolve_slab(
     if top_mm - bottom_mm <= 1e-3 {
         return Err(invalid("Slab or pedestal thickness must be positive"));
     }
+    let mut holes: Vec<ResolvedSlabHole> = vec![];
+    for (k, hole) in slab.holes.iter().enumerate() {
+        let label = format!("Vertical cutout hole {}", k + 1);
+        let (w, d) = (mm(&hole.width)?, mm(&hole.depth)?);
+        if w <= 1e-3 || d <= 1e-3 {
+            return Err(invalid(format!("{label} needs a positive width and depth")));
+        }
+        let corners = rectangle_corners(
+            [mm(&hole.center[0])?, mm(&hole.center[1])?],
+            w,
+            d,
+            hole.rotation_deg,
+        );
+        if !inside_outline(&outline, &corners) {
+            return Err(invalid(format!(
+                "{label} is not inside the slab outline; a cutout must keep slab material all around it and may not reach, cross or split the slab edge"
+            )));
+        }
+        if holes.iter().any(|h| convex_overlap(&h.corners, &corners)) {
+            return Err(invalid(format!(
+                "{label} overlaps or touches another cutout in this slab"
+            )));
+        }
+        holes.push(ResolvedSlabHole {
+            id: hole.id,
+            corners,
+        });
+    }
     Ok(ResolvedSlab {
         outline,
         bottom_mm,
         top_mm,
+        holes,
     })
+}
+fn distance_to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 < 1e-18 {
+        0.
+    } else {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0., 1.)
+    };
+    (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
+}
+/// Even-odd point in polygon; points on the boundary may go either way.
+fn point_in_polygon(p: [f64; 2], polygon: &[[f64; 2]]) -> bool {
+    let n = polygon.len();
+    let mut inside = false;
+    for i in 0..n {
+        let (a, b) = (polygon[i], polygon[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+fn distance_to_boundary(p: [f64; 2], polygon: &[[f64; 2]]) -> f64 {
+    let n = polygon.len();
+    (0..n)
+        .map(|i| distance_to_segment(p, polygon[i], polygon[(i + 1) % n]))
+        .fold(f64::INFINITY, f64::min)
+}
+/// Whether `inner` lies strictly inside `outline`, clear of its boundary.
+pub fn inside_outline(outline: &[[f64; 2]], inner: &[[f64; 2]]) -> bool {
+    const CLEAR: f64 = 1e-3;
+    let (n, m) = (outline.len(), inner.len());
+    inner
+        .iter()
+        .all(|p| point_in_polygon(*p, outline) && distance_to_boundary(*p, outline) > CLEAR)
+        && outline
+            .iter()
+            .all(|p| !point_in_polygon(*p, inner) && distance_to_boundary(*p, inner) > CLEAR)
+        && (0..n).all(|i| {
+            (0..m).all(|j| {
+                !crosses(
+                    outline[i],
+                    outline[(i + 1) % n],
+                    inner[j],
+                    inner[(j + 1) % m],
+                )
+            })
+        })
+}
+/// Whether two convex polygons overlap or touch (separating-axis test).
+pub fn convex_overlap(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    const GAP: f64 = 1e-3;
+    for polygon in [a, b] {
+        let n = polygon.len();
+        for i in 0..n {
+            let (p, q) = (polygon[i], polygon[(i + 1) % n]);
+            let axis = [p[1] - q[1], q[0] - p[0]];
+            let l = axis[0].hypot(axis[1]);
+            if l < 1e-12 {
+                continue;
+            }
+            let project = |s: &[[f64; 2]]| {
+                s.iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                        let d = (v[0] * axis[0] + v[1] * axis[1]) / l;
+                        (lo.min(d), hi.max(d))
+                    })
+            };
+            let ((a0, a1), (b0, b1)) = (project(a), project(b));
+            if a1 < b0 - GAP || b1 < a0 - GAP {
+                return false;
+            }
+        }
+    }
+    true
+}
+/// Whether two simple polygons share any area or boundary.
+pub fn polygons_meet(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    let (n, m) = (a.len(), b.len());
+    a.iter().any(|p| point_in_polygon(*p, b))
+        || b.iter().any(|p| point_in_polygon(*p, a))
+        || (0..n).any(|i| {
+            (0..m).any(|j| {
+                distance_to_segment(a[i], b[j], b[(j + 1) % m]) < 1e-3
+                    || crosses(a[i], a[(i + 1) % n], b[j], b[(j + 1) % m])
+            })
+        })
 }
 fn crosses(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
     let cross = |p: [f64; 2], q: [f64; 2]| p[0] * q[1] - p[1] * q[0];

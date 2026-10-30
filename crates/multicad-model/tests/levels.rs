@@ -94,6 +94,7 @@ fn levels_host_slabs_pedestals_stairs_and_walls_that_follow_level_edits() {
                 kind: SlabKind::Slab,
                 outline: vec![pt(0., 0.), pt(6000., 0.), pt(6000., 4000.), pt(0., 4000.)],
                 thickness: None,
+                holes: vec![],
             },
             None,
         )
@@ -118,6 +119,7 @@ fn levels_host_slabs_pedestals_stairs_and_walls_that_follow_level_edits() {
                     pt(4500., 3300.),
                 ],
                 thickness: Some(length(300.)),
+                holes: vec![],
             },
             None,
         )
@@ -278,6 +280,7 @@ fn levels_host_slabs_pedestals_stairs_and_walls_that_follow_level_edits() {
         kind: SlabKind::Slab,
         outline: vec![pt(0., 0.), pt(2000., 1000.), pt(2000., 0.), pt(0., 2000.)],
         thickness: None,
+        holes: vec![],
     };
     let msg = model::prepare_slab(&s, s.revision(), actor(), "Bow", &bow, None)
         .err()

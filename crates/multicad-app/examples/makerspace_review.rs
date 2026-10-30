@@ -455,6 +455,7 @@ pub fn build() -> Result<Scenario, Error> {
             corner(&session, "=-100 mm", "=$room_depth + 100 mm")?,
         ],
         thickness: None,
+        holes: vec![],
     };
     let prepared = model::prepare_slab(
         &session,
@@ -478,6 +479,7 @@ pub fn build() -> Result<Scenario, Error> {
             corner(&session, "=100 mm", "=$room_depth - 100 mm")?,
         ],
         thickness: None,
+        holes: vec![],
     };
     let prepared = model::prepare_slab(
         &session,
