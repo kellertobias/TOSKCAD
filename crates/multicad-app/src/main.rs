@@ -9,6 +9,7 @@ mod files;
 mod inspection;
 mod library;
 mod mcp;
+mod mechanical_imports;
 mod modeling;
 mod recent_projects;
 mod reference_repairs;
@@ -126,6 +127,7 @@ fn run_application() -> Result<(), String> {
         Box::new(assembly_inspection::Backend::new())
     }));
     app.set_drawing_backends(std::sync::Arc::new(|| Box::new(drawings::Backend::new())));
+    app.set_mechanical_import_backend(std::sync::Arc::new(mechanical_imports::Backend));
     app.set_export_backends(std::sync::Arc::new(|| Box::new(exchange::Backend::new())))?;
     multicad_ui::launch_with(Box::new(move |context| {
         app.set_file_picker(Box::new(file_picker::NativePicker::new(context)));
