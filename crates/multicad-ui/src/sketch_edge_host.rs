@@ -30,6 +30,8 @@ impl SketchEditor {
             .visible()
             .filter(|_| feed.is_current(session.document().id(), session.revision()))
             .ok_or("Wait for the current native model")?;
+        // Only an edge hit seeds Fillet / Chamfer; a face set (CAD-152) is
+        // deliberately ignored here.
         let edges = self
             .solid
             .selected_hit()

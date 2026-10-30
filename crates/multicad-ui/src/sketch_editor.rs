@@ -1359,6 +1359,7 @@ impl SketchEditor {
         if self.has_pending_edits() {
             return Err("Apply or discard pending edits before creating a sketch".into());
         }
+        self.ensure_single_selected_face()?;
         if self.selected_face_hit().is_some() {
             self.create_on_selected_face(session, "Sketch", channel)
         } else {
@@ -1409,6 +1410,7 @@ impl SketchEditor {
         if self.editing {
             return Err("Finish or abort the open sketch before creating an engraving".into());
         }
+        self.ensure_single_selected_face()?;
         if self.selected_face_hit().is_none() {
             return Err("Select a planar face in the 3D view, then Create engraving".into());
         }

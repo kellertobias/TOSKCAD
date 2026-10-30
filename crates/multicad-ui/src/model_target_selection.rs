@@ -345,11 +345,15 @@ impl SketchEditor {
             })
             .collect();
         self.whole_sketch = (!self.editing && sketches.len() == 1).then(|| sketches[0]);
-        if matches!(tool, ModelingTool::Extrude | ModelingTool::Revolve) && sketches.is_empty() {
-            self.adopt_preselected_profile_face(session.document(), session.revision());
+        let face_notice = if matches!(tool, ModelingTool::Extrude | ModelingTool::Revolve)
+            && sketches.is_empty()
+        {
+            self.adopt_preselected_profile_faces(session.document(), session.revision())
+                .map(|notice| format!("{} · {notice}", tool.label()))
         } else {
             self.profile_faces.clear();
-        }
+            None
+        };
         self.finish()?;
         let acquisition = Acquisition {
             tool,
@@ -394,7 +398,7 @@ impl SketchEditor {
         self.tree_selection
             .retain(|id| acquisition.accepts(session.document(), *id));
         let incompatible = (before - self.tree_selection.len()).saturating_sub(owned);
-        let mut notice = None;
+        let mut notice = face_notice;
         if acquisition.profiles() {
             if self.tree_selection.len() > 1 {
                 // One Extrude / Revolve feature reads profiles of one sketch.
@@ -553,6 +557,15 @@ impl SketchEditor {
                 .profile_inputs(session.document(), session.revision())
                 .is_ok()
                 || self.profile_face_inputs(session.revision()).is_ok());
+        if a.profiles()
+            && confirm
+            && !profiles_ready
+            && !self.profile_faces.is_empty()
+            && let Err(error) = self.profile_face_inputs(session.revision())
+        {
+            // CAD-152: explain a refused face set (e.g. not coplanar).
+            self.message = format!("{} · {error}", a.tool.label());
+        }
         let ready = if a.profiles() {
             confirm && profiles_ready
         } else {

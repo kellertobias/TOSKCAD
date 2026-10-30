@@ -5,6 +5,24 @@
 //! display guide (arrow start, outward normal, straight edges as revolution
 //! axis candidates) is derived from the outward tessellation and is never
 //! manufacturing geometry; native Preview proves the exact boundary.
+//!
+//! Several faces (CAD-152: Command / Control-click in the viewer, or
+//! modifier clicks during acquisition) start one operation only when they
+//! are coplanar: their outward normals agree within
+//! [`COPLANAR_ANGLE_RAD`] and every face plane lies within
+//! [`COPLANAR_DISTANCE_MM`] of the first one. Faces in one plane but facing
+//! opposite sides are not coplanar for this purpose, because one signed
+//! distance would extrude them in opposite directions. A non-coplanar set is
+//! refused with an explanation and kept visible so a face can be removed;
+//! faces are never dropped silently. Each face becomes its own output, so
+//! the result equals extruding every face separately.
+//!
+//! Other face consumers and the viewer face set: New Sketch and Create
+//! Engraving refuse several faces (a sketch attaches to one face); Fillet /
+//! Chamfer seeds only from an edge hit; Shell, Thickness and Draft pick their
+//! faces inside the tool (Shift / Command toggles there), because starting a
+//! tool resets the viewer selection. The bodies owning the selected faces
+//! stay in the selected-body set (`Interaction::selected_ids`).
 use super::*;
 use crate::viewport::{Hit, PickFilter, PickOptions, Scene};
 use multicad_core::model::{FaceInput, capture_profile_face};
@@ -18,6 +36,49 @@ pub(super) struct ProfileFacePick {
     /// Display-only face centroid in that frame's U,V.
     pub anchor: [f64; 2],
     pub lines: Vec<crate::modeling::GuideLine>,
+}
+
+/// Maximum angle between the outward normals of coplanar profile faces.
+pub(super) const COPLANAR_ANGLE_RAD: f64 = 1e-6;
+/// Maximum distance of a face plane from the first selected face plane.
+pub(super) const COPLANAR_DISTANCE_MM: f64 = 1e-4;
+
+/// Check that all faces share one plane and one outward side.
+pub(super) fn ensure_coplanar(picks: &[ProfileFacePick]) -> Result<(), String> {
+    let Some(first) = picks.first() else {
+        return Ok(());
+    };
+    let n = first.frame.n;
+    for (index, pick) in picks.iter().enumerate().skip(1) {
+        let m = pick.frame.n;
+        let cross = [
+            n[1] * m[2] - n[2] * m[1],
+            n[2] * m[0] - n[0] * m[2],
+            n[0] * m[1] - n[1] * m[0],
+        ];
+        let angle = dot(cross, cross).sqrt().atan2(dot(n, m));
+        let offset = dot(sub(pick.frame.origin, first.frame.origin), n);
+        let count = picks.len();
+        let face = index + 1;
+        if std::f64::consts::PI - angle <= COPLANAR_ANGLE_RAD {
+            return Err(format!(
+                "The {count} selected faces are not usable together: face {face} faces the opposite side of face 1; one Extrude / Revolve needs coplanar faces with the same outward side. Command/Control-click a face to remove it, or run the command per face"
+            ));
+        }
+        if angle > COPLANAR_ANGLE_RAD {
+            return Err(format!(
+                "The {count} selected faces are not coplanar: face {face} is tilted {:.3}° from face 1. One Extrude / Revolve needs faces in one plane. Command/Control-click a face to remove it, or run the command per face",
+                angle.to_degrees()
+            ));
+        }
+        if offset.abs() > COPLANAR_DISTANCE_MM {
+            return Err(format!(
+                "The {count} selected faces are not coplanar: face {face} is parallel but {:.3} mm from the plane of face 1. One Extrude / Revolve needs faces in one plane. Command/Control-click a face to remove it, or run the command per face",
+                offset.abs()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -119,19 +180,51 @@ pub(super) fn capture_hit(
 }
 
 impl SketchEditor {
-    /// A planar face selected in the viewer before Extrude / Revolve.
-    pub(super) fn adopt_preselected_profile_face(&mut self, document: &Document, revision: u64) {
+    /// Planar faces selected in the viewer before Extrude / Revolve: one
+    /// face, or a Command/Control-click set. Returns a notice when the
+    /// selection cannot start the operation as it is: a face that cannot be
+    /// captured refuses the whole set (nothing is used silently), and a
+    /// non-coplanar set is kept for correction but does not open editing.
+    pub(super) fn adopt_preselected_profile_faces(
+        &mut self,
+        document: &Document,
+        revision: u64,
+    ) -> Option<String> {
         self.profile_faces.clear();
-        let Some(hit) = self.selected_face_hit() else {
-            return;
-        };
-        let Some(scene) = self.display_scene.clone() else {
-            return;
-        };
-        match capture_hit(document, revision, &scene, &hit) {
-            Ok(pick) => self.profile_faces.push(pick),
-            Err(error) => self.message = error,
+        let hits = self.solid.selected_faces();
+        if hits.is_empty() {
+            return None;
         }
+        let Some(scene) = self.display_scene.clone() else {
+            return Some("Wait for the current model before using the selected faces".into());
+        };
+        let count = hits.len();
+        let mut picks = Vec::with_capacity(count);
+        for (index, hit) in hits.iter().enumerate() {
+            match capture_hit(document, revision, &scene, hit) {
+                Ok(pick) => picks.push(pick),
+                Err(error) if count == 1 => return Some(error),
+                Err(error) => {
+                    return Some(format!(
+                        "Selected face {} of {count}: {error}. The face selection was not used; Command/Control-click to remove that face",
+                        index + 1
+                    ));
+                }
+            }
+        }
+        self.profile_faces = picks;
+        ensure_coplanar(&self.profile_faces).err()
+    }
+    /// New Sketch and Create Engraving attach to one face; a multi-face
+    /// selection is refused instead of picking one of the faces.
+    pub(super) fn ensure_single_selected_face(&self) -> Result<(), String> {
+        let count = self.solid.selected_faces().len();
+        if count > 1 {
+            return Err(format!(
+                "{count} faces are selected; a sketch attaches to one planar face. Click one face without Command/Control, then try again"
+            ));
+        }
+        Ok(())
     }
     /// Current, unique face inputs ready for a face-profile operation.
     pub(super) fn profile_face_inputs(&self, revision: u64) -> Result<Vec<FaceInput>, String> {
@@ -145,6 +238,7 @@ impl SketchEditor {
         {
             return Err("The selected faces are stale; select them again".into());
         }
+        ensure_coplanar(&self.profile_faces)?;
         Ok(self.profile_faces.iter().map(|p| p.face.clone()).collect())
     }
     /// Display guide of the first face: arrow start, outward normal and its
@@ -284,12 +378,16 @@ mod tests {
 
     /// Two 30 x 30 x 10 boxes at x = 0 and x = 65 with a current native scene.
     fn fixture() -> (Session, SceneFeed, SketchEditor) {
+        fixture_with_heights([10., 10.])
+    }
+    /// Two 30 x 30 boxes at x = 0 and x = 65 with the given heights.
+    fn fixture_with_heights(heights: [f64; 2]) -> (Session, SceneFeed, SketchEditor) {
         let mut session = Session::new(Document::new("Face profiles").unwrap()).unwrap();
-        for i in 0..2 {
+        for (i, height) in heights.into_iter().enumerate() {
             let request = PrimitiveRequest::new(
                 format!("Box {}", i + 1),
                 PrimitiveParameters::Box {
-                    size: [length(30.), length(30.), length(10.)],
+                    size: [length(30.), length(30.), length(height)],
                     frame: PrimitiveFrame {
                         origin: [length(i as f64 * 65.), length(0.), length(0.)],
                         ..Default::default()
@@ -358,9 +456,19 @@ mod tests {
     }
     /// Select a face in the viewer outside any tool (real canvas picking).
     fn preselect(editor: &mut SketchEditor, session: &mut Session, feed: &SceneFeed, p: [f64; 3]) {
+        preselect_with(editor, session, feed, p, egui::Modifiers::NONE);
+    }
+    /// Viewer click with modifiers (Command/Control toggles faces, CAD-152).
+    fn preselect_with(
+        editor: &mut SketchEditor,
+        session: &mut Session,
+        feed: &SceneFeed,
+        p: [f64; 3],
+        modifiers: egui::Modifiers,
+    ) {
         let ctx = egui::Context::default();
         let pos = screen(editor, p);
-        let [down, up] = press_release(pos, egui::Modifiers::NONE);
+        let [down, up] = press_release(pos, modifiers);
         for events in [vec![], vec![], down, up] {
             ctx.run_ui(raw(events), |ui| {
                 editor.canvas(ui, session, false, feed.visible().cloned(), true)
@@ -430,6 +538,206 @@ mod tests {
             assert_eq!(session.document(), &before);
             assert_eq!(session.revision(), revision);
         }
+    }
+
+    fn preview_and_apply(editor: &mut SketchEditor, session: &mut Session) {
+        editor
+            .preview_model(session, &Default::default(), Channel::Ui)
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        while editor.model.pending() && Instant::now() < until {
+            editor.model.poll(session, &Default::default());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        editor
+            .apply_model(session, &Default::default())
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    fn face_extrusions(session: &Session) -> Vec<EntityId> {
+        session
+            .document()
+            .entities()
+            .filter_map(|e| {
+                model::read_extrude(session.document(), e.id)
+                    .ok()
+                    .filter(|s| s.profile.face().is_some())
+                    .map(|_| e.id)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn command_click_coplanar_faces_open_extrude_and_revolve_and_commit_each_face() {
+        for (tool, modifiers) in [
+            (ModelingTool::Extrude, egui::Modifiers::COMMAND),
+            // egui-winit reports Control on Windows/Linux as ctrl + command;
+            // raw Control on macOS (secondary click) stays a plain click.
+            (
+                ModelingTool::Revolve,
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let (mut session, feed, mut editor) = fixture();
+            let before = session.document().clone();
+            let revision = session.revision();
+            // Two top faces at z = 10 on different bodies: coplanar.
+            preselect(&mut editor, &mut session, &feed, [15., 15., 10.]);
+            preselect_with(&mut editor, &mut session, &feed, [80., 15., 10.], modifiers);
+            assert_eq!(editor.solid.selected_faces().len(), 2, "{tool:?}");
+            activate(&mut editor, &session, &feed, tool);
+            assert!(editor.model_active(), "{tool:?}: {}", editor.message);
+            assert!(!editor.awaiting_model_targets());
+            assert!(
+                editor.message.contains("2 planar face(s)"),
+                "{}",
+                editor.message
+            );
+            assert_eq!(session.revision(), revision);
+            if tool == ModelingTool::Revolve {
+                editor.cancel_model();
+                assert!(editor.profile_faces.is_empty());
+                assert_eq!(session.document(), &before);
+                continue;
+            }
+            match editor.model_request_for_tests(&session) {
+                Some(ModelRequest::Extrude(request)) => {
+                    assert_eq!(request.outputs.len(), 2);
+                    assert!(request.outputs.iter().all(|o| o.face.is_some()));
+                }
+                other => panic!("{other:?}"),
+            }
+            // One transaction; each face's native volume equals extruding it alone.
+            preview_and_apply(&mut editor, &mut session);
+            assert_eq!(session.revision(), revision + 1);
+            let compiled = multicad_model::Compiler::default()
+                .compile(session.document(), session.revision())
+                .unwrap();
+            let features = face_extrusions(&session);
+            assert_eq!(features.len(), 2);
+            let mut min_x: Vec<f64> = features
+                .iter()
+                .map(|feature| {
+                    let shape = &compiled.snapshot().shapes[feature];
+                    assert!((shape.volume_mm3 - 30. * 30. * 10.).abs() < 1e-4);
+                    assert!((shape.bounds.min[2] - 10.).abs() < 1e-6);
+                    assert!((shape.bounds.max[2] - 20.).abs() < 1e-6);
+                    shape.bounds.min[0]
+                })
+                .collect();
+            min_x.sort_by(f64::total_cmp);
+            assert!((min_x[0] - 0.).abs() < 1e-6 && (min_x[1] - 65.).abs() < 1e-6);
+            session
+                .undo(session.revision(), Actor::local(Channel::Ui))
+                .unwrap();
+            assert_eq!(session.document(), &before);
+        }
+    }
+
+    #[test]
+    fn non_coplanar_face_set_is_explained_kept_and_correctable_without_source_change() {
+        // Top faces at z = 10 and z = 16: parallel but 6 mm apart.
+        let (mut session, feed, mut editor) = fixture_with_heights([10., 16.]);
+        let before = session.document().clone();
+        let revision = session.revision();
+        preselect(&mut editor, &mut session, &feed, [15., 15., 10.]);
+        preselect_with(
+            &mut editor,
+            &mut session,
+            &feed,
+            [80., 15., 16.],
+            egui::Modifiers::COMMAND,
+        );
+        activate(&mut editor, &session, &feed, ModelingTool::Extrude);
+        assert!(!editor.model_active());
+        assert!(editor.awaiting_model_targets(), "{}", editor.message);
+        assert!(
+            editor.message.contains("not coplanar"),
+            "{}",
+            editor.message
+        );
+        assert!(editor.message.contains("6.000 mm"), "{}", editor.message);
+        // Nothing is dropped: both faces stay listed for correction.
+        assert_eq!(editor.profile_faces.len(), 2);
+        // "Use selected targets" repeats the explanation and does not open.
+        editor.advance_model_targets(&session, &Default::default(), &feed, true);
+        assert!(!editor.model_active());
+        assert!(
+            editor.message.contains("not coplanar"),
+            "{}",
+            editor.message
+        );
+        // Control-click removes the off-plane face; then editing opens.
+        acquire_click(&mut editor, &session, &feed, [80., 15., 16.], true);
+        assert_eq!(editor.profile_faces.len(), 1, "{}", editor.message);
+        editor.advance_model_targets(&session, &Default::default(), &feed, true);
+        assert!(editor.model_active(), "{}", editor.message);
+        editor.cancel_model();
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
+    }
+
+    #[test]
+    fn coplanarity_refuses_tilted_and_opposite_faces_within_documented_tolerance() {
+        let (mut session, feed, mut editor) = fixture();
+        preselect(&mut editor, &mut session, &feed, [15., 15., 10.]);
+        let hit = editor.selected_face_hit().unwrap();
+        let scene = feed.visible().cloned().unwrap();
+        let pick = capture_hit(session.document(), session.revision(), &scene, &hit).unwrap();
+        let mut moved = pick.clone();
+        // Sliding inside the plane keeps it coplanar; a tiny offset is tolerated.
+        moved.frame.origin = [
+            pick.frame.origin[0] + 40.,
+            pick.frame.origin[1] - 3.,
+            pick.frame.origin[2] + COPLANAR_DISTANCE_MM * 0.5,
+        ];
+        assert!(ensure_coplanar(&[pick.clone(), moved.clone()]).is_ok());
+        moved.frame.origin[2] = pick.frame.origin[2] + COPLANAR_DISTANCE_MM * 2.;
+        let error = ensure_coplanar(&[pick.clone(), moved]).unwrap_err();
+        assert!(error.contains("mm from the plane"), "{error}");
+        let mut tilted = pick.clone();
+        let a: f64 = 0.01;
+        tilted.frame.n = [a.sin(), 0., a.cos()];
+        let error = ensure_coplanar(&[pick.clone(), tilted]).unwrap_err();
+        assert!(error.contains("tilted 0.573°"), "{error}");
+        let mut opposite = pick.clone();
+        opposite.frame.n = pick.frame.n.map(|v| -v);
+        let error = ensure_coplanar(&[pick.clone(), opposite]).unwrap_err();
+        assert!(error.contains("opposite side"), "{error}");
+    }
+
+    #[test]
+    fn new_sketch_and_engraving_refuse_a_multi_face_selection_without_source_change() {
+        let (mut session, feed, mut editor) = fixture();
+        preselect(&mut editor, &mut session, &feed, [15., 15., 10.]);
+        preselect_with(
+            &mut editor,
+            &mut session,
+            &feed,
+            [80., 15., 10.],
+            egui::Modifiers::COMMAND,
+        );
+        let before = session.document().clone();
+        let error = editor
+            .begin_from_selection(&mut session, Channel::Ui)
+            .unwrap_err();
+        assert!(error.contains("2 faces are selected"), "{error}");
+        let error = editor
+            .begin_engraving(&mut session, Channel::Ui)
+            .unwrap_err();
+        assert!(error.contains("2 faces are selected"), "{error}");
+        assert_eq!(session.document(), &before);
+        // Escape (cancel) clears the face set; a single face sketches again.
+        editor.cancel();
+        assert!(editor.solid.selected_faces().is_empty());
+        preselect(&mut editor, &mut session, &feed, [15., 15., 10.]);
+        editor
+            .begin_from_selection(&mut session, Channel::Ui)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(editor.editing);
     }
 
     #[test]
