@@ -28,6 +28,8 @@ The native provider supports:
 
 - [multi-page PDF and per-page drawing DXF](drawing-exports.md) from checked drawing pages.
 
+Export → Print builds a single [3MF print package](print-packaging.md) from chosen Parts and their removable aids, without a saved export set.
+
 Other STEP units, STEP product-name attributes, preserved STEP assembly hierarchies, and GLB in units other than meters report Unsupported. Any Empty or Unsupported recipe blocks the whole Run. A preview never substitutes another scope or format.
 
 ## Mesh output
