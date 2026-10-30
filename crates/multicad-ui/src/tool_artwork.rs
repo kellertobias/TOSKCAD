@@ -85,7 +85,7 @@ pub static SOURCES: &[(&str, &str)] = artwork![
 pub fn artwork_id(mode: Mode, tool: &str) -> Option<&'static str> {
     Some(match (mode, tool) {
         (_, "apply") => "apply-rebuild",
-        (_, "discard" | "page-discard" | "export-set-discard") => "discard",
+        (_, "discard" | "abort-sketch" | "page-discard" | "export-set-discard") => "discard",
         (Mode::Parameters, "preview") => "preview-model",
         (_, "preview" | "export-preview") => "preview",
         (_, "finish-sketch" | "page-apply") => "finish",
@@ -157,6 +157,7 @@ pub fn description(tool: &str) -> Option<&'static str> {
         "discard" | "page-discard" | "export-set-discard" => {
             "Discard the pending edits; the canonical document stays unchanged."
         }
+        "abort-sketch" => "Abort the sketch session without applying its pending edits.",
         "boolean-join" => "Boolean Join: unite the tool bodies with each target body.",
         "boolean-subtract" => "Boolean Subtract: remove the tool bodies from each target body.",
         "boolean-intersect" => {
@@ -257,6 +258,7 @@ mod tests {
         for mode in Mode::ALL {
             assert_eq!(artwork_id(mode, "apply"), Some("apply-rebuild"));
             assert_eq!(artwork_id(mode, "discard"), Some("discard"));
+            assert_eq!(artwork_id(mode, "abort-sketch"), Some("discard"));
             assert_eq!(artwork_id(mode, "delete"), Some("erase"));
             assert_eq!(artwork_id(mode, "finish-sketch"), Some("finish"));
         }

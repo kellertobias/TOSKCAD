@@ -119,6 +119,45 @@ pub fn show(
     enabled: impl Fn(Command) -> bool,
     hint: impl Fn(Command, &str) -> String,
 ) -> Option<Command> {
+    show_selectable(ui, registry, mode, tab, editing, enabled, hint, |_| false)
+}
+/// Glyph for a registered tool: reviewed catalog artwork when bound,
+/// otherwise its retained vector symbol.
+pub fn tool_glyph(mode: Mode, id: &str, fallback: Icon) -> icons::Glyph {
+    crate::tool_artwork::tool_artwork(mode, id)
+        .map(|(art, svg)| icons::Glyph::Art(art, svg))
+        .unwrap_or(icons::Glyph::Vector(fallback))
+}
+fn menu_memory(mode: Mode, label: &str) -> egui::Id {
+    egui::Id::new(("ribbon-menu-choice", mode.title(), label))
+}
+/// The tool a menu button currently represents: the last choice made from
+/// that menu while it is still offered, otherwise the first entry.
+pub fn menu_choice(
+    ctx: &egui::Context,
+    mode: Mode,
+    label: &str,
+    tools: &[&'static str],
+) -> &'static str {
+    let remembered = ctx.data(|data| data.get_temp::<&'static str>(menu_memory(mode, label)));
+    remembered
+        .and_then(|id| tools.iter().copied().find(|tool| *tool == id))
+        .or_else(|| tools.first().copied())
+        .unwrap_or_default()
+}
+/// Ribbon with per-command selected state (for example the active drawing
+/// tool or construction mode).
+#[allow(clippy::too_many_arguments)]
+pub fn show_selectable(
+    ui: &mut egui::Ui,
+    registry: &Registry,
+    mode: Mode,
+    tab: &RibbonTab,
+    editing: bool,
+    enabled: impl Fn(Command) -> bool,
+    hint: impl Fn(Command, &str) -> String,
+    selected: impl Fn(Command) -> bool,
+) -> Option<Command> {
     let visible = |id: &&str| {
         registry.tool(id).is_some_and(|tool| {
             implemented(tool.action) && (mode != Mode::Sketch || editing || *id == "new-sketch")
@@ -186,12 +225,7 @@ pub fn show(
                                         let tool = registry.tool(id).expect("catalog entry");
                                         let response = ui
                                             .add_enabled_ui(enabled(tool.action), |ui| {
-                                                let glyph =
-                                                    crate::tool_artwork::tool_artwork(mode, id)
-                                                        .map(|(art, svg)| {
-                                                            icons::Glyph::Art(art, svg)
-                                                        })
-                                                        .unwrap_or(icons::Glyph::Vector(tool.icon));
+                                                let glyph = tool_glyph(mode, id, tool.icon);
                                                 let mut text = hint(tool.action, tool.label);
                                                 if let Some(more) =
                                                     crate::tool_artwork::description(id)
@@ -199,7 +233,11 @@ pub fn show(
                                                     text = format!("{text}\n{more}");
                                                 }
                                                 icons::tool_glyph(
-                                                    ui, glyph, tool.label, &text, false,
+                                                    ui,
+                                                    glyph,
+                                                    tool.label,
+                                                    &text,
+                                                    selected(tool.action),
                                                 )
                                             })
                                             .inner;
@@ -214,11 +252,22 @@ pub fn show(
                                         }
                                     }
                                     Entry::Menu { label, icon, tools } => {
-                                        let response = icons::tool_with_hint(
+                                        let choice = menu_choice(ui.ctx(), mode, label, tools);
+                                        let glyph = registry
+                                            .tool(choice)
+                                            .map(|tool| tool_glyph(mode, choice, tool.icon))
+                                            .filter(|glyph| matches!(glyph, icons::Glyph::Art(..)))
+                                            .unwrap_or(icons::Glyph::Vector(*icon));
+                                        let response = icons::tool_glyph(
                                             ui,
-                                            *icon,
+                                            glyph,
                                             label,
                                             &format!("{label} · choose a tool"),
+                                            tools.iter().any(|id| {
+                                                registry
+                                                    .tool(id)
+                                                    .is_some_and(|tool| selected(tool.action))
+                                            }),
                                         );
                                         let rect = response.rect;
                                         let center = rect.right_top() + egui::vec2(-9., 12.);
@@ -235,15 +284,28 @@ pub fn show(
                                             for id in tools {
                                                 let tool =
                                                     registry.tool(id).expect("menu catalog entry");
+                                                let mut text = hint(tool.action, tool.label);
+                                                if let Some(more) =
+                                                    crate::tool_artwork::description(id)
+                                                {
+                                                    text = format!("{text}\n{more}");
+                                                }
                                                 if ui
                                                     .add_enabled(
                                                         enabled(tool.action),
                                                         egui::Button::new(tool.label),
                                                     )
-                                                    .on_hover_text(hint(tool.action, tool.label))
+                                                    .on_hover_text(text)
                                                     .clicked()
                                                 {
                                                     action = Some(tool.action);
+                                                    let id: &'static str = id;
+                                                    ui.ctx().data_mut(|data| {
+                                                        data.insert_temp(
+                                                            menu_memory(mode, label),
+                                                            id,
+                                                        )
+                                                    });
                                                     ui.close();
                                                 }
                                             }
@@ -392,6 +454,89 @@ mod tests {
         assert!((center.x - 600.).abs() < 16.);
         assert!((center.y - 62.).abs() < 16.);
         output.drop_without_applying_deltas();
+    }
+    fn textured_meshes(output: &egui::FullOutput) -> usize {
+        output
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                    if mesh.texture_id != egui::TextureId::default())
+            })
+            .count()
+    }
+    #[test]
+    fn reviewed_artwork_is_painted_as_tinted_textures_with_state_colors() {
+        let registry = Registry::default();
+        let tab = &registry.workspace(Mode::Parameters).tabs[0];
+        let ctx = egui::Context::default();
+        let mut draw = |ui: &mut egui::Ui| {
+            show_selectable(
+                ui,
+                &registry,
+                Mode::Parameters,
+                tab,
+                false,
+                |command| command != Command::Discard,
+                |_, label| label.into(),
+                |command| command == Command::Apply,
+            );
+        };
+        let output = frame(&ctx, vec![], &mut draw);
+        // Apply, Discard and Preview use catalog artwork; Undo/Redo keep
+        // their retained vector motifs.
+        assert_eq!(textured_meshes(&output), 3);
+        let tints: Vec<egui::Color32> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                    mesh.vertices.first().map(|v| v.color)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(tints.contains(&icons::TOOL_SELECTED), "selected Apply");
+        // egui additionally fades disabled widgets; the tint stays neutral grey.
+        assert!(
+            tints
+                .iter()
+                .any(|c| c.r() == c.g() && c.g() == c.b() && c.r() <= icons::TOOL_DISABLED.r()),
+            "disabled Discard: {tints:?}"
+        );
+        assert!(tints.contains(&icons::TOOL_COLOR), "enabled Preview");
+        output.drop_without_applying_deltas();
+        let finish = crate::tool_artwork::artwork("finish").unwrap();
+        let glyph = icons::Glyph::Art("finish", finish);
+        assert_eq!(
+            icons::glyph_color(glyph, icons::ToolState::Hovered),
+            egui::Color32::from_rgb(0x24, 0xaa, 0x60)
+        );
+        assert_eq!(
+            icons::glyph_color(glyph, icons::ToolState::Disabled),
+            icons::TOOL_DISABLED
+        );
+    }
+    #[test]
+    fn menu_button_represents_the_last_offered_choice() {
+        let ctx = egui::Context::default();
+        let tools = ["boolean-join", "boolean-subtract", "boolean-intersect"];
+        assert_eq!(
+            menu_choice(&ctx, Mode::Model, "Boolean", &tools),
+            "boolean-join"
+        );
+        ctx.data_mut(|data| {
+            data.insert_temp(menu_memory(Mode::Model, "Boolean"), "boolean-intersect")
+        });
+        assert_eq!(
+            menu_choice(&ctx, Mode::Model, "Boolean", &tools),
+            "boolean-intersect"
+        );
+        assert_eq!(
+            menu_choice(&ctx, Mode::Model, "Boolean", &tools[..2]),
+            "boolean-join",
+            "a choice no longer offered falls back to the first entry"
+        );
     }
     #[test]
     fn additional_catalog_tools_are_not_lost_by_common_grouping() {

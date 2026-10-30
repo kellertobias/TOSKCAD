@@ -1641,14 +1641,20 @@ impl Application {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let context = ui.ctx().clone();
-                action = crate::ribbon_ui::show(
+                let sketch = &self.current().sketch;
+                action = crate::ribbon_ui::show_selectable(
                     ui,
                     &self.registry,
                     self.mode,
                     &workspace.tabs[self.tab],
-                    self.current().sketch.editing,
+                    sketch.editing,
                     |command| self.enabled(command),
                     |command, label| self.command_help(command, label, &context),
+                    |command| match command {
+                        Command::Draw(tool) => sketch.editing && sketch.tool == Some(tool),
+                        Command::Construction => sketch.editing && sketch.construction(),
+                        _ => false,
+                    },
                 );
             });
         if let Some(action) = action {
