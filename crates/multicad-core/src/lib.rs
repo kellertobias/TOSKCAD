@@ -19,6 +19,7 @@ pub mod parameters;
 pub mod project_file;
 pub mod references;
 pub mod sketch;
+pub mod sketch_corner;
 pub mod sketch_draw;
 pub mod sketch_external;
 pub mod sketch_import;
