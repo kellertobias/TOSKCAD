@@ -1,4 +1,4 @@
 <svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
   <title>Rectangle: center</title>
-  <rect x="10" y="16" width="44" height="32"/><path d="M29 32h6M32 29v6" /><path d="m32 32 22 16" stroke-dasharray="2 5"/><circle cx="54" cy="48" r="2.6" fill="currentColor" stroke="none"/>
+  <rect x="10" y="16" width="44" height="32"/><path d="M27 32h10M32 27v10" /><path d="m32 32 22 16" stroke-dasharray="2 5"/><circle cx="54" cy="48" r="4.5" fill="currentColor" stroke="none"/>
 </svg>
