@@ -1807,6 +1807,27 @@ impl SketchEditor {
         self.message = "Sketch saved in the document. Select it to inspect or reopen.".into();
         Ok(())
     }
+    /// Leave sketch editing and drop only what is not yet in the document:
+    /// the active tool, unapplied constraint values, previews and pending
+    /// controls. Committed sketch edits stay; Undo removes them.
+    pub fn abort(&mut self) -> Result<(), String> {
+        if !self.editing && !self.picking {
+            return Err("No sketch is being edited".into());
+        }
+        self.cancel();
+        self.constraints.discard();
+        self.repair.cancel();
+        self.repair_set.discard();
+        self.trim_worker.cancel();
+        if self.has_pending_edits() {
+            return Err("Apply or discard the pending sketch controls before aborting".into());
+        }
+        self.editing = false;
+        self.moving = false;
+        self.message =
+            "Sketch editing aborted · unapplied changes discarded, committed edits kept".into();
+        Ok(())
+    }
     pub fn set_tool(&mut self, tool: DrawTool) -> Result<(), String> {
         if self.has_pending_edits() {
             return Err("Apply or discard pending edits before drawing".into());

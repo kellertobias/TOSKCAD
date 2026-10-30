@@ -394,6 +394,7 @@ impl Application {
                     | Command::Dimension
                     | Command::External(_)
                     | Command::FinishSketch
+                    | Command::AbortSketch
                     | Command::FinishCurve
                     | Command::Delete
                     | Command::Extension("materials")
@@ -1000,6 +1001,14 @@ impl Application {
                 self.mode = Mode::Model;
                 self.tab = 0;
             }
+            Command::AbortSketch => {
+                if self.mode != Mode::Sketch {
+                    return Err("No sketch is being edited".into());
+                }
+                self.current_mut().sketch.abort()?;
+                self.mode = Mode::Model;
+                self.tab = 0;
+            }
             Command::FinishCurve => {
                 if !self.enabled(command) {
                     return Err("Place at least four spline control poles before finishing".into());
@@ -1241,6 +1250,10 @@ impl Application {
             }
             Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
             Command::NewSketch => !pending(),
+            Command::AbortSketch => {
+                self.mode == Mode::Sketch
+                    && (self.current().sketch.editing || self.current().sketch.picking)
+            }
             Command::ImportArtwork => !pending() && !self.file_busy(),
             Command::FinishCurve => {
                 self.mode == Mode::Sketch && !pending() && self.current().sketch.can_finish_spline()
@@ -2558,6 +2571,55 @@ mod tests {
             assert_eq!(app.current().session.document(), &before);
             assert_eq!(app.current().session.revision(), revision);
         }
+    }
+    #[test]
+    fn model_new_sketch_picks_a_plane_and_abort_leaves_source_and_history_unchanged() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.mode = Mode::Model;
+        let source = app.current().session.document().clone();
+        let revision = app.current().session.revision();
+        assert!(!app.enabled(Command::AbortSketch));
+        app.invoke(Command::NewSketch, &[], Channel::Ui).unwrap();
+        assert_eq!(app.mode, Mode::Sketch);
+        assert!(app.current().sketch.picking);
+        assert!(!app.current().sketch.editing);
+        assert!(app.enabled(Command::AbortSketch));
+        app.invoke(Command::AbortSketch, &[], Channel::Ui).unwrap();
+        assert_eq!(app.mode, Mode::Model);
+        assert!(!app.current().sketch.picking);
+        assert_eq!(app.current().session.document(), &source);
+        assert_eq!(app.current().session.revision(), revision);
+        assert!(app.invoke(Command::AbortSketch, &[], Channel::Ui).is_err());
+    }
+    #[test]
+    fn abort_discards_the_active_tool_but_keeps_committed_sketch_edits() {
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        app.invoke(
+            Command::Draw(DrawTool::Circle),
+            &["0", "0", "5"],
+            Channel::CommandLine,
+        )
+        .unwrap();
+        app.current_mut().sketch.set_tool(DrawTool::Line).unwrap();
+        let committed = app.current().session.document().clone();
+        let revision = app.current().session.revision();
+        let undo = app.current().session.can_undo();
+        app.invoke(Command::AbortSketch, &[], Channel::Ui).unwrap();
+        assert_eq!(app.mode, Mode::Model);
+        assert!(!app.current().sketch.editing);
+        assert_eq!(app.current().sketch.tool, None);
+        assert_eq!(app.current().session.document(), &committed);
+        assert_eq!(app.current().session.revision(), revision);
+        assert_eq!(app.current().session.can_undo(), undo);
+        // Finish keeps its meaning: same exit, same committed source.
+        app.invoke(Command::NewSketch, &["xz"], Channel::Ui)
+            .unwrap();
+        let revision = app.current().session.revision();
+        app.invoke(Command::FinishSketch, &[], Channel::Ui).unwrap();
+        assert_eq!(app.mode, Mode::Model);
+        assert_eq!(app.current().session.revision(), revision);
     }
     #[test]
     fn drawing_and_construction_commands_require_an_open_idle_sketch() {

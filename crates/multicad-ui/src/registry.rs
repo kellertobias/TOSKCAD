@@ -67,6 +67,7 @@ pub enum Command {
     Construction,
     Dimension,
     FinishSketch,
+    AbortSketch,
     FinishCurve,
     Drawing(crate::drawings::DrawingTool),
     Export(crate::exchange::ExportTool),
@@ -241,6 +242,13 @@ impl Default for Registry {
                 aliases: &["finish"],
             },
             Tool {
+                id: "abort-sketch",
+                label: "Abort",
+                icon: Icon::Undo,
+                action: Command::AbortSketch,
+                aliases: &["abort"],
+            },
+            Tool {
                 id: "finish-curve",
                 label: "Finish curve",
                 icon: Icon::Spline,
@@ -408,7 +416,6 @@ impl Default for Registry {
                             "construction",
                             "dimension",
                             "delete",
-                            "finish-sketch",
                         ],
                     ),
                     RibbonTab {
@@ -455,7 +462,7 @@ impl Default for Registry {
                                 )
                             })
                             .map(ModelingTool::id)
-                            .chain(["symbol"])
+                            .chain(["new-sketch", "symbol"])
                             .collect(),
                         requires_active_sketch: false,
                     },
