@@ -1334,6 +1334,7 @@ impl ModelToolController {
 
 mod context;
 mod edge_treatment;
+mod face_inputs;
 mod groups;
 mod legacy;
 mod operation_interaction;
@@ -1350,6 +1351,8 @@ mod tests;
 #[cfg(test)]
 mod placement_tests;
 
+#[cfg(test)]
+mod face_entry_tests;
 #[cfg(test)]
 mod gizmo_entry_tests;
 

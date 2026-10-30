@@ -305,6 +305,11 @@ impl SketchEditor {
             })
             .collect();
         self.whole_sketch = (!self.editing && sketches.len() == 1).then(|| sketches[0]);
+        if matches!(tool, ModelingTool::Extrude | ModelingTool::Revolve) && sketches.is_empty() {
+            self.adopt_preselected_profile_face(session.document(), session.revision());
+        } else {
+            self.profile_faces.clear();
+        }
         self.finish()?;
         let acquisition = Acquisition {
             tool,
@@ -323,9 +328,32 @@ impl SketchEditor {
             started: false,
         };
         let before = self.tree_selection.len();
+        // The Part owning a preselected planar face is that face's context,
+        // not an extra unused input.
+        let face_owners: BTreeSet<EntityId> = self
+            .profile_faces
+            .iter()
+            .flat_map(|pick| {
+                let source = pick.face.source;
+                session
+                    .document()
+                    .entities()
+                    .filter_map(move |e| match &e.data {
+                        EntityData::Part { features, .. } if features.contains(&source) => {
+                            Some(e.id)
+                        }
+                        _ => None,
+                    })
+            })
+            .collect();
+        let owned = self
+            .tree_selection
+            .iter()
+            .filter(|id| face_owners.contains(id))
+            .count();
         self.tree_selection
             .retain(|id| acquisition.accepts(session.document(), *id));
-        let incompatible = before - self.tree_selection.len();
+        let incompatible = (before - self.tree_selection.len()).saturating_sub(owned);
         let mut notice = None;
         if acquisition.profiles() {
             if self.tree_selection.len() > 1 {
@@ -350,9 +378,8 @@ impl SketchEditor {
             }
             if incompatible > 0 && notice.is_none() {
                 notice = Some(format!(
-                    "{} · {incompatible} selected item(s) are not sketch profiles and were not used; planar model faces are not a supported {} input",
+                    "{} · {incompatible} selected item(s) are neither sketch profiles nor planar model faces and were not used",
                     tool.label(),
-                    tool.label()
                 ));
             }
         } else {
@@ -482,9 +509,10 @@ impl SketchEditor {
         let enough =
             self.tree_selection.len() >= a.minimum() && self.tree_selection.len() <= a.maximum();
         let profiles_ready = a.profiles()
-            && self
+            && (self
                 .profile_inputs(session.document(), session.revision())
-                .is_ok();
+                .is_ok()
+                || self.profile_face_inputs(session.revision()).is_ok());
         let ready = if a.profiles() {
             confirm && profiles_ready
         } else {
@@ -594,7 +622,13 @@ impl SketchEditor {
             return false;
         }
         ui.strong(format!("{} · select targets", a.tool.label()));
-        ui.label(if a.tool==ModelingTool::EdgeTreatment {"Select one Part definition in the tree or viewer, then its native edges. Linked occurrences follow; Instance-only treatment is unsupported."} else if a.profiles() { "Select a sketch in the tree, then choose one or more closed areas below or in the viewer." } else { "Select objects in the tree or viewer. Shift-click adds or removes a target." });
+        ui.label(if a.tool==ModelingTool::EdgeTreatment {"Select one Part definition in the tree or viewer, then its native edges. Linked occurrences follow; Instance-only treatment is unsupported."} else if a.profiles() { "Select a sketch in the tree, then choose one or more closed areas below or in the viewer. Or click planar model faces in the viewer (Shift, Command or Control adds)." } else { "Select objects in the tree or viewer. Shift-click adds or removes a target." });
+        if a.profiles() && !self.profile_faces.is_empty() {
+            ui.small(format!(
+                "{} planar face(s) selected as profiles",
+                self.profile_faces.len()
+            ));
+        }
         ui.small(format!("{} selected", self.tree_selection.len()));
         let profiles = a.profiles();
         if profiles && let Some(id) = self.selected {
@@ -617,6 +651,7 @@ impl SketchEditor {
         let ready = if profiles {
             self.profile_inputs(session.document(), session.revision())
                 .is_ok()
+                || self.profile_face_inputs(session.revision()).is_ok()
         } else {
             enough && feed.is_current(session.document().id(), session.revision())
         };
@@ -662,6 +697,19 @@ impl SketchEditor {
             return;
         };
         let modifiers = crate::selection_input::click_modifiers(ui, response);
+        if a.profiles() && self.selected.is_none() {
+            let toggle = modifiers.shift || modifiers.command || modifiers.ctrl;
+            if let Some(scene) = feed
+                .visible()
+                .filter(|_| feed.is_current(session.document().id(), session.revision()))
+                .cloned()
+            {
+                self.pick_profile_face(session, &scene, rect, pointer, toggle);
+            } else {
+                self.message = "Wait for current native geometry before selecting faces".into();
+            }
+            return;
+        }
         if a.profiles() {
             if let Some(id) = self.selected
                 && let Ok((_, frame, _)) =

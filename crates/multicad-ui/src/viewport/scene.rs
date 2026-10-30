@@ -321,6 +321,60 @@ impl Geometry {
     pub fn edges(&self) -> &[DisplayEdge] {
         &self.edges
     }
+    /// Display-only outward normal (unit) and area centroid of one source
+    /// face, from the consistently outward-oriented tessellation, in
+    /// producer-local coordinates. Never manufacturing geometry.
+    pub fn face_outward(&self, ordinal: u32) -> Option<(Point, Point)> {
+        let mut normal = [0.; 3];
+        let mut centroid = [0.; 3];
+        let mut area = 0.;
+        for (triangle, face) in self.triangle_faces.iter().enumerate() {
+            if *face != ordinal {
+                continue;
+            }
+            let [a, b, c] =
+                std::array::from_fn(|i| self.vertices[self.indices[triangle * 3 + i] as usize]);
+            let ab: Point = std::array::from_fn(|i| b[i] - a[i]);
+            let ac: Point = std::array::from_fn(|i| c[i] - a[i]);
+            let n = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let twice = n.iter().map(|v| v * v).sum::<f64>().sqrt();
+            for i in 0..3 {
+                normal[i] += n[i];
+                centroid[i] += (a[i] + b[i] + c[i]) / 3. * twice;
+            }
+            area += twice;
+        }
+        let length = normal.iter().map(|v| v * v).sum::<f64>().sqrt();
+        (area > 0. && length > 1e-12)
+            .then(|| (normal.map(|v| v / length), centroid.map(|v| v / area)))
+    }
+    /// Straight display edges whose two end points are vertices of the
+    /// face's triangles: display-only revolution axis candidates.
+    pub fn face_straight_edges(&self, ordinal: u32) -> Vec<[Point; 2]> {
+        let corners: Vec<Point> = self
+            .triangle_faces
+            .iter()
+            .enumerate()
+            .filter(|(_, face)| **face == ordinal)
+            .flat_map(|(triangle, _)| (0..3).map(move |i| self.indices[triangle * 3 + i] as usize))
+            .map(|index| self.vertices[index])
+            .collect();
+        let on_face = |p: &Point| {
+            corners
+                .iter()
+                .any(|c| (0..3).all(|i| (c[i] - p[i]).abs() <= self.display_error_mm.max(1e-6)))
+        };
+        self.edges
+            .iter()
+            .filter(|edge| edge.points_mm.len() == 2)
+            .filter(|edge| edge.points_mm.iter().all(on_face))
+            .map(|edge| [edge.points_mm[0], edge.points_mm[1]])
+            .collect()
+    }
     pub fn points(&self) -> &[DisplayPoint] {
         &self.points
     }
@@ -1002,6 +1056,10 @@ impl Scene {
             .get(&source)
             .copied()
             .or_else(|| self.geometries.contains_key(&source).then_some(source))
+    }
+    /// Display geometry of one canonical producer (producer-local).
+    pub fn producer_geometry(&self, producer: EntityId) -> Option<&Geometry> {
+        self.geometries.get(&producer).map(|g| g.as_ref())
     }
     /// Local source topology for one canonical geometry producer. Placed
     /// occurrence frames are supplied separately by its instance transform.
