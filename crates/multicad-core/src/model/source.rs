@@ -108,9 +108,10 @@ impl Default for Direction {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Termination {
-    Distance {
-        distance: Dimension,
-    },
+    /// One-sided extents accept a signed nonzero distance measured from the
+    /// configured start plane; negative values reverse the sweep. Two-sided
+    /// ends are positive magnitudes on their named side.
+    Distance { distance: Dimension },
     ToPlane {
         plane: EntityId,
         /// Signed movement of the end plane along its own normal, in the
@@ -353,13 +354,31 @@ impl ExtrudeParameters {
                 "Extrusion taper must be strictly between -90 and 90 degrees",
             ));
         }
-        let sign = if self.direction.reverse { -1. } else { 1. };
-        let direction = [
-            elevation_cos * azimuth_cos * sign,
-            elevation_cos * azimuth_sin * sign,
-            elevation_sin * sign,
-        ];
+        let mut sign = if self.direction.reverse { -1. } else { 1. };
         let extent = match &self.extent {
+            // A one-sided distance is signed relative to the configured start
+            // plane: a negative value sweeps the same profile the same
+            // magnitude along the opposite direction. The Boolean operation,
+            // start offset and taper are independent of that sign.
+            Extent::OneSided {
+                end: Termination::Distance { distance },
+            } => {
+                check_dimension(distance, Unit::Millimeter)?;
+                let value = number(distance, Unit::Millimeter)?;
+                if value == 0. {
+                    return Err(invalid(
+                        "Extrusion distance must be nonzero; a negative distance reverses the sweep",
+                    ));
+                }
+                if value < 0. {
+                    sign = -sign;
+                }
+                ResolvedExtent::OneSided {
+                    end: ResolvedTermination::Distance {
+                        distance_mm: value.abs(),
+                    },
+                }
+            }
             Extent::OneSided { end } => ResolvedExtent::OneSided {
                 end: end.resolve(parameters)?,
             },
@@ -386,6 +405,11 @@ impl ExtrudeParameters {
                 ResolvedExtent::Symmetric { total_mm: total }
             }
         };
+        let direction = [
+            elevation_cos * azimuth_cos * sign,
+            elevation_cos * azimuth_sin * sign,
+            elevation_sin * sign,
+        ];
         Ok(ResolvedExtrudeControls {
             direction,
             start_offset_mm: number(&self.start_offset, Unit::Millimeter)?,

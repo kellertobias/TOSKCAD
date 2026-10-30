@@ -212,7 +212,7 @@ tools! {
         "Solve a sketch and report its state, degrees of freedom, conflicts, solved points, curves, constraints and the exact closed regions (with index and area in mm²) usable by extrude.",
         inspect_sketch;
     "extrude" => Extrude, "Extrude regions", false,
-        "Extrude regions of a sketch (indices from inspect_sketch at the same revision) by a distance. operation new_body creates parts; join, cut and intersect modify target_part. The candidate is evaluated natively before it commits.",
+        "Extrude regions of a sketch (indices from inspect_sketch at the same revision) by a signed nonzero distance; a negative distance extrudes the same magnitude opposite to the sketch normal without changing the operation. operation new_body creates parts; join, cut and intersect modify target_part. The candidate is evaluated natively before it commits.",
         extrude;
     "evaluate_model" => NoArgs, "Evaluate model", true,
         "Evaluate the complete model with the native kernel and report every final part (producing feature, solid count, volume in mm³, bounds in mm) and every placed instance (component, solid count, volume, bounds), plus reference diagnostics. Evaluation failures are returned as structured errors.",
