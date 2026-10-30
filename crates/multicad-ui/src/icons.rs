@@ -1,4 +1,5 @@
 //! Original vector symbols on a consistent 24-point grid. No platform glyphs.
+use crate::svg_icon::SvgIcon;
 use eframe::egui::{self, Color32, Pos2, Stroke, Vec2};
 #[derive(Clone, Copy)]
 pub enum Icon {
@@ -128,8 +129,71 @@ pub fn tool(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     tool_with_hint(ui, icon, label, label)
 }
 pub fn tool_with_hint(ui: &mut egui::Ui, icon: Icon, label: &str, hint: &str) -> egui::Response {
+    tool_glyph(ui, Glyph::Vector(icon), label, hint, false)
+}
+/// A ribbon symbol: a retained vector motif or reviewed catalog artwork.
+#[derive(Clone, Copy)]
+pub enum Glyph {
+    Vector(Icon),
+    Art(&'static str, &'static SvgIcon),
+}
+/// Visual state of a ribbon tool button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolState {
+    Enabled,
+    Disabled,
+    Hovered,
+    Selected,
+}
+pub const TOOL_COLOR: Color32 = Color32::from_rgb(201, 214, 232);
+pub const TOOL_DISABLED: Color32 = Color32::from_gray(91);
+pub const TOOL_HOVER: Color32 = Color32::from_rgb(238, 244, 252);
+pub const TOOL_SELECTED: Color32 = Color32::WHITE;
+/// Symbol tint for a state. Artwork with its own reviewed color (the green
+/// Finish / Apply check) keeps it whenever it is usable.
+pub fn glyph_color(glyph: Glyph, state: ToolState) -> Color32 {
+    if state == ToolState::Disabled {
+        return TOOL_DISABLED;
+    }
+    if let Glyph::Art(_, art) = glyph
+        && let Some([r, g, b]) = art.color
+    {
+        return Color32::from_rgb(r, g, b);
+    }
+    match state {
+        ToolState::Enabled => TOOL_COLOR,
+        ToolState::Hovered => TOOL_HOVER,
+        ToolState::Selected => TOOL_SELECTED,
+        ToolState::Disabled => TOOL_DISABLED,
+    }
+}
+pub fn tool_glyph(
+    ui: &mut egui::Ui,
+    glyph: Glyph,
+    label: &str,
+    hint: &str,
+    selected: bool,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(76.0, 92.0), egui::Sense::click());
-    if response.hovered() {
+    let state = if !ui.is_enabled() {
+        ToolState::Disabled
+    } else if selected {
+        ToolState::Selected
+    } else if response.hovered() {
+        ToolState::Hovered
+    } else {
+        ToolState::Enabled
+    };
+    if selected {
+        ui.painter()
+            .rect_filled(rect.shrink(1.0), 4, Color32::from_rgb(36, 62, 96));
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            4,
+            Stroke::new(1.0, Color32::from_rgb(110, 160, 220)),
+            egui::StrokeKind::Inside,
+        );
+    } else if response.hovered() {
         ui.painter()
             .rect_filled(rect, 3, Color32::from_rgb(42, 51, 65));
     }
@@ -141,33 +205,90 @@ pub fn tool_with_hint(ui: &mut egui::Ui, icon: Icon, label: &str, hint: &str) ->
             egui::StrokeKind::Inside,
         );
     }
-    let color = if ui.is_enabled() {
-        Color32::from_rgb(201, 214, 232)
-    } else {
-        Color32::from_gray(91)
-    };
-    paint_sized(
+    let color = glyph_color(glyph, state);
+    paint_glyph(
         ui,
-        icon,
+        glyph,
         Pos2::new(rect.center().x, rect.top() + rect.height() / 3.0 + 4.0),
         color,
-        24.0,
+        if matches!(glyph, Glyph::Art(..)) {
+            30.0
+        } else {
+            24.0
+        },
     );
+    let text = if state == ToolState::Disabled {
+        TOOL_DISABLED
+    } else {
+        TOOL_COLOR
+    };
     let galley = ui
         .painter()
-        .layout(label.into(), egui::FontId::proportional(11.0), color, 64.0);
+        .layout(label.into(), egui::FontId::proportional(11.0), text, 64.0);
     ui.painter().galley(
         Pos2::new(
             rect.center().x - galley.size().x * 0.5,
             rect.top() + rect.height() * 2.0 / 3.0,
         ),
         galley,
-        color,
+        text,
     );
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, label)
     });
     response.on_hover_text(hint)
+}
+/// Paint a glyph centred at `center` with an edge length of `size` points.
+pub fn paint_glyph(ui: &egui::Ui, glyph: Glyph, center: Pos2, color: Color32, size: f32) {
+    match glyph {
+        Glyph::Vector(icon) => paint_sized(ui, icon, center, color, size),
+        Glyph::Art(id, art) => {
+            let pixels = (size * ui.ctx().pixels_per_point())
+                .round()
+                .clamp(8.0, 256.0) as usize;
+            let texture = artwork_texture(ui.ctx(), id, art, pixels);
+            ui.painter().image(
+                texture.id(),
+                egui::Rect::from_center_size(center, Vec2::splat(size)),
+                egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                color,
+            );
+        }
+    }
+}
+#[derive(Clone, Default)]
+struct ArtworkTextures(std::collections::HashMap<(&'static str, usize), egui::TextureHandle>);
+/// White alpha-mask texture per artwork and pixel size; tinted when painted.
+fn artwork_texture(
+    ctx: &egui::Context,
+    id: &'static str,
+    art: &SvgIcon,
+    pixels: usize,
+) -> egui::TextureHandle {
+    let key = egui::Id::new("multicad-artwork-textures");
+    if let Some(texture) = ctx.data(|data| {
+        data.get_temp::<ArtworkTextures>(key)
+            .and_then(|cache| cache.0.get(&(id, pixels)).cloned())
+    }) {
+        return texture;
+    }
+    let mask = art.rasterize(pixels);
+    let rgba: Vec<u8> = mask
+        .alpha
+        .iter()
+        .flat_map(|alpha| [255, 255, 255, *alpha])
+        .collect();
+    let texture = ctx.load_texture(
+        format!("artwork-{id}-{pixels}"),
+        egui::ColorImage::from_rgba_unmultiplied([mask.size, mask.size], &rgba),
+        egui::TextureOptions::LINEAR,
+    );
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<ArtworkTextures>(key)
+            .0
+            .insert((id, pixels), texture.clone());
+    });
+    texture
 }
 pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color32, size: f32) {
     let p = ui.painter();

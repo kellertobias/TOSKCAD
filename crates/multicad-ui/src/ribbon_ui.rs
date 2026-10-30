@@ -186,11 +186,20 @@ pub fn show(
                                         let tool = registry.tool(id).expect("catalog entry");
                                         let response = ui
                                             .add_enabled_ui(enabled(tool.action), |ui| {
-                                                icons::tool_with_hint(
-                                                    ui,
-                                                    tool.icon,
-                                                    tool.label,
-                                                    &hint(tool.action, tool.label),
+                                                let glyph =
+                                                    crate::tool_artwork::tool_artwork(mode, id)
+                                                        .map(|(art, svg)| {
+                                                            icons::Glyph::Art(art, svg)
+                                                        })
+                                                        .unwrap_or(icons::Glyph::Vector(tool.icon));
+                                                let mut text = hint(tool.action, tool.label);
+                                                if let Some(more) =
+                                                    crate::tool_artwork::description(id)
+                                                {
+                                                    text = format!("{text}\n{more}");
+                                                }
+                                                icons::tool_glyph(
+                                                    ui, glyph, tool.label, &text, false,
                                                 )
                                             })
                                             .inner;
