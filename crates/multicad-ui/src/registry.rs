@@ -532,6 +532,7 @@ impl Default for Registry {
                             "drawing-leader",
                             "drawing-weld",
                             "drawing-table",
+                            "drawing-schedule",
                         ],
                     ),
                     tab(

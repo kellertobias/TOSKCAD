@@ -3,8 +3,10 @@ mod annotations;
 mod canvas;
 mod evaluation;
 mod inspector;
+mod schedules;
 mod views;
 pub use evaluation::{DrawingBackend, DrawingBackendFactory, DrawingReply};
+pub use schedules::ScheduleStatus;
 #[cfg(test)]
 mod tests;
 use crate::{egui, icons::Icon};
@@ -33,6 +35,7 @@ pub enum DrawingTool {
     Leader,
     Weld,
     Table,
+    ScheduleTable,
     DraftLine,
     DraftCircle,
     DraftArc,
@@ -51,7 +54,7 @@ impl DrawingTool {
         Self::Hatch,
         Self::DraftDimension,
     ];
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::NewDocument,
         Self::AddPage,
         Self::Duplicate,
@@ -69,6 +72,7 @@ impl DrawingTool {
         Self::Leader,
         Self::Weld,
         Self::Table,
+        Self::ScheduleTable,
         Self::DraftLine,
         Self::DraftCircle,
         Self::DraftArc,
@@ -94,6 +98,7 @@ impl DrawingTool {
             Self::Leader => "drawing-leader",
             Self::Weld => "drawing-weld",
             Self::Table => "drawing-table",
+            Self::ScheduleTable => "drawing-schedule",
             Self::DraftLine => "draft-line",
             Self::DraftCircle => "draft-circle",
             Self::DraftArc => "draft-arc",
@@ -120,6 +125,7 @@ impl DrawingTool {
             Self::Leader => "Leader",
             Self::Weld => "Weld symbol",
             Self::Table => "Table",
+            Self::ScheduleTable => "Schedule table",
             Self::DraftLine => "Sheet line",
             Self::DraftCircle => "Sheet circle",
             Self::DraftArc => "Sheet arc",
@@ -143,7 +149,7 @@ impl DrawingTool {
             Self::Detail => Icon::Fit,
             Self::Dimension | Self::DraftDimension => Icon::Measure,
             Self::Leader | Self::Weld => Icon::Line,
-            Self::Table => Icon::Grid,
+            Self::Table | Self::ScheduleTable => Icon::Grid,
             Self::DraftLine => Icon::Line,
             Self::DraftCircle => Icon::Circle,
             Self::DraftArc => Icon::Arc,
@@ -168,7 +174,8 @@ impl DrawingTool {
             Self::Dimension => &["drawingdim", "modeldim"],
             Self::Leader => &["leader"],
             Self::Weld => &["weld"],
-            Self::Table => &["table", "schedule"],
+            Self::Table => &["table"],
+            Self::ScheduleTable => &["schedule", "bom", "cutlist"],
             Self::DraftLine => &["sheetline"],
             Self::DraftCircle => &["sheetcircle"],
             Self::DraftArc => &["sheetarc"],
@@ -191,6 +198,7 @@ pub struct DrawingEditor {
     /// Picking a section line in this parent view; the first paper point.
     section_pick: Option<(EntityId, Option<[f64; 2]>)>,
     selected_annotation: Option<EntityId>,
+    schedules: schedules::ScheduleState,
 }
 impl DrawingEditor {
     pub fn dirty(&self) -> bool {
@@ -259,6 +267,9 @@ impl DrawingEditor {
             DrawingTool::Discard => self.dirty(),
             DrawingTool::Settings => self.selected.is_some(),
             DrawingTool::Text => self.selected.is_some(),
+            DrawingTool::ScheduleTable => {
+                self.selected.is_some() && !self.dirty() && self.has_backend_factory()
+            }
             DrawingTool::Dimension => self.draft.as_ref().is_some_and(|p| !p.views.is_empty()),
             tool if DrawingTool::ANNOTATIONS.contains(&tool) => self.selected.is_some(),
             DrawingTool::Projection | DrawingTool::Section | DrawingTool::Detail => {
@@ -315,6 +326,14 @@ impl DrawingEditor {
         }
         if DrawingTool::ANNOTATIONS.contains(&tool) {
             return self.add_annotation(session, tool);
+        }
+        if tool == DrawingTool::ScheduleTable {
+            if !self.has_backend_factory() {
+                return Err("Native schedules are unavailable".into());
+            }
+            self.selected.ok_or("Add a page first")?;
+            self.schedules.chooser = true;
+            return Ok(());
         }
         if tool == DrawingTool::Text {
             let page = self.draft.as_mut().ok_or("Add a page first")?;
@@ -482,6 +501,7 @@ impl DrawingEditor {
                 });
             });
         self.tick_views(ui.ctx(), session);
+        self.tick_schedules(session);
         let mut event = canvas::CanvasEvent::default();
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(page) = &self.draft {

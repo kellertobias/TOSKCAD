@@ -14,6 +14,19 @@ pub trait DrawingBackend {
     fn request(&mut self, document: &Document, stamp: DrawingStamp) -> Result<(), String>;
     fn poll(&mut self) -> Option<DrawingReply>;
     fn cancel(&mut self) {}
+    /// Build these schedules for the snapshot on a native worker, apart
+    /// from view previews; a newer request supersedes an older one.
+    fn request_schedules(
+        &mut self,
+        _document: &Document,
+        _stamp: DrawingStamp,
+        _specs: &[multicad_core::schedules::ScheduleSpec],
+    ) -> Result<(), String> {
+        Err("Native schedules are unavailable".into())
+    }
+    fn poll_schedules(&mut self) -> Option<crate::schedules::ScheduleReply> {
+        None
+    }
 }
 pub type DrawingBackendFactory = Arc<dyn Fn() -> Box<dyn DrawingBackend>>;
 #[derive(Default)]
@@ -38,6 +51,13 @@ impl DrawingFeed {
     }
     pub fn has_factory(&self) -> bool {
         self.factory.is_some()
+    }
+    /// The installed backend, created on first use.
+    pub fn backend(&mut self) -> Option<&mut Box<dyn DrawingBackend>> {
+        if self.backend.is_none() {
+            self.backend = self.factory.as_ref().map(|factory| factory());
+        }
+        self.backend.as_mut()
     }
     pub fn schedule(&mut self, document: Document, revision: u64, now: f64) -> Result<(), String> {
         if let Some(backend) = self.backend.as_mut() {
