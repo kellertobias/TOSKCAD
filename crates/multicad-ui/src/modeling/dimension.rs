@@ -41,6 +41,17 @@ impl DimensionField {
             previous: value.expression().cloned(),
         })
     }
+    /// Replace the text with a literal given in `unit`, converted to this
+    /// field's own unit (a formula field may keep an authored unit).
+    pub fn set_literal(&mut self, value: f64, unit: &str) {
+        let scale = match (Unit::parse(unit), Unit::parse(&self.unit)) {
+            (Some(from), Some(to)) if from.dimension() == to.dimension() => {
+                from.scale() / to.scale()
+            }
+            _ => 1.,
+        };
+        self.text = super::value_entry::format_number(value * scale);
+    }
     pub fn show(&mut self, ui: &mut egui::Ui, label: &str, help: &str) -> bool {
         ui.label(format!("{label} ({})", self.unit));
         ui.add(

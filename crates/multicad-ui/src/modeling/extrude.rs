@@ -279,6 +279,59 @@ impl ExtrudePanel {
     pub fn active(&self) -> bool {
         self.draft.is_some()
     }
+    /// The signed one-sided distance the viewport arrow edits, in mm. Other
+    /// extents (two-sided, symmetric, To plane / To face) keep their Inspector
+    /// controls and show no arrow.
+    pub(crate) fn gizmo_distance(&self, document: &Document) -> Option<Result<f64, String>> {
+        let draft = self.draft.as_ref()?;
+        if draft.extent != ExtentChoice::OneSided
+            || draft.forward.kind != super::termination::EndKind::Distance
+        {
+            return None;
+        }
+        Some(millimeter_value(document, &draft.forward.distance))
+    }
+    #[cfg(test)]
+    pub(crate) fn set_test_taper(&mut self, degrees: f64) {
+        if let Some(draft) = &mut self.draft {
+            draft.taper.set_literal(degrees, "deg");
+            draft.stamp.changed();
+        }
+    }
+    /// Write a gizmo or typed value into the same Inspector field so preview,
+    /// Inspector and commit always share one source of truth.
+    pub(crate) fn set_gizmo_distance(&mut self, millimeters: f64) {
+        if let Some(draft) = &mut self.draft {
+            draft.forward.distance.set_literal(millimeters, "mm");
+            draft.stamp.changed();
+        }
+        self.error = None;
+    }
+    /// Positive sweep direction in sketch U,V,N (ignoring the distance sign)
+    /// and the start offset along N, both resolved from the current fields.
+    pub(crate) fn gizmo_axis(&self, document: &Document) -> Result<([f64; 3], f64), String> {
+        let draft = self.draft.as_ref().ok_or("Start Extrude first")?;
+        let parameters =
+            multicad_core::parameters::evaluate(document).map_err(|e| e.to_string())?;
+        let number = |field: &DimensionField, unit| {
+            field
+                .resolve(document)?
+                .value_in(unit, Some(&parameters))
+                .map_err(|e| e.to_string())
+        };
+        let elevation = number(&draft.elevation, multicad_core::parameters::Unit::Radian)?;
+        let azimuth = number(&draft.azimuth, multicad_core::parameters::Unit::Radian)?;
+        let offset = number(&draft.offset, multicad_core::parameters::Unit::Millimeter)?;
+        let sign = if draft.reverse { -1. } else { 1. };
+        Ok((
+            [
+                elevation.cos() * azimuth.cos() * sign,
+                elevation.cos() * azimuth.sin() * sign,
+                elevation.sin() * sign,
+            ],
+            offset,
+        ))
+    }
     pub(crate) fn changed(&mut self) {
         if let Some(draft) = &mut self.draft {
             draft.stamp.changed();
@@ -586,6 +639,16 @@ fn show_end(
         picker.begin(side, kind);
     }
     action.changed || action.pick.is_some() || action.cancel
+}
+pub(crate) fn millimeter_value(document: &Document, field: &DimensionField) -> Result<f64, String> {
+    let parameters = multicad_core::parameters::evaluate(document).map_err(|e| e.to_string())?;
+    field
+        .resolve(document)?
+        .value_in(
+            multicad_core::parameters::Unit::Millimeter,
+            Some(&parameters),
+        )
+        .map_err(|e| e.to_string())
 }
 fn millimeters(value: f64) -> Dimension {
     Dimension::Literal {

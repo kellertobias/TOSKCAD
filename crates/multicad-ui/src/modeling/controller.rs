@@ -96,6 +96,7 @@ pub struct ModelToolController {
     scale_interaction: super::scale_gizmo::Interaction,
     scale_confirm: Option<FormStamp>,
     scale_host_basis: Option<super::GizmoBasis>,
+    operation: operation_interaction::OperationState,
 }
 pub enum ModelToolOutcome {
     Applied(Vec<CreatedBody>),
@@ -635,7 +636,7 @@ impl ModelToolController {
             session,
             resources,
             channel,
-            ModelForm::Revolve(Box::new(RevolvePanel::new(request)?)),
+            ModelForm::Revolve(Box::new(RevolvePanel::new(request)?.acquire_axis())),
         )
     }
     fn begin_form(
@@ -812,6 +813,7 @@ impl ModelToolController {
         self.scale_host_basis = None;
         self.placement_confirm = None;
         self.scale_confirm = None;
+        self.operation = Default::default();
         self.form = None;
         self.scope = None;
         self.candidate = None;
@@ -1310,8 +1312,10 @@ mod context;
 mod edge_treatment;
 mod groups;
 mod legacy;
+mod operation_interaction;
 mod operations;
 mod placement_interaction;
+pub use operation_interaction::OperationViewport;
 mod scale_interaction;
 pub use placement_interaction::PlacementViewportResult;
 mod proof;
@@ -1321,6 +1325,9 @@ mod tests;
 
 #[cfg(test)]
 mod placement_tests;
+
+#[cfg(test)]
+mod gizmo_entry_tests;
 
 #[cfg(test)]
 mod scale_tests;

@@ -160,6 +160,8 @@ pub struct SketchEditor {
     fitted_model_document: Option<EntityId>,
     tree: crate::model_tree::ModelTree,
     tree_selection: std::collections::BTreeSet<EntityId>,
+    /// Sketch selected as a whole (not merely open) when Extrude/Revolve began.
+    whole_sketch: Option<EntityId>,
     visibility: crate::viewport::VisibilityFilter,
     visibility_error: Option<String>,
     overlay_visibility: Option<((EntityId, u64), std::collections::BTreeSet<EntityId>)>,
@@ -246,6 +248,7 @@ impl Default for SketchEditor {
             fitted_model_document: None,
             tree: Default::default(),
             tree_selection: Default::default(),
+            whole_sketch: None,
             visibility: Default::default(),
             visibility_error: None,
             overlay_visibility: None,
@@ -866,7 +869,7 @@ impl SketchEditor {
         self.model.has_backend()
             && !self.has_pending_edits()
             && !self.picking
-            && self.selected_profiles(document, revision).is_ok()
+            && self.profile_inputs(document, revision).is_ok()
     }
     pub fn begin_extrude(
         &mut self,
@@ -907,7 +910,8 @@ impl SketchEditor {
         if self.has_pending_edits() || self.picking {
             return Err("Apply or cancel pending edits before extruding".into());
         }
-        let (sketch, profiles) = self.selected_profiles(session.document(), session.revision())?;
+        let (sketch, profiles) = self.profile_inputs(session.document(), session.revision())?;
+        let guide = self.profile_guide(session.document(), session.revision(), sketch, &profiles);
         self.finish()?;
         match tool {
             crate::modeling::ModelingTool::Extrude => {
@@ -922,10 +926,20 @@ impl SketchEditor {
                 .begin_revolve(session, resources, sketch, profiles, channel)?,
             _ => return Err("Choose a profile modeling tool".into()),
         }
-        self.message = format!(
-            "{} · choose controls in the Inspector, then Preview",
-            tool.label()
-        );
+        self.message = match guide {
+            Ok(guide) => {
+                self.model.set_profile_guide(guide);
+                if tool == crate::modeling::ModelingTool::Revolve {
+                    "Revolve · choose the axis (click a straight sketch line), then drag the angle handle or type an angle and press Enter".into()
+                } else {
+                    "Extrude · drag the arrow or type a signed distance, then press Enter".into()
+                }
+            }
+            Err(error) => format!(
+                "{} · viewport handle unavailable ({error}); use the Inspector, then Preview",
+                tool.label()
+            ),
+        };
         Ok(())
     }
     pub fn preview_model(
@@ -3437,6 +3451,9 @@ impl SketchEditor {
                         .request_repaint_after(std::time::Duration::from_millis(16));
                 }
             }
+            if self.model.operation_gizmo_active() {
+                owned |= self.operation_viewport(ui, &response, session, context.resources, rect);
+            }
             if !owned {
                 self.target_viewport(
                     ui,
@@ -4344,6 +4361,8 @@ mod tests {
             .model
             .begin_revolve(&session, &Default::default(), sketch, regions, Channel::Ui)
             .unwrap();
+        // A new revolve needs an explicit axis; use the sketch V axis.
+        editor.model.choose_revolve_axis([0., 0.], 90.);
         editor
             .preview_model(&session, &Default::default(), Channel::Ui)
             .unwrap();
@@ -6745,6 +6764,7 @@ mod tests {
         assert!((actual[1] - initial[1] - 20.).abs() < 0.01);
         assert_eq!(session.revision(), 0);
     }
+    mod operation_selection_tests;
 }
 
 #[cfg(test)]
