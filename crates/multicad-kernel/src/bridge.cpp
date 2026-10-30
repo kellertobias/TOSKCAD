@@ -533,6 +533,12 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
     return result;
   });
 }
+// A second owner of the same immutable B-rep: TopoDS handles are reference
+// counted and every kernel operation builds new shapes (non-destructive
+// Booleans, tessellation of a copy), so sharing never changes the source.
+std::unique_ptr<Shape> share_shape(const Shape &source) {
+  return guard([&] { return std::make_unique<Shape>(source); });
+}
 // Query-only occupied space. Compound members remain distinct in canonical
 // source; normalize deep copies so overlapping members cannot invalidate COMMON
 // or count the same physical overlap twice.

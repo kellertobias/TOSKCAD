@@ -459,6 +459,25 @@ impl Solid {
     pub fn geometry_policy(&self) -> GeometryPolicy {
         self.policy
     }
+    /// Another owner of the same immutable exact B-rep (and its provenance),
+    /// without copying geometry. Kernel operations never modify their input
+    /// shapes, so both owners observe identical geometry. Like every Solid
+    /// the share stays on the thread that created it (`!Send`/`!Sync`).
+    pub fn share(&self) -> Result<Self, GeometryError> {
+        let handle = ffi::share_shape(&self.native.0).map_err(|e| native("share", e))?;
+        if handle.is_null() {
+            return Err(error(
+                "share",
+                GeometryErrorKind::InvalidResult,
+                "Kernel returned an empty shape",
+            ));
+        }
+        Ok(Self {
+            native: Shape(handle),
+            policy: self.policy,
+            provenance: self.provenance.clone(),
+        })
+    }
     pub(crate) fn adopt(
         handle: cxx::UniquePtr<ffi::Shape>,
         policy: GeometryPolicy,
