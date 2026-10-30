@@ -232,7 +232,7 @@ tools! {
         "Solve a sketch and report its state, degrees of freedom, conflicts, solved points, curves, constraints, text elements (with their derived glyph contour curve IDs) and the exact closed regions (with index and area in mm²) usable by extrude.",
         inspect_sketch;
     "extrude" => Extrude, "Extrude regions", false,
-        "Extrude regions of a sketch (indices from inspect_sketch at the same revision) by a signed nonzero distance; a negative distance extrudes the same magnitude opposite to the sketch normal without changing the operation. operation new_body creates parts; join, cut and intersect modify target_part. The candidate is evaluated natively before it commits.",
+        "Extrude regions of a sketch (indices from inspect_sketch at the same revision), or planar model faces (source feature and face ordinal from reference_candidates at the same revision; exact outer boundary and holes, persistent face reference), by a signed nonzero distance. Give either sketch with regions or faces. A negative distance extrudes the same magnitude opposite to the profile normal (for faces: into the body) without changing the operation. operation new_body creates parts; join, cut and intersect modify target_part. Curved, missing or ambiguous faces are refused and nothing changes. The candidate is evaluated natively before it commits.",
         extrude;
     "evaluate_model" => NoArgs, "Evaluate model", true,
         "Evaluate the complete model with the native kernel and report every final part (producing feature, solid count, volume in mm³, bounds in mm) and every placed instance (component, solid count, volume, bounds), plus reference diagnostics. Evaluation failures are returned as structured errors.",
@@ -618,9 +618,18 @@ pub enum ExtrudeOperation {
 #[serde(deny_unknown_fields)]
 pub struct Extrude {
     pub expected_revision: u64,
-    pub sketch: String,
+    /// Sketch whose regions are extruded; omit when extruding faces.
+    #[serde(default)]
+    pub sketch: Option<String>,
     /// Region indices reported by inspect_sketch at expected_revision.
+    #[serde(default)]
     pub regions: Vec<usize>,
+    /// Planar model faces to extrude instead of sketch regions: each is a
+    /// source feature and a face ordinal from reference_candidates at
+    /// expected_revision. Each face becomes one profile with its exact outer
+    /// boundary and holes; curved, missing or ambiguous faces are refused.
+    #[serde(default)]
+    pub faces: Vec<ExtrudeFace>,
     pub distance: Quantity,
     pub operation: ExtrudeOperation,
     /// Required for join, cut and intersect: the part to modify.
@@ -629,6 +638,14 @@ pub struct Extrude {
     /// Extrude against the sketch normal.
     #[serde(default)]
     pub reverse: bool,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExtrudeFace {
+    /// Source feature that produces the face.
+    pub source: String,
+    /// Face ordinal from reference_candidates at expected_revision.
+    pub face: u32,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1357,9 +1374,22 @@ fn compile(
 }
 
 fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
-    let sketch = id(&args.sketch)?;
     let target_part = args.target_part.as_deref().map(id).transpose()?;
-    if args.regions.is_empty() {
+    if !args.faces.is_empty() && (args.sketch.is_some() || !args.regions.is_empty()) {
+        return Err(ToolError::invalid(
+            "Give either sketch with regions or faces, not both",
+        ));
+    }
+    let sketch = match &args.sketch {
+        Some(sketch) => Some(id(sketch)?),
+        None if args.faces.is_empty() => {
+            return Err(ToolError::invalid(
+                "Choose a sketch with regions, or planar faces",
+            ));
+        }
+        None => None,
+    };
+    if sketch.is_some() && args.regions.is_empty() {
         return Err(ToolError::invalid("Choose at least one region"));
     }
     let (document, revision, evaluated) = snapshot(host)?;
@@ -1373,25 +1403,28 @@ fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
         )
         .at_revision(revision));
     }
-    let evaluated_sketch = multicad_solver::evaluate_document_sketch_with_parameters(
-        &document, revision, sketch, None, &evaluated,
-    )?;
-    let interrupt = || call.cancelled();
-    let extraction = call.finish(
-        evaluated_sketch
-            .regions_with_queries_and_interrupt(&NativeRegionQueries::default(), Some(&interrupt)),
-    )?;
     let mut intents = vec![];
-    for index in &args.regions {
-        let region = extraction.regions.get(*index).ok_or_else(|| {
-            ToolError::invalid(format!(
-                "Region {index} does not exist; the sketch has {} regions",
-                extraction.regions.len()
-            ))
-            .involving(sketch)
-        })?;
-        intents.push(region.intent());
+    if let Some(sketch) = sketch {
+        let evaluated_sketch = multicad_solver::evaluate_document_sketch_with_parameters(
+            &document, revision, sketch, None, &evaluated,
+        )?;
+        let interrupt = || call.cancelled();
+        let extraction = call.finish(evaluated_sketch.regions_with_queries_and_interrupt(
+            &NativeRegionQueries::default(),
+            Some(&interrupt),
+        ))?;
+        for index in &args.regions {
+            let region = extraction.regions.get(*index).ok_or_else(|| {
+                ToolError::invalid(format!(
+                    "Region {index} does not exist; the sketch has {} regions",
+                    extraction.regions.len()
+                ))
+                .involving(sketch)
+            })?;
+            intents.push(region.intent());
+        }
     }
+    let faces = extrude_faces(&document, revision, call, &args.faces)?;
     let (distance, _) = args.distance.dimension(&document, &evaluated)?;
     let parameters = ExtrudeParameters {
         direction: Direction {
@@ -1403,7 +1436,10 @@ fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
         },
         ..Default::default()
     };
-    let request = ExtrudeRequest::new(sketch, intents, parameters);
+    let request = match sketch {
+        Some(sketch) => ExtrudeRequest::new(sketch, intents, parameters),
+        None => ExtrudeRequest::from_faces(faces, parameters),
+    };
     let call_owned = call.clone();
     let operation = args.operation;
     let (prepared, created, results) = with(host, move |target| {
@@ -1474,6 +1510,83 @@ fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
     let call_owned = call.clone();
     let new_revision = with(host, move |target| commit(target, &call_owned, prepared))??;
     Ok(json!({ "revision": new_revision, "created": created, "bodies": bodies }))
+}
+
+/// Capture each requested face of its source feature's current native
+/// topology as a persistent planar profile reference (shared validation with
+/// the window: curved, missing, unnamed or multi-frame faces are refused).
+fn extrude_faces(
+    document: &multicad_core::document::Document,
+    revision: u64,
+    call: &Request,
+    faces: &[ExtrudeFace],
+) -> Result<Vec<model::FaceInput>, ToolError> {
+    let mut captured = vec![];
+    for face in faces {
+        let source = id(&face.source)?;
+        if !matches!(
+            document.get(source).map(|e| &e.data),
+            Some(EntityData::Feature {
+                suppressed: false,
+                ..
+            })
+        ) {
+            return Err(
+                ToolError::invalid(format!("{source} is not an active source feature"))
+                    .involving(source),
+            );
+        }
+        let interrupt = || call.cancelled();
+        let model = call.finish(Compiler::default().compile_sources_interruptible(
+            document,
+            revision,
+            &[source],
+            Some(&interrupt),
+        ))?;
+        let topology = model
+            .snapshot()
+            .shapes
+            .get(&source)
+            .map(|shape| &shape.topology)
+            .ok_or_else(|| {
+                ToolError::new(
+                    "model_failed",
+                    "Source feature has no current native topology",
+                )
+                .involving(source)
+            })?;
+        let key = multicad_core::references::TopologyKey {
+            kind: multicad_core::references::TopologyKind::Face,
+            ordinal: face.face,
+        };
+        if !topology.elements.iter().any(|e| e.key == key) {
+            return Err(ToolError::invalid(format!(
+                "Face {} does not exist on the current source; list faces with reference_candidates",
+                face.face
+            ))
+            .involving(source));
+        }
+        let solid = model.solid(source).ok_or_else(|| {
+            ToolError::new("model_failed", "Source feature has no current solid").involving(source)
+        })?;
+        let planar = solid
+            .faces()
+            .map_err(|e| ToolError::new("model_failed", e.to_string()))?
+            .into_iter()
+            .any(|f| f.index == face.face && f.plane.is_some());
+        if !planar {
+            return Err(ToolError::invalid(format!(
+                "Face {} is curved; extrude needs a planar face",
+                face.face
+            ))
+            .involving(source));
+        }
+        captured.push(
+            model::capture_profile_face(topology, key, None)
+                .map_err(|message| ToolError::invalid(message).involving(source))?,
+        );
+    }
+    Ok(captured)
 }
 
 fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
