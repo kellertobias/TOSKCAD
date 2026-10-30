@@ -415,6 +415,16 @@ pub fn read_board(text: &str, min_hole_mm: f64) -> Result<KicadBoard, String> {
             let Some(head) = g.head() else { continue };
             if head.starts_with("fp_") && matches!(layer(g), Some("F.CrtYd" | "B.CrtYd")) {
                 courtyard = true;
+                // A circle's end is a point on it; its extent is center ± radius.
+                if head == "fp_circle"
+                    && let (Some(c), Some(e)) =
+                        (g.child("center").and_then(xy), g.child("end").and_then(xy))
+                {
+                    let r = (e[0] - c[0]).hypot(e[1] - c[1]);
+                    grow([c[0] - r, c[1] - r]);
+                    grow([c[0] + r, c[1] + r]);
+                    continue;
+                }
                 for key in ["start", "end", "center", "mid"] {
                     if let Some(p) = g.child(key).and_then(xy) {
                         grow(p);
@@ -558,6 +568,30 @@ mod tests {
         assert_eq!(s.text(3), Some("e\"f"));
         assert!(parse_sexp("(a (b)").is_err());
         assert!(parse_sexp("(a))").is_err());
+    }
+    #[test]
+    fn circular_courtyards_give_a_square_envelope_around_the_circle() {
+        let board = read_board(
+            r#"(kicad_pcb (general (thickness 1.6))
+  (footprint "MountingHole:M3" (layer "F.Cu") (at 5 5)
+    (property "Reference" "H1")
+    (fp_circle (center 0 0) (end 3.45 0) (layer "F.CrtYd"))
+    (pad "" np_thru_hole circle (at 0 0) (size 3.2 3.2) (drill 3.2)))
+  (gr_rect (start 0 0) (end 20 20) (layer "Edge.Cuts")))"#,
+            2.,
+        )
+        .unwrap();
+        let [lo, hi] = board.footprints[0].envelope;
+        for (v, expected) in [lo[0], lo[1], hi[0], hi[1]]
+            .into_iter()
+            .zip([-3.45, -3.45, 3.45, 3.45])
+        {
+            assert!(
+                (v - expected).abs() < 1e-9,
+                "{:?}",
+                board.footprints[0].envelope
+            );
+        }
     }
     #[test]
     fn rotated_footprint_pads_land_in_y_up_board_coordinates() {
