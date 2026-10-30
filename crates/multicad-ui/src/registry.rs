@@ -559,6 +559,7 @@ impl Default for Registry {
                             "export-preview",
                             "export-run",
                             "export-cancel",
+                            "export-schedule-csv",
                         ],
                     ),
                     tab("Print", &["print"]),

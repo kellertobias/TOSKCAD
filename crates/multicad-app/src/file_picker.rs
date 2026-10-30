@@ -28,11 +28,13 @@ impl FilePicker for NativePicker {
             Kind::ImportSource => "Import source snapshot",
             Kind::ImportArtwork => "Import DXF or SVG artwork",
             Kind::PreviewImage => "Choose a PNG preview image",
+            Kind::SaveCsv => "Export schedule CSV",
         });
         dialog = match request.kind {
             Kind::ImportSource => dialog.add_filter("Source snapshot", &["json"]),
             Kind::ImportArtwork => dialog.add_filter("DXF or SVG artwork", &["dxf", "svg"]),
             Kind::PreviewImage => dialog.add_filter("PNG image", &["png"]),
+            Kind::SaveCsv => dialog.add_filter("CSV schedule", &["csv"]),
             _ => dialog.add_filter("ToskCAD project", &["multicad"]),
         };
         if let Some(path) = &request.directory {
@@ -45,7 +47,7 @@ impl FilePicker for NativePicker {
         // Poll its future on a bounded worker; AppKit dispatch stays in rfd.
         let future: std::pin::Pin<
             Box<dyn std::future::Future<Output = Option<rfd::FileHandle>> + Send>,
-        > = if request.kind == Kind::SaveProject {
+        > = if matches!(request.kind, Kind::SaveProject | Kind::SaveCsv) {
             Box::pin(dialog.save_file())
         } else {
             Box::pin(dialog.pick_file())
@@ -58,6 +60,9 @@ impl FilePicker for NativePicker {
                     let mut path = file.path().to_path_buf();
                     if request.kind == Kind::SaveProject && path.extension().is_none() {
                         path.set_extension("multicad");
+                    }
+                    if request.kind == Kind::SaveCsv && path.extension().is_none() {
+                        path.set_extension("csv");
                     }
                     path
                 });

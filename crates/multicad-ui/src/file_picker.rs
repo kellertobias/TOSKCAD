@@ -8,6 +8,8 @@ pub enum Kind {
     ImportSource,
     ImportArtwork,
     PreviewImage,
+    /// A schedule CSV destination.
+    SaveCsv,
 }
 #[derive(Clone, Debug)]
 pub struct Request {

@@ -35,6 +35,22 @@ pub trait ExportBackend {
         directory: &Path,
         actor: Actor,
     ) -> Result<EntityId, ExportError>;
+    /// Build one schedule on the snapshot. With a target, write its CSV to
+    /// that path only when it still hashes to the accepted preview.
+    fn schedule(
+        &mut self,
+        _document: &Document,
+        _revision: u64,
+        _spec: multicad_core::schedules::ScheduleSpec,
+        _target: Option<(&Path, multicad_core::project_file::ContentHash)>,
+        _actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        Err(ExportError::new(
+            multicad_core::exchange::ErrorKind::Unsupported,
+            None,
+            "Native schedules are unavailable",
+        ))
+    }
     fn cancel(&mut self, id: EntityId) -> bool;
     fn poll(&mut self) -> Option<ExportReply>;
     fn pending(&self) -> bool;

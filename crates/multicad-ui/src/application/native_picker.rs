@@ -62,6 +62,7 @@ impl Application {
                 FileAction::Import => Kind::ImportSource,
                 FileAction::Artwork => Kind::ImportArtwork,
                 FileAction::PreviewImage => Kind::PreviewImage,
+                FileAction::ScheduleCsv => Kind::SaveCsv,
             },
             directory: self
                 .current()
@@ -72,6 +73,11 @@ impl Application {
             suggested_name: match action {
                 FileAction::SymbolSave(id) => Some(self.symbol_filename(id)?),
                 FileAction::Save => Some(suggested),
+                FileAction::ScheduleCsv => Some(
+                    self.current()
+                        .exchange
+                        .schedule_file_name(&self.current().session),
+                ),
                 _ => None,
             },
         };
@@ -130,6 +136,7 @@ impl Application {
                     FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
                     FileAction::Artwork => self.begin_artwork_import(path),
                     FileAction::PreviewImage => self.read_preview_image(path),
+                    FileAction::ScheduleCsv => self.write_schedule_csv(path),
                 }
             }
             Ok(None) => {
