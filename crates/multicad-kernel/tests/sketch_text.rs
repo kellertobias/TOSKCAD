@@ -1,10 +1,11 @@
-//! Sketch text outlines (CAD-142) through the exact native region service:
-//! every supported character's glyph contours are closed, non-intersecting
-//! and nested so that counters are holes. This defines the supported set.
+//! Sketch text outlines (CAD-142, CAD-149) through the exact native region
+//! service: every supported character's glyph contours, in every bundled
+//! font, are closed, non-intersecting and nested so that counters are holes.
+//! This defines the supported set.
 use multicad_core::{
     constraint_sketch::{
         SplineBasis,
-        text::{SUPPORTED_LATIN1, SketchText, TextStyle},
+        text::{SUPPORTED_LATIN1, SketchText, TextAlignment, TextAnchor, TextFont, TextStyle},
     },
     document::EntityId,
     sketch_regions::{
@@ -24,15 +25,24 @@ fn text(s: &str) -> SketchText {
 fn every_supported_character_extracts_clean_nested_regions() {
     let queries = NativeRegionQueries::default();
     let mut failures = vec![];
-    for c in ('!'..='~').chain(SUPPORTED_LATIN1.chars()) {
-        let t = text(&c.to_string());
+    for (font, c) in TextFont::ALL.into_iter().flat_map(|font| {
+        ('!'..='~')
+            .chain(SUPPORTED_LATIN1.chars())
+            .map(move |c| (font, c))
+    }) {
+        let mut t = text(&c.to_string());
+        t.style.font = font;
+        if !font.supports(c) {
+            assert!(t.validate().is_err(), "{font:?} refuses {c:?}");
+            continue;
+        }
         let contours = t.contours().unwrap().len();
         let extraction =
             extract_evaluated_with_queries_and_interrupt(&[], &[], &[t], &queries, None).unwrap();
         // Every closed contour bounds exactly one selectable region.
         if !extraction.diagnostics.is_empty() || extraction.regions.len() != contours {
             failures.push(format!(
-                "{c:?}: {} regions for {contours} contours, {:?}",
+                "{font:?} {c:?}: {} regions for {contours} contours, {:?}",
                 extraction.regions.len(),
                 extraction
                     .diagnostics
@@ -110,8 +120,53 @@ fn c0_spline_self_intersection_ignores_joints_but_finds_real_crossings() {
 }
 
 #[test]
+fn multiline_aligned_text_keeps_closed_nested_regions() {
+    for font in TextFont::ALL {
+        for alignment in [
+            TextAlignment::Left,
+            TextAlignment::Center,
+            TextAlignment::Right,
+        ] {
+            let mut t = text("AB8\nOg\nÄ");
+            t.style.font = font;
+            t.style.alignment = alignment;
+            t.style.anchor = TextAnchor::Center;
+            t.style.rotation_deg = 15.;
+            let contours = t.contours().unwrap().len();
+            let extraction = extract_evaluated_with_queries_and_interrupt(
+                &[],
+                &[],
+                &[t],
+                &NativeRegionQueries::default(),
+                None,
+            )
+            .unwrap();
+            assert!(
+                extraction.diagnostics.is_empty(),
+                "{font:?} {alignment:?}: {:?}",
+                extraction.diagnostics
+            );
+            assert_eq!(extraction.regions.len(), contours, "{font:?} {alignment:?}");
+            // A, B, 8, O, g and Ä each enclose at least one counter.
+            let letters = extraction
+                .regions
+                .iter()
+                .filter(|r| !r.holes.is_empty())
+                .count();
+            assert!(letters >= 6, "{font:?} {alignment:?}: {letters}");
+        }
+    }
+}
+
+#[test]
 fn abo_counters_are_holes_and_areas_balance() {
-    let t = text("ABO");
+    for font in TextFont::ALL {
+        abo_counters(font);
+    }
+}
+fn abo_counters(font: TextFont) {
+    let mut t = text("ABO");
+    t.style.font = font;
     let extraction = extract_evaluated_with_queries_and_interrupt(
         &[],
         &[],
@@ -142,9 +197,11 @@ fn abo_counters_are_holes_and_areas_balance() {
         assert!(letter.area_mm2 < letter.outer.signed_area_mm2.abs());
     }
     // Touching or overlapping texts are diagnosed, never silently merged.
-    let a = text("O");
-    let mut b = text("O");
-    b.style.origin_mm = [2., 0.];
+    let mut a = text("O");
+    a.style.font = font;
+    let mut b = a.clone();
+    b.id = EntityId::new();
+    b.style.position_mm = [2., 0.];
     let crossing = extract_evaluated_with_queries_and_interrupt(
         &[],
         &[],
