@@ -481,8 +481,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(planned.resolved.openings[0].width_mm, 1000.);
-        let prepared =
-            prepare_wall_opening(&f.session, 1, actor(), f.wall, &[ty.clone()], &change).unwrap();
+        let prepared = prepare_wall_opening(
+            &f.session,
+            1,
+            actor(),
+            f.wall,
+            std::slice::from_ref(&ty),
+            &change,
+        )
+        .unwrap();
         let doc = prepared.prepared.document();
         assert!(read_opening_type(doc, ty.id).is_ok());
         assert_eq!(read_wall(doc, f.wall).unwrap().openings.len(), 1);
