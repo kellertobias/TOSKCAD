@@ -21,8 +21,11 @@ same document, revision and source hash, every view ready and every model
 dimension attached. Otherwise the export provider marks the PDF or
 drawing-DXF recipe Unsupported, with a reason naming the page, for example
 "Page A-101 cannot export: Detached dimension: …". The whole Run is then
-blocked. A preview made before a source edit cannot run; it reports Stale.
-Nothing old is ever presented as current.
+blocked. A table placed from a schedule must also still match a fresh
+schedule of the source; a stale one blocks the page the same way until it is
+refreshed ([schedules](schedules.md#drawing-tables)). A preview made before a
+source edit cannot run; it reports Stale. Nothing old is ever presented as
+current.
 
 ## PDF
 
@@ -72,5 +75,5 @@ excluded by the view range is absent in every format.
 Publication writes into the existing staged bundle. It then checks that the
 bytes equal the generated output, that the PDF header, trailer and page count
 are intact, and that each DXF holds exactly one page. Repeated identical runs
-reuse a verified bundle. Schedules are authored tables and need no producer;
-missing BOM, bend or weld producers never block ordinary pages.
+reuse a verified bundle. Unlinked tables are authored content and need no
+producer; missing BOM, bend or weld producers never block ordinary pages.
