@@ -100,6 +100,7 @@ fn reply_preview(s: &Session, state: &Rc<RefCell<State>>, index: usize, objects:
         objects: (0..objects)
             .map(|_| PrintObject {
                 part: EntityId::new(),
+                occurrence_path: vec![],
                 name: "Bracket body".into(),
                 role: PrintRole::Finished,
                 bounds_mm: [[0.; 3], [1.; 3]],

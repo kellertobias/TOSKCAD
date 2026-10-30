@@ -236,6 +236,7 @@ mod tests {
                 },
                 objects: vec![PrintObject {
                     part: EntityId::new(),
+                    occurrence_path: vec![],
                     name: "Body".into(),
                     role: PrintRole::Finished,
                     bounds_mm: [[0.; 3], [1.; 3]],
