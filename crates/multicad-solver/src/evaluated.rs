@@ -203,7 +203,7 @@ impl EvaluatedSketch {
                 .map(|p| p.position_mm)
                 .ok_or_else(|| error(id, "Solved curve point is missing"))
         };
-        solved
+        let mut geometry = solved
             .curves
             .iter()
             .map(|c| {
@@ -243,7 +243,24 @@ impl EvaluatedSketch {
                     },
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, InputError>>()?;
+        geometry.extend(self.text_geometry()?);
+        Ok(geometry)
+    }
+    /// Exact derived glyph contours of the canonical text elements, as closed
+    /// display/profile splines. They are never solver points or source curves.
+    pub fn text_geometry(&self) -> Result<Vec<Geometry>, InputError> {
+        let mut geometry = vec![];
+        for text in &self.canonical.sketch.texts {
+            for contour in text.contours().map_err(|e| error(text.id, e.to_string()))? {
+                geometry.push(Geometry::BSpline {
+                    id: contour.id,
+                    poles: contour.poles,
+                    basis: contour.basis,
+                });
+            }
+        }
+        Ok(geometry)
     }
     pub fn regions(&self) -> Result<Extraction, InputError> {
         self.regions_with_queries(&sketch_regions::AnalyticQueries)
@@ -262,9 +279,10 @@ impl EvaluatedSketch {
         let solved = self
             .solved()
             .ok_or_else(|| error(self.sketch, "Sketch has no current valid solved profiles"))?;
-        sketch_regions::extract_geometry_with_queries_and_interrupt(
+        sketch_regions::extract_evaluated_with_queries_and_interrupt(
             &solved.points,
             &solved.curves,
+            &self.canonical.sketch.texts,
             queries,
             interrupt,
         )

@@ -46,6 +46,7 @@ mod reference_repair;
 mod render;
 mod schedules;
 mod sheet_metal;
+mod text;
 mod walls;
 pub use cabinetry::{
     CarcassArgs, DeleteJointArgs, DeleteMachiningArgs, HardwareArgs, MachiningArgs, PanelArgs,
@@ -59,6 +60,10 @@ pub use engraving::EngravingArgs;
 use engraving::create_engraving_sketch;
 pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs};
 use fdm::{fdm_aid_report, remove_fdm_aid, set_fdm_aid, set_fdm_process};
+pub use text::{
+    AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextFontArg, TextStyleArgs,
+};
+use text::{sketch_add_text, sketch_edit_text, sketch_remove_text};
 mod weldment;
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
@@ -211,11 +216,20 @@ tools! {
     "sketch_add_circle" => AddCircle, "Add circle", false,
         "Add a circle whose center is fixed at center_mm (sketch coordinates, mm) with a driving diameter dimension (literal or parameter formula). Commits one transaction.",
         sketch_add_circle;
+    "sketch_add_text" => AddTextArgs, "Add sketch text", false,
+        "Add an editable text element to a sketch: one line of printable ASCII (or ÄÖÜäöüßéèàç°±µ), cap height in mm, baseline origin in sketch mm, optional rotation (degrees) and alignment (left, center, right). Its exact glyph outlines (bundled Hack Regular, closed quadratic B-splines) become closed regions with counters as holes, listed by inspect_sketch for extrude. Empty text, invalid height, unsupported characters or more than 64 glyph contours per sketch are refused and nothing changes. Commits one transaction.",
+        sketch_add_text;
+    "sketch_edit_text" => EditTextArgs, "Edit sketch text", false,
+        "Replace the string, height, placement, rotation or alignment of a sketch text element (text_id from sketch_add_text or inspect_sketch). Contour identities follow character and contour position, so extrusions of unchanged glyph structure rebuild. Validation matches sketch_add_text; commits one transaction.",
+        sketch_edit_text;
+    "sketch_remove_text" => RemoveTextArgs, "Remove sketch text", false,
+        "Remove a sketch text element. Features that used its regions report that their profile changed. Commits one transaction.",
+        sketch_remove_text;
     "set_sketch_dimension" => SetDimension, "Set sketch dimension", false,
         "Change the value of an existing driving dimension constraint to a literal or parameter formula. The sketch is re-solved; a failed solve changes nothing.",
         set_sketch_dimension;
     "inspect_sketch" => SketchArgs, "Inspect sketch", true,
-        "Solve a sketch and report its state, degrees of freedom, conflicts, solved points, curves, constraints and the exact closed regions (with index and area in mm²) usable by extrude.",
+        "Solve a sketch and report its state, degrees of freedom, conflicts, solved points, curves, constraints, text elements (with their derived glyph contour curve IDs) and the exact closed regions (with index and area in mm²) usable by extrude.",
         inspect_sketch;
     "extrude" => Extrude, "Extrude regions", false,
         "Extrude regions of a sketch (indices from inspect_sketch at the same revision) by a signed nonzero distance; a negative distance extrudes the same magnitude opposite to the sketch normal without changing the operation. operation new_body creates parts; join, cut and intersect modify target_part. The candidate is evaluated natively before it commits.",
@@ -1293,6 +1307,11 @@ fn inspect_sketch(host: &dyn Host, call: &Request, args: SketchArgs) -> ToolResu
         "points": solved.points,
         "curves": solved.curves,
         "constraints": source.sketch.constraints,
+        "texts": source.sketch.texts.iter().map(|t| json!({
+            "id": t.id,
+            "style": t.style,
+            "contour_curves": t.contours().map(|c| c.into_iter().map(|c| c.id).collect::<Vec<_>>()).unwrap_or_default(),
+        })).collect::<Vec<_>>(),
         "measurements": measurements,
         "regions": regions["regions"],
         "region_diagnostics": regions["region_diagnostics"],

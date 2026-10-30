@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub mod binding;
 pub mod source;
 mod spline;
+pub mod text;
 pub use spline::{MAX_SPLINE_POLES, SplineBasis};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -14,6 +15,10 @@ pub struct Sketch {
     pub points: Vec<Point>,
     pub curves: Vec<Curve>,
     pub constraints: Vec<Constraint>,
+    /// Parametric text elements (CAD-142). Their exact glyph contours are
+    /// derived during evaluation and are not solver points or curves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<text::SketchText>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

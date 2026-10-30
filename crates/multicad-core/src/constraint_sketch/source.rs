@@ -11,6 +11,19 @@ pub const TYPE: &str = "core.constrained_sketch";
 pub const V2_CAPABILITY: &str = "core.constrained_sketch.2";
 pub const V3_CAPABILITY: &str = "core.constrained_sketch.3";
 pub const V4_CAPABILITY: &str = "core.constrained_sketch.4";
+/// Any constrained sketch with parametric text needs the text capability.
+pub fn requires_text(document: &Document) -> bool {
+    document.entities().any(|e| {
+        matches!(&e.data, EntityData::Sketch { definition, .. }
+            if definition.type_id == TYPE
+                && definition
+                    .data
+                    .get("sketch")
+                    .and_then(|s| s.get("texts"))
+                    .and_then(|t| t.as_array())
+                    .is_some_and(|a| !a.is_empty()))
+    })
+}
 pub fn requires_v4(document: &Document) -> bool {
     document.entities().any(|e|matches!(&e.data,EntityData::Sketch{definition,..} if definition.type_id==TYPE&&definition.schema_version==4))
 }
@@ -127,9 +140,9 @@ impl Source {
     /// Render/query facade for both source providers. Never write this derived
     /// view back over a constrained sketch: edits use the solver transaction.
     pub fn display_geometry(&self) -> Result<Vec<sketch::Geometry>, DocumentError> {
-        if self.has_expressions() || self.has_splines() {
+        if self.has_expressions() || self.has_splines() || self.has_texts() {
             return Err(invalid(
-                "Parameter-driven or spline sketch requires current evaluated geometry; authored point guesses are not a display or manufacturing result",
+                "Parameter-driven, spline or text sketch requires current evaluated geometry; authored point guesses are not a display or manufacturing result",
             ));
         }
         let p = |id| {
@@ -231,6 +244,9 @@ impl Source {
         if source.has_splines() && definition.schema_version < 3 {
             return Err(invalid("Spline curves require constrained sketch schema 3"));
         }
+        if definition.schema_version == 1 && source.has_texts() {
+            return Err(invalid("Sketch text requires constrained sketch schema 2"));
+        }
         if definition.schema_version == 1 && source.has_expressions() {
             return Err(invalid(
                 "Parameter-driven dimensions require constrained sketch schema 2",
@@ -270,10 +286,28 @@ impl Source {
             .map(|p| p.id)
             .chain(self.sketch.curves.iter().map(|c| c.id))
             .chain(self.sketch.constraints.iter().map(|c| c.id))
+            .chain(self.sketch.texts.iter().map(|t| t.id))
         {
             if id.is_nil() || !ids.insert(id) {
                 return Err(invalid("Duplicate or nil constrained sketch identity"));
             }
+        }
+        if self.sketch.texts.len() > super::text::MAX_TEXTS_PER_SKETCH {
+            return Err(invalid(format!(
+                "A sketch holds at most {} text elements",
+                super::text::MAX_TEXTS_PER_SKETCH
+            )));
+        }
+        let mut contours = 0;
+        for text in &self.sketch.texts {
+            text.validate()?;
+            contours += text.style.contour_count()?;
+        }
+        if contours > super::text::MAX_TEXT_CONTOURS {
+            return Err(invalid(format!(
+                "Sketch text produces {contours} glyph contours; the exact region budget allows {} per sketch. Shorten the text or use another sketch",
+                super::text::MAX_TEXT_CONTOURS
+            )));
         }
         let points: BTreeSet<_> = self.sketch.points.iter().map(|p| p.id).collect();
         let geometry: BTreeSet<_> = points
@@ -460,10 +494,28 @@ impl Source {
             .iter()
             .any(|c| matches!(c.kind, CurveKind::BSpline { .. }))
     }
+    /// Curve identities a profile may reference: solid authored curves plus
+    /// the derived glyph contours of every text element.
+    pub fn profile_curve_ids(&self) -> Result<BTreeSet<EntityId>, DocumentError> {
+        let mut ids: BTreeSet<_> = self
+            .sketch
+            .curves
+            .iter()
+            .filter(|c| !c.construction)
+            .map(|c| c.id)
+            .collect();
+        for text in &self.sketch.texts {
+            ids.extend(text.contours()?.into_iter().map(|c| c.id));
+        }
+        Ok(ids)
+    }
+    pub fn has_texts(&self) -> bool {
+        !self.sketch.texts.is_empty()
+    }
     pub fn minimum_schema_version(&self) -> u32 {
         if self.has_splines() {
             3
-        } else if self.has_expressions() {
+        } else if self.has_expressions() || self.has_texts() {
             2
         } else {
             1

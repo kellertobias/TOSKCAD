@@ -20,6 +20,7 @@
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <Bnd_Box.hxx>
+#include <Bnd_Box2d.hxx>
 #include <GCE2d_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2dAPI_InterCurveCurve.hxx>
@@ -145,6 +146,69 @@ CurveQueryData query(const Handle(Geom2d_Curve) & a,
   }
   return out;
 }
+// OCCT's single-curve self-intersector reports spurious tangent "overlap"
+// zones on C0 splines whose pieces include parallel straight spans (for
+// example glyph outlines). A C0 B-spline is therefore split at its C0 knots
+// and its smooth pieces are checked individually and pairwise; hits at the
+// joint shared by neighbouring pieces (including a closed seam) are not
+// intersections. Smooth, rational and periodic splines keep the direct query.
+CurveQueryData self_query(const Handle(Geom2d_Curve) & c, double tolerance) {
+  const auto spline = Handle(Geom2d_BSplineCurve)::DownCast(c);
+  if (spline.IsNull() || spline->IsRational() || spline->IsPeriodic())
+    return query(c, c, tolerance, true);
+  std::vector<double> breaks{spline->FirstParameter()};
+  for (int i = 2; i < spline->NbKnots(); ++i)
+    if (spline->Multiplicity(i) >= spline->Degree())
+      breaks.push_back(spline->Knot(i));
+  breaks.push_back(spline->LastParameter());
+  if (breaks.size() <= 2)
+    return query(c, c, tolerance, true);
+  struct Piece {
+    Handle(Geom2d_BSplineCurve) curve;
+    Bnd_Box2d box;
+  };
+  std::vector<Piece> pieces;
+  for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+    Handle(Geom2d_BSplineCurve) piece =
+        Handle(Geom2d_BSplineCurve)::DownCast(spline->Copy());
+    piece->Segment(breaks[i], breaks[i + 1]);
+    Bnd_Box2d box;
+    for (int p = 1; p <= piece->NbPoles(); ++p)
+      box.Add(piece->Pole(p));
+    box.Enlarge(tolerance);
+    pieces.push_back(Piece{piece, box});
+  }
+  const bool closed =
+      spline->StartPoint().Distance(spline->EndPoint()) <= tolerance;
+  CurveQueryData out;
+  const auto keep = [&](const CurveIntersectionData &hit, size_t a, size_t b) {
+    const bool next = b == a + 1;
+    const bool seam = closed && a == 0 && b + 1 == pieces.size();
+    if (!next && !seam)
+      return true;
+    const auto joint = next ? pieces[a].curve->EndPoint()
+                            : pieces[a].curve->StartPoint();
+    return p2(hit.point).Distance(joint) > tolerance;
+  };
+  for (size_t a = 0; a < pieces.size(); ++a) {
+    const auto own = query(pieces[a].curve, pieces[a].curve, tolerance, true);
+    out.overlaps += own.overlaps;
+    for (const auto &hit : own.points)
+      out.points.push_back(hit);
+    for (size_t b = a + 1; b < pieces.size(); ++b) {
+      if (pieces[a].box.IsOut(pieces[b].box))
+        continue;
+      const auto hits = query(pieces[a].curve, pieces[b].curve, tolerance, false);
+      out.overlaps += hits.overlaps;
+      for (const auto &hit : hits.points)
+        if (keep(hit, a, b))
+          out.points.push_back(hit);
+      if (out.points.size() > maxHits || out.overlaps > maxHits)
+        throw std::runtime_error("Curve intersection budget exceeded");
+    }
+  }
+  return out;
+}
 struct FaceBuild {
   TopoDS_Face face;
   std::vector<std::pair<TopoDS_Edge, uint32_t>> sources;
@@ -174,7 +238,7 @@ FaceBuild build(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
         throw std::runtime_error(
             "Exact profile edges are not connected within policy tolerance");
       if (edges[i].kind == 1) {
-        const auto hits = query(curves[i], curves[i], tolerance, true);
+        const auto hits = self_query(curves[i], tolerance);
         if (hits.overlaps > 0)
           throw std::runtime_error(
               "Self-overlapping spline cannot bound a profile");
@@ -390,7 +454,8 @@ CurveQueryData curve_intersections(const CurvedEdgeData &first,
       throw std::runtime_error("Invalid query tolerance");
     if (self && first.kind != 1)
       return CurveQueryData{};
-    return query(curve(first), curve(second), tolerance, self);
+    return self ? self_query(curve(first), tolerance)
+                : query(curve(first), curve(second), tolerance, false);
   });
 }
 double curved_profile_area(const Frame3 &f,

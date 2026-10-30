@@ -4,7 +4,7 @@ import {execFileSync,spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
-import {assembleRuntime,collectNotices,nativeSourceHash,peImports,runtimeExecutable} from './native-package.mjs';
+import {assembleRuntime,collectNotices,isNoticeFile,nativeSourceHash,peImports,runtimeExecutable} from './native-package.mjs';
 
 // Use a real Mach-O to exercise native executable signing. This fixture never
 // creates a window and is not an application runtime or a shipped product.
@@ -83,6 +83,17 @@ test('macOS development bundle declares its principal class and seals every reso
     writeFileSync(join(layout.resources,'LICENSE'),'tampered resource');
     assert.throws(()=>execFileSync('codesign',['--verify','--deep','--strict',bundle],{stdio:'pipe'}));
     assert.match(readFileSync(join(stage,'README.txt'),'utf8'),/macOS bundle is ad-hoc signed/);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+test('notices include font licence sidecars used by sketch text',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'multicad-font-notice-'));
+  try{
+    for(const name of ['Hack-Regular.ttf','Hack-Regular.txt','UFL.txt','OFL.txt','readme.txt','lib.rs'])writeFileSync(join(directory,name),name);
+    assert.equal(isNoticeFile(join(directory,'Hack-Regular.txt')),true);
+    assert.equal(isNoticeFile(join(directory,'UFL.txt')),true);
+    assert.equal(isNoticeFile(join(directory,'OFL.txt')),true);
+    assert.equal(isNoticeFile(join(directory,'readme.txt')),false);
+    assert.equal(isNoticeFile(join(directory,'Hack-Regular.ttf')),false);
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 function peFixture(name){

@@ -2132,10 +2132,12 @@ dependencies = [
 name = "multicad-core"
 version = "0.1.0-dev"
 dependencies = [
+ "epaint_default_fonts",
  "quick-xml",
  "serde",
  "serde_json",
  "sha2",
+ "skrifa",
  "tempfile",
  "uuid",
 ]

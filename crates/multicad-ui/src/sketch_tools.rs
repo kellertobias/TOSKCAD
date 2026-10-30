@@ -3,7 +3,7 @@ use crate::{icons::Icon, sketch_editor::DrawTool};
 use multicad_core::sketch_draw::{DrawInput, DrawRequest, PointInput};
 
 impl DrawTool {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Line,
         Self::Rectangle,
         Self::Circle,
@@ -17,6 +17,7 @@ impl DrawTool {
         Self::CircleThree,
         Self::Fillet,
         Self::Chamfer,
+        Self::Text,
     ];
     /// Rectangle drawing modes offered under one ribbon menu, default first.
     pub const RECTANGLE_MODES: [Self; 4] = [
@@ -42,6 +43,7 @@ impl DrawTool {
             Self::CircleThree => "circle-three",
             Self::Fillet => "sketch-fillet",
             Self::Chamfer => "sketch-chamfer",
+            Self::Text => "sketch-text",
         }
     }
     pub fn label(self) -> &'static str {
@@ -59,6 +61,7 @@ impl DrawTool {
             Self::CircleThree => "3-point circle",
             Self::Fillet => "Sketch fillet",
             Self::Chamfer => "Sketch chamfer",
+            Self::Text => "Text",
         }
     }
     pub fn icon(self) -> Icon {
@@ -74,6 +77,7 @@ impl DrawTool {
             }
             Self::CircleTwoRadius | Self::CircleThree => Icon::Circle,
             Self::Fillet | Self::Chamfer => Icon::Edge,
+            Self::Text => Icon::Sketch,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -91,6 +95,7 @@ impl DrawTool {
             Self::CircleThree => &["circle3"],
             Self::Fillet => &["corner-fillet"],
             Self::Chamfer => &["corner-chamfer"],
+            Self::Text => &["text"],
         }
     }
     pub fn usage(self) -> &'static str {
@@ -120,12 +125,21 @@ impl DrawTool {
             Self::Chamfer => {
                 "sketch-chamfer: set the setback in the Inspector, then click a corner shared by two lines"
             }
+            Self::Text => {
+                "text: set the string and cap height in the Inspector, then click the baseline origin"
+            }
         }
     }
     /// Syntax and finite numeric input are checked here. The shared drawing
     /// draft validates geometry, bounds and source budgets before committing.
     pub fn parse(self, args: &[&str], construction: bool) -> Result<DrawRequest, String> {
         let usage = || format!("Usage: {}", self.usage());
+        if self == Self::Text {
+            return Err(format!(
+                "Text is placed in the sketch view; {}",
+                self.usage()
+            ));
+        }
         if self.corner() {
             return Err(format!(
                 "{} picks its corner in the sketch view; {}",
@@ -158,7 +172,9 @@ impl DrawTool {
                 }
                 (args, false)
             }
-            Self::Fillet | Self::Chamfer => unreachable!("corner tools return above"),
+            Self::Fillet | Self::Chamfer | Self::Text => {
+                unreachable!("view-placed tools return above")
+            }
             Self::CircleTwoRadius => match args.len() {
                 5 => (args, false),
                 6 if args[5].eq_ignore_ascii_case("right") => (&args[..5], true),
@@ -265,7 +281,9 @@ impl DrawTool {
                 b: at(2),
                 c: at(4),
             },
-            Self::Fillet | Self::Chamfer => unreachable!("corner tools return above"),
+            Self::Fillet | Self::Chamfer | Self::Text => {
+                unreachable!("view-placed tools return above")
+            }
         };
         Ok(DrawRequest {
             input,

@@ -71,6 +71,15 @@ export function createSourceTree(destination,commit,version){
   return metadata;
 }
 function walk(path,visit){for(const e of readdirSync(path,{withFileTypes:true})){const p=join(path,e.name);if(e.isDirectory())walk(p,visit);else if(e.isFile())visit(p);}}
+// Licence texts, including a font's same-stem .txt licence sidecar (Hack-Regular.txt
+// beside Hack-Regular.ttf in epaint_default_fonts, used for sketch text outlines).
+export function isNoticeFile(path){
+  const name=path.split(/[\\/]/).at(-1);
+  if(path.endsWith('.rs'))return false;
+  if(/licen[cs]e|copying|copyright|notice|\bofl\b|\bufl\b/i.test(name))return true;
+  const font=/^(.+)\.txt$/i.exec(name);
+  return Boolean(font)&&['.ttf','.otf'].some(extension=>existsSync(join(dirname(path),font[1]+extension)));
+}
 export function collectNotices(resources,source,metadata){
   const notices=join(resources,'third-party');mkdirSync(notices,{recursive:true});
   const records=[];
@@ -78,7 +87,7 @@ export function collectNotices(resources,source,metadata){
     if(p.source===null)continue;
     if(!p.license)throw new Error(`Missing license metadata for ${p.name}`);
     const directory=dirname(p.manifest_path);const target=join(notices,`${p.name}-${p.version}`);
-    walk(directory,path=>{const name=path.split(/[\\/]/).at(-1);if(/licen[cs]e|copying|copyright|notice|\bofl\b/i.test(name)&&!path.endsWith('.rs')){const dest=join(target,relative(directory,path));mkdirSync(dirname(dest),{recursive:true});copyFileSync(path,dest);}});
+    walk(directory,path=>{if(isNoticeFile(path)){const dest=join(target,relative(directory,path));mkdirSync(dirname(dest),{recursive:true});copyFileSync(path,dest);}});
     records.push({name:p.name,version:p.version,license:p.license,source:p.source});
   }
   writeFileSync(join(resources,'third-party.json'),JSON.stringify(records.sort((a,b)=>a.name.localeCompare(b.name)),null,2)+'\n');
