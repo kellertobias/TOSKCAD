@@ -433,6 +433,7 @@ pub fn build() -> Result<Scenario, Error> {
                 opening(window, 1, 1000.),
                 opening(window, 2, 3000.),
             ],
+            cutouts: vec![],
         },
     );
     let walls = request.wall.output.body;

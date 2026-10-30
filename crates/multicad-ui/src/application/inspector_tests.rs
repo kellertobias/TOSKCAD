@@ -267,3 +267,123 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
         assert_eq!(app.current().session.revision(), 0);
     }
 }
+
+/// Room → Door from the ribbon command: refused without a wall, then a door
+/// is previewed natively and applied as one transaction on the wall.
+#[test]
+fn room_door_tool_previews_and_applies_one_wall_transaction() {
+    use multicad_core::model::{
+        BodyOutput, Justification, NewType, NewTypeKind, WallChange, WallDefinition, WallRequest,
+        WallTypeDefinition,
+    };
+    let height = 860.;
+    let mut empty =
+        Application::with_document(Box::new(Storage), Document::new("No walls").unwrap()).unwrap();
+    empty.pending_files.clear();
+    let factory: BackendFactory = Arc::new(|| Box::new(NativeBackend::new()));
+    empty.set_scene_backends(factory.clone());
+    empty.set_model_backends(factory.clone());
+    empty.mode = Mode::Sketch;
+    let refused = empty
+        .invoke(Command::Modeling(ModelingTool::Door), &[], Channel::Ui)
+        .unwrap_err();
+    assert!(refused.contains("Draw a wall first"), "{refused}");
+
+    let mut seed = Session::new(Document::new("Room door").unwrap()).unwrap();
+    let ty = NewType::new(
+        "Block 200",
+        NewTypeKind::Wall(WallTypeDefinition {
+            thickness: model::length(200.),
+            height: model::length(2500.),
+            justification: Justification::Center,
+            material: None,
+        }),
+    );
+    let request = WallRequest::new(
+        "Wall 1",
+        WallDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            wall_type: ty.id,
+            path: vec![
+                [model::length(0.), model::length(0.)],
+                [model::length(4000.), model::length(0.)],
+            ],
+            closed: false,
+            level: None,
+            base_z: model::length(0.),
+            thickness: None,
+            height: None,
+            justification: None,
+            openings: vec![],
+            cutouts: vec![],
+        },
+    );
+    let wall = request.feature;
+    seed.commit(
+        model::prepare_wall_change(
+            &seed,
+            0,
+            Actor::local(Channel::Ui),
+            &[ty],
+            &WallChange::Create(&request),
+        )
+        .unwrap()
+        .prepared,
+    )
+    .unwrap();
+    let mut app = Application::with_document(Box::new(Storage), seed.document().clone()).unwrap();
+    app.pending_files.clear();
+    app.set_scene_backends(factory.clone());
+    app.set_model_backends(factory);
+    app.mode = Mode::Sketch;
+    let original = app.current().session.document().clone();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    let until = Instant::now() + Duration::from_secs(5);
+    while !app.current().scene.is_current(original.id(), 0) {
+        frame(&ctx, &mut app, height, vec![]).drop_without_applying_deltas();
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(app.enabled(Command::Modeling(ModelingTool::Door)));
+    app.invoke(Command::Modeling(ModelingTool::Door), &[], Channel::Ui)
+        .unwrap();
+    assert!(app.current().sketch.model_interaction_active());
+    click(&ctx, &mut app, height, "Preview");
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let out = frame(&ctx, &mut app, height, vec![]);
+        let ready = out
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|(_, n)| n.label() == Some("Apply") && !n.is_disabled());
+        out.drop_without_applying_deltas();
+        if ready {
+            break;
+        }
+        assert!(Instant::now() < until, "Door Preview never became ready");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(app.current().session.document(), &original);
+    click(&ctx, &mut app, height, "Apply");
+    let session = &app.current().session;
+    assert_eq!(
+        session.revision(),
+        1,
+        "one transaction on the reopened document"
+    );
+    let placed = model::read_wall(session.document(), wall).unwrap();
+    assert_eq!(placed.openings.len(), 1);
+    assert_eq!(placed.openings[0].offset, model::length(500.));
+    assert_eq!(
+        session.activity().last().map(|a| a.label.as_str()),
+        Some("Place door")
+    );
+}

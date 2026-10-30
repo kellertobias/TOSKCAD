@@ -182,6 +182,7 @@ fn levels_host_slabs_pedestals_stairs_and_walls_that_follow_level_edits() {
                     height: None,
                     justification: None,
                     openings: vec![],
+                    cutouts: vec![],
                 },
             ),
         )
@@ -363,6 +364,7 @@ fn service_envelopes_report_model_clearance_and_show_in_plan() {
             height: None,
             justification: None,
             openings: vec![],
+            cutouts: vec![],
         },
     );
     let wall_part = wall.body;

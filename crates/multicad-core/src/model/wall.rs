@@ -25,6 +25,9 @@ pub const WALL_TYPE_KIND: &str = "architecture.wall_type";
 pub const WALL_TYPE_CAPABILITY: &str = "architecture.wall_type.1";
 pub const OPENING_TYPE_KIND: &str = "architecture.opening_type";
 pub const OPENING_TYPE_CAPABILITY: &str = "architecture.opening_type.1";
+/// Required by documents whose walls carry vertical cutouts, so a build that
+/// does not know them refuses the file instead of misreading the wall.
+pub const WALL_CUTOUT_CAPABILITY: &str = "architecture.wall_cutout.1";
 pub const MAX_WALL_POINTS: usize = 256;
 pub const MAX_WALL_OPENINGS: usize = 256;
 /// A miter longer than this many wall thicknesses is reported, not built.
@@ -93,6 +96,31 @@ pub struct Opening {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sill: Option<Dimension>,
 }
+/// The wall face a partial-depth vertical cutout (a chase) is cut from,
+/// looking along the segment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallFace {
+    #[default]
+    Left,
+    Right,
+}
+/// A full-height rectangular cutout in one wall segment, from the wall base
+/// to its top. Without a depth it passes through the whole thickness (a
+/// gap); with a depth it is a vertical chase cut into one face.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerticalCutout {
+    pub id: EntityId,
+    pub segment: usize,
+    /// Along the segment from its start point to the cutout's start side.
+    pub offset: Dimension,
+    pub width: Dimension,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<Dimension>,
+    #[serde(default)]
+    pub face: WallFace,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WallDefinition {
@@ -114,6 +142,8 @@ pub struct WallDefinition {
     pub justification: Option<Justification>,
     #[serde(default)]
     pub openings: Vec<Opening>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cutouts: Vec<VerticalCutout>,
 }
 
 fn definition<T: Serialize>(type_id: &str, data: &T) -> Result<Definition, DocumentError> {
@@ -163,19 +193,24 @@ impl WallDefinition {
                 if self.closed { "closed" } else { "open" }
             )));
         }
-        if self.openings.len() > MAX_WALL_OPENINGS {
+        if self.openings.len() + self.cutouts.len() > MAX_WALL_OPENINGS {
             return Err(invalid("Too many wall openings"));
         }
         let segments = self.segment_count();
         let mut ids = BTreeSet::new();
-        for opening in &self.openings {
-            if opening.id.is_nil() || !ids.insert(opening.id) {
+        let placed = self
+            .openings
+            .iter()
+            .map(|o| (o.id, o.segment, "Opening"))
+            .chain(self.cutouts.iter().map(|c| (c.id, c.segment, "Cutout")));
+        for (id, segment, what) in placed {
+            if id.is_nil() || !ids.insert(id) {
                 return Err(invalid("Wall openings need distinct identities"));
             }
-            if opening.segment >= segments {
+            if segment >= segments {
                 return Err(invalid(format!(
-                    "Opening refers to segment {} but the wall has {segments}",
-                    opening.segment + 1
+                    "{what} refers to segment {} but the wall has {segments}",
+                    segment + 1
                 )));
             }
         }
@@ -183,6 +218,10 @@ impl WallDefinition {
             check_dimension(d, Unit::Millimeter)?;
         }
         Ok(())
+    }
+    /// Whether a door, window or vertical cutout of this wall has `id`.
+    pub fn has_opening(&self, id: EntityId) -> bool {
+        self.openings.iter().any(|o| o.id == id) || self.cutouts.iter().any(|c| c.id == id)
     }
     pub fn segment_count(&self) -> usize {
         if self.closed {
@@ -198,6 +237,10 @@ impl WallDefinition {
         for o in &self.openings {
             out.push(&o.offset);
             out.extend(o.width.iter().chain(&o.height).chain(&o.sill));
+        }
+        for c in &self.cutouts {
+            out.extend([&c.offset, &c.width]);
+            out.extend(c.depth.iter());
         }
         out
     }
@@ -328,6 +371,17 @@ pub struct ResolvedOpening {
     pub sill_mm: f64,
 }
 #[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedWallCutout {
+    pub id: EntityId,
+    pub segment: usize,
+    pub offset_mm: f64,
+    pub width_mm: f64,
+    /// Depth into the wall from `face`; equal to the thickness when through.
+    pub depth_mm: f64,
+    pub face: WallFace,
+    pub through: bool,
+}
+#[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedWall {
     pub points: Vec<[f64; 2]>,
     pub closed: bool,
@@ -336,6 +390,7 @@ pub struct ResolvedWall {
     pub height_mm: f64,
     pub justification: Justification,
     pub openings: Vec<ResolvedOpening>,
+    pub cutouts: Vec<ResolvedWallCutout>,
 }
 pub fn resolve_wall(
     document: &Document,
@@ -367,6 +422,22 @@ pub fn resolve_wall(
             sill_mm: mm(o.sill.as_ref().unwrap_or(&t.sill))?,
         });
     }
+    let mut cutouts = vec![];
+    for c in &wall.cutouts {
+        let depth_mm = match &c.depth {
+            Some(d) => mm(d)?,
+            None => thickness_mm,
+        };
+        cutouts.push(ResolvedWallCutout {
+            id: c.id,
+            segment: c.segment,
+            offset_mm: mm(&c.offset)?,
+            width_mm: mm(&c.width)?,
+            depth_mm,
+            face: c.face,
+            through: c.depth.is_none() || depth_mm >= thickness_mm - 1e-6,
+        });
+    }
     let level_z = match wall.level {
         Some(level) => super::resolve_level(document, parameters, level)?.elevation_mm,
         None => 0.,
@@ -379,6 +450,7 @@ pub fn resolve_wall(
         height_mm,
         justification: wall.justification.unwrap_or(ty.justification),
         openings,
+        cutouts,
     })
 }
 
@@ -653,7 +725,90 @@ impl ResolvedWall {
             }
             spans.push((o.segment, o.offset_mm, o.offset_mm + o.width_mm));
         }
+        self.check_cutouts(plan, &mut spans)
+    }
+    /// Vertical cutouts run from the base to the top, so they must fit their
+    /// segment like an opening, overlap nothing, and leave one connected wall.
+    fn check_cutouts(
+        &self,
+        plan: &WallPlan,
+        spans: &mut Vec<(usize, f64, f64)>,
+    ) -> Result<(), DocumentError> {
+        let n = plan.segments.len();
+        let mut interior_through = 0;
+        for (k, c) in self.cutouts.iter().enumerate() {
+            let seg = plan.segments[c.segment];
+            let label = format!("Vertical cutout {}", k + 1);
+            if c.width_mm <= 1e-3 || c.depth_mm <= 1e-3 {
+                return Err(invalid(format!("{label} needs a positive width and depth")));
+            }
+            if c.depth_mm > self.thickness_mm + 1e-6 {
+                return Err(invalid(format!(
+                    "{label} is {:.1} mm deep but the wall is {:.1} mm thick; leave the depth empty to cut through",
+                    c.depth_mm, self.thickness_mm
+                )));
+            }
+            let at_start = !self.closed && c.segment == 0;
+            let at_end = !self.closed && c.segment + 1 == n;
+            let start_margin = if at_start { 0. } else { self.thickness_mm };
+            let end_margin = if at_end { 0. } else { self.thickness_mm };
+            let (a, b) = (c.offset_mm, c.offset_mm + c.width_mm);
+            if a < start_margin - 1e-9 || b > seg.length_mm - end_margin + 1e-9 {
+                return Err(invalid(format!(
+                    "{label} does not fit segment {} ({:.1} mm long, keeping {:.1} mm of wall at joints)",
+                    c.segment + 1,
+                    seg.length_mm,
+                    self.thickness_mm
+                )));
+            }
+            for (s, sa, sb) in spans.iter() {
+                if *s == c.segment && a < *sb - 1e-9 && b > *sa + 1e-9 {
+                    return Err(invalid(format!(
+                        "{label} overlaps another opening or cutout"
+                    )));
+                }
+            }
+            spans.push((c.segment, a, b));
+            if c.through {
+                let touches_start = at_start && a <= 1e-9;
+                let touches_end = at_end && b >= seg.length_mm - 1e-9;
+                if touches_start && touches_end {
+                    return Err(invalid(format!("{label} removes the whole wall")));
+                }
+                if !touches_start && !touches_end {
+                    interior_through += 1;
+                }
+            }
+        }
+        // An open wall falls apart at its first interior through-cut; a closed
+        // room stays one piece with a single gap.
+        let allowed = usize::from(self.closed);
+        if interior_through > allowed {
+            return Err(invalid(if self.closed {
+                "Two full-depth vertical cutouts split this room wall into separate pieces; give one a chase depth or draw separate walls"
+            } else {
+                "A full-depth vertical cutout inside an open wall splits it into two pieces; give it a chase depth, move it to a wall end or draw two walls"
+            }));
+        }
         Ok(())
+    }
+    /// The plan rectangle of a vertical cutout: along-segment span and
+    /// across-wall span (signed offsets from the path, low then high).
+    pub fn cutout_span(
+        &self,
+        plan: &WallPlan,
+        cutout: &ResolvedWallCutout,
+    ) -> ([f64; 2], [f64; 2]) {
+        let along = [cutout.offset_mm, cutout.offset_mm + cutout.width_mm];
+        let across = if cutout.through {
+            [plan.right_mm, plan.left_mm]
+        } else {
+            match cutout.face {
+                WallFace::Left => [plan.left_mm - cutout.depth_mm, plan.left_mm],
+                WallFace::Right => [plan.right_mm, plan.right_mm + cutout.depth_mm],
+            }
+        };
+        (along, across)
     }
     /// Plan symbols in world X/Y: door leaves and swing arcs, window panes.
     pub fn plan_symbols(&self, plan: &WallPlan) -> PlanSymbols {
@@ -923,7 +1078,7 @@ impl NewType {
             kind,
         }
     }
-    fn entity(&self) -> Result<Entity, CommandError> {
+    pub(super) fn entity(&self) -> Result<Entity, CommandError> {
         if self.name.trim().is_empty() || self.name.len() > 256 {
             return Err(error("Type name must contain 1–256 bytes"));
         }
@@ -965,6 +1120,18 @@ pub fn prepare_wall_change(
     new_types: &[NewType],
     change: &WallChange<'_>,
 ) -> Result<ModelPrepared, CommandError> {
+    prepare_wall_change_labeled(session, expected_revision, actor, new_types, change, None)
+}
+/// As [`prepare_wall_change`], with an optional history label replacing
+/// "Create wall" or "Edit wall".
+pub(super) fn prepare_wall_change_labeled(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    new_types: &[NewType],
+    change: &WallChange<'_>,
+    history_label: Option<&str>,
+) -> Result<ModelPrepared, CommandError> {
     revision(session, expected_revision)?;
     let mut edits = vec![];
     for t in new_types {
@@ -1003,6 +1170,8 @@ pub fn prepare_wall_change(
             )
         }
     };
+    // Validate first: planning indexes segments by the openings' numbers.
+    wall.validate()?;
     let resolved = resolve_wall(&candidate, &parameters, wall)?;
     resolved.check_openings(&resolved.plan()?)?;
     match change {
@@ -1051,7 +1220,7 @@ pub fn prepare_wall_change(
     let prepared = session.prepare_scoped(Request {
         expected_revision,
         actor,
-        label: label.into(),
+        label: history_label.unwrap_or(label).into(),
         edits,
     })?;
     Ok(ModelPrepared {
@@ -1072,6 +1241,7 @@ mod tests {
             height_mm: 2500.,
             justification: j,
             openings: vec![],
+            cutouts: vec![],
         }
     }
     fn area(l: &Loop) -> f64 {
@@ -1194,6 +1364,7 @@ mod tests {
                 height: None,
                 sill: None,
             }],
+            cutouts: vec![],
         };
         let request = WallRequest::new("Partition", wall);
         let prepared = prepare_wall_change(

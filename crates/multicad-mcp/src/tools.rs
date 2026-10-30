@@ -88,9 +88,14 @@ use sheet_metal::{
     set_sheet_part, sheet_hardware, sheet_metal, unfold_sheet,
 };
 pub use walls::{
-    CreateWallArgs, EditWallArgs, EditWallTypeArgs, OpeningTypeArgs, WallArgs, WallTypeArgs,
+    CreateWallArgs, EditWallArgs, EditWallTypeArgs, FaceArg, InspectWallArgs, NewOpeningTypeArg,
+    OpeningTypeArgs, RemoveWallOpeningArgs, VerticalCutoutArgs, WallArgs, WallOpeningArgs,
+    WallTypeArgs,
 };
-use walls::{create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type};
+use walls::{
+    create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type, inspect_wall,
+    remove_wall_opening, set_vertical_cutout, set_wall_opening,
+};
 pub use weldment::{
     ConnectArgs, EditMemberArgs, MembersArgs, ProfileStockArgs, SequenceArgs, WeldArgs,
     WeldPlanArgs,
@@ -289,8 +294,20 @@ tools! {
         "Draw a wall of a wall type along a path (world X/Y mm, optionally closed into a room) with optional thickness/height/justification overrides and door/window openings placed by segment and offset. The mitered wall and its cut openings are evaluated natively before the transaction commits; unsupported joints or openings are refused with a reason.",
         create_wall;
     "edit_wall" => EditWallArgs, "Edit wall", false,
-        "Replace a wall's path, overrides and openings, keeping its Part and the identities of openings at the same positions. Evaluated natively before commit.",
+        "Replace a wall's path, overrides and openings, keeping its Part, the identities of openings at the same positions and its vertical cutouts. Evaluated natively before commit.",
         edit_wall;
+    "inspect_wall" => InspectWallArgs, "Inspect wall", true,
+        "Report a wall's resolved segments (index, start, direction, length), thickness, height, base, and every door, window and vertical cutout with its ID, segment, offset and size, plus any current placement diagnostic. Use the segment indices and IDs with set_wall_opening, set_vertical_cutout and remove_wall_opening.",
+        inspect_wall;
+    "set_wall_opening" => WallOpeningArgs, "Place or edit door/window", false,
+        "Add a door or window to one wall segment at an offset (from the segment start to the start jamb), or edit an existing one by ID, with an existing opening type or a new type committed in the same transaction and optional width/height/sill overrides. Misfitting, top-reaching or overlapping openings are refused with a reason; the wall is evaluated natively before the one transaction commits.",
+        set_wall_opening;
+    "set_vertical_cutout" => VerticalCutoutArgs, "Place or edit vertical cutout", false,
+        "Add or edit (by ID) a full-height rectangular cutout in one wall segment, from the wall base to its top: through the full thickness when depth is omitted, otherwise a chase of that depth from the left or right face. Cutouts that do not fit, overlap an opening, exceed the thickness or would split the wall into pieces are refused. Slabs are not cut. Evaluated natively before commit.",
+        set_vertical_cutout;
+    "remove_wall_opening" => RemoveWallOpeningArgs, "Remove door, window or cutout", false,
+        "Remove one door, window or vertical cutout from a wall by ID as one transaction, evaluated natively before commit.",
+        remove_wall_opening;
     "create_panel_stock" => PanelStockArgs, "Create panel stock", false,
         "Create a panel stock definition (thickness, sheet size, grain relative to the sheet length) on an existing Material or a new one. Commits one transaction.",
         create_panel_stock;

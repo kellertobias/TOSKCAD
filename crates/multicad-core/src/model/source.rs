@@ -812,5 +812,11 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }) {
         capabilities.insert(PART_REFERENCE_CAPABILITY.into());
     }
+    if super::walls(document).any(|entity| {
+        matches!(&entity.data, EntityData::Feature { definition, .. }
+            if definition.data.get("cutouts").is_some_and(|c| c.as_array().is_some_and(|a| !a.is_empty())))
+    }) {
+        capabilities.insert(super::WALL_CUTOUT_CAPABILITY.into());
+    }
     capabilities
 }

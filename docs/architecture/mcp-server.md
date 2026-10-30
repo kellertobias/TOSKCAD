@@ -165,7 +165,11 @@ schema is generated from the Rust argument types with schemars and returned by
 | `set_drawing_guide` | yes | Floor plan, section or elevation guide, optionally generating or updating its linked drawing views (see [drawing guides](drawing-guides.md)) |
 | `create_wall_type`, `edit_wall_type` | yes | Reusable wall types; a type edit rebuilds every wall that does not override the value (see [walls](walls.md)) |
 | `create_opening_type` | yes | Reusable door (hinge, swing) or window type with width, height and sill |
-| `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit |
+| `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit; an edit keeps vertical cutouts |
+| `inspect_wall` | no | A wall's resolved segments, doors, windows and vertical cutouts with IDs, plus any placement diagnostic |
+| `set_wall_opening` | yes | Add a door or window to one segment at an offset, or edit one by ID, with an existing or new opening type |
+| `set_vertical_cutout` | yes | Add or edit a full-height cutout: through the wall, or a chase of a given depth from one face |
+| `remove_wall_opening` | yes | Remove one door, window or vertical cutout by ID |
 | `create_panel_stock` | yes | Panel stock (thickness, sheet size, grain) on an existing or new Material (see [cabinetry](cabinetry.md)) |
 | `set_carcass` | yes | Create or edit a parametric carcass; every panel is evaluated natively before commit |
 | `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |

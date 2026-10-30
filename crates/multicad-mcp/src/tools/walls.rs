@@ -8,8 +8,9 @@ use crate::{
 use multicad_core::{
     document::EntityId,
     model::{
-        self, BodyOutput, Hinge, Justification, Opening, OpeningKind, OpeningTypeDefinition, Swing,
-        WallDefinition, WallRequest, WallTypeDefinition, length,
+        self, BodyOutput, Hinge, Justification, NewType, NewTypeKind, Opening, OpeningKind,
+        OpeningTypeDefinition, Swing, VerticalCutout, WallDefinition, WallFace, WallOpeningChange,
+        WallRequest, WallTypeDefinition, length,
     },
 };
 use schemars::JsonSchema;
@@ -209,6 +210,8 @@ fn wall_value(
         height: opt(&args.height)?,
         justification: args.justification.map(Into::into),
         openings,
+        // This tool does not author cutouts; an edit keeps the existing ones.
+        cutouts: previous.map(|p| p.cutouts.clone()).unwrap_or_default(),
     })
 }
 fn q_ref<'a>(
@@ -402,4 +405,344 @@ pub(super) fn edit_wall(host: &dyn Host, call: &Request, args: EditWallArgs) -> 
         )
     })??;
     finish(host, call, prepared, revision, feature, body)
+}
+
+// ---- Single openings: the shared Room-tool operation ---------------------
+
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FaceArg {
+    Left,
+    Right,
+}
+/// A door or window type created in the same transaction as the placement.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewOpeningTypeArg {
+    pub name: String,
+    pub kind: OpeningKindArg,
+    #[serde(default)]
+    pub hinge: Option<HingeArg>,
+    #[serde(default)]
+    pub swing: Option<SwingArg>,
+    pub width: Quantity,
+    pub height: Quantity,
+    pub sill: Quantity,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WallOpeningArgs {
+    pub expected_revision: u64,
+    /// The wall feature ID.
+    pub wall: String,
+    /// An existing door/window ID of this wall to edit; omit to add one.
+    #[serde(default)]
+    pub opening: Option<String>,
+    /// Existing door or window type. Required when adding unless `new_type` is given.
+    #[serde(default)]
+    pub opening_type: Option<String>,
+    /// A new reusable type committed together with the placement.
+    #[serde(default)]
+    pub new_type: Option<NewOpeningTypeArg>,
+    /// Zero-based wall segment index (see inspect_wall).
+    pub segment: usize,
+    /// Distance along the segment from its start point to the start jamb.
+    pub offset: Quantity,
+    #[serde(default)]
+    pub width: Option<Quantity>,
+    #[serde(default)]
+    pub height: Option<Quantity>,
+    #[serde(default)]
+    pub sill: Option<Quantity>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VerticalCutoutArgs {
+    pub expected_revision: u64,
+    pub wall: String,
+    /// An existing cutout ID of this wall to edit; omit to add one.
+    #[serde(default)]
+    pub cutout: Option<String>,
+    /// Zero-based wall segment index (see inspect_wall).
+    pub segment: usize,
+    /// Distance along the segment from its start point to the cutout's start side.
+    pub offset: Quantity,
+    pub width: Quantity,
+    /// Chase depth into the wall from `face`; omit to cut through the full thickness.
+    #[serde(default)]
+    pub depth: Option<Quantity>,
+    /// Face a chase is cut from, looking along the segment (default left).
+    #[serde(default)]
+    pub face: Option<FaceArg>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveWallOpeningArgs {
+    pub expected_revision: u64,
+    pub wall: String,
+    /// The door, window or vertical cutout ID to remove.
+    pub opening: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InspectWallArgs {
+    pub wall: String,
+}
+
+fn opening_kind(
+    kind: OpeningKindArg,
+    hinge: Option<HingeArg>,
+    swing: Option<SwingArg>,
+) -> OpeningKind {
+    match kind {
+        OpeningKindArg::Window => OpeningKind::Window,
+        OpeningKindArg::Door => OpeningKind::Door {
+            hinge: match hinge {
+                Some(HingeArg::End) => Hinge::End,
+                _ => Hinge::Start,
+            },
+            swing: match swing {
+                Some(SwingArg::Right) => Swing::Right,
+                _ => Swing::Left,
+            },
+        },
+    }
+}
+fn read_current_wall(
+    document: &multicad_core::document::Document,
+    feature: EntityId,
+) -> Result<WallDefinition, ToolError> {
+    model::read_wall(document, feature).map_err(|e| ToolError::from(e).involving(feature))
+}
+/// Stage one opening change, evaluate the wall natively, then commit.
+fn commit_opening_change(
+    host: &dyn Host,
+    call: &Request,
+    revision: u64,
+    (feature, body): (EntityId, EntityId),
+    new_types: Vec<NewType>,
+    change: WallOpeningChange,
+) -> ToolResult {
+    let target = change.target();
+    let call_owned = call.clone();
+    let prepared = with(host, move |t| {
+        revision_guard(t, revision)?;
+        Ok::<_, ToolError>(
+            model::prepare_wall_opening(
+                t.session(),
+                revision,
+                call_owned.actor.clone(),
+                feature,
+                &new_types,
+                &change,
+            )?
+            .prepared,
+        )
+    })??;
+    let mut result = finish(host, call, prepared, revision, feature, body)?;
+    result["opening"] = json!(target);
+    Ok(result)
+}
+pub(super) fn set_wall_opening(
+    host: &dyn Host,
+    call: &Request,
+    args: WallOpeningArgs,
+) -> ToolResult {
+    let feature = id(&args.wall)?;
+    let (document, revision, evaluated) = snapshot(host)?;
+    revision_matches(revision, args.expected_revision)?;
+    let current = read_current_wall(&document, feature)?;
+    let q = q_ref(&document, &evaluated);
+    let opt = |v: &Option<Quantity>| v.as_ref().map(&q).transpose();
+    let previous = match &args.opening {
+        Some(o) => {
+            let oid = id(o)?;
+            Some(
+                current
+                    .openings
+                    .iter()
+                    .find(|x| x.id == oid)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ToolError::new(
+                            "invalid_request",
+                            "This wall has no door or window with that ID",
+                        )
+                    })?,
+            )
+        }
+        None => None,
+    };
+    let mut new_types = vec![];
+    let opening_type = match (&args.opening_type, &args.new_type) {
+        (Some(_), Some(_)) => {
+            return Err(ToolError::new(
+                "invalid_request",
+                "Give either opening_type or new_type, not both",
+            ));
+        }
+        (Some(t), None) => id(t)?,
+        (None, Some(t)) => {
+            let ty = NewType::new(
+                t.name.clone(),
+                NewTypeKind::Opening(OpeningTypeDefinition {
+                    kind: opening_kind(t.kind, t.hinge, t.swing),
+                    width: q(&t.width)?,
+                    height: q(&t.height)?,
+                    sill: q(&t.sill)?,
+                }),
+            );
+            let tid = ty.id;
+            new_types.push(ty);
+            tid
+        }
+        (None, None) => previous.as_ref().map(|p| p.opening_type).ok_or_else(|| {
+            ToolError::new(
+                "invalid_request",
+                "Choose an opening_type or define a new_type for the new opening",
+            )
+        })?,
+    };
+    let opening = Opening {
+        id: previous.as_ref().map(|p| p.id).unwrap_or_default(),
+        opening_type,
+        segment: args.segment,
+        offset: q(&args.offset)?,
+        width: opt(&args.width)?,
+        height: opt(&args.height)?,
+        sill: opt(&args.sill)?,
+    };
+    let change = if previous.is_some() {
+        WallOpeningChange::ReplaceOpening(opening)
+    } else {
+        WallOpeningChange::AddOpening(opening)
+    };
+    commit_opening_change(
+        host,
+        call,
+        revision,
+        (feature, current.output.body),
+        new_types,
+        change,
+    )
+}
+pub(super) fn set_vertical_cutout(
+    host: &dyn Host,
+    call: &Request,
+    args: VerticalCutoutArgs,
+) -> ToolResult {
+    let feature = id(&args.wall)?;
+    let (document, revision, evaluated) = snapshot(host)?;
+    revision_matches(revision, args.expected_revision)?;
+    let current = read_current_wall(&document, feature)?;
+    let q = q_ref(&document, &evaluated);
+    let existing = args.cutout.as_deref().map(id).transpose()?;
+    if let Some(cid) = existing
+        && !current.cutouts.iter().any(|c| c.id == cid)
+    {
+        return Err(ToolError::new(
+            "invalid_request",
+            "This wall has no vertical cutout with that ID",
+        ));
+    }
+    let cutout = VerticalCutout {
+        id: existing.unwrap_or_default(),
+        segment: args.segment,
+        offset: q(&args.offset)?,
+        width: q(&args.width)?,
+        depth: args.depth.as_ref().map(&q).transpose()?,
+        face: match args.face {
+            Some(FaceArg::Right) => WallFace::Right,
+            _ => WallFace::Left,
+        },
+    };
+    let change = if existing.is_some() {
+        WallOpeningChange::ReplaceCutout(cutout)
+    } else {
+        WallOpeningChange::AddCutout(cutout)
+    };
+    commit_opening_change(
+        host,
+        call,
+        revision,
+        (feature, current.output.body),
+        vec![],
+        change,
+    )
+}
+pub(super) fn remove_wall_opening(
+    host: &dyn Host,
+    call: &Request,
+    args: RemoveWallOpeningArgs,
+) -> ToolResult {
+    let feature = id(&args.wall)?;
+    let (document, revision, _) = snapshot(host)?;
+    revision_matches(revision, args.expected_revision)?;
+    let current = read_current_wall(&document, feature)?;
+    let change = WallOpeningChange::Remove(id(&args.opening)?);
+    commit_opening_change(
+        host,
+        call,
+        revision,
+        (feature, current.output.body),
+        vec![],
+        change,
+    )
+}
+pub(super) fn inspect_wall(host: &dyn Host, _: &Request, args: InspectWallArgs) -> ToolResult {
+    let feature = id(&args.wall)?;
+    let (document, revision, evaluated) = snapshot(host)?;
+    let source = read_current_wall(&document, feature)?;
+    let e = |e: multicad_core::document::DocumentError| ToolError::from(e).involving(feature);
+    let wall = model::resolve_wall(&document, &evaluated, &source).map_err(e)?;
+    let plan = wall.plan().map_err(e)?;
+    let diagnostic = wall.check_openings(&plan).err().map(|e| e.to_string());
+    let segments: Vec<_> = plan
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            json!({
+                "segment": i, "start_mm": s.start, "direction": s.direction,
+                "length_mm": s.length_mm,
+            })
+        })
+        .collect();
+    let openings: Vec<_> = wall
+        .openings
+        .iter()
+        .zip(&source.openings)
+        .map(|(o, s)| {
+            json!({
+                "opening": o.id, "opening_type": s.opening_type,
+                "kind": match o.kind { OpeningKind::Door { .. } => "door", OpeningKind::Window => "window" },
+                "segment": o.segment, "offset_mm": o.offset_mm, "width_mm": o.width_mm,
+                "height_mm": o.height_mm, "sill_mm": o.sill_mm,
+            })
+        })
+        .collect();
+    let cutouts: Vec<_> = wall
+        .cutouts
+        .iter()
+        .map(|c| {
+            json!({
+                "cutout": c.id, "segment": c.segment, "offset_mm": c.offset_mm,
+                "width_mm": c.width_mm, "depth_mm": c.depth_mm, "through": c.through,
+                "face": match c.face { WallFace::Left => "left", WallFace::Right => "right" },
+            })
+        })
+        .collect();
+    Ok(json!({
+        "revision": revision,
+        "wall": feature,
+        "part": source.output.body,
+        "closed": wall.closed,
+        "thickness_mm": wall.thickness_mm,
+        "height_mm": wall.height_mm,
+        "base_z_mm": wall.base_z_mm,
+        "segments": segments,
+        "openings": openings,
+        "cutouts": cutouts,
+        "diagnostic": diagnostic,
+    }))
 }

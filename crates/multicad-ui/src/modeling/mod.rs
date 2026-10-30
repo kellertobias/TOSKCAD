@@ -25,6 +25,7 @@ mod names;
 #[cfg(test)]
 pub(crate) mod native_fixture;
 mod object_basis;
+mod opening;
 mod operation_guide;
 mod placement;
 mod primitive;
@@ -70,6 +71,9 @@ pub enum ModelingTool {
     Scale,
     EdgeTreatment,
     Wall,
+    Door,
+    Window,
+    Cutout,
     Level,
     Panel,
     Joint,
@@ -82,10 +86,13 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 31] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
+        Self::Door,
+        Self::Window,
+        Self::Cutout,
         Self::Level,
         Self::Panel,
         Self::Joint,
@@ -132,6 +139,9 @@ impl ModelingTool {
             Self::Scale => "scale",
             Self::EdgeTreatment => "edge-treatment",
             Self::Wall => "wall",
+            Self::Door => "door",
+            Self::Window => "window-tool",
+            Self::Cutout => "vertical-cutout",
             Self::Level => "level",
             Self::Panel => "panel",
             Self::Joint => "joint",
@@ -166,6 +176,9 @@ impl ModelingTool {
             Self::Scale => "Scale",
             Self::EdgeTreatment => "Fillet / Chamfer",
             Self::Wall => "Wall",
+            Self::Door => "Door",
+            Self::Window => "Window",
+            Self::Cutout => "Vertical cutout",
             Self::Level => "Levels & stairs",
             Self::Panel => "Panel / carcass",
             Self::Joint => "Panel joint",
@@ -200,6 +213,8 @@ impl ModelingTool {
             Self::Scale => crate::icons::Icon::Scale,
             Self::EdgeTreatment => crate::icons::Icon::Edge,
             Self::Wall => crate::icons::Icon::Box,
+            Self::Door | Self::Window => crate::icons::Icon::Box,
+            Self::Cutout => crate::icons::Icon::Cut,
             Self::Level => crate::icons::Icon::Edge,
             Self::Panel => crate::icons::Icon::Box,
             Self::Joint => crate::icons::Icon::Link,
@@ -234,6 +249,9 @@ impl ModelingTool {
             Self::Scale => &["scale-body", "resize-solid"],
             Self::EdgeTreatment => &["fillet", "chamfer", "edge"],
             Self::Wall => &["walls", "architectural-wall", "doors-windows"],
+            Self::Door => &["place-door", "wall-door"],
+            Self::Window => &["place-window", "wall-window"],
+            Self::Cutout => &["wall-cutout", "chase", "wall-chase"],
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
@@ -303,6 +321,12 @@ impl ModelingTool {
             Self::Wall => {
                 "Usage: wall (choose or define a wall type, enter path points and doors/windows in the Inspector, then Preview and Apply)"
             }
+            Self::Door | Self::Window => {
+                "Usage: door / window-tool (click a wall face in the viewport or choose the wall, segment and offset, pick or define a type in the Inspector, then Preview and Apply)"
+            }
+            Self::Cutout => {
+                "Usage: vertical-cutout (click a wall face or choose the wall, segment and offset, set the width and through or chase depth, then Preview and Apply)"
+            }
             Self::EdgeTreatment => {
                 "Usage: edge-treatment (choose Part edges, a Fillet radius or Chamfer distances/angle and explicit adjacent faces, then Preview and Apply)"
             }
@@ -370,6 +394,12 @@ impl ModelingTool {
             }
             Self::Wall => {
                 "Requires native modeling and no pending edits. Wall and opening types are created with the wall or reused from the project."
+            }
+            Self::Door | Self::Window => {
+                "Requires an existing wall, native modeling and no pending edits. Places one opening of a reusable type at a segment offset; misfitting, top-reaching or overlapping openings are refused. Reopen an existing opening from the same tool to edit or remove it."
+            }
+            Self::Cutout => {
+                "Requires an existing wall, native modeling and no pending edits. Cuts the full wall height, through the wall or as a chase from one face; cutouts that would split the wall are refused. Slabs are not cut."
             }
             Self::EdgeTreatment => {
                 "Select native edges of one Part definition. Sided Chamfer distances/angles use explicit adjacent face captures. Linked Instances follow the definition."
