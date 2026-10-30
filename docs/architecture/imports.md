@@ -11,6 +11,8 @@ features build on their Parts like any other.
 | `crates/multicad-model/src/imports.rs` | Reading files natively and building the solids |
 | `crates/multicad-kernel` | `Solid::step_solids`, `to_brep` and `from_brep` |
 | `crates/multicad-mcp/src/tools/imports.rs` | MCP tools |
+| `crates/multicad-ui/src/mechanical_import/` | Window import Inspector |
+| `crates/multicad-app/src/mechanical_imports.rs` | Native reader for the window |
 
 ## STEP
 
@@ -117,6 +119,8 @@ an import-specific copy:
 
 ## Access
 
+- **Window.** Model → **Import** has **Import STEP**, **Import KiCad board**
+  and **Update import**. See [Window import](#window-import).
 - **MCP.** `import_step` and `import_kicad`, for both a first import and an
   update. Both read bare file names from the exchange folder in scope
   (`--export-dir`) only. KiCad model lookups outside that folder count as
@@ -124,9 +128,55 @@ an import-specific copy:
 - **API.** `read_step_file` and `read_kicad_file` in `multicad-model`, then
   the `prepare_*` transactions in `multicad-core`.
 
+## Window import
+
+The commands sit on their own **Import** tab in Model, next to Materials:
+imports create Parts, and other Model features build on them. Sketch has
+its own DXF/SVG import for curves.
+
+1. **Choose a file.** The native file dialog filters `.step`/`.stp` or
+   `.kicad_pcb`. Cancelling it leaves the document unchanged.
+2. **Read.** A worker thread reads the file with `read_step_file` or
+   `read_kicad_file`. The window keeps responding. An unreadable, empty or
+   invalid file closes the import with the reader's message.
+3. **Check.** A second worker prepares the same `prepare_*` transaction as
+   MCP against a snapshot of the document and builds the resulting model.
+   A model that does not build blocks Apply and shows why. Changing an
+   option, or any edit to the document, starts a new check.
+4. **Review in the Inspector.**
+   - **STEP:** each solid with its name, volume and size.
+   - **KiCad:** thickness, outline, cutouts and holes. You can set the
+     minimum hole size, which reads the board again on the worker, and the
+     default envelope height. A checkbox selects each footprint and shows
+     whether its STEP model was found. Unsupported items are listed.
+   - **Apply will:** the Parts to create, models that were not found, or
+     the reimport plan.
+5. **Apply or Cancel.** Apply commits the checked transaction as one
+   undoable step. Cancel discards it.
+
+**Updating an import.** **Update import** uses the import that owns the
+selected Parts: a STEP solid, the board or a component. With nothing
+selected, it uses the only import in the document. It then opens the
+dialog for that kind of file. An import of either kind can also choose
+**Update …** as its target in the Inspector. Before Apply, the Inspector
+shows:
+
+- **STEP:** matched, new and missing solids;
+- **KiCad:** whether the outline and holes changed, and the moved,
+  unchanged, added and missing components.
+
+Missing solids and components are kept with their last geometry, as
+described above.
+
+The user picks the board in the dialog, so its footprint models are found
+wherever KiCad would find them: `${KIPRJMOD}` and environment variables.
+MCP looks only in the exchange folder.
+
 ## Limits
 
-- **No window import.** The window has no STEP or KiCad import command yet.
+- **Window preview.** The Inspector lists what Apply creates, but the 3D view
+  shows the candidate only after Apply. The check builds the whole document,
+  so a feature that already fails elsewhere also blocks the import.
 - **STEP structure.** The STEP assembly tree, product names and colors are
   not read; solids are flat Parts with their file placement.
 - **KiCad coverage.**
@@ -137,3 +187,5 @@ an import-specific copy:
   - Copper, silkscreen, zones and tracks are not imported.
 - **Not verified.** Files from other CAD systems or real KiCad projects were
   not run; the tests use OCCT-written STEP files and hand-written boards.
+  The window import is covered by application and Inspector tests with
+  those files. It has not been checked interactively in the macOS window.
