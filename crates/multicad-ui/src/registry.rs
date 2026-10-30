@@ -58,6 +58,7 @@ pub enum Command {
     New,
     NewWindow,
     NewSketch,
+    Engraving,
     Draw(DrawTool),
     SketchOperation(OperationTool),
     External(crate::external_references::ExternalTool),
@@ -219,6 +220,13 @@ impl Default for Registry {
                 icon: Icon::Sketch,
                 action: Command::NewSketch,
                 aliases: &["start", "new-sketch"],
+            },
+            Tool {
+                id: "engraving",
+                label: "Create engraving",
+                icon: Icon::Sketch,
+                action: Command::Engraving,
+                aliases: &["engraving", "engrave"],
             },
             Tool {
                 id: "import-artwork",
@@ -462,7 +470,7 @@ impl Default for Registry {
                                 )
                             })
                             .map(ModelingTool::id)
-                            .chain(["new-sketch", "symbol"])
+                            .chain(["new-sketch", "engraving", "symbol"])
                             .collect(),
                         requires_active_sketch: false,
                     },

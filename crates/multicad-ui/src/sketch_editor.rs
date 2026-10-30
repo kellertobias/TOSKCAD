@@ -1298,27 +1298,63 @@ impl SketchEditor {
         if self.has_pending_edits() {
             return Err("Apply or discard pending edits before creating a sketch".into());
         }
-        if let Some(hit) = self
-            .solid
-            .selected_hit()
-            .filter(|hit| hit.key.kind == multicad_core::references::TopologyKind::Face)
-            .cloned()
-        {
-            let scene = self.display_scene.clone();
-            let context = PlaneContext {
-                document: session.document(),
-                revision: session.revision(),
-                scene: scene.as_deref(),
-                report: self.evaluated.as_ref(),
-                occurrence: Some(hit.instance),
-                section: self.solid.section.plane(),
-            };
-            let preview = crate::sketch_plane::selected_face(context, &hit)?;
-            self.create_on_plane(session, preview, channel)
+        if self.selected_face_hit().is_some() {
+            self.create_on_selected_face(session, "Sketch", channel)
         } else {
             self.begin();
             Ok(())
         }
+    }
+    fn selected_face_hit(&self) -> Option<crate::viewport::Hit> {
+        self.solid
+            .selected_hit()
+            .filter(|hit| hit.key.kind == multicad_core::references::TopologyKind::Face)
+            .cloned()
+    }
+    fn create_on_selected_face(
+        &mut self,
+        session: &mut Session,
+        prefix: &str,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let hit = self
+            .selected_face_hit()
+            .ok_or("Select a planar face in the 3D view first")?;
+        let scene = self.display_scene.clone();
+        let context = PlaneContext {
+            document: session.document(),
+            revision: session.revision(),
+            scene: scene.as_deref(),
+            report: self.evaluated.as_ref(),
+            occurrence: Some(hit.instance),
+            section: self.solid.section.plane(),
+        };
+        let preview = crate::sketch_plane::selected_face(context, &hit)?;
+        self.create_named(session, preview, prefix, channel)
+    }
+    /// Create Engraving: a sketch attached to the planar face selected in the
+    /// 3D view. Unlike New sketch there is no plane-picking fallback, and it
+    /// defines only the sketch, not any depth or material removal.
+    pub fn begin_engraving(
+        &mut self,
+        session: &mut Session,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if self.has_pending_edits() {
+            return Err(
+                "Apply or discard pending edits before creating an engraving sketch".into(),
+            );
+        }
+        if self.editing {
+            return Err("Finish or abort the open sketch before creating an engraving".into());
+        }
+        if self.selected_face_hit().is_none() {
+            return Err("Select a planar face in the 3D view, then Create engraving".into());
+        }
+        self.create_on_selected_face(session, "Engraving", channel)?;
+        self.message =
+            "Editing engraving sketch on the selected face · dimensions in millimeters".into();
+        Ok(())
     }
     pub fn begin(&mut self) {
         if self.has_pending_edits() {
@@ -1358,6 +1394,15 @@ impl SketchEditor {
         &mut self,
         session: &mut Session,
         preview: PlanePreview,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.create_named(session, preview, "Sketch", channel)
+    }
+    fn create_named(
+        &mut self,
+        session: &mut Session,
+        preview: PlanePreview,
+        prefix: &str,
         channel: Channel,
     ) -> Result<(), String> {
         if self.has_pending_edits() {
@@ -1401,7 +1446,7 @@ impl SketchEditor {
             session,
             session.revision(),
             Actor::local(channel),
-            &format!("Sketch {}", count + 1),
+            &format!("{prefix} {}", count + 1),
             plane,
             preview.options,
         )
@@ -5087,13 +5132,28 @@ mod tests {
             )
         };
         // Selection-first entry must consume the existing face, without a second
-        // plane picker click or an Inspector confirmation.
-        {
+        // plane picker click or an Inspector confirmation. Create engraving
+        // takes the same face path but never falls back to plane picking.
+        for engraving in [false, true] {
             let mut direct_session = Session::new(before.clone()).unwrap();
             let mut direct = SketchEditor {
                 display_scene: Some(scene(0, 1)),
                 ..Default::default()
             };
+            let enter = |editor: &mut SketchEditor, session: &mut Session| {
+                if engraving {
+                    editor.begin_engraving(session, Channel::Ui)
+                } else {
+                    editor.begin_from_selection(session, Channel::Ui)
+                }
+            };
+            if engraving {
+                let error = enter(&mut direct, &mut direct_session).unwrap_err();
+                assert!(error.contains("Select a planar face"), "{error}");
+                assert!(!direct.picking && !direct.editing);
+                assert_eq!(direct_session.document(), &before);
+                assert_eq!(direct_session.revision(), 0);
+            }
             direct.camera.target = [110., 75., 58.];
             direct.camera.pitch = std::f32::consts::FRAC_PI_2;
             direct.camera.yaw = 0.;
@@ -5139,15 +5199,24 @@ mod tests {
                 .unwrap();
             let stale_source = stale.document().clone();
             assert!(
-                direct
-                    .begin_from_selection(&mut stale, Channel::Ui)
+                enter(&mut direct, &mut stale)
                     .unwrap_err()
                     .contains("stale")
             );
             assert_eq!(stale.document(), &stale_source);
-            direct
-                .begin_from_selection(&mut direct_session, Channel::Ui)
-                .unwrap();
+            enter(&mut direct, &mut direct_session).unwrap();
+            let expected = if engraving { "Engraving 1" } else { "Sketch 1" };
+            assert!(
+                direct_session
+                    .document()
+                    .entities()
+                    .any(|e| matches!(e.data, EntityData::Sketch { .. }) && e.name == expected),
+                "{expected}"
+            );
+            if engraving {
+                assert!(enter(&mut direct, &mut direct_session).is_err());
+                assert_eq!(direct_session.revision(), 1);
+            }
             assert!(direct.editing && !direct.picking);
             assert_eq!(direct_session.revision(), 1);
             assert_eq!(direct.occurrence, Some(instance.id));

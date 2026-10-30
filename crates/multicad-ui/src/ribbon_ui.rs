@@ -29,6 +29,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
             label: "Create",
             entries: vec![
                 Entry::Tool("new-sketch"),
+                Entry::Tool("engraving"),
                 Entry::Menu {
                     label: "Add Primitive",
                     icon: Icon::Box,
@@ -495,6 +496,10 @@ mod tests {
         assert!(matches!(
             create[0].entries.first(),
             Some(Entry::Tool("new-sketch"))
+        ));
+        assert!(matches!(
+            create[0].entries.get(1),
+            Some(Entry::Tool("engraving"))
         ));
         assert_eq!(
             click(&registry, Mode::Model, tab, false, 1200., "New sketch"),

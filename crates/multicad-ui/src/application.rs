@@ -384,6 +384,7 @@ impl Application {
                     | Command::Discard
                     | Command::Preview
                     | Command::NewSketch
+                    | Command::Engraving
                     | Command::ImportArtwork
                     | Command::Draw(_)
                     | Command::SketchOperation(_)
@@ -415,6 +416,7 @@ impl Application {
                 command,
                 Command::Parameter
                     | Command::NewSketch
+                    | Command::Engraving
                     | Command::ImportArtwork
                     | Command::Draw(_)
                     | Command::SketchOperation(_)
@@ -953,6 +955,17 @@ impl Application {
                 self.mode = Mode::Sketch;
                 self.tab = 0;
             }
+            Command::Engraving => {
+                if self.current().pending_edits() {
+                    return Err(
+                        "Apply or discard pending edits before creating an engraving sketch".into(),
+                    );
+                }
+                let p = self.current_mut();
+                p.sketch.begin_engraving(&mut p.session, channel)?;
+                self.mode = Mode::Sketch;
+                self.tab = 0;
+            }
             Command::Draw(tool) => {
                 if !self.enabled(command) {
                     return Err(
@@ -1250,6 +1263,7 @@ impl Application {
             }
             Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
             Command::NewSketch => !pending(),
+            Command::Engraving => !pending() && !self.current().sketch.editing,
             Command::AbortSketch => {
                 self.mode == Mode::Sketch
                     && (self.current().sketch.editing || self.current().sketch.picking)
@@ -2590,6 +2604,18 @@ mod tests {
         assert_eq!(app.current().session.document(), &source);
         assert_eq!(app.current().session.revision(), revision);
         assert!(app.invoke(Command::AbortSketch, &[], Channel::Ui).is_err());
+        // Create engraving never falls back to plane picking.
+        let error = app
+            .invoke(Command::Engraving, &[], Channel::Ui)
+            .unwrap_err();
+        assert!(error.contains("Select a planar face"), "{error}");
+        assert_eq!(app.mode, Mode::Model);
+        assert!(!app.current().sketch.picking);
+        assert_eq!(app.current().session.document(), &source);
+        app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+            .unwrap();
+        assert!(!app.enabled(Command::Engraving));
+        assert!(app.invoke(Command::Engraving, &[], Channel::Ui).is_err());
     }
     #[test]
     fn abort_discards_the_active_tool_but_keeps_committed_sketch_edits() {
