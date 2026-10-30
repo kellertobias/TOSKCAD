@@ -25,7 +25,7 @@ Each Save or Save As captures the visible 3D view and stores it as the file's pr
 Details:
 
 - **No Undo entry:** the preview counts as presentation state. `replace_file_preview` writes it into the current source and into every Undo/Redo snapshot. Undo and Redo therefore never bring back an older picture, never dirty the file and need no extra history step. The revision advances so open previews and editors revalidate. The activity log records "Capture file preview".
-- **No visible 3D view** (Parameters, Drawings or Export mode, or a headless or MCP save with no window): the previous preview is kept, and the save receipt says so.
+- **No visible 3D view** (Parameters, Drawings or Export mode, or a headless or MCP save with no window): the previous preview is kept and the save receipt is the ordinary one.
 - **Capture failures never block saving.** If no screenshot arrives within 120 frames, the crop is off-screen, or encoding fails, the save still runs and the receipt reports "preview not updated (…)".
 - **Manual override:** *Choose image…* is still available. It sets the chosen PNG as the draft preview and turns *Capture the 3D view on save* off, so that image is kept. The checkbox turns capture back on. Both are part of the Parameters draft (Apply/Rebuild).
 - **Tests run without a GPU:** they inject the captured image through `finish_capture`, and the crop, downscale and encode helpers work on a plain `ColorImage`.

@@ -38,8 +38,8 @@ impl Application {
             .then_some(self.library.viewport)
             .flatten();
         let Some(rect) = viewport else {
-            self.library.capture_note =
-                Some("preview unchanged (no 3D view visible to capture)".into());
+            // No 3D view to capture: keep the previous preview silently, so
+            // ordinary save receipts stay unchanged.
             return self.submit_save(path, mode);
         };
         self.library.capture = Some(PendingCapture {

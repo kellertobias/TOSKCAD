@@ -464,7 +464,10 @@ fn capture_failure_or_no_visible_view_never_blocks_saving() {
     assert!(!app.capture_pending());
     drain(&mut app);
     assert_eq!(saved_preview(&shared), Some(captured.clone()));
-    assert!(app.message.contains("preview unchanged"), "{}", app.message);
+    assert_eq!(
+        app.message, "Project saved atomically",
+        "previous preview kept silently"
+    );
 
     // Capture off (e.g. after choosing an image): the viewport is ignored.
     app.current_mut().editor.info.capture_on_save = false;
