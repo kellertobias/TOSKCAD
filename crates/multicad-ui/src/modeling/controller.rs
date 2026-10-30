@@ -96,6 +96,7 @@ pub struct ModelToolController {
     scale_interaction: super::scale_gizmo::Interaction,
     scale_confirm: Option<FormStamp>,
     scale_host_basis: Option<super::GizmoBasis>,
+    boolean_preset: Option<multicad_core::model::Operation>,
 }
 pub enum ModelToolOutcome {
     Applied(Vec<CreatedBody>),
@@ -790,6 +791,20 @@ impl ModelToolController {
             ModelForm::Split(Box::new(panel)),
         )
     }
+    /// Operation the next Boolean form starts with; `None` restores Subtract.
+    pub fn set_boolean_preset(&mut self, operation: Option<multicad_core::model::Operation>) {
+        self.boolean_preset = operation;
+    }
+    pub fn boolean_preset(&self) -> Option<multicad_core::model::Operation> {
+        self.boolean_preset
+    }
+    /// Operation of the open Boolean form, if one is open.
+    pub fn boolean_operation(&self) -> Option<multicad_core::model::Operation> {
+        match &self.form {
+            Some(ModelForm::Boolean(panel)) => Some(panel.operation()),
+            _ => None,
+        }
+    }
     pub fn begin_boolean(
         &mut self,
         session: &Session,
@@ -798,7 +813,11 @@ impl ModelToolController {
         selected: &std::collections::BTreeSet<EntityId>,
         channel: Channel,
     ) -> Result<(), String> {
-        let panel = BooleanPanel::new(session.document(), session.revision(), scene, selected)?;
+        let panel = BooleanPanel::new(session.document(), session.revision(), scene, selected)?
+            .with_operation(
+                self.boolean_preset
+                    .unwrap_or(multicad_core::model::Operation::Cut),
+            );
         self.begin_form(
             session,
             resources,

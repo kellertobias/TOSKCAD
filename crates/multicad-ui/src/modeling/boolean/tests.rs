@@ -310,3 +310,73 @@ fn long_body_paths_and_multi_selection_never_expand_the_resizable_inspector() {
     assert_eq!(panel.request(session.document(), true).unwrap(), original);
     assert_eq!(session.document(), &before);
 }
+#[test]
+fn ribbon_operation_presets_reach_requests_and_cancel_or_failed_preview_change_nothing() {
+    let (session, bodies, scene) = fixture();
+    let before = session.document().clone();
+    for operation in [Operation::Join, Operation::Cut, Operation::Intersect] {
+        let mut panel = BooleanPanel::new(
+            session.document(),
+            session.revision(),
+            &scene,
+            &BTreeSet::from([bodies[0].body]),
+        )
+        .unwrap()
+        .with_operation(operation);
+        assert_eq!(panel.operation(), operation);
+        // Failed preview: no tool bodies chosen yet.
+        assert!(
+            panel
+                .finish_frame(
+                    false,
+                    Some(FormAction::Preview),
+                    session.document(),
+                    true,
+                    PreviewState::Idle
+                )
+                .is_none()
+        );
+        assert!(panel.error.as_deref().unwrap().contains("tool bodies"));
+        panel.tools.insert(bodies[2].body);
+        let Some(ModelEvent::Preview {
+            request: ModelRequest::Booleans(requests),
+            ..
+        }) = panel.finish_frame(
+            false,
+            Some(FormAction::Preview),
+            session.document(),
+            true,
+            PreviewState::Idle,
+        )
+        else {
+            panic!("preview request expected")
+        };
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.operation == operation)
+        );
+        assert!(matches!(
+            panel.finish_frame(
+                false,
+                Some(FormAction::Cancel),
+                session.document(),
+                true,
+                PreviewState::Idle
+            ),
+            Some(ModelEvent::Cancel)
+        ));
+        assert_eq!(session.document(), &before);
+    }
+    for unsupported in [Operation::Split, Operation::NewBody] {
+        let panel = BooleanPanel::new(
+            session.document(),
+            session.revision(),
+            &scene,
+            &BTreeSet::new(),
+        )
+        .unwrap()
+        .with_operation(unsupported);
+        assert_eq!(panel.operation(), Operation::Cut);
+    }
+}

@@ -62,6 +62,8 @@ pub enum Command {
     SketchOperation(OperationTool),
     External(crate::external_references::ExternalTool),
     Modeling(ModelingTool),
+    /// Boolean form preset to Join, Subtract (Cut) or Intersect.
+    BooleanOperation(multicad_core::model::Operation),
     Assembly(crate::assembly::AssemblyTool),
     Transfer,
     Construction,
@@ -302,6 +304,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for (id, label, operation, aliases) in BOOLEAN_OPERATIONS {
+            registry.tools.push(Tool {
+                id,
+                label,
+                icon: Icon::Boolean,
+                action: Command::BooleanOperation(operation),
+                aliases,
+            });
+        }
         for tool in crate::assembly::AssemblyTool::ALL {
             registry.tools.push(Tool {
                 id: tool.id(),
@@ -442,6 +453,7 @@ impl Default for Registry {
                                 !matches!(
                                     tool,
                                     ModelingTool::Copy
+                                        | ModelingTool::Boolean
                                         | ModelingTool::Wall
                                         | ModelingTool::Level
                                         | ModelingTool::Panel
@@ -455,6 +467,7 @@ impl Default for Registry {
                                 )
                             })
                             .map(ModelingTool::id)
+                            .chain(BOOLEAN_OPERATIONS.map(|(id, ..)| id))
                             .chain(["symbol"])
                             .collect(),
                         requires_active_sketch: false,
@@ -540,6 +553,28 @@ impl Default for Registry {
         registry
     }
 }
+/// Ribbon Boolean menu entries; each opens the Boolean form preset to an
+/// implemented native operation.
+pub const BOOLEAN_OPERATIONS: [(&str, &str, multicad_core::model::Operation, &[&str]); 3] = [
+    (
+        "boolean-join",
+        "Join",
+        multicad_core::model::Operation::Join,
+        &["union", "join-bodies"],
+    ),
+    (
+        "boolean-subtract",
+        "Subtract",
+        multicad_core::model::Operation::Cut,
+        &["subtract", "subtract-bodies"],
+    ),
+    (
+        "boolean-intersect",
+        "Intersect",
+        multicad_core::model::Operation::Intersect,
+        &["intersect-bodies"],
+    ),
+];
 impl Registry {
     pub fn tool(&self, id: &str) -> Option<&Tool> {
         self.tools.iter().find(|t| t.id == id)
@@ -763,6 +798,7 @@ mod tests {
                 !matches!(
                     tool,
                     ModelingTool::Copy
+                        | ModelingTool::Boolean
                         | ModelingTool::Wall
                         | ModelingTool::Level
                         | ModelingTool::Panel
@@ -774,7 +810,7 @@ mod tests {
                         | ModelingTool::Weld
                         | ModelingTool::Sheet
                 ),
-                "Copy shares the Move / Copy ribbon entry; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM aids tabs"
+                "Copy shares the Move / Copy ribbon entry; Boolean is offered as Join / Subtract / Intersect; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM aids tabs"
             );
             if matches!(
                 tool,

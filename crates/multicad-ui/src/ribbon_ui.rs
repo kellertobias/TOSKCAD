@@ -42,7 +42,13 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
         Group {
             label: "Modify",
             entries: vec![
-                Entry::Tool("boolean"),
+                Entry::Menu {
+                    label: "Boolean",
+                    icon: Icon::Boolean,
+                    tools: crate::registry::BOOLEAN_OPERATIONS
+                        .map(|(id, ..)| id)
+                        .to_vec(),
+                },
                 Entry::Tool("split"),
                 Entry::Tool("edge-treatment"),
                 Entry::Tool("shell"),
@@ -385,7 +391,8 @@ mod tests {
             modify
                 .entries
                 .iter()
-                .any(|e| matches!(e, Entry::Tool("boolean")))
+                .any(|e| matches!(e, Entry::Menu { label: "Boolean", tools, .. }
+                    if tools == &["boolean-join", "boolean-subtract", "boolean-intersect"]))
         );
         assert!(
             modify

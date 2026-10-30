@@ -63,6 +63,20 @@ impl BooleanPanel {
             error: None,
         })
     }
+    /// Preset the operation chosen from the ribbon's Boolean menu. Only
+    /// implemented Join, Subtract and Intersect operations are accepted.
+    pub fn with_operation(mut self, operation: Operation) -> Self {
+        if matches!(
+            operation,
+            Operation::Join | Operation::Cut | Operation::Intersect
+        ) {
+            self.operation = operation;
+        }
+        self
+    }
+    pub fn operation(&self) -> Operation {
+        self.operation
+    }
     pub fn stamp(&self) -> FormStamp {
         self.stamp
     }
