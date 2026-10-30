@@ -522,3 +522,38 @@ impl Extras {
         sides.consumed.extend(self.consumed);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mentions_find_identities_in_values_strings_and_keys() {
+        let [a, b, c, d] = std::array::from_fn(|_| EntityId::new());
+        let value = serde_json::json!({
+            "target": a.to_string(),
+            "role": format!("side/{b}/panel.v_start"),
+            "by_id": { c.to_string(): [1, 2, format!("x{d}")] },
+            "noise": "0123456789abcdef-not-an-identity",
+        });
+        let mut found = BTreeSet::new();
+        mentions(&value, &mut found);
+        assert_eq!(found, BTreeSet::from([a, b, c, d]));
+    }
+
+    #[test]
+    fn cacheable_types_exclude_scanning_and_unknown_providers() {
+        assert!(cacheable_type(model::EXTRUDE_TYPE));
+        assert!(cacheable_type(model::MEMBER_TYPE));
+        for excluded in [
+            model::WALL_TYPE,
+            model::SLAB_TYPE,
+            model::STAIR_TYPE,
+            model::TRANSFER_TYPE,
+            model::SCALE_TYPE,
+            "vendor.unknown",
+        ] {
+            assert!(!cacheable_type(excluded), "{excluded}");
+        }
+    }
+}
