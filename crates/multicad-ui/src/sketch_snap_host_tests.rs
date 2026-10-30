@@ -330,3 +330,63 @@ fn geometry_snapping_can_be_disabled_independently_of_the_grid() {
     assert_ne!(first, [0., 0.]);
     assert!(h.editor.first_anchor.is_none());
 }
+
+#[test]
+fn perpendicular_snap_commits_the_exact_foot_with_grid_on_and_off() {
+    let ab = [40., 30.];
+    for grid in [true, false] {
+        let mut h = Harness::new(|editor, session| {
+            editor
+                .add(session, DrawTool::Line, [0., 0.], ab, Channel::Ui)
+                .unwrap();
+        });
+        h.editor.snap = grid;
+        h.click([10., 20.], Vec2::ZERO, 1.);
+        let first = h.editor.first.expect("line started");
+        // Foot from (10,20) onto the line: t = 0.4 -> (16,12), off the grid.
+        let offset = Vec2::new(3., -2.);
+        h.hover([16., 12.], offset, 2.);
+        assert_eq!(h.shown(), Some(TargetKind::Perpendicular), "grid {grid}");
+        let shown = h.editor.snap_assist.shown().unwrap().position;
+        let revision = h.session.revision();
+        h.click([16., 12.], offset, 2.1);
+        assert_eq!(h.session.revision(), revision + 1, "one shared transaction");
+        let end = h
+            .points()
+            .into_iter()
+            .find(|p| (p[0] - shown[0]).abs() < 1e-12 && (p[1] - shown[1]).abs() < 1e-12)
+            .unwrap_or_else(|| panic!("grid {grid}: shown {shown:?} not committed"));
+        let drawn = [end[0] - first[0], end[1] - first[1]];
+        let length = drawn[0].hypot(drawn[1]);
+        assert!(length > 5., "grid {grid}: {drawn:?}");
+        assert!(
+            (drawn[0] * ab[0] + drawn[1] * ab[1]).abs() < 1e-9 * length * 50.,
+            "grid {grid}: not perpendicular {drawn:?}"
+        );
+        assert!(
+            (end[0] * ab[1] - end[1] * ab[0]).abs() < 1e-9 * 50.,
+            "grid {grid}: foot left the target line {end:?}"
+        );
+    }
+}
+
+#[test]
+fn perpendicular_targets_only_appear_while_a_line_has_a_start() {
+    let mut h = Harness::new(|editor, session| {
+        editor
+            .add(session, DrawTool::Line, [0., 0.], [40., 30.], Channel::Ui)
+            .unwrap();
+    });
+    h.editor.snap = false;
+    // Before the first click the same spot is just a point on the line.
+    h.hover([16., 12.], Vec2::new(3., -2.), 1.);
+    assert_eq!(h.shown(), Some(TargetKind::OnCurve));
+    h.click([10., 20.], Vec2::ZERO, 2.);
+    h.hover([16., 12.], Vec2::new(3., -2.), 3.);
+    assert_eq!(h.shown(), Some(TargetKind::Perpendicular));
+    h.editor.cancel();
+    h.editor.set_tool(DrawTool::Circle).unwrap();
+    h.click([10., 20.], Vec2::ZERO, 4.);
+    h.hover([16., 12.], Vec2::new(3., -2.), 5.);
+    assert_eq!(h.shown(), Some(TargetKind::OnCurve), "circles have no foot");
+}

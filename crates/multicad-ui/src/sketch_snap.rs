@@ -1,5 +1,6 @@
 //! Transient sketch placement aids: geometry snapping, dwell-acquired
-//! references and horizontal/vertical assistive lines.
+//! references, horizontal/vertical assistive lines, and perpendicular and
+//! tangent targets for a line being drawn from a known start point.
 //!
 //! Everything here is pure and display-only. It never reads or writes the
 //! canonical document; the sketch editor commits the resolved position through
@@ -62,6 +63,12 @@ pub enum TargetKey {
         reference: u64,
         axis: Axis,
     },
+    /// Foot of the perpendicular from the line start onto a curve. Circles
+    /// and arcs have a near (0) and a far (1) foot.
+    Perpendicular(EntityId, u8),
+    /// Tangent point on a circle or arc as seen from the line start; the two
+    /// tangents are numbered counter-clockwise (0) and clockwise (1).
+    Tangent(EntityId, u8),
 }
 impl TargetKey {
     /// Competing-target order: lower classes win regardless of distance;
@@ -73,7 +80,10 @@ impl TargetKey {
             | Self::ShapeCenter(_)
             | Self::Reference(_)
             | Self::ReferenceMidpoint(..) => 1,
-            Self::GuideIntersection { .. } | Self::GuideOnLine { .. } => 2,
+            Self::GuideIntersection { .. }
+            | Self::GuideOnLine { .. }
+            | Self::Perpendicular(..)
+            | Self::Tangent(..) => 2,
             Self::OnCurve(_) => 3,
             Self::Guide { .. } => 4,
         }
@@ -110,6 +120,8 @@ pub enum TargetKind {
     GuideOnLine,
     OnCurve,
     Guide(Axis),
+    Perpendicular,
+    Tangent,
 }
 impl TargetKind {
     pub fn label(self) -> &'static str {
@@ -126,6 +138,8 @@ impl TargetKind {
             Self::OnCurve => "On curve",
             Self::Guide(Axis::Horizontal) => "Horizontal alignment",
             Self::Guide(Axis::Vertical) => "Vertical alignment",
+            Self::Perpendicular => "Perpendicular",
+            Self::Tangent => "Tangent",
         }
     }
 }
@@ -425,6 +439,9 @@ pub struct Query<'a> {
     pub pointer_mm: [f64; 2],
     pub pointer_px: [f32; 2],
     pub to_screen: &'a dyn Fn([f64; 2]) -> Option<[f32; 2]>,
+    /// Start of the line being drawn, if any. It enables perpendicular and
+    /// tangent targets relative to that point.
+    pub from: Option<[f64; 2]>,
 }
 
 struct Candidate {
@@ -634,6 +651,92 @@ fn candidates(geometry: &SnapGeometry, references: &[Reference], q: &Query) -> V
                 vec![],
                 CURVE_SNAP_PX,
             );
+        }
+    }
+    if let Some(from) = q.from {
+        for (key, kind, position) in relative_targets(geometry, from) {
+            push(key, kind, position, None, vec![], POINT_SNAP_PX);
+        }
+    }
+    out
+}
+
+/// Perpendicular feet and tangent points as seen from `from`, the start of
+/// the line being drawn. A line's foot must lie on the segment; circle and
+/// arc targets lie on the circle (arcs: inside their sweep). A target at
+/// `from` itself would give a zero-length line and is omitted.
+fn relative_targets(
+    geometry: &SnapGeometry,
+    from: [f64; 2],
+) -> Vec<(TargetKey, TargetKind, [f64; 2])> {
+    let mut out = vec![];
+    let far_enough = |p: [f64; 2]| len(sub(p, from)) > 1e-9 * (1. + len(from));
+    for &(id, a, b) in &geometry.lines {
+        let ab = sub(b, a);
+        let t = dot(sub(from, a), ab) / dot(ab, ab);
+        let foot = [a[0] + t * ab[0], a[1] + t * ab[1]];
+        if (0. ..=1.).contains(&t) && far_enough(foot) {
+            out.push((
+                TargetKey::Perpendicular(id, 0),
+                TargetKind::Perpendicular,
+                foot,
+            ));
+        }
+    }
+    let round = geometry
+        .circles
+        .iter()
+        .map(|&(id, center, radius)| (id, center, radius, None))
+        .chain(
+            geometry
+                .arcs
+                .iter()
+                .map(|arc| (arc.id, arc.center, arc.radius, Some(*arc))),
+        );
+    for (id, center, radius, arc) in round {
+        let d = sub(from, center);
+        let distance = len(d);
+        if distance <= 1e-12 {
+            continue;
+        }
+        let base = d[1].atan2(d[0]);
+        let on = |angle: f64| {
+            [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ]
+        };
+        let inside = |angle: f64| arc.is_none_or(|arc| arc.contains(angle));
+        let mut candidates = vec![
+            (
+                TargetKey::Perpendicular(id, 0),
+                TargetKind::Perpendicular,
+                base,
+            ),
+            (
+                TargetKey::Perpendicular(id, 1),
+                TargetKind::Perpendicular,
+                base + std::f64::consts::PI,
+            ),
+        ];
+        if distance > radius * (1. + 1e-9) {
+            let spread = (radius / distance).acos();
+            candidates.push((
+                TargetKey::Tangent(id, 0),
+                TargetKind::Tangent,
+                base + spread,
+            ));
+            candidates.push((
+                TargetKey::Tangent(id, 1),
+                TargetKind::Tangent,
+                base - spread,
+            ));
+        }
+        for (key, kind, angle) in candidates {
+            let position = on(angle);
+            if inside(angle) && far_enough(position) {
+                out.push((key, kind, position));
+            }
         }
     }
     out

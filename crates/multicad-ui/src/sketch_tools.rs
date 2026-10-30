@@ -120,10 +120,10 @@ impl DrawTool {
                 "circle3 <x1> <y1> <x2> <y2> <x3> <y3> (three points on the circle, mm)"
             }
             Self::Fillet => {
-                "sketch-fillet: set the radius in the Inspector, then click a corner shared by two lines"
+                "sketch-fillet: set the radius in the Inspector, then click a corner shared by two lines or arcs"
             }
             Self::Chamfer => {
-                "sketch-chamfer: set the setback in the Inspector, then click a corner shared by two lines"
+                "sketch-chamfer: set the setback in the Inspector, then click a corner shared by two lines or arcs"
             }
             Self::Text => {
                 "text: set the string and cap height in the Inspector, then click the baseline origin"

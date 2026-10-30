@@ -1,6 +1,6 @@
 # Sketch snapping, dwell references and assistive lines
 
-Status: implemented for native sketch draw tools (CAD-136). macOS interactive review pending.
+Status: implemented for native sketch draw tools (CAD-136); perpendicular and tangent targets added in CAD-151. macOS interactive review pending.
 
 ## Scope
 
@@ -16,13 +16,23 @@ All distances are measured in screen pixels after projecting the sketch-plane ca
 | --- | --- | --- |
 | 0 | Existing sketch points: endpoints, vertices, spline poles, circle/arc center points (reused by identity) | 8 px |
 | 1 | Line midpoints, shape centers, acquired references, midpoint of two references | 8 px |
-| 2 | Intersection of two assistive lines; assistive line crossing an existing line | 8 px |
+| 2 | Intersection of two assistive lines; assistive line crossing an existing line; perpendicular foot and tangent point from the line start (see below) | 8 px |
 | 3 | Nearest point on an existing line, circle or arc (arcs only inside their sweep) | 6 px |
 | 4 | Horizontal or vertical assistive line through a reference | 6 px |
 
 The lowest class within its distance wins. Within a class, the nearest target wins. The target shown in the previous frame stays eligible up to 1.5× its acquisition distance, which prevents flicker.
 
 Grid rounding (the "Snap sketch points to grid spacing" option) applies only when no geometry target is indicated. A nearby grid point never displaces a geometry target, and along an assistive line the free coordinate is not grid-rounded. Geometry snapping has its own toggle, "Snap to geometry and assistive lines" (default on). It is independent of the grid option.
+
+## Perpendicular and tangent targets
+
+While the Line tool (or the current Polyline segment) has a start point, the curves offer extra point targets relative to that start:
+
+- **Perpendicular** (line): the foot of the perpendicular from the start onto the line. It is offered only when the foot lies on the segment, not on its extension.
+- **Perpendicular** (circle, arc): the near and far points on the circle along the radial line through the start, so the drawn line is normal to the curve. Arcs offer only feet inside their sweep.
+- **Tangent** (circle, arc): the two points where a line from the start touches the circle, when the start lies outside it. Arcs offer only points inside their sweep.
+
+A target at the start itself is omitted, because it would give a zero-length line. These targets are class 2: they beat the plain on-curve point at the same spot, while endpoints and midpoints still win. They are shown with a right-angle mark or a small circle drawn along the line from its start, plus the label. Like every target, the committed end is exactly the shown position, independent of the grid. They are not acquirable as references and add no constraint: the result is perpendicular or tangent at placement, not a persistent relation.
 
 Construction curves participate like normal curves. B-splines contribute only their poles, with no on-curve or center targets.
 
@@ -58,6 +68,7 @@ Lifetime:
   - dwell timing and drift, two-reference midpoint, guides in four directions, guide intersections
   - line midpoints and on-curve snapping, competing targets, grid versus geometry, hysteresis
   - supported and unsupported centers, arc sweep, reference limit, release, revalidation, zoom-invariant pixel tolerances
+  - perpendicular feet on lines (segment only) and circles/arcs, tangent points, and their absence without a line start
 - `sketch_snap_host_tests.rs` drives the real canvas with injected egui time and covers:
   - dwell without document change
   - the (10,5) commit with the grid on and off
@@ -66,5 +77,6 @@ Lifetime:
   - anchoring through pan and zoom
   - cancel, tool switch and finish leaving the document and revision unchanged
   - the geometry-snap toggle
+  - a perpendicular snap committing the exact foot (line perpendicular within 1e-9 relative) with the grid on and off, and no perpendicular target before the first click or for non-line tools
 
 Not verified: interactive macOS review of the feel of the 0.5 s dwell, colors and label legibility, and Windows/Linux runtime behavior.

@@ -62,10 +62,10 @@ impl DrawTool {
             (Self::CircleThree, 1) => "Click the second point on the circle · Esc cancels",
             (Self::CircleThree, _) => "Click the third point on the circle · Esc cancels",
             (Self::Fillet, _) => {
-                "Click a corner shared by two lines to round it with the Inspector radius · Esc ends"
+                "Click a corner of two lines or arcs to round it with the Inspector radius · Esc ends"
             }
             (Self::Chamfer, _) => {
-                "Click a corner shared by two lines to chamfer it by the Inspector setback · Esc ends"
+                "Click a corner of two lines or arcs to chamfer it by the Inspector setback · Esc ends"
             }
             (Self::Text, _) => "Click the baseline origin to place the Inspector text · Esc ends",
             _ => "Click the first point, then the second point · Esc cancels",
@@ -308,7 +308,7 @@ impl SketchEditor {
             );
         });
     }
-    /// Nearest corner shared by exactly two lines within 10 px of the pointer.
+    /// Nearest corner shared by exactly two lines or arcs within 10 px of the pointer.
     fn hovered_corner(
         &self,
         session: &Session,
@@ -364,7 +364,7 @@ impl SketchEditor {
             return;
         }
         let result = match hovered {
-            None => Err("Click a corner shared by exactly two lines".to_string()),
+            None => Err("Click a corner shared by exactly two lines or arcs".to_string()),
             Some((corner, _)) => {
                 self.treat_corner(session, corner, corner_treatment(tool, self.corner_size_mm))
             }
@@ -446,6 +446,85 @@ mod tests {
         }
         assert!(!DrawTool::Rectangle.multi_point());
         assert!(mode_input(DrawTool::Rectangle, &[at(0., 0.)], at(1., 1.)).is_none());
+    }
+
+    #[test]
+    fn corner_tools_treat_a_line_arc_corner_in_one_undoable_transaction() {
+        use multicad_core::{constraint_sketch::CurveKind, sketch_corner::CornerTreatment};
+        let mut session =
+            Session::new(multicad_core::document::Document::new("Corner").unwrap()).unwrap();
+        let mut editor = SketchEditor::default();
+        editor
+            .create(&mut session, multicad_core::sketch::Datum::Xy, Channel::Ui)
+            .unwrap();
+        let request = |input| DrawRequest {
+            input,
+            construction: false,
+        };
+        editor
+            .draw(
+                &mut session,
+                &request(DrawInput::Line {
+                    start: PointInput::Position([0., 0.]),
+                    end: PointInput::Position([40., 0.]),
+                }),
+                Channel::Ui,
+            )
+            .unwrap();
+        let corner = editor.last_draw_line.unwrap()[1].0;
+        editor
+            .draw(
+                &mut session,
+                &request(DrawInput::Arc {
+                    center: PointInput::Position([30., 10.]),
+                    start: PointInput::Existing(corner),
+                    end: PointInput::Position([40., 20.]),
+                    clockwise: false,
+                }),
+                Channel::Ui,
+            )
+            .unwrap();
+        let id = editor.selected.unwrap();
+        let read = |session: &Session| {
+            multicad_core::constraint_sketch::source::Source::read(session.document(), id)
+                .unwrap()
+                .0
+        };
+        assert!(multicad_core::sketch_corner::treatable_corners(&read(&session)).contains(&corner));
+        for (treatment, arcs) in [
+            (CornerTreatment::Fillet { radius_mm: 2. }, 3),
+            (CornerTreatment::Chamfer { distance_mm: 3. }, 2),
+        ] {
+            let before = session.document().clone();
+            let revision = session.revision();
+            editor
+                .treat_corner(&mut session, corner, treatment)
+                .unwrap();
+            assert_eq!(session.revision(), revision + 1, "{treatment:?}");
+            let arc_count = read(&session)
+                .sketch
+                .curves
+                .iter()
+                .filter(|c| matches!(c.kind, CurveKind::Arc { .. }))
+                .count();
+            // Fillet: edge arc, fillet, construction arc. Chamfer: edge arc
+            // and construction arc.
+            assert_eq!(arc_count, arcs, "{treatment:?}");
+            session
+                .undo(session.revision(), Actor::local(Channel::Ui))
+                .unwrap();
+            assert_eq!(session.document(), &before, "{treatment:?}: undo restores");
+        }
+        let before = session.document().clone();
+        let error = editor
+            .treat_corner(
+                &mut session,
+                corner,
+                CornerTreatment::Fillet { radius_mm: 500. },
+            )
+            .unwrap_err();
+        assert!(error.contains("fillet"), "{error}");
+        assert_eq!(session.document(), &before);
     }
 
     #[test]
