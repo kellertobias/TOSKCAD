@@ -33,6 +33,7 @@ mod scaling;
 mod sheet;
 mod split;
 mod termination;
+pub(crate) mod value_entry;
 mod wall;
 mod weld_connection;
 mod weld_form;
