@@ -126,7 +126,8 @@ Print orientation and mesh packaging stay Export controls. Aids assume the
 model's +Z is the build direction, so a print recipe must keep that
 orientation. Export → Print writes a [3MF print package](print-packaging.md)
 that keeps model coordinates and shows the process records and inspection
-findings of the aids serving the chosen Parts.
+findings of the aids serving the chosen Parts. A chosen placed copy brings its
+aids at the copy placement.
 
 ## Access
 

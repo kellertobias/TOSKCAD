@@ -1,8 +1,10 @@
-//! Print packages: the finished Parts a user chose, optionally with the
-//! removable FDM aids serving them, tessellated from current exact solids
-//! into one 3MF (one object and one identity build item per Part, in world
-//! millimeters) and, on request, one binary STL per Part. The package keeps
-//! model coordinates with +Z as the build direction. Nothing here slices,
+//! Print packages: the finished Parts and placed occurrences a user chose,
+//! optionally with the removable FDM aids serving them, tessellated from
+//! current exact solids into one 3MF and, on request, one binary STL per
+//! packaged object. The 3MF holds one mesh resource per producing solid and
+//! one build item per world Part or placed occurrence at its world
+//! placement, in millimeters, so copies of one Part share their mesh. The
+//! package keeps model coordinates with +Z as the build direction. Nothing here slices,
 //! arranges a plate, drives a printer or asserts printability.
 use super::{Exporter, checkpoint, failure, mesh};
 use crate::Model;
@@ -10,11 +12,12 @@ use multicad_core::{
     commands::Actor,
     document::{Document, EntityId},
     exchange::*,
-    model,
+    model::{self, RigidPose},
     project_file::ContentHash,
 };
+use multicad_kernel::{RigidTransform, Solid};
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -182,27 +185,40 @@ fn verify(
         PrintFileKind::Stl => (mesh::read_stl(bytes), true),
     };
     let read = read.map_err(io)?;
-    let mesh_volume: f64 = objects.iter().map(|o| o.mesh_volume_mm3).sum();
-    let exact: f64 = objects.iter().map(|o| o.volume_mm3).sum();
-    let allowance: f64 = objects
-        .iter()
-        .map(|o| {
-            let [a, b] = o.bounds_mm;
-            let [x, y, z] = std::array::from_fn::<_, 3, _>(|i| b[i] - a[i]);
-            2. * (x * y + y * z + z * x) * quality.chord_deviation_mm * 1.5 + o.volume_mm3 * 1e-6
-        })
-        .sum();
+    let allowance = |o: &PrintObject| {
+        let [a, b] = o.bounds_mm;
+        let [x, y, z] = std::array::from_fn::<_, 3, _>(|i| b[i] - a[i]);
+        2. * (x * y + y * z + z * x) * quality.chord_deviation_mm * 1.5 + o.volume_mm3 * 1e-6
+    };
     let relative = if single { 1e-5 } else { 1e-6 };
     let structure = match file.kind {
-        PrintFileKind::ThreeMf => read.objects == file.objects && read.items == file.objects,
+        PrintFileKind::ThreeMf => read.objects == file.objects && read.items == file.items,
         PrintFileKind::Stl => true,
     };
-    if !structure
-        || (read.unit_scale - 1.).abs() > 1e-12
-        || read.triangles != file.triangles
-        || (read.volume_mm3() - mesh_volume).abs() > mesh_volume.abs() * relative + 1e-6
-        || (read.volume_mm3() - exact).abs() > allowance
-    {
+    // Facets are read back in build-item order, one item per packaged
+    // object, so each placed object's volume is compared on its own.
+    let mut facets = read.world.as_slice();
+    let mut placed_ok = read.triangles == file.triangles;
+    for object in objects {
+        if !placed_ok || facets.len() < object.triangles {
+            placed_ok = false;
+            break;
+        }
+        let (own, rest) = facets.split_at(object.triangles);
+        facets = rest;
+        let volume = mesh::ReadMesh {
+            unit_scale: 1.,
+            objects: 1,
+            items: 1,
+            triangles: own.len(),
+            world: own.to_vec(),
+        }
+        .volume_mm3();
+        placed_ok = (volume - object.mesh_volume_mm3).abs()
+            <= object.mesh_volume_mm3.abs() * relative + 1e-6
+            && (volume - object.volume_mm3).abs() <= allowance(object);
+    }
+    if !structure || !placed_ok || !facets.is_empty() || (read.unit_scale - 1.).abs() > 1e-12 {
         return Err(failure(
             ErrorKind::Invalid,
             file.part,
@@ -256,6 +272,7 @@ impl Exporter {
         }
         let mut objects = vec![];
         let mut meshes = vec![];
+        let mut items = vec![];
         if !selection.parts.is_empty() {
             let model = self
                 .compiler
@@ -269,57 +286,136 @@ impl Exporter {
                 ));
             }
             let mut unavailable = vec![];
+            // One mesh resource per producing solid: a world Part and its
+            // placed occurrences share it, placed by their build items.
+            let mut shared: BTreeMap<EntityId, usize> = BTreeMap::new();
             for part in &selection.parts {
                 checkpoint(interrupt)?;
-                let solid = model
-                    .snapshot()
+                let skip = |reason: &str| PrintSkip {
+                    entity: part.part,
+                    name: part.name.clone(),
+                    reason: reason.into(),
+                };
+                let snapshot = model.snapshot();
+                let own = snapshot
                     .bodies
                     .get(&part.part)
-                    .and_then(|producer| model.solid(*producer));
-                let Some(solid) = solid else {
-                    unavailable.push(PrintSkip {
-                        entity: part.part,
-                        name: part.name.clone(),
-                        reason: if model.snapshot().consumed_bodies.contains(&part.part) {
-                            "Consumed by a later operation; package the resulting Part".into()
+                    .and_then(|producer| model.solid(*producer).map(|s| (*producer, s)));
+                let invalid = |e: String| failure(ErrorKind::Invalid, Some(part.part), e);
+                // (producer, local solid, pose, exact world solid if it differs)
+                let placed = match part.occurrence_path.split_first() {
+                    None => own.map(|(producer, solid)| {
+                        (producer, solid, RigidPose::default(), None::<Solid>)
+                    }),
+                    Some((root, members)) => {
+                        let path = model::OccurrencePath {
+                            root: *root,
+                            members: members.to_vec(),
+                        };
+                        match model.leaf_snapshot(&path) {
+                            None => None,
+                            Some(leaf) if leaf.component == part.part => model
+                                .solid(leaf.producer)
+                                .map(|local| (leaf.producer, local, leaf.pose, None)),
+                            // An aid riding on its placed target: the aid's
+                            // solid shares the target's frame and pose.
+                            Some(leaf) => match own {
+                                Some((producer, local)) => {
+                                    let world = local
+                                        .transformed(RigidTransform {
+                                            rotation: leaf.pose.rotation,
+                                            translation_mm: leaf.pose.translation_mm,
+                                        })
+                                        .map_err(|e| invalid(e.to_string()))?;
+                                    Some((producer, local, leaf.pose, Some(world)))
+                                }
+                                None => None,
+                            },
+                        }
+                    }
+                };
+                let Some((producer, local, pose, transformed)) = placed else {
+                    unavailable.push(skip(if part.occurrence_path.is_empty() {
+                        if model.snapshot().consumed_bodies.contains(&part.part) {
+                            "Consumed by a later operation; package the resulting Part"
                         } else {
-                            "No current unsuppressed solid".into()
-                        },
-                    });
+                            "No current unsuppressed solid"
+                        }
+                    } else {
+                        "No current exact geometry for this placed occurrence"
+                    }));
                     continue;
                 };
-                let invalid = |e: String| failure(ErrorKind::Invalid, Some(part.part), e);
-                let bounds = solid.bounds().map_err(|e| invalid(e.to_string()))?;
-                let volume = solid.volume_mm3().map_err(|e| invalid(e.to_string()))?;
-                let object =
-                    mesh::tessellate(solid, &request.quality, &part.name).map_err(invalid)?;
+                let world = match (&transformed, part.occurrence_path.split_first()) {
+                    (Some(world), _) => world,
+                    (None, None) => local,
+                    (None, Some((root, members))) => model
+                        .leaf_solid(&model::OccurrencePath {
+                            root: *root,
+                            members: members.to_vec(),
+                        })
+                        .ok_or_else(|| {
+                            invalid(
+                                "Exact world geometry of the placed occurrence is unavailable"
+                                    .into(),
+                            )
+                        })?,
+                };
+                let bounds = world.bounds().map_err(|e| invalid(e.to_string()))?;
+                let volume = world.volume_mm3().map_err(|e| invalid(e.to_string()))?;
+                let index = match shared.get(&producer) {
+                    Some(index) => *index,
+                    None => {
+                        let name = document
+                            .get(part.part)
+                            .map_or_else(|| part.name.clone(), |e| e.name.clone());
+                        meshes.push(
+                            mesh::tessellate(local, &request.quality, &name).map_err(invalid)?,
+                        );
+                        shared.insert(producer, meshes.len() - 1);
+                        meshes.len() - 1
+                    }
+                };
+                let item = mesh::BuildItem {
+                    object: index,
+                    rotation: pose.rotation,
+                    translation_mm: pose.translation_mm,
+                };
+                let resource = &meshes[index];
+                let placed_vertices: Vec<_> =
+                    resource.vertices.iter().map(|p| item.apply(*p)).collect();
                 objects.push(PrintObject {
                     part: part.part,
+                    occurrence_path: part.occurrence_path.clone(),
                     name: part.name.clone(),
                     role: part.role.clone(),
                     bounds_mm: [bounds.min, bounds.max],
                     volume_mm3: volume,
-                    triangles: object.triangles.len(),
-                    mesh_volume_mm3: mesh::volume(&object.vertices, &object.triangles),
+                    triangles: resource.triangles.len(),
+                    mesh_volume_mm3: mesh::volume(&placed_vertices, &resource.triangles).abs(),
                 });
-                meshes.push(object);
+                items.push(item);
             }
-            selection
-                .parts
-                .retain(|p| !unavailable.iter().any(|u| u.entity == p.part));
+            selection.parts.retain(|p| {
+                !unavailable
+                    .iter()
+                    .any(|u| u.entity == p.part && u.name == p.name)
+            });
             selection.skipped.extend(unavailable);
             found.extend(findings(document, &model, &selection, &objects));
         }
         let blocked = if objects.is_empty() {
             Some(match &request.source {
                 PrintSource::Parts { parts } if parts.is_empty() => {
-                    "Select finished Parts before entering Export, or choose Parts by tag".into()
+                    "Select finished Parts or placed copies before entering Export, or choose Parts by tag".into()
                 }
                 PrintSource::Tag { tag } => {
-                    format!("No world Part with a current solid carries the tag “{tag}”")
+                    format!(
+                        "No world Part or placed occurrence with a current solid carries the tag “{tag}”"
+                    )
                 }
                 PrintSource::Parts { .. } => {
-                    "None of the chosen entities is a world Part with a current solid".into()
+                    "None of the chosen entities resolves to a world Part or placed occurrence with a current solid".into()
                 }
             })
         } else {
@@ -328,32 +424,37 @@ impl Exporter {
         let mut files = vec![];
         let mut generated = vec![];
         if blocked.is_none() {
-            let items: Vec<_> = (0..meshes.len()).map(mesh::BuildItem::identity).collect();
             files.push(PrintFile {
                 kind: PrintFileKind::ThreeMf,
                 part: None,
+                occurrence_path: vec![],
                 suffix: ".3mf".into(),
                 objects: meshes.len(),
+                items: items.len(),
                 triangles: objects.iter().map(|o| o.triangles).sum(),
             });
             generated.push(mesh::three_mf(&meshes, &items, LengthUnit::Millimeter));
             if request.stl_per_part {
                 let names: Vec<&str> = objects.iter().map(|o| o.name.as_str()).collect();
-                for ((object, mesh_object), suffix) in
-                    objects.iter().zip(&meshes).zip(stl_suffixes(&names))
+                for ((object, item), suffix) in objects.iter().zip(&items).zip(stl_suffixes(&names))
                 {
                     checkpoint(interrupt)?;
                     generated.push(mesh::stl(
-                        std::slice::from_ref(mesh_object),
-                        &[mesh::BuildItem::identity(0)],
+                        std::slice::from_ref(&meshes[item.object]),
+                        &[mesh::BuildItem {
+                            object: 0,
+                            ..item.clone()
+                        }],
                         LengthUnit::Millimeter,
                         &object.name,
                     ));
                     files.push(PrintFile {
                         kind: PrintFileKind::Stl,
                         part: Some(object.part),
+                        occurrence_path: object.occurrence_path.clone(),
                         suffix,
                         objects: 1,
+                        items: 1,
                         triangles: object.triangles,
                     });
                 }
@@ -447,7 +548,11 @@ impl Exporter {
         let mut volumes = vec![];
         for (file, bytes) in preview.files.iter().zip(&built.generated) {
             let objects: Vec<&PrintObject> = match file.part {
-                Some(part) => preview.objects.iter().filter(|o| o.part == part).collect(),
+                Some(part) => preview
+                    .objects
+                    .iter()
+                    .filter(|o| o.part == part && o.occurrence_path == file.occurrence_path)
+                    .collect(),
                 None => preview.objects.iter().collect(),
             };
             volumes.push(verify(file, bytes, &objects, &request.quality)?);
@@ -865,6 +970,76 @@ mod tests {
                 "-a_b.stl"
             ]
         );
+    }
+    #[test]
+    fn readback_checks_each_placed_object_and_the_item_count() {
+        // A unit cube shared by two items; the second sits 10 mm along x.
+        let v = |x: f64, y: f64, z: f64| [x, y, z];
+        let cube = mesh::MeshObject {
+            name: "Cube".into(),
+            vertices: vec![
+                v(0., 0., 0.),
+                v(1., 0., 0.),
+                v(1., 1., 0.),
+                v(0., 1., 0.),
+                v(0., 0., 1.),
+                v(1., 0., 1.),
+                v(1., 1., 1.),
+                v(0., 1., 1.),
+            ],
+            triangles: vec![
+                [0, 2, 1],
+                [0, 3, 2],
+                [4, 5, 6],
+                [4, 6, 7],
+                [0, 1, 5],
+                [0, 5, 4],
+                [1, 2, 6],
+                [1, 6, 5],
+                [2, 3, 7],
+                [2, 7, 6],
+                [3, 0, 4],
+                [3, 4, 7],
+            ],
+        };
+        let moved = mesh::BuildItem {
+            translation_mm: [10., 0., 0.],
+            ..mesh::BuildItem::identity(0)
+        };
+        let items = [mesh::BuildItem::identity(0), moved];
+        let bytes = mesh::three_mf(std::slice::from_ref(&cube), &items, LengthUnit::Millimeter);
+        let object = |x: f64, volume: f64| PrintObject {
+            part: EntityId::new(),
+            occurrence_path: vec![],
+            name: "Cube".into(),
+            role: PrintRole::Finished,
+            bounds_mm: [[x, 0., 0.], [x + 1., 1., 1.]],
+            volume_mm3: volume,
+            triangles: 12,
+            mesh_volume_mm3: volume,
+        };
+        let file = PrintFile {
+            kind: PrintFileKind::ThreeMf,
+            part: None,
+            occurrence_path: vec![],
+            suffix: ".3mf".into(),
+            objects: 1,
+            items: 2,
+            triangles: 24,
+        };
+        let quality = MeshQuality::default();
+        let (a, b) = (object(0., 1.), object(10., 1.));
+        near(verify(&file, &bytes, &[&a, &b], &quality).unwrap(), 2.);
+        // A placed object whose own volume differs is refused even when the
+        // package total would still match.
+        let (big, small) = (object(0., 1.5), object(10., 0.5));
+        assert!(verify(&file, &bytes, &[&big, &small], &quality).is_err());
+        // Item and object counts must match the plan.
+        let wrong = PrintFile { items: 1, ..file };
+        assert!(verify(&wrong, &bytes, &[&a, &b], &quality).is_err());
+    }
+    fn near(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "{a} != {b}");
     }
     #[test]
     fn package_target_requires_an_absolute_3mf_in_an_existing_folder() {

@@ -308,10 +308,36 @@ pub fn resolve_parts(document: &Document, scope: &Scope) -> Result<Vec<ResolvedP
         .map(|q| q.select(document))
         .transpose()?
         .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
-    let parts = walker
-        .parts
-        .into_iter()
-        .filter(|p| matched.as_ref().is_none_or(|ids| ids.contains(&p.part)))
+    Ok(named(
+        document,
+        walker
+            .parts
+            .into_iter()
+            .filter(|p| matched.as_ref().is_none_or(|ids| ids.contains(&p.part))),
+    ))
+}
+/// Walk one Part, Instance or Assembly to its leaf Part occurrences, exactly
+/// as an explicit export scope walks it. An Assembly becomes the root
+/// assembly of its occurrences.
+pub fn resolve_occurrences(
+    document: &Document,
+    entity: EntityId,
+) -> Result<Vec<ResolvedPart>, ExportError> {
+    let mut walker = Walker {
+        document,
+        parts: BTreeSet::new(),
+        steps: 0,
+    };
+    let root = matches!(
+        document.get(entity).map(|e| &e.data),
+        Some(EntityData::Assembly { .. })
+    )
+    .then_some(entity);
+    walker.visit(entity, &mut vec![], root)?;
+    Ok(named(document, walker.parts.into_iter()))
+}
+fn named(document: &Document, parts: impl Iterator<Item = PartRef>) -> Vec<ResolvedPart> {
+    parts
         .map(|reference| {
             let name = document
                 .get(reference.part)
@@ -335,6 +361,5 @@ pub fn resolve_parts(document: &Document, scope: &Scope) -> Result<Vec<ResolvedP
                 occurrence_names,
             }
         })
-        .collect();
-    Ok(parts)
+        .collect()
 }

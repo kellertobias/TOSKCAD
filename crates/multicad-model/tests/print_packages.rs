@@ -25,7 +25,9 @@ struct Fixture {
     s: Session,
     lift: EntityId,
     block: EntityId,
+    block_feature: EntityId,
     post: EntityId,
+    post_feature: EntityId,
     support: EntityId,
     process: EntityId,
 }
@@ -117,7 +119,9 @@ fn fixture() -> Fixture {
         s,
         lift: lift_id,
         block: block.body,
+        block_feature: block.feature,
         post: post.body,
+        post_feature: post.feature,
         support: support.body,
         process,
     }
@@ -354,4 +358,307 @@ fn stale_sources_changed_plans_and_failed_evaluations_write_nothing() {
     };
     assert!(write(&f.s, &r, &key, &path).is_err());
     assert!(listing(dir.path()).is_empty(), "nothing was written");
+}
+
+/// Place a copy of a Part by Move/Copy and return the new Instance.
+fn copy(s: &mut Session, body: EntityId, producer: EntityId, name: &str, dy: f64) -> EntityId {
+    let mut request = model::InstanceCopyRequest::new(
+        model::InstanceCopySource::Part {
+            source: model::BodyInput { body, producer },
+        },
+        model::NumericTransform {
+            translation: [length(0.), length(dy), length(0.)],
+            ..Default::default()
+        },
+    );
+    request.name = name.into();
+    let p = model::prepare_instance_copies(s, s.revision(), actor(), &[request.clone()]).unwrap();
+    s.commit(p.prepared).unwrap();
+    request.instance
+}
+/// Volumes of the placed objects in build-item order, given each object's
+/// triangle count, from a read-back 3MF.
+fn placed_volumes(read: &mesh::ReadMesh, triangles: &[usize]) -> Vec<f64> {
+    let mut rest = read.world.as_slice();
+    triangles
+        .iter()
+        .map(|n| {
+            let (own, tail) = rest.split_at(*n);
+            rest = tail;
+            mesh::ReadMesh {
+                unit_scale: 1.,
+                objects: 1,
+                items: 1,
+                triangles: own.len(),
+                world: own.to_vec(),
+            }
+            .volume_mm3()
+        })
+        .collect()
+}
+
+#[test]
+fn selected_placed_copies_are_packaged_per_occurrence_and_share_one_mesh() {
+    let mut f = fixture();
+    let a = copy(&mut f.s, f.post, f.post_feature, "Copy A", 30.);
+    let b = copy(&mut f.s, f.post, f.post_feature, "Copy B", 60.);
+    let dir = tempfile::tempdir().unwrap();
+
+    // Only the selected copies are packaged, each at its own placement.
+    let r = request(vec![a, b], AidPolicy::IncludeAll, true);
+    let p = preview(&f.s, &r);
+    assert!(p.can_write(), "{:?}", p.blocked);
+    assert_eq!(
+        p.objects
+            .iter()
+            .map(|o| (o.part, o.occurrence_path.clone(), o.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (f.post, vec![a], "Post (Copy A)"),
+            (f.post, vec![b], "Post (Copy B)"),
+        ]
+    );
+    for (object, y) in p.objects.iter().zip([30., 60.]) {
+        near(object.bounds_mm[0][1], y, 1e-6);
+        near(object.bounds_mm[1][0], 70., 1e-6);
+        near(object.volume_mm3, 1000., 1e-6);
+    }
+    assert_eq!((p.files[0].objects, p.files[0].items), (1, 2));
+    assert_eq!(
+        p.files
+            .iter()
+            .map(|x| x.filename("copies"))
+            .collect::<Vec<_>>(),
+        [
+            "copies.3mf",
+            "copies-Post (Copy A).stl",
+            "copies-Post (Copy B).stl"
+        ]
+    );
+    let path = dir.path().join("copies.3mf");
+    let receipt = write(&f.s, &r, &p.key, &path).unwrap();
+    assert_eq!(receipt.files.len(), 3);
+    let read = mesh::read_three_mf(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        (read.objects, read.items),
+        (1, 2),
+        "one shared mesh, two items"
+    );
+    let triangles: Vec<_> = p.objects.iter().map(|o| o.triangles).collect();
+    for volume in placed_volumes(&read, &triangles) {
+        near(volume, 1000., 1e-6);
+    }
+    let bounds = read.bounds_mm().unwrap();
+    near(bounds[0][1], 30., 1e-6);
+    near(bounds[1][1], 70., 1e-6);
+    let stl = mesh::read_stl(&std::fs::read(dir.path().join("copies-Post (Copy B).stl")).unwrap())
+        .unwrap();
+    near(stl.volume_mm3(), 1000., 0.1);
+    near(stl.bounds_mm().unwrap()[0][1], 60., 1e-4);
+
+    // The world Part and a copy share the mesh; the copy keeps its name.
+    let r = request(vec![f.post, a], AidPolicy::IncludeAll, false);
+    let p = preview(&f.s, &r);
+    assert_eq!(
+        p.objects
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Post", "Post (Copy A)"]
+    );
+    let path = dir.path().join("mixed.3mf");
+    write(&f.s, &r, &p.key, &path).unwrap();
+    let read = mesh::read_three_mf(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!((read.objects, read.items), (1, 2));
+    near(read.volume_mm3(), 2000., 1e-3);
+
+    // Copies with the same name are numbered so each one is told apart.
+    let c = copy(&mut f.s, f.post, f.post_feature, "Copy A", 90.);
+    let p = preview(&f.s, &request(vec![a, c], AidPolicy::IncludeAll, false));
+    assert_eq!(
+        p.objects
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Post (Copy A) #1", "Post (Copy A) #2"]
+    );
+}
+
+#[test]
+fn a_placed_copy_brings_its_aids_at_the_copy_placement() {
+    let mut f = fixture();
+    let copied = copy(&mut f.s, f.block, f.block_feature, "Lifted copy", 50.);
+    let dir = tempfile::tempdir().unwrap();
+    let r = request(vec![copied], AidPolicy::IncludeAll, false);
+    let p = preview(&f.s, &r);
+    assert_eq!(
+        p.objects
+            .iter()
+            .map(|o| (o.part, o.occurrence_path.clone()))
+            .collect::<Vec<_>>(),
+        [(f.block, vec![copied]), (f.support, vec![copied])]
+    );
+    assert!(matches!(p.objects[1].role, PrintRole::Aid { target, .. } if target == f.block));
+    assert_eq!(p.objects[1].name, "Support (Lifted copy)");
+    // The support moves with the copy: 5 mm into the block, 50 mm along y.
+    near(p.objects[1].bounds_mm[0][1], 55., 1e-6);
+    near(p.objects[1].bounds_mm[1][2], 14.9, 1e-6);
+    near(p.objects[1].volume_mm3, 1490., 1e-6);
+    near(p.objects[0].bounds_mm[0][2], 15., 1e-6);
+    assert_eq!(p.selection.processes, [f.process]);
+    let path = dir.path().join("copy.3mf");
+    write(&f.s, &r, &p.key, &path).unwrap();
+    let read = mesh::read_three_mf(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!((read.objects, read.items), (2, 2));
+    let triangles: Vec<_> = p.objects.iter().map(|o| o.triangles).collect();
+    let volumes = placed_volumes(&read, &triangles);
+    near(volumes[0], 8000., 1e-3);
+    near(volumes[1], 1490., 1e-3);
+
+    // Leaving aids out lists the support of this copy; the copy stays.
+    let without = preview(
+        &f.s,
+        &request(vec![copied], AidPolicy::ExcludeRemovable, false),
+    );
+    assert_eq!(without.objects.len(), 1);
+    assert!(
+        without
+            .selection
+            .skipped
+            .iter()
+            .any(|s| s.entity == f.support && s.name == "Support (Lifted copy)")
+    );
+
+    // A source edit makes the copy's preview stale; nothing is written.
+    let mut lift = f.s.document().get(f.lift).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut lift.data else {
+        unreachable!()
+    };
+    *expression = "20".into();
+    f.s.apply(Request {
+        expected_revision: f.s.revision(),
+        actor: actor(),
+        label: "Raise the block".into(),
+        edits: vec![Mutation::Replace(lift)],
+    })
+    .unwrap();
+    let stale_path = dir.path().join("stale.3mf");
+    let stale = write(&f.s, &r, &p.key, &stale_path).unwrap_err();
+    assert_eq!(stale.kind, ErrorKind::Stale);
+    assert!(!stale_path.exists());
+}
+
+#[test]
+fn a_tag_packages_the_world_part_and_every_placed_copy() {
+    let mut f = fixture();
+    let a = copy(&mut f.s, f.post, f.post_feature, "Copy A", 30.);
+    let b = copy(&mut f.s, f.post, f.post_feature, "Copy B", 60.);
+    let p = prepare_tags(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        &[f.post],
+        &TagEdit::Add(BTreeSet::from([DEFAULT_PRINT_TAG.to_string()])),
+    )
+    .unwrap();
+    f.s.commit(p).unwrap();
+    let tag = PrintRequest {
+        source: PrintSource::Tag {
+            tag: DEFAULT_PRINT_TAG.into(),
+        },
+        ..request(vec![], AidPolicy::IncludeAll, false)
+    };
+    let p = preview(&f.s, &tag);
+    let mut paths: Vec<_> = p
+        .objects
+        .iter()
+        .map(|o| (o.part, o.occurrence_path.clone()))
+        .collect();
+    paths.sort();
+    let mut expected = vec![(f.post, vec![]), (f.post, vec![a]), (f.post, vec![b])];
+    expected.sort();
+    assert_eq!(paths, expected);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tagged.3mf");
+    write(&f.s, &tag, &p.key, &path).unwrap();
+    let read = mesh::read_three_mf(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!((read.objects, read.items), (1, 3));
+    near(read.volume_mm3(), 3000., 1e-3);
+}
+
+#[test]
+fn placed_assembly_occurrences_are_packaged_at_their_nested_world_placements() {
+    let mut f = fixture();
+    let commit = |s: &mut Session, p: model::AssemblyPrepared| s.commit(p.prepared).unwrap();
+    // A reusable "Rack" holds the post 30 mm along y; it is placed twice.
+    let mut member = model::ComponentPlacementRequest::new(
+        f.post,
+        model::NumericTransform {
+            translation: [length(0.), length(30.), length(0.)],
+            ..Default::default()
+        },
+    );
+    member.name = "Slot".into();
+    let p = model::prepare_place_component(&f.s, f.s.revision(), actor(), &member).unwrap();
+    commit(&mut f.s, p);
+    let rack = model::AssemblyRequest::new("Rack", vec![member.instance], vec![f.post]);
+    let p = model::prepare_assembly(&f.s, f.s.revision(), actor(), &rack).unwrap();
+    commit(&mut f.s, p);
+    let mut roots = vec![];
+    for (name, dx) in [("Left rack", 100.), ("Right rack", 200.)] {
+        let mut root = model::ComponentPlacementRequest::new(
+            rack.assembly,
+            model::NumericTransform {
+                translation: [length(dx), length(0.), length(0.)],
+                ..Default::default()
+            },
+        );
+        root.name = name.into();
+        let p = model::prepare_place_component(&f.s, f.s.revision(), actor(), &root).unwrap();
+        commit(&mut f.s, p);
+        roots.push(root.instance);
+    }
+    // The member and the definition Part are not world occurrences: they are
+    // listed as not packaged, never substituted.
+    let r = request(
+        vec![roots[0], roots[1], member.instance, f.post],
+        AidPolicy::IncludeAll,
+        false,
+    );
+    let p = preview(&f.s, &r);
+    assert!(p.can_write(), "{:?}", p.blocked);
+    assert_eq!(
+        p.objects
+            .iter()
+            .map(|o| (o.part, o.occurrence_path.clone(), o.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                f.post,
+                vec![roots[0], member.instance],
+                "Post (Left rack / Slot)"
+            ),
+            (
+                f.post,
+                vec![roots[1], member.instance],
+                "Post (Right rack / Slot)"
+            ),
+        ]
+    );
+    for (object, x) in p.objects.iter().zip([160., 260.]) {
+        near(object.bounds_mm[0][0], x, 1e-6);
+        near(object.bounds_mm[0][1], 30., 1e-6);
+        near(object.volume_mm3, 1000., 1e-6);
+    }
+    let skipped: BTreeSet<_> = p.selection.skipped.iter().map(|s| s.entity).collect();
+    assert_eq!(skipped, BTreeSet::from([member.instance, f.post]));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("racks.3mf");
+    write(&f.s, &r, &p.key, &path).unwrap();
+    let read = mesh::read_three_mf(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!((read.objects, read.items), (1, 2));
+    let bounds = read.bounds_mm().unwrap();
+    near(bounds[0][0], 160., 1e-6);
+    near(bounds[1][0], 270., 1e-6);
+    near(read.volume_mm3(), 2000., 1e-3);
 }

@@ -458,7 +458,9 @@ impl PrintWorkspace {
                 crate::controls::inspector_layout(ui);
                 ui.heading("Printable Parts");
                 ui.radio_value(&mut self.by_tag, false, "Selection")
-                    .on_hover_text("Parts selected in the viewport when Export was entered");
+                    .on_hover_text(
+                        "Parts and placed copies selected in the viewport when Export was entered; each copy is packaged at its placement",
+                    );
                 if !self.by_tag {
                     ui.small(format!(
                         "{} captured entit{}",
@@ -474,7 +476,9 @@ impl PrintWorkspace {
                     }
                 }
                 ui.radio_value(&mut self.by_tag, true, "Tag")
-                    .on_hover_text("Every world Part carrying this exact, case-sensitive tag");
+                    .on_hover_text(
+                        "Every world Part and every placed copy of a Part carrying this exact, case-sensitive tag",
+                    );
                 if self.by_tag {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.tag)
@@ -575,8 +579,13 @@ impl PrintWorkspace {
             ui.colored_label(egui::Color32::LIGHT_YELLOW, reason);
         }
         let total: f64 = preview.objects.iter().map(|o| o.volume_mm3).sum();
+        let placed = preview
+            .objects
+            .iter()
+            .filter(|o| !o.occurrence_path.is_empty())
+            .count();
         ui.label(format!(
-            "{} object(s) · {:.1} mm³ exact volume · revision {}",
+            "{} object(s), {placed} of them placed occurrence(s) · {:.1} mm³ exact volume · revision {}",
             preview.objects.len(),
             total,
             preview.key.source.revision
@@ -585,12 +594,17 @@ impl PrintWorkspace {
             .striped(true)
             .num_columns(5)
             .show(ui, |ui| {
-                for h in ["Part", "Role", "Z range mm", "Volume mm³", "Triangles"] {
+                for h in ["Object", "Role", "Z range mm", "Volume mm³", "Triangles"] {
                     ui.strong(h);
                 }
                 ui.end_row();
                 for o in &preview.objects {
-                    ui.label(&o.name);
+                    ui.label(&o.name)
+                        .on_hover_text(if o.occurrence_path.is_empty() {
+                            "World Part"
+                        } else {
+                            "Placed occurrence, packaged at its world placement"
+                        });
                     ui.label(match &o.role {
                         PrintRole::Finished => "Finished".to_string(),
                         PrintRole::Aid { target, .. } => format!(
@@ -614,9 +628,10 @@ impl PrintWorkspace {
             ui.strong("Files");
             for file in &preview.files {
                 ui.label(format!(
-                    "{} · {} object(s) · {} triangles",
+                    "{} · {} mesh object(s) · {} build item(s) · {} triangles",
                     file.filename("<name>"),
                     file.objects,
+                    file.items,
                     file.triangles
                 ));
             }

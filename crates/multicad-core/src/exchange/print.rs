@@ -1,13 +1,14 @@
-//! Print packaging intent: which finished Parts go into a 3MF print package,
-//! whether their removable FDM aids go with them, and what a native provider
-//! reports back. Nothing here slices, controls a printer or asserts that a
+//! Print packaging intent: which finished Parts and placed occurrences go
+//! into a 3MF print package, whether their removable FDM aids go with them,
+//! and what a native provider reports back. Nothing here slices, controls a printer or asserts that a
 //! package is printable; the native provider only packages exact geometry.
 use super::*;
 use crate::{materials::TagQuery, model, project_file::ContentHash};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Upper bound on Parts in one print package, including aids.
+/// Upper bound on packaged objects (world Parts and placed occurrences,
+/// including aids) in one print package.
 pub const MAX_PRINT_PARTS: usize = 128;
 /// The tag Print proposes when choosing Parts by tag.
 pub const DEFAULT_PRINT_TAG: &str = "printed";
@@ -16,9 +17,12 @@ pub const DEFAULT_PRINT_TAG: &str = "printed";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PrintSource {
-    /// Explicit Parts, usually the selection captured on entering Export.
+    /// Explicit Parts, Instances or Assemblies, usually the selection
+    /// captured on entering Export. A placed occurrence is packaged at its
+    /// world placement.
     Parts { parts: Vec<EntityId> },
-    /// Every world Part carrying this exact, case-sensitive tag.
+    /// Every world Part and every placed occurrence of a Part carrying this
+    /// exact, case-sensitive tag.
     Tag { tag: String },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,7 +33,8 @@ pub struct PrintRequest {
     /// `ExcludeRemovable` leaves every aid Part out.
     pub aids: AidPolicy,
     pub quality: MeshQuality,
-    /// Also write one binary STL per packaged Part beside the 3MF.
+    /// Also write one binary STL per packaged object (world Part or placed
+    /// occurrence) beside the 3MF.
     pub stl_per_part: bool,
 }
 impl Default for PrintRequest {
@@ -91,6 +96,12 @@ pub enum PrintRole {
 #[serde(deny_unknown_fields)]
 pub struct PrintPart {
     pub part: EntityId,
+    /// The placed occurrence, outermost Instance first; empty for a world
+    /// Part. An aid riding on a placed target shares its target's path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occurrence_path: Vec<EntityId>,
+    /// The Part name, followed by the occurrence names for a placed
+    /// occurrence; repeated labels are numbered.
     pub name: String,
     pub role: PrintRole,
 }
@@ -102,7 +113,7 @@ pub struct PrintSkip {
     pub name: String,
     pub reason: String,
 }
-/// The resolved package source: finished Parts first, then included aids.
+/// The resolved package source: finished objects first, then included aids.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrintSelection {
@@ -117,10 +128,27 @@ fn name_of(document: &Document, id: EntityId) -> String {
         .get(id)
         .map_or_else(|| id.to_string(), |e| e.name.clone())
 }
+/// One leaf Part occurrence chosen for the package: a world Part when the
+/// path is empty.
+#[derive(Clone)]
+struct Chosen {
+    part: EntityId,
+    path: Vec<EntityId>,
+    names: Vec<String>,
+}
+fn label(document: &Document, chosen: &Chosen) -> String {
+    let name = name_of(document, chosen.part);
+    if chosen.names.is_empty() {
+        name
+    } else {
+        format!("{name} ({})", chosen.names.join(" / "))
+    }
+}
 /// Resolve a print request against one immutable document snapshot.
 /// Explicit identities that no longer exist fail instead of broadening the
-/// package; placed occurrences and component definitions are listed as
-/// skipped, never silently substituted.
+/// package. A chosen Instance or Assembly is walked to its leaf Part
+/// occurrences, each packaged at its own world placement; component
+/// definitions are listed as skipped, never silently substituted.
 pub fn resolve_print(
     document: &Document,
     revision: u64,
@@ -128,6 +156,7 @@ pub fn resolve_print(
 ) -> Result<PrintSelection, ExportError> {
     request.validate()?;
     let stamp = ExportStamp::capture(document, revision)?;
+    let by_tag = matches!(request.source, PrintSource::Tag { .. });
     let candidates: Vec<EntityId> = match &request.source {
         PrintSource::Parts { parts } => parts.clone(),
         PrintSource::Tag { tag } => TagQuery {
@@ -137,10 +166,40 @@ pub fn resolve_print(
         .select(document)?,
     };
     let definitions = model::assembly_definition_parts(document)?;
+    let reusable = model::reusable_assemblies(document)?;
+    let mut components = BTreeSet::new();
+    let mut members = BTreeMap::new();
+    for entity in document.entities() {
+        match &entity.data {
+            EntityData::Instance { component, .. } => {
+                components.insert(*component);
+            }
+            EntityData::Assembly { instances } => {
+                for member in instances {
+                    members.insert(*member, entity.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    // An Assembly that is reusable or itself placed has no world occurrences
+    // of its own; its placed Instances do.
+    let definition_assembly = |id: &EntityId| reusable.contains(id) || components.contains(id);
     let aid_parts = model::aid_parts(document);
     let mut skipped = vec![];
-    let mut finished = vec![];
-    let mut explicit_aids = vec![];
+    let mut finished: Vec<Chosen> = vec![];
+    let mut explicit_aids: Vec<Chosen> = vec![];
+    let mut seen = BTreeSet::new();
+    let mut choose = |chosen: Chosen, finished: &mut Vec<Chosen>, aids: &mut Vec<Chosen>| {
+        if seen.insert((chosen.part, chosen.path.clone())) {
+            if aid_parts.contains(&chosen.part) {
+                aids.push(chosen);
+            } else {
+                finished.push(chosen);
+            }
+        }
+    };
+    let mut occurrences = vec![];
     for id in candidates {
         let entity = document.get(id).ok_or_else(|| {
             ExportError::new(
@@ -158,30 +217,75 @@ pub fn resolve_print(
             EntityData::Part { .. } => {
                 if model::scale_component_owner(document, id)?.is_some() {
                     skipped.push(skip(
-                        "Owned scale geometry belongs to its Instance; Print packages world Parts only",
+                        "Owned scale geometry belongs to its Instance; choose the Instance",
                     ));
                 } else if definitions.contains(&id) {
-                    skipped.push(skip(
-                        "Assembly component definition; Print packages world Parts, not placed occurrences",
-                    ));
-                } else if aid_parts.contains(&id) {
-                    explicit_aids.push(id);
+                    skipped.push(skip(if by_tag {
+                        "Assembly component definition; its placed occurrences carrying the tag are packaged instead"
+                    } else {
+                        "Assembly component definition; choose its placed Instances"
+                    }));
                 } else {
-                    finished.push(id);
+                    choose(
+                        Chosen {
+                            part: id,
+                            path: vec![],
+                            names: vec![],
+                        },
+                        &mut finished,
+                        &mut explicit_aids,
+                    );
                 }
             }
-            EntityData::Instance { .. } | EntityData::Assembly { .. } => skipped.push(skip(
-                "Placed occurrences are not packaged by Print; choose the world Parts",
+            EntityData::Instance { .. }
+                if members.get(&id).is_some_and(definition_assembly) =>
+            {
+                skipped.push(skip(
+                    "Member of a reusable Assembly definition; choose a placed Instance of the Assembly",
+                ))
+            }
+            EntityData::Assembly { .. } if definition_assembly(&id) => skipped.push(skip(
+                "Reusable Assembly definition; choose a placed Instance of the Assembly",
             )),
-            _ => skipped.push(skip("Not a Part")),
+            EntityData::Instance { .. } | EntityData::Assembly { .. } => {
+                occurrences.extend(resolve_occurrences(document, id)?)
+            }
+            _ => skipped.push(skip("Not a Part, Instance or Assembly")),
         }
     }
-    let finished_set: BTreeSet<_> = finished.iter().copied().collect();
+    if let PrintSource::Tag { tag } = &request.source {
+        // Placed occurrences whose leaf Part carries the tag, walked as a
+        // project export scope walks them; world Parts were handled above.
+        let scope = Scope {
+            root: ScopeRoot::Project,
+            tags: Some(TagQuery {
+                any: BTreeSet::from([tag.clone()]),
+                ..Default::default()
+            }),
+        };
+        occurrences.extend(
+            resolve_parts(document, &scope)?
+                .into_iter()
+                .filter(|p| !p.reference.occurrence_path.is_empty()),
+        );
+    }
+    for occurrence in occurrences {
+        choose(
+            Chosen {
+                part: occurrence.reference.part,
+                path: occurrence.reference.occurrence_path,
+                names: occurrence.occurrence_names,
+            },
+            &mut finished,
+            &mut explicit_aids,
+        );
+    }
     let mut parts: Vec<PrintPart> = finished
         .iter()
-        .map(|id| PrintPart {
-            part: *id,
-            name: name_of(document, *id),
+        .map(|c| PrintPart {
+            part: c.part,
+            occurrence_path: c.path.clone(),
+            name: label(document, c),
             role: PrintRole::Finished,
         })
         .collect();
@@ -190,8 +294,15 @@ pub fn resolve_print(
     for entity in model::aids(document) {
         let aid = model::read_aid(document, entity.id)?;
         let part = aid.output.body;
-        let chosen = explicit_aids.contains(&part);
-        if !finished_set.contains(&aid.target) && !chosen {
+        // The aid rides on every chosen occurrence of its target, and is
+        // packaged wherever the aid Part itself was chosen.
+        let placed: Vec<Chosen> = finished
+            .iter()
+            .filter(|c| c.part == aid.target)
+            .map(|c| Chosen { part, ..c.clone() })
+            .chain(explicit_aids.iter().filter(|c| c.part == part).cloned())
+            .collect();
+        if placed.is_empty() {
             continue;
         }
         if let Some(process) = aid.process
@@ -199,29 +310,50 @@ pub fn resolve_print(
         {
             processes.push(process);
         }
-        if request.aids == AidPolicy::ExcludeRemovable {
-            skipped.push(PrintSkip {
-                entity: part,
-                name: name_of(document, part),
-                reason: "Removable FDM aid left out by the aid policy".into(),
-            });
-        } else if included.insert(part) {
-            parts.push(PrintPart {
-                part,
-                name: name_of(document, part),
-                role: PrintRole::Aid {
-                    feature: entity.id,
-                    target: aid.target,
-                },
-            });
+        for chosen in placed {
+            if !included.insert((part, chosen.path.clone())) {
+                continue;
+            }
+            if request.aids == AidPolicy::ExcludeRemovable {
+                skipped.push(PrintSkip {
+                    entity: part,
+                    name: label(document, &chosen),
+                    reason: "Removable FDM aid left out by the aid policy".into(),
+                });
+            } else {
+                parts.push(PrintPart {
+                    part,
+                    name: label(document, &chosen),
+                    occurrence_path: chosen.path,
+                    role: PrintRole::Aid {
+                        feature: entity.id,
+                        target: aid.target,
+                    },
+                });
+            }
         }
     }
     if parts.len() > MAX_PRINT_PARTS {
         return Err(ExportError::new(
             ErrorKind::Budget,
             None,
-            format!("A print package holds at most {MAX_PRINT_PARTS} Parts, including aids"),
+            format!(
+                "A print package holds at most {MAX_PRINT_PARTS} objects, including placed occurrences and aids"
+            ),
         ));
+    }
+    // Number repeated labels so every packaged object is told apart.
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for part in &parts {
+        *counts.entry(part.name.clone()).or_default() += 1;
+    }
+    let mut ordinal: BTreeMap<String, usize> = BTreeMap::new();
+    for part in &mut parts {
+        if counts[&part.name] > 1 {
+            let n = ordinal.entry(part.name.clone()).or_default();
+            *n += 1;
+            part.name = format!("{} #{n}", part.name);
+        }
     }
     Ok(PrintSelection {
         stamp,
@@ -237,11 +369,15 @@ pub struct PrintKey {
     pub source: ExportStamp,
     pub plan_hash: ContentHash,
 }
-/// One packaged Part as tessellated from its current exact solid.
+/// One packaged world Part or placed occurrence as tessellated from its
+/// current exact solid. Bounds and volumes are in world placement.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrintObject {
     pub part: EntityId,
+    /// The placed occurrence; empty for a world Part.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occurrence_path: Vec<EntityId>,
     pub name: String,
     pub role: PrintRole,
     /// World bounds of the exact solid, in millimeters.
@@ -263,8 +399,15 @@ pub enum PrintFileKind {
 pub struct PrintFile {
     pub kind: PrintFileKind,
     pub part: Option<EntityId>,
+    /// For a per-object STL: the placed occurrence of `part`, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occurrence_path: Vec<EntityId>,
     pub suffix: String,
+    /// Mesh resource objects; placed occurrences of one Part share one.
     pub objects: usize,
+    /// Build items: one per packaged world Part or placed occurrence.
+    pub items: usize,
+    /// Placed triangles over all build items.
     pub triangles: usize,
 }
 impl PrintFile {
@@ -479,6 +622,53 @@ mod tests {
         .unwrap();
         assert_eq!(other.parts.len(), 1);
         assert!(other.processes.is_empty());
+    }
+    #[test]
+    fn placed_occurrences_are_chosen_per_path_with_their_aids() {
+        let mut f = fixture();
+        let mut placed = model::ComponentPlacementRequest::new(f.block, Default::default());
+        placed.name = "Spare".into();
+        let p = model::prepare_place_component(&f.s, f.s.revision(), actor(), &placed).unwrap();
+        f.s.commit(p.prepared).unwrap();
+        let chosen = resolve_print(
+            f.s.document(),
+            f.s.revision(),
+            &request(
+                PrintSource::Parts {
+                    parts: vec![placed.instance, f.block],
+                },
+                AidPolicy::IncludeAll,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            chosen
+                .parts
+                .iter()
+                .map(|p| (p.part, p.occurrence_path.clone(), p.name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (f.block, vec![], "Block"),
+                (f.block, vec![placed.instance], "Block (Spare)"),
+                (f.tab, vec![], "Tab"),
+                (f.tab, vec![placed.instance], "Tab (Spare)"),
+            ]
+        );
+        assert!(chosen.skipped.is_empty());
+        assert_eq!(chosen.processes, [f.process], "listed once");
+        let without = resolve_print(
+            f.s.document(),
+            f.s.revision(),
+            &request(
+                PrintSource::Parts {
+                    parts: vec![placed.instance],
+                },
+                AidPolicy::ExcludeRemovable,
+            ),
+        )
+        .unwrap();
+        assert_eq!(without.parts.len(), 1);
+        assert_eq!(without.skipped[0].name, "Tab (Spare)");
     }
     #[test]
     fn tags_choose_parts_exactly_and_missing_identities_fail() {
