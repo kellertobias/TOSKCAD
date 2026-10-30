@@ -289,7 +289,31 @@ impl Compiler {
         revision: u64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
-        self.compile_scoped(document, revision, None, interrupt)
+        self.compile_scoped(document, revision, None, interrupt, None)
+    }
+    /// A full compile that reuses unchanged feature results from earlier
+    /// compiles through `cache` and records new ones (see [`EvaluationCache`]).
+    /// The result is identical to [`Self::compile_interruptible`].
+    pub fn compile_cached(
+        &self,
+        cache: &mut crate::EvaluationCache,
+        document: &Document,
+        revision: u64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
+        self.compile_scoped(document, revision, None, interrupt, Some(cache))
+    }
+    /// [`Self::compile_sources_interruptible`] through an evaluation cache.
+    pub fn compile_sources_cached(
+        &self,
+        cache: &mut crate::EvaluationCache,
+        document: &Document,
+        revision: u64,
+        roots: &[EntityId],
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
+        let roots = validate_source_roots(document, roots)?;
+        self.compile_scoped(document, revision, Some(roots), interrupt, Some(cache))
     }
     /// Evaluate only explicitly selected current source roots and their dependencies.
     /// The stamp still covers the complete canonical document. The result is an
@@ -310,7 +334,7 @@ impl Compiler {
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
         let roots = validate_source_roots(document, roots)?;
-        self.compile_scoped(document, revision, Some(roots), interrupt)
+        self.compile_scoped(document, revision, Some(roots), interrupt, None)
     }
     /// Nested evaluators report their own cancellation wording (for example
     /// a sketch "cancelled" or a wrapped native failure). A failure observed
@@ -322,8 +346,9 @@ impl Compiler {
         revision: u64,
         roots: Option<Vec<EntityId>>,
         interrupt: Option<&dyn Fn() -> bool>,
+        cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
-        self.compile_scoped_unchecked(document, revision, roots, interrupt)
+        self.compile_scoped_unchecked(document, revision, roots, interrupt, cache)
             .map_err(|e| {
                 if !is_superseded(&e) && interrupt.is_some_and(|f| f()) {
                     error(e.entity, "Model evaluation superseded")
@@ -338,6 +363,7 @@ impl Compiler {
         revision: u64,
         roots: Option<Vec<EntityId>>,
         interrupt: Option<&dyn Fn() -> bool>,
+        cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
         checkpoint(interrupt)?;
         document.validate().map_err(|e| error(None, e))?;
@@ -427,6 +453,9 @@ impl Compiler {
                 }
             }
         }
+        let mut cached = cache.map(|cache| {
+            crate::eval_cache::Session::new(cache, self, document, context.parameters())
+        });
         let mut profiles = Profiles {
             context: &context,
             queries: NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?,
@@ -549,6 +578,36 @@ impl Compiler {
             if shapes.len() >= MAX_MODEL_FEATURES {
                 return Err(error(Some(id), "Model exceeds the native feature budget"));
             }
+            // CAD-150: an unchanged result key reuses the earlier exact result.
+            let key = cached.as_mut().and_then(|c| c.key(id));
+            if let Some((solid, shape, extras)) =
+                key.and_then(|key| cached.as_mut().and_then(|c| c.lookup(&key, revision)))
+            {
+                extras.apply(
+                    id,
+                    crate::eval_cache::Sides {
+                        panel_frames: &mut panel_frames,
+                        sheet_layouts: &mut sheet_layouts,
+                        member_paths: &mut member_paths,
+                        consumed: &mut consumed_versions,
+                    },
+                );
+                triangles = triangles.saturating_add(shape.mesh.indices.len() / 3);
+                if triangles > MAX_MODEL_TRIANGLES {
+                    return Err(error(
+                        Some(id),
+                        "Model display exceeds the triangle budget; use coarser detail",
+                    ));
+                }
+                topologies.insert(id, shape.topology.clone());
+                shapes.insert(id, shape);
+                solids.insert(id, solid);
+                continue;
+            }
+            if let Some(cached) = cached.as_mut() {
+                cached.evaluated(id, key.is_some());
+            }
+            let consumed_before = key.map(|_| consumed_versions.clone());
             // Provider dispatch is confined to the native model layer. The UI,
             // document and storage layers do not implement geometry algorithms.
             let solid = match (definition.type_id.as_str(), definition.schema_version) {
@@ -942,10 +1001,26 @@ impl Compiler {
                     "Model display exceeds the triangle budget; use coarser detail",
                 ));
             }
+            let snapshot = Arc::new(snapshot);
+            if let (Some(cached), Some(key), Some(before)) = (cached.as_mut(), key, consumed_before)
+            {
+                let extras = crate::eval_cache::capture(
+                    id,
+                    crate::eval_cache::Sides {
+                        panel_frames: &mut panel_frames,
+                        sheet_layouts: &mut sheet_layouts,
+                        member_paths: &mut member_paths,
+                        consumed: &mut consumed_versions,
+                    },
+                    &before,
+                );
+                cached.store(key, &solid, &snapshot, extras);
+            }
             topologies.insert(id, topology);
-            shapes.insert(id, Arc::new(snapshot));
+            shapes.insert(id, snapshot);
             solids.insert(id, solid);
         }
+        drop(cached);
         checkpoint(interrupt)?;
         let mut references = references::inspect(document, revision, &topologies);
         crate::external::complete_report(

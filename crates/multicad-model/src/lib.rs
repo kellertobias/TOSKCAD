@@ -8,6 +8,7 @@ mod cabinetry;
 mod compiler;
 mod drawings;
 mod edge_treatment;
+mod eval_cache;
 pub mod export;
 mod external;
 mod external_geometry;
@@ -38,6 +39,9 @@ pub use assemblies::LeafOccurrenceSnapshot;
 pub use cabinetry::{CutRecord, MachiningRecord, PANEL_EDGE_ROLES, StackEvaluation, StackLayer};
 pub use compiler::*;
 pub use drawings::*;
+pub use eval_cache::{
+    CompileStats, DEFAULT_MAX_ENTRIES, DEFAULT_RETAINED_BYTES, EvaluationCache, cacheable_type,
+};
 pub use external::*;
 pub use external_repair::*;
 pub use fdm::{AidContact, AidInspection};
