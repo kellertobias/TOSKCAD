@@ -24,6 +24,13 @@ impl SketchEditor {
             self.snap_assist.clear();
         }
     }
+    /// Start of the line segment being drawn (Line, or the current Polyline
+    /// segment); perpendicular and tangent targets are relative to it.
+    fn line_start(&self) -> Option<[f64; 2]> {
+        matches!(self.tool, Some(DrawTool::Line | DrawTool::Polyline))
+            .then_some(self.first)
+            .flatten()
+    }
     /// Explicitly removes all acquired references and pending dwell.
     pub fn clear_snap_references(&mut self) {
         self.snap_assist.clear();
@@ -57,6 +64,7 @@ impl SketchEditor {
             pointer_mm: raw,
             pointer_px: [pointer.x, pointer.y],
             to_screen: &project,
+            from: self.line_start(),
         };
         let now = ui.input(|i| i.time);
         let outcome = self.snap_assist.update(&geometry, &query, now);
@@ -142,6 +150,25 @@ impl SketchEditor {
                 5.,
                 1.,
             ));
+        }
+        // Right-angle mark for a perpendicular foot, a touching circle for a
+        // tangent point; both drawn along the line from its start.
+        if let (TargetKind::Perpendicular | TargetKind::Tangent, Some(start)) =
+            (target.kind, self.line_start().and_then(screen))
+        {
+            let along = start - at;
+            if along.length() > 1e-3 {
+                let u = along.normalized();
+                let v = u.rot90();
+                let stroke = Stroke::new(1.5, GUIDE_COLOR);
+                if target.kind == TargetKind::Perpendicular {
+                    let d = 7.;
+                    painter.line_segment([at + v * d, at + v * d + u * d], stroke);
+                    painter.line_segment([at + u * d, at + v * d + u * d], stroke);
+                } else {
+                    painter.circle_stroke(at, 4., stroke);
+                }
+            }
         }
         let label = match target.kind {
             TargetKind::Guide(Axis::Horizontal) => "Horizontal",

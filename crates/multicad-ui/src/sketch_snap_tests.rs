@@ -12,6 +12,7 @@ fn query(pointer_mm: [f64; 2]) -> Query<'static> {
         pointer_mm,
         pointer_px: to_screen(pointer_mm).unwrap(),
         to_screen: &to_screen,
+        from: None,
     }
 }
 /// Pointer offset by whole screen pixels from a sketch position.
@@ -23,6 +24,7 @@ fn query_px(at: [f64; 2], dx: f32, dy: f32) -> Query<'static> {
         pointer_mm: [(pointer[0] / SCALE) as f64, (-pointer[1] / SCALE) as f64],
         pointer_px: pointer,
         to_screen: &to_screen,
+        from: None,
     }
 }
 
@@ -419,7 +421,100 @@ fn tolerances_are_screen_pixels_and_follow_zoom() {
             pointer_mm: [1., 0.],
             pointer_px: [scale, 0.],
             to_screen: &screen,
+            from: None,
         };
         assert_eq!(resolve(&g, &[], &q, None).is_some(), snaps, "scale {scale}");
     }
+}
+
+/// `query_px` with the start of the line being drawn.
+fn from_query(at: [f64; 2], dx: f32, dy: f32, from: [f64; 2]) -> Query<'static> {
+    Query {
+        from: Some(from),
+        ..query_px(at, dx, dy)
+    }
+}
+
+#[test]
+fn perpendicular_foot_on_a_line_needs_a_line_start_and_lies_on_the_segment() {
+    let mut b = Builder::default();
+    let (p, q) = (b.point([0., 0.]), b.point([40., 30.]));
+    b.line(p, q);
+    let g = b.geometry();
+    let from = [5., 20.];
+    // Foot of the perpendicular from (5,20) onto the line through (0,0) and
+    // (40,30): t = (5*40 + 20*30) / 2500 = 0.32 -> (12.8, 9.6).
+    let foot = [12.8, 9.6];
+    let target = resolve(&g, &[], &from_query(foot, 3., -2., from), None).unwrap();
+    assert_eq!(target.kind, TargetKind::Perpendicular);
+    let ab = [40., 30.];
+    let drawn = sub(target.position, from);
+    assert!(
+        dot(drawn, ab).abs() < 1e-9,
+        "not perpendicular: {:?}",
+        target.position
+    );
+    assert!(len(sub(target.position, foot)) < 1e-9);
+    assert_eq!(target.anchor, None);
+    // It beats the on-curve point, but an endpoint still wins over it.
+    let near = resolve(&g, &[], &query_px(foot, 3., -2.), None).unwrap();
+    assert_eq!(near.kind, TargetKind::OnCurve, "no line start, no foot");
+    // A foot beyond the segment is not offered.
+    let target = resolve(&g, &[], &from_query([44., 33.], 2., 0., [60., 10.]), None);
+    assert!(target.is_none_or(|t| t.kind != TargetKind::Perpendicular));
+}
+
+#[test]
+fn circles_and_arcs_offer_radial_feet_and_tangent_points_from_the_line_start() {
+    let mut b = Builder::default();
+    let c = b.point([0., 0.]);
+    let circle = b.curve(CurveKind::Circle {
+        center: c,
+        radius_mm: 10.,
+    });
+    let g = b.geometry();
+    let from = [30., 0.];
+    let near = resolve(&g, &[], &from_query([10., 0.], 2., 3., from), None).unwrap();
+    assert_eq!(near.kind, TargetKind::Perpendicular);
+    assert_eq!(near.key, TargetKey::Perpendicular(circle, 0));
+    assert!(len(sub(near.position, [10., 0.])) < 1e-12);
+    let far = resolve(&g, &[], &from_query([-10., 0.], 2., 3., from), None).unwrap();
+    assert_eq!(far.key, TargetKey::Perpendicular(circle, 1));
+    // Tangent from (30,0): the radius to the tangent point is perpendicular
+    // to the drawn line.
+    let angle = (10f64 / 30.).acos();
+    let tangent = [10. * angle.cos(), 10. * angle.sin()];
+    let target = resolve(&g, &[], &from_query(tangent, -2., 2., from), None).unwrap();
+    assert_eq!(target.kind, TargetKind::Tangent);
+    assert!(dot(target.position, sub(target.position, from)).abs() < 1e-9);
+    // A line start inside the circle has no tangent.
+    assert!(
+        relative_targets(&g, [1., 0.])
+            .iter()
+            .all(|t| t.1 != TargetKind::Tangent)
+    );
+    // A quarter arc only offers targets inside its sweep.
+    let mut b = Builder::default();
+    let (c, s, e) = (b.point([0., 0.]), b.point([10., 0.]), b.point([0., 10.]));
+    b.curve(CurveKind::Arc {
+        center: c,
+        start: s,
+        end: e,
+        clockwise: false,
+    });
+    let g = b.geometry();
+    let targets = relative_targets(&g, [20., 20.]);
+    let feet: Vec<_> = targets
+        .iter()
+        .filter(|t| t.1 == TargetKind::Perpendicular)
+        .collect();
+    assert_eq!(feet.len(), 1, "only the near foot is on the arc");
+    let h = 50f64.sqrt();
+    assert!(len(sub(feet[0].2, [h, h])) < 1e-9);
+    // From the opposite side only the far foot lies on the arc; both
+    // tangent points fall outside its sweep.
+    let behind = relative_targets(&g, [-20., -20.]);
+    assert_eq!(behind.len(), 1, "{behind:?}");
+    assert!(matches!(behind[0].0, TargetKey::Perpendicular(_, 1)));
+    assert!(len(sub(behind[0].2, [h, h])) < 1e-9);
 }
