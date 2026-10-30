@@ -108,8 +108,8 @@ impl ModelRequest {
                 return command.prepare(session, actor);
             }
             Self::Opening(command) => {
-                if command.wall != feature {
-                    return Err("Opening edit changed its wall".into());
+                if command.anchor != feature {
+                    return Err("Opening edit changed its wall or slab".into());
                 }
                 return command.prepare(session, actor);
             }

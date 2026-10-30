@@ -399,7 +399,7 @@ impl ModelingTool {
                 "Requires an existing wall, native modeling and no pending edits. Places one opening of a reusable type at a segment offset; misfitting, top-reaching or overlapping openings are refused. Reopen an existing opening from the same tool to edit or remove it."
             }
             Self::Cutout => {
-                "Requires an existing wall, native modeling and no pending edits. Cuts the full wall height, through the wall or as a chase from one face; cutouts that would split the wall are refused. Slabs are not cut."
+                "Requires an existing wall or floor slab, native modeling and no pending edits. Choose what it cuts: the full wall height, through the wall or as a chase from one face, and/or the floor slabs under it on a range of levels (shafts, floor penetrations). Cutouts that would split the wall or cross a slab edge are refused."
             }
             Self::EdgeTreatment => {
                 "Select native edges of one Part definition. Sided Chamfer distances/angles use explicit adjacent face captures. Linked Instances follow the definition."
