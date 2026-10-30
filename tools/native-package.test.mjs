@@ -50,6 +50,9 @@ test('native development layout includes a copied executable, identity pin and n
       assert.deepEqual(readFileSync(join(stage,'share/icons/hicolor/512x512/apps/multicad.png')),readFileSync(new URL('../assets/branding/app/multicad.png',import.meta.url)));
     }
     assert(readFileSync(join(layout.resources,'OCCT-LGPL-EXCEPTION.txt'),'utf8').length>100);
+    const cantarell=readFileSync(join(layout.resources,'third-party/bundled-fonts/Cantarell-Regular.txt'),'utf8');
+    assert.match(cantarell,/SIL OPEN FONT LICENSE Version 1\.1/);
+    assert.match(cantarell,/Jakub Steiner/);
     const readme=readFileSync(join(stage,'README.txt'),'utf8');
     assert.match(readme,/constrained sketches and initial native solid extrusion/);
     assert.match(readme,/Native \.multicad projects support save\/open/);
