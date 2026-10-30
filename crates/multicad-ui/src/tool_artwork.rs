@@ -33,6 +33,9 @@ pub static SOURCES: &[(&str, &str)] = artwork![
     "erase",
     "wall-2d",
     "levels-2d",
+    "door",
+    "window",
+    "vertical-cutout",
     "project-reference",
     "trim",
     "rectangle-corners",
@@ -96,6 +99,9 @@ pub fn artwork_id(mode: Mode, tool: &str) -> Option<&'static str> {
         (Mode::Sketch, "level") => "levels-2d",
         (_, "wall") => "wall-3d",
         (_, "level") => "levels-3d",
+        (_, "door") => "door",
+        (_, "window-tool") => "window",
+        (_, "vertical-cutout") => "vertical-cutout",
         (_, "project-reference") => "project-reference",
         (_, "trim") => "trim",
         (_, "rectangle") => "rectangle-corners",
@@ -160,6 +166,9 @@ pub fn description(tool: &str) -> Option<&'static str> {
             "Discard the pending edits; the canonical document stays unchanged."
         }
         "abort-sketch" => "Abort the sketch session without applying its pending edits.",
+        "vertical-cutout" => {
+            "Vertical cutout: a rectangular cut from the wall base to its top in one wall segment, through the wall or as a chase of a set depth from one face. It does not cut slabs."
+        }
         "engraving" => {
             "Create engraving: opens a sketch on the planar face selected in the 3D view. It defines only the sketch; no depth or material removal."
         }
@@ -282,8 +291,15 @@ mod tests {
             Some([0x24, 0xaa, 0x60]),
             "Finish keeps its reviewed success green"
         );
+        // The Room opening tools now have canonical operations (CAD-147).
+        assert_eq!(artwork_id(Mode::Sketch, "door"), Some("door"));
+        assert_eq!(artwork_id(Mode::Model, "window-tool"), Some("window"));
+        assert_eq!(
+            artwork_id(Mode::Sketch, "vertical-cutout"),
+            Some("vertical-cutout")
+        );
         // Proposed tools without behavior have no binding.
-        for proposed in ["door", "window-tool", "vertical-cutout", "fold", "unfold"] {
+        for proposed in ["fold", "unfold"] {
             assert_eq!(artwork_id(Mode::Sketch, proposed), None);
             assert_eq!(artwork_id(Mode::Model, proposed), None);
         }
