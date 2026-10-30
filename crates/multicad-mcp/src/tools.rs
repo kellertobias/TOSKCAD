@@ -61,7 +61,8 @@ use engraving::create_engraving_sketch;
 pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs};
 use fdm::{fdm_aid_report, remove_fdm_aid, set_fdm_aid, set_fdm_process};
 pub use text::{
-    AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextFontArg, TextStyleArgs,
+    AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextAnchorArg, TextFontArg,
+    TextStyleArgs,
 };
 use text::{sketch_add_text, sketch_edit_text, sketch_remove_text};
 mod weldment;
@@ -222,10 +223,10 @@ tools! {
         "Add a circle whose center is fixed at center_mm (sketch coordinates, mm) with a driving diameter dimension (literal or parameter formula). Commits one transaction.",
         sketch_add_circle;
     "sketch_add_text" => AddTextArgs, "Add sketch text", false,
-        "Add an editable text element to a sketch: one line of printable ASCII (or ÄÖÜäöüßéèàç°±µ), cap height in mm, baseline origin in sketch mm, optional rotation (degrees) and alignment (left, center, right). Its exact glyph outlines (bundled Hack Regular, closed quadratic B-splines) become closed regions with counters as holes, listed by inspect_sketch for extrude. Empty text, invalid height, unsupported characters or more than 64 glyph contours per sketch are refused and nothing changes. Commits one transaction.",
+        "Add an editable text element to a sketch: printable ASCII (or ÄÖÜäöüßéèàç°±µ) with \\n line breaks, size (cap height) in mm, the anchor position in sketch mm, the anchor (top_left, top_center, top_right, left_center, center, right_center, bottom_left, bottom_center, bottom_right of the text block box; default bottom_left), line alignment (left, center, right), rotation about the anchor in degrees and font (cantarell_regular proportional, default; hack_regular monospaced). Its exact glyph outlines (closed quadratic B-splines) become closed regions with counters as holes, listed by inspect_sketch for extrude. Empty text, invalid size, unsupported characters or more than 64 glyph contours per sketch are refused and nothing changes. Commits one transaction.",
         sketch_add_text;
     "sketch_edit_text" => EditTextArgs, "Edit sketch text", false,
-        "Replace the string, height, placement, rotation or alignment of a sketch text element (text_id from sketch_add_text or inspect_sketch). Contour identities follow character and contour position, so extrusions of unchanged glyph structure rebuild. Validation matches sketch_add_text; commits one transaction.",
+        "Replace the string, font, size, anchor position, anchor, rotation or line alignment of a sketch text element (text_id from sketch_add_text or inspect_sketch). Contour identities follow character and contour position, so extrusions of unchanged glyph structure rebuild. Validation matches sketch_add_text; commits one transaction.",
         sketch_edit_text;
     "sketch_remove_text" => RemoveTextArgs, "Remove sketch text", false,
         "Remove a sketch text element. Features that used its regions report that their profile changed. Commits one transaction.",
@@ -1345,6 +1346,7 @@ fn inspect_sketch(host: &dyn Host, call: &Request, args: SketchArgs) -> ToolResu
             "id": t.id,
             "style": t.style,
             "contour_curves": t.contours().map(|c| c.into_iter().map(|c| c.id).collect::<Vec<_>>()).unwrap_or_default(),
+            "block_corners_mm": t.style.block_corners().ok(),
         })).collect::<Vec<_>>(),
         "measurements": measurements,
         "regions": regions["regions"],
