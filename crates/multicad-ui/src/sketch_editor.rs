@@ -35,10 +35,13 @@ mod model_target_selection;
 #[cfg(test)]
 #[path = "sketch_scale_host_tests.rs"]
 mod scale_host_tests;
-// Pure snapping/reference logic (CAD-136); canvas integration pending.
-#[allow(dead_code)]
 #[path = "sketch_snap.rs"]
 mod snap;
+#[path = "sketch_snap_host.rs"]
+mod snap_host;
+#[cfg(test)]
+#[path = "sketch_snap_host_tests.rs"]
+mod snap_host_tests;
 #[path = "sketch_symbol_host.rs"]
 mod symbol_host;
 #[path = "sketch_transfer_host.rs"]
@@ -127,6 +130,8 @@ pub struct SketchEditor {
     guides: bool,
     spacing: f64,
     snap: bool,
+    geometry_snap: bool,
+    snap_assist: snap::SnapAssist,
     pub moving: bool,
     pub coordinates: Coordinates,
     custom_angle_deg: f64,
@@ -213,6 +218,8 @@ impl Default for SketchEditor {
             guides: true,
             spacing: 10.,
             snap: true,
+            geometry_snap: true,
+            snap_assist: Default::default(),
             moving: false,
             coordinates: Coordinates::World,
             custom_angle_deg: 0.,
@@ -1287,6 +1294,7 @@ impl SketchEditor {
         self.plane_picker.cancel();
         self.tool = None;
         self.clear_drawing_progress();
+        self.snap_assist.clear();
         self.cancel_move();
     }
     fn cancel_move(&mut self) {
@@ -1824,6 +1832,7 @@ impl SketchEditor {
         self.moving = false;
         self.tool = Some(tool);
         self.clear_drawing_progress();
+        self.snap_assist.clear();
         self.message = match tool {
             DrawTool::Circle => "Click the center, then the radius · Esc cancels",
             DrawTool::Arc => "Click the center, start, then end · Esc cancels",
@@ -3657,6 +3666,7 @@ impl SketchEditor {
                 }
             }
         }
+        self.begin_snap_frame();
         if sketch_mode
             && self.editing
             && !self.has_pending_edits()
@@ -3664,33 +3674,11 @@ impl SketchEditor {
             && let (Some(id), Some(tool)) = (self.selected, self.tool)
             && let Ok((_, frame, _)) = self.read_sketch(session.document(), id, session.revision())
             && let Some(pointer) = response.hover_pos()
-            && let Some(mut p) = self.camera.on_plane(pointer, rect, frame)
+            && let Some(raw) = self.camera.on_plane(pointer, rect, frame)
         {
             use multicad_core::sketch_draw::{DrawInput, DrawRequest, PointInput};
-            let mut anchor = None;
-            if self.snap {
-                if let Ok((source, _, _)) =
-                    self.read_solved_source(session.document(), id, session.revision())
-                {
-                    let nearest = source
-                        .sketch
-                        .points
-                        .iter()
-                        .filter_map(|point| {
-                            let screen = project(frame.point(point.position_mm), &self.camera);
-                            let distance = screen.distance(pointer);
-                            (distance <= 8.).then_some((distance, point.id, point.position_mm))
-                        })
-                        .min_by(|a, b| a.0.total_cmp(&b.0));
-                    if let Some((_, id, point)) = nearest {
-                        anchor = Some(id);
-                        p = point;
-                    }
-                }
-                if anchor.is_none() {
-                    p = p.map(|v| (v / self.spacing).round() * self.spacing);
-                }
-            }
+            // Geometry targets and assistive lines win over the optional grid.
+            let (mut p, mut anchor) = self.snap_pointer(ui, session, id, frame, rect, pointer, raw);
             // Closing a chain is an explicit vertex target, independent of the
             // optional grid/near-point snapping preference.
             if tool == DrawTool::Polyline
@@ -3726,6 +3714,7 @@ impl SketchEditor {
                     p = std::array::from_fn(|i| center[i] + direction[i] * radius / length);
                 }
             }
+            self.snap_assist.settle(p);
             let cursor = project(frame.point(p), &self.camera);
             painter.circle_stroke(
                 cursor,
@@ -3989,6 +3978,7 @@ impl SketchEditor {
                 }
             }
         }
+        self.paint_snap_aids(&painter, session, rect);
         if !self.measurement.active() && self.moving && self.selected.is_some() {
             self.gizmo(ui, session, rect);
         }
@@ -4015,6 +4005,7 @@ impl SketchEditor {
         let mut guides = self.guides;
         let mut spacing = self.spacing;
         let mut snap = self.snap;
+        let mut geometry_snap = self.geometry_snap;
         egui::Area::new(ui.id().with("camera-toolbar"))
             .movable(false)
             .pivot(Align2::RIGHT_BOTTOM)
@@ -4030,7 +4021,8 @@ impl SketchEditor {
                             ui.label("Spacing · mm");
                             ui.add(egui::DragValue::new(&mut spacing).range(0.01..=10000.));
                         });
-                        ui.checkbox(&mut snap, "Snap sketch points to spacing");
+                        ui.checkbox(&mut snap, "Snap sketch points to grid spacing");
+                        ui.checkbox(&mut geometry_snap, "Snap to geometry and assistive lines");
                         ui.checkbox(&mut envelopes, "Service envelopes");
                         ui.checkbox(&mut guides, "Drawing guides");
                     },
@@ -4093,6 +4085,10 @@ impl SketchEditor {
         self.guides = guides;
         self.spacing = spacing;
         self.snap = snap;
+        if self.geometry_snap != geometry_snap {
+            self.snap_assist.clear();
+        }
+        self.geometry_snap = geometry_snap;
     }
     /// Dashed service-envelope boxes over the model. They follow the
     /// target's evaluated pose, so they stay visible while it is placed.

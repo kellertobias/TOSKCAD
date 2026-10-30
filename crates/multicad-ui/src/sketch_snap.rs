@@ -297,6 +297,7 @@ impl SnapGeometry {
         }
     }
     /// Recognized shape centers, for tests and diagnostics.
+    #[cfg(test)]
     pub fn shape_centers(&self) -> impl Iterator<Item = ([f64; 2], ShapeKind)> + '_ {
         self.centers.iter().map(|c| (c.1, c.2))
     }
@@ -765,6 +766,16 @@ impl SnapAssist {
     /// Starts a frame: nothing is shown until `update` runs again.
     pub fn begin_frame(&mut self) {
         self.shown = None;
+    }
+    /// The caller may adjust the placement after snapping (for example the
+    /// arc tool projects onto its radius). The target stays shown only if it
+    /// still describes the final placement.
+    pub fn settle(&mut self, final_position: [f64; 2]) {
+        if self.shown.as_ref().is_some_and(|t| {
+            (t.position[0] - final_position[0]).hypot(t.position[1] - final_position[1]) > 1e-9
+        }) {
+            self.shown = None;
+        }
     }
     /// References belong to one sketch; switching sketches clears them.
     pub fn bind(&mut self, sketch: EntityId) {
