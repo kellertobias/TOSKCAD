@@ -238,7 +238,7 @@ pub fn resolve_print(
                 }
             }
             EntityData::Instance { .. }
-                if members.get(&id).is_some_and(&definition_assembly) =>
+                if members.get(&id).is_some_and(definition_assembly) =>
             {
                 skipped.push(skip(
                     "Member of a reusable Assembly definition; choose a placed Instance of the Assembly",
