@@ -71,12 +71,17 @@ pub fn inspect_ungrouped_extrude(
         schema_version: EXTRUDE_GROUP_V2_SCHEMA,
         definition,
         extrusion: ExtrudeRequest {
-            sketch: extrusion.profile.sketch,
+            sketch: extrusion.profile.sketch_id().unwrap_or(EntityId::nil()),
             outputs: vec![model::ExtrudeOutput {
                 feature: source.producer,
                 body: source.body,
                 name,
-                region: extrusion.profile.region,
+                region: extrusion
+                    .profile
+                    .sketch()
+                    .map(|profile| profile.region.clone())
+                    .unwrap_or_else(model::empty_region),
+                face: validation::profile_face(document, source.producer)?,
             }],
             parameters: extrusion.parameters,
             operation: Operation::NewBody,

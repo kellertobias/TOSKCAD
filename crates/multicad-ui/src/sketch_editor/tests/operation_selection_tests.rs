@@ -83,7 +83,7 @@ fn incompatible_preselection_is_reported_not_silently_dropped() {
     activate(&mut h, crate::modeling::ModelingTool::Extrude);
     assert!(h.editor.model_active());
     assert!(
-        h.editor.message.contains("not sketch profiles"),
+        h.editor.message.contains("neither sketch profiles"),
         "{}",
         h.editor.message
     );

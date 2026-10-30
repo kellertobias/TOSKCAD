@@ -168,7 +168,7 @@ impl Default for ExtrudeParameters {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtrudeDefinition {
-    pub profile: ProfileSource,
+    pub profile: super::ModelProfile,
     pub output: BodyOutput,
     pub parameters: ExtrudeParameters,
     pub operation: Operation,
@@ -465,10 +465,10 @@ pub(super) fn validate_region(region: &RegionIntent) -> Result<(), DocumentError
 }
 impl ExtrudeDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
-        if self.profile.sketch.is_nil() || self.output.body.is_nil() {
+        if self.output.body.is_nil() {
             return Err(invalid("Extrusion source/output identity is nil"));
         }
-        validate_region(&self.profile.region)?;
+        self.profile.validate()?;
         self.parameters.validate()?;
         if self.targets.len() > 128 {
             return Err(invalid("Model target budget exceeded"));
@@ -525,7 +525,7 @@ impl ExtrudeDefinition {
             .collect()
     }
     fn plain_links(&self) -> Vec<Link> {
-        let mut links = vec![Link::new(self.profile.sketch, "profile")];
+        let mut links = self.profile.plain_links();
         let parameters: BTreeSet<_> = self
             .parameters
             .dimensions()
@@ -559,12 +559,23 @@ impl ExtrudeDefinition {
         );
         links
     }
+    /// `faces` holds the termination face inputs and, for a face profile,
+    /// exactly one profile face input matched by its intent identity.
     pub fn inputs(&self, faces: &[FaceInput]) -> Result<Vec<Link>, DocumentError> {
         self.validate()?;
         let wanted = self.face_references();
         let mut seen = BTreeSet::new();
         let mut links = self.plain_links();
-        for face in faces {
+        let profile_face = self.profile.face();
+        if let Some(link) = self.profile.face_link(faces)? {
+            if wanted.contains(&link.geometry.as_ref().expect("profile intent").id) {
+                return Err(invalid(
+                    "A profile face reference cannot also be a termination reference",
+                ));
+            }
+            links.push(link);
+        }
+        for face in faces.iter().filter(|f| Some(f.intent.id) != profile_face) {
             face.intent.validate().map_err(invalid)?;
             if face.source.is_nil()
                 || face.intent.kind != TopologyKind::Face
@@ -612,6 +623,8 @@ fn validate_feature(
         if let Some(entity) = document.get(link.target) {
             let correct = if link.role == "profile" {
                 matches!(entity.data, EntityData::Sketch { .. })
+            } else if link.role == super::PROFILE_FACE_ROLE {
+                matches!(entity.data, EntityData::Feature { .. })
             } else if link.role.starts_with("parameter/") {
                 matches!(entity.data, EntityData::Parameter { .. })
             } else if link.role.starts_with("termination/plane/") {
@@ -802,6 +815,13 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    if document.entities().any(|entity| {
+        matches!(&entity.data, EntityData::Feature { definition, .. }
+            if [EXTRUDE_TYPE, super::REVOLVE_TYPE].contains(&definition.type_id.as_str())
+                && super::face_profile::definition_uses_face_profile(&definition.data))
+    }) {
+        capabilities.insert(super::FACE_PROFILE_CAPABILITY.into());
+    }
     if document.entities().any(|entity| {
         entity.references().iter().any(|link| {
             link.geometry.is_some()

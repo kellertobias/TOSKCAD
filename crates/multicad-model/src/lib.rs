@@ -13,6 +13,7 @@ mod external;
 mod external_geometry;
 mod external_repair;
 mod extrude;
+mod face_profile;
 mod fdm;
 pub mod imports;
 pub mod inspection;

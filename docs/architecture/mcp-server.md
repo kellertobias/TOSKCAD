@@ -148,7 +148,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `sketch_add_text`, `sketch_edit_text`, `sketch_remove_text` | yes | Editable parametric text (string, cap height, origin, rotation, alignment) whose exact glyph contours become closed regions; see [sketch-text.md](sketch-text.md) |
 | `set_sketch_dimension` | yes | New literal or formula for an existing driving dimension |
 | `inspect_sketch` | no | Solve state, degrees of freedom, conflicts, geometry, constraints, text elements with their contour curve IDs, measurements, and regions with index and area |
-| `extrude` | yes | Extrude regions by a distance as `new_body`, or `join`, `cut` or `intersect` a `target_part` |
+| `extrude` | yes | Extrude sketch regions, or planar model faces (`faces`: source feature and face ordinal from `reference_candidates`; exact boundary with holes, persistent face reference), by a signed distance as `new_body`, or `join`, `cut` or `intersect` a `target_part`; curved, missing, ambiguous or mixed inputs are refused unchanged |
 | `evaluate_model` | no | Native evaluation of every final part and placed instance, plus reference diagnostics |
 | `undo`, `redo` | yes | The most recent transaction on any channel |
 | `history` | no | Recent activity with actor, channel, label, kind and changed IDs |

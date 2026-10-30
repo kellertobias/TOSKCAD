@@ -32,6 +32,8 @@ mod edge_host;
 mod edge_host_tests;
 #[path = "sketch_external_host.rs"]
 mod external_host;
+#[path = "sketch_face_profiles.rs"]
+mod face_profiles;
 #[path = "sketch_mechanical_import_host.rs"]
 mod mechanical_import_host;
 #[path = "model_target_selection.rs"]
@@ -190,6 +192,8 @@ pub struct SketchEditor {
     tree_selection: std::collections::BTreeSet<EntityId>,
     /// Sketch selected as a whole (not merely open) when Extrude/Revolve began.
     whole_sketch: Option<EntityId>,
+    /// Planar model faces chosen as Extrude / Revolve inputs (CAD-146).
+    profile_faces: Vec<face_profiles::ProfileFacePick>,
     visibility: crate::viewport::VisibilityFilter,
     visibility_error: Option<String>,
     overlay_visibility: Option<((EntityId, u64), std::collections::BTreeSet<EntityId>)>,
@@ -282,6 +286,7 @@ impl Default for SketchEditor {
             tree: Default::default(),
             tree_selection: Default::default(),
             whole_sketch: None,
+            profile_faces: Vec::new(),
             visibility: Default::default(),
             visibility_error: None,
             overlay_visibility: None,
@@ -902,7 +907,8 @@ impl SketchEditor {
         self.model.has_backend()
             && !self.has_pending_edits()
             && !self.picking
-            && self.profile_inputs(document, revision).is_ok()
+            && (self.profile_inputs(document, revision).is_ok()
+                || self.profile_face_inputs(revision).is_ok())
     }
     pub fn begin_extrude(
         &mut self,
@@ -942,6 +948,9 @@ impl SketchEditor {
         }
         if self.has_pending_edits() || self.picking {
             return Err("Apply or cancel pending edits before extruding".into());
+        }
+        if !self.profile_faces.is_empty() {
+            return self.begin_face_profile_model(session, resources, tool, channel);
         }
         let (sketch, profiles) = self.profile_inputs(session.document(), session.revision())?;
         let guide = self.profile_guide(session.document(), session.revision(), sketch, &profiles);
@@ -1026,6 +1035,7 @@ impl SketchEditor {
         fit: bool,
     ) {
         self.acquisition = None;
+        self.profile_faces.clear();
         self.tree_selection = outputs.into_iter().map(|output| output.body).collect();
         self.selected = None;
         self.solid.clear();
@@ -1034,6 +1044,7 @@ impl SketchEditor {
     }
     pub fn cancel_model(&mut self) {
         self.acquisition = None;
+        self.profile_faces.clear();
         self.symbols.cancel();
         self.transfer.cancel();
         self.assembly.cancel();
@@ -4417,7 +4428,8 @@ mod tests {
             fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
                 let feature=document.entities().find(|entity|matches!(&entity.data,EntityData::Feature{definition,..} if definition.type_id==model::REVOLVE_TYPE)).unwrap();
                 let definition = model::read_revolve(document, feature.id).unwrap();
-                let (source, frame, _) = Source::read(document, definition.profile.sketch).unwrap();
+                let (source, frame, _) =
+                    Source::read(document, definition.profile.sketch_id().unwrap()).unwrap();
                 let geometry = source.display_geometry().unwrap();
                 let edges = geometry
                     .iter()
