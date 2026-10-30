@@ -97,11 +97,20 @@ fn reply_preview(s: &Session, state: &Rc<RefCell<State>>, index: usize, objects:
             skipped: vec![],
             processes: vec![],
         },
+        // Every object after the first is a placed copy of the bracket.
         objects: (0..objects)
-            .map(|_| PrintObject {
+            .map(|n| PrintObject {
                 part: EntityId::new(),
-                occurrence_path: vec![],
-                name: "Bracket body".into(),
+                occurrence_path: if n == 0 {
+                    vec![]
+                } else {
+                    vec![EntityId::new()]
+                },
+                name: if n == 0 {
+                    "Bracket body".into()
+                } else {
+                    format!("Bracket body (Copy {n})")
+                },
                 role: PrintRole::Finished,
                 bounds_mm: [[0.; 3], [1.; 3]],
                 volume_mm3: 1.,
@@ -260,7 +269,7 @@ fn blocked_previews_tag_source_and_receipts_are_attributed() {
 fn print_workspace_renders_its_controls_and_requests_the_save_dialog() {
     let (s, mut w, state, _) = fixture();
     w.request_preview(&s, Channel::Ui).unwrap();
-    reply_preview(&s, &state, 0, 1);
+    reply_preview(&s, &state, 0, 2);
     w.poll(&s);
     let ctx = egui::Context::default();
     let mut labels = vec![];
@@ -287,11 +296,18 @@ fn print_workspace_renders_its_controls_and_requests_the_save_dialog() {
         "Write 3MF package",
         "FDM process records",
         "Findings",
+        "Bracket body (Copy 1)",
     ] {
         assert!(
             labels.iter().any(|l| l == expected),
             "{expected} missing: {labels:?}"
         );
     }
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.starts_with("2 object(s), 1 of them placed occurrence(s)")),
+        "{labels:?}"
+    );
     assert!(!w.take_write_request());
 }

@@ -83,9 +83,26 @@ mod tests {
         let p =
             model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &primitive).unwrap();
         session.commit(p.prepared).unwrap();
+        // A placed copy 20 mm along x is packaged as its own build item.
+        let mut copy = model::ComponentPlacementRequest::new(
+            primitive.body,
+            model::NumericTransform {
+                translation: [length(20.), length(0.), length(0.)],
+                ..Default::default()
+            },
+        );
+        copy.name = "Copy".into();
+        let p = model::prepare_place_component(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            &copy,
+        )
+        .unwrap();
+        session.commit(p.prepared).unwrap();
         let mut workspace = PrintWorkspace::default();
         workspace.set_backend(Box::new(Backend::new())).unwrap();
-        workspace.capture(vec![primitive.body]);
+        workspace.capture(vec![primitive.body, copy.instance]);
         workspace.set_stl_per_part(true);
         let before = session.document().clone();
         workspace.request_preview(&session, Channel::Ui).unwrap();
@@ -101,16 +118,26 @@ mod tests {
         settle(&mut workspace, &session);
         let (notice, error) = workspace.take_notice().unwrap();
         assert!(!error, "{notice}");
-        assert!(notice.contains("Wrote 2 file(s)"), "{notice}");
+        assert!(notice.contains("Wrote 3 file(s)"), "{notice}");
         let read =
             multicad_model::export::mesh::read_three_mf(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!((read.objects, read.items), (1, 1));
-        assert!((read.volume_mm3() - 288.).abs() < 1e-6);
+        assert_eq!(
+            (read.objects, read.items),
+            (1, 2),
+            "the copy shares the mesh"
+        );
+        assert!((read.volume_mm3() - 576.).abs() < 1e-6);
+        assert!((read.bounds_mm().unwrap()[1][0] - 32.).abs() < 1e-6);
         let stl = multicad_model::export::mesh::read_stl(
             &std::fs::read(dir.path().join("stock-Stock.stl")).unwrap(),
         )
         .unwrap();
         assert!((stl.volume_mm3() - 288.).abs() < 1e-3);
+        let copy_stl = multicad_model::export::mesh::read_stl(
+            &std::fs::read(dir.path().join("stock-Stock (Copy).stl")).unwrap(),
+        )
+        .unwrap();
+        assert!((copy_stl.bounds_mm().unwrap()[0][0] - 20.).abs() < 1e-4);
         assert_eq!(session.document(), &before);
     }
 }
