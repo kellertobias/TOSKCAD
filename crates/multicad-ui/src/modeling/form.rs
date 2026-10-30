@@ -11,6 +11,7 @@ use super::{
     group_edit::GroupEditPanel,
     joint::{JointCommand, JointPanel},
     machining::{MachiningCommand, MachiningPanel},
+    opening::{OpeningCommand, OpeningPanel},
     placement::PlacementPanel,
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
@@ -49,6 +50,7 @@ pub enum ModelRequest {
     Advanced(Box<super::AdvancedCommand>),
     Alignment(Box<super::AlignmentCommand>),
     Wall(Box<WallCommand>),
+    Opening(Box<OpeningCommand>),
     Architecture(Box<ArchitectureCommand>),
     Cabinet(Box<CabinetCommand>),
     Joint(Box<JointCommand>),
@@ -102,6 +104,12 @@ impl ModelRequest {
             Self::Wall(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Wall edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
+            Self::Opening(command) => {
+                if command.wall != feature {
+                    return Err("Opening edit changed its wall".into());
                 }
                 return command.prepare(session, actor);
             }
@@ -213,6 +221,7 @@ impl ModelRequest {
                 }
                 return command.prepare(session, actor);
             }
+            Self::Opening(command) => return command.prepare(session, actor),
             Self::Architecture(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved slab or stair before editing it".into());
@@ -353,6 +362,7 @@ pub(super) enum ModelForm {
     Advanced(Box<AdvancedPanel>),
     Alignment(Box<AlignmentPanel>),
     Wall(Box<WallPanel>),
+    Opening(Box<OpeningPanel>),
     Architecture(Box<ArchitecturePanel>),
     Cabinet(Box<CabinetPanel>),
     Joint(Box<JointPanel>),
@@ -379,6 +389,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.stamp(),
             Self::Alignment(panel) => panel.stamp(),
             Self::Wall(panel) => panel.stamp(),
+            Self::Opening(panel) => panel.stamp(),
             Self::Architecture(panel) => panel.stamp(),
             Self::Cabinet(panel) => panel.stamp(),
             Self::Joint(panel) => panel.stamp(),
@@ -405,6 +416,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.label(),
             Self::Alignment(_) => "Referenced alignment",
             Self::Wall(panel) => panel.label(),
+            Self::Opening(panel) => panel.label(),
             Self::Architecture(panel) => panel.label(),
             Self::Cabinet(panel) => panel.label(),
             Self::Joint(panel) => panel.label(),
@@ -434,6 +446,9 @@ impl ModelForm {
             Self::Wall(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Wall(Box::new(command))),
+            Self::Opening(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Opening(Box::new(command))),
             Self::Architecture(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Architecture(Box::new(command))),
@@ -531,6 +546,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Alignment(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Wall(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Opening(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Joint(panel) => panel.show(ui, document, capabilities.new_body, preview),

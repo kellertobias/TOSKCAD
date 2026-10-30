@@ -387,8 +387,6 @@ impl Default for Registry {
             ("bend-list", "Bend schedule", Icon::Page),
             ("weld-list", "Weld sequence", Icon::Page),
             ("materials", "Materials", Icon::Library),
-            ("door", "Door", Icon::Page),
-            ("window-tool", "Window", Icon::Page),
             ("text", "Text / leader", Icon::Sketch),
             ("export-3d", "STEP / OBJ", Icon::Export),
             ("export-2d", "DXF / PDF", Icon::Page),
@@ -454,7 +452,10 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: true,
                     },
-                    tab("Room", &["wall", "door", "window-tool", "level"]),
+                    tab(
+                        "Room",
+                        &["wall", "door", "window-tool", "vertical-cutout", "level"],
+                    ),
                 ],
             },
             Workspace {
@@ -470,6 +471,9 @@ impl Default for Registry {
                                     ModelingTool::Copy
                                         | ModelingTool::Boolean
                                         | ModelingTool::Wall
+                                        | ModelingTool::Door
+                                        | ModelingTool::Window
+                                        | ModelingTool::Cutout
                                         | ModelingTool::Level
                                         | ModelingTool::Panel
                                         | ModelingTool::Joint
@@ -487,7 +491,10 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: false,
                     },
-                    tab("Architecture", &["wall", "level"]),
+                    tab(
+                        "Architecture",
+                        &["wall", "door", "window-tool", "vertical-cutout", "level"],
+                    ),
                     tab("Wood", &["panel", "drill", "joint", "cut-list"]),
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
@@ -848,6 +855,9 @@ mod tests {
                     ModelingTool::Copy
                         | ModelingTool::Boolean
                         | ModelingTool::Wall
+                        | ModelingTool::Door
+                        | ModelingTool::Window
+                        | ModelingTool::Cutout
                         | ModelingTool::Level
                         | ModelingTool::Panel
                         | ModelingTool::Joint
@@ -871,7 +881,14 @@ mod tests {
                     .find(|t| t.title == "Weld");
                 assert!(weld.unwrap().tools.contains(&tool.id()));
             }
-            if matches!(tool, ModelingTool::Wall | ModelingTool::Level) {
+            if matches!(
+                tool,
+                ModelingTool::Wall
+                    | ModelingTool::Door
+                    | ModelingTool::Window
+                    | ModelingTool::Cutout
+                    | ModelingTool::Level
+            ) {
                 let architecture = registry
                     .workspace(Mode::Model)
                     .tabs

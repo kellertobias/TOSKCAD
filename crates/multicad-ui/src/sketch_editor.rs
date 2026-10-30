@@ -3392,6 +3392,25 @@ impl SketchEditor {
             self.solid
                 .highlight_reference(self.model.alignment_highlight());
         }
+        if !self.measurement.active()
+            && self.model.opening_picking()
+            && self.model.opening_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Wall location picked · check the fit in the Inspector, then Preview".into();
+        }
         if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {
                 camera: self.camera,

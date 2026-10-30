@@ -468,6 +468,53 @@ impl ModelToolController {
             )?)),
         )
     }
+    /// Room door, window or vertical-cutout tool on `wall` (or the first
+    /// wall); a known `opening` of that wall is reopened for editing.
+    pub fn begin_opening(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        tool: ModelingTool,
+        wall: Option<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let kind = match tool {
+            ModelingTool::Door => super::opening::RoomOpening::Door,
+            ModelingTool::Window => super::opening::RoomOpening::Window,
+            ModelingTool::Cutout => super::opening::RoomOpening::Cutout,
+            _ => return Err("Choose a door, window or vertical cutout tool".into()),
+        };
+        let panel = super::opening::OpeningPanel::new(session.document(), kind, wall)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Opening(Box::new(panel)),
+        )
+    }
+    /// The wall feature producing a selected Part, for the Room tools.
+    pub fn wall_of(document: &multicad_core::document::Document, id: EntityId) -> Option<EntityId> {
+        super::opening::wall_of_part(document, id)
+    }
+    pub fn opening_picking(&self) -> bool {
+        matches!(&self.form, Some(ModelForm::Opening(panel)) if panel.picking())
+    }
+    pub fn opening_viewport(
+        &mut self,
+        session: &Session,
+        view: super::TerminationViewport<'_>,
+    ) -> bool {
+        let changed = match self.form.as_mut() {
+            Some(ModelForm::Opening(panel)) => {
+                panel.viewport(session.document(), session.revision(), view)
+            }
+            _ => false,
+        };
+        if changed {
+            self.invalidate();
+        }
+        changed
+    }
     pub fn begin_sheet(
         &mut self,
         session: &Session,
@@ -934,7 +981,13 @@ impl ModelToolController {
         if self.stamp() != Some(form) {
             return Err("Modeling inputs changed; preview the current values".into());
         }
-        let execution = self.scope.as_ref().expect("current scope").execution;
+        // A Room opening edits the wall the form currently names.
+        let execution = match request {
+            ModelRequest::Opening(command) => Execution::Edit {
+                feature: command.wall,
+            },
+            _ => self.scope.as_ref().expect("current scope").execution,
+        };
         let (prepared, proof) = match execution {
             Execution::Create => (
                 request.prepare(session, Actor::local(channel))?,

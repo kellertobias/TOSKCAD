@@ -241,6 +241,40 @@ impl SketchEditor {
     pub(super) fn acquiring_profiles(&self) -> bool {
         self.acquisition.as_ref().is_some_and(Acquisition::profiles)
     }
+    /// Room door, window or vertical-cutout tool. A wall Part selected in the
+    /// tree or viewer is the starting wall; otherwise the first wall.
+    pub fn begin_room_opening(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        tool: ModelingTool,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before placing an opening"
+                    .into(),
+            );
+        }
+        if multicad_core::model::walls(session.document())
+            .next()
+            .is_none()
+        {
+            return Err("Draw a wall first with Room → Wall, then place openings in it".into());
+        }
+        let wall = self
+            .tree_selection
+            .iter()
+            .find_map(|id| crate::modeling::ModelToolController::wall_of(session.document(), *id));
+        self.finish()?;
+        self.model
+            .begin_opening(session, resources, tool, wall, channel)?;
+        self.message = format!(
+            "{} · click a wall face in the viewport or enter the segment and offset, then Preview",
+            tool.label()
+        );
+        Ok(())
+    }
     pub fn activate_model_tool(
         &mut self,
         session: &Session,
@@ -257,6 +291,12 @@ impl SketchEditor {
         }
         if tool == ModelingTool::Wall {
             return self.begin_wall(session, resources, channel);
+        }
+        if matches!(
+            tool,
+            ModelingTool::Door | ModelingTool::Window | ModelingTool::Cutout
+        ) {
+            return self.begin_room_opening(session, resources, tool, channel);
         }
         if tool == ModelingTool::Weld {
             return self.begin_weld(session, resources, channel);
