@@ -23,6 +23,7 @@ impl DrawTool {
                 | Self::CircleThree
                 | Self::Fillet
                 | Self::Chamfer
+                | Self::Text
         )
     }
     /// Corner treatments that modify existing lines instead of drawing.
@@ -66,6 +67,7 @@ impl DrawTool {
             (Self::Chamfer, _) => {
                 "Click a corner shared by two lines to chamfer it by the Inspector setback · Esc ends"
             }
+            (Self::Text, _) => "Click the baseline origin to place the Inspector text · Esc ends",
             _ => "Click the first point, then the second point · Esc cancels",
         }
     }
@@ -228,6 +230,10 @@ impl SketchEditor {
     ) {
         if tool.corner() {
             self.corner_pointer(painter, session, tool, input);
+            return;
+        }
+        if tool == DrawTool::Text {
+            self.text_pointer(painter, session, input);
             return;
         }
         let clicks = self.mode_clicks();
@@ -430,7 +436,7 @@ mod tests {
     fn mode_inputs_need_their_full_click_sequence() {
         for tool in DrawTool::ALL
             .into_iter()
-            .filter(|t| t.multi_point() && !t.corner())
+            .filter(|t| t.multi_point() && !t.corner() && *t != DrawTool::Text)
         {
             let clicks: Vec<Click> = (0..tool.clicks() - 1)
                 .map(|i| at(i as f64 * 10., (i * i) as f64 * 7.))

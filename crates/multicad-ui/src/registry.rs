@@ -576,7 +576,12 @@ impl Default for Registry {
             for family in [
                 &DrawTool::RECTANGLE_MODES[..],
                 &DrawTool::CIRCLE_MODES[..],
-                &[DrawTool::Spline, DrawTool::Fillet, DrawTool::Chamfer][..],
+                &[
+                    DrawTool::Spline,
+                    DrawTool::Fillet,
+                    DrawTool::Chamfer,
+                    DrawTool::Text,
+                ][..],
             ] {
                 let base = family[0].id();
                 let mut at = common

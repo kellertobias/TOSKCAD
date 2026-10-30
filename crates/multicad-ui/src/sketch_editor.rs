@@ -46,6 +46,8 @@ mod snap_host;
 mod snap_host_tests;
 #[path = "sketch_symbol_host.rs"]
 mod symbol_host;
+#[path = "sketch_text_tool.rs"]
+mod text_tool;
 #[path = "sketch_transfer_host.rs"]
 mod transfer_host;
 #[cfg(test)]
@@ -82,6 +84,7 @@ pub enum DrawTool {
     CircleThree,
     Fillet,
     Chamfer,
+    Text,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coordinates {
@@ -132,6 +135,8 @@ pub struct SketchEditor {
     construction: bool,
     /// Fillet radius or chamfer setback for the corner tools, in mm.
     corner_size_mm: f64,
+    /// Text tool Inspector state (CAD-142).
+    text_tool: text_tool::TextTool,
     draw_preview_id: EntityId,
     element: Option<EntityId>,
     pub camera: Camera,
@@ -220,6 +225,7 @@ impl Default for SketchEditor {
             last_draw_line: None,
             construction: false,
             corner_size_mm: 2.,
+            text_tool: Default::default(),
             draw_preview_id: EntityId::new(),
             element: None,
             camera: Camera {
@@ -2188,6 +2194,9 @@ impl SketchEditor {
             DrawTool::Fillet | DrawTool::Chamfer => {
                 return Err(format!("{} needs a corner point", tool.label()));
             }
+            DrawTool::Text => {
+                return Err("Text is placed by a click in the sketch view".into());
+            }
         };
         self.draw(
             session,
@@ -2713,6 +2722,9 @@ impl SketchEditor {
                             if tool==DrawTool::Arc {ui.checkbox(&mut self.arc_clockwise,"Clockwise arc").on_hover_text("Direction around the sketch's positive normal");}
                             if tool.corner() {
                                 self.corner_size_ui(ui, tool);
+                            }
+                            if tool == DrawTool::Text {
+                                self.text_tool_ui(ui, session);
                             }
                             if tool==DrawTool::Spline {
                                 ui.small(format!("{} control poles",self.spline_poles.len()));
@@ -3897,7 +3909,8 @@ impl SketchEditor {
                         | DrawTool::CircleTwoRadius
                         | DrawTool::CircleThree
                         | DrawTool::Fillet
-                        | DrawTool::Chamfer => {
+                        | DrawTool::Chamfer
+                        | DrawTool::Text => {
                             unreachable!("multi-click modes use their own gesture")
                         }
                         DrawTool::Arc => {
@@ -3960,7 +3973,8 @@ impl SketchEditor {
                                 | DrawTool::CircleTwoRadius
                                 | DrawTool::CircleThree
                                 | DrawTool::Fillet
-                                | DrawTool::Chamfer => {
+                                | DrawTool::Chamfer
+                                | DrawTool::Text => {
                                     unreachable!("multi-click modes use their own gesture")
                                 }
                                 DrawTool::Arc => {
@@ -6290,6 +6304,77 @@ mod tests {
                 click_sketch(&ctx, &mut editor, &mut session, *point);
             }
         }
+    }
+    #[test]
+    fn pointer_text_places_once_edits_in_inspector_and_refuses_without_change() {
+        use multicad_core::constraint_sketch::text::TextOperation;
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.snap = false;
+        let id = editor.selected.unwrap();
+        editor.set_tool(DrawTool::Text).unwrap();
+        editor.text_tool.draft.text = "ABO".into();
+        editor.text_tool.draft.height_mm = 8.;
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+        let before = session.document().clone();
+        click_sketch(&ctx, &mut editor, &mut session, [10., 5.]);
+        assert_ne!(session.document(), &before, "{}", editor.message);
+        let texts = |session: &Session| {
+            Source::read_for_evaluation(session.document(), id, session.revision(), None)
+                .unwrap()
+                .0
+                .sketch
+                .texts
+        };
+        let placed = texts(&session);
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].style.text, "ABO");
+        assert_eq!(placed[0].style.height_mm, 8.);
+        assert!((placed[0].style.origin_mm[0] - 10.).abs() < 1e-6);
+        assert!((placed[0].style.origin_mm[1] - 5.).abs() < 1e-6);
+        assert_eq!(editor.text_tool.editing, Some(placed[0].id));
+        let after_place = session.document().clone();
+        // An Inspector edit is one further transaction.
+        let mut style = editor.text_tool.draft.clone();
+        style.text = "ABD".into();
+        style.height_mm = 12.;
+        editor
+            .apply_text(
+                &mut session,
+                TextOperation::Edit {
+                    text: placed[0].id,
+                    style,
+                },
+            )
+            .unwrap();
+        assert_eq!(texts(&session)[0].style.text, "ABD");
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(
+            session.document(),
+            &after_place,
+            "one undo restores the edit"
+        );
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(
+            session.document(),
+            &before,
+            "one undo removes the placement"
+        );
+        // Empty text and unsupported characters are refused without change.
+        for (text, needle) in [("  ", "empty"), ("A\u{263A}", "not supported")] {
+            editor.text_tool.draft.text = text.into();
+            click_sketch(&ctx, &mut editor, &mut session, [0., 0.]);
+            assert_eq!(session.document(), &before, "{text:?}");
+            assert!(editor.message.contains(needle), "{}", editor.message);
+        }
+        assert!(DrawTool::Text.parse(&[], false).is_err());
     }
     #[test]
     fn pointer_corner_fillet_and_chamfer_apply_once_and_misses_change_nothing() {
