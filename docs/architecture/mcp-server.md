@@ -145,8 +145,9 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_sketch` | yes | Empty sketch on the `xy`, `xz` or `yz` origin plane |
 | `sketch_add_rectangle` | yes | Fully constrained rectangle with a fixed corner and driving width and height |
 | `sketch_add_circle` | yes | Circle with a fixed center and a driving diameter |
+| `sketch_add_text`, `sketch_edit_text`, `sketch_remove_text` | yes | Editable parametric text (string, cap height, origin, rotation, alignment) whose exact glyph contours become closed regions; see [sketch-text.md](sketch-text.md) |
 | `set_sketch_dimension` | yes | New literal or formula for an existing driving dimension |
-| `inspect_sketch` | no | Solve state, degrees of freedom, conflicts, geometry, constraints, measurements, and regions with index and area |
+| `inspect_sketch` | no | Solve state, degrees of freedom, conflicts, geometry, constraints, text elements with their contour curve IDs, measurements, and regions with index and area |
 | `extrude` | yes | Extrude regions by a distance as `new_body`, or `join`, `cut` or `intersect` a `target_part` |
 | `evaluate_model` | no | Native evaluation of every final part and placed instance, plus reference diagnostics |
 | `undo`, `redo` | yes | The most recent transaction on any channel |
