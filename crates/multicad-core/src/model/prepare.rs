@@ -147,14 +147,7 @@ fn authored_curves(
     let Some(EntityData::Sketch { definition, .. }) = document.get(sketch).map(|e| &e.data) else {
         return Err(error("Choose an existing constrained sketch", vec![sketch]));
     };
-    let source = Source::from_definition(definition)?;
-    Ok(source
-        .sketch
-        .curves
-        .into_iter()
-        .filter(|curve| !curve.construction)
-        .map(|curve| curve.id)
-        .collect())
+    Ok(Source::from_definition(definition)?.profile_curve_ids()?)
 }
 /// Prepare canonical new-body source without solving sketches or running a
 /// kernel. Structural checks never claim that a profile is currently closed.

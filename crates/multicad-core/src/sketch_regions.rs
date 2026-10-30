@@ -361,7 +361,54 @@ fn along(a: Point, delta: Point, t: f64) -> Point {
     [a[0] + delta[0] * t, a[1] + delta[1] * t]
 }
 
+fn disjoint(a: [Point; 2], b: [Point; 2], tolerance: f64) -> bool {
+    a[1][0] + tolerance < b[0][0]
+        || b[1][0] + tolerance < a[0][0]
+        || a[1][1] + tolerance < b[0][1]
+        || b[1][1] + tolerance < a[0][1]
+}
+fn boundary_bounds(edges: &[Edge]) -> [Point; 2] {
+    edges.iter().map(|e| e.curve.bounds()).fold(
+        [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
+        |[lo, hi], [a, b]| {
+            [
+                [lo[0].min(a[0]), lo[1].min(a[1])],
+                [hi[0].max(b[0]), hi[1].max(b[1])],
+            ]
+        },
+    )
+}
 impl ExactCurve {
+    /// Conservative axis-aligned bounds: control-polygon hull for splines
+    /// (positive weights), full circle for arcs.
+    fn bounds(&self) -> [Point; 2] {
+        let fold = |points: &mut dyn Iterator<Item = Point>| {
+            points.fold(
+                [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
+                |[lo, hi], p| {
+                    [
+                        [lo[0].min(p[0]), lo[1].min(p[1])],
+                        [hi[0].max(p[0]), hi[1].max(p[1])],
+                    ]
+                },
+            )
+        };
+        match *self {
+            Self::Line { a, b } => fold(&mut [a, b].into_iter()),
+            Self::BSpline { ref poles, .. } => fold(&mut poles.iter().copied()),
+            Self::Arc { center, a, .. } => {
+                let r = distance(center, a);
+                [
+                    [center[0] - r, center[1] - r],
+                    [center[0] + r, center[1] + r],
+                ]
+            }
+            Self::Circle { center, radius_mm } => [
+                [center[0] - radius_mm, center[1] - radius_mm],
+                [center[0] + radius_mm, center[1] + radius_mm],
+            ],
+        }
+    }
     fn is_spline(&self) -> bool {
         matches!(self, Self::BSpline { .. })
     }
@@ -670,6 +717,17 @@ pub fn extract_geometry_with_queries_and_interrupt(
     queries: &dyn RegionQueries,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Extraction, QueryError> {
+    extract_evaluated_with_queries_and_interrupt(points, curves, &[], queries, interrupt)
+}
+/// Checked evaluated geometry plus the sketch's parametric text elements,
+/// whose exact glyph contours join extraction as closed spline boundaries.
+pub fn extract_evaluated_with_queries_and_interrupt(
+    points: &[crate::constraint_sketch::Point],
+    curves: &[crate::constraint_sketch::Curve],
+    texts: &[crate::constraint_sketch::text::SketchText],
+    queries: &dyn RegionQueries,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Extraction, QueryError> {
     check_interrupt(interrupt)?;
     extract_impl(
         &Source {
@@ -678,6 +736,7 @@ pub fn extract_geometry_with_queries_and_interrupt(
                 points: points.to_vec(),
                 curves: curves.to_vec(),
                 constraints: vec![],
+                texts: texts.to_vec(),
             },
         },
         queries.tolerance_mm(),
@@ -799,6 +858,25 @@ fn extract_impl(
             },
         })
         .collect();
+    let mut diagnostics = vec![];
+    for text in &source.sketch.texts {
+        match text.contours() {
+            Ok(contours) => edges.extend(contours.into_iter().map(|c| Edge {
+                authored: c.id,
+                reversed: false,
+                curve: ExactCurve::BSpline {
+                    poles: c.poles,
+                    basis: c.basis,
+                },
+            })),
+            Err(e) => diagnostics.push(diagnostic(
+                Problem::InvalidSource,
+                vec![text.id],
+                Some(text.style.origin_mm),
+                e.to_string(),
+            )),
+        }
+    }
     if edges.len() > queries.maximum_curves(edges.iter().any(|e| e.curve.is_spline())) {
         return Ok(Extraction {
             regions: vec![],
@@ -811,7 +889,7 @@ fn extract_impl(
         });
     }
     edges.sort_by_key(|e| e.authored);
-    let mut diagnostics = vec![];
+    let bounds: Vec<_> = edges.iter().map(|e| e.curve.bounds()).collect();
     let mut invalid_edges = BTreeSet::new();
     let mut degenerate = BTreeSet::new();
     for (i, edge) in edges.iter().enumerate() {
@@ -930,6 +1008,13 @@ fn extract_impl(
         for j in i + 1..edges.len() {
             check_interrupt(interrupt)?;
             if degenerate.contains(&i) || degenerate.contains(&j) {
+                continue;
+            }
+            // Convex-hull bounds are exact exclusion for splines: disjoint
+            // boxes cannot meet, so the native predicate is not needed.
+            if (edges[i].curve.is_spline() || edges[j].curve.is_spline())
+                && disjoint(bounds[i], bounds[j], tolerance_mm)
+            {
                 continue;
             }
             let hits = match queries.intersections(&edges[i].curve, &edges[j].curve, tolerance_mm) {
@@ -1059,6 +1144,16 @@ fn extract_impl(
         for (j, c) in boundaries.iter().enumerate() {
             check_interrupt(interrupt)?;
             if i == j || c.signed_area_mm2.abs() <= b.signed_area_mm2.abs() {
+                continue;
+            }
+            if c.edges.iter().any(|e| e.curve.is_spline()) && {
+                let [lo, hi] = boundary_bounds(&c.edges);
+                p[0] < lo[0] - tolerance_mm
+                    || p[0] > hi[0] + tolerance_mm
+                    || p[1] < lo[1] - tolerance_mm
+                    || p[1] > hi[1] + tolerance_mm
+            } {
+                // Outside the convex bounds of the whole boundary: Outside.
                 continue;
             }
             match queries.classify_boundary(&c.edges, p, tolerance_mm) {

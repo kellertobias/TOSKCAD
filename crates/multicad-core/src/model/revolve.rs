@@ -198,13 +198,7 @@ pub fn prepare_revolve(
     else {
         return Err(error("Choose an existing constrained sketch"));
     };
-    let curves: BTreeSet<_> = Source::from_definition(definition)?
-        .sketch
-        .curves
-        .into_iter()
-        .filter(|c| !c.construction)
-        .map(|c| c.id)
-        .collect();
+    let curves: BTreeSet<_> = Source::from_definition(definition)?.profile_curve_ids()?;
     let mut regions = vec![];
     let mut bodies = vec![];
     for output in &request.outputs {
