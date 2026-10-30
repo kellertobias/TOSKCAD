@@ -340,6 +340,61 @@ pub fn summary(
         expected_file_bytes,
     })
 }
+/// Home-screen and library card: checked manifest plus checked canonical
+/// source, without reading payloads or caches. Authored file information
+/// comes from the same source record that Parameters edits.
+#[derive(Clone, Debug)]
+pub struct ProjectCard {
+    pub document: EntityId,
+    pub info: super::info::FileInfo,
+    /// Set when the file information exists but cannot be shown by this build.
+    pub info_error: Option<String>,
+    pub symbol_definitions: usize,
+    pub format_version: u32,
+    pub source_hash: ContentHash,
+}
+pub fn card(
+    reader: &mut impl Read,
+    limits: FileLimits,
+    supported: &BTreeSet<String>,
+) -> Result<ProjectCard, String> {
+    let Envelope {
+        manifest,
+        inline_source,
+        version,
+        ..
+    } = envelope(reader, limits, supported)?;
+    let source = match inline_source {
+        Some(bytes) => bytes,
+        None => checked_chunk(reader, &manifest.source, limits.maximum_source_bytes)?,
+    };
+    let document: Document =
+        serde_json::from_slice(&source).map_err(|e| format!("Invalid canonical document: {e}"))?;
+    if document.id() != manifest.identity.id || document.name() != manifest.identity.name {
+        return Err("Project source identity does not match its checked manifest".into());
+    }
+    let (info, info_error) = match super::info::read(&document) {
+        Ok(info) => (info, None),
+        Err(error) => (
+            super::info::FileInfo {
+                name: document.name().into(),
+                ..Default::default()
+            },
+            Some(error),
+        ),
+    };
+    let symbol_definitions = crate::symbols::definitions(&document)
+        .map(|d| d.len())
+        .unwrap_or(0);
+    Ok(ProjectCard {
+        document: document.id(),
+        info,
+        info_error,
+        symbol_definitions,
+        format_version: version,
+        source_hash: manifest.source.sha256,
+    })
+}
 pub fn read(
     reader: &mut impl Read,
     limits: FileLimits,

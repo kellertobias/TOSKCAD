@@ -6,6 +6,7 @@ pub mod external_control;
 #[path = "external_reference_app_tests.rs"]
 mod external_reference_tests;
 mod files;
+mod library;
 mod native_picker;
 mod symbol_files;
 mod welcome;
@@ -107,6 +108,7 @@ enum FileAction {
     SymbolOpen,
     SymbolSave(EntityId),
     Artwork,
+    PreviewImage,
 }
 struct CommandRecord {
     input: String,
@@ -121,6 +123,7 @@ pub struct Application {
     recent_worker: Option<crate::recent_projects::RecentWorker>,
     recents: Vec<crate::recent_projects::RecentProject>,
     recent_error: Option<String>,
+    library: library::LibraryState,
     pub active: usize,
     pub mode: Mode,
     pub registry: Registry,
@@ -182,6 +185,7 @@ impl Application {
             recent_worker: None,
             recents: vec![],
             recent_error: None,
+            library: Default::default(),
             active: 0,
             mode: Mode::Parameters,
             registry: Registry::default(),
@@ -1969,6 +1973,7 @@ impl Application {
             self.cancel_pending_view_restore();
         }
         self.poll_recents(&ctx);
+        self.poll_library(&ctx);
         self.poll_files();
         self.handle_close_request(&ctx);
         controls::block_modal_background(
@@ -2118,6 +2123,14 @@ impl Application {
             .frame(egui::Frame::new().fill(crate::theme::PANEL))
             .show(ui, |ui| {
                 if self.mode == Mode::Parameters {
+                    egui::Panel::right("parameters-metadata")
+                        .exact_size(crate::metadata_sidebar::WIDTH)
+                        .frame(
+                            egui::Frame::new()
+                                .fill(crate::theme::PANEL)
+                                .inner_margin(egui::Margin::same(12)),
+                        )
+                        .show(ui, |ui| self.parameters_sidebar(ui));
                     let p = self.current_mut();
                     egui::Frame::new()
                         .inner_margin(egui::Margin {

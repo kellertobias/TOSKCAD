@@ -100,6 +100,7 @@ impl Application {
         }
     }
     pub(super) fn remember_recent(&mut self, path: PathBuf, view: Option<RecentView>) {
+        self.invalidate_card(&path);
         let Some(worker) = &mut self.recent_worker else {
             return;
         };
@@ -155,6 +156,7 @@ impl Application {
                 Some(ctx.load_texture("approved-application-logo", image, Default::default()));
         }
         self.handle_shortcuts(&ctx);
+        self.request_cards();
         egui::Panel::top("welcome-titlebar")
             .frame(
                 egui::Frame::new()
@@ -195,10 +197,11 @@ impl Application {
                     ui.add_space(10.);
                     if self.recents.is_empty() { ui.colored_label(Color32::GRAY,"Projects appear here after you open or save them."); }
                     egui::ScrollArea::vertical().id_salt("welcome-recents").max_height((ui.available_height()-80.).max(100.)).show(ui,|ui| {
-                        for entry in &self.recents {
+                        for entry in self.recents.clone() {
+                            let entry = &entry;
                             let response=egui::Frame::new().fill(Color32::from_rgb(33,44,60)).inner_margin(12.).corner_radius(5).show(ui,|ui| {
                                 ui.set_width((width-30.).max(260.));
-                                ui.strong(&entry.title);
+                                self.recent_card(ui, entry);
                                 ui.add(egui::Label::new(egui::RichText::new(entry.path.to_string_lossy()).color(Color32::GRAY)).truncate());
                             }).response.interact(egui::Sense::click()).on_hover_text(entry.path.to_string_lossy());
                             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,!self.file_busy(),&entry.title));

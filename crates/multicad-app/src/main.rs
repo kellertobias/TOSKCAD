@@ -7,6 +7,7 @@ mod external_queries;
 mod file_picker;
 mod files;
 mod inspection;
+mod library;
 mod mcp;
 mod modeling;
 mod recent_projects;
@@ -106,6 +107,7 @@ fn run_application() -> Result<(), String> {
     let mut app =
         multicad_ui::application::Application::welcome(Box::new(files::ProjectStore::default()))?;
     app.set_recent_store(Box::new(recent_projects::RecentFileStore::default()));
+    app.set_library_store(Box::new(library::LibraryFileStore::default()));
     app.set_sketch_queries(std::sync::Arc::new(|| {
         Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
     }));

@@ -7,6 +7,7 @@ pub enum Kind {
     SaveProject,
     ImportSource,
     ImportArtwork,
+    PreviewImage,
 }
 #[derive(Clone, Debug)]
 pub struct Request {
