@@ -1,0 +1,4 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Breakaway tab</title>
+  <path d="M21 10h31v34H21Z"/><path d="M5 44h29v10H5Z" fill="currentColor" fill-opacity=".18"/><path d="M21 44v10" stroke-dasharray="2 5"/><path d="M5 58h54"/>
+</svg>

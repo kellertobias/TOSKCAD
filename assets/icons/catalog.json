@@ -298,6 +298,108 @@
       "group": "Drawings",
       "id": "model-dimension",
       "label": "Model dimension"
+    },
+    {
+      "group": "Sheet metal",
+      "id": "fold",
+      "label": "Fold",
+      "status": "Requested"
+    },
+    {
+      "group": "Sheet metal",
+      "id": "unfold",
+      "label": "Unfold",
+      "status": "Requested"
+    },
+    {
+      "group": "Sheet metal",
+      "id": "create-bend",
+      "label": "Create bend",
+      "status": "Requested"
+    },
+    {
+      "group": "Sheet metal",
+      "id": "create-relief",
+      "label": "Create relief",
+      "status": "Requested"
+    },
+    {
+      "group": "Sheet metal",
+      "id": "engraving",
+      "label": "Create engraving",
+      "status": "Proposed surface sketch"
+    },
+    {
+      "group": "FDM",
+      "id": "fdm-tab",
+      "label": "Breakaway tab",
+      "status": "Proposal"
+    },
+    {
+      "group": "FDM",
+      "id": "fdm-bridge",
+      "label": "Thin bridge",
+      "status": "Proposal"
+    },
+    {
+      "group": "FDM",
+      "id": "fdm-support",
+      "label": "Removable support",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-panel",
+      "label": "Panel",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-carcass",
+      "label": "Carcass",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-groove",
+      "label": "Groove",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-rabbet",
+      "label": "Rabbet",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-pocket",
+      "label": "Pocket",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-butt-joint",
+      "label": "Butt joint",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-miter",
+      "label": "Wood miter joint",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-hardware",
+      "label": "Hardware drilling",
+      "status": "Proposal"
+    },
+    {
+      "group": "Wood",
+      "id": "wood-cut-list",
+      "label": "Cut list",
+      "status": "Proposed report"
     }
   ],
   "retained": [
