@@ -358,5 +358,8 @@ impl DocumentStorage for ProjectStore {
     }
 }
 #[cfg(test)]
+#[path = "scenario_tests.rs"]
+mod scenario_tests;
+#[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

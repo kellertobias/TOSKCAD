@@ -21,6 +21,10 @@ jobs:
     name: Native dependency proof
     uses: ./.github/workflows/native-foundation.yml
 
+  regression:
+    name: Native regression suites
+    uses: ./.github/workflows/native-regression.yml
+
   metadata:
     name: Select build/release version
     runs-on: ubuntu-24.04
@@ -112,7 +116,7 @@ jobs:
 
   release:
     name: Mint GitHub tag and hosted release
-    needs: [metadata, quality, build, foundation]
+    needs: [metadata, quality, build, foundation, regression]
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.metadata.outputs.release == 'true' &&

@@ -115,8 +115,9 @@ fn dxf_entities_bulges_ocs_units_and_unsupported_content_are_interpreted_explici
 
 #[test]
 fn unitless_binary_and_malformed_dxf_fail_without_guessing() {
-    let unitless =
-        String::from_utf8_lossy(DXF).replace("$INSUNITS\r\n70\r\n4", "$INSUNITS\r\n70\r\n0");
+    let unitless = String::from_utf8_lossy(DXF)
+        .replace("\r\n", "\n")
+        .replace("$INSUNITS\n70\n4", "$INSUNITS\n70\n0");
     let e =
         sketch_import::parse(Format::Dxf, unitless.as_bytes(), UnitChoice::FromFile).unwrap_err();
     assert!(e.0.contains("choose source units"), "{e}");

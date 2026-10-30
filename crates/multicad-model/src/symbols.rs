@@ -46,6 +46,10 @@ pub(crate) fn validate_definitions(
         let native = compiler
             .compile_interruptible(&definition.template, revision, interrupt)
             .map_err(|e| {
+                // An interrupted check says nothing about the definition.
+                if crate::compiler::is_superseded(&e) {
+                    return error(Some(id), "Symbol definition evaluation superseded");
+                }
                 error(
                     Some(id),
                     format!(

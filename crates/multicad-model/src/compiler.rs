@@ -105,6 +105,11 @@ pub(crate) fn error(entity: Option<EntityId>, message: impl fmt::Display) -> Mod
         message: message.to_string(),
     }
 }
+/// Whether an evaluation error reports an interrupted (superseded) request
+/// rather than a problem with the model source.
+pub fn is_superseded(error: &ModelError) -> bool {
+    error.message.ends_with("superseded")
+}
 fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ModelError> {
     if interrupt.is_some_and(|f| f()) {
         Err(error(None, "Model evaluation superseded"))
@@ -278,7 +283,27 @@ impl Compiler {
         let roots = validate_source_roots(document, roots)?;
         self.compile_scoped(document, revision, Some(roots), interrupt)
     }
+    /// Nested evaluators report their own cancellation wording (for example
+    /// a sketch "cancelled" or a wrapped native failure). A failure observed
+    /// while the request is interrupted is reported as supersession so that
+    /// callers never present an abandoned rebuild as a modeling error.
     fn compile_scoped(
+        &self,
+        document: &Document,
+        revision: u64,
+        roots: Option<Vec<EntityId>>,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
+        self.compile_scoped_unchecked(document, revision, roots, interrupt)
+            .map_err(|e| {
+                if !is_superseded(&e) && interrupt.is_some_and(|f| f()) {
+                    error(e.entity, "Model evaluation superseded")
+                } else {
+                    e
+                }
+            })
+    }
+    fn compile_scoped_unchecked(
         &self,
         document: &Document,
         revision: u64,
