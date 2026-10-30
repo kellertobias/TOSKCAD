@@ -109,6 +109,56 @@ pub(crate) fn build(
             .map_err(|e| error(Some(id), e))?
             .ok_or_else(|| error(Some(id), "An opening removed the whole wall"))?;
     }
+    for cutout in &wall.cutouts {
+        if interrupt.is_some_and(|f| f()) {
+            return Err(error(Some(id), "Wall evaluation superseded"));
+        }
+        let seg = plan.segments[cutout.segment];
+        let ([a, b], [low, high]) = wall.cutout_span(&plan, cutout);
+        // Reach 1 mm past every free wall face so no sliver skin remains;
+        // a chase's back face stays exactly at its depth.
+        let (low, high) = match (cutout.through, cutout.face) {
+            (true, _) => (low - 1., high + 1.),
+            (false, model::WallFace::Left) => (low, high + 1.),
+            (false, model::WallFace::Right) => (low - 1., high),
+        };
+        // The low edge lies toward the right face, the high edge toward the
+        // left face; a chase names the edge at its depth `back`.
+        let back = |left: bool| match (cutout.through, cutout.face, left) {
+            (false, model::WallFace::Left, false) | (false, model::WallFace::Right, true) => "back",
+            (_, _, false) => "outside.right",
+            (_, _, true) => "outside.left",
+        };
+        let corners = [[a, low], [b, low], [b, high], [a, high]];
+        let tool_profile = CurvedProfile {
+            frame: PlaneFrame {
+                origin: [seg.start[0], seg.start[1], wall.base_z_mm - 1.],
+                u: [seg.direction[0], seg.direction[1], 0.],
+                v: [seg.normal[0], seg.normal[1], 0.],
+            },
+            outer: (0..4)
+                .map(|i| CurvedEdge2d::Line {
+                    a: corners[i],
+                    b: corners[(i + 1) % 4],
+                })
+                .collect(),
+            holes: vec![],
+        };
+        let roles = [back(false), "jamb.end", back(true), "jamb.start"]
+            .map(|r| format!("cutout.{}.{r}", cutout.id));
+        let tool = Solid::extrude_curved_profile_vector_named(
+            &tool_profile,
+            [0., 0., wall.height_mm + 2.],
+            id,
+            &origins(id, roles),
+            policy,
+        )
+        .map_err(|e| error(Some(id), e))?;
+        solid = solid
+            .boolean(&tool, BooleanOperation::Subtract, policy)
+            .map_err(|e| error(Some(id), e))?
+            .ok_or_else(|| error(Some(id), "A vertical cutout removed the whole wall"))?;
+    }
     if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
         return Err(error(
             Some(id),

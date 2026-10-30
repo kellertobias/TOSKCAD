@@ -121,6 +121,7 @@ fn fixture() -> Fixture {
                 height: None,
                 justification: None,
                 openings: vec![],
+                cutouts: vec![],
             },
         );
         walls.push(request.wall.output.body);

@@ -144,6 +144,7 @@ fn l_wall(f: &Fixture) -> WallDefinition {
         height: None,
         justification: None,
         openings: vec![opening(f.door, 0, 500.), opening(f.window, 1, 1000.)],
+        cutouts: vec![],
     }
 }
 fn create(f: &mut Fixture, name: &str, wall: WallDefinition) -> (EntityId, EntityId) {
@@ -343,6 +344,7 @@ fn closed_room_and_plan_section_show_door_swings_and_window_panes() {
         ],
         closed: true,
         openings: vec![opening(f.door, 0, 1000.), opening(f.window, 2, 1500.)],
+        cutouts: vec![],
         ..l_wall(&f)
     };
     let (wall, body) = create(&mut f, "Room", room);
@@ -420,4 +422,105 @@ fn closed_room_and_plan_section_show_door_swings_and_window_panes() {
         .filter(|v| matches!(v.curve, VectorCurve::Line { a, b } if (a[1] - b[1]).abs() < 1e-9 && (a[1] - 4000.).abs() < 40. && ((a[0] - b[0]).abs() - 1200.).abs() < 1e-9))
         .count();
     assert_eq!(panes, 2);
+}
+
+#[test]
+fn room_tools_place_openings_and_vertical_cutouts_natively_and_survive_reopen() {
+    use model::{VerticalCutout, WallFace, WallOpeningChange, prepare_wall_opening};
+    let mut f = fixture();
+    let straight = WallDefinition {
+        path: vec![point(0., 0.), point(6000., 0.)],
+        openings: vec![],
+        ..l_wall(&f)
+    };
+    let (wall, _) = create(&mut f, "Straight", straight);
+    let full = 6000. * 200. * 2500.;
+    let apply = |f: &mut Fixture, change: WallOpeningChange| {
+        let prepared =
+            prepare_wall_opening(&f.s, f.s.revision(), actor(), wall, &[], &change).unwrap();
+        Compiler::default()
+            .compile(prepared.prepared.document(), f.s.revision())
+            .unwrap();
+        f.s.commit(prepared.prepared).unwrap();
+    };
+    let door = opening(f.door, 0, 600.);
+    apply(&mut f, WallOpeningChange::AddOpening(door.clone()));
+    let window = opening(f.window, 0, 2000.);
+    apply(&mut f, WallOpeningChange::AddOpening(window));
+    // A 300 mm wide, 80 mm deep chase from the left face, full height.
+    let chase = VerticalCutout {
+        id: EntityId::new(),
+        segment: 0,
+        offset: length(4000.),
+        width: length(300.),
+        depth: Some(length(80.)),
+        face: WallFace::Left,
+    };
+    apply(&mut f, WallOpeningChange::AddCutout(chase.clone()));
+    // A full-depth gap at the wall end shortens the wall by 500 mm.
+    let gap = VerticalCutout {
+        id: EntityId::new(),
+        segment: 0,
+        offset: length(5500.),
+        width: length(500.),
+        depth: None,
+        face: WallFace::Left,
+    };
+    apply(&mut f, WallOpeningChange::AddCutout(gap.clone()));
+    let m = compile(&f.s);
+    let shape = &m.snapshot().shapes[&wall];
+    assert_eq!(shape.solid_count, 1);
+    let cut = DOOR + WINDOW + 300. * 80. * 2500. + 500. * 200. * 2500.;
+    near(shape.volume_mm3, full - cut, 1e-3);
+    near(shape.bounds.max[0], 5500., 1e-6);
+    let roles: Vec<_> = shape
+        .topology
+        .elements
+        .iter()
+        .flat_map(|e| e.origins.iter().map(|o| o.role.clone()))
+        .collect();
+    for role in [
+        format!("cutout.{}.back", chase.id),
+        format!("cutout.{}.jamb.start", chase.id),
+        format!("cutout.{}.jamb.start", gap.id),
+    ] {
+        assert!(roles.iter().any(|r| r.contains(&role)), "missing {role}");
+    }
+    assert!(model::required_capabilities(f.s.document()).contains(model::WALL_CUTOUT_CAPABILITY));
+
+    // Moving the door is an edit of the same opening identity.
+    let mut moved = door.clone();
+    moved.offset = length(1000.);
+    apply(&mut f, WallOpeningChange::ReplaceOpening(moved));
+    near(volume(&compile(&f.s), wall), full - cut, 1e-3);
+
+    // Save/reopen preserves the openings, cutouts and the rebuilt solid.
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(f.s.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert!(
+        opened
+            .capabilities()
+            .contains(model::WALL_CUTOUT_CAPABILITY)
+    );
+    assert_eq!(&opened.document, f.s.document());
+    let reopened = model::read_wall(&opened.document, wall).unwrap();
+    assert_eq!((reopened.openings.len(), reopened.cutouts.len()), (2, 2));
+    let rebuilt = Compiler::default().compile(&opened.document, 0).unwrap();
+    near(volume(&rebuilt, wall), full - cut, 1e-3);
+    // A build without cutout support refuses the file instead of misreading it.
+    let mut older = project_file::supported_capabilities();
+    older.remove(model::WALL_CUTOUT_CAPABILITY);
+    assert!(project_file::read(&mut bytes.as_slice(), Default::default(), &older).is_err());
 }

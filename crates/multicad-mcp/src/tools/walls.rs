@@ -209,6 +209,8 @@ fn wall_value(
         height: opt(&args.height)?,
         justification: args.justification.map(Into::into),
         openings,
+        // This tool does not author cutouts; an edit keeps the existing ones.
+        cutouts: previous.map(|p| p.cutouts.clone()).unwrap_or_default(),
     })
 }
 fn q_ref<'a>(

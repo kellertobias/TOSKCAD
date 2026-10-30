@@ -110,6 +110,8 @@ pub(super) struct WallPanel {
     level: Option<EntityId>,
     base_z: DimensionField,
     openings: Vec<OpeningRow>,
+    /// Vertical cutouts are edited with their Room tool; a wall edit keeps them.
+    cutouts: Vec<model::VerticalCutout>,
     error: Option<String>,
 }
 fn literal(d: &Dimension) -> String {
@@ -139,6 +141,7 @@ impl WallPanel {
             level: model::levels(document).next().map(|e| e.id),
             base_z: DimensionField::from_dimension(&length(0.), "mm")?,
             openings: vec![],
+            cutouts: vec![],
             error: None,
         })
     }
@@ -165,6 +168,7 @@ impl WallPanel {
         panel.closed = wall.closed;
         panel.level = wall.level;
         panel.base_z = DimensionField::from_dimension(&wall.base_z, "mm")?;
+        panel.cutouts = wall.cutouts.clone();
         for o in &wall.openings {
             let t =
                 model::read_opening_type(document, o.opening_type).map_err(|e| e.to_string())?;
@@ -297,6 +301,7 @@ impl WallPanel {
                     .transpose()?,
                 justification: self.wall_type.is_some().then_some(self.justification),
                 openings,
+                cutouts: self.cutouts.clone(),
             },
         })
     }
@@ -512,6 +517,12 @@ impl WallPanel {
                 }
             }
         });
+        if !self.cutouts.is_empty() {
+            ui.small(format!(
+                "{} vertical cutout(s) are kept. Edit them with Room → Vertical cutout; a path change that no longer fits them is refused.",
+                self.cutouts.len()
+            ));
+        }
         ui.separator();
         form::preview_status(ui, self.stamp, preview);
         let validation = self.request(document, enabled);
