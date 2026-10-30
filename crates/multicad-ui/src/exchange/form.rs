@@ -5,6 +5,7 @@ use multicad_core::{
     drawings,
     exchange::*,
     materials::TagQuery,
+    schedules::{ScheduleKind, ScheduleSpec},
 };
 use std::collections::BTreeSet;
 pub(super) struct Choice {
@@ -502,6 +503,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
         RecipeOutput::PlanarDxf { .. } => 5,
         RecipeOutput::DrawingDxf { .. } => 6,
         RecipeOutput::Pdf => 7,
+        RecipeOutput::ScheduleCsv { .. } => 8,
     };
     let old = kind;
     egui::ComboBox::from_id_salt("recipe-format")
@@ -515,6 +517,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
                 "Planar DXF",
                 "Drawing DXF",
                 "Multi-page PDF",
+                "Schedule CSV",
             ][kind],
         )
         .show_ui(ui, |ui| {
@@ -527,6 +530,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
                 "Planar DXF",
                 "Drawing DXF",
                 "Multi-page PDF",
+                "Schedule CSV",
             ]
             .into_iter()
             .enumerate()
@@ -568,7 +572,10 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
                 units: LengthUnit::Millimeter,
                 layers: Default::default(),
             },
-            _ => RecipeOutput::Pdf,
+            7 => RecipeOutput::Pdf,
+            _ => RecipeOutput::ScheduleCsv {
+                schedule: ScheduleSpec::new(ScheduleKind::Bom),
+            },
         };
     }
     if kind == 2 {
@@ -622,6 +629,10 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
         }
         RecipeOutput::DrawingDxf { units, .. } => units_control(ui, units),
         RecipeOutput::Pdf => {}
+        RecipeOutput::ScheduleCsv { schedule } => {
+            crate::schedules::spec_controls(ui, "recipe-schedule", schedule);
+            ui.small("Writes the whole project's schedule, exactly as Schedule CSV in Export → Common; the Part scope and pages do not apply.");
+        }
     }
     if let RecipeOutput::Mesh { quality, .. } = output {
         number(

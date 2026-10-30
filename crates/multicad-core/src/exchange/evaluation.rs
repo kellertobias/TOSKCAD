@@ -58,6 +58,36 @@ pub struct ExportArtifact {
     pub mesh: Option<MeshEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drawing: Option<DrawingEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<ScheduleEvidence>,
+}
+/// What a schedule CSV contains: the schedule, the revision it was built
+/// at, its size and the hash of the exact CSV bytes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleEvidence {
+    pub spec: crate::schedules::ScheduleSpec,
+    pub title: String,
+    pub revision: u64,
+    pub columns: usize,
+    pub rows: usize,
+    pub csv_hash: ContentHash,
+}
+/// A schedule built on an exact source snapshot, and the file it was
+/// written to when a write was requested.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleReceipt {
+    pub spec: crate::schedules::ScheduleSpec,
+    pub source: ExportStamp,
+    pub title: String,
+    pub notes: Vec<String>,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    /// Exactly `Schedule::csv` of the native schedule.
+    pub csv: String,
+    pub csv_hash: ContentHash,
+    pub written: Option<String>,
 }
 /// What a drawing output contains, in page order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -134,6 +164,7 @@ pub enum ExportResult {
     Preview(Result<Box<ExportPreview>, ExportError>),
     Run(Result<RunReceipt, ExportError>),
     PlanarCatalog(Result<Box<PlanarCatalog>, ExportError>),
+    Schedule(Result<Box<ScheduleReceipt>, ExportError>),
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -33,6 +33,20 @@ fn verify(
     artifact: &ExportArtifact,
     path: &Path,
 ) -> Result<(), ExportError> {
+    if let Some(evidence) = &artifact.schedule {
+        let expected = built
+            .generated
+            .get(&artifact.output.filename)
+            .ok_or_else(|| io("Current schedule output is missing"))?;
+        let written = fs::read(path).map_err(io)?;
+        if written != *expected || ContentHash::of(&written) != evidence.csv_hash {
+            return Err(io(
+                "Written schedule CSV differs from the generated schedule",
+            ));
+        }
+        return verify_csv(&written, evidence)
+            .map_err(|e| failure(ErrorKind::Invalid, Some(artifact.producer), e));
+    }
     if let Some(evidence) = &artifact.drawing {
         let expected = built
             .generated
@@ -378,4 +392,20 @@ pub(super) fn run(
         files,
         reused: false,
     })
+}
+/// Read a written schedule CSV back: its kind and revision comments, a
+/// header and one record per row, each with every column.
+fn verify_csv(written: &[u8], evidence: &ScheduleEvidence) -> Result<(), String> {
+    let text = std::str::from_utf8(written).map_err(|_| "Schedule CSV is not UTF-8")?;
+    let (comments, records) = crate::schedules::read_csv(text)?;
+    let kind = format!("MultiCAD {} schedule", evidence.spec.kind.token());
+    let revision = format!("revision {}", evidence.revision);
+    if comments.first() != Some(&kind)
+        || comments.get(1) != Some(&revision)
+        || records.len() != evidence.rows + 1
+        || records.iter().any(|r| r.len() != evidence.columns)
+    {
+        return Err("Schedule CSV readback differs from the planned kind, revision or size".into());
+    }
+    Ok(())
 }

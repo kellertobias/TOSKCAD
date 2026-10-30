@@ -7,6 +7,8 @@ pub use render::{RenderManifest, RenderPackage};
 mod planar;
 pub use planar::DevelopedContourProvider;
 mod publish;
+mod schedule;
+pub use schedule::ScheduleTarget;
 pub mod sheet_dxf;
 mod worker;
 use crate::{Compiler, Model};
@@ -102,7 +104,9 @@ fn unsupported(output: &RecipeOutput) -> Option<String> {
             }
         }
         RecipeOutput::PlanarDxf { layers, .. } => dxf::layer_names(layers).err(),
-        RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. } => None,
+        RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. } | RecipeOutput::ScheduleCsv { .. } => {
+            None
+        }
         RecipeOutput::Mesh {
             format,
             units,
@@ -227,6 +231,7 @@ fn availability(
 /// A stale view, unresolved view or detached dimension blocks the output
 /// with a reason naming the page; nothing old is presented as current.
 fn drawing_output(
+    model: &Model,
     document: &Document,
     revision: u64,
     selection: &ResolvedSet,
@@ -247,6 +252,8 @@ fn drawing_output(
             .iter()
             .find(|p| p.reference == *page)
             .map_or_else(|| page.page.to_string(), |p| p.number.clone());
+        stale_schedule_tables(model, document, revision, page)
+            .map_err(|e| format!("Page {label} cannot export: {e}"))?;
         renders.push(
             render::render_page(document, revision, page.book, page.page, evaluation)
                 .map_err(|e| format!("Page {label} cannot export: {e}"))?,
@@ -270,6 +277,38 @@ fn drawing_output(
         _ => return Err("Not a drawing recipe".into()),
     };
     Ok((bytes, evidence))
+}
+/// A table placed from a schedule must still show the current schedule;
+/// a stale one blocks the output instead of printing old rows as current.
+fn stale_schedule_tables(
+    model: &Model,
+    document: &Document,
+    revision: u64,
+    page: &PageRef,
+) -> Result<(), String> {
+    use multicad_core::drawings::{self, AnnotationKind};
+    let book = drawings::read(document, page.book).map_err(|e| e.to_string())?;
+    let Some(source) = book.pages.iter().find(|p| p.id == page.page) else {
+        return Ok(());
+    };
+    let mut fresh = BTreeMap::new();
+    for annotation in &source.annotations {
+        if let AnnotationKind::Table {
+            schedule: Some(spec),
+            ..
+        } = &annotation.kind
+        {
+            if !fresh.contains_key(spec) {
+                let built = crate::schedules::build(model, document, revision, *spec)
+                    .map_err(|e| format!("the {} cannot be built: {}", spec.label(), e.message))?;
+                fresh.insert(*spec, built);
+            }
+            fresh[spec]
+                .check_table(&annotation.kind)
+                .map_err(|e| format!("{e}; refresh the table in Drawings"))?;
+        }
+    }
+    Ok(())
 }
 /// GLB scene nodes and the materials they reference.
 type Scene = (
@@ -531,7 +570,7 @@ impl Exporter {
             });
         let p = self.compiler.policy;
         format!(
-            "step-files.1;planar-dxf.1;mesh-obj-3mf.1;drawing-pdf-dxf.1;build:{build};occt:{};policy:{:?}",
+            "step-files.1;planar-dxf.1;mesh-obj-3mf.1;drawing-pdf-dxf.1;schedule-csv.1;build:{build};occt:{};policy:{:?}",
             multicad_kernel::source_identity(),
             [
                 p.linear_tolerance_mm,
@@ -569,7 +608,11 @@ impl Exporter {
                     RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. }
                 )
             });
-        let model = if supported && (!selection.parts.is_empty() || drawings) {
+        let schedules = selection
+            .recipes
+            .iter()
+            .any(|r| matches!(r.output, RecipeOutput::ScheduleCsv { .. }));
+        let model = if supported && (!selection.parts.is_empty() || drawings || schedules) {
             Some(
                 self.compiler
                     .compile_interruptible(document, revision, interrupt)
@@ -635,6 +678,51 @@ impl Exporter {
             let mut recipe_artifacts = vec![];
             let mut recipe_bytes = BTreeMap::new();
             if status == RecipeStatus::Ready
+                && let RecipeOutput::ScheduleCsv { schedule } = &recipe.output
+            {
+                let model = model.as_ref().ok_or_else(|| {
+                    failure(
+                        ErrorKind::Invalid,
+                        Some(set),
+                        "No owned current model for schedule output",
+                    )
+                })?;
+                checkpoint(interrupt)?;
+                match crate::schedules::build(model, document, revision, *schedule) {
+                    Ok(built) => {
+                        for output in requested.iter() {
+                            let csv = built.csv().into_bytes();
+                            recipe_artifacts.push(ExportArtifact {
+                                output: (*output).clone(),
+                                producer: recipe.id,
+                                solid: recipe.id,
+                                bounds_mm: [[0.; 3]; 2],
+                                volume_mm3: 0.,
+                                solid_count: 0,
+                                planar: None,
+                                mesh: None,
+                                drawing: None,
+                                schedule: Some(ScheduleEvidence {
+                                    spec: schedule.normalized(),
+                                    title: built.title.clone(),
+                                    revision: built.revision,
+                                    columns: built.columns.len(),
+                                    rows: built.rows.len(),
+                                    csv_hash: ContentHash::of(&csv),
+                                }),
+                            });
+                            recipe_bytes.insert(output.filename.clone(), csv);
+                        }
+                    }
+                    Err(e) => {
+                        status = RecipeStatus::Unsupported(format!(
+                            "The {} cannot be built: {}",
+                            schedule.label(),
+                            e.message
+                        ));
+                    }
+                }
+            } else if status == RecipeStatus::Ready
                 && matches!(
                     recipe.output,
                     RecipeOutput::Pdf | RecipeOutput::DrawingDxf { .. }
@@ -657,6 +745,7 @@ impl Exporter {
                     .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
                 for output in requested.iter() {
                     match drawing_output(
+                        model,
                         document,
                         revision,
                         &selection,
@@ -680,6 +769,7 @@ impl Exporter {
                                 planar: None,
                                 mesh: None,
                                 drawing: Some(evidence),
+                                schedule: None,
                             });
                         }
                         Err(reason) => {
@@ -725,6 +815,7 @@ impl Exporter {
                                 planar: None,
                                 mesh: Some(evidence),
                                 drawing: None,
+                                schedule: None,
                             });
                         }
                         Err(e) => {
@@ -798,6 +889,7 @@ impl Exporter {
                         planar,
                         mesh: None,
                         drawing: None,
+                        schedule: None,
                     });
                 }
             }

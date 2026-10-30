@@ -24,6 +24,7 @@ pub mod reference_repair_set;
 pub mod registry;
 pub mod render_view;
 pub mod ribbon_ui;
+pub mod schedules;
 mod selection_input;
 pub mod storage;
 pub mod svg_icon;

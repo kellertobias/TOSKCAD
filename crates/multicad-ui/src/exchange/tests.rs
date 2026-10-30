@@ -159,6 +159,7 @@ fn preview(state: &Rc<RefCell<State>>, index: usize) -> ExportReply {
             planar: None,
             mesh: None,
             drawing: None,
+            schedule: None,
             output: files[0].clone(),
             producer: EntityId::new(),
             solid: EntityId::new(),

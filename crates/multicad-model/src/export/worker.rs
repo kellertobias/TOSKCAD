@@ -33,6 +33,13 @@ enum Request {
         directory: PathBuf,
         actor: Actor,
     },
+    Schedule {
+        document: Document,
+        revision: u64,
+        spec: multicad_core::schedules::ScheduleSpec,
+        target: Option<(PathBuf, ContentHash)>,
+        actor: Actor,
+    },
 }
 impl Request {
     fn info(&self, id: EntityId) -> Info {
@@ -54,13 +61,27 @@ impl Request {
                 revision,
                 actor,
                 ..
+            }
+            | Self::Schedule {
+                document,
+                revision,
+                actor,
+                ..
             } => Info {
                 id,
                 document: document.id(),
                 revision: *revision,
                 actor: actor.clone(),
-                run: matches!(self, Self::Run { .. }),
+                run: matches!(
+                    self,
+                    Self::Run { .. }
+                        | Self::Schedule {
+                            target: Some(_),
+                            ..
+                        }
+                ),
                 catalog: matches!(self, Self::PlanarCatalog { .. }),
+                schedule: matches!(self, Self::Schedule { .. }),
             },
         }
     }
@@ -73,6 +94,7 @@ struct Info {
     actor: Actor,
     run: bool,
     catalog: bool,
+    schedule: bool,
 }
 impl Info {
     fn reply(&self, result: ExportResult) -> ExportReply {
@@ -86,7 +108,9 @@ impl Info {
     }
     fn failed(&self, message: &str) -> ExportReply {
         let error = Err(failure(ErrorKind::Io, None, message));
-        self.reply(if self.catalog {
+        self.reply(if self.schedule {
+            ExportResult::Schedule(Err(failure(ErrorKind::Io, None, message)))
+        } else if self.catalog {
             ExportResult::PlanarCatalog(Err(failure(ErrorKind::Io, None, message)))
         } else if self.run {
             ExportResult::Run(error)
@@ -173,6 +197,28 @@ impl ExportWorker {
                 &actor,
                 Some(interrupt),
             )),
+            Request::Schedule {
+                document,
+                revision,
+                spec,
+                target,
+                ..
+            } => ExportResult::Schedule(
+                exporter
+                    .schedule(
+                        &document,
+                        revision,
+                        spec,
+                        target
+                            .as_ref()
+                            .map(|(path, expected)| super::ScheduleTarget {
+                                path,
+                                expected: *expected,
+                            }),
+                        Some(interrupt),
+                    )
+                    .map(Box::new),
+            ),
         })
     }
     fn spawn(
@@ -281,6 +327,24 @@ impl ExportWorker {
             document: document.clone(),
             revision,
             scope: scope.clone(),
+            actor,
+        })
+    }
+    /// Build a schedule on the snapshot; with a target, write its CSV only
+    /// when it still hashes to the accepted preview.
+    pub fn schedule(
+        &self,
+        document: &Document,
+        revision: u64,
+        spec: multicad_core::schedules::ScheduleSpec,
+        target: Option<(&Path, ContentHash)>,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.enqueue(Request::Schedule {
+            document: document.clone(),
+            revision,
+            spec,
+            target: target.map(|(p, h)| (p.to_owned(), h)),
             actor,
         })
     }
