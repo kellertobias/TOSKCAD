@@ -20,6 +20,23 @@ reviewed interactively on macOS, and Windows/Linux interaction is unverified.
   selected, acquisition clicks pick planar faces (Shift, Command or Control
   adds/removes; a plain click replaces); *Use selected targets* opens editing.
   Each face becomes its own output with a face profile (see below).
+- **Viewer face sets (CAD-152).** Outside a tool, Command (macOS) / Control
+  (Windows, Linux) click on a face adds it to the viewer selection or removes
+  it; a plain click replaces the selection, Shift-click still builds a part
+  set, and Escape clears. Every selected face is highlighted (further faces of
+  one instance are drawn as highlight-only overlay instance records). A
+  refresh of the same source revision revalidates each face; a new revision
+  clears the set. Extrude/Revolve started with several faces opens editing
+  with all of them when they are coplanar: outward normals within 1e-6 rad,
+  each plane within 1e-4 mm of the first face's plane, and the same outward
+  side (opposite-facing faces in one plane would extrude in opposite
+  directions). Otherwise the tool stays in acquisition with an explanation and
+  keeps every face, so one can be Command/Control-clicked away; a face that
+  cannot be captured (curved, stale) refuses the whole set. The same check runs
+  for faces accumulated during acquisition. New Sketch and Create Engraving
+  refuse several faces; Fillet / Chamfer seeds only from an edge hit;
+  Shell/Thickness/Draft pick faces inside the tool because starting a tool
+  resets the viewer selection.
 - **Unsupported combinations are reported, never dropped silently.** One
   sketch-profile feature reads areas of one sketch. Several selected sketches
   keep the tool in acquisition with a message asking for one sketch. Sketch
@@ -140,6 +157,14 @@ nonzero values within ±360°.
   drag + typed ±25 + Enter, face-edge axis + typed 90 for Revolve) and
   `sketch_editor::face_profiles::tests` (real viewer preselection; Control-click
   accumulation, toggle, Apply and commit of two face extrusions).
+- CAD-152 (viewer face sets): `viewport::interaction::tests` (real viewer
+  clicks: Command toggles, plain click replaces, Shift part set, same-revision
+  revalidation, new-revision clearing), `sketch_editor::face_profiles::tests`
+  (Command/Control-click coplanar faces open Extrude and Revolve; Apply commits
+  two face extrusions with per-face native volumes; a 6 mm offset set is
+  explained, kept and corrected; tilted/opposite/tolerance unit checks; New
+  Sketch and Engraving refuse two faces) and the GPU render check (ignored by
+  default, needs a physical GPU) for overlay highlight of a second face.
 - `sketch_editor::tests::operation_selection_tests`: preselected sketch opens
   Extrude/Revolve immediately; incompatible preselection is reported;
   acquisition with Control-click accumulation, then Apply opens editing
