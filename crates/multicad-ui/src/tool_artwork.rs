@@ -90,7 +90,7 @@ pub fn artwork_id(mode: Mode, tool: &str) -> Option<&'static str> {
         (Mode::Parameters, "preview") => "preview-model",
         (_, "preview" | "export-preview") => "preview",
         (_, "finish-sketch" | "page-apply") => "finish",
-        (_, "import-artwork") => "import",
+        (_, "import-artwork" | "import-step" | "import-kicad" | "import-update") => "import",
         (_, "delete") => "erase",
         (Mode::Sketch, "wall") => "wall-2d",
         (Mode::Sketch, "level") => "levels-2d",

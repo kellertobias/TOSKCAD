@@ -7,6 +7,8 @@ pub enum Kind {
     SaveProject,
     ImportSource,
     ImportArtwork,
+    ImportStep,
+    ImportKicad,
     PreviewImage,
 }
 #[derive(Clone, Debug)]

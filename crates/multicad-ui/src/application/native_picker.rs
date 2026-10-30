@@ -12,7 +12,7 @@ impl Application {
     pub fn set_file_picker(&mut self, picker: Box<dyn FilePicker>) {
         self.file_picker = Some(picker);
     }
-    fn start_native_picker(&mut self) -> Result<(), String> {
+    pub(super) fn start_native_picker(&mut self) -> Result<(), String> {
         let action = self.file_action.ok_or("No file action requested")?;
         let local = self.current().local_id;
         let guard = self
@@ -61,6 +61,12 @@ impl Application {
                 FileAction::Save | FileAction::SymbolSave(_) => Kind::SaveProject,
                 FileAction::Import => Kind::ImportSource,
                 FileAction::Artwork => Kind::ImportArtwork,
+                FileAction::Mechanical(crate::mechanical_import::SourceKind::Step, _) => {
+                    Kind::ImportStep
+                }
+                FileAction::Mechanical(crate::mechanical_import::SourceKind::Kicad, _) => {
+                    Kind::ImportKicad
+                }
                 FileAction::PreviewImage => Kind::PreviewImage,
             },
             directory: self
@@ -87,7 +93,7 @@ impl Application {
         });
         Ok(())
     }
-    fn accept_picker_reply(&mut self, reply: Reply) {
+    pub(super) fn accept_picker_reply(&mut self, reply: Reply) {
         let Some(scope) = self.picker_scope.as_ref().filter(|s| s.id == reply.id) else {
             return;
         };
@@ -129,6 +135,9 @@ impl Application {
                     FileAction::SymbolOpen => self.load_symbol_library(path),
                     FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
                     FileAction::Artwork => self.begin_artwork_import(path),
+                    FileAction::Mechanical(kind, target) => {
+                        self.begin_mechanical_import(kind, target, path)
+                    }
                     FileAction::PreviewImage => self.read_preview_image(path),
                 }
             }

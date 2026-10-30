@@ -32,6 +32,8 @@ mod edge_host;
 mod edge_host_tests;
 #[path = "sketch_external_host.rs"]
 mod external_host;
+#[path = "sketch_mechanical_import_host.rs"]
+mod mechanical_import_host;
 #[path = "model_target_selection.rs"]
 mod model_target_selection;
 #[cfg(test)]
@@ -172,6 +174,7 @@ pub struct SketchEditor {
     assembly: crate::assembly::AssemblyController,
     symbols: crate::symbols::SymbolController,
     artwork: crate::artwork_import::ImportController,
+    mechanical: crate::mechanical_import::MechanicalImport,
     assembly_anchor: Option<assembly_host::PendingAnchor>,
     assembly_presentation: Option<assembly_host::PresentationCache>,
     assembly_pick_view: Option<assembly_host::AnchorView>,
@@ -264,6 +267,7 @@ impl Default for SketchEditor {
             assembly: Default::default(),
             symbols: Default::default(),
             artwork: Default::default(),
+            mechanical: Default::default(),
             assembly_anchor: None,
             assembly_presentation: None,
             assembly_pick_view: None,
@@ -1295,6 +1299,7 @@ impl SketchEditor {
             || self.transfer.dirty()
             || self.symbols.dirty()
             || self.artwork.active()
+            || self.mechanical.active()
             || self.acquisition.is_some()
             || self.external.active()
             || self.trim_worker.pending()
@@ -1307,6 +1312,7 @@ impl SketchEditor {
         self.acquisition = None;
         self.symbols.cancel();
         self.artwork.cancel();
+        self.mechanical.cancel();
         self.transfer.cancel();
         self.assembly.cancel();
         self.assembly_anchor = None;
@@ -2604,7 +2610,7 @@ impl SketchEditor {
                 use crate::inspector_actions::Owner;
                 let owner=if self.measurement.active(){None}
                     else if self.symbols.active(){Some(Owner::Symbols)}
-                    else if self.artwork.active(){Some(Owner::Import)}
+                    else if self.artwork.active() || self.mechanical.active(){Some(Owner::Import)}
                     else if self.transfer.active(){Some(Owner::Transfer)}
                     else if self.assembly.active(){Some(Owner::Assembly)}
                     else if self.model.active(){Some(Owner::Model)}
@@ -2627,6 +2633,10 @@ impl SketchEditor {
                         }
                         if self.artwork.active(){
                             self.artwork_inspector(ui,session);
+                            return;
+                        }
+                        if self.mechanical.active(){
+                            self.mechanical_import_inspector(ui,session);
                             return;
                         }
                         if self.target_inspector(ui, session, resources, feed) { return; }

@@ -27,11 +27,15 @@ impl FilePicker for NativePicker {
             Kind::SaveProject => "Save ToskCAD project",
             Kind::ImportSource => "Import source snapshot",
             Kind::ImportArtwork => "Import DXF or SVG artwork",
+            Kind::ImportStep => "Import or update a STEP file",
+            Kind::ImportKicad => "Import or update a KiCad board",
             Kind::PreviewImage => "Choose a PNG preview image",
         });
         dialog = match request.kind {
             Kind::ImportSource => dialog.add_filter("Source snapshot", &["json"]),
             Kind::ImportArtwork => dialog.add_filter("DXF or SVG artwork", &["dxf", "svg"]),
+            Kind::ImportStep => dialog.add_filter("STEP file", &["step", "stp", "STEP", "STP"]),
+            Kind::ImportKicad => dialog.add_filter("KiCad board", &["kicad_pcb"]),
             Kind::PreviewImage => dialog.add_filter("PNG image", &["png"]),
             _ => dialog.add_filter("ToskCAD project", &["multicad"]),
         };

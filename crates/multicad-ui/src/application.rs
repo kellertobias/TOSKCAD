@@ -7,6 +7,7 @@ pub mod external_control;
 mod external_reference_tests;
 mod files;
 mod library;
+mod mechanical_imports;
 mod native_picker;
 mod save_preview;
 mod symbol_files;
@@ -110,6 +111,7 @@ enum FileAction {
     SymbolSave(EntityId),
     Artwork,
     PreviewImage,
+    Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
 }
 struct CommandRecord {
     input: String,
@@ -173,6 +175,7 @@ pub struct Application {
     /// Client actor IDs whose changes apply without review in this window.
     trusted_clients: std::collections::BTreeSet<String>,
     review_preview: Option<external_control::ReviewPreview>,
+    mechanical_imports: Option<crate::mechanical_import::MechanicalImportBackendRef>,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -232,6 +235,7 @@ impl Application {
             control_bindings: BTreeMap::new(),
             trusted_clients: Default::default(),
             review_preview: None,
+            mechanical_imports: None,
             sketch_queries: None,
             repair_set_checker: None,
         };
@@ -954,6 +958,11 @@ impl Application {
                     .set_display_style(crate::render_view::style_of(scene.display));
                 self.message = "Render view shown in the viewport".into();
             }
+            Command::Extension(
+                id @ (mechanical_imports::IMPORT_STEP
+                | mechanical_imports::IMPORT_KICAD
+                | mechanical_imports::IMPORT_UPDATE),
+            ) => self.request_mechanical_import(id)?,
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
@@ -1324,6 +1333,11 @@ impl Application {
             Command::Extension("symbol" | "library") => {
                 !pending() && self.current().sketch.has_symbol_backend()
             }
+            Command::Extension(
+                id @ (mechanical_imports::IMPORT_STEP
+                | mechanical_imports::IMPORT_KICAD
+                | mechanical_imports::IMPORT_UPDATE),
+            ) => self.mechanical_import_enabled(id),
             Command::Extension(_) => false,
             _ => true,
         }

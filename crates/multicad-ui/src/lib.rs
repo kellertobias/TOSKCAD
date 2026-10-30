@@ -12,6 +12,7 @@ pub mod inspection;
 mod inspector_actions;
 pub mod library;
 pub mod materials;
+pub mod mechanical_import;
 pub mod metadata_sidebar;
 pub mod model_tree;
 pub mod modeling;

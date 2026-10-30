@@ -396,6 +396,9 @@ impl Default for Registry {
             ("appearance", "Capture render view", Icon::Box),
             ("render-view", "Show render view", Icon::Box),
             ("blender", "Blender handoff", Icon::Export),
+            ("import-step", "Import STEP", Icon::Page),
+            ("import-kicad", "Import KiCad board", Icon::Page),
+            ("import-update", "Update import", Icon::Page),
         ] {
             registry.tools.push(Tool {
                 id,
@@ -502,6 +505,7 @@ impl Default for Registry {
                     },
                     tab("FDM aids", &["fdm-aid"]),
                     tab("Materials", &["materials"]),
+                    tab("Import", &["import-step", "import-kicad", "import-update"]),
                 ],
             },
             Workspace {

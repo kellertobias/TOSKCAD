@@ -167,7 +167,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
     sections
 }
 fn implemented(command: Command) -> bool {
-    !matches!(command,Command::Extension(id) if !matches!(id,"materials"|"appearance"|"render-view"))
+    !matches!(command,Command::Extension(id) if !matches!(id,"materials"|"appearance"|"render-view"|"import-step"|"import-kicad"|"import-update"))
 }
 /// Session actions pinned at the right end of the ribbon while a sketch is
 /// open, on every Sketch tab and outside the horizontal scroll.
