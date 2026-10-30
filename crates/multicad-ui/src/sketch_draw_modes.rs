@@ -21,12 +21,18 @@ impl DrawTool {
                 | Self::RectangleThree
                 | Self::CircleTwoRadius
                 | Self::CircleThree
+                | Self::Fillet
+                | Self::Chamfer
         )
+    }
+    /// Corner treatments that modify existing lines instead of drawing.
+    pub fn corner(self) -> bool {
+        matches!(self, Self::Fillet | Self::Chamfer)
     }
     /// Number of clicks that complete the gesture.
     pub fn clicks(self) -> usize {
         match self {
-            Self::RectangleCenter => 2,
+            Self::RectangleCenter | Self::Fillet | Self::Chamfer => 2,
             Self::RectangleCenterTwo
             | Self::RectangleThree
             | Self::CircleTwoRadius
@@ -54,6 +60,12 @@ impl DrawTool {
             (Self::CircleThree, 0) => "Click the first point on the circle · Esc cancels",
             (Self::CircleThree, 1) => "Click the second point on the circle · Esc cancels",
             (Self::CircleThree, _) => "Click the third point on the circle · Esc cancels",
+            (Self::Fillet, _) => {
+                "Click a corner shared by two lines to round it with the Inspector radius · Esc ends"
+            }
+            (Self::Chamfer, _) => {
+                "Click a corner shared by two lines to chamfer it by the Inspector setback · Esc ends"
+            }
             _ => "Click the first point, then the second point · Esc cancels",
         }
     }
@@ -193,6 +205,7 @@ pub(super) fn mode_ghost(tool: DrawTool, clicks: &[Click], cursor: [f64; 2]) -> 
 pub(super) struct ModePointer {
     pub frame: Frame,
     pub rect: Rect,
+    pub screen: Pos2,
     pub point: [f64; 2],
     pub anchor: Option<EntityId>,
     pub clicked: bool,
@@ -213,6 +226,10 @@ impl SketchEditor {
         tool: DrawTool,
         input: ModePointer,
     ) {
+        if tool.corner() {
+            self.corner_pointer(painter, session, tool, input);
+            return;
+        }
         let clicks = self.mode_clicks();
         for [a, b] in mode_ghost(tool, &clicks, input.point) {
             if let Some(segment) =
@@ -266,6 +283,141 @@ impl SketchEditor {
     }
 }
 
+impl SketchEditor {
+    pub(super) fn corner_size_ui(&mut self, ui: &mut egui::Ui, tool: DrawTool) {
+        ui.horizontal(|ui| {
+            ui.label(if tool == DrawTool::Fillet {
+                "Radius"
+            } else {
+                "Setback"
+            });
+            ui.add(
+                egui::DragValue::new(&mut self.corner_size_mm)
+                    .range(0.001..=1.0e6)
+                    .speed(0.1)
+                    .suffix(" mm"),
+            )
+            .on_hover_text(
+                "Applied to the next corner you click. The result keeps a solver dimension you can edit later.",
+            );
+        });
+    }
+    /// Nearest corner shared by exactly two lines within 10 px of the pointer.
+    fn hovered_corner(
+        &self,
+        session: &Session,
+        input: &ModePointer,
+    ) -> Option<(EntityId, [f64; 2])> {
+        let id = self.selected?;
+        let (source, _, _) = self
+            .read_solved_source(session.document(), id, session.revision())
+            .ok()?;
+        let corners = multicad_core::sketch_corner::treatable_corners(&source);
+        let camera = self.camera;
+        source
+            .sketch
+            .points
+            .iter()
+            .filter(|point| corners.contains(&point.id))
+            .filter_map(|point| {
+                let p = camera.project(
+                    input.frame.point(point.position_mm).map(|v| v as f32),
+                    input.rect,
+                );
+                let distance = Pos2::new(p[0], p[1]).distance(input.screen);
+                (distance <= 10.).then_some((distance, point.id, point.position_mm))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, id, position)| (id, position))
+    }
+    fn corner_pointer(
+        &mut self,
+        painter: &egui::Painter,
+        session: &mut Session,
+        tool: DrawTool,
+        input: ModePointer,
+    ) {
+        let hovered = input
+            .anchor
+            .and_then(|anchor| {
+                self.hovered_corner(session, &input)
+                    .filter(|(id, _)| *id == anchor)
+            })
+            .or_else(|| self.hovered_corner(session, &input));
+        if let Some((_, position)) = hovered {
+            let p = self
+                .camera
+                .project(input.frame.point(position).map(|v| v as f32), input.rect);
+            painter.circle_stroke(
+                Pos2::new(p[0], p[1]),
+                7.,
+                Stroke::new(1.5, Color32::LIGHT_YELLOW),
+            );
+        }
+        if !input.clicked {
+            return;
+        }
+        let result = match hovered {
+            None => Err("Click a corner shared by exactly two lines".to_string()),
+            Some((corner, _)) => {
+                self.treat_corner(session, corner, corner_treatment(tool, self.corner_size_mm))
+            }
+        };
+        self.message = match result {
+            Ok(()) => format!("{} applied · Undo restores the sharp corner", tool.label()),
+            Err(error) => error,
+        };
+    }
+    /// One solver-checked transaction; failures change nothing.
+    pub fn treat_corner(
+        &mut self,
+        session: &mut Session,
+        corner: EntityId,
+        treatment: multicad_core::sketch_corner::CornerTreatment,
+    ) -> Result<(), String> {
+        if !self.editing || self.has_pending_edits() {
+            return Err("Open a sketch and apply or discard pending edits first".into());
+        }
+        let id = self.selected.ok_or("Select a sketch")?;
+        let (source, _, _) = self
+            .read_source(session.document(), id, session.revision())
+            .map_err(|e| e.to_string())?;
+        let draft = multicad_core::sketch_corner::corner_draft(&source, corner, treatment)
+            .map_err(|e| e.to_string())?;
+        let edit = multicad_solver::prepare_edit_with_report(
+            session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            id,
+            draft.source,
+            self.evaluated.as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
+        let preview = edit.preview.ok_or_else(|| {
+            format!(
+                "The corner treatment conflicts with existing constraints ({:?}); nothing changed",
+                edit.evaluation.diagnostics.state
+            )
+        })?;
+        session.commit(preview).map_err(|e| e.to_string())?;
+        self.element = draft.created_curves.first().copied();
+        self.revision = session.revision();
+        Ok(())
+    }
+}
+
+pub(super) fn corner_treatment(
+    tool: DrawTool,
+    size: f64,
+) -> multicad_core::sketch_corner::CornerTreatment {
+    use multicad_core::sketch_corner::CornerTreatment;
+    if tool == DrawTool::Chamfer {
+        CornerTreatment::Chamfer { distance_mm: size }
+    } else {
+        CornerTreatment::Fillet { radius_mm: size }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,7 +428,10 @@ mod tests {
 
     #[test]
     fn mode_inputs_need_their_full_click_sequence() {
-        for tool in DrawTool::ALL.into_iter().filter(|t| t.multi_point()) {
+        for tool in DrawTool::ALL
+            .into_iter()
+            .filter(|t| t.multi_point() && !t.corner())
+        {
             let clicks: Vec<Click> = (0..tool.clicks() - 1)
                 .map(|i| at(i as f64 * 10., (i * i) as f64 * 7.))
                 .collect();

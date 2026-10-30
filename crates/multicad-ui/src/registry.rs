@@ -558,7 +558,11 @@ impl Default for Registry {
             .find(|w| w.mode == Mode::Sketch)
             .and_then(|w| w.tabs.iter_mut().find(|t| t.title == "Common"))
         {
-            for family in [&DrawTool::RECTANGLE_MODES[..], &DrawTool::CIRCLE_MODES[..]] {
+            for family in [
+                &DrawTool::RECTANGLE_MODES[..],
+                &DrawTool::CIRCLE_MODES[..],
+                &[DrawTool::Spline, DrawTool::Fillet, DrawTool::Chamfer][..],
+            ] {
                 let base = family[0].id();
                 let mut at = common
                     .tools
