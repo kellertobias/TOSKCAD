@@ -1,16 +1,28 @@
 //! Parametric sketch text. Canonical source keeps only the string, bundled
-//! font identity, cap height and placement; closed glyph outlines are derived
-//! deterministically from the font bundled in the binary. TrueType glyph
+//! font identity, size and placement. Closed glyph outlines are derived
+//! deterministically from fonts bundled in the binary. TrueType glyph
 //! contours are piecewise quadratic, so every contour maps exactly onto one
 //! closed, clamped degree-2 B-spline with C0 Bezier joints. No polyline
 //! approximation or system font participates.
+//!
+//! Placement (CAD-149): the text is a block of one or more lines. The block
+//! box spans the widest line's advance width horizontally, and from the
+//! first line's cap height down to the last line's baseline vertically. One
+//! of nine anchors on that box sits at `position_mm`. Lines align left,
+//! center or right inside the box.
 use crate::document::{DocumentError, EntityId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Project capability recorded whenever a constrained sketch carries text.
-pub const CAPABILITY: &str = "core.sketch_text.1";
+/// Version 2 stores the anchor model (CAD-149); version 1 files (baseline
+/// origin and alignment, CAD-142) still open and migrate on read.
+pub const CAPABILITY: &str = "core.sketch_text.2";
+/// The CAD-142 storage form, still readable.
+pub const LEGACY_CAPABILITY: &str = "core.sketch_text.1";
+/// Characters per element, newlines included.
 pub const MAX_TEXT_CHARS: usize = 64;
+pub const MAX_TEXT_LINES: usize = 16;
 pub const MAX_TEXTS_PER_SKETCH: usize = 16;
 /// The exact native spline region budget is 64 curves per sketch; text
 /// outlines therefore stay inside it even before other curves are counted.
@@ -19,31 +31,54 @@ pub const MIN_HEIGHT_MM: f64 = 0.1;
 pub const MAX_HEIGHT_MM: f64 = 10_000.;
 const MAX_CONTOUR_POLES: usize = crate::constraint_sketch::MAX_SPLINE_POLES;
 
+/// Cantarell Regular 0.05, SIL Open Font License 1.1. Vendored unmodified;
+/// see `fonts/Cantarell-Regular.txt`.
+const CANTARELL_REGULAR: &[u8] = include_bytes!("../../fonts/Cantarell-Regular.ttf");
+
 /// Fonts bundled in the binary. New fonts are new variants; an existing
 /// variant never changes its outline source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextFont {
-    /// Hack Regular 3.003 (MIT, Bitstream Vera licence) from the pinned
-    /// `epaint_default_fonts` crate that the application already ships.
+    /// Cantarell Regular 0.05, a proportional sans-serif outline font
+    /// (OFL-1.1). The default for new text.
     #[default]
+    CantarellRegular,
+    /// Hack Regular 3.003 (MIT, Bitstream Vera licence), monospaced, from the
+    /// pinned `epaint_default_fonts` crate that the application already
+    /// ships. Text created before CAD-149 uses it.
     HackRegular,
 }
 impl TextFont {
-    pub const ALL: [Self; 1] = [Self::HackRegular];
+    pub const ALL: [Self; 2] = [Self::CantarellRegular, Self::HackRegular];
     pub fn label(self) -> &'static str {
         match self {
+            Self::CantarellRegular => "Cantarell Regular",
             Self::HackRegular => "Hack Regular",
         }
     }
+    /// Characters of the common set whose outlines in this font are not
+    /// clean region boundaries: Cantarell draws `|` as two touching bars and
+    /// its `ç` cedilla touches the c. They are refused for that font.
+    pub fn excluded(self) -> &'static str {
+        match self {
+            Self::CantarellRegular => "|ç",
+            Self::HackRegular => "",
+        }
+    }
+    /// Whether this font's outline for `c` is verified as a clean region.
+    pub fn supports(self, c: char) -> bool {
+        supported_char(c) && !self.excluded().contains(c)
+    }
     fn data(self) -> &'static [u8] {
         match self {
+            Self::CantarellRegular => CANTARELL_REGULAR,
             Self::HackRegular => epaint_default_fonts::HACK_REGULAR,
         }
     }
 }
 
-/// Horizontal anchor of the baseline origin.
+/// Horizontal alignment of each line inside the text block.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextAlignment {
@@ -51,6 +86,65 @@ pub enum TextAlignment {
     Left,
     Center,
     Right,
+}
+
+/// Which point of the text block box sits at `position_mm`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAnchor {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    LeftCenter,
+    Center,
+    RightCenter,
+    #[default]
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+impl TextAnchor {
+    /// Row-major from the top-left, as shown in a 3 × 3 picker.
+    pub const ALL: [Self; 9] = [
+        Self::TopLeft,
+        Self::TopCenter,
+        Self::TopRight,
+        Self::LeftCenter,
+        Self::Center,
+        Self::RightCenter,
+        Self::BottomLeft,
+        Self::BottomCenter,
+        Self::BottomRight,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TopLeft => "Top left",
+            Self::TopCenter => "Top center",
+            Self::TopRight => "Top right",
+            Self::LeftCenter => "Left center",
+            Self::Center => "Center",
+            Self::RightCenter => "Right center",
+            Self::BottomLeft => "Bottom left",
+            Self::BottomCenter => "Bottom center",
+            Self::BottomRight => "Bottom right",
+        }
+    }
+    /// Horizontal fraction of the box: 0 left, 1 center, 2 right.
+    fn column(self) -> u8 {
+        match self {
+            Self::TopLeft | Self::LeftCenter | Self::BottomLeft => 0,
+            Self::TopCenter | Self::Center | Self::BottomCenter => 1,
+            Self::TopRight | Self::RightCenter | Self::BottomRight => 2,
+        }
+    }
+    /// Vertical position in the box: 0 top, 1 middle, 2 bottom.
+    fn row(self) -> u8 {
+        match self {
+            Self::TopLeft | Self::TopCenter | Self::TopRight => 0,
+            Self::LeftCenter | Self::Center | Self::RightCenter => 1,
+            Self::BottomLeft | Self::BottomCenter | Self::BottomRight => 2,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,29 +156,94 @@ pub struct SketchText {
 
 /// Everything an author edits; shared by the native tool and MCP.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "TextStyleRecord")]
 pub struct TextStyle {
-    /// One line of supported characters (printable ASCII and listed Latin-1).
+    /// Supported characters (printable ASCII and listed Latin-1); `\n`
+    /// separates lines.
     pub text: String,
     pub font: TextFont,
-    /// Cap height (height of capital letters such as H) in mm.
+    /// Size: the cap height (height of capital letters such as H) in mm.
     pub height_mm: f64,
-    /// Baseline anchor in sketch coordinates, mm.
-    pub origin_mm: [f64; 2],
-    /// Counterclockwise rotation of the baseline from sketch U, degrees.
+    /// Where the anchor point of the text block sits, in sketch mm.
+    pub position_mm: [f64; 2],
+    pub anchor: TextAnchor,
+    /// Counterclockwise rotation of the block about the anchor, from sketch U,
+    /// in degrees.
     pub rotation_deg: f64,
+    /// Alignment of each line inside the block.
     pub alignment: TextAlignment,
 }
+
+/// Stored form. CAD-142 wrote `origin_mm` (a baseline point) and no anchor;
+/// that reads as the matching bottom anchor, which is the same placement for
+/// single-line text.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextStyleRecord {
+    text: String,
+    font: TextFont,
+    height_mm: f64,
+    #[serde(default)]
+    position_mm: Option<[f64; 2]>,
+    #[serde(default)]
+    origin_mm: Option<[f64; 2]>,
+    #[serde(default)]
+    anchor: Option<TextAnchor>,
+    rotation_deg: f64,
+    alignment: TextAlignment,
+}
+impl TryFrom<TextStyleRecord> for TextStyle {
+    type Error = String;
+    fn try_from(r: TextStyleRecord) -> Result<Self, String> {
+        let (position_mm, anchor) = match (r.position_mm, r.origin_mm, r.anchor) {
+            (Some(position), None, Some(anchor)) => (position, anchor),
+            (None, Some(origin), None) => (origin, TextAnchor::legacy(r.alignment)),
+            _ => {
+                return Err(
+                    "sketch text needs position_mm with anchor, or the legacy origin_mm without anchor"
+                        .into(),
+                );
+            }
+        };
+        Ok(Self {
+            text: r.text,
+            font: r.font,
+            height_mm: r.height_mm,
+            position_mm,
+            anchor,
+            rotation_deg: r.rotation_deg,
+            alignment: r.alignment,
+        })
+    }
+}
+impl TextAnchor {
+    /// CAD-142 placed the baseline's left end, middle or right end at the
+    /// origin; for one line that is exactly the bottom anchor.
+    pub fn legacy(alignment: TextAlignment) -> Self {
+        match alignment {
+            TextAlignment::Left => Self::BottomLeft,
+            TextAlignment::Center => Self::BottomCenter,
+            TextAlignment::Right => Self::BottomRight,
+        }
+    }
+}
+
 impl TextStyle {
-    pub fn new(text: impl Into<String>, height_mm: f64, origin_mm: [f64; 2]) -> Self {
+    /// Cantarell text whose bottom-left anchor (the first character's
+    /// baseline start, for one line) sits at `position_mm`.
+    pub fn new(text: impl Into<String>, height_mm: f64, position_mm: [f64; 2]) -> Self {
         Self {
             text: text.into(),
-            font: TextFont::HackRegular,
+            font: TextFont::CantarellRegular,
             height_mm,
-            origin_mm,
+            position_mm,
+            anchor: TextAnchor::BottomLeft,
             rotation_deg: 0.,
             alignment: TextAlignment::Left,
         }
+    }
+    pub fn lines(&self) -> std::str::Split<'_, char> {
+        self.text.split('\n')
     }
 }
 
@@ -107,6 +266,25 @@ pub struct TextContour {
     pub poles: Vec<[f64; 2]>,
     pub basis: crate::constraint_sketch::SplineBasis,
 }
+impl TextContour {
+    /// Display and hit-test samples of the exact quadratic spans, closed
+    /// (first point repeated last). Never used for manufacturing geometry.
+    pub fn samples(&self, per_span: usize) -> Vec<[f64; 2]> {
+        let per_span = per_span.max(1);
+        let mut points = vec![self.poles[0]];
+        for span in self.poles.windows(3).step_by(2) {
+            for step in 1..=per_span {
+                let t = step as f64 / per_span as f64;
+                points.push(std::array::from_fn(|i| {
+                    (1. - t) * (1. - t) * span[0][i]
+                        + 2. * t * (1. - t) * span[1][i]
+                        + t * t * span[2][i]
+                }));
+            }
+        }
+        points
+    }
+}
 
 impl TextStyle {
     /// Structural checks shared by every entry point. Nothing is changed when
@@ -120,28 +298,62 @@ impl TextStyle {
         }
         if chars > MAX_TEXT_CHARS {
             return Err(invalid(format!(
-                "Text has {chars} characters; the limit is {MAX_TEXT_CHARS} per text element"
+                "Text has {chars} characters; the limit is {MAX_TEXT_CHARS} per text element, line breaks included"
             )));
         }
-        if let Some(c) = self.text.chars().find(|c| !supported_char(*c)) {
+        if let Some(c) = self
+            .text
+            .chars()
+            .find(|c| *c != '\n' && supported_char(*c) && !self.font.supports(*c))
+        {
+            let other = TextFont::ALL
+                .into_iter()
+                .find(|f| f.supports(c))
+                .map_or("another font", TextFont::label);
             return Err(invalid(format!(
-                "Character {c:?} (U+{:04X}) is not supported by the bundled {} outlines; use printable ASCII or one of {SUPPORTED_LATIN1}",
+                "Character {c:?} is not supported by {}: its outline pieces touch and cannot bound a clean profile; use {other} for it",
+                self.font.label()
+            )));
+        }
+        if let Some(c) = self
+            .text
+            .chars()
+            .find(|c| *c != '\n' && !supported_char(*c))
+        {
+            return Err(invalid(format!(
+                "Character {c:?} (U+{:04X}) is not supported by the bundled {} outlines; use printable ASCII, line breaks or one of {SUPPORTED_LATIN1}",
                 c as u32,
                 self.font.label()
             )));
         }
+        let lines: Vec<&str> = self.lines().collect();
+        if lines.len() > MAX_TEXT_LINES {
+            return Err(invalid(format!(
+                "Text has {} lines; the limit is {MAX_TEXT_LINES}",
+                lines.len()
+            )));
+        }
+        if lines.first().is_some_and(|l| l.trim().is_empty())
+            || lines.last().is_some_and(|l| l.trim().is_empty())
+        {
+            return Err(invalid(
+                "Text starts or ends with an empty line; remove it so the anchor box fits the lettering",
+            ));
+        }
         if !self.height_mm.is_finite() || !(MIN_HEIGHT_MM..=MAX_HEIGHT_MM).contains(&self.height_mm)
         {
             return Err(invalid(format!(
-                "Text height must be between {MIN_HEIGHT_MM} and {MAX_HEIGHT_MM} mm"
+                "Text size (cap height) must be between {MIN_HEIGHT_MM} and {MAX_HEIGHT_MM} mm"
             )));
         }
         if self
-            .origin_mm
+            .position_mm
             .iter()
             .any(|v| !v.is_finite() || v.abs() > 1e9)
         {
-            return Err(invalid("Text position must be finite sketch coordinates"));
+            return Err(invalid(
+                "Text anchor position must be finite sketch coordinates",
+            ));
         }
         if !self.rotation_deg.is_finite() || self.rotation_deg.abs() > 360. {
             return Err(invalid(
@@ -154,11 +366,85 @@ impl TextStyle {
     pub fn contour_count(&self) -> Result<usize, DocumentError> {
         let font = Font::load(self.font)?;
         let mut count = 0;
-        for c in self.text.chars() {
+        for c in self.text.chars().filter(|c| *c != '\n') {
             count += font.glyph(c)?.len();
         }
         Ok(count)
     }
+    /// Block layout in font units: per-line widths, the block width, the
+    /// line pitch and the anchor offset.
+    fn layout(&self, font: &Font) -> Result<Layout, DocumentError> {
+        let mut widths = vec![];
+        for line in self.lines() {
+            let width: f64 = line
+                .chars()
+                .map(|c| font.advance(c))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .sum();
+            widths.push(width);
+        }
+        let width = widths.iter().copied().fold(0., f64::max);
+        let pitch = font.line_pitch;
+        let bottom = -((widths.len() - 1) as f64 * pitch);
+        let top = font.cap_height;
+        let anchor = [
+            match self.anchor.column() {
+                0 => 0.,
+                1 => width / 2.,
+                _ => width,
+            },
+            match self.anchor.row() {
+                0 => top,
+                1 => (top + bottom) / 2.,
+                _ => bottom,
+            },
+        ];
+        Ok(Layout {
+            widths,
+            width,
+            pitch,
+            top,
+            bottom,
+            anchor,
+            scale: self.height_mm / font.cap_height,
+        })
+    }
+    /// The four corners of the block box in sketch coordinates:
+    /// bottom-left, bottom-right, top-right, top-left (before rotation).
+    pub fn block_corners(&self) -> Result<[[f64; 2]; 4], DocumentError> {
+        self.validate()?;
+        let font = Font::load(self.font)?;
+        let layout = self.layout(&font)?;
+        let place = self.placer(&layout);
+        Ok([
+            place(0., layout.bottom),
+            place(layout.width, layout.bottom),
+            place(layout.width, layout.top),
+            place(0., layout.top),
+        ])
+    }
+    /// Font units (block coordinates) to sketch coordinates.
+    fn placer(&self, layout: &Layout) -> impl Fn(f64, f64) -> [f64; 2] {
+        let (sin, cos) = exact_sin_cos(self.rotation_deg);
+        let [ax, ay] = layout.anchor;
+        let scale = layout.scale;
+        let origin = self.position_mm;
+        move |x: f64, y: f64| {
+            let (x, y) = ((x - ax) * scale, (y - ay) * scale);
+            [origin[0] + x * cos - y * sin, origin[1] + x * sin + y * cos]
+        }
+    }
+}
+
+struct Layout {
+    widths: Vec<f64>,
+    width: f64,
+    pitch: f64,
+    top: f64,
+    bottom: f64,
+    anchor: [f64; 2],
+    scale: f64,
 }
 
 impl SketchText {
@@ -173,60 +459,58 @@ impl SketchText {
         self.validate()?;
         let style = &self.style;
         let font = Font::load(style.font)?;
-        let scale = style.height_mm / font.cap_height;
-        let total_advance: f64 = style
-            .text
-            .chars()
-            .map(|c| font.advance(c))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum();
-        let start = match style.alignment {
-            TextAlignment::Left => 0.,
-            TextAlignment::Center => -total_advance / 2.,
-            TextAlignment::Right => -total_advance,
-        };
-        let (sin, cos) = exact_sin_cos(style.rotation_deg);
-        let place = |x: f64, y: f64| {
-            let (x, y) = (x * scale, y * scale);
-            [
-                style.origin_mm[0] + x * cos - y * sin,
-                style.origin_mm[1] + x * sin + y * cos,
-            ]
-        };
-        let mut pen_x = start;
+        let layout = style.layout(&font)?;
+        let place = style.placer(&layout);
         let mut contours = vec![];
-        for (index, c) in style.text.chars().enumerate() {
-            for (contour, segments) in font.glyph(c)?.into_iter().enumerate() {
-                let mut poles = Vec::with_capacity(segments.len() * 2 + 1);
-                poles.push(place(pen_x + segments[0].start[0], segments[0].start[1]));
-                for segment in &segments {
-                    poles.push(place(pen_x + segment.control[0], segment.control[1]));
-                    poles.push(place(pen_x + segment.end[0], segment.end[1]));
+        let mut index = 0usize;
+        for (number, (line, width)) in style.lines().zip(&layout.widths).enumerate() {
+            let mut pen_x = match style.alignment {
+                TextAlignment::Left => 0.,
+                TextAlignment::Center => (layout.width - width) / 2.,
+                TextAlignment::Right => layout.width - width,
+            };
+            let baseline = -(number as f64 * layout.pitch);
+            for c in line.chars() {
+                for (contour, segments) in font.glyph(c)?.into_iter().enumerate() {
+                    let mut poles = Vec::with_capacity(segments.len() * 2 + 1);
+                    poles.push(place(
+                        pen_x + segments[0].start[0],
+                        baseline + segments[0].start[1],
+                    ));
+                    for segment in &segments {
+                        poles.push(place(
+                            pen_x + segment.control[0],
+                            baseline + segment.control[1],
+                        ));
+                        poles.push(place(pen_x + segment.end[0], baseline + segment.end[1]));
+                    }
+                    if poles.len() > MAX_CONTOUR_POLES {
+                        return Err(invalid(format!(
+                            "Glyph {c:?} has a contour with more than {MAX_CONTOUR_POLES} poles"
+                        )));
+                    }
+                    let spans = segments.len();
+                    let mut multiplicities = vec![2; spans + 1];
+                    multiplicities[0] = 3;
+                    multiplicities[spans] = 3;
+                    let basis = crate::constraint_sketch::SplineBasis {
+                        degree: 2,
+                        knots: (0..=spans).map(|k| k as f64).collect(),
+                        multiplicities,
+                        weights: None,
+                    };
+                    basis.validate(poles.len())?;
+                    contours.push(TextContour {
+                        id: derived_id(self.id, index as u64, contour as u64),
+                        poles,
+                        basis,
+                    });
                 }
-                if poles.len() > MAX_CONTOUR_POLES {
-                    return Err(invalid(format!(
-                        "Glyph {c:?} has a contour with more than {MAX_CONTOUR_POLES} poles"
-                    )));
-                }
-                let spans = segments.len();
-                let mut multiplicities = vec![2; spans + 1];
-                multiplicities[0] = 3;
-                multiplicities[spans] = 3;
-                let basis = crate::constraint_sketch::SplineBasis {
-                    degree: 2,
-                    knots: (0..=spans).map(|k| k as f64).collect(),
-                    multiplicities,
-                    weights: None,
-                };
-                basis.validate(poles.len())?;
-                contours.push(TextContour {
-                    id: derived_id(self.id, index as u64, contour as u64),
-                    poles,
-                    basis,
-                });
+                pen_x += font.advance(c)?;
+                index += 1;
             }
-            pen_x += font.advance(c)?;
+            // The line break keeps its character index.
+            index += 1;
         }
         if contours.len() > MAX_TEXT_CONTOURS {
             return Err(invalid(format!(
@@ -236,6 +520,46 @@ impl SketchText {
         }
         Ok(contours)
     }
+    /// The text's sketch point at its anchor.
+    pub fn anchor_mm(&self) -> [f64; 2] {
+        self.style.position_mm
+    }
+    /// Whether `point` (sketch mm) lies inside one of this text's glyph
+    /// outlines (counters included). Used for click selection only; the
+    /// test uses display samples, never manufacturing geometry.
+    pub fn contains(&self, point: [f64; 2]) -> bool {
+        let Ok(contours) = self.contours() else {
+            return false;
+        };
+        contours
+            .iter()
+            .any(|contour| inside_polygon(&contour.samples(8), point))
+    }
+    /// Whether `curve` is one of this text's derived contour identities.
+    pub fn owns_contour(&self, curve: EntityId) -> bool {
+        self.contours()
+            .is_ok_and(|contours| contours.iter().any(|c| c.id == curve))
+    }
+}
+
+/// The last listed (topmost drawn) text whose glyph outlines contain `point`.
+pub fn text_at(texts: &[SketchText], point: [f64; 2]) -> Option<EntityId> {
+    texts.iter().rev().find(|t| t.contains(point)).map(|t| t.id)
+}
+
+/// Even-odd crossing test against a closed sample polygon.
+fn inside_polygon(polygon: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let mut inside = false;
+    for edge in polygon.windows(2) {
+        let (a, b) = (edge[0], edge[1]);
+        if (a[1] > p[1]) != (b[1] > p[1]) {
+            let x = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            if p[0] < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 /// Multiples of 90 degrees keep exact axis-aligned outlines.
@@ -280,6 +604,8 @@ struct Span {
 struct Font {
     font: skrifa::FontRef<'static>,
     cap_height: f64,
+    /// Baseline-to-baseline distance in font units: ascent − descent + gap.
+    line_pitch: f64,
     kind: TextFont,
 }
 impl Font {
@@ -291,20 +617,40 @@ impl Font {
             skrifa::instance::Size::unscaled(),
             skrifa::instance::LocationRef::default(),
         );
-        let cap_height = metrics
-            .cap_height
-            .map(f64::from)
-            .filter(|h| *h > 0.)
-            .ok_or_else(|| invalid(format!("Bundled font {} has no cap height", kind.label())))?;
-        Ok(Self {
+        let line_pitch =
+            f64::from(metrics.ascent) - f64::from(metrics.descent) + f64::from(metrics.leading);
+        if line_pitch.is_nan() || line_pitch <= 0. {
+            return Err(invalid(format!(
+                "Bundled font {} has no line spacing",
+                kind.label()
+            )));
+        }
+        let mut loaded = Self {
             font,
-            cap_height,
+            cap_height: 0.,
+            line_pitch,
             kind,
-        })
+        };
+        // The cap height is the top of the H outline, so H spans exactly
+        // 0..size. (Hack's OS/2 cap height equals it; Cantarell's OS/2 value
+        // is a few units lower than its H.)
+        loaded.cap_height = loaded
+            .glyph('H')?
+            .iter()
+            .flatten()
+            .flat_map(|s| [s.start[1], s.control[1], s.end[1]])
+            .fold(0., f64::max);
+        if loaded.cap_height.is_nan() || loaded.cap_height <= 0. {
+            return Err(invalid(format!(
+                "Bundled font {} has no cap height",
+                kind.label()
+            )));
+        }
+        Ok(loaded)
     }
     fn glyph_id(&self, c: char) -> Result<skrifa::GlyphId, DocumentError> {
         use skrifa::MetadataProvider;
-        if !supported_char(c) {
+        if !self.kind.supports(c) {
             return Err(invalid(format!(
                 "Character {c:?} is not supported by the bundled {} outlines",
                 self.kind.label()
@@ -531,137 +877,5 @@ impl TextOperation {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn operations_add_edit_remove_and_refuse_without_change() {
-        let source = super::super::source::Source {
-            u: [1., 0., 0.],
-            sketch: Default::default(),
-        };
-        let add = TextOperation::Add {
-            style: TextStyle::new("ABO", 5., [1., 2.]),
-        };
-        let (added, id) = add.apply(&source).unwrap();
-        assert_eq!(added.sketch.texts.len(), 1);
-        assert_eq!(added.minimum_schema_version(), 2);
-        let json = serde_json::to_value(&added).unwrap();
-        let back: super::super::source::Source = serde_json::from_value(json).unwrap();
-        assert_eq!(back, added, "text round-trips exactly through source JSON");
-        let mut style = TextStyle::new("ABD", 6., [1., 2.]);
-        let (edited, same) = TextOperation::Edit {
-            text: id,
-            style: style.clone(),
-        }
-        .apply(&added)
-        .unwrap();
-        assert_eq!(same, id);
-        assert_eq!(edited.sketch.texts[0].style.text, "ABD");
-        style.text.clear();
-        assert!(
-            TextOperation::Edit { text: id, style }
-                .apply(&edited)
-                .unwrap_err()
-                .to_string()
-                .contains("empty")
-        );
-        let (removed, _) = TextOperation::Remove { text: id }.apply(&edited).unwrap();
-        assert!(removed.sketch.texts.is_empty());
-        assert!(TextOperation::Remove { text: id }.apply(&removed).is_err());
-        // Serialized sketches without text keep their previous JSON shape.
-        assert!(
-            !serde_json::to_string(&removed.sketch)
-                .unwrap()
-                .contains("texts")
-        );
-    }
-    fn text(s: &str) -> SketchText {
-        SketchText {
-            id: EntityId::new(),
-            style: TextStyle::new(s, 10., [0., 0.]),
-        }
-    }
-    #[test]
-    fn abo_maps_to_exact_closed_degree_two_contours() {
-        let t = text("ABO");
-        let contours = t.contours().unwrap();
-        // A: outline + counter, B: outline + two counters, O: outline + counter.
-        assert_eq!(contours.len(), 7);
-        for c in &contours {
-            assert_eq!(c.basis.degree, 2);
-            assert_eq!(c.poles.first(), c.poles.last(), "closed contour");
-            c.basis.validate(c.poles.len()).unwrap();
-        }
-        assert_eq!(contours, t.contours().unwrap(), "deterministic");
-        let ids: std::collections::BTreeSet<_> = contours.iter().map(|c| c.id).collect();
-        assert_eq!(ids.len(), 7);
-        // Cap height of H is exactly the requested height.
-        let h = text("H").contours().unwrap();
-        let top = h[0].poles.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
-        let bottom = h[0].poles.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
-        assert!(
-            (top - 10.).abs() < 1e-9 && bottom.abs() < 1e-9,
-            "{top} {bottom}"
-        );
-    }
-    #[test]
-    fn placement_changes_coordinates_but_not_identities() {
-        let mut t = text("AB");
-        let before = t.contours().unwrap();
-        t.style.origin_mm = [5., -3.];
-        t.style.height_mm = 4.;
-        t.style.rotation_deg = 90.;
-        let after = t.contours().unwrap();
-        assert_eq!(
-            before.iter().map(|c| c.id).collect::<Vec<_>>(),
-            after.iter().map(|c| c.id).collect::<Vec<_>>()
-        );
-        let p = before[0].poles[0];
-        let q = after[0].poles[0];
-        let s = 4. / 10.;
-        assert_eq!(q, [5. - p[1] * s, -3. + p[0] * s]);
-        t.style.alignment = TextAlignment::Right;
-        t.style.rotation_deg = 0.;
-        let right = t.contours().unwrap();
-        let max_x = right
-            .iter()
-            .flat_map(|c| c.poles.iter())
-            .map(|p| p[0])
-            .fold(f64::MIN, f64::max);
-        assert!(max_x <= 5. + 1e-9);
-    }
-    #[test]
-    fn invalid_text_is_refused_with_actionable_messages() {
-        for (s, h, needle) in [
-            ("", 5., "empty"),
-            ("   ", 5., "empty"),
-            ("A\nB", 5., "not supported"),
-            ("Ж", 5., "not supported"),
-            ("AB", 0., "height"),
-            ("AB", -1., "height"),
-            ("AB", f64::NAN, "height"),
-        ] {
-            let mut t = text(s);
-            t.style.height_mm = h;
-            let e = t.validate().unwrap_err().to_string();
-            assert!(e.contains(needle), "{s:?}: {e}");
-        }
-        let long = text(&"O".repeat(40));
-        assert!(long.validate().is_ok());
-        let e = long.contours().unwrap_err().to_string();
-        assert!(e.contains("budget"), "{e}");
-    }
-    #[test]
-    fn every_supported_character_has_exact_closed_contours() {
-        let all: String = (' '..='~').chain(SUPPORTED_LATIN1.chars()).collect();
-        for c in all.chars() {
-            let t = text(&c.to_string());
-            if c == ' ' {
-                assert!(t.validate().is_err());
-                continue;
-            }
-            let contours = t.contours().unwrap_or_else(|e| panic!("{c:?}: {e}"));
-            assert!(!contours.is_empty(), "{c:?}");
-        }
-    }
-}
+#[path = "text_tests.rs"]
+mod tests;
