@@ -3,6 +3,7 @@
 mod evaluation;
 mod names;
 mod planar;
+mod print;
 mod resolve;
 mod source;
 use crate::{
@@ -12,6 +13,7 @@ use crate::{
 pub use evaluation::*;
 pub use names::*;
 pub use planar::*;
+pub use print::*;
 pub use resolve::*;
 pub use source::*;
 
