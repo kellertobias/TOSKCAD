@@ -64,11 +64,30 @@ impl PreviewImage {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileInfo {
     pub name: String,
     pub description: String,
     pub preview: Option<PreviewImage>,
+    /// Replace the preview with the visible 3D view on every save. Choosing an
+    /// image manually turns this off so the chosen image is kept.
+    pub capture_on_save: bool,
+}
+impl Default for FileInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            preview: None,
+            capture_on_save: true,
+        }
+    }
+}
+fn yes() -> bool {
+    true
+}
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,6 +105,8 @@ struct Stored {
     description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview: Option<StoredPreview>,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    capture_on_save: bool,
 }
 
 fn invalid(message: impl Into<String>) -> DocumentError {
@@ -120,7 +141,7 @@ fn entities(document: &Document) -> impl Iterator<Item = (&Entity, &Definition)>
         _ => None,
     })
 }
-fn decode(definition: &Definition) -> Result<(String, Option<PreviewImage>), String> {
+fn decode(definition: &Definition) -> Result<(String, Option<PreviewImage>, bool), String> {
     if definition.schema_version != FILE_INFO_SCHEMA {
         return Err(format!(
             "File information schema {} was written by a newer version and is read-only here",
@@ -146,7 +167,7 @@ fn decode(definition: &Definition) -> Result<(String, Option<PreviewImage>), Str
             Some(image)
         }
     };
-    Ok((stored.description, preview))
+    Ok((stored.description, preview, stored.capture_on_save))
 }
 /// Structural check run by `Document::validate`. A newer schema is preserved
 /// as opaque source; current-schema records must be well formed.
@@ -171,14 +192,15 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
 /// The file's authored information. Fails only for a record written by a
 /// newer schema; a project without a record has an empty description.
 pub fn read(document: &Document) -> Result<FileInfo, String> {
-    let (description, preview) = match entities(document).next() {
+    let (description, preview, capture_on_save) = match entities(document).next() {
         Some((_, definition)) => decode(definition)?,
-        None => (String::new(), None),
+        None => (String::new(), None, true),
     };
     Ok(FileInfo {
         name: document.name().into(),
         description,
         preview,
+        capture_on_save,
     })
 }
 /// Typed source edits that make the document's file information equal `info`.
@@ -191,11 +213,14 @@ pub fn edits(document: &Document, info: &FileInfo) -> Result<Vec<Mutation>, Stri
     if current.name != info.name {
         edits.push(Mutation::RenameDocument(info.name.clone()));
     }
-    if current.description == info.description && current.preview == info.preview {
+    if current.description == info.description
+        && current.preview == info.preview
+        && current.capture_on_save == info.capture_on_save
+    {
         return Ok(edits);
     }
     let existing = entities(document).next().map(|(entity, _)| entity.clone());
-    if info.description.is_empty() && info.preview.is_none() {
+    if info.description.is_empty() && info.preview.is_none() && info.capture_on_save {
         if let Some(entity) = existing {
             edits.push(Mutation::Remove(entity.id));
         }
@@ -209,6 +234,7 @@ pub fn edits(document: &Document, info: &FileInfo) -> Result<Vec<Mutation>, Stri
             height: p.height,
             data: base64_encode(&p.png),
         }),
+        capture_on_save: info.capture_on_save,
     };
     let definition = Definition {
         type_id: FILE_INFO_TYPE.into(),
@@ -227,6 +253,22 @@ pub fn edits(document: &Document, info: &FileInfo) -> Result<Vec<Mutation>, Stri
         None => Mutation::Insert(Entity::new("File information", data)),
     });
     Ok(edits)
+}
+/// The same document with only its preview replaced; name, description and
+/// the capture setting are kept. Used for the save-time capture, which is
+/// presentation state outside Undo history.
+pub fn with_preview(
+    document: &Document,
+    preview: Option<PreviewImage>,
+) -> Result<Document, String> {
+    let mut info = read(document)?;
+    if info.preview == preview {
+        return Ok(document.clone());
+    }
+    info.preview = preview;
+    document
+        .edited(&edits(document, &info)?)
+        .map_err(|e| e.to_string())
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -335,6 +377,7 @@ mod tests {
             name: "Wall bracket".into(),
             description: "Holds a 20 mm shelf.\nPrint flat.".into(),
             preview: Some(PreviewImage::from_png(png(64, 48)).unwrap()),
+            capture_on_save: true,
         };
         let edits = edits(session.document(), &info).unwrap();
         session
@@ -406,6 +449,7 @@ mod tests {
             name: "Shelf bracket".into(),
             description: "Two screws".into(),
             preview: Some(PreviewImage::from_png(png(8, 8)).unwrap()),
+            capture_on_save: true,
         };
         let edited = plain.edited(&edits(&plain, &info).unwrap()).unwrap();
         let without = ProjectFile::new(plain).unwrap();
@@ -437,6 +481,71 @@ mod tests {
         assert!(
             project_file::card(&mut corrupt.as_slice(), FileLimits::default(), &supported).is_err(),
             "the card checks the canonical source checksum"
+        );
+    }
+    #[test]
+    fn save_time_preview_replacement_has_no_undo_entry_and_survives_undo_redo() {
+        let mut session = Session::new(Document::new("Plate").unwrap()).unwrap();
+        let mut info = read(session.document()).unwrap();
+        info.description = "Before".into();
+        session
+            .apply(Request {
+                expected_revision: 0,
+                actor: Actor::local(Channel::Ui),
+                label: "Describe".into(),
+                edits: edits(session.document(), &info).unwrap(),
+            })
+            .unwrap();
+        let image = PreviewImage::from_png(png(32, 24)).unwrap();
+        let revision = session.revision();
+        session
+            .replace_file_preview(Some(image.clone()), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.revision(), revision + 1);
+        assert_eq!(
+            read(session.document()).unwrap().preview,
+            Some(image.clone())
+        );
+        assert_eq!(read(session.document()).unwrap().description, "Before");
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert!(!session.can_undo(), "the capture added no Undo entry");
+        let undone = read(session.document()).unwrap();
+        assert_eq!(undone.description, "");
+        assert_eq!(
+            undone.preview,
+            Some(image.clone()),
+            "Undo keeps the newest preview"
+        );
+        session
+            .redo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(
+            read(session.document()).unwrap().preview,
+            Some(image.clone())
+        );
+        // Replacing with the identical image is a no-op.
+        let revision = session.revision();
+        session
+            .replace_file_preview(Some(image), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.revision(), revision);
+    }
+    #[test]
+    fn capture_setting_round_trips_and_defaults_on() {
+        let document = Document::new("Toggle").unwrap();
+        assert!(read(&document).unwrap().capture_on_save);
+        let mut info = read(&document).unwrap();
+        info.capture_on_save = false;
+        let edited = document.edited(&edits(&document, &info).unwrap()).unwrap();
+        assert!(!read(&edited).unwrap().capture_on_save);
+        info.capture_on_save = true;
+        let back = edited.edited(&edits(&edited, &info).unwrap()).unwrap();
+        assert!(read(&back).unwrap().capture_on_save);
+        assert!(
+            !back.entities().any(|e| matches!(&e.data, EntityData::Extension { definition, .. } if definition.type_id == FILE_INFO_TYPE)),
+            "default information needs no record"
         );
     }
 }

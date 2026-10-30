@@ -364,6 +364,47 @@ impl Session {
         });
         Ok(change)
     }
+    /// Replace the file preview image (CAD-141 save-time capture) without an
+    /// Undo entry. The preview is presentation state: it is written into the
+    /// current source and into every Undo/Redo snapshot, so Undo and Redo never
+    /// bring back an older picture and never make the file dirty by themselves.
+    /// The revision advances so outstanding previews and editors revalidate.
+    pub fn replace_file_preview(
+        &mut self,
+        preview: Option<crate::project_file::info::PreviewImage>,
+        actor: Actor,
+    ) -> Result<Change, CommandError> {
+        Self::validate_actor(&actor)?;
+        let invalid = |message: String| CommandError::new(ErrorCode::InvalidRequest, message);
+        let document = crate::project_file::info::with_preview(self.document(), preview.clone())
+            .map_err(invalid)?;
+        if &document == self.document() {
+            return difference(self.document(), self.document(), self.revision);
+        }
+        let evaluated = parameters::evaluate(&document)?;
+        let revision = self.next_revision()?;
+        let change = difference(self.document(), &evaluated.document, revision)?;
+        for history in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            for snapshot in [&mut history.before, &mut history.after] {
+                // A snapshot whose information cannot be edited (newer schema)
+                // keeps its own preview.
+                if let Ok(updated) =
+                    crate::project_file::info::with_preview(snapshot, preview.clone())
+                {
+                    *snapshot = updated;
+                }
+            }
+        }
+        self.current = evaluated;
+        self.revision = revision;
+        self.record(Activity {
+            actor,
+            label: "Capture file preview".into(),
+            kind: ActivityKind::Apply,
+            change: change.clone(),
+        });
+        Ok(change)
+    }
     pub fn apply(&mut self, request: Request) -> Result<Change, CommandError> {
         let prepared = self.prepare(request)?;
         self.commit(prepared)
