@@ -35,6 +35,10 @@ mod model_target_selection;
 #[cfg(test)]
 #[path = "sketch_scale_host_tests.rs"]
 mod scale_host_tests;
+// Pure snapping/reference logic (CAD-136); canvas integration pending.
+#[allow(dead_code)]
+#[path = "sketch_snap.rs"]
+mod snap;
 #[path = "sketch_symbol_host.rs"]
 mod symbol_host;
 #[path = "sketch_transfer_host.rs"]
