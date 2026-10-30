@@ -1,11 +1,13 @@
-//! Sketch → Common → Text (CAD-142). A click places the Inspector's string,
-//! cap height, rotation and alignment at the baseline origin through the
-//! shared `multicad_solver::prepare_text` transaction (one Undo step). The
-//! placed text, or one chosen from the Inspector list, is edited there
-//! (string, height, position, rotation, alignment) with Apply text as one
-//! further transaction. Refusals change nothing.
+//! Sketch → Common → Text (CAD-142, CAD-149). A click places the Inspector's
+//! text (font, size, anchor, line alignment, rotation) with its anchor at the
+//! clicked point, through the shared `multicad_solver::prepare_text`
+//! transaction (one Undo step). Clicking a letter of placed text, with no tool
+//! or with the Text tool, selects that text and opens it here for editing;
+//! Apply text is one further transaction. Refusals change nothing.
 use super::*;
-use multicad_core::constraint_sketch::text::{SketchText, TextAlignment, TextOperation, TextStyle};
+use multicad_core::constraint_sketch::text::{
+    SketchText, TextAlignment, TextAnchor, TextFont, TextOperation, TextStyle, text_at,
+};
 
 /// Inspector state of the Text tool; never canonical source.
 pub(super) struct TextTool {
@@ -15,12 +17,19 @@ pub(super) struct TextTool {
 }
 impl Default for TextTool {
     fn default() -> Self {
+        let mut draft = TextStyle::new("Text", 5., [0., 0.]);
+        // The anchor defaults to the block center, as the user asked for a
+        // text size and its center position.
+        draft.anchor = TextAnchor::Center;
+        draft.alignment = TextAlignment::Center;
         Self {
-            draft: TextStyle::new("Text", 5., [0., 0.]),
+            draft,
             editing: None,
         }
     }
 }
+
+const SELECTED: Color32 = Color32::from_rgb(255, 176, 64);
 
 impl SketchEditor {
     fn sketch_texts(&self, session: &Session) -> Vec<SketchText> {
@@ -32,15 +41,63 @@ impl SketchEditor {
             .map(|(source, _, _)| source.sketch.texts)
             .unwrap_or_default()
     }
+    /// Open a placed text in the Text Inspector for editing.
+    fn open_text(&mut self, text: &SketchText) {
+        self.text_tool.editing = Some(text.id);
+        self.text_tool.draft = text.style.clone();
+        self.message = format!(
+            "Text \"{}\" selected · edit it in the Inspector · Apply text commits",
+            text.style.text.replace('\n', " ⏎ ")
+        );
+    }
+    /// Click selection: a click on a glyph outline (`curve` is one of a
+    /// text's derived contours) or inside a letter selects that text, switches
+    /// to the Text tool and opens it for editing. Returns whether it did.
+    pub(super) fn select_text_at(
+        &mut self,
+        session: &Session,
+        curve: Option<EntityId>,
+        point: Option<[f64; 2]>,
+    ) -> bool {
+        let texts = self.sketch_texts(session);
+        let hit = curve
+            .and_then(|curve| texts.iter().find(|t| t.owns_contour(curve)).map(|t| t.id))
+            .or_else(|| point.and_then(|point| text_at(&texts, point)));
+        let Some(text) = hit.and_then(|id| texts.into_iter().find(|t| t.id == id)) else {
+            return false;
+        };
+        if let Err(error) = self.set_tool(DrawTool::Text) {
+            self.message = error;
+            return true;
+        }
+        self.open_text(&text);
+        true
+    }
     pub(super) fn text_tool_ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
         let draft = &mut self.text_tool.draft;
+        ui.label("Text");
+        ui.add(
+            egui::TextEdit::multiline(&mut draft.text)
+                .desired_rows(2)
+                .desired_width(180.),
+        )
+        .on_hover_text("Printable ASCII or ÄÖÜäöüßéèàç°±µ · Enter starts a new line");
         ui.horizontal(|ui| {
-            ui.label("Text");
-            ui.add(egui::TextEdit::singleline(&mut draft.text).desired_width(140.))
-                .on_hover_text("One line of printable ASCII or ÄÖÜäöüßéèàç°±µ");
-        });
+            ui.label("Font");
+            egui::ComboBox::from_id_salt("sketch-text-font")
+                .selected_text(draft.font.label())
+                .show_ui(ui, |ui| {
+                    for font in TextFont::ALL {
+                        ui.selectable_value(&mut draft.font, font, font.label());
+                    }
+                });
+        })
+        .response
+        .on_hover_text(
+            "Bundled vector outline fonts: Cantarell (proportional, OFL) or Hack (monospaced)",
+        );
         ui.horizontal(|ui| {
-            ui.label("Height");
+            ui.label("Size");
             ui.add(
                 egui::DragValue::new(&mut draft.height_mm)
                     .range(0.1..=10_000.0)
@@ -50,14 +107,22 @@ impl SketchEditor {
             .on_hover_text("Cap height: the height of capital letters such as H");
         });
         ui.horizontal(|ui| {
-            ui.label("Rotation");
-            ui.add(
-                egui::DragValue::new(&mut draft.rotation_deg)
-                    .range(-360.0..=360.0)
-                    .speed(1.)
-                    .suffix("°"),
-            );
-        });
+            ui.label("Anchor");
+            egui::Grid::new("sketch-text-anchor")
+                .spacing([2., 2.])
+                .show(ui, |ui| {
+                    for (index, anchor) in TextAnchor::ALL.into_iter().enumerate() {
+                        ui.selectable_value(&mut draft.anchor, anchor, "◼")
+                            .on_hover_text(anchor.label());
+                        if index % 3 == 2 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            ui.small(draft.anchor.label());
+        })
+        .response
+        .on_hover_text("The point of the text block that sits at the anchor position");
         ui.horizontal(|ui| {
             ui.label("Align");
             for (alignment, label) in [
@@ -67,19 +132,31 @@ impl SketchEditor {
             ] {
                 ui.selectable_value(&mut draft.alignment, alignment, label);
             }
+        })
+        .response
+        .on_hover_text("Alignment of each line inside the text block");
+        ui.horizontal(|ui| {
+            ui.label("Rotation");
+            ui.add(
+                egui::DragValue::new(&mut draft.rotation_deg)
+                    .range(-360.0..=360.0)
+                    .speed(1.)
+                    .suffix("°"),
+            )
+            .on_hover_text("Counterclockwise about the anchor");
         });
-        ui.small("Font: Hack Regular (bundled). Outlines are exact closed profiles.");
+        ui.small("Outlines are exact closed profiles. A click places the anchor.");
         if let Some(editing) = self.text_tool.editing {
             let draft = &mut self.text_tool.draft;
             ui.horizontal(|ui| {
                 ui.label("Position");
-                for value in &mut draft.origin_mm {
+                for value in &mut draft.position_mm {
                     ui.add(egui::DragValue::new(value).speed(0.1).suffix(" mm"));
                 }
             })
             .response
-            .on_hover_text("Baseline anchor in sketch coordinates");
-            ui.small("Editing the selected text · a click places another text");
+            .on_hover_text("Anchor position in sketch coordinates");
+            ui.small("Editing the selected text · click empty space to place another");
             ui.horizontal(|ui| {
                 if ui.button("Apply text").clicked() {
                     let style = self.text_tool.draft.clone();
@@ -111,20 +188,23 @@ impl SketchEditor {
         }
         let texts = self.sketch_texts(session);
         if !texts.is_empty() {
-            ui.small("Placed texts");
+            ui.small("Placed texts · or click a letter in the view");
             for text in texts {
                 ui.horizontal(|ui| {
                     let selected = self.text_tool.editing == Some(text.id);
                     if ui
                         .selectable_label(
                             selected,
-                            format!("\"{}\" · {} mm", text.style.text, text.style.height_mm),
+                            format!(
+                                "\"{}\" · {} mm",
+                                text.style.text.replace('\n', " ⏎ "),
+                                text.style.height_mm
+                            ),
                         )
                         .on_hover_text("Edit this text in the fields above")
                         .clicked()
                     {
-                        self.text_tool.editing = Some(text.id);
-                        self.text_tool.draft = text.style.clone();
+                        self.open_text(&text);
                     }
                 });
             }
@@ -159,44 +239,64 @@ impl SketchEditor {
         self.revision = session.revision();
         Ok(prepared.text)
     }
+    /// Display-only outline and anchor marker of one text.
+    fn paint_text(
+        &self,
+        painter: &egui::Painter,
+        input: &draw_modes::ModePointer,
+        text: &SketchText,
+        color: Color32,
+    ) {
+        let Ok(contours) = text.contours() else {
+            return;
+        };
+        for contour in contours {
+            for pair in contour.samples(4).windows(2) {
+                if let Some(segment) = self.camera.segment(
+                    input.frame.point(pair[0]),
+                    input.frame.point(pair[1]),
+                    input.rect,
+                ) {
+                    painter.line_segment(segment, Stroke::new(1., color));
+                }
+            }
+        }
+        let anchor = self.camera.project(
+            input.frame.point(text.anchor_mm()).map(|v| v as f32),
+            input.rect,
+        );
+        painter.circle_stroke(Pos2::new(anchor[0], anchor[1]), 4., Stroke::new(1.5, color));
+    }
     pub(super) fn text_pointer(
         &mut self,
         painter: &egui::Painter,
         session: &mut Session,
         input: draw_modes::ModePointer,
     ) {
+        let texts = self.sketch_texts(session);
+        if let Some(editing) = self
+            .text_tool
+            .editing
+            .and_then(|id| texts.iter().find(|t| t.id == id))
+        {
+            self.paint_text(painter, &input, editing, SELECTED);
+        }
+        // A letter under the pointer is selected by a click, not overlaid.
+        if let Some(hovered) = text_at(&texts, input.point) {
+            if input.clicked
+                && let Some(text) = texts.iter().find(|t| t.id == hovered)
+            {
+                self.open_text(text);
+            }
+            return;
+        }
         let mut style = self.text_tool.draft.clone();
-        style.origin_mm = input.point;
+        style.position_mm = input.point;
         let ghost = SketchText {
             id: self.draw_preview_id,
             style: style.clone(),
         };
-        // Display-only preview samples of the exact quadratic spans.
-        if let Ok(contours) = ghost.contours() {
-            for contour in contours {
-                let mut previous: Option<[f64; 2]> = None;
-                for span in contour.poles.windows(3).step_by(2) {
-                    for step in 0..=4 {
-                        let t = f64::from(step) / 4.;
-                        let p = std::array::from_fn(|i| {
-                            (1. - t) * (1. - t) * span[0][i]
-                                + 2. * t * (1. - t) * span[1][i]
-                                + t * t * span[2][i]
-                        });
-                        if let Some(a) = previous
-                            && let Some(segment) = self.camera.segment(
-                                input.frame.point(a),
-                                input.frame.point(p),
-                                input.rect,
-                            )
-                        {
-                            painter.line_segment(segment, Stroke::new(1., Color32::LIGHT_YELLOW));
-                        }
-                        previous = Some(p);
-                    }
-                }
-            }
-        }
+        self.paint_text(painter, &input, &ghost, Color32::LIGHT_YELLOW);
         if !input.clicked {
             return;
         }

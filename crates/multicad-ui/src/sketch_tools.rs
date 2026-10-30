@@ -126,7 +126,7 @@ impl DrawTool {
                 "sketch-chamfer: set the setback in the Inspector, then click a corner shared by two lines"
             }
             Self::Text => {
-                "text: set the string and cap height in the Inspector, then click the baseline origin"
+                "text: set the string, font, size, anchor and alignment in the Inspector, then click the anchor position"
             }
         }
     }
