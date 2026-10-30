@@ -205,7 +205,7 @@ fn viewport_modifier_click_adds_parts_and_scene_refresh_retains_only_existing_id
                 if response.clicked() {
                     assert!(interaction.hovered_instance().is_some());
                     let click_modifiers = crate::selection_input::click_modifiers(ui, &response);
-                    if click_modifiers.command || click_modifiers.shift {
+                    if click_modifiers.shift {
                         assert_eq!(interaction.hovered_instance(), interaction.range_anchor);
                         assert!(!interaction.has_topology_selection());
                     } else {
@@ -220,7 +220,8 @@ fn viewport_modifier_click_adds_parts_and_scene_refresh_retains_only_existing_id
     frame(scene.clone(), vec![]);
     // run_ui's root inset is zero; the camera uses the allocated viewport bounds.
     let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(600., 400.));
-    for (index, modifiers) in [(0, egui::Modifiers::NONE), (2, egui::Modifiers::COMMAND)] {
+    // Shift adds parts; Command on a face toggles faces instead (CAD-152).
+    for (index, modifiers) in [(0, egui::Modifiers::NONE), (2, egui::Modifiers::SHIFT)] {
         let p = camera.project([index as f32 * 30. + 10., 6., 8.], rect);
         let p = Pos2::new(p[0], p[1]);
         for pressed in [true, false] {
@@ -276,6 +277,175 @@ fn viewport_modifier_click_adds_parts_and_scene_refresh_retains_only_existing_id
     );
     assert!(frame(other, vec![]).is_empty());
     assert_eq!(session.revision(), 0);
+}
+fn viewer_frame(
+    ctx: &egui::Context,
+    interaction: &mut Interaction,
+    scene: Arc<Scene>,
+    camera: Camera,
+    events: Vec<egui::Event>,
+) {
+    ctx.run_ui(
+        egui::RawInput {
+            focused: true,
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(600., 400.))),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            let (_, response) =
+                ui.allocate_exact_size(egui::vec2(600., 400.), egui::Sense::click());
+            interaction.show(
+                ui,
+                &response,
+                scene.clone(),
+                camera,
+                DisplayStyle::Filled,
+                true,
+            );
+        },
+    )
+    .drop_without_applying_deltas();
+}
+fn viewer_click(
+    ctx: &egui::Context,
+    interaction: &mut Interaction,
+    scene: &Arc<Scene>,
+    camera: Camera,
+    p: Pos2,
+    modifiers: egui::Modifiers,
+) {
+    for pressed in [true, false] {
+        viewer_frame(
+            ctx,
+            interaction,
+            scene.clone(),
+            camera,
+            vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers,
+                },
+                egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+            ],
+        );
+    }
+}
+#[test]
+fn command_click_toggles_faces_plain_click_replaces_and_stale_faces_are_dropped() {
+    let (session, scene, ids) = fixture();
+    let before = session.document().clone();
+    let ctx = egui::Context::default();
+    let mut interaction = Interaction::default();
+    let camera = Camera {
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        scale: 2.,
+        target: [70., 6., 8.],
+        perspective: false,
+    };
+    let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(600., 400.));
+    let top = |index: usize| {
+        let p = camera.project([index as f32 * 30. + 10., 6., 8.], rect);
+        Pos2::new(p[0], p[1])
+    };
+    let faces = |interaction: &Interaction| -> Vec<EntityId> {
+        interaction
+            .selected_faces()
+            .iter()
+            .inspect(|hit| assert_eq!(hit.key.kind, TopologyKind::Face))
+            .map(|hit| hit.instance)
+            .collect()
+    };
+    viewer_frame(&ctx, &mut interaction, scene.clone(), camera, vec![]);
+    let command = egui::Modifiers::COMMAND;
+    let none = egui::Modifiers::NONE;
+    // A plain click selects one face; Command-click adds a face of another body.
+    viewer_click(&ctx, &mut interaction, &scene, camera, top(0), none);
+    assert_eq!(faces(&interaction), vec![ids[0]]);
+    viewer_click(&ctx, &mut interaction, &scene, camera, top(2), command);
+    assert_eq!(faces(&interaction), vec![ids[0], ids[2]]);
+    assert_eq!(interaction.selected_ids(), BTreeSet::from([ids[0], ids[2]]));
+    assert!(interaction.has_topology_selection());
+    // The primary single-hit view is the most recently added face.
+    assert_eq!(interaction.selected_hit().unwrap().instance, ids[2]);
+    // Command-click on a selected face removes it; again adds it back.
+    viewer_click(&ctx, &mut interaction, &scene, camera, top(2), command);
+    assert_eq!(faces(&interaction), vec![ids[0]]);
+    viewer_click(&ctx, &mut interaction, &scene, camera, top(2), command);
+    viewer_click(&ctx, &mut interaction, &scene, camera, top(3), command);
+    assert_eq!(faces(&interaction), vec![ids[0], ids[2], ids[3]]);
+    // Display refinement of the same revision keeps faces that still exist.
+    let refined = Arc::new(
+        Scene::new(
+            SceneStamp {
+                generation: 2,
+                ..scene.stamp()
+            },
+            scene.geometries().values().cloned().collect(),
+            scene
+                .instances()
+                .iter()
+                .filter(|i| i.id != ids[3])
+                .cloned()
+                .collect(),
+        )
+        .unwrap(),
+    );
+    viewer_frame(&ctx, &mut interaction, refined.clone(), camera, vec![]);
+    assert_eq!(faces(&interaction), vec![ids[0], ids[2]]);
+    assert!(
+        interaction
+            .selected_faces()
+            .iter()
+            .all(|hit| hit.stamp == refined.stamp())
+    );
+    // A plain click replaces the set with one face.
+    viewer_click(&ctx, &mut interaction, &refined, camera, top(4), none);
+    assert_eq!(faces(&interaction), vec![ids[4]]);
+    // Shift-click still builds a part set and drops the face set.
+    viewer_click(&ctx, &mut interaction, &refined, camera, top(0), command);
+    viewer_click(
+        &ctx,
+        &mut interaction,
+        &refined,
+        camera,
+        top(1),
+        egui::Modifiers::SHIFT,
+    );
+    assert!(interaction.selected_faces().is_empty());
+    assert_eq!(
+        interaction.selected_ids(),
+        BTreeSet::from([ids[0], ids[1], ids[4]])
+    );
+    // A new source revision clears faces that cannot be revalidated.
+    viewer_click(&ctx, &mut interaction, &refined, camera, top(0), none);
+    viewer_click(&ctx, &mut interaction, &refined, camera, top(2), command);
+    assert_eq!(faces(&interaction).len(), 2);
+    let edited = Arc::new(
+        Scene::new(
+            SceneStamp {
+                revision: 1,
+                generation: 3,
+                ..scene.stamp()
+            },
+            scene.geometries().values().cloned().collect(),
+            scene.instances().to_vec(),
+        )
+        .unwrap(),
+    );
+    viewer_frame(&ctx, &mut interaction, edited, camera, vec![]);
+    assert!(interaction.selected_faces().is_empty());
+    // Escape reaches the host as clear().
+    viewer_click(&ctx, &mut interaction, &scene, camera, top(0), none);
+    interaction.clear();
+    assert!(interaction.selected_faces().is_empty());
+    assert!(!interaction.has_topology_selection());
+    assert_eq!(session.document(), &before);
 }
 #[test]
 fn linked_duplication_is_one_undoable_transaction_and_rejects_stale_selection() {

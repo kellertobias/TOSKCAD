@@ -149,6 +149,19 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
         .unwrap()
         .key
         .ordinal;
+    // CAD-152: a second face of the same instance comes from a highlight-only
+    // overlay record; listing a side face first proves the overlay path.
+    let side = solid
+        .topology_snapshot(id, 0)
+        .unwrap()
+        .elements
+        .into_iter()
+        .find(|e| {
+            e.key.kind == multicad_core::references::TopologyKind::Face && e.key.ordinal != cap
+        })
+        .unwrap()
+        .key
+        .ordinal;
     let mut images = vec![];
     for ((perspective, reverse, selection, oblique, style), section) in [
         (false, false, None, false, DisplayStyle::Filled),
@@ -176,6 +189,16 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             Some(Selection::Parts(Arc::new(BTreeSet::from([
                 near.id, far.id,
             ])))),
+            false,
+            DisplayStyle::Filled,
+        ),
+        (
+            true,
+            false,
+            Some(Selection::Faces(Arc::new(vec![
+                (near.id, side),
+                (near.id, cap),
+            ]))),
             false,
             DisplayStyle::Filled,
         ),
@@ -239,7 +262,12 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
         );
         assert_eq!(renderer.meshes.len(), 1);
         assert_eq!(renderer.draws.len(), 1);
-        assert_eq!(renderer.draws[0].count, 2);
+        // Two instances plus one overlay record per extra face of an instance.
+        let overlays = match &selection {
+            Some(Selection::Faces(faces)) => faces.len() as u32 - 1,
+            _ => 0,
+        };
+        assert_eq!(renderer.draws[0].count, 2 + overlays);
         if let Some(buffer) = &first_buffer {
             assert_eq!(
                 buffer, &renderer.meshes[&id].vertices,

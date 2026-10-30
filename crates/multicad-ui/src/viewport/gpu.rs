@@ -21,9 +21,20 @@ pub enum Selection {
     References([Option<ReferenceSelection>; 2]),
     Part(EntityId),
     Parts(Arc<BTreeSet<EntityId>>),
-    Face { instance: EntityId, ordinal: u32 },
-    Edge { instance: EntityId, ordinal: u32 },
-    Vertex { instance: EntityId, ordinal: u32 },
+    Face {
+        instance: EntityId,
+        ordinal: u32,
+    },
+    /// Several faces (CAD-152 Command/Control-click set), any instances.
+    Faces(Arc<Vec<(EntityId, u32)>>),
+    Edge {
+        instance: EntityId,
+        ordinal: u32,
+    },
+    Vertex {
+        instance: EntityId,
+        ordinal: u32,
+    },
 }
 fn reference_code(reference: Option<ReferenceSelection>, instance: EntityId) -> u32 {
     reference
@@ -232,7 +243,9 @@ impl Renderer {
             }
             for (id, instances) in groups {
                 let mut bytes = Vec::with_capacity(instances.len() * 80);
+                let mut records = 0;
                 for instance in &instances {
+                    records += 1;
                     for row in instance.transform.rows() {
                         floats(&mut bytes, row);
                     }
@@ -263,11 +276,31 @@ impl Renderer {
                             0,
                         ];
                     }
+                    let mut extra = vec![];
+                    if let Some(Selection::Faces(faces)) = &selection {
+                        let mut own = faces
+                            .iter()
+                            .filter(|(id, _)| *id == instance.id)
+                            .map(|(_, ordinal)| *ordinal);
+                        emphasis[0] = own.next().unwrap_or(u32::MAX);
+                        extra.extend(own);
+                    }
                     words(&mut bytes, emphasis);
+                    // Further faces of one instance are highlight-only overlay
+                    // records (w = 1): identical placement at LessEqual depth,
+                    // every other triangle and edge is discarded in the shader.
+                    for ordinal in extra {
+                        for row in instance.transform.rows() {
+                            floats(&mut bytes, row);
+                        }
+                        floats(&mut bytes, instance.color.map(|v| v as f32 / 255.));
+                        words(&mut bytes, [ordinal, 0, u32::MAX, 1]);
+                        records += 1;
+                    }
                 }
                 self.draws.push(Draw {
                     geometry: id,
-                    count: instances.len() as u32,
+                    count: records,
                     instances: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("CAD instance placements"),
                         contents: &bytes,

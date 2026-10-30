@@ -17,6 +17,10 @@ use std::{collections::BTreeSet, sync::Arc};
 #[derive(Default)]
 pub struct Interaction {
     selected: Option<Hit>,
+    /// Command (macOS) / Control-click face set (CAD-152). Empty for a plain
+    /// single selection; otherwise every face in click order, and `selected`
+    /// is the last one so single-hit consumers keep a primary face.
+    faces: Vec<Hit>,
     hovered: Option<Hit>,
     parts: Arc<BTreeSet<EntityId>>,
     range_anchor: Option<EntityId>,
@@ -40,6 +44,7 @@ impl Interaction {
     }
     pub fn clear(&mut self) {
         self.selected = None;
+        self.faces.clear();
         self.hovered = None;
         Arc::make_mut(&mut self.parts).clear();
         self.range_anchor = None;
@@ -51,6 +56,44 @@ impl Interaction {
     }
     pub fn selected_hit(&self) -> Option<&Hit> {
         self.selected.as_ref()
+    }
+    /// Every selected face: the Command/Control-click set, or the single
+    /// selected face. Edges, vertices and part sets are not included.
+    pub fn selected_faces(&self) -> Vec<Hit> {
+        if !self.faces.is_empty() {
+            return self.faces.clone();
+        }
+        self.selected
+            .iter()
+            .filter(|hit| hit.key.kind == TopologyKind::Face)
+            .cloned()
+            .collect()
+    }
+    /// Command/Control-click on a face adds it to the face set, or removes it
+    /// when it is already selected. A current single face selection seeds
+    /// the set; part sets are replaced.
+    fn toggle_face(&mut self, hit: Hit) {
+        if self.faces.is_empty()
+            && let Some(current) = self
+                .selected
+                .take()
+                .filter(|h| h.key.kind == TopologyKind::Face)
+        {
+            self.faces.push(current);
+        }
+        if let Some(index) = self
+            .faces
+            .iter()
+            .position(|f| f.instance == hit.instance && f.key == hit.key)
+        {
+            self.faces.remove(index);
+        } else {
+            self.faces.push(hit);
+        }
+        self.selected = self.faces.last().cloned();
+        Arc::make_mut(&mut self.parts).clear();
+        self.range_anchor = None;
+        self.action_error = None;
     }
     pub fn hovered_instance(&self) -> Option<EntityId> {
         self.hovered.as_ref().map(|hit| hit.instance)
@@ -66,6 +109,7 @@ impl Interaction {
         if let Some(hit) = &self.selected {
             ids.insert(hit.instance);
         }
+        ids.extend(self.faces.iter().map(|hit| hit.instance));
         ids
     }
     /// Synchronize canonical tree selection with visible placed occurrences.
@@ -114,11 +158,13 @@ impl Interaction {
     }
     fn select_part(&mut self, id: EntityId, toggle: bool) {
         let old = self.selected.take().map(|hit| hit.instance);
+        let faces: Vec<_> = self.faces.drain(..).map(|hit| hit.instance).collect();
         let parts = Arc::make_mut(&mut self.parts);
         if !toggle {
             parts.clear();
-        } else if let Some(old) = old {
-            parts.insert(old);
+        } else {
+            parts.extend(old);
+            parts.extend(faces);
         }
         if !toggle || !parts.remove(&id) {
             parts.insert(id);
@@ -152,6 +198,7 @@ impl Interaction {
                         let modifiers=crate::selection_input::click_modifiers(ui, &response);
                         if modifiers.shift && let Some(start)=self.range_anchor.and_then(|id|rows.iter().position(|row|row.id==id)) {
                             self.selected=None;
+                            self.faces.clear();
                             let parts=Arc::make_mut(&mut self.parts);
                             if !modifiers.command {parts.clear();}
                             parts.extend(rows[start.min(i)..=start.max(i)].iter().map(|row|row.id));
@@ -225,7 +272,10 @@ impl Interaction {
             return;
         };
         ui.strong(&entity.name);
-        if let Some(hit) = &self.selected {
+        if self.faces.len() > 1 {
+            ui.label(format!("{} faces selected", self.faces.len()));
+            ui.small("Command/Control-click adds or removes a face · Escape clears");
+        } else if let Some(hit) = &self.selected {
             ui.label(format!("{:?}", hit.key.kind));
             if hit.intent.is_none() {
                 ui.small("No unique source reference is available for this selection.");
@@ -450,6 +500,16 @@ impl Interaction {
                     .selected
                     .as_ref()
                     .and_then(|hit| scene.refresh_hit(hit));
+                if !self.faces.is_empty() {
+                    // Display refinement of the same revision: keep faces that
+                    // still resolve; the primary follows the remaining set.
+                    self.faces = self
+                        .faces
+                        .iter()
+                        .filter_map(|hit| scene.refresh_hit(hit))
+                        .collect();
+                    self.selected = self.faces.last().cloned();
+                }
                 Arc::make_mut(&mut self.parts)
                     .retain(|id| scene.instances().iter().any(|i| i.id == *id));
                 self.hovered = None;
@@ -501,6 +561,14 @@ impl Interaction {
             if response.clicked() {
                 let modifiers = crate::selection_input::click_modifiers(ui, response);
                 if let Some(hit) = self.hovered.clone()
+                    && modifiers.command
+                    && !modifiers.shift
+                    && self.filter != PickFilter::Parts
+                    && hit.key.kind == TopologyKind::Face
+                {
+                    // CAD-152: Command (macOS) / Control toggles faces.
+                    self.toggle_face(hit);
+                } else if let Some(hit) = self.hovered.clone()
                     && (modifiers.command || modifiers.shift || self.filter == PickFilter::Parts)
                 {
                     self.select_part(hit.instance, modifiers.command || modifiers.shift);
@@ -509,6 +577,7 @@ impl Interaction {
                     self.hovered = Some(hit);
                 } else {
                     self.selected = self.hovered.clone();
+                    self.faces.clear();
                     Arc::make_mut(&mut self.parts).clear();
                     self.range_anchor = None;
                 }
@@ -538,11 +607,25 @@ impl Interaction {
                 ordinal: h.key.ordinal,
             },
         });
-        let selection = if self.parts.is_empty() {
-            selection
-        } else {
-            Some(Selection::Parts(self.parts.clone()))
-        };
+        let selection =
+            if !self.faces.is_empty() {
+                let mut faces: Vec<_> = self
+                    .faces
+                    .iter()
+                    .map(|hit| (hit.instance, hit.key.ordinal))
+                    .collect();
+                if let Some(hover) = self.hovered.as_ref().filter(|h| {
+                    h.key.kind == TopologyKind::Face && self.filter != PickFilter::Parts
+                }) && !faces.contains(&(hover.instance, hover.key.ordinal))
+                {
+                    faces.push((hover.instance, hover.key.ordinal));
+                }
+                Some(Selection::Faces(Arc::new(faces)))
+            } else if self.parts.is_empty() {
+                selection
+            } else {
+                Some(Selection::Parts(self.parts.clone()))
+            };
         let bounds = scene.world_bounds();
         paint_scene_section(
             ui.painter(),
