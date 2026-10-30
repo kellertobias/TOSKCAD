@@ -9,6 +9,7 @@ mod files;
 mod library;
 mod mechanical_imports;
 mod native_picker;
+mod print;
 mod save_preview;
 mod symbol_files;
 mod welcome;
@@ -50,6 +51,7 @@ pub struct Project {
     pub sketch: SketchEditor,
     pub drawings: crate::drawings::DrawingEditor,
     pub exchange: crate::exchange::ExportWorkspace,
+    pub print: crate::print::PrintWorkspace,
     measure_return_view: Option<(Mode, usize)>,
     pub path: Option<PathBuf>,
     pub scene: crate::viewport::SceneFeed,
@@ -76,6 +78,7 @@ impl Project {
             sketch: SketchEditor::default(),
             drawings: Default::default(),
             exchange: Default::default(),
+            print: Default::default(),
             measure_return_view: None,
             path: None,
             scene: Default::default(),
@@ -112,6 +115,7 @@ enum FileAction {
     Artwork,
     PreviewImage,
     Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
+    PrintPackage,
 }
 struct CommandRecord {
     input: String,
@@ -168,6 +172,7 @@ pub struct Application {
     measurement_backends: Option<crate::inspection::MeasurementBackendFactory>,
     assembly_queries: Option<crate::assembly::AssemblyInspectionBackendFactory>,
     export_backends: Option<crate::exchange::BackendFactory>,
+    print_backends: Option<crate::print::PrintBackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
     repair_set_checker: Option<crate::reference_repair_set::RepairSetChecker>,
     external_control: Option<Box<dyn external_control::ExternalControl>>,
@@ -231,6 +236,7 @@ impl Application {
             measurement_backends: None,
             assembly_queries: None,
             export_backends: None,
+            print_backends: None,
             external_control: None,
             control_bindings: BTreeMap::new(),
             trusted_clients: Default::default(),
@@ -246,7 +252,7 @@ impl Application {
         self.projects
             .iter()
             .filter(|p| Some(p.local_id) != self.welcome_placeholder)
-            .any(|p| p.dirty() || p.exchange.writing())
+            .any(|p| p.dirty() || p.exchange.writing() || p.print.writing())
             || self
                 .pending_files
                 .values()
@@ -294,6 +300,19 @@ impl Application {
             project.exchange.set_backend(factory())?;
         }
         self.export_backends = Some(factory);
+        Ok(())
+    }
+    pub fn set_print_backends(
+        &mut self,
+        factory: crate::print::PrintBackendFactory,
+    ) -> Result<(), String> {
+        if self.projects.iter().any(|p| p.print.pending()) {
+            return Err("Wait for accepted print jobs before replacing the print service".into());
+        }
+        for project in &mut self.projects {
+            project.print.set_backend(factory())?;
+        }
+        self.print_backends = Some(factory);
         Ok(())
     }
     fn export_io_allowed(&self) -> bool {
@@ -482,7 +501,10 @@ impl Application {
             self.cancel_pending_view_restore();
         }
         if self.current().sketch.measurement.active()
-            && matches!(command, Command::Drawing(_) | Command::Export(_))
+            && matches!(
+                command,
+                Command::Drawing(_) | Command::Export(_) | Command::Print(_)
+            )
         {
             self.close_measurement();
         }
@@ -615,6 +637,7 @@ impl Application {
                 self.tab = 0;
                 self.message = message;
             }
+            Command::Print(tool) => self.invoke_print(tool, channel)?,
             Command::Drawing(tool) => {
                 if self.current().editor.dirty() || self.current().sketch.has_pending_edits() {
                     return Err(
@@ -679,8 +702,9 @@ impl Application {
                 }
                 if mode == Mode::Export {
                     let p = self.current_mut();
-                    p.exchange
-                        .capture(p.sketch.export_selection(p.session.document()));
+                    let selection = p.sketch.export_selection(p.session.document());
+                    p.print.capture(selection.clone());
+                    p.exchange.capture(selection);
                 }
                 self.mode = mode;
                 self.tab = 0;
@@ -1249,6 +1273,15 @@ impl Application {
                             tool,
                             crate::exchange::ExportTool::Run | crate::exchange::ExportTool::Preview
                         ))
+            }
+            Command::Print(tool) => {
+                !self.current().editor.dirty()
+                    && !self.current().sketch.has_pending_edits()
+                    && !self.current().drawings.dirty()
+                    && !self.current().exchange.dirty()
+                    && self.current().print.enabled(tool, &self.current().session)
+                    && (tool == crate::print::PrintTool::Cancel
+                        || (self.export_io_allowed() && self.file_action.is_none()))
             }
             Command::Apply | Command::Discard if self.mode == Mode::Export => {
                 self.current().exchange.dirty()
@@ -2058,6 +2091,7 @@ impl Application {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
         }
+        self.poll_print(&ctx);
         self.schedule_recovery(&ctx);
         if let Some(factory) = &self.drawing_backends {
             for project in &mut self.projects {
@@ -2184,6 +2218,8 @@ impl Application {
                             bottom: 8,
                         })
                         .show(ui, |ui| p.editor.show(ui, &p.session));
+                } else if self.mode == Mode::Export && self.print_tab() {
+                    self.show_print(ui);
                 } else if self.mode == Mode::Export {
                     let allow_io = self.export_io_allowed();
                     let p = self.current_mut();

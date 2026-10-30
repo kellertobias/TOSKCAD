@@ -74,6 +74,7 @@ pub enum Command {
     FinishCurve,
     Drawing(crate::drawings::DrawingTool),
     Export(crate::exchange::ExportTool),
+    Print(crate::print::PrintTool),
     Delete,
     Mode(Mode),
     Extension(&'static str),
@@ -378,6 +379,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for tool in crate::print::PrintTool::ALL {
+            registry.tools.push(Tool {
+                id: tool.id(),
+                label: tool.label(),
+                icon: tool.icon(),
+                action: Command::Print(tool),
+                aliases: tool.aliases(),
+            });
+        }
         for (id, label, icon) in [
             ("symbol", "Create symbol", Icon::Library),
             ("library", "Symbol library", Icon::Library),
@@ -392,7 +402,6 @@ impl Default for Registry {
             ("text", "Text / leader", Icon::Sketch),
             ("export-3d", "STEP / OBJ", Icon::Export),
             ("export-2d", "DXF / PDF", Icon::Page),
-            ("print", "3MF package", Icon::Export),
             ("appearance", "Capture render view", Icon::Box),
             ("render-view", "Show render view", Icon::Box),
             ("blender", "Blender handoff", Icon::Export),
@@ -564,7 +573,7 @@ impl Default for Registry {
                             "export-cancel",
                         ],
                     ),
-                    tab("Print", &["print"]),
+                    tab("Print", &["print-preview", "print-write", "print-cancel"]),
                     tab("Render", &["appearance", "render-view", "blender"]),
                 ],
             },

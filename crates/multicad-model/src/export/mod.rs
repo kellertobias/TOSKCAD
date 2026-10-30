@@ -6,6 +6,8 @@ mod render;
 pub use render::{RenderManifest, RenderPackage};
 mod planar;
 pub use planar::DevelopedContourProvider;
+pub mod print;
+pub use print::PrintWorker;
 mod publish;
 pub mod sheet_dxf;
 mod worker;

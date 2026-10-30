@@ -34,7 +34,10 @@ impl Application {
         if self.recents_writing()
             || self.picker_scope.is_some()
             || !self.pending_files.is_empty()
-            || self.projects.iter().any(|p| p.exchange.writing())
+            || self
+                .projects
+                .iter()
+                .any(|p| p.exchange.writing() || p.print.writing())
         {
             return Err("Wait for file and export operations to finish before closing".into());
         }
@@ -57,7 +60,10 @@ impl Application {
         let busy = self.recents_writing()
             || self.picker_scope.is_some()
             || !self.pending_files.is_empty()
-            || self.projects.iter().any(|p| p.exchange.writing());
+            || self
+                .projects
+                .iter()
+                .any(|p| p.exchange.writing() || p.print.writing());
         let response = crate::controls::modal(
             ctx,
             "unsaved-documents",

@@ -10,6 +10,8 @@ pub enum Kind {
     ImportStep,
     ImportKicad,
     PreviewImage,
+    /// Save a 3MF print package from Export → Print.
+    SavePrintPackage,
 }
 #[derive(Clone, Debug)]
 pub struct Request {

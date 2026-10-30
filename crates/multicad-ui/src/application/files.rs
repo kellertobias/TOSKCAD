@@ -190,6 +190,7 @@ impl Application {
                 self.begin_mechanical_import(kind, target, path)
             }
             FileAction::PreviewImage => self.read_preview_image(path),
+            FileAction::PrintPackage => self.submit_print_package(path),
         };
         if let Err(error) = result {
             self.message = error;

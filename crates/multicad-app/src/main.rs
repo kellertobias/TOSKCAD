@@ -11,6 +11,7 @@ mod library;
 mod mcp;
 mod mechanical_imports;
 mod modeling;
+mod print;
 mod recent_projects;
 mod reference_repairs;
 mod self_test;
@@ -129,6 +130,7 @@ fn run_application() -> Result<(), String> {
     app.set_drawing_backends(std::sync::Arc::new(|| Box::new(drawings::Backend::new())));
     app.set_mechanical_import_backend(std::sync::Arc::new(mechanical_imports::Backend));
     app.set_export_backends(std::sync::Arc::new(|| Box::new(exchange::Backend::new())))?;
+    app.set_print_backends(std::sync::Arc::new(|| Box::new(print::Backend::new())))?;
     multicad_ui::launch_with(Box::new(move |context| {
         app.set_file_picker(Box::new(file_picker::NativePicker::new(context)));
         app.set_external_control(Box::new(app_control::WindowControl::new(

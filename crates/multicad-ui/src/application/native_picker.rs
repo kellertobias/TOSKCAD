@@ -68,6 +68,7 @@ impl Application {
                     Kind::ImportKicad
                 }
                 FileAction::PreviewImage => Kind::PreviewImage,
+                FileAction::PrintPackage => Kind::SavePrintPackage,
             },
             directory: self
                 .current()
@@ -78,6 +79,7 @@ impl Application {
             suggested_name: match action {
                 FileAction::SymbolSave(id) => Some(self.symbol_filename(id)?),
                 FileAction::Save => Some(suggested),
+                FileAction::PrintPackage => Some(self.print_package_name()?),
                 _ => None,
             },
         };
@@ -139,6 +141,7 @@ impl Application {
                         self.begin_mechanical_import(kind, target, path)
                     }
                     FileAction::PreviewImage => self.read_preview_image(path),
+                    FileAction::PrintPackage => self.submit_print_package(path),
                 }
             }
             Ok(None) => {
@@ -174,20 +177,25 @@ impl Application {
         if self.replacement.is_some() {
             return;
         }
+        let title = if self.file_action == Some(FileAction::PrintPackage) {
+            "Print package file"
+        } else {
+            "Project file"
+        };
         if self.picker_scope.is_some() {
             // The OS sheet owns its controls. This layer also blocks shortcuts
             // and canvas input on platforms that expose a separate dialog window.
-            crate::controls::modal(ctx, "native-file-picker", "Choose a project file", |ui| {
+            crate::controls::modal(ctx, "native-file-picker", title, |ui| {
                 ui.label("Complete or cancel the operating system file dialog.");
             });
             ctx.request_repaint_after(std::time::Duration::from_millis(32));
         } else if self.file_busy() {
-            crate::controls::modal(ctx, "project-file-progress", "Project file", |ui| {
+            crate::controls::modal(ctx, "project-file-progress", title, |ui| {
                 ui.label(&self.message);
                 ui.spinner();
             });
         } else {
-            let response = crate::controls::modal(ctx, "file-picker-error", "Project file", |ui| {
+            let response = crate::controls::modal(ctx, "file-picker-error", title, |ui| {
                 ui.colored_label(Color32::LIGHT_RED, &self.message);
                 if ui.button("Try file dialog again").clicked() {
                     self.picker_started = false;

@@ -30,6 +30,7 @@ impl FilePicker for NativePicker {
             Kind::ImportStep => "Import or update a STEP file",
             Kind::ImportKicad => "Import or update a KiCad board",
             Kind::PreviewImage => "Choose a PNG preview image",
+            Kind::SavePrintPackage => "Save 3MF print package",
         });
         dialog = match request.kind {
             Kind::ImportSource => dialog.add_filter("Source snapshot", &["json"]),
@@ -37,6 +38,7 @@ impl FilePicker for NativePicker {
             Kind::ImportStep => dialog.add_filter("STEP file", &["step", "stp", "STEP", "STP"]),
             Kind::ImportKicad => dialog.add_filter("KiCad board", &["kicad_pcb"]),
             Kind::PreviewImage => dialog.add_filter("PNG image", &["png"]),
+            Kind::SavePrintPackage => dialog.add_filter("3MF print package", &["3mf"]),
             _ => dialog.add_filter("ToskCAD project", &["multicad"]),
         };
         if let Some(path) = &request.directory {
@@ -49,7 +51,7 @@ impl FilePicker for NativePicker {
         // Poll its future on a bounded worker; AppKit dispatch stays in rfd.
         let future: std::pin::Pin<
             Box<dyn std::future::Future<Output = Option<rfd::FileHandle>> + Send>,
-        > = if request.kind == Kind::SaveProject {
+        > = if matches!(request.kind, Kind::SaveProject | Kind::SavePrintPackage) {
             Box::pin(dialog.save_file())
         } else {
             Box::pin(dialog.pick_file())
@@ -60,8 +62,16 @@ impl FilePicker for NativePicker {
             .spawn(move || {
                 let picked = pollster::block_on(future).map(|file| {
                     let mut path = file.path().to_path_buf();
-                    if request.kind == Kind::SaveProject && path.extension().is_none() {
-                        path.set_extension("multicad");
+                    if path.extension().is_none() {
+                        match request.kind {
+                            Kind::SaveProject => {
+                                path.set_extension("multicad");
+                            }
+                            Kind::SavePrintPackage => {
+                                path.set_extension("3mf");
+                            }
+                            _ => {}
+                        }
                     }
                     path
                 });
