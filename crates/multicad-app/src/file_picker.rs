@@ -27,10 +27,12 @@ impl FilePicker for NativePicker {
             Kind::SaveProject => "Save ToskCAD project",
             Kind::ImportSource => "Import source snapshot",
             Kind::ImportArtwork => "Import DXF or SVG artwork",
+            Kind::PreviewImage => "Choose a PNG preview image",
         });
         dialog = match request.kind {
             Kind::ImportSource => dialog.add_filter("Source snapshot", &["json"]),
             Kind::ImportArtwork => dialog.add_filter("DXF or SVG artwork", &["dxf", "svg"]),
+            Kind::PreviewImage => dialog.add_filter("PNG image", &["png"]),
             _ => dialog.add_filter("ToskCAD project", &["multicad"]),
         };
         if let Some(path) = &request.directory {

@@ -3,6 +3,7 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Vec2};
 use multicad_core::{
     commands::{Actor, Channel, CommandError, ErrorCode, Prepared, Request, Session},
     document::{Definition, Document, Entity, EntityData, EntityId, Link, Mutation},
+    project_file::info::{self, FileInfo},
 };
 use std::collections::BTreeSet;
 const ORDER_TYPE: &str = "core.parameter_table";
@@ -64,6 +65,11 @@ pub struct ParameterEditor {
     pub preview: Option<Prepared>,
     revision: u64,
     guard: Prepared,
+    /// File name, description and preview draft, applied with the table.
+    pub info: FileInfo,
+    info_baseline: FileInfo,
+    /// Set when the file information was written by a newer schema.
+    pub info_locked: Option<String>,
 }
 fn session_guard(session: &Session) -> Prepared {
     session
@@ -85,6 +91,9 @@ impl ParameterEditor {
             preview: None,
             revision: session.revision(),
             guard: session_guard(session),
+            info: FileInfo::default(),
+            info_baseline: FileInfo::default(),
+            info_locked: None,
         };
         value.reload(session);
         value
@@ -131,12 +140,32 @@ impl ParameterEditor {
             .collect();
         self.rows.push(Row::default());
         self.baseline = self.rows.clone();
+        match info::read(session.document()) {
+            Ok(value) => {
+                self.info = value;
+                self.info_locked = None;
+            }
+            Err(error) => {
+                self.info = FileInfo {
+                    name: session.document().name().into(),
+                    ..Default::default()
+                };
+                self.info_locked = Some(error);
+            }
+        }
+        self.info_baseline = self.info.clone();
         self.error = None;
         self.preview = None;
         self.revision = session.revision();
         self.guard = session_guard(session);
     }
     pub fn dirty(&self) -> bool {
+        self.info_dirty() || self.rows_dirty()
+    }
+    pub fn info_dirty(&self) -> bool {
+        self.info != self.info_baseline
+    }
+    fn rows_dirty(&self) -> bool {
         let mut rows = self.rows.iter().filter(|r| !r.empty());
         let mut before = self.baseline.iter().filter(|r| !r.empty());
         loop {
@@ -227,10 +256,28 @@ impl ParameterEditor {
                 Mutation::Insert(entity)
             });
         }
+        let info_error = |message: String| CommandError {
+            code: ErrorCode::InvalidParameter,
+            message,
+            involved: vec![],
+            parameter: None,
+        };
+        let info_changed = self.info_dirty();
+        if info_changed {
+            if let Some(locked) = &self.info_locked {
+                return Err(info_error(locked.clone()));
+            }
+            edits.extend(info::edits(session.document(), &self.info).map_err(info_error)?);
+        }
         session.prepare(Request {
             expected_revision: self.revision,
             actor: Actor::local(channel),
-            label: "Edit parameters".into(),
+            label: if info_changed {
+                "Edit parameters and file information"
+            } else {
+                "Edit parameters"
+            }
+            .into(),
             edits,
         })
     }

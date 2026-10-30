@@ -61,6 +61,7 @@ impl Application {
                 FileAction::Save | FileAction::SymbolSave(_) => Kind::SaveProject,
                 FileAction::Import => Kind::ImportSource,
                 FileAction::Artwork => Kind::ImportArtwork,
+                FileAction::PreviewImage => Kind::PreviewImage,
             },
             directory: self
                 .current()
@@ -128,6 +129,7 @@ impl Application {
                     FileAction::SymbolOpen => self.load_symbol_library(path),
                     FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
                     FileAction::Artwork => self.begin_artwork_import(path),
+                    FileAction::PreviewImage => self.read_preview_image(path),
                 }
             }
             Ok(None) => {
