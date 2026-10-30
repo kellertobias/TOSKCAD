@@ -545,6 +545,71 @@ mod tests {
             "a choice no longer offered falls back to the first entry"
         );
     }
+    fn labels(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().replace('\n', " ")),
+                _ => None,
+            })
+            .collect()
+    }
+    /// Regression for the reported empty Wood / Sheet metal workspaces: in
+    /// builds between eff1e2d and 5dffdb3 / f9988f9 every entry on those tabs
+    /// was an unimplemented extension placeholder, so the ribbon showed only
+    /// the empty-workspace guidance. Every built-in tab must now render at
+    /// least one implemented tool.
+    #[test]
+    fn every_workspace_tab_renders_implemented_tools_including_wood_and_sheet_metal() {
+        let registry = Registry::default();
+        for workspace in &registry.workspaces {
+            for tab in &workspace.tabs {
+                // Export → Print only lists the unimplemented 3MF package
+                // placeholder; its empty-state guidance is truthful.
+                let known_empty = workspace.mode == Mode::Export && tab.title == "Print";
+                let ctx = egui::Context::default();
+                let output = frame(&ctx, vec![], |ui| {
+                    show(
+                        ui,
+                        &registry,
+                        workspace.mode,
+                        tab,
+                        true,
+                        |_| false,
+                        |_, label| label.into(),
+                    );
+                });
+                let shown = labels(&output);
+                output.drop_without_applying_deltas();
+                assert_eq!(
+                    shown
+                        .iter()
+                        .any(|label| label == "No tools available in this workspace yet."),
+                    known_empty,
+                    "{} / {} renders no tools",
+                    workspace.mode.title(),
+                    tab.title
+                );
+                let expected: &[&str] = match (workspace.mode, tab.title) {
+                    (Mode::Model, "Wood") => &["Panel / carcass", "Drill / pocket", "Panel joint"],
+                    (Mode::Model, "Sheet metal") => &["Sheet part / flanges"],
+                    _ => &[],
+                };
+                for label in expected {
+                    assert!(
+                        shown.iter().any(|shown| shown == label),
+                        "{label} missing from {}: {shown:?}",
+                        tab.title
+                    );
+                }
+                // Placeholders stay hidden instead of appearing implemented.
+                for placeholder in ["Cut list", "Flat pattern", "Bend schedule"] {
+                    assert!(!shown.iter().any(|shown| shown == placeholder));
+                }
+            }
+        }
+    }
     #[test]
     fn additional_catalog_tools_are_not_lost_by_common_grouping() {
         let tab = RibbonTab {
