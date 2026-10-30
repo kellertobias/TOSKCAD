@@ -167,7 +167,7 @@ pub fn description(tool: &str) -> Option<&'static str> {
         }
         "abort-sketch" => "Abort the sketch session without applying its pending edits.",
         "vertical-cutout" => {
-            "Vertical cutout: a rectangular cut from the wall base to its top in one wall segment, through the wall or as a chase of a set depth from one face. It does not cut slabs."
+            "Vertical cutout: choose what it cuts. In a wall it runs from the wall base to its top in one segment, through the wall or as a chase of a set depth from one face; it can also cut, or only cut, the floor slabs under it over a range of levels for shafts and floor penetrations."
         }
         "engraving" => {
             "Create engraving: opens a sketch on the planar face selected in the 3D view. It defines only the sketch; no depth or material removal."

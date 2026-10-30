@@ -89,13 +89,15 @@ use sheet_metal::{
     set_sheet_part, sheet_hardware, sheet_metal, unfold_sheet,
 };
 pub use walls::{
-    CreateWallArgs, EditWallArgs, EditWallTypeArgs, FaceArg, InspectWallArgs, NewOpeningTypeArg,
-    OpeningTypeArgs, RemoveWallOpeningArgs, VerticalCutoutArgs, WallArgs, WallOpeningArgs,
+    CreateWallArgs, EditWallArgs, EditWallTypeArgs, FaceArg, InspectVerticalCutoutArgs,
+    InspectWallArgs, NewOpeningTypeArg, OpeningTypeArgs, PlanRectangleArg,
+    RemoveVerticalCutoutArgs, RemoveWallOpeningArgs, VerticalCutoutArgs, WallArgs, WallOpeningArgs,
     WallTypeArgs,
 };
 use walls::{
-    create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type, inspect_wall,
-    remove_wall_opening, set_vertical_cutout, set_wall_opening,
+    create_opening_type, create_wall, create_wall_type, edit_wall, edit_wall_type,
+    inspect_vertical_cutout, inspect_wall, remove_vertical_cutout, remove_wall_opening,
+    set_vertical_cutout, set_wall_opening,
 };
 pub use weldment::{
     ConnectArgs, EditMemberArgs, MembersArgs, ProfileStockArgs, SequenceArgs, WeldArgs,
@@ -304,11 +306,17 @@ tools! {
         "Add a door or window to one wall segment at an offset (from the segment start to the start jamb), or edit an existing one by ID, with an existing opening type or a new type committed in the same transaction and optional width/height/sill overrides. Misfitting, top-reaching or overlapping openings are refused with a reason; the wall is evaluated natively before the one transaction commits.",
         set_wall_opening;
     "set_vertical_cutout" => VerticalCutoutArgs, "Place or edit vertical cutout", false,
-        "Add or edit (by ID) a full-height rectangular cutout in one wall segment, from the wall base to its top: through the full thickness when depth is omitted, otherwise a chase of that depth from the left or right face. Cutouts that do not fit, overlap an opening, exceed the thickness or would split the wall into pieces are refused. Slabs are not cut. Evaluated natively before commit.",
+        "Add or edit (by ID) a vertical cutout and choose what it cuts: a wall, floor slabs, or both. With `wall` (plus segment, offset, width) it is a full-height rectangular cutout in one wall segment, through the thickness when depth is omitted, otherwise a chase of that depth from the left or right face. With `slabs` (IDs) or `from_level`/`to_level` (every floor slab under the cutout on those levels: a shaft) it also cuts a hole through each slab, using `plan` (center, width, depth, rotation) or else the wall cutout's footprint; a slab-only cutout needs `plan`. Cutouts that do not fit, overlap an opening or another hole, cross or touch a slab edge, exceed the wall thickness or would split the wall are refused with no change. One transaction for the wall and every slab, evaluated natively before commit.",
         set_vertical_cutout;
     "remove_wall_opening" => RemoveWallOpeningArgs, "Remove door, window or cutout", false,
-        "Remove one door, window or vertical cutout from a wall by ID as one transaction, evaluated natively before commit.",
+        "Remove one door, window or vertical cutout from a wall by ID as one transaction, evaluated natively before commit. A cutout that also cuts slabs is removed from them in the same transaction.",
         remove_wall_opening;
+    "remove_vertical_cutout" => RemoveVerticalCutoutArgs, "Remove vertical cutout", false,
+        "Remove a vertical cutout by ID from its wall and every slab it cuts as one transaction, evaluated natively before commit.",
+        remove_vertical_cutout;
+    "inspect_vertical_cutout" => InspectVerticalCutoutArgs, "Inspect vertical cutouts", true,
+        "Report what a vertical cutout cuts (its wall and each slab with level, vertical span and hole corners), or list every cutout that cuts a slab when no ID is given.",
+        inspect_vertical_cutout;
     "create_panel_stock" => PanelStockArgs, "Create panel stock", false,
         "Create a panel stock definition (thickness, sheet size, grain relative to the sheet length) on an existing Material or a new one. Commits one transaction.",
         create_panel_stock;

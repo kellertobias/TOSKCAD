@@ -838,5 +838,12 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }) {
         capabilities.insert(super::WALL_CUTOUT_CAPABILITY.into());
     }
+    if document.entities().any(|entity| {
+        matches!(&entity.data, EntityData::Feature { definition, .. }
+            if definition.type_id == super::SLAB_TYPE
+                && definition.data.get("holes").is_some_and(|h| h.as_array().is_some_and(|a| !a.is_empty())))
+    }) {
+        capabilities.insert(super::SLAB_HOLE_CAPABILITY.into());
+    }
     capabilities
 }

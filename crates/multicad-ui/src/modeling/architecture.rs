@@ -169,6 +169,9 @@ pub(super) struct ArchitecturePanel {
     outline: String,
     override_thickness: bool,
     thickness: DimensionField,
+    /// Vertical-cutout holes of the edited slab, kept as they are; the
+    /// vertical-cutout tool edits them.
+    holes: Vec<model::SlabHole>,
     to_level: Option<EntityId>,
     form: StairForm,
     start: [f64; 2],
@@ -231,6 +234,7 @@ impl ArchitecturePanel {
             outline: "0, 0\n6000, 0\n6000, 4000\n0, 4000".into(),
             override_thickness: false,
             thickness: mm(200.)?,
+            holes: vec![],
             to_level: None,
             form: StairForm::Straight,
             start: [0., 0.],
@@ -263,6 +267,7 @@ impl ArchitecturePanel {
                 .collect::<Vec<_>>()
                 .join("\n");
             panel.override_thickness = slab.thickness.is_some();
+            panel.holes = slab.holes.clone();
             if let Some(t) = &slab.thickness {
                 panel.thickness = DimensionField::from_dimension(t, "mm")?;
             }
@@ -411,6 +416,7 @@ impl ArchitecturePanel {
                         thickness: (pedestal || self.override_thickness)
                             .then(|| self.thickness.resolve(document))
                             .transpose()?,
+                        holes: self.holes.clone(),
                     },
                 }
             }

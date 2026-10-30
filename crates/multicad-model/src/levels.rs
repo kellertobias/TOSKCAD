@@ -51,13 +51,18 @@ pub(crate) fn build_slab(
             v: [0., 1., 0.],
         },
         outer: closed(&slab.outline),
-        holes: vec![],
+        holes: slab.holes.iter().map(|h| closed(&h.corners)).collect(),
     };
+    // Hole sides carry the cutout identity so shafts are traceable per slab.
+    let mut roles = named(id, "slab.edge", slab.outline.len());
+    for hole in &slab.holes {
+        roles.extend(named(id, &format!("cutout.{}.side", hole.id), 4));
+    }
     Solid::extrude_curved_profile_vector_named(
         &profile,
         [0., 0., slab.top_mm - slab.bottom_mm],
         id,
-        &named(id, "slab.edge", slab.outline.len()),
+        &roles,
         policy,
     )
     .map_err(|e| error(Some(id), e))

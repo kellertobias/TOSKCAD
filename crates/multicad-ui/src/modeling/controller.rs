@@ -986,10 +986,10 @@ impl ModelToolController {
         if self.stamp() != Some(form) {
             return Err("Modeling inputs changed; preview the current values".into());
         }
-        // A Room opening edits the wall the form currently names.
+        // A Room opening edits the wall (or slab) the form currently names.
         let execution = match request {
             ModelRequest::Opening(command) => Execution::Edit {
-                feature: command.wall,
+                feature: command.anchor,
             },
             _ => self.scope.as_ref().expect("current scope").execution,
         };

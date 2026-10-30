@@ -261,3 +261,178 @@ fn mcp_places_edits_and_removes_single_openings_and_vertical_cutouts() {
     let inspected = run("inspect_wall", json!({ "wall": wall })).unwrap();
     assert_eq!(inspected["openings"][0]["opening"], door);
 }
+
+#[test]
+fn mcp_vertical_cutouts_choose_walls_and_slabs_and_cut_shafts_over_levels() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Shafts").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let text = |v: &Value, key: &str| v[key].as_str().unwrap().to_owned();
+    let level = |rev: u64, name: &str, z: f64| {
+        text(
+            &run(
+                "set_level",
+                json!({ "expected_revision": rev, "name": name, "elevation": mm(z),
+                "height": mm(3000.), "slab_thickness": mm(200.) }),
+            )
+            .unwrap(),
+            "level",
+        )
+    };
+    let ground = level(0, "Ground", 0.);
+    let upper = level(1, "Upper", 3000.);
+    let slab = |rev: u64, name: &str, level: &str| {
+        text(
+            &run(
+                "create_slab",
+                json!({ "expected_revision": rev, "name": name, "level": level, "kind": "slab",
+                "outline_mm": [[0, 0], [6000, 0], [6000, 4000], [0, 4000]] }),
+            )
+            .unwrap(),
+            "slab",
+        )
+    };
+    let ground_slab = slab(2, "Ground slab", &ground);
+    let upper_slab = slab(3, "Upper slab", &upper);
+    let wall_type = text(
+        &run(
+            "create_wall_type",
+            json!({ "expected_revision": 4, "name": "Block 200",
+            "thickness": mm(200.), "height": mm(2500.) }),
+        )
+        .unwrap(),
+        "wall_type",
+    );
+    let wall = text(
+        &run(
+            "create_wall",
+            json!({ "expected_revision": 5, "name": "Wall", "wall_type": wall_type,
+            "level": ground, "path_mm": [[1000, 1000], [5000, 1000]] }),
+        )
+        .unwrap(),
+        "wall",
+    );
+    let slab_volume = 6000. * 4000. * 200.;
+    let volume_of = |result: &Value, feature: &str| {
+        result["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["feature"] == feature)
+            .map(|f| f["volume_mm3"].as_f64().unwrap())
+    };
+
+    // A slab-only shaft through both levels, chosen by level range.
+    let shaft = run(
+        "set_vertical_cutout",
+        json!({ "expected_revision": 6, "from_level": ground, "to_level": upper,
+        "plan": { "center": [mm(4000.), mm(2500.)], "width": mm(600.), "depth": mm(800.) } }),
+    )
+    .unwrap();
+    assert_eq!(shaft["revision"], 7);
+    assert!(shaft["wall"].is_null());
+    let mut cut: Vec<_> = shaft["slabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_owned())
+        .collect();
+    let mut expected = vec![ground_slab.clone(), upper_slab.clone()];
+    cut.sort();
+    expected.sort();
+    assert_eq!(cut, expected);
+    let hole = 600. * 800. * 200.;
+    near(volume_of(&shaft, &ground_slab).unwrap(), slab_volume - hole);
+    near(volume_of(&shaft, &upper_slab).unwrap(), slab_volume - hole);
+    let history = run("history", json!({ "limit": 1 })).unwrap();
+    assert_eq!(history["entries"][0]["label"], "Place vertical cutout");
+    let shaft_id = text(&shaft, "cutout");
+    let listed = run("inspect_vertical_cutout", json!({})).unwrap();
+    assert_eq!(listed["cutouts"][0]["cutout"], shaft_id.as_str());
+    assert_eq!(listed["cutouts"][0]["slabs"][1]["top_mm"], 3000.);
+
+    // A wall chase that also cuts the ground slab under its footprint.
+    let both = run(
+        "set_vertical_cutout",
+        json!({ "expected_revision": 7, "wall": wall, "segment": 0, "offset": mm(1000.),
+        "width": mm(400.), "depth": mm(100.), "slabs": [ground_slab] }),
+    )
+    .unwrap();
+    let both_id = text(&both, "cutout");
+    near(
+        volume_of(&both, &wall).unwrap(),
+        4000. * 200. * 2500. - 400. * 100. * 2500.,
+    );
+    near(
+        volume_of(&both, &ground_slab).unwrap(),
+        slab_volume - hole - 400. * 100. * 200.,
+    );
+    let inspected = run("inspect_wall", json!({ "wall": wall })).unwrap();
+    assert_eq!(inspected["cutouts"][0]["slabs"], json!([ground_slab]));
+
+    // Misplacements are refused with the document unchanged.
+    for (arguments, expected) in [
+        (
+            json!({ "expected_revision": 8, "slabs": [ground_slab],
+            "plan": { "center": [mm(5900.), mm(2000.)], "width": mm(600.), "depth": mm(600.) } }),
+            "not inside the slab outline",
+        ),
+        (
+            json!({ "expected_revision": 8, "slabs": [upper_slab],
+            "plan": { "center": [mm(4300.), mm(2500.)], "width": mm(600.), "depth": mm(800.) } }),
+            "overlaps",
+        ),
+        (
+            json!({ "expected_revision": 8, "wall": wall, "segment": 0, "offset": mm(2500.),
+            "width": mm(400.), "slabs": [ground_slab] }),
+            "splits it",
+        ),
+        (
+            json!({ "expected_revision": 8, "from_level": upper,
+            "plan": { "center": [mm(9000.), mm(2500.)], "width": mm(600.), "depth": mm(800.) } }),
+            "No floor slab",
+        ),
+    ] {
+        let error = run("set_vertical_cutout", arguments).unwrap_err();
+        assert!(error.message.contains(expected), "{}", error.message);
+    }
+    assert_eq!(
+        run("history", json!({ "limit": 1 })).unwrap()["entries"][0]["label"],
+        "Place vertical cutout"
+    );
+
+    // Editing the shaft down to the upper level restores the ground slab.
+    let edited = run(
+        "set_vertical_cutout",
+        json!({ "expected_revision": 8, "cutout": shaft_id, "slabs": [upper_slab],
+        "plan": { "center": [mm(4000.), mm(2500.)], "width": mm(600.), "depth": mm(800.) } }),
+    )
+    .unwrap();
+    near(
+        volume_of(&edited, &ground_slab).unwrap(),
+        slab_volume - 400. * 100. * 200.,
+    );
+    // Removing the wall cutout through remove_wall_opening also clears its slab hole.
+    let removed = run(
+        "remove_wall_opening",
+        json!({ "expected_revision": 9, "wall": wall, "opening": both_id }),
+    )
+    .unwrap();
+    near(volume_of(&removed, &ground_slab).unwrap(), slab_volume);
+    near(volume_of(&removed, &wall).unwrap(), 4000. * 200. * 2500.);
+    let gone = run(
+        "remove_vertical_cutout",
+        json!({ "expected_revision": 10, "cutout": shaft_id }),
+    )
+    .unwrap();
+    near(volume_of(&gone, &upper_slab).unwrap(), slab_volume);
+    assert!(
+        run("inspect_vertical_cutout", json!({})).unwrap()["cutouts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -179,6 +179,7 @@ pub(super) fn create_slab(host: &dyn Host, call: &Request, args: SlabArgs) -> To
             .as_ref()
             .map(|q| q.dimension(&document, &evaluated).map(|d| d.0))
             .transpose()?,
+        holes: vec![],
     };
     let (body, name, actor) = (slab.output.body, args.name, call.actor.clone());
     let prepared = with(host, move |target| {

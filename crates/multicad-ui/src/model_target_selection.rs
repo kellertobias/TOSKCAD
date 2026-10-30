@@ -256,11 +256,16 @@ impl SketchEditor {
                     .into(),
             );
         }
-        if multicad_core::model::walls(session.document())
-            .next()
-            .is_none()
-        {
-            return Err("Draw a wall first with Room → Wall, then place openings in it".into());
+        let document = session.document();
+        let has_wall = multicad_core::model::walls(document).next().is_some();
+        // A vertical cutout can also cut floor slabs alone (a shaft).
+        let has_slab = multicad_core::model::slabs(document).next().is_some();
+        if !has_wall && !(tool == ModelingTool::Cutout && has_slab) {
+            return Err(if tool == ModelingTool::Cutout {
+                "Draw a wall or a floor slab first, then place the cutout in it".into()
+            } else {
+                "Draw a wall first with Room → Wall, then place openings in it".into()
+            });
         }
         let wall = self
             .tree_selection
