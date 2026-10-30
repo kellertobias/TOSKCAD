@@ -37,6 +37,7 @@ use std::{
 };
 
 mod cabinetry;
+mod engraving;
 mod fdm;
 mod guides;
 mod imports;
@@ -54,6 +55,8 @@ use cabinetry::{
     create_panel, create_panel_stack, create_panel_stock, cut_list, delete_machining,
     delete_panel_joint, set_carcass, set_hardware_pattern, set_machining, set_panel_joint,
 };
+pub use engraving::EngravingArgs;
+use engraving::create_engraving_sketch;
 pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs};
 use fdm::{fdm_aid_report, remove_fdm_aid, set_fdm_aid, set_fdm_process};
 mod weldment;
@@ -199,6 +202,9 @@ tools! {
     "create_sketch" => CreateSketch, "Create sketch", false,
         "Create an empty constrained sketch on an origin datum plane (xy, xz or yz). Commits one transaction and returns the sketch ID.",
         create_sketch;
+    "create_engraving_sketch" => EngravingArgs, "Create engraving sketch", false,
+        "Create an empty sketch attached to a current planar face of a source feature (face ordinal from reference_candidates at expected_revision), named \"Engraving N\" unless given. Curved, missing or ambiguous faces are refused and nothing changes. Defines only the sketch: no engraving depth, material removal or toolpath. Commits one transaction.",
+        create_engraving_sketch;
     "sketch_add_rectangle" => AddRectangle, "Add rectangle", false,
         "Add a fully constrained axis-aligned rectangle: the first corner is fixed at origin_mm (sketch coordinates, mm), width along sketch U and height along sketch V are driving dimensions (literal or parameter formula). Commits one transaction.",
         sketch_add_rectangle;
