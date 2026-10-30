@@ -685,9 +685,6 @@ mod tests {
         let registry = Registry::default();
         for workspace in &registry.workspaces {
             for tab in &workspace.tabs {
-                // Export → Print only lists the unimplemented 3MF package
-                // placeholder; its empty-state guidance is truthful.
-                let known_empty = workspace.mode == Mode::Export && tab.title == "Print";
                 let ctx = egui::Context::default();
                 let output = frame(&ctx, vec![], |ui| {
                     show(
@@ -702,11 +699,10 @@ mod tests {
                 });
                 let shown = labels(&output);
                 output.drop_without_applying_deltas();
-                assert_eq!(
-                    shown
+                assert!(
+                    !shown
                         .iter()
                         .any(|label| label == "No tools available in this workspace yet."),
-                    known_empty,
                     "{} / {} renders no tools",
                     workspace.mode.title(),
                     tab.title
@@ -714,6 +710,7 @@ mod tests {
                 let expected: &[&str] = match (workspace.mode, tab.title) {
                     (Mode::Model, "Wood") => &["Panel / carcass", "Drill / pocket", "Panel joint"],
                     (Mode::Model, "Sheet metal") => &["Sheet part / flanges"],
+                    (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],
                     _ => &[],
                 };
                 for label in expected {

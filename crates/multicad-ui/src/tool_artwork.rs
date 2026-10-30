@@ -88,7 +88,7 @@ pub fn artwork_id(mode: Mode, tool: &str) -> Option<&'static str> {
         (_, "apply") => "apply-rebuild",
         (_, "discard" | "abort-sketch" | "page-discard" | "export-set-discard") => "discard",
         (Mode::Parameters, "preview") => "preview-model",
-        (_, "preview" | "export-preview") => "preview",
+        (_, "preview" | "export-preview" | "print-preview") => "preview",
         (_, "finish-sketch" | "page-apply") => "finish",
         (_, "import-artwork") => "import",
         (_, "delete") => "erase",

@@ -8,6 +8,8 @@ pub enum Kind {
     ImportSource,
     ImportArtwork,
     PreviewImage,
+    /// Save a 3MF print package from Export → Print.
+    SavePrintPackage,
 }
 #[derive(Clone, Debug)]
 pub struct Request {

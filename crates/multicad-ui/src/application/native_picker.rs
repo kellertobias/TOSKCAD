@@ -12,7 +12,7 @@ impl Application {
     pub fn set_file_picker(&mut self, picker: Box<dyn FilePicker>) {
         self.file_picker = Some(picker);
     }
-    fn start_native_picker(&mut self) -> Result<(), String> {
+    pub(super) fn start_native_picker(&mut self) -> Result<(), String> {
         let action = self.file_action.ok_or("No file action requested")?;
         let local = self.current().local_id;
         let guard = self
@@ -62,6 +62,7 @@ impl Application {
                 FileAction::Import => Kind::ImportSource,
                 FileAction::Artwork => Kind::ImportArtwork,
                 FileAction::PreviewImage => Kind::PreviewImage,
+                FileAction::PrintPackage => Kind::SavePrintPackage,
             },
             directory: self
                 .current()
@@ -72,6 +73,7 @@ impl Application {
             suggested_name: match action {
                 FileAction::SymbolSave(id) => Some(self.symbol_filename(id)?),
                 FileAction::Save => Some(suggested),
+                FileAction::PrintPackage => Some(self.print_package_name()?),
                 _ => None,
             },
         };
@@ -87,7 +89,7 @@ impl Application {
         });
         Ok(())
     }
-    fn accept_picker_reply(&mut self, reply: Reply) {
+    pub(super) fn accept_picker_reply(&mut self, reply: Reply) {
         let Some(scope) = self.picker_scope.as_ref().filter(|s| s.id == reply.id) else {
             return;
         };
@@ -130,6 +132,7 @@ impl Application {
                     FileAction::SymbolSave(id) => self.save_symbol_library(path, id),
                     FileAction::Artwork => self.begin_artwork_import(path),
                     FileAction::PreviewImage => self.read_preview_image(path),
+                    FileAction::PrintPackage => self.submit_print_package(path),
                 }
             }
             Ok(None) => {
