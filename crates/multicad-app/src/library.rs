@@ -1,11 +1,12 @@
-//! The installation library on disk: one per-user writable directory next to
-//! recovery data (never the application bundle). Registration copies the
-//! saved project's exact bytes into `entries/<entry>.multicad`, so entries
-//! keep working when the original moves, changes or disappears. The index is
-//! replaced atomically under a persistent lock shared by all instances.
+//! The installation library on disk: one per-user writable index next to
+//! recovery data (never the application bundle). Add to Library lists the
+//! saved project at its original absolute location; nothing is copied and
+//! the project file is never written. Browsing reads name, description and
+//! preview live from each listed file. The index is replaced atomically under
+//! a persistent lock shared by all application instances.
 use multicad_core::{
     document::EntityId,
-    project_file::{self, ContentHash, FileLimits, ProjectCard, info::PreviewImage},
+    project_file::{self, FileLimits, ProjectCard, info::PreviewImage},
 };
 use multicad_ui::library::{
     LibraryEntry, LibraryStore, RegisterReceipt, RegisterRequest, Registration,
@@ -19,6 +20,7 @@ use std::{
 };
 
 const APPLICATION: &str = "multicad.library";
+const VERSION: u64 = 2;
 const INDEX: &str = "library.json";
 const MAX_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
@@ -32,41 +34,24 @@ impl Default for LibraryFileStore {
         Self::new(recovery.parent().unwrap_or(&recovery).join("library"))
     }
 }
-fn failure(message: impl std::fmt::Display) -> String {
-    format!("{message}")
-}
 fn storage(context: &str, error: impl std::fmt::Display) -> String {
     format!("{context}: {error}. Check that the library folder is writable and has free space.")
 }
-/// The stored index record; previews and symbol counts come from snapshots.
+/// One listing. Name and description are the last values read from the file,
+/// shown when it is missing.
 struct Record {
     id: EntityId,
     document: EntityId,
+    path: String,
     name: String,
     description: String,
-    file: String,
-    source_path: Option<String>,
-    content: ContentHash,
     registered_unix_ms: u64,
-}
-fn hex(hash: &ContentHash) -> String {
-    hash.to_string()
-}
-fn parse_hex(text: &str) -> Result<ContentHash, String> {
-    if text.len() != 64 || !text.is_ascii() {
-        return Err("invalid content hash".into());
-    }
-    let mut bytes = [0u8; 32];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
-            .map_err(|_| "invalid content hash".to_string())?;
-    }
-    Ok(ContentHash(bytes))
 }
 fn decode(bytes: &[u8]) -> Result<Vec<Record>, String> {
     let invalid = |m: &str| format!("Library index is damaged ({m})");
     let value: Value = serde_json::from_slice(bytes).map_err(|e| invalid(&e.to_string()))?;
-    if value["application"].as_str() != Some(APPLICATION) || value["version"].as_u64() != Some(1) {
+    let version = value["version"].as_u64();
+    if value["application"].as_str() != Some(APPLICATION) || !matches!(version, Some(1 | 2)) {
         return Err(invalid("foreign application or unsupported version"));
     }
     let entries = value["entries"]
@@ -83,24 +68,27 @@ fn decode(bytes: &[u8]) -> Result<Vec<Record>, String> {
     };
     let mut records = Vec::with_capacity(entries.len());
     for entry in entries {
-        let file = text(entry, "file")?;
-        // Snapshots always live directly inside entries/.
-        if !file.starts_with("entries/")
-            || file[8..].contains(['/', '\\'])
-            || file.contains("..")
-            || !file.ends_with(".multicad")
-        {
-            return Err(invalid("snapshot path escapes the library"));
+        // Version 1 (an unreleased development build) kept managed copies and
+        // recorded the original as `source_path`. Migrate to that original
+        // location; the old copies are ignored and left untouched on disk.
+        let path = if version == Some(1) {
+            match entry["source_path"].as_str() {
+                Some(path) => path.to_string(),
+                None => continue,
+            }
+        } else {
+            text(entry, "path")?
+        };
+        if !Path::new(&path).is_absolute() || path.chars().any(char::is_control) {
+            return Err(invalid("listed paths must be absolute"));
         }
         records.push(Record {
             id: EntityId::parse(&text(entry, "id")?).map_err(|e| invalid(&e.to_string()))?,
             document: EntityId::parse(&text(entry, "document")?)
                 .map_err(|e| invalid(&e.to_string()))?,
+            path,
             name: text(entry, "name")?,
             description: text(entry, "description")?,
-            file,
-            source_path: entry["source_path"].as_str().map(Into::into),
-            content: parse_hex(&text(entry, "content")?).map_err(|e| invalid(&e))?,
             registered_unix_ms: entry["registered_unix_ms"]
                 .as_u64()
                 .ok_or_else(|| invalid("registered_unix_ms must be an integer"))?,
@@ -115,17 +103,17 @@ fn encode(records: &[Record]) -> Result<Vec<u8>, String> {
             json!({
                 "id": r.id.to_string(),
                 "document": r.document.to_string(),
+                "path": r.path,
                 "name": r.name,
                 "description": r.description,
-                "file": r.file,
-                "source_path": r.source_path,
-                "content": hex(&r.content),
                 "registered_unix_ms": r.registered_unix_ms,
             })
         })
         .collect();
-    serde_json::to_vec_pretty(&json!({"application":APPLICATION,"version":1,"entries":entries}))
-        .map_err(failure)
+    serde_json::to_vec_pretty(
+        &json!({"application":APPLICATION,"version":VERSION,"entries":entries}),
+    )
+    .map_err(|e| e.to_string())
 }
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -154,7 +142,7 @@ impl LibraryFileStore {
         Self { root }
     }
     fn lock(&self) -> Result<File, String> {
-        fs::create_dir_all(self.root.join("entries"))
+        fs::create_dir_all(&self.root)
             .map_err(|e| storage("Cannot create the library folder", e))?;
         let lock = OpenOptions::new()
             .read(true)
@@ -181,56 +169,76 @@ impl LibraryFileStore {
             .map_err(|e| storage("Cannot read the library index", e))?;
         decode(&bytes)
     }
-    fn persist(&self, path: &Path, bytes: &[u8], context: &str) -> Result<(), String> {
+    fn write_index(&self, records: &[Record]) -> Result<(), String> {
+        let context = "Cannot write the library index";
+        let bytes = encode(records)?;
         let mut temporary =
             tempfile::NamedTempFile::new_in(&self.root).map_err(|e| storage(context, e))?;
         temporary
-            .write_all(bytes)
+            .write_all(&bytes)
             .map_err(|e| storage(context, e))?;
         temporary
             .as_file()
             .sync_all()
             .map_err(|e| storage(context, e))?;
-        temporary.persist(path).map_err(|e| storage(context, e))?;
+        temporary
+            .persist(self.root.join(INDEX))
+            .map_err(|e| storage(context, e))?;
         #[cfg(unix)]
-        if let Some(parent) = path.parent() {
-            File::open(parent)
-                .and_then(|d| d.sync_all())
-                .map_err(|e| storage(context, e))?;
-        }
+        File::open(&self.root)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| storage(context, e))?;
         Ok(())
     }
-    fn entry(&self, record: &Record) -> LibraryEntry {
-        let snapshot = self.root.join(&record.file);
-        let card = File::open(&snapshot)
-            .map_err(|e| e.to_string())
-            .and_then(|f| card_of(&mut BufReader::new(f)));
-        let (preview, symbol_definitions, problem) = match card {
-            Ok(card) => (card.info.preview, card.symbol_definitions, None),
-            Err(error) => (
-                None,
-                0,
-                Some(format!(
-                    "The library copy is missing or damaged ({error}). Open the original file and choose Add to Library again."
-                )),
-            ),
-        };
-        LibraryEntry {
+    /// The live view of one listing, read from the original file.
+    fn entry(record: &Record) -> LibraryEntry {
+        let path = PathBuf::from(&record.path);
+        let mut entry = LibraryEntry {
             id: record.id,
             document: record.document,
+            path: path.clone(),
             name: record.name.clone(),
             description: record.description.clone(),
-            preview,
-            snapshot,
-            source_path: record.source_path.as_ref().map(PathBuf::from),
-            content: record.content,
+            preview: None,
             registered_unix_ms: record.registered_unix_ms,
-            symbol_definitions,
-            problem,
+            symbol_definitions: 0,
+            problem: None,
+        };
+        let card = match File::open(&path) {
+            Ok(file) => card_of(&mut BufReader::new(file)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                entry.problem = Some(format!(
+                    "Missing: no file at {} (moved or deleted). Open it from its new location and choose Add to Library, or remove this entry.",
+                    path.display()
+                ));
+                return entry;
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        match card {
+            Ok(card) if card.document != record.document => {
+                entry.problem = Some(format!(
+                    "{} now holds a different project. Re-add the original from its new location, or remove this entry.",
+                    path.display()
+                ));
+            }
+            Ok(card) => {
+                entry.name = card.info.name;
+                entry.description = card.info.description;
+                entry.preview = card.info.preview;
+                entry.symbol_definitions = card.symbol_definitions;
+            }
+            Err(error) => {
+                entry.problem = Some(format!(
+                    "Cannot read {} ({error}). Fix or re-save the file, or remove this entry.",
+                    path.display()
+                ));
+            }
         }
+        entry
     }
-    fn entries(&self, records: &[Record]) -> Vec<LibraryEntry> {
-        let mut entries: Vec<_> = records.iter().map(|r| self.entry(r)).collect();
+    fn entries(records: &[Record]) -> Vec<LibraryEntry> {
+        let mut entries: Vec<_> = records.iter().map(Self::entry).collect();
         entries.sort_by(|a, b| {
             a.name
                 .to_lowercase()
@@ -239,8 +247,8 @@ impl LibraryFileStore {
         });
         entries
     }
-    /// Read and check the saved project exactly as it is on disk.
-    fn saved_bytes(request: &RegisterRequest) -> Result<Vec<u8>, String> {
+    /// Check that the file on disk is exactly the project this window saved.
+    fn saved_card(request: &RegisterRequest) -> Result<ProjectCard, String> {
         let limits = FileLimits::default();
         let bytes = match read_limited(&request.path, limits.maximum_file_bytes) {
             Ok(bytes) => bytes,
@@ -273,23 +281,21 @@ impl LibraryFileStore {
         if opened.project.document.id() != request.document {
             return Err("The file on disk is a different project. Save this project first.".into());
         }
-        Ok(bytes)
+        card_of(&mut bytes.as_slice())
     }
 }
 impl LibraryStore for LibraryFileStore {
     fn load(&mut self) -> Result<Vec<LibraryEntry>, String> {
         let _lock = self.lock()?;
         let records = self.read_index()?;
-        Ok(self.entries(&records))
+        Ok(Self::entries(&records))
     }
     fn register(
         &mut self,
         request: &RegisterRequest,
     ) -> Result<(RegisterReceipt, Vec<LibraryEntry>), String> {
-        let bytes = Self::saved_bytes(request)?;
-        let card = card_of(&mut bytes.as_slice())?;
-        let content = ContentHash::of(&bytes);
-        let source_path = request
+        let card = Self::saved_card(request)?;
+        let path = request
             .path
             .canonicalize()
             .unwrap_or_else(|_| request.path.clone())
@@ -298,82 +304,51 @@ impl LibraryStore for LibraryFileStore {
         let _lock = self.lock()?;
         let mut records = self.read_index()?;
         let existing = records.iter().position(|r| r.document == request.document);
-        if let Some(index) = existing {
-            let record = &records[index];
-            let snapshot_intact = read_limited(
-                &self.root.join(&record.file),
-                FileLimits::default().maximum_file_bytes,
-            )
-            .is_ok_and(|old| ContentHash::of(&old) == record.content);
-            if record.content == content && snapshot_intact {
-                let entry = self.entry(record);
-                return Ok((
-                    RegisterReceipt {
-                        outcome: Registration::Unchanged,
-                        entry,
-                        previous_source: None,
-                    },
-                    self.entries(&records),
+        let outcome = match existing {
+            Some(index) if records[index].path == path => Registration::AlreadyListed,
+            Some(index) => Registration::Relocated {
+                previous: PathBuf::from(&records[index].path),
+            },
+            None if records.len() >= MAX_ENTRIES => {
+                return Err(format!(
+                    "The library holds its maximum of {MAX_ENTRIES} entries"
                 ));
             }
-        } else if records.len() >= MAX_ENTRIES {
-            return Err(format!(
-                "The library holds its maximum of {MAX_ENTRIES} entries"
-            ));
-        }
-        let (id, outcome, previous_source) = match existing {
-            Some(index) => {
-                let previous = records[index].source_path.clone();
-                (
-                    records[index].id,
-                    Registration::Updated,
-                    previous.filter(|p| *p != source_path).map(PathBuf::from),
-                )
-            }
-            None => (EntityId::new(), Registration::Added, None),
+            None => Registration::Added,
         };
-        let file = format!("entries/{id}.multicad");
-        // Write the snapshot before the index: a failure leaves the previous
-        // registration (or none) intact.
-        self.persist(
-            &self.root.join(&file),
-            &bytes,
-            "Cannot write the library copy",
-        )?;
+        let id = existing.map_or_else(EntityId::new, |index| records[index].id);
         let record = Record {
             id,
             document: request.document,
+            path: path.clone(),
             name: card.info.name.clone(),
             description: card.info.description.clone(),
-            file,
-            source_path: Some(source_path),
-            content,
-            registered_unix_ms: now_ms(),
+            registered_unix_ms: existing
+                .map_or_else(now_ms, |index| records[index].registered_unix_ms),
         };
-        match existing {
+        // A listing at this location for another document is stale: that
+        // file was replaced by this project.
+        records.retain(|r| r.document == request.document || r.path != path);
+        match records.iter().position(|r| r.document == request.document) {
             Some(index) => records[index] = record,
             None => records.push(record),
         }
-        let index = encode(&records)?;
-        self.persist(
-            &self.root.join(INDEX),
-            &index,
-            "Cannot write the library index",
-        )?;
-        let entry = self.entry(
-            records
-                .iter()
-                .find(|r| r.id == id)
-                .expect("registered record"),
-        );
-        Ok((
-            RegisterReceipt {
-                outcome,
-                entry,
-                previous_source,
-            },
-            self.entries(&records),
-        ))
+        // Also refreshes the last known name and description of an
+        // already-listed file.
+        self.write_index(&records)?;
+        let entry = Self::entry(records.iter().find(|r| r.id == id).expect("listed record"));
+        Ok((RegisterReceipt { outcome, entry }, Self::entries(&records)))
+    }
+    fn remove(&mut self, entry: EntityId) -> Result<Vec<LibraryEntry>, String> {
+        let _lock = self.lock()?;
+        let mut records = self.read_index()?;
+        let before = records.len();
+        records.retain(|r| r.id != entry);
+        if records.len() == before {
+            return Err("That library entry no longer exists".into());
+        }
+        self.write_index(&records)?;
+        Ok(Self::entries(&records))
     }
     fn card(&mut self, path: &Path) -> Result<ProjectCard, String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;

@@ -65,6 +65,7 @@ fn recovery_filename(path: Option<&str>) -> &str {
 impl Application {
     pub(super) fn file_busy(&self) -> bool {
         self.picker_scope.is_some()
+            || self.capture_pending()
             || self
                 .pending_files
                 .values()
@@ -108,9 +109,9 @@ impl Application {
         } else {
             SaveMode::Create
         };
-        self.submit_save(path, mode)
+        self.begin_save(path, mode)
     }
-    fn submit_save(&mut self, path: PathBuf, mode: SaveMode) -> Result<(), String> {
+    pub(super) fn submit_save(&mut self, path: PathBuf, mode: SaveMode) -> Result<(), String> {
         let p = self.current();
         let project = p.snapshot()?;
         let local = p.local_id;
@@ -295,6 +296,9 @@ impl Application {
                 } else {
                     format!("Project saved · {}", saved.warnings.join(" · "))
                 };
+                if let Some(note) = self.library.capture_note.take() {
+                    self.message = format!("{} · {note}", self.message);
+                }
                 self.message_error = false;
                 self.file_action = None;
                 self.file_document = None;

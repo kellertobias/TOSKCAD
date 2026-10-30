@@ -7,7 +7,7 @@ use crate::{
     parameter_editor::ParameterEditor,
 };
 use eframe::egui::{self, Color32};
-use multicad_core::{commands::Session, project_file::info};
+use multicad_core::{commands::Session, document::EntityId, project_file::info};
 use std::path::PathBuf;
 
 pub const WIDTH: f32 = 300.;
@@ -20,6 +20,8 @@ pub enum SidebarAction {
     /// Load a library entry's symbol definitions through the explicit,
     /// pinned import/update workflow.
     UseLibraryEntry(PathBuf),
+    /// Remove a listing (the file itself is untouched).
+    RemoveEntry(EntityId),
 }
 pub struct SidebarContext<'a> {
     /// `Err` explains why Add to Library is unavailable right now.
@@ -28,6 +30,8 @@ pub struct SidebarContext<'a> {
     pub choose_image: Result<(), String>,
     /// Latest registration result: message and whether it is an error.
     pub status: Option<&'a (String, bool)>,
+    /// How the current file is listed: message and whether it is listed here.
+    pub listing: Option<&'a (String, bool)>,
     pub library: &'a [LibraryEntry],
     pub library_error: Option<&'a str>,
 }
@@ -99,7 +103,7 @@ pub fn show(
                         ui,
                         "Choose image…",
                         &cx.choose_image,
-                        "Choose a PNG screenshot (at most 1 MiB, 2048×2048 px)",
+                        "Use a PNG instead of the captured view (at most 1 MiB, 2048×2048 px); turns capture on save off",
                     ) {
                         action = Some(SidebarAction::ChooseImage);
                     }
@@ -114,6 +118,13 @@ pub fn show(
                         changed = true;
                     }
                 });
+                changed |= ui
+                    .checkbox(
+                        &mut editor.info.capture_on_save,
+                        "Capture the 3D view on save",
+                    )
+                    .on_hover_text("Each Save stores the visible Sketch/Model 3D view as the preview. Saving from other modes keeps the current preview.")
+                    .changed();
             });
             if editor.info_dirty() {
                 ui.colored_label(
@@ -125,7 +136,7 @@ pub fn show(
             ui.heading("Library");
             ui.label(
                 egui::RichText::new(
-                    "One library for this installation. Adding stores a copy of the saved file; projects that already use it keep their pinned copy.",
+                    "One library for this installation. Adding lists the saved file at its location; nothing is copied. Projects that already use it keep their pinned copy.",
                 )
                 .small()
                 .color(Color32::GRAY),
@@ -139,9 +150,24 @@ pub fn show(
                 ui,
                 "Add to Library",
                 &state,
-                "Register the saved file in this installation's library",
+                "List the saved file at its location in this installation's library",
             ) {
                 action = Some(SidebarAction::AddToLibrary);
+            }
+            match cx.listing {
+                Some((message, true)) => {
+                    ui.colored_label(Color32::from_rgb(132, 200, 140), message);
+                }
+                Some((message, false)) => {
+                    ui.colored_label(Color32::from_rgb(232, 190, 92), message);
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new("Not listed in the library")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                }
             }
             if let Err(reason) = &cx.register {
                 ui.label(egui::RichText::new(reason).small().color(Color32::GRAY));
@@ -193,18 +219,24 @@ pub fn show(
                             }
                         });
                     });
-                    if let Some(source) = &entry.source_path {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!("From {}", source.display()))
-                                    .small()
-                                    .color(Color32::GRAY),
-                            )
-                            .truncate(),
-                        );
-                    }
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(entry.path.display().to_string())
+                                .small()
+                                .color(Color32::GRAY),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(entry.path.display().to_string());
                     if let Some(problem) = &entry.problem {
                         ui.colored_label(Color32::LIGHT_RED, problem);
+                        if ui
+                            .small_button("Remove from library")
+                            .on_hover_text("Remove this listing; no file is deleted")
+                            .clicked()
+                        {
+                            action = Some(SidebarAction::RemoveEntry(entry.id));
+                        }
                     } else if entry.symbol_definitions > 0 {
                         if ui
                             .small_button(format!(
@@ -214,7 +246,7 @@ pub fn show(
                             .on_hover_text("Load its symbol definitions; import and updates stay explicit in Sketch › Symbols")
                             .clicked()
                         {
-                            action = Some(SidebarAction::UseLibraryEntry(entry.snapshot.clone()));
+                            action = Some(SidebarAction::UseLibraryEntry(entry.path.clone()));
                         }
                     } else {
                         ui.label(

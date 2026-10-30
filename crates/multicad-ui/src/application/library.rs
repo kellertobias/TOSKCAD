@@ -18,6 +18,12 @@ pub(super) struct LibraryState {
     pub(super) cards: BTreeMap<PathBuf, Result<ProjectCard, String>>,
     requested: BTreeSet<PathBuf>,
     pub(super) textures: PreviewTextures,
+    /// Save waiting for its preview screenshot.
+    pub(super) capture: Option<super::save_preview::PendingCapture>,
+    /// Outcome of the last save-time capture, appended to the save receipt.
+    pub(super) capture_note: Option<String>,
+    /// The 3D viewport drawn in the latest frame, if any.
+    pub(super) viewport: Option<egui::Rect>,
 }
 impl Application {
     pub fn set_library_store(&mut self, store: Box<dyn LibraryStore>) {
@@ -79,9 +85,11 @@ impl Application {
                 match result {
                     Ok(image) if project.editor.info_locked.is_none() => {
                         project.editor.info.preview = Some(image);
+                        // Keep the chosen image instead of capturing on save.
+                        project.editor.info.capture_on_save = false;
                         project.editor.refresh_preview(&project.session);
                         self.message =
-                            "Preview image chosen · Apply/Rebuild stores it in the file".into();
+                            "Preview image chosen · Apply/Rebuild stores it; capture on save is now off".into();
                         self.message_error = false;
                     }
                     Ok(_) => {
@@ -100,6 +108,43 @@ impl Application {
     pub(super) fn invalidate_card(&mut self, path: &Path) {
         self.library.requested.remove(path);
         self.library.cards.remove(path);
+        // Listed files are read live: refresh the library after a save.
+        let listed = self.library.entries.iter().any(|e| {
+            e.path == path
+                || path
+                    .canonicalize()
+                    .is_ok_and(|canonical| canonical == e.path)
+        });
+        if listed && let Some(worker) = &mut self.library.worker {
+            let _ = worker.reload();
+        }
+    }
+    /// How the current file is listed, for the sidebar status.
+    fn listing_status(&self) -> Option<(String, bool)> {
+        let p = self.current();
+        let document = p.session.document().id();
+        let entry = self
+            .library
+            .entries
+            .iter()
+            .find(|e| e.document == document)?;
+        let here = p.path.as_ref().is_some_and(|path| {
+            *path == entry.path || path.canonicalize().is_ok_and(|c| c == entry.path)
+        });
+        Some(if here {
+            (
+                format!("Listed in the library · {}", entry.path.display()),
+                true,
+            )
+        } else {
+            (
+                format!(
+                    "Listed from another location: {} · Add to Library lists this file instead",
+                    entry.path.display()
+                ),
+                false,
+            )
+        })
     }
     pub(super) fn request_cards(&mut self) {
         let Some(worker) = &mut self.library.worker else {
@@ -124,7 +169,7 @@ impl Application {
         };
         if p.dirty() {
             return Err(
-                "Apply and save your changes first · the library stores the saved file".into(),
+                "Apply and save your changes first · the library lists the saved file".into(),
             );
         }
         if self.file_busy() {
@@ -144,7 +189,7 @@ impl Application {
             .ok_or("The installation library is unavailable in this host")?
             .register(request)?;
         self.library.status = None;
-        self.message = "Adding the saved file to the library…".into();
+        self.message = "Listing the saved file in the library…".into();
         self.message_error = false;
         Ok(())
     }
@@ -190,6 +235,7 @@ impl Application {
             .worker
             .as_ref()
             .is_some_and(|w| w.registering());
+        let listing = self.listing_status();
         let state = &mut self.library;
         let p = &mut self.projects[self.active];
         let action = metadata_sidebar::show(
@@ -202,6 +248,7 @@ impl Application {
                 registering,
                 choose_image,
                 status: state.status.as_ref(),
+                listing: listing.as_ref(),
                 library: &state.entries,
                 library_error: state.error.as_deref(),
             },
@@ -216,6 +263,12 @@ impl Application {
                 .as_mut()
                 .ok_or_else(|| "The installation library is unavailable in this host".into())
                 .and_then(|w| w.reload()),
+            Some(SidebarAction::RemoveEntry(id)) => self
+                .library
+                .worker
+                .as_mut()
+                .ok_or_else(|| "The installation library is unavailable in this host".into())
+                .and_then(|w| w.remove(id)),
             Some(SidebarAction::UseLibraryEntry(path)) => {
                 self.load_symbol_library(path).map(|()| {
                     self.message = "Reading library symbols · then use Sketch › Symbols to import or review an update".into();

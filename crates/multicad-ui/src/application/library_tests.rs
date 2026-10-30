@@ -65,7 +65,7 @@ impl LibraryStore for Library {
             .iter()
             .any(|e| e.document == request.document)
         {
-            Registration::Unchanged
+            Registration::AlreadyListed
         } else {
             Registration::Added
         };
@@ -75,9 +75,7 @@ impl LibraryStore for Library {
             name: info.name,
             description: info.description,
             preview: info.preview,
-            snapshot: PathBuf::from("/library/entries/x.multicad"),
-            source_path: Some(request.path.clone()),
-            content: request.stamp.manifest,
+            path: request.path.clone(),
             registered_unix_ms: 1,
             symbol_definitions: 0,
             problem: None,
@@ -85,14 +83,7 @@ impl LibraryStore for Library {
         if outcome == Registration::Added {
             shared.entries.push(entry.clone());
         }
-        Ok((
-            RegisterReceipt {
-                outcome,
-                entry,
-                previous_source: None,
-            },
-            shared.entries.clone(),
-        ))
+        Ok((RegisterReceipt { outcome, entry }, shared.entries.clone()))
     }
     fn card(&mut self, path: &Path) -> Result<ProjectCard, String> {
         let shared = self.0.lock().unwrap();
@@ -107,6 +98,11 @@ impl LibraryStore for Library {
             Default::default(),
             &multicad_core::project_file::supported_capabilities(),
         )
+    }
+    fn remove(&mut self, entry: EntityId) -> Result<Vec<LibraryEntry>, String> {
+        let mut shared = self.0.lock().unwrap();
+        shared.entries.retain(|e| e.id != entry);
+        Ok(shared.entries.clone())
     }
     fn read_preview(&mut self, _: &Path) -> Result<PreviewImage, String> {
         PreviewImage::from_png(ICON.to_vec())
@@ -260,7 +256,7 @@ fn add_to_library_is_explicit_requires_a_clean_saved_file_and_reports_results() 
     assert_eq!(app.library.entries.len(), 1);
     assert_eq!(app.library.entries[0].name, "Hook");
     let (message, error) = app.library.status.clone().unwrap();
-    assert!(!error && message.contains("Added “Hook”"), "{message}");
+    assert!(!error && message.contains("Listed “Hook”"), "{message}");
 
     app.add_to_library().unwrap();
     drain(&mut app);
@@ -271,7 +267,7 @@ fn add_to_library_is_explicit_requires_a_clean_saved_file_and_reports_results() 
             .as_ref()
             .unwrap()
             .0
-            .contains("nothing changed")
+            .contains("already listed")
     );
 
     // Unapplied or unsaved edits block registration of a stale file.
@@ -308,9 +304,7 @@ fn library_entries_are_shared_by_every_project_in_the_installation() {
         name: "Registered elsewhere".into(),
         description: String::new(),
         preview: Some(PreviewImage::from_png(ICON.to_vec()).unwrap()),
-        snapshot: PathBuf::from("/library/entries/y.multicad"),
-        source_path: None,
-        content: ContentHash::of(b"y"),
+        path: PathBuf::from("/elsewhere/y.multicad"),
         registered_unix_ms: 1,
         symbol_definitions: 2,
         problem: None,
@@ -353,4 +347,150 @@ fn home_screen_cards_use_the_files_own_metadata_and_preview() {
     frame(&mut app);
     app.invalidate_card(&path);
     assert!(app.library.cards.is_empty());
+}
+
+fn gradient(w: usize, h: usize) -> egui::ColorImage {
+    egui::ColorImage::new(
+        [w, h],
+        (0..w * h)
+            .map(|i| egui::Color32::from_rgb((i % 251) as u8, (i / w % 251) as u8, 120))
+            .collect(),
+    )
+}
+fn saved_preview(shared: &Arc<Mutex<Shared>>) -> Option<PreviewImage> {
+    let saved = shared.lock().unwrap().saved.last().cloned().unwrap();
+    multicad_core::project_file::info::read(&saved.document)
+        .unwrap()
+        .preview
+}
+
+#[test]
+fn listing_status_and_removal_follow_the_installation_index() {
+    let (mut app, shared) = app();
+    assert!(app.listing_status().is_none());
+    name(&mut app, "Listed part");
+    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    let path = PathBuf::from("/private/tmp/listed.multicad");
+    app.save_to(path.clone()).unwrap();
+    drain(&mut app);
+    app.add_to_library().unwrap();
+    drain(&mut app);
+    let (message, here) = app.listing_status().unwrap();
+    assert!(
+        here && message.contains("Listed in the library"),
+        "{message}"
+    );
+    assert!(message.contains("listed.multicad"));
+    // Listed from elsewhere (e.g. this tab is a Save As copy).
+    shared.lock().unwrap().entries[0].path = PathBuf::from("/elsewhere/original.multicad");
+    app.library.worker.as_mut().unwrap().reload().unwrap();
+    drain(&mut app);
+    let (message, here) = app.listing_status().unwrap();
+    assert!(!here && message.contains("another location"), "{message}");
+    let id = app.library.entries[0].id;
+    app.library.worker.as_mut().unwrap().remove(id).unwrap();
+    drain(&mut app);
+    assert!(app.library.entries.is_empty());
+    assert!(app.listing_status().is_none());
+    frame(&mut app);
+}
+
+#[test]
+fn save_captures_the_visible_3d_view_without_undo_and_leaves_the_tab_clean() {
+    let (mut app, shared) = app();
+    name(&mut app, "Captured");
+    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    let undo_before = app.current().session.can_undo();
+    app.mode = Mode::Model;
+    app.library.viewport = Some(egui::Rect::from_min_max(
+        egui::pos2(10., 20.),
+        egui::pos2(810., 620.),
+    ));
+    let path = PathBuf::from("/private/tmp/captured.multicad");
+    app.save_to(path.clone()).unwrap();
+    assert!(app.capture_pending() && app.file_busy());
+    assert!(
+        shared.lock().unwrap().saved.is_empty(),
+        "save waits for the capture"
+    );
+    // Injected screenshot of the viewport (no GPU needed).
+    app.finish_capture(Ok(gradient(1600, 1200)));
+    drain(&mut app);
+    let preview = saved_preview(&shared).expect("captured preview saved");
+    assert_eq!((preview.width(), preview.height()), (640, 480));
+    assert!(!app.current().dirty(), "the file is not left dirty");
+    assert_eq!(app.current().session.can_undo(), undo_before);
+    app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
+    assert_eq!(
+        multicad_core::project_file::info::read(app.current().session.document())
+            .unwrap()
+            .preview,
+        Some(preview),
+        "Undo of the earlier edit keeps the captured preview"
+    );
+}
+
+#[test]
+fn capture_failure_or_no_visible_view_never_blocks_saving() {
+    let (mut app, shared) = app();
+    name(&mut app, "Robust");
+    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    app.mode = Mode::Sketch;
+    app.library.viewport = Some(egui::Rect::from_min_max(
+        egui::pos2(0., 0.),
+        egui::pos2(100., 100.),
+    ));
+    let path = PathBuf::from("/private/tmp/robust.multicad");
+    app.save_to(path.clone()).unwrap();
+    app.finish_capture(Err("the window did not deliver a screenshot".into()));
+    drain(&mut app);
+    assert_eq!(shared.lock().unwrap().saved.len(), 1);
+    assert!(saved_preview(&shared).is_none());
+    assert!(
+        app.message.contains("preview not updated"),
+        "{}",
+        app.message
+    );
+    assert!(!app.current().dirty());
+
+    // Parameters mode: no 3D view, the previous preview is kept.
+    app.mode = Mode::Model;
+    app.save_to(path.clone()).unwrap();
+    app.finish_capture(Ok(gradient(200, 100)));
+    drain(&mut app);
+    let captured = saved_preview(&shared).unwrap();
+    app.mode = Mode::Parameters;
+    app.save_to(path.clone()).unwrap();
+    assert!(!app.capture_pending());
+    drain(&mut app);
+    assert_eq!(saved_preview(&shared), Some(captured.clone()));
+    assert!(app.message.contains("preview unchanged"), "{}", app.message);
+
+    // Capture off (e.g. after choosing an image): the viewport is ignored.
+    app.current_mut().editor.info.capture_on_save = false;
+    let p = app.current_mut();
+    p.editor.refresh_preview(&p.session);
+    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    app.mode = Mode::Model;
+    app.save_to(path).unwrap();
+    assert!(!app.capture_pending());
+    drain(&mut app);
+    assert_eq!(saved_preview(&shared), Some(captured));
+}
+
+#[test]
+fn choosing_an_image_turns_capture_on_save_off_in_the_draft() {
+    let (mut app, _) = app();
+    assert!(app.current().editor.info.capture_on_save);
+    app.choose_preview_image().unwrap();
+    app.file_path = "/private/tmp/shot.png".into();
+    app.complete_file_action();
+    drain(&mut app);
+    assert!(!app.current().editor.info.capture_on_save);
+    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    assert!(
+        !multicad_core::project_file::info::read(app.current().session.document())
+            .unwrap()
+            .capture_on_save
+    );
 }

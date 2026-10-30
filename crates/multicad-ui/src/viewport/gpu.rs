@@ -430,6 +430,7 @@ pub fn paint_scene_section(
     {
         return;
     }
+    crate::preview_capture::record_viewport(painter.ctx(), rect);
     painter.add(egui_wgpu::Callback::new_paint_callback(
         rect,
         Callback {

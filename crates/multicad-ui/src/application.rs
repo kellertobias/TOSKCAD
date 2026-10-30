@@ -8,6 +8,7 @@ mod external_reference_tests;
 mod files;
 mod library;
 mod native_picker;
+mod save_preview;
 mod symbol_files;
 mod welcome;
 #[cfg(test)]
@@ -2002,6 +2003,7 @@ impl Application {
         }
         self.poll_recents(&ctx);
         self.poll_library(&ctx);
+        self.drive_capture(&ctx);
         self.poll_files();
         self.handle_close_request(&ctx);
         controls::block_modal_background(

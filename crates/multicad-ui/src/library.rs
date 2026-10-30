@@ -1,9 +1,9 @@
-//! The single installation library and project cards. Registration is an
-//! explicit user action that stores an immutable managed snapshot of a saved
-//! project; it never edits the source project, never runs on Save and never
-//! changes definitions already embedded (pinned) in consuming projects.
-//! File-system access belongs to the application's `LibraryStore`; this
-//! module owns the nonblocking worker and preview textures.
+//! The single installation library and project cards. Add to Library is an
+//! explicit user action that lists a saved project file at its original
+//! location; the library never copies the file, never edits it, never runs on
+//! Save and never changes definitions already embedded (pinned) in consuming
+//! projects. File-system access belongs to the application's `LibraryStore`;
+//! this module owns the nonblocking worker and preview textures.
 use crate::storage::FileStamp;
 use eframe::egui;
 use multicad_core::{
@@ -20,21 +20,17 @@ use std::{
 pub struct LibraryEntry {
     /// Stable entry identity within this installation's library.
     pub id: EntityId,
-    /// Document identity of the registered project; one entry per document.
+    /// Document identity of the listed project; one entry per document.
     pub document: EntityId,
+    /// The original file's absolute location (the last known one when missing).
+    pub path: PathBuf,
+    /// Read live from the file; the last known values when it is missing.
     pub name: String,
     pub description: String,
     pub preview: Option<PreviewImage>,
-    /// Managed immutable copy inside the library directory.
-    pub snapshot: PathBuf,
-    /// Where the file was registered from. Informational only: the entry
-    /// keeps working when this file moves, changes or disappears.
-    pub source_path: Option<PathBuf>,
-    /// Hash of the snapshot bytes.
-    pub content: ContentHash,
     pub registered_unix_ms: u64,
     pub symbol_definitions: usize,
-    /// Set when the managed copy is missing or unreadable.
+    /// Set when the file is missing, unreadable or now holds another project.
     pub problem: Option<String>,
 }
 #[derive(Clone, Debug)]
@@ -45,42 +41,35 @@ pub struct RegisterRequest {
     pub stamp: FileStamp,
     pub document: EntityId,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Registration {
     Added,
-    /// The same document was registered before with different content; its
-    /// one entry now holds the new snapshot.
-    Updated,
-    /// The identical saved content is already registered; nothing changed.
-    Unchanged,
+    /// This document is already listed at this location; nothing changed.
+    AlreadyListed,
+    /// This document was listed at another location (moved file or Save As
+    /// copy); the entry now points at the new location.
+    Relocated {
+        previous: PathBuf,
+    },
 }
 #[derive(Clone, Debug)]
 pub struct RegisterReceipt {
     pub outcome: Registration,
     pub entry: LibraryEntry,
-    /// The previous registration's source when it was a different file.
-    pub previous_source: Option<PathBuf>,
 }
 impl RegisterReceipt {
     pub fn message(&self) -> String {
         let name = &self.entry.name;
-        match self.outcome {
-            Registration::Added => format!("Added “{name}” to the library"),
-            Registration::Unchanged => {
-                format!(
-                    "“{name}” is already in the library with this saved content · nothing changed"
-                )
+        let path = self.entry.path.display();
+        match &self.outcome {
+            Registration::Added => format!("Listed “{name}” in the library · {path}"),
+            Registration::AlreadyListed => {
+                format!("“{name}” is already listed in the library at {path} · nothing changed")
             }
-            Registration::Updated => {
-                let from = self
-                    .previous_source
-                    .as_ref()
-                    .map(|p| format!(" (previously registered from {})", p.display()))
-                    .unwrap_or_default();
-                format!(
-                    "Updated the library entry “{name}”{from} · projects that already use it keep their pinned copy until you review an update"
-                )
-            }
+            Registration::Relocated { previous } => format!(
+                "The library now lists “{name}” at {path} instead of {}",
+                previous.display()
+            ),
         }
     }
 }
@@ -90,6 +79,8 @@ pub trait LibraryStore: Send + 'static {
         &mut self,
         request: &RegisterRequest,
     ) -> Result<(RegisterReceipt, Vec<LibraryEntry>), String>;
+    /// Remove one listing; the file itself is never touched.
+    fn remove(&mut self, entry: EntityId) -> Result<Vec<LibraryEntry>, String>;
     /// Name, description and preview of a project file for the home screen.
     fn card(&mut self, path: &Path) -> Result<ProjectCard, String>;
     /// Read a user-chosen preview image file.
@@ -109,6 +100,7 @@ pub fn decode_preview(image: &PreviewImage) -> Result<egui::ColorImage, String> 
 }
 enum Job {
     Load,
+    Remove(EntityId),
     Register(RegisterRequest),
     Card(PathBuf),
     Preview { local: EntityId, path: PathBuf },
@@ -144,6 +136,7 @@ impl LibraryWorker {
                 while let Ok(job) = jobs.recv() {
                     let event = match job {
                         Job::Load => LibraryEvent::Loaded(store.load()),
+                        Job::Remove(id) => LibraryEvent::Loaded(store.remove(id)),
                         Job::Register(request) => LibraryEvent::Registered {
                             document: request.document,
                             result: store.register(&request),
@@ -184,6 +177,9 @@ impl LibraryWorker {
     }
     pub fn reload(&mut self) -> Result<(), String> {
         self.submit(Job::Load)
+    }
+    pub fn remove(&mut self, entry: EntityId) -> Result<(), String> {
+        self.submit(Job::Remove(entry))
     }
     pub fn register(&mut self, request: RegisterRequest) -> Result<(), String> {
         if self.registering {
@@ -301,6 +297,9 @@ mod tests {
             _: &RegisterRequest,
         ) -> Result<(RegisterReceipt, Vec<LibraryEntry>), String> {
             Err("Library directory is read-only".into())
+        }
+        fn remove(&mut self, _: EntityId) -> Result<Vec<LibraryEntry>, String> {
+            Ok(vec![])
         }
         fn card(&mut self, path: &Path) -> Result<ProjectCard, String> {
             Err(format!("missing {}", path.display()))

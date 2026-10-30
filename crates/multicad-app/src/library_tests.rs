@@ -17,11 +17,24 @@ fn project(name: &str, description: &str) -> ProjectFile {
         name: name.into(),
         description: description.into(),
         preview: Some(PreviewImage::from_png(ICON.to_vec()).unwrap()),
+        capture_on_save: true,
     };
     let document = document
         .edited(&info::edits(&document, &wanted).unwrap())
         .unwrap();
     ProjectFile::new(document).unwrap()
+}
+fn describe(project: &ProjectFile, name: &str, description: &str) -> ProjectFile {
+    let mut wanted = info::read(&project.document).unwrap();
+    wanted.name = name.into();
+    wanted.description = description.into();
+    ProjectFile::new(
+        project
+            .document
+            .edited(&info::edits(&project.document, &wanted).unwrap())
+            .unwrap(),
+    )
+    .unwrap()
 }
 fn save(store: &mut ProjectStore, path: &Path, project: &ProjectFile, mode: SaveMode) -> FileStamp {
     store.save_project(path, project, mode).unwrap().stamp
@@ -33,109 +46,121 @@ fn request(path: &Path, stamp: FileStamp, project: &ProjectFile) -> RegisterRequ
         document: project.document.id(),
     }
 }
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap()
+}
 
 #[test]
-fn explicit_registration_persists_across_restart_and_survives_source_moves() {
+fn listing_records_the_original_location_and_reads_metadata_live() {
     let root = tempfile::tempdir().unwrap();
     let mut projects = ProjectStore::new(root.path().join("recovery"));
     let path = root.path().join("bracket.multicad");
     let mut bracket = project("Wall bracket", "Holds a shelf");
     let stamp = save(&mut projects, &path, &bracket, SaveMode::Create);
+    let original = fs::read(&path).unwrap();
     let library_root = root.path().join("library");
     let mut library = LibraryFileStore::new(library_root.clone());
     assert!(
         library.load().unwrap().is_empty(),
-        "saving never registers a file"
+        "saving never lists a file"
     );
 
     let (receipt, entries) = library.register(&request(&path, stamp, &bracket)).unwrap();
     assert_eq!(receipt.outcome, Registration::Added);
-    assert!(receipt.message().contains("Added “Wall bracket”"));
+    assert!(receipt.message().contains("Listed “Wall bracket”"));
     assert_eq!(entries.len(), 1);
-    let entry = &entries[0];
-    assert_eq!(entry.name, "Wall bracket");
-    assert_eq!(entry.description, "Holds a shelf");
-    assert_eq!(entry.preview.as_ref().unwrap().png(), ICON);
-    assert!(entry.snapshot.starts_with(&library_root));
-    assert!(entry.problem.is_none());
-
-    // Same saved content again: a defined, visible no-op, not a duplicate.
-    let (again, entries) = library.register(&request(&path, stamp, &bracket)).unwrap();
-    assert_eq!(again.outcome, Registration::Unchanged);
-    assert!(again.message().contains("nothing changed"));
-    assert_eq!(entries.len(), 1);
-
-    // Edit and save: re-registering updates the one entry for this document.
-    let renamed = FileInfo {
-        name: "Wall bracket v2".into(),
-        description: "Holds a deeper shelf".into(),
-        preview: None,
-    };
-    bracket = ProjectFile::new(
-        bracket
-            .document
-            .edited(&info::edits(&bracket.document, &renamed).unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    let stamp = save(&mut projects, &path, &bracket, SaveMode::Replace(stamp));
-    let (updated, entries) = library.register(&request(&path, stamp, &bracket)).unwrap();
-    assert_eq!(updated.outcome, Registration::Updated);
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].id, entry.id, "same entry identity");
-    assert_eq!(entries[0].name, "Wall bracket v2");
-    assert!(entries[0].preview.is_none());
-
-    // The original disappears: the managed copy keeps the entry usable, and a
-    // new store instance (application restart / another project) sees it.
-    fs::remove_file(&path).unwrap();
-    let entries = LibraryFileStore::new(library_root.clone()).load().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert!(entries[0].problem.is_none());
-    let opened = projects.open_project(&entries[0].snapshot).unwrap();
-    assert_eq!(opened.file.document.name(), "Wall bracket v2");
+    assert_eq!(entries[0].path, canonical(&path));
+    assert_eq!(entries[0].preview.as_ref().unwrap().png(), ICON);
     assert_eq!(
-        entries[0]
-            .source_path
-            .as_ref()
-            .unwrap()
-            .file_name()
-            .unwrap(),
-        "bracket.multicad"
+        fs::read(&path).unwrap(),
+        original,
+        "the file is never written"
     );
+    let names: Vec<_> = fs::read_dir(&library_root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        names
+            .iter()
+            .all(|n| n == "library.json" || n == ".library.json.lock"),
+        "no copies: {names:?}"
+    );
+
+    // Same file again: visible no-op, no duplicate.
+    let (again, entries) = library.register(&request(&path, stamp, &bracket)).unwrap();
+    assert_eq!(again.outcome, Registration::AlreadyListed);
+    assert!(again.message().contains("already listed"));
+    assert_eq!(entries.len(), 1);
+
+    // Later edits to the original show up without re-adding (live read).
+    bracket = describe(&bracket, "Wall bracket v2", "Deeper shelf");
+    save(&mut projects, &path, &bracket, SaveMode::Replace(stamp));
+    let entries = LibraryFileStore::new(library_root).load().unwrap();
+    assert_eq!(entries.len(), 1, "a new store instance (restart) sees it");
+    assert_eq!(entries[0].name, "Wall bracket v2");
+    assert_eq!(entries[0].description, "Deeper shelf");
+    assert!(entries[0].problem.is_none());
 }
 
 #[test]
-fn a_moved_save_as_copy_with_the_same_document_reports_its_previous_source() {
+fn moved_or_deleted_files_stay_listed_as_missing_and_can_be_relocated_or_removed() {
     let root = tempfile::tempdir().unwrap();
     let mut projects = ProjectStore::new(root.path().join("recovery"));
     let first = root.path().join("a.multicad");
-    let second = root.path().join("b.multicad");
-    let mut part = project("Part", "");
+    let part = project("Part", "Original");
     let stamp = save(&mut projects, &first, &part, SaveMode::Create);
     let mut library = LibraryFileStore::new(root.path().join("library"));
     library.register(&request(&first, stamp, &part)).unwrap();
-    part = ProjectFile::new(part.document.edited(&[]).unwrap()).unwrap();
-    let mut info = info::read(&part.document).unwrap();
-    info.description = "Changed copy".into();
-    part = ProjectFile::new(
-        part.document
-            .edited(&info::edits(&part.document, &info).unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    let stamp = save(&mut projects, &second, &part, SaveMode::Create);
-    let (receipt, entries) = library.register(&request(&second, stamp, &part)).unwrap();
-    assert_eq!(receipt.outcome, Registration::Updated);
-    assert_eq!(entries.len(), 1);
+
+    let moved = root.path().join("moved.multicad");
+    fs::rename(&first, &moved).unwrap();
+    let entries = library.load().unwrap();
+    assert_eq!(entries.len(), 1, "never dropped silently");
+    assert_eq!(entries[0].path, canonical(root.path()).join("a.multicad"));
+    assert_eq!(entries[0].name, "Part", "last known name");
+    let problem = entries[0].problem.as_ref().unwrap();
     assert!(
-        receipt
-            .previous_source
+        problem.contains("Missing") && problem.contains("Add to Library"),
+        "{problem}"
+    );
+
+    // Re-adding from the new location updates the entry and says so.
+    let (receipt, entries) = library.register(&request(&moved, stamp, &part)).unwrap();
+    assert!(matches!(receipt.outcome, Registration::Relocated { .. }));
+    assert!(
+        receipt.message().contains("instead of"),
+        "{}",
+        receipt.message()
+    );
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, canonical(&moved));
+    assert!(entries[0].problem.is_none());
+
+    // A Save As copy keeps the document id: listing it relocates too.
+    let copy = root.path().join("copy.multicad");
+    let stamp = save(&mut projects, &copy, &part, SaveMode::Create);
+    let (receipt, entries) = library.register(&request(&copy, stamp, &part)).unwrap();
+    assert!(matches!(receipt.outcome, Registration::Relocated { .. }));
+    assert_eq!(entries.len(), 1);
+
+    // Another project now at the listed path is reported, not shown as ours.
+    let other = project("Other", "");
+    let copy_stamp = projects.open_project(&copy).unwrap().stamp.unwrap();
+    save(&mut projects, &copy, &other, SaveMode::Replace(copy_stamp));
+    let entries = library.load().unwrap();
+    assert!(
+        entries[0]
+            .problem
             .as_ref()
             .unwrap()
-            .ends_with("a.multicad")
+            .contains("different project")
     );
-    assert!(receipt.message().contains("previously registered from"));
+
+    let entries = library.remove(entries[0].id).unwrap();
+    assert!(entries.is_empty());
+    assert!(copy.exists(), "removing a listing never touches the file");
+    assert!(library.remove(EntityId::new()).is_err());
 }
 
 #[test]
@@ -147,20 +172,17 @@ fn missing_changed_and_unwritable_registrations_fail_without_partial_entries() {
     let stamp = save(&mut projects, &path, &part, SaveMode::Create);
     let mut library = LibraryFileStore::new(root.path().join("library"));
 
-    // Changed on disk by someone else.
     let other = project("Other", "");
     let mut external = ProjectStore::new(root.path().join("recovery"));
     let _ = save(&mut external, &path, &other, SaveMode::Replace(stamp));
     let error = library.register(&request(&path, stamp, &part)).unwrap_err();
     assert!(error.contains("changed on disk"), "{error}");
 
-    // Missing source.
     fs::remove_file(&path).unwrap();
     let error = library.register(&request(&path, stamp, &part)).unwrap_err();
     assert!(error.contains("missing"), "{error}");
     assert!(library.load().unwrap().is_empty());
 
-    // Storage-write failure: the library root is a regular file.
     let stamp = save(&mut projects, &path, &part, SaveMode::Create);
     let blocked = root.path().join("blocked");
     fs::write(&blocked, b"not a directory").unwrap();
@@ -171,43 +193,55 @@ fn missing_changed_and_unwritable_registrations_fail_without_partial_entries() {
 }
 
 #[test]
-fn damaged_copies_and_index_are_reported_and_cards_read_file_metadata() {
+fn an_index_from_the_snapshot_build_migrates_to_original_locations() {
     let root = tempfile::tempdir().unwrap();
     let mut projects = ProjectStore::new(root.path().join("recovery"));
-    let path = root.path().join("card.multicad");
-    let part = project("Card part", "Shown on the home screen");
-    let stamp = save(&mut projects, &path, &part, SaveMode::Create);
-    let mut library = LibraryFileStore::new(root.path().join("library"));
-
-    let card = library.card(&path).unwrap();
-    assert_eq!(card.info.name, "Card part");
-    assert_eq!(card.info.description, "Shown on the home screen");
-    assert_eq!(card.info.preview.unwrap().png(), ICON);
-    assert!(library.card(&root.path().join("gone.multicad")).is_err());
-
-    let (_, entries) = library.register(&request(&path, stamp, &part)).unwrap();
-    fs::write(&entries[0].snapshot, b"truncated").unwrap();
+    let path = root.path().join("old.multicad");
+    let part = project("Old listing", "");
+    save(&mut projects, &path, &part, SaveMode::Create);
+    let library_root = root.path().join("library");
+    fs::create_dir_all(library_root.join("entries")).unwrap();
+    fs::write(library_root.join("entries/x.multicad"), b"old copy").unwrap();
+    let old = json!({
+        "application": "multicad.library",
+        "version": 1,
+        "entries": [
+            {"id": EntityId::new().to_string(), "document": part.document.id().to_string(),
+             "name": "Old listing", "description": "", "file": "entries/x.multicad",
+             "source_path": path.to_string_lossy(), "content": "00".repeat(32),
+             "registered_unix_ms": 1},
+            {"id": EntityId::new().to_string(), "document": EntityId::new().to_string(),
+             "name": "No source", "description": "", "file": "entries/y.multicad",
+             "source_path": null, "content": "00".repeat(32), "registered_unix_ms": 1}
+        ]
+    });
+    fs::write(library_root.join("library.json"), old.to_string()).unwrap();
+    let mut library = LibraryFileStore::new(library_root.clone());
     let entries = library.load().unwrap();
-    assert!(
-        entries[0]
-            .problem
-            .as_ref()
-            .unwrap()
-            .contains("Add to Library again")
-    );
-    // Re-registering the unchanged original repairs the damaged copy.
-    let (receipt, entries) = library.register(&request(&path, stamp, &part)).unwrap();
-    assert_eq!(receipt.outcome, Registration::Updated);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, path);
     assert!(entries[0].problem.is_none());
-
-    fs::write(root.path().join("library/library.json"), b"{broken").unwrap();
+    assert!(
+        library_root.join("entries/x.multicad").exists(),
+        "old copies are left untouched"
+    );
+    fs::write(library_root.join("library.json"), b"{broken").unwrap();
     assert!(library.load().unwrap_err().contains("damaged"));
 }
 
 #[test]
-fn preview_files_must_be_bounded_pngs() {
+fn cards_and_preview_files() {
     let root = tempfile::tempdir().unwrap();
+    let mut projects = ProjectStore::new(root.path().join("recovery"));
+    let path = root.path().join("card.multicad");
+    let part = project("Card part", "Shown on the home screen");
+    save(&mut projects, &path, &part, SaveMode::Create);
     let mut library = LibraryFileStore::new(root.path().join("library"));
+    let card = library.card(&path).unwrap();
+    assert_eq!(card.info.name, "Card part");
+    assert_eq!(card.info.preview.unwrap().png(), ICON);
+    assert!(library.card(&root.path().join("gone.multicad")).is_err());
+
     let png = root.path().join("shot.png");
     fs::write(&png, ICON).unwrap();
     assert_eq!(library.read_preview(&png).unwrap().width(), 256);
@@ -222,12 +256,6 @@ fn preview_files_must_be_bounded_pngs() {
     let large = root.path().join("large.png");
     fs::write(&large, vec![0u8; info::MAX_PREVIEW_BYTES + 1]).unwrap();
     assert!(library.read_preview(&large).unwrap_err().contains("KiB"));
-    assert!(
-        library
-            .read_preview(&root.path().join("gone.png"))
-            .unwrap_err()
-            .contains("no longer exists")
-    );
 }
 
 #[test]

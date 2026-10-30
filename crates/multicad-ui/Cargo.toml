@@ -12,6 +12,7 @@ eframe.workspace = true
 multicad-core.workspace = true
 multicad-solver.workspace = true
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+png = "=0.18.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cxx = "=1.0.205"

@@ -2215,6 +2215,7 @@ dependencies = [
  "multicad-model",
  "multicad-solver",
  "naga",
+ "png",
  "raw-window-handle",
  "serde_json",
 ]
