@@ -3,14 +3,30 @@ use crate::{icons::Icon, sketch_editor::DrawTool};
 use multicad_core::sketch_draw::{DrawInput, DrawRequest, PointInput};
 
 impl DrawTool {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 13] = [
         Self::Line,
         Self::Rectangle,
         Self::Circle,
         Self::Arc,
         Self::Polyline,
         Self::Spline,
+        Self::RectangleCenter,
+        Self::RectangleCenterTwo,
+        Self::RectangleThree,
+        Self::CircleTwoRadius,
+        Self::CircleThree,
+        Self::Fillet,
+        Self::Chamfer,
     ];
+    /// Rectangle drawing modes offered under one ribbon menu, default first.
+    pub const RECTANGLE_MODES: [Self; 4] = [
+        Self::Rectangle,
+        Self::RectangleCenter,
+        Self::RectangleCenterTwo,
+        Self::RectangleThree,
+    ];
+    /// Circle drawing modes offered under one ribbon menu, default first.
+    pub const CIRCLE_MODES: [Self; 3] = [Self::Circle, Self::CircleTwoRadius, Self::CircleThree];
     pub fn id(self) -> &'static str {
         match self {
             Self::Line => "line",
@@ -19,6 +35,13 @@ impl DrawTool {
             Self::Arc => "arc",
             Self::Polyline => "polyline",
             Self::Spline => "spline",
+            Self::RectangleCenter => "rectangle-center",
+            Self::RectangleCenterTwo => "rectangle-center-two",
+            Self::RectangleThree => "rectangle-three",
+            Self::CircleTwoRadius => "circle-two-radius",
+            Self::CircleThree => "circle-three",
+            Self::Fillet => "sketch-fillet",
+            Self::Chamfer => "sketch-chamfer",
         }
     }
     pub fn label(self) -> &'static str {
@@ -29,6 +52,13 @@ impl DrawTool {
             Self::Arc => "Arc",
             Self::Polyline => "Polyline",
             Self::Spline => "Spline",
+            Self::RectangleCenter => "Center rectangle",
+            Self::RectangleCenterTwo => "Center + 2 points rectangle",
+            Self::RectangleThree => "3-point rectangle",
+            Self::CircleTwoRadius => "2 points + radius circle",
+            Self::CircleThree => "3-point circle",
+            Self::Fillet => "Sketch fillet",
+            Self::Chamfer => "Sketch chamfer",
         }
     }
     pub fn icon(self) -> Icon {
@@ -39,6 +69,11 @@ impl DrawTool {
             Self::Arc => Icon::Arc,
             Self::Polyline => Icon::Polyline,
             Self::Spline => Icon::Spline,
+            Self::RectangleCenter | Self::RectangleCenterTwo | Self::RectangleThree => {
+                Icon::Rectangle
+            }
+            Self::CircleTwoRadius | Self::CircleThree => Icon::Circle,
+            Self::Fillet | Self::Chamfer => Icon::Edge,
         }
     }
     pub fn aliases(self) -> &'static [&'static str] {
@@ -49,6 +84,13 @@ impl DrawTool {
             Self::Arc => &["arc"],
             Self::Polyline => &["polyline"],
             Self::Spline => &["spline", "bspline"],
+            Self::RectangleCenter => &["rect-center", "center-rectangle"],
+            Self::RectangleCenterTwo => &["rect-center2"],
+            Self::RectangleThree => &["rect3", "rotated-rectangle"],
+            Self::CircleTwoRadius => &["circle2"],
+            Self::CircleThree => &["circle3"],
+            Self::Fillet => &["corner-fillet"],
+            Self::Chamfer => &["corner-chamfer"],
         }
     }
     pub fn usage(self) -> &'static str {
@@ -59,12 +101,38 @@ impl DrawTool {
             Self::Arc => "arc <cx> <cy> <sx> <sy> <ex> <ey> [cw] (mm)",
             Self::Polyline => "polyline <x1> <y1> <x2> <y2> ... [closed] (mm)",
             Self::Spline => "spline <x1> <y1> ... <x4> <y4> ... [closed] (cubic control poles, mm)",
+            Self::RectangleCenter => "rect-center <cx> <cy> <corner-x> <corner-y> (mm)",
+            Self::RectangleCenterTwo => {
+                "rect-center2 <cx> <cy> <corner-x> <corner-y> <toward-x> <toward-y> (second corner at the same distance from the center, mm)"
+            }
+            Self::RectangleThree => {
+                "rect3 <x1> <y1> <x2> <y2> <hx> <hy> (first edge, then a point setting the height, mm)"
+            }
+            Self::CircleTwoRadius => {
+                "circle2 <x1> <y1> <x2> <y2> <radius> [right] (two points on the circle; center left of 1→2 unless 'right', mm)"
+            }
+            Self::CircleThree => {
+                "circle3 <x1> <y1> <x2> <y2> <x3> <y3> (three points on the circle, mm)"
+            }
+            Self::Fillet => {
+                "sketch-fillet: set the radius in the Inspector, then click a corner shared by two lines"
+            }
+            Self::Chamfer => {
+                "sketch-chamfer: set the setback in the Inspector, then click a corner shared by two lines"
+            }
         }
     }
     /// Syntax and finite numeric input are checked here. The shared drawing
     /// draft validates geometry, bounds and source budgets before committing.
     pub fn parse(self, args: &[&str], construction: bool) -> Result<DrawRequest, String> {
         let usage = || format!("Usage: {}", self.usage());
+        if self.corner() {
+            return Err(format!(
+                "{} picks its corner in the sketch view; {}",
+                self.label(),
+                self.usage()
+            ));
+        }
         let (coordinates, flag) = match self {
             Self::Line | Self::Rectangle => {
                 if args.len() != 4 {
@@ -78,6 +146,24 @@ impl DrawTool {
                 }
                 (args, false)
             }
+            Self::RectangleCenter => {
+                if args.len() != 4 {
+                    return Err(usage());
+                }
+                (args, false)
+            }
+            Self::RectangleCenterTwo | Self::RectangleThree | Self::CircleThree => {
+                if args.len() != 6 {
+                    return Err(usage());
+                }
+                (args, false)
+            }
+            Self::Fillet | Self::Chamfer => unreachable!("corner tools return above"),
+            Self::CircleTwoRadius => match args.len() {
+                5 => (args, false),
+                6 if args[5].eq_ignore_ascii_case("right") => (&args[..5], true),
+                _ => return Err(usage()),
+            },
             Self::Arc => match args.len() {
                 6 => (args, false),
                 7 if args[6].eq_ignore_ascii_case("cw") => (&args[..6], true),
@@ -121,6 +207,7 @@ impl DrawTool {
             })
             .collect::<Result<_, String>>()?;
         let point = |i| PointInput::Position([values[i], values[i + 1]]);
+        let at = |i: usize| [values[i], values[i + 1]];
         let input = match self {
             Self::Line => DrawInput::Line {
                 start: point(0),
@@ -153,6 +240,32 @@ impl DrawTool {
                 .map_err(|e| e.to_string())?,
                 closed: flag,
             },
+            Self::RectangleCenter => DrawInput::CenterRectangle {
+                center: at(0),
+                corner: point(2),
+            },
+            Self::RectangleCenterTwo => DrawInput::CenterPointsRectangle {
+                center: at(0),
+                corner: point(2),
+                adjacent: at(4),
+            },
+            Self::RectangleThree => DrawInput::ThreePointRectangle {
+                a: point(0),
+                b: point(2),
+                height: at(4),
+            },
+            Self::CircleTwoRadius => DrawInput::TwoPointCircle {
+                a: at(0),
+                b: at(2),
+                radius_mm: values[4],
+                left: !flag,
+            },
+            Self::CircleThree => DrawInput::ThreePointCircle {
+                a: at(0),
+                b: at(2),
+                c: at(4),
+            },
+            Self::Fillet | Self::Chamfer => unreachable!("corner tools return above"),
         };
         Ok(DrawRequest {
             input,

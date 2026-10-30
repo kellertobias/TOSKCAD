@@ -435,6 +435,21 @@ impl Application {
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        // Boolean menu entries are the Boolean tool with a preset operation;
+        // the plain Boolean command restores the default.
+        let command = match command {
+            Command::BooleanOperation(operation) => {
+                self.current_mut()
+                    .sketch
+                    .set_boolean_preset(Some(operation));
+                Command::Modeling(crate::modeling::ModelingTool::Boolean)
+            }
+            Command::Modeling(crate::modeling::ModelingTool::Boolean) => {
+                self.current_mut().sketch.set_boolean_preset(None);
+                command
+            }
+            other => other,
+        };
         if self.welcome
             && !matches!(
                 command,
@@ -529,6 +544,7 @@ impl Application {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
+            Command::BooleanOperation(_) => unreachable!("normalized to the Boolean tool above"),
             Command::Measure => {
                 if self.current().sketch.measurement.active() {
                     self.close_measurement();
@@ -1159,6 +1175,12 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
+        let command = match command {
+            Command::BooleanOperation(_) => {
+                Command::Modeling(crate::modeling::ModelingTool::Boolean)
+            }
+            other => other,
+        };
         if self.welcome
             && !matches!(
                 command,
@@ -1672,14 +1694,20 @@ impl Application {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let context = ui.ctx().clone();
-                action = crate::ribbon_ui::show(
+                let sketch = &self.current().sketch;
+                action = crate::ribbon_ui::show_selectable(
                     ui,
                     &self.registry,
                     self.mode,
                     &workspace.tabs[self.tab],
-                    self.current().sketch.editing,
+                    sketch.editing,
                     |command| self.enabled(command),
                     |command, label| self.command_help(command, label, &context),
+                    |command| match command {
+                        Command::Draw(tool) => sketch.editing && sketch.tool == Some(tool),
+                        Command::Construction => sketch.editing && sketch.construction(),
+                        _ => false,
+                    },
                 );
             });
         if let Some(action) = action {
@@ -3809,6 +3837,22 @@ mod tests {
                 .model_can_apply(&app.current().session, &app.current().resources)
         );
         assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        // Ribbon Boolean menu entries dispatch the same tool with a preset
+        // operation; cancelling leaves the canonical source unchanged.
+        for (id, _, operation, _) in crate::registry::BOOLEAN_OPERATIONS {
+            let entry = app.registry.tool(id).unwrap().action;
+            assert_eq!(entry, Command::BooleanOperation(operation));
+            assert!(app.enabled(entry));
+            app.invoke(entry, &[], Channel::Ui).unwrap();
+            assert_eq!(app.current().sketch.boolean_preset(), Some(operation));
+            assert!(app.current().sketch.awaiting_model_targets());
+            app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+            assert!(!app.current().sketch.awaiting_model_targets());
+            assert_eq!(app.current().session.document(), &before);
+        }
+        app.invoke(command, &[], Channel::Ui).unwrap();
+        assert_eq!(app.current().sketch.boolean_preset(), None);
         app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         let split = Command::Modeling(crate::modeling::ModelingTool::Split);
         assert!(

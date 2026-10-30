@@ -25,6 +25,7 @@ pub mod render_view;
 pub mod ribbon_ui;
 mod selection_input;
 pub mod storage;
+pub mod svg_icon;
 pub mod symbols;
 pub mod transfer;
 // Native host and reusable interaction controls. Domain and kernel ownership
@@ -84,6 +85,7 @@ pub mod sketch_selection;
 pub mod sketch_tools;
 
 pub mod theme;
+pub mod tool_artwork;
 
 #[cfg(target_os = "macos")]
 mod native_window;

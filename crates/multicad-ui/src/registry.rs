@@ -63,6 +63,8 @@ pub enum Command {
     SketchOperation(OperationTool),
     External(crate::external_references::ExternalTool),
     Modeling(ModelingTool),
+    /// Boolean form preset to Join, Subtract (Cut) or Intersect.
+    BooleanOperation(multicad_core::model::Operation),
     Assembly(crate::assembly::AssemblyTool),
     Transfer,
     Construction,
@@ -318,6 +320,15 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        for (id, label, operation, aliases) in BOOLEAN_OPERATIONS {
+            registry.tools.push(Tool {
+                id,
+                label,
+                icon: Icon::Boolean,
+                action: Command::BooleanOperation(operation),
+                aliases,
+            });
+        }
         for tool in crate::assembly::AssemblyTool::ALL {
             registry.tools.push(Tool {
                 id: tool.id(),
@@ -457,6 +468,7 @@ impl Default for Registry {
                                 !matches!(
                                     tool,
                                     ModelingTool::Copy
+                                        | ModelingTool::Boolean
                                         | ModelingTool::Wall
                                         | ModelingTool::Level
                                         | ModelingTool::Panel
@@ -470,6 +482,7 @@ impl Default for Registry {
                                 )
                             })
                             .map(ModelingTool::id)
+                            .chain(BOOLEAN_OPERATIONS.map(|(id, ..)| id))
                             .chain(["new-sketch", "engraving", "symbol"])
                             .collect(),
                         requires_active_sketch: false,
@@ -552,9 +565,58 @@ impl Default for Registry {
                 ],
             },
         ];
+        // Drawing modes follow their default tool on Sketch → Common; the
+        // ribbon groups each family under one menu.
+        if let Some(common) = registry
+            .workspaces
+            .iter_mut()
+            .find(|w| w.mode == Mode::Sketch)
+            .and_then(|w| w.tabs.iter_mut().find(|t| t.title == "Common"))
+        {
+            for family in [
+                &DrawTool::RECTANGLE_MODES[..],
+                &DrawTool::CIRCLE_MODES[..],
+                &[DrawTool::Spline, DrawTool::Fillet, DrawTool::Chamfer][..],
+            ] {
+                let base = family[0].id();
+                let mut at = common
+                    .tools
+                    .iter()
+                    .position(|id| *id == base)
+                    .map_or(common.tools.len(), |i| i + 1);
+                for mode in &family[1..] {
+                    if !common.tools.contains(&mode.id()) {
+                        common.tools.insert(at, mode.id());
+                        at += 1;
+                    }
+                }
+            }
+        }
         registry
     }
 }
+/// Ribbon Boolean menu entries; each opens the Boolean form preset to an
+/// implemented native operation.
+pub const BOOLEAN_OPERATIONS: [(&str, &str, multicad_core::model::Operation, &[&str]); 3] = [
+    (
+        "boolean-join",
+        "Join",
+        multicad_core::model::Operation::Join,
+        &["union", "join-bodies"],
+    ),
+    (
+        "boolean-subtract",
+        "Subtract",
+        multicad_core::model::Operation::Cut,
+        &["subtract", "subtract-bodies"],
+    ),
+    (
+        "boolean-intersect",
+        "Intersect",
+        multicad_core::model::Operation::Intersect,
+        &["intersect-bodies"],
+    ),
+];
 impl Registry {
     pub fn tool(&self, id: &str) -> Option<&Tool> {
         self.tools.iter().find(|t| t.id == id)
@@ -608,7 +670,8 @@ mod tests {
                 .iter()
                 .map(|t| t.action)
                 .collect::<Vec<_>>(),
-            vec![Command::Draw(DrawTool::Rectangle)]
+            DrawTool::RECTANGLE_MODES.map(Command::Draw).to_vec(),
+            "the finder lists every rectangle mode, default first"
         );
         assert_eq!(
             registry
@@ -778,6 +841,7 @@ mod tests {
                 !matches!(
                     tool,
                     ModelingTool::Copy
+                        | ModelingTool::Boolean
                         | ModelingTool::Wall
                         | ModelingTool::Level
                         | ModelingTool::Panel
@@ -789,7 +853,7 @@ mod tests {
                         | ModelingTool::Weld
                         | ModelingTool::Sheet
                 ),
-                "Copy shares the Move / Copy ribbon entry; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM aids tabs"
+                "Copy shares the Move / Copy ribbon entry; Boolean is offered as Join / Subtract / Intersect; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM aids tabs"
             );
             if matches!(
                 tool,

@@ -225,6 +225,16 @@ impl SketchEditor {
             || self.symbols.dirty()
             || self.acquisition.is_some()
     }
+    /// Operation preset for the next Boolean form (ribbon Boolean menu).
+    pub fn set_boolean_preset(&mut self, operation: Option<multicad_core::model::Operation>) {
+        self.model.set_boolean_preset(operation);
+    }
+    pub fn boolean_preset(&self) -> Option<multicad_core::model::Operation> {
+        self.model.boolean_preset()
+    }
+    pub fn boolean_operation(&self) -> Option<multicad_core::model::Operation> {
+        self.model.boolean_operation()
+    }
     pub fn awaiting_model_targets(&self) -> bool {
         self.acquisition.is_some() && !self.model.active()
     }

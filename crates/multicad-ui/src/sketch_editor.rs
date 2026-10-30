@@ -23,6 +23,8 @@ mod assembly_host;
 #[cfg(test)]
 #[path = "sketch_assembly_host_tests.rs"]
 mod assembly_host_tests;
+#[path = "sketch_draw_modes.rs"]
+mod draw_modes;
 #[path = "sketch_edge_host.rs"]
 mod edge_host;
 #[cfg(test)]
@@ -73,6 +75,13 @@ pub enum DrawTool {
     Arc,
     Polyline,
     Spline,
+    RectangleCenter,
+    RectangleCenterTwo,
+    RectangleThree,
+    CircleTwoRadius,
+    CircleThree,
+    Fillet,
+    Chamfer,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coordinates {
@@ -121,6 +130,8 @@ pub struct SketchEditor {
     spline_poles: Vec<([f64; 2], Option<EntityId>)>,
     last_draw_line: Option<[(EntityId, [f64; 2]); 2]>,
     construction: bool,
+    /// Fillet radius or chamfer setback for the corner tools, in mm.
+    corner_size_mm: f64,
     draw_preview_id: EntityId,
     element: Option<EntityId>,
     pub camera: Camera,
@@ -208,6 +219,7 @@ impl Default for SketchEditor {
             spline_poles: vec![],
             last_draw_line: None,
             construction: false,
+            corner_size_mm: 2.,
             draw_preview_id: EntityId::new(),
             element: None,
             camera: Camera {
@@ -1922,6 +1934,7 @@ impl SketchEditor {
             DrawTool::Spline => {
                 "Click control poles · Enter finishes · click the first pole to close · Esc cancels"
             }
+            tool if tool.multi_point() => tool.mode_prompt(0),
             _ => "Click the first point, then the second point · Esc cancels",
         }
         .into();
@@ -2161,6 +2174,19 @@ impl SketchEditor {
             DrawTool::Arc => return Err("An arc needs a center, start and end point".into()),
             DrawTool::Spline => {
                 return Err("A cubic spline needs at least four control poles".into());
+            }
+            DrawTool::RectangleCenter => DrawInput::CenterRectangle {
+                center: a,
+                corner: point(b),
+            },
+            DrawTool::RectangleCenterTwo
+            | DrawTool::RectangleThree
+            | DrawTool::CircleTwoRadius
+            | DrawTool::CircleThree => {
+                return Err(format!("{} needs three points", tool.label()));
+            }
+            DrawTool::Fillet | DrawTool::Chamfer => {
+                return Err(format!("{} needs a corner point", tool.label()));
             }
         };
         self.draw(
@@ -2685,6 +2711,9 @@ impl SketchEditor {
                             ui.small(tool.usage());
                             if ui.checkbox(&mut self.construction,"Construction geometry").on_hover_text("Construction curves constrain the sketch but are excluded from solid profiles").changed() {self.message=if self.construction {"Construction drawing on"}else{"Construction drawing off"}.into();}
                             if tool==DrawTool::Arc {ui.checkbox(&mut self.arc_clockwise,"Clockwise arc").on_hover_text("Direction around the sketch's positive normal");}
+                            if tool.corner() {
+                                self.corner_size_ui(ui, tool);
+                            }
                             if tool==DrawTool::Spline {
                                 ui.small(format!("{} control poles",self.spline_poles.len()));
                                 if ui.add_enabled(!self.spline_poles.is_empty(),egui::Button::new("Remove last pole")).on_hover_text("Remove only the last uncommitted control pole").clicked() {self.spline_poles.pop();}
@@ -3811,7 +3840,21 @@ impl SketchEditor {
                     },
                 ),
             );
-            if tool == DrawTool::Spline {
+            if tool.multi_point() {
+                self.mode_pointer(
+                    &painter,
+                    session,
+                    tool,
+                    draw_modes::ModePointer {
+                        frame,
+                        rect,
+                        screen: pointer,
+                        point: p,
+                        anchor,
+                        clicked: response.clicked(),
+                    },
+                );
+            } else if tool == DrawTool::Spline {
                 self.spline_pointer(
                     &painter,
                     session,
@@ -3848,6 +3891,15 @@ impl SketchEditor {
                             radius_mm: (p[0] - a[0]).hypot(p[1] - a[1]),
                         },
                         DrawTool::Spline => unreachable!("Spline uses the control-pole gesture"),
+                        DrawTool::RectangleCenter
+                        | DrawTool::RectangleCenterTwo
+                        | DrawTool::RectangleThree
+                        | DrawTool::CircleTwoRadius
+                        | DrawTool::CircleThree
+                        | DrawTool::Fillet
+                        | DrawTool::Chamfer => {
+                            unreachable!("multi-click modes use their own gesture")
+                        }
                         DrawTool::Arc => {
                             if let Some((start, _)) = self.arc_start {
                                 Geometry::Arc {
@@ -3901,6 +3953,15 @@ impl SketchEditor {
                                 },
                                 DrawTool::Spline => {
                                     unreachable!("Spline uses the control-pole gesture")
+                                }
+                                DrawTool::RectangleCenter
+                                | DrawTool::RectangleCenterTwo
+                                | DrawTool::RectangleThree
+                                | DrawTool::CircleTwoRadius
+                                | DrawTool::CircleThree
+                                | DrawTool::Fillet
+                                | DrawTool::Chamfer => {
+                                    unreachable!("multi-click modes use their own gesture")
                                 }
                                 DrawTool::Arc => {
                                     let (b, anchor) = self.arc_start.expect("arc start chosen");
@@ -6147,6 +6208,139 @@ mod tests {
             panic!("line missing")
         };
         assert_eq!(start, center);
+    }
+    #[test]
+    fn pointer_rectangle_and_circle_modes_commit_once_and_cancel_keeps_source() {
+        use multicad_core::constraint_sketch::CurveKind;
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.snap = false;
+        let cases: [(DrawTool, &[[f64; 2]], usize); 4] = [
+            (
+                DrawTool::RectangleThree,
+                &[[0., 0.], [20., 10.], [10., 30.]],
+                4,
+            ),
+            (DrawTool::RectangleCenter, &[[50., 0.], [60., 8.]], 4),
+            (
+                DrawTool::CircleThree,
+                &[[100., 0.], [110., 10.], [120., 0.]],
+                1,
+            ),
+            (
+                DrawTool::CircleTwoRadius,
+                &[[150., 0.], [158., 0.], [154., 3.]],
+                1,
+            ),
+        ];
+        for (tool, clicks, curves) in cases {
+            editor.set_tool(tool).unwrap();
+            gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+            gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+            let before = session.document().clone();
+            // Partial gestures are UI state; cancelling never commits.
+            for point in &clicks[..clicks.len() - 1] {
+                click_sketch(&ctx, &mut editor, &mut session, *point);
+            }
+            assert_eq!(session.document(), &before, "{tool:?} committed early");
+            editor.cancel();
+            assert_eq!(session.document(), &before);
+            editor.set_tool(tool).unwrap();
+            let id = editor.selected.unwrap();
+            let count = Source::read(session.document(), id)
+                .unwrap()
+                .0
+                .sketch
+                .curves
+                .len();
+            let revision = session.revision();
+            let undone = session.document().clone();
+            for point in clicks {
+                click_sketch(&ctx, &mut editor, &mut session, *point);
+            }
+            assert_eq!(
+                session.revision(),
+                revision + 1,
+                "{tool:?}: one transaction"
+            );
+            let (source, _, _) = Source::read(session.document(), id).unwrap();
+            assert_eq!(source.sketch.curves.len(), count + curves, "{tool:?}");
+            if tool == DrawTool::CircleTwoRadius {
+                let CurveKind::Circle { center, radius_mm } = source.sketch.curves[count].kind
+                else {
+                    panic!("circle expected")
+                };
+                let center = source
+                    .sketch
+                    .points
+                    .iter()
+                    .find(|p| p.id == center)
+                    .unwrap()
+                    .position_mm;
+                assert!((center[0] - 154.).abs() < 1e-4 && (center[1] - 3.).abs() < 1e-4);
+                assert!((radius_mm - 5.).abs() < 1e-4);
+            }
+            session
+                .undo(session.revision(), Actor::local(Channel::Ui))
+                .unwrap();
+            assert_eq!(session.document(), &undone, "{tool:?}: one undo restores");
+            for point in clicks {
+                click_sketch(&ctx, &mut editor, &mut session, *point);
+            }
+        }
+    }
+    #[test]
+    fn pointer_corner_fillet_and_chamfer_apply_once_and_misses_change_nothing() {
+        use multicad_core::constraint_sketch::CurveKind;
+        let mut session = session();
+        let mut editor = SketchEditor::default();
+        let ctx = egui::Context::default();
+        editor.create(&mut session, Datum::Xy, Channel::Ui).unwrap();
+        editor.snap = false;
+        editor
+            .add(
+                &mut session,
+                DrawTool::Rectangle,
+                [0., 0.],
+                [40., 20.],
+                Channel::Ui,
+            )
+            .unwrap();
+        let id = editor.selected.unwrap();
+        for (tool, corner, arcs, lines) in [
+            (DrawTool::Fillet, [40., 0.], 1, 6),
+            (DrawTool::Chamfer, [0., 20.], 1, 9),
+        ] {
+            editor.set_tool(tool).unwrap();
+            editor.corner_size_mm = 4.;
+            gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+            gesture_frame(&ctx, &mut editor, &mut session, vec![]);
+            let before = session.document().clone();
+            // A click away from any two-line corner is refused.
+            click_sketch(&ctx, &mut editor, &mut session, [20., 10.]);
+            assert_eq!(session.document(), &before);
+            assert!(editor.message.contains("corner"), "{}", editor.message);
+            click_sketch(&ctx, &mut editor, &mut session, corner);
+            assert_ne!(session.document(), &before, "{tool:?} did not apply");
+            let (source, _, _) = Source::read(session.document(), id).unwrap();
+            let count = |arc: bool| {
+                source
+                    .sketch
+                    .curves
+                    .iter()
+                    .filter(|c| matches!(c.kind, CurveKind::Arc { .. }) == arc)
+                    .count()
+            };
+            assert_eq!(count(true), arcs.min(1), "{tool:?}");
+            assert_eq!(count(false), lines, "{tool:?}");
+            session
+                .undo(session.revision(), Actor::local(Channel::Ui))
+                .unwrap();
+            assert_eq!(session.document(), &before, "{tool:?}: one undo restores");
+            click_sketch(&ctx, &mut editor, &mut session, corner);
+        }
     }
     #[test]
     fn pointer_arc_center_start_end_projects_radius_and_cancel_never_commits_partial_arc() {
