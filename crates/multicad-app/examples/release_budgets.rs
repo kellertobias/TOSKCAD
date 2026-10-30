@@ -10,6 +10,14 @@
 //! writes one JSON report next to the project (and prints it) including
 //! model sizes.
 //!
+//! Since CAD-150 it also measures the cached (incremental) path the model
+//! runtime uses: filling an `EvaluationCache`, cached warm compiles, the
+//! cached rebuild after the same parameter edit (with the evaluated/reused
+//! feature counts and an exact equality check against the plain compile)
+//! and the cached rebuild after undo. A fifth, generated scenario
+//! `large_plate_field` (`MULTICAD_LARGE_FIELD=ROWSxCOLUMNS`, default 10x20,
+//! three features per plate) measures a model with hundreds of parts.
+//!
 //! Process memory is measured by the caller (`tools/release-budgets.mjs` runs
 //! each phase under `/usr/bin/time`). Interactive orbit/selection frame times
 //! and idle CPU need the native window and are not measured here.
@@ -29,12 +37,16 @@ mod tool_case;
 #[allow(dead_code)]
 mod control_desk;
 
+#[path = "large_scenario.rs"]
+#[allow(dead_code)]
+mod large;
+
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     document::{Document, EntityData, EntityId, EntityKind, Mutation},
     project_file::{self, FileLimits, ProjectFile, RecoveryInfo},
 };
-use multicad_model::{Compiler, DrawingProviders, Model, export::Exporter};
+use multicad_model::{Compiler, DrawingProviders, EvaluationCache, Model, export::Exporter};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -51,12 +63,21 @@ type Error = Box<dyn std::error::Error>;
 
 /// Scenario name, the parameter edited for the incremental measurement and
 /// its new expression (each edit is one the scenario's own test applies).
-pub const SCENARIOS: [(&str, &str, &str); 4] = [
+pub const SCENARIOS: [(&str, &str, &str); 5] = [
     ("makerspace", "room_width", "9600"),
     ("cabinetry_table", "table_width", "1800"),
     ("tool_case", "rail_pitch", "80"),
     ("control_desk", "desk_width", "280"),
+    ("large_plate_field", "row_0_width", "95"),
 ];
+/// Rows and columns of the generated large scenario.
+fn large_field() -> Result<(usize, usize), Error> {
+    let text = std::env::var("MULTICAD_LARGE_FIELD").unwrap_or_else(|_| "10x20".into());
+    let (rows, columns) = text
+        .split_once('x')
+        .ok_or("MULTICAD_LARGE_FIELD must be ROWSxCOLUMNS")?;
+    Ok((rows.parse()?, columns.parse()?))
+}
 const WARM_RUNS: usize = 3;
 
 fn ms(duration: Duration) -> f64 {
@@ -84,6 +105,10 @@ fn build(scenario: &str, directory: &Path) -> Result<Session, Error> {
         "tool_case" => tool_case::build()?.session,
         // Linked KiCad/STEP sources stay next to the project for export.
         "control_desk" => control_desk::build(&directory.join(scenario).join("sources"))?.session,
+        "large_plate_field" => {
+            let (rows, columns) = large_field()?;
+            large::build(rows, columns)?.session
+        }
         other => return Err(format!("Unknown scenario {other}").into()),
     })
 }
@@ -329,6 +354,19 @@ fn measure(scenario: &str, directory: &Path) -> Result<Value, Error> {
         warm.push(elapsed);
     }
     let warm_min = warm.iter().copied().fold(f64::MAX, f64::min);
+    // The incremental path: a worker-owned cache filled by the first compile.
+    let mut cache = EvaluationCache::default();
+    let (filled, cache_fill_ms) =
+        timed(|| compiler.compile_cached(&mut cache, session.document(), revision, None));
+    filled?;
+    let mut cached_warm = Vec::new();
+    for _ in 0..WARM_RUNS {
+        let (result, elapsed) =
+            timed(|| compiler.compile_cached(&mut cache, session.document(), revision, None));
+        result?;
+        cached_warm.push(elapsed);
+    }
+    let warm_stats = cache.last_compile().clone();
     let (drawings, drawings_ms) =
         timed(|| model.drawings(session.document(), revision, &DrawingProviders::default()));
     let drawing_views = drawings
@@ -352,11 +390,21 @@ fn measure(scenario: &str, directory: &Path) -> Result<Value, Error> {
         .filter(|(id, print)| before.get(id) != Some(print))
         .count();
     let steps_after = checkpoints(session.document(), revision)?;
-    drop(edited);
+    let (cached_edit, cached_edit_ms) =
+        timed(|| compiler.compile_cached(&mut cache, session.document(), revision, None));
+    let cached_edit = cached_edit?;
+    let cached_identical =
+        format!("{:?}", cached_edit.snapshot()) == format!("{:?}", edited.snapshot());
+    let edit_stats = cache.last_compile().clone();
+    drop((edited, cached_edit));
     session.undo(session.revision(), actor())?;
     if session.document() != &opened.project.document {
         return Err("Undo did not restore the opened document".into());
     }
+    let (undone, cached_undo_ms) =
+        timed(|| compiler.compile_cached(&mut cache, session.document(), session.revision(), None));
+    undone?;
+    let undo_stats = cache.last_compile().clone();
 
     let cancellations: Vec<_> = [0.25, 0.5, 0.75]
         .into_iter()
@@ -425,6 +473,23 @@ fn measure(scenario: &str, directory: &Path) -> Result<Value, Error> {
             "evaluation_checkpoints_after": steps_after.0,
             "evaluated_shapes": after.len(),
             "changed_shapes": changed,
+        },
+        "incremental": {
+            "cache_fill_compile_ms": cache_fill_ms,
+            "cached_warm_compile_ms": cached_warm,
+            "cached_warm_evaluated_features": warm_stats.evaluated.len(),
+            "cached_warm_reused_features": warm_stats.reused.len(),
+            "edit_rebuild_ms": cached_edit_ms,
+            "edit_rebuild_to_warm_full_ratio": (cached_edit_ms / warm_min * 100.).round() / 100.,
+            "edit_evaluated_features": edit_stats.evaluated.len(),
+            "edit_reused_features": edit_stats.reused.len(),
+            "edit_uncacheable_features": edit_stats.uncacheable.len(),
+            "edit_identical_to_plain_compile": cached_identical,
+            "undo_rebuild_ms": cached_undo_ms,
+            "undo_evaluated_features": undo_stats.evaluated.len(),
+            "undo_reused_features": undo_stats.reused.len(),
+            "cache_entries": undo_stats.entries,
+            "cache_estimated_bytes": undo_stats.estimated_bytes,
         },
         "cancellation": {
             "longest_span_between_checks_ms": steps_before.1,
