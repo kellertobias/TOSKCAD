@@ -586,14 +586,32 @@ pub struct SheetRecord {
 }
 
 impl Model {
+    /// The final producer of a sheet or hardware Part: a physical Part's
+    /// head, or the definition head of a Part that an Assembly places
+    /// (its manufacturing source). Consumed Parts have none.
+    pub(crate) fn sheet_head(&self, document: &Document, part: EntityId) -> Option<EntityId> {
+        let snapshot = self.snapshot();
+        if let Some(head) = snapshot.bodies.get(&part) {
+            return Some(*head);
+        }
+        if snapshot.consumed_bodies.contains(&part)
+            || !model::assembly_definition_parts(document)
+                .ok()?
+                .contains(&part)
+        {
+            return None;
+        }
+        snapshot.body_sources.get(&part).copied()
+    }
     fn sheet_parts_solid(
         &self,
+        document: &Document,
         feature: EntityId,
         part: EntityId,
     ) -> Option<(&SheetLayout, &Solid)> {
         let layout = self.snapshot().sheet_layouts.get(&feature)?;
-        let head = self.snapshot().bodies.get(&part)?;
-        Some((layout, self.solid(*head)?))
+        let head = self.sheet_head(document, part)?;
+        Some((layout, self.solid(head)?))
     }
     /// The developed flat pattern of one evaluated sheet feature.
     pub fn sheet_flat_pattern(&self, feature: EntityId) -> Result<PlanarContours, ModelError> {
@@ -615,7 +633,7 @@ impl Model {
             let e = |e: DocumentError| error(Some(id), e);
             let source = model::read_sheet(document, id).map_err(e)?;
             let part = source.output.body;
-            let Some((layout, solid)) = self.sheet_parts_solid(id, part) else {
+            let Some((layout, solid)) = self.sheet_parts_solid(document, id, part) else {
                 continue;
             };
             let sheet = model::resolve_sheet(document, &parameters, &source).map_err(e)?;

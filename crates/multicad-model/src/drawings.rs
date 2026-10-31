@@ -196,12 +196,73 @@ impl DrawingSourceProvider for ModelDrawingSource {
                 }
                 continue;
             }
+            if !model.snapshot().occurrences.contains_key(&id)
+                && !model.snapshot().bodies.contains_key(&id)
+            {
+                bodies.extend(Self::assembly_source(model, id)?);
+                continue;
+            }
             bodies.push(Self::body(model, id)?);
         }
         Ok(bodies)
     }
 }
 impl ModelDrawingSource {
+    /// An Instance inside an Assembly projects its world-placed leaves when
+    /// exactly one placed path contains it; a definition-only Part of an
+    /// Assembly projects its own definition in component coordinates (a
+    /// detail view of the component).
+    fn assembly_source(model: &Model, id: EntityId) -> Result<Vec<DrawingBody<'_>>, ModelError> {
+        let snapshot = model.snapshot();
+        let mut prefixes = BTreeSet::new();
+        let mut leaves = vec![];
+        for leaf in snapshot.leaf_occurrences.values() {
+            if let Some(at) = leaf.path.members.iter().position(|m| *m == id) {
+                prefixes.insert((leaf.path.root, leaf.path.members[..=at].to_vec()));
+                leaves.push(leaf);
+            }
+        }
+        match prefixes.len() {
+            0 => {}
+            1 => {
+                return leaves
+                    .into_iter()
+                    .map(|leaf| {
+                        Ok(DrawingBody {
+                            identity: id,
+                            material_part: leaf.component,
+                            shape: DrawingShape::Borrowed(
+                                model.leaf_solid(&leaf.path).ok_or_else(|| {
+                                    error(Some(id), "Placed leaf solid is unavailable")
+                                })?,
+                            ),
+                        })
+                    })
+                    .collect();
+            }
+            n => {
+                return Err(error(
+                    Some(id),
+                    format!(
+                        "The member appears in {n} placed copies; choose the placed copy instead"
+                    ),
+                ));
+            }
+        }
+        let producer = snapshot
+            .body_sources
+            .get(&id)
+            .ok_or_else(|| error(Some(id), "Drawing Part has no current native solid"))?;
+        Ok(vec![DrawingBody {
+            identity: id,
+            material_part: id,
+            shape: DrawingShape::Borrowed(
+                model
+                    .solid(*producer)
+                    .ok_or_else(|| error(Some(id), "Drawing source solid is unavailable"))?,
+            ),
+        }])
+    }
     fn body(model: &Model, id: EntityId) -> Result<DrawingBody<'_>, ModelError> {
         let (producer, part) =
             if let Some(occurrence) = model.snapshot().occurrences.get(&id) {

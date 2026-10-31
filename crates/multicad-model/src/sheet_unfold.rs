@@ -95,7 +95,7 @@ impl Model {
             .ok_or_else(|| error(Some(part), "Choose a Part to unfold"))?;
         let feature = model::sheet_feature(document, part)
             .ok_or_else(|| error(Some(part), format!("{name} is not a sheet part")))?;
-        if self.snapshot().bodies.get(&part) != Some(&feature) {
+        if self.sheet_head(document, part) != Some(feature) {
             return Err(error(
                 Some(part),
                 format!(
