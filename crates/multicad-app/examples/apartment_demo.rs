@@ -48,6 +48,8 @@ use std::path::{Path, PathBuf};
 
 pub type Error = Box<dyn std::error::Error>;
 pub const DOCUMENT_NAME: &str = "Apartment with workshop";
+pub const REFERENCE_NOTE: &str =
+    "Workshop: these objects are pinned references to the bundled example projects";
 pub const DESCRIPTION: &str = "Apartment demo: a single-level apartment of about 10.3 × 8.3 m \
 with a living room, kitchen, bedroom and workshop, built from editable walls, doors, windows and \
 a floor slab. The workshop holds pinned references to the shipped cabinet and workbench examples; \
@@ -974,10 +976,7 @@ fn build_drawings(s: &mut Scenario) -> Result<(), Error> {
     ];
 
     let shop_page = &mut pages[2];
-    let mut lines = vec![note(
-        [20., 20.],
-        "Workshop: the objects below are pinned references to shipped example projects, not copies",
-    )];
+    let mut lines = vec![note([20., 20.], REFERENCE_NOTE)];
     let document = s.session.document();
     for (i, r) in s.references.iter().enumerate() {
         let record = symbols::read_instance(document, r.instance)?;

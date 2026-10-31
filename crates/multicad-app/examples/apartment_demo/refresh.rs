@@ -35,10 +35,7 @@ pub fn run(input: &std::path::Path, output: &std::path::Path) -> Result<(), Erro
         .into_iter()
         .find(|p| p.number == PAGES[2])
         .ok_or("Reference drawing missing")?;
-    let mut lines = vec![note(
-        [20., 20.],
-        "Workshop: these objects are pinned references to the bundled example projects",
-    )];
+    let mut lines = vec![note([20., 20.], REFERENCE_NOTE)];
     for (i, label) in ["Workbench", "Cabinet"].into_iter().enumerate() {
         let instance = session
             .document()
