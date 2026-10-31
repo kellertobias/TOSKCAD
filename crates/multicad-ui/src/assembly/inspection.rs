@@ -1,5 +1,6 @@
 use super::{
     AssemblySelection,
+    clearance_view::{self, ClearanceMarker},
     widgets::{self, Fields},
 };
 use crate::{
@@ -43,6 +44,10 @@ pub(super) struct InspectionPanel {
     backend: Option<Box<dyn AssemblyInspectionBackend>>,
     expected: Option<(u64, AssemblyInspectionQuery)>,
     report: Option<AssemblyInspectionReport>,
+    /// Current-pose result shown in the viewport (index into the report).
+    selected: Option<usize>,
+    reveal: bool,
+    fit_requested: bool,
     pub error: Option<String>,
     pub pending: bool,
 }
@@ -88,9 +93,39 @@ impl InspectionPanel {
             backend: factory.map(|f| f()),
             expected: None,
             report: None,
+            selected: None,
+            reveal: false,
+            fit_requested: false,
             error: None,
             pending: false,
         }
+    }
+    /// Viewport evidence for the selected current-pose result. `None` when no
+    /// result is selected; an error when the viewed model is not the evaluated
+    /// one, so stale markers are never drawn.
+    pub fn marker(
+        &self,
+        session: &Session,
+        scene: &Scene,
+    ) -> Option<Result<ClearanceMarker, String>> {
+        let Some(AssemblyInspectionReport::Current(report)) = &self.report else {
+            return None;
+        };
+        let index = self.selected?;
+        if report.stamp.document != session.document().id()
+            || report.stamp.revision != session.revision()
+        {
+            return Some(Err(
+                "The document changed after this result; Preview again".into()
+            ));
+        }
+        Some(ClearanceMarker::build(report, index, scene))
+    }
+    pub fn take_fit(&mut self) -> bool {
+        std::mem::take(&mut self.fit_requested)
+    }
+    pub fn reveal(&self) -> bool {
+        self.reveal
     }
     pub fn invalidate(&mut self) {
         if let Some(b) = &mut self.backend {
@@ -98,6 +133,8 @@ impl InspectionPanel {
         }
         self.expected = None;
         self.report = None;
+        self.selected = None;
+        self.fit_requested = false;
         self.pending = false;
         self.error = None;
     }
@@ -196,6 +233,13 @@ impl InspectionPanel {
             self.expected = None;
             match result {
                 Ok(report) => {
+                    // Show the first known current-pose result immediately.
+                    self.selected = match &report {
+                        AssemblyInspectionReport::Current(r) => {
+                            r.pairs.iter().position(|p| p.result.is_ok())
+                        }
+                        AssemblyInspectionReport::Range(_) => None,
+                    };
                     self.report = Some(report);
                     self.error = None;
                 }
@@ -206,7 +250,7 @@ impl InspectionPanel {
             }
         }
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, session: &Session) {
+    pub fn show(&mut self, ui: &mut egui::Ui, session: &Session, scene: Option<&Arc<Scene>>) {
         self.fields.start();
         let mut changed = false;
         ui.small(if self.range{"Samples only · no continuous collision, dynamics or safety guarantee between poses."}else{"Exact native solid overlap and finite-BRep minimum clearance at the current assembled pose."});
@@ -397,13 +441,70 @@ impl InspectionPanel {
         if let Some(report) = &self.report {
             match report {
                 AssemblyInspectionReport::Current(report) => {
-                    show_pairs(ui, session.document(), report)
+                    show_pairs(ui, session.document(), report, Some(&mut self.selected));
+                    if self.selected.is_some() {
+                        let hash = report.stamp.source_hash.to_string();
+                        ui.small(format!(
+                            "Evaluated revision {} · source {}",
+                            report.stamp.revision,
+                            hash.get(..12).unwrap_or(&hash)
+                        ));
+                        let status = scene.map(|scene| {
+                            report
+                                .stamp
+                                .check(session.document(), session.revision())
+                                .and_then(|_| {
+                                    ClearanceMarker::build(
+                                        report,
+                                        self.selected.unwrap_or_default(),
+                                        scene,
+                                    )
+                                })
+                        });
+                        match status {
+                            Some(Ok(marker)) => {
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui
+                                        .button("Fit result")
+                                        .on_hover_text(
+                                            "Frame both occurrences and the native witnesses · camera only, the model is unchanged",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.fit_requested = true;
+                                    }
+                                    ui.checkbox(&mut self.reveal, "Reveal targets")
+                                        .on_hover_text(
+                                            "Outline both occurrences over occluding or hidden geometry",
+                                        );
+                                });
+                                for (side, hidden) in marker.hidden().into_iter().enumerate() {
+                                    if hidden {
+                                        ui.small(format!(
+                                            "{} occurrence is hidden in the viewport · outlined from its native placement",
+                                            if side == 0 { "First" } else { "Second" }
+                                        ));
+                                    }
+                                }
+                            }
+                            Some(Err(error)) => {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_YELLOW,
+                                    format!("Viewport markers hidden: {error}"),
+                                );
+                            }
+                            None => {
+                                ui.small("Viewport markers need the current native model view");
+                            }
+                        }
+                    }
                 }
                 AssemblyInspectionReport::Range(report) => {
                     ui.label(format!(
                         "{} explicit samples · samples only",
                         report.samples.len()
                     ));
+                    ui.small("Sampled poses are not displayed; viewport witnesses show the current pose only.");
                     ui.small(format!(
                         "Actual intervals: {:?} {}",
                         report.actual_intervals,
@@ -427,7 +528,7 @@ impl InspectionPanel {
                                 }
                             ),
                             |ui| match &sample.result {
-                                Ok(report) => show_pairs(ui, session.document(), report),
+                                Ok(report) => show_pairs(ui, session.document(), report, None),
                                 Err(error) => {
                                     ui.colored_label(
                                         egui::Color32::LIGHT_RED,
@@ -492,26 +593,40 @@ fn path_name(document: &Document, path: &OccurrencePath) -> String {
         .collect::<Vec<_>>()
         .join(" / ")
 }
-fn show_pairs(ui: &mut egui::Ui, document: &Document, report: &PairReport) {
+fn show_pairs(
+    ui: &mut egui::Ui,
+    document: &Document,
+    report: &PairReport,
+    mut selected: Option<&mut Option<usize>>,
+) {
     for (index, pair) in report.pairs.iter().enumerate() {
         ui.push_id(index, |ui| {
-            ui.label(format!(
+            let name = format!(
                 "{} / {}",
                 path_name(document, &pair.pair.a),
                 path_name(document, &pair.pair.b)
-            ));
+            );
+            match selected.as_deref_mut() {
+                Some(selected) if pair.result.is_ok() => {
+                    let active = *selected == Some(index);
+                    if ui
+                        .selectable_label(active, name)
+                        .on_hover_text("Show this pair's witnesses and distance in the viewport")
+                        .clicked()
+                    {
+                        *selected = (!active).then_some(index);
+                    }
+                }
+                _ => {
+                    ui.label(name);
+                }
+            }
             match &pair.result {
                 Err(error) => {
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("Unknown: {error}"));
                 }
                 Ok(values) => {
-                    let (label, color) = match values.relation {
-                        PairRelation::Separated => ("Separated", egui::Color32::LIGHT_GREEN),
-                        PairRelation::ContactWithinTolerance => {
-                            ("Contact within tolerance", egui::Color32::YELLOW)
-                        }
-                        PairRelation::Overlapping => ("Interference", egui::Color32::LIGHT_RED),
-                    };
+                    let (label, color) = clearance_view::relation_style(values.relation);
                     ui.colored_label(color, label);
                     ui.label(format!(
                         "Minimum clearance: {:.6} mm",
@@ -537,3 +652,7 @@ fn show_pairs(ui: &mut egui::Ui, document: &Document, report: &PairReport) {
 #[cfg(test)]
 #[path = "inspection_native_tests.rs"]
 mod native_tests;
+
+#[cfg(test)]
+#[path = "clearance_view_tests.rs"]
+mod clearance_tests;

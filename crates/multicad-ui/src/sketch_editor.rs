@@ -3635,6 +3635,7 @@ impl SketchEditor {
             scene.as_ref(),
             self.solid.section.plane(),
         );
+        self.assembly_clearance_paint(&painter, rect, session, scene.as_ref());
         if !self.measurement.active()
             && scene.is_none()
             && response.clicked()
