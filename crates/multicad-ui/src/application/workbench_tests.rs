@@ -124,6 +124,16 @@ fn drawing_annotate_and_drafting_tools_keep_their_workbench() {
         assert_eq!(app.tab, tab, "{id} after page Discard");
         assert!(!app.tool_active(command));
         app.invoke(command, &[], Channel::Ui).unwrap();
+        // Text note and Sheet line first wait for placement on the paper.
+        let drawings = &mut app.current_mut().drawings;
+        if let Some(text) = drawings.pending_note_text() {
+            *text = "Note".into();
+            drawings.finish_placement().unwrap();
+        } else {
+            drawings.placement_click([60., 60.], false).unwrap();
+            drawings.placement_click([90., 60.], false).unwrap();
+        }
+        assert!(app.current().drawings.dirty(), "{id} placed");
         app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
         assert_eq!(
             (app.mode, app.tab),

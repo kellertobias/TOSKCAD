@@ -311,3 +311,92 @@ fn print_workspace_renders_its_controls_and_requests_the_save_dialog() {
     );
     assert!(!w.take_write_request());
 }
+
+#[test]
+fn parts_are_chosen_in_print_without_a_model_selection_and_changes_invalidate_the_preview() {
+    // Two untagged Parts and nothing selected on entering Export.
+    let (mut s, mut w, state, first) = fixture();
+    let second = Entity::new(
+        "Lid",
+        EntityData::Part {
+            features: vec![],
+            material: None,
+            tags: Default::default(),
+        },
+    );
+    let second_id = second.id;
+    s.apply(Request {
+        expected_revision: s.revision(),
+        actor: Actor::local(Channel::Ui),
+        label: "Second Part".into(),
+        edits: vec![Mutation::Insert(second)],
+    })
+    .unwrap();
+    w.capture(vec![]);
+    let source = s.document().clone();
+    let offered: Vec<_> = w
+        .candidates(&s)
+        .unwrap()
+        .iter()
+        .map(|c| (c.name.clone(), c.kind))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            ("Bracket body".to_owned(), PrintCandidateKind::Part),
+            ("Lid".to_owned(), PrintCandidateKind::Part),
+        ]
+    );
+    // The picker renders both Parts with their kind.
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400., 900.),
+            )),
+            ..Default::default()
+        },
+        |ui| w.show(ui, &s, false),
+    );
+    output.textures_delta.clear();
+    let labels: Vec<String> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    for expected in ["Bracket body · Part", "Lid · Part", "0 of 2 chosen"] {
+        assert!(
+            labels.iter().any(|l| l == expected),
+            "{expected} missing: {labels:?}"
+        );
+    }
+    // Choose one, preview it, then both: the first preview goes stale.
+    w.choose(vec![second_id]);
+    w.request_preview(&s, Channel::Ui).unwrap();
+    assert_eq!(
+        state.borrow().previews[0].2.source,
+        PrintSource::Parts {
+            parts: vec![second_id]
+        }
+    );
+    reply_preview(&s, &state, 0, 1);
+    w.poll(&s);
+    assert!(w.current(&s) && w.enabled(PrintTool::Write, &s));
+    w.choose(vec![second_id, first]);
+    assert!(!w.current(&s) && !w.enabled(PrintTool::Write, &s));
+    w.request_preview(&s, Channel::Ui).unwrap();
+    assert_eq!(
+        state.borrow().previews[1].2.source,
+        PrintSource::Parts {
+            parts: vec![second_id, first]
+        }
+    );
+    // Returning to the captured model selection is a workspace change only.
+    w.restore_captured();
+    assert!(w.chosen().is_empty());
+    assert_eq!(s.document(), &source, "picking never edits the document");
+}

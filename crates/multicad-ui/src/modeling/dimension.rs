@@ -2,8 +2,18 @@ use crate::egui;
 use multicad_core::{
     constraint_sketch::Dimension,
     document::Document,
-    parameters::{BoundExpression, Unit},
+    parameters::{BoundExpression, LengthUnit, Unit, parse_length},
 };
+/// Up to six decimals without trailing zeros.
+fn trimmed(value: f64) -> String {
+    let text = format!("{value:.6}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".into()
+    } else {
+        text.into()
+    }
+}
 
 /// Text stays local, including temporarily incomplete formulas. Stable bindings
 /// are retained when editing a previously bound dimension.
@@ -16,16 +26,26 @@ pub(crate) struct DimensionField {
     original_text: String,
 }
 impl DimensionField {
+    /// `unit` is the field's canonical unit. Millimetre fields show and read
+    /// unqualified input in the Settings length unit (CAD-187); typed values
+    /// are stored with that explicit unit, so the preference never changes a
+    /// stored dimension.
     pub fn from_dimension(value: &Dimension, unit: &'static str) -> Result<Self, String> {
+        let unit = if unit == "mm" {
+            crate::preferences::length_unit().symbol()
+        } else {
+            unit
+        };
         let source = Unit::parse(value.unit()).ok_or("Unknown dimension unit")?;
         let target = Unit::parse(unit).ok_or("Unknown field unit")?;
         if source.dimension() != target.dimension() {
             return Err("Incompatible dimension unit".into());
         }
         let text = match value {
-            Dimension::Literal { value, .. } => {
-                (value * source.scale() / target.scale()).to_string()
-            }
+            Dimension::Literal { value, .. } if source == target => value.to_string(),
+            // A converted literal shows a rounded value; left unchanged it
+            // still resolves to the exact authored dimension.
+            Dimension::Literal { value, .. } => trimmed(value * source.scale() / target.scale()),
             Dimension::Expression { expression } => expression.text.clone(),
         };
         Ok(Self {
@@ -73,11 +93,18 @@ impl DimensionField {
             .map(|expression| Dimension::Expression { expression })
             .map_err(|error| error.to_string());
         }
-        let value = self
-            .text
-            .trim()
-            .parse::<f64>()
-            .map_err(|_| "Enter a number or an expression beginning with '='".to_string())?;
+        let (value, unit) = match self.text.trim().parse::<f64>() {
+            Ok(value) => (value, self.unit.clone()),
+            // Explicitly qualified lengths such as `1 in` keep their own unit.
+            Err(_) => Unit::parse(&self.unit)
+                .filter(|unit| unit.dimension() == multicad_core::parameters::Dimension::LENGTH)
+                .and_then(|_| parse_length(&self.text, LengthUnit::Millimeter).ok())
+                .map(|input| (input.value, input.unit.symbol().to_string()))
+                .ok_or_else(|| {
+                    "Enter a number, a length such as 1 in, or an expression beginning with '='"
+                        .to_string()
+                })?,
+        };
         if !value.is_finite() || value.abs() > 1e9 {
             return Err("Value must be finite and no greater than 1,000,000,000".into());
         }
@@ -86,10 +113,7 @@ impl DimensionField {
         {
             return Ok(self.original.clone());
         }
-        Ok(Dimension::Literal {
-            value,
-            unit: self.unit.clone(),
-        })
+        Ok(Dimension::Literal { value, unit })
     }
     pub fn remember(&mut self, dimension: &Dimension) {
         self.previous = dimension.expression().cloned();
@@ -167,5 +191,62 @@ mod tests {
         assert_eq!(field.resolve(&doc).unwrap(), bound);
         doc.remove(parameter.id).unwrap();
         assert!(field.resolve(&doc).is_err());
+    }
+    #[test]
+    fn length_fields_follow_the_settings_unit_without_changing_stored_dimensions() {
+        use crate::preferences::{LengthUnit, set_length_unit};
+        let doc = Document::new("Inch fields").unwrap();
+        let authored = Dimension::Literal {
+            value: 25.4,
+            unit: "mm".into(),
+        };
+        set_length_unit(LengthUnit::Inch);
+        let mut field = DimensionField::from_dimension(&authored, "mm").unwrap();
+        assert_eq!(field.text, "1");
+        assert_eq!(field.unit, "in");
+        // Untouched, the authored millimetre literal is kept exactly.
+        assert_eq!(field.resolve(&doc).unwrap(), authored);
+        // Unqualified input is inches; qualified input keeps its unit.
+        field.text = "2".into();
+        assert_eq!(
+            field.resolve(&doc).unwrap(),
+            Dimension::Literal {
+                value: 2.,
+                unit: "in".into()
+            }
+        );
+        field.text = "30 mm".into();
+        assert_eq!(
+            field.resolve(&doc).unwrap(),
+            Dimension::Literal {
+                value: 30.,
+                unit: "mm".into()
+            }
+        );
+        field.text = "5 deg".into();
+        assert!(field.resolve(&doc).is_err());
+        // Angles and counts are unaffected by the length preference.
+        let angle = DimensionField::from_dimension(
+            &Dimension::Literal {
+                value: 90.,
+                unit: "deg".into(),
+            },
+            "deg",
+        )
+        .unwrap();
+        assert_eq!(angle.unit, "deg");
+        // An inch literal shown in millimetres stays inches until edited.
+        set_length_unit(LengthUnit::Millimeter);
+        let inch = Dimension::Literal {
+            value: 1.,
+            unit: "in".into(),
+        };
+        let field = DimensionField::from_dimension(&inch, "mm").unwrap();
+        assert_eq!((field.text.as_str(), field.unit.as_str()), ("25.4", "mm"));
+        assert_eq!(field.resolve(&doc).unwrap(), inch);
+        assert_eq!(
+            inch.value_in(Unit::Millimeter, None).unwrap(),
+            authored.value_in(Unit::Millimeter, None).unwrap()
+        );
     }
 }

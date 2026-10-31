@@ -352,7 +352,7 @@ impl MeasurementInspector {
             if let Some(e) = self.feed.batch.as_ref().and_then(|b| b.pinned.get(&pin.id)) {
                 match &e.result {
                     Ok(v) => {
-                        ui.small(format!("{:.3} mm", v.minimum_mm));
+                        ui.small(crate::preferences::format_mm(v.minimum_mm));
                     }
                     Err(e) => {
                         ui.colored_label(egui::Color32::LIGHT_RED, &e.message);
@@ -485,11 +485,17 @@ impl MeasurementInspector {
     }
 }
 fn values(ui: &mut egui::Ui, v: &MeasurementValues) {
-    ui.strong(format!("Minimum distance · {:.3} mm", v.minimum_mm));
+    ui.strong(format!(
+        "Minimum distance · {}",
+        crate::preferences::format_mm(v.minimum_mm)
+    ));
     if let Some(d) = v.axis_components_mm {
+        let unit = crate::preferences::length_unit();
         ui.label(format!(
-            "ΔX {:+.3} · ΔY {:+.3} · ΔZ {:+.3} mm",
-            d[0], d[1], d[2]
+            "ΔX {} · ΔY {} · ΔZ {}",
+            unit.format_signed_mm(d[0]),
+            unit.format_signed_mm(d[1]),
+            unit.format_signed_mm(d[2])
         ));
     } else if let Some(message) = &v.axis_warning {
         ui.small(message);
@@ -504,7 +510,10 @@ fn values(ui: &mut egui::Ui, v: &MeasurementValues) {
         _ => {}
     }
     if let ScalarMetric::Millimeters { value } = v.parallel_plane_separation {
-        ui.label(format!("Supporting-plane separation · {value:.3} mm"));
+        ui.label(format!(
+            "Supporting-plane separation · {}",
+            crate::preferences::format_mm(value)
+        ));
     }
     ui.collapsing("Accuracy",|ui|{ui.small(format!("Tolerance {} mm · Boolean fuzz {} mm",v.tolerance_mm,v.boolean_fuzzy_mm));ui.small(format!("{} native closest-point solution(s){}",v.total_solutions,if v.witnesses_complete{""}else{" · bounded witness display"}));if v.inner_solution{ui.small("A solid contains the other selection; zero distance does not distinguish contact from penetration.");}});
 }

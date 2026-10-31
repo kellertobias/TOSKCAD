@@ -1,5 +1,6 @@
 //! Saved output sets and nonblocking, attributable export jobs.
 mod backend;
+mod destination;
 mod form;
 mod schedule_csv;
 use crate::{egui, icons::Icon};
@@ -88,6 +89,8 @@ struct Pending {
     run: bool,
     expected: Option<PreviewKey>,
     catalog_scope: Option<Scope>,
+    /// Format of each previewed recipe, for the run receipt.
+    formats: BTreeMap<EntityId, &'static str>,
 }
 struct JobSummary {
     id: EntityId,
@@ -113,8 +116,38 @@ pub struct ExportWorkspace {
     catalog_key: Option<(EntityId, u64)>,
     planar_catalog: Option<PlanarCatalog>,
     schedule: schedule_csv::ScheduleCsv,
+    /// The output folder text and why it cannot be used, refreshed when the
+    /// text changes.
+    directory_check: Option<(String, Option<String>)>,
+    /// The panel asked for the native folder dialog.
+    folder_requested: bool,
 }
 impl ExportWorkspace {
+    /// The panel asked for the native folder dialog.
+    pub fn take_folder_request(&mut self) -> bool {
+        std::mem::take(&mut self.folder_requested)
+    }
+    #[cfg(test)]
+    pub fn request_folder_for_test(&mut self) {
+        self.folder_requested = true;
+    }
+    pub fn directory(&self) -> &str {
+        &self.directory
+    }
+    /// Use a folder chosen in the native dialog; returns why it cannot
+    /// receive a bundle, if it cannot.
+    pub fn set_directory(&mut self, directory: &str) -> Option<String> {
+        self.directory = directory.into();
+        self.directory_problem()
+    }
+    /// Why the current output folder cannot receive a bundle.
+    pub fn directory_problem(&mut self) -> Option<String> {
+        let text = self.directory.trim();
+        if self.directory_check.as_ref().is_none_or(|(d, _)| d != text) {
+            self.directory_check = Some((text.to_owned(), destination::diagnose(text)));
+        }
+        self.directory_check.as_ref().and_then(|(_, p)| p.clone())
+    }
     pub fn has_backend(&self) -> bool {
         self.backend.is_some()
     }
@@ -230,6 +263,7 @@ impl ExportWorkspace {
                 run: false,
                 expected: None,
                 catalog_scope: None,
+                formats: BTreeMap::new(),
             },
         );
         self.scheduled = None;
@@ -266,6 +300,7 @@ impl ExportWorkspace {
                 run: false,
                 expected: None,
                 catalog_scope: Some(scope),
+                formats: BTreeMap::new(),
             },
         );
         Ok("Loading current native planar faces…".into())
@@ -321,6 +356,10 @@ impl ExportWorkspace {
                 if let Some(path) = path {
                     self.directory = path.into();
                 }
+                // Checked afresh: the folder may have changed since it was typed.
+                if let Some(problem) = destination::diagnose(&self.directory) {
+                    return Err(problem);
+                }
                 if !self.current(s) {
                     return Err("Preview the current saved set before running it".into());
                 }
@@ -359,6 +398,12 @@ impl ExportWorkspace {
                         run: true,
                         expected: Some(preview.key.clone()),
                         catalog_scope: None,
+                        formats: preview
+                            .selection
+                            .recipes
+                            .iter()
+                            .map(|r| (r.id, r.output.format_label()))
+                            .collect(),
                     },
                 );
                 Ok(format!(
@@ -497,20 +542,25 @@ impl ExportWorkspace {
                             continue;
                         }
                         let text = format!(
-                            "{} {} file(s) · {} ({:?}) · revision {}",
+                            "{} {} file(s){} from {} revision {} · {} ({:?})",
                             if receipt.reused { "Reused" } else { "Exported" },
                             receipt.files.len(),
+                            receipt_formats(&p.formats, &receipt.files),
+                            source_name(s, p.document),
+                            p.revision,
                             p.actor.id,
                             p.actor.channel,
-                            p.revision
                         );
                         self.notice = Some((format!("{text} · {}", receipt.directory), false));
                         self.remember(reply.id, text, Some(receipt.directory));
                     }
                     Err(e) => {
                         let text = format!(
-                            "Export failed · {} ({:?}) · revision {} · {e}",
-                            p.actor.id, p.actor.channel, p.revision
+                            "Export failed for {} revision {} · {} ({:?}) · {e}",
+                            source_name(s, p.document),
+                            p.revision,
+                            p.actor.id,
+                            p.actor.channel,
                         );
                         self.notice = Some((text.clone(), true));
                         self.error = Some(e.to_string());
@@ -619,7 +669,9 @@ impl ExportWorkspace {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(22,16)).show(ui,|ui|{
    ui.heading("Output preview");ui.label("Saved scopes resolve current source identities, independently of model selection and visibility.");
    ui.horizontal_wrapped(|ui|{for tool in[ExportTool::Preview,ExportTool::Run,ExportTool::Cancel]{if ui.add_enabled(self.enabled(tool,s)&&(allow_io||tool==ExportTool::Cancel),egui::Button::new(tool.label())).on_hover_text(match tool{ExportTool::Preview=>"Resolve the current saved scope against native geometry",ExportTool::Run=>"Export the exact previewed snapshot into a verified output bundle",_=>"Cancel accepted jobs at the next safe boundary"}).clicked(){action=Some(tool);}}});
-   ui.label("Absolute output directory");ui.add(egui::TextEdit::singleline(&mut self.directory).desired_width(ui.available_width()).hint_text("Choose an existing absolute directory")).on_hover_text("The run creates a source- and provider-identified bundle. Unknown or modified bundles are never overwritten");
+   ui.label("Output folder");
+   ui.horizontal(|ui|{if ui.button("Choose folder…").on_hover_text("Choose the output folder in the system folder dialog").clicked(){self.folder_requested=true;}ui.add(egui::TextEdit::singleline(&mut self.directory).desired_width(ui.available_width()).hint_text("or type an existing absolute folder path")).on_hover_text("The run creates a source- and provider-identified bundle in this folder. Unknown or modified bundles are never overwritten");});
+   if !self.directory.trim().is_empty()&&let Some(problem)=self.directory_problem(){ui.colored_label(egui::Color32::LIGHT_YELLOW,problem);}
    if self.dirty(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Save or discard set edits before previewing or running.");}else if self.pending(){ui.label("Output job in progress…");}
    if let Some(error)=&self.error{ui.colored_label(egui::Color32::LIGHT_RED,error);}
    if self.backend.is_none(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Native output service is not installed.");}
@@ -627,9 +679,10 @@ impl ExportWorkspace {
     if let Some(preview)=&self.preview{
      let current=self.current(s);if !current{ui.colored_label(egui::Color32::LIGHT_YELLOW,"Previous preview · display only. Resolve the current source before Run.");}
      ui.label(format!("{} matched source occurrence(s) · {} selected page(s) · revision {}",preview.selection.parts.len(),preview.selection.pages.len(),preview.key.source.revision));
-     for report in &preview.recipes{let name=preview.selection.recipes.iter().find(|r|r.id==report.recipe).map_or("Recipe",|r|r.name.as_str());match &report.status{RecipeStatus::Ready=>{ui.label(format!("{name} · Ready · {} file(s)",report.files));},RecipeStatus::Empty=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Empty"));},RecipeStatus::Unsupported(reason)=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Unsupported · {reason}"));}}}
+     ui.small(format!("Provider · {}",preview.provider));
+     for report in &preview.recipes{let name=preview.selection.recipes.iter().find(|r|r.id==report.recipe).map_or_else(||"Recipe".to_owned(),recipe_title);match &report.status{RecipeStatus::Ready=>{ui.label(format!("{name} · Ready · {} file(s)",report.files));},RecipeStatus::Empty=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Empty"));},RecipeStatus::Unsupported(reason)=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Unsupported · {reason}"));}}}
      ui.collapsing("Matched parts and occurrences",|ui|{for part in &preview.selection.parts {let path=if part.occurrence_names.is_empty(){part.name.clone()}else{format!("{} / {}",part.occurrence_names.join(" / "),part.name)};ui.label(path).on_hover_text(format!("Part {} · occurrence path {:?}",part.reference.part,part.reference.occurrence_path));}});
-     ui.separator();for artifact in &preview.artifacts{let label=match &artifact.output.subject{OutputSubject::Part(reference)=>preview.selection.parts.iter().find(|p|p.reference==*reference).map(|p|if p.occurrence_names.is_empty(){p.name.clone()}else{format!("{} · {}",p.name,p.occurrence_names.join(" / "))}).unwrap_or_else(||"Part".into()),OutputSubject::Parts(parts)=>format!("Assembly · {} part(s)",parts.len()),_=>"Drawing".into()};ui.strong(label);if let Some(drawing)=&artifact.drawing{ui.label(format!("{} page(s) · {} vector item(s) · {} text line(s)",drawing.pages.len(),drawing.vectors,drawing.texts));}else if let Some(mesh)=&artifact.mesh{ui.label(format!("{} object(s) · {} placement(s) · {} triangles · chord {} mm",mesh.objects,mesh.build_items,mesh.triangles,mesh.chord_deviation_mm));}else if let Some(planar)=&artifact.planar{ui.label(format!("1:1 · {:.3} mm² · {} outer / {} inner loop(s)",planar.area_mm2,planar.outer_loops,planar.inner_loops));}else{ui.label(format!("{:.3} mm³ · {} solid(s)",artifact.volume_mm3,artifact.solid_count));}ui.add(egui::Label::new(&artifact.output.filename).truncate()).on_hover_text(&artifact.output.filename);}
+     ui.separator();for artifact in &preview.artifacts{let label=match &artifact.output.subject{OutputSubject::Part(reference)=>preview.selection.parts.iter().find(|p|p.reference==*reference).map(|p|if p.occurrence_names.is_empty(){p.name.clone()}else{format!("{} · {}",p.name,p.occurrence_names.join(" / "))}).unwrap_or_else(||"Part".into()),OutputSubject::Parts(parts)=>format!("Assembly · {} part(s)",parts.len()),_=>"Drawing".into()};ui.strong(label);if let Some(drawing)=&artifact.drawing{ui.label(format!("{} page(s) · {} vector item(s) · {} text line(s)",drawing.pages.len(),drawing.vectors,drawing.texts));}else if let Some(mesh)=&artifact.mesh{ui.label(format!("{} object(s) · {} placement(s) · {} triangles · chord {} mm",mesh.objects,mesh.build_items,mesh.triangles,mesh.chord_deviation_mm));}else if let Some(planar)=&artifact.planar{ui.label(format!("1:1 · {:.3} mm² · {} outer / {} inner loop(s)",planar.area_mm2,planar.outer_loops,planar.inner_loops));}else{ui.label(format!("{:.3} mm³ · {} solid(s)",artifact.volume_mm3,artifact.solid_count));}let format=preview.selection.recipes.iter().find(|r|r.id==artifact.output.recipe).map_or("Unknown format",|r|r.output.format_label());ui.add(egui::Label::new(format!("{format} · {}",artifact.output.filename)).truncate()).on_hover_text(&artifact.output.filename);}
      for excluded in &preview.excluded{let name=s.document().get(excluded.reference.part).map_or("Part",|e|e.name.as_str());ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("Not exported: {name} · {}",match excluded.reason{ExclusionReason::ConsumedProducer=>"consumed by a later operation",ExclusionReason::NoCurrentSolid=>"no current unsuppressed solid"}));}
      if !preview.selection.pages.is_empty(){ui.separator();for(index,page)in preview.selection.pages.iter().enumerate(){ui.label(format!("Page {} · {} · {} · {} × {} mm",index+1,page.number,page.title,page.paper_mm[0],page.paper_mm[1]));}}
      ui.collapsing("Source identities",|ui|{ui.monospace(format!("Source {}",preview.key.source.source_hash));for part in &preview.selection.parts{ui.monospace(format!("Part {} · occurrences {:?}",part.reference.part,part.reference.occurrence_path));}});
@@ -663,3 +716,44 @@ impl ExportWorkspace {
 
 #[cfg(test)]
 mod tests;
+
+/// The originating document's name for a job receipt, so a receipt never
+/// reads as if it came from whichever project is active when it is shown.
+fn source_name(s: &Session, document: EntityId) -> String {
+    if s.document().id() == document {
+        format!("\u{201c}{}\u{201d}", s.document().name())
+    } else {
+        "another document".into()
+    }
+}
+
+/// A recipe's preview title: its actual format and extension, with the
+/// authored name first when it says something else.
+pub(super) fn recipe_title(recipe: &Recipe) -> String {
+    let format = format!(
+        "{} (.{})",
+        recipe.output.format_label(),
+        recipe.output.extension()
+    );
+    if recipe.output.is_generated_name(&recipe.name) {
+        format
+    } else {
+        format!("{} · {format}", recipe.name.trim())
+    }
+}
+/// The formats actually written, in recipe order, e.g. ` · PDF, STEP`.
+fn receipt_formats(formats: &BTreeMap<EntityId, &'static str>, files: &[WrittenFile]) -> String {
+    let mut written: Vec<&str> = vec![];
+    for file in files {
+        if let Some(label) = formats.get(&file.artifact.output.recipe)
+            && !written.contains(label)
+        {
+            written.push(label);
+        }
+    }
+    if written.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", written.join(", "))
+    }
+}
