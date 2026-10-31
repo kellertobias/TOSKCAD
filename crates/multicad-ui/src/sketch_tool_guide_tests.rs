@@ -164,7 +164,9 @@ fn rectangle_inspector_prompts_corners_without_apply_and_commits_on_the_second_c
     assert!(
         h.editor
             .message
-            .starts_with("Rectangle committed · Undo removes it")
+            .starts_with("Rectangle committed · Undo removes it"),
+        "{}",
+        h.editor.message
     );
     assert!(h.shows("Step 1 of 2 · Click the first corner"));
     // Escape semantics: ending the tool keeps the committed rectangle.
