@@ -137,7 +137,7 @@ CurveQueryData query(const Handle(Geom2d_Curve) & a,
   if (inter.NbPoints() > static_cast<int>(maxHits) ||
       inter.NbSegments() > static_cast<int>(maxHits))
     throw std::runtime_error("Curve intersection budget exceeded");
-  CurveQueryData out;
+  CurveQueryData out{};
   out.overlaps = static_cast<uint32_t>(inter.NbSegments());
   for (int i = 1; i <= inter.NbPoints(); ++i) {
     const auto &hit = inter.Intersector().Point(i);
@@ -180,7 +180,7 @@ CurveQueryData self_query(const Handle(Geom2d_Curve) & c, double tolerance) {
   }
   const bool closed =
       spline->StartPoint().Distance(spline->EndPoint()) <= tolerance;
-  CurveQueryData out;
+  CurveQueryData out{};
   const auto keep = [&](const CurveIntersectionData &hit, size_t a, size_t b) {
     const bool next = b == a + 1;
     const bool seam = closed && a == 0 && b + 1 == pieces.size();

@@ -44,7 +44,11 @@ fn main() {
         config.define(format!("USE_{name}"), "OFF");
     }
     let root = config.build();
-    cxx_build::bridge("src/lib.rs")
+    let mut bridge = cxx_build::bridge("src/lib.rs");
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        bridge.flag("/EHsc").flag("/Zc:__cplusplus");
+    }
+    bridge
         .file("src/bridge.cpp")
         .include("include")
         .include(root.join("include"))
