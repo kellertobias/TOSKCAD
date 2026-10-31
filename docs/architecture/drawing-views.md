@@ -109,6 +109,34 @@ clipping. Curve, point, source and hatch budgets produce explicit errors.
 These bounds constrain output size; they do not establish a low-power timing
 budget or cancellation inside a running OCCT operation.
 
+## Title block
+
+[`drawings/title_block.rs`](../../crates/multicad-core/src/drawings/title_block.rs)
+lays out the default title block at the lower right of the printable area,
+at most 180 mm wide, on a four-column grid:
+
+| Row | Cells |
+| --- | --- |
+| Identity | Project (3 columns), app logo (1 column) |
+| Title | Drawing title across the full width, 3.5 mm text |
+| People | Drawn by, Checked by, Revision, Drawing no. |
+| Format | Scale, Units (mm), Projection, Sheet (`n / total`) |
+
+Labels are 1.8 mm and values 2.5 mm monospaced text. The block has a 0.5 mm
+outer frame and 0.25 mm cell rules. Values wrap inside their cell and rows
+grow; missing values print an em dash, and a block that no longer fits the
+paper is rejected rather than clipped. The layout is independent of view and
+room-plan rendering.
+
+The ToskCAD logo (`assets/branding/toskcad-logo-titleblock.png`, a 640 px
+copy of the approved blueprint logo) is shown by default with its
+proportions preserved. **Show app logo in title block** in Page settings
+turns it off for that page; the project cell then spans the full width, so
+no empty cell remains. The setting is saved with the page. It is omitted
+from the wire form while on; a page that hides the logo requires
+`drawings.title_logo.1`. An application-wide default for new pages belongs to
+the Settings work (CAD-187).
+
 ## Scales and fitting
 
 Every view prints a caption with its name and stored paper:model scale, such
