@@ -507,17 +507,7 @@ impl MachiningPanel {
                 if !self.through {
                     changed |= self.depth.show(ui, "Depth", "Blind hole depth");
                 }
-                if let Some(i) = self.selected_hole {
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Hole {} selected: the next face click moves it",
-                            i + 1
-                        ));
-                        if ui.small_button("Add holes").clicked() {
-                            self.selected_hole = None;
-                        }
-                    });
-                }
+                changed |= self.show_selected_hole(ui);
             }
             Kind::ShelfPins => changed |= self.show_shelf_pins(ui, document),
             Kind::Hardware => {

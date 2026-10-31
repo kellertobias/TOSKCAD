@@ -437,8 +437,11 @@ the producer contract for BOM and cut-list exports (CAD-89).
   and to the face edges and center lines. The viewport draws each target's
   face outline and name, its u and v axes, the hovered point's offsets from
   the start edges, and the resolved holes and recess outlines; a target the
-  current values refuse is outlined in red with the reason. The Inspector
-  edits the same values.
+  current values refuse is outlined in red with the reason, and the hole or
+  pocket under the pointer turns red with a note where it would leave the
+  face. A selected hole shows its u and v in the Inspector, where it can be
+  typed or deleted. The Inspector edits the same values, and an edit keeps
+  the operation, its cut features and its targets.
 - **MCP shelf pins.** `set_machining` with `kind: "shelf_pins"` and
   `face: "inside"`; its result lists each carcass's `shelf_supports`.
 

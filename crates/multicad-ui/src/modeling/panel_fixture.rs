@@ -78,6 +78,14 @@ pub(crate) fn flat_panel() -> (Session, EntityId) {
 }
 /// A 600 × 720 × 400 carcass; returns its left and right sides.
 pub(crate) fn carcass() -> (Session, EntityId, EntityId) {
+    carcass_with(false)
+}
+/// The cabinet review fixture: sides, top, bottom, an inset back and one
+/// shelf, six panels in all.
+pub(crate) fn six_panel_carcass() -> (Session, EntityId, EntityId) {
+    carcass_with(true)
+}
+fn carcass_with(six: bool) -> (Session, EntityId, EntityId) {
     let (mut s, stock) = stocked();
     let created = model::prepare_carcass(
         &s,
@@ -93,9 +101,18 @@ pub(crate) fn carcass() -> (Session, EntityId, EntityId) {
                 depth: length(400.),
                 stock,
                 construction: Construction::SidesFullHeight,
-                back: Back::None,
+                back: if six {
+                    Back::Inset {
+                        stock,
+                        recess: length(10.),
+                    }
+                } else {
+                    Back::None
+                },
                 shelves: Shelves {
-                    layout: ShelfLayout::Even { count: 0 },
+                    layout: ShelfLayout::Even {
+                        count: u32::from(six),
+                    },
                     setback: length(10.),
                     clearance: length(1.),
                 },

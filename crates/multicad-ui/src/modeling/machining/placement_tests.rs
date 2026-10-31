@@ -153,3 +153,85 @@ fn system32_tool_targets_both_sides_places_rows_and_reopens() {
     assert!(!edit.click(s.document(), &parameters, hit, hit.at, |_, _| f32::MAX));
     assert!(edit.pick_note.as_deref().unwrap().contains("fixed"));
 }
+
+#[test]
+fn a_visual_drill_edit_on_the_six_panel_cabinet_keeps_identity_and_undoes() {
+    let (mut s, left, _right) = crate::modeling::panel_fixture::six_panel_carcass();
+    let panels = model::panels(s.document()).count();
+    assert_eq!(panels, 6);
+    let parameters = multicad_core::parameters::evaluate(s.document()).unwrap();
+    // Click the left side's inner face (x = 18) 100 mm from the front, 300 up.
+    let mut form = MachiningPanel::new("Hinge holes".into());
+    form.kind = Kind::Drill;
+    form.holes.clear();
+    form.diameter = field(5.);
+    let hit = panel_face::locate(s.document(), &parameters, left, [18., 100.4, 299.6]).unwrap();
+    assert_eq!(hit.face, MachiningFace::Top);
+    let at = panel_face::snap(hit.at, hit.frame.size, 1., 5.);
+    assert!(form.click(s.document(), &parameters, hit, at, |_, _| f32::MAX));
+    assert_eq!(form.targets, vec![left]);
+    assert_eq!(form.side, Side::Top);
+    assert_eq!(form.hole_points(), vec![[100., 300.]]);
+    // A hole that would leave the face is flagged while hovering.
+    let edge = panel_face::locate(s.document(), &parameters, left, [18., 1., 300.]).unwrap();
+    let near_edge = panel_face::snap(edge.at, edge.frame.size, 1., 5.);
+    assert!(
+        form.hover_problem(s.document(), &parameters, &edge, near_edge)
+            .unwrap()
+            .contains("Outside")
+    );
+    assert!(
+        form.hover_problem(s.document(), &parameters, &hit, at)
+            .is_none()
+    );
+    let prepared = form
+        .request(s.document(), true)
+        .unwrap()
+        .prepare(&s, actor())
+        .unwrap();
+    let cut = prepared.outputs[0].feature;
+    s.commit(prepared.prepared).unwrap();
+    let applied = s.revision();
+    let center = |s: &Session| {
+        let m = Compiler::default()
+            .compile(s.document(), s.revision())
+            .unwrap();
+        m.machining(s.document()).unwrap()[0].holes[0].center
+    };
+    assert_eq!(center(&s), [18., 100., 300.]);
+
+    // Reopen, select the hole on the face and move it with a second click.
+    let mut edit = MachiningPanel::existing(s.document(), cut).unwrap();
+    let op = edit.existing.unwrap();
+    let parameters = multicad_core::parameters::evaluate(s.document()).unwrap();
+    let hole = panel_face::locate(s.document(), &parameters, left, [18., 100., 300.]).unwrap();
+    // The pointer is on the hole marker: it selects instead of adding.
+    assert!(edit.click(s.document(), &parameters, hole, hole.at, |_, _| 0.));
+    assert_eq!(edit.selected_hole, Some(0));
+    let to = panel_face::locate(s.document(), &parameters, left, [18., 150., 420.]).unwrap();
+    assert!(edit.click(s.document(), &parameters, to, to.at, |_, _| f32::MAX));
+    assert_eq!(edit.hole_points(), vec![[150., 420.]]);
+    let prepared = edit
+        .request(s.document(), true)
+        .unwrap()
+        .prepare(&s, actor())
+        .unwrap();
+    // The same operation and cut feature on the same Part.
+    assert_eq!(prepared.outputs.len(), 1);
+    assert_eq!(prepared.outputs[0].feature, cut);
+    assert_eq!(prepared.outputs[0].body, left);
+    s.commit(prepared.prepared).unwrap();
+    assert_eq!(
+        model::read_machining(s.document(), op).unwrap().targets,
+        vec![left]
+    );
+    assert_eq!(center(&s), [18., 150., 420.]);
+    assert_eq!(model::panels(s.document()).count(), 6);
+
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.revision(), applied + 2);
+    assert_eq!(center(&s), [18., 100., 300.]);
+    s.redo(s.revision(), actor()).unwrap();
+    assert_eq!(center(&s), [18., 150., 420.]);
+    assert!(model::read_machining_cut(s.document(), cut).is_ok());
+}

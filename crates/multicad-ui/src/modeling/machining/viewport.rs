@@ -64,24 +64,39 @@ impl MachiningPanel {
         let Some(hit) = self.hover else {
             return false;
         };
-        let at = self.snapped(document, &hit);
+        let at = self.snapped(&hit);
         panel_face::outline(&view, &hit.frame, panel_face::HOVER);
         panel_face::axes(&view, &hit.frame);
         panel_face::offsets(&view, &hit.frame, at);
         let p = panel_face::on_screen(&view, &hit.frame, at);
-        view.painter
-            .circle_stroke(p, 4., egui::Stroke::new(2., panel_face::HOVER));
+        // The feature the click would place, red where it would leave the face.
+        let problem = self.hover_problem(document, &parameters, &hit, at);
+        let color = if problem.is_some() {
+            panel_face::INVALID
+        } else {
+            panel_face::HOVER
+        };
+        match self.hover_diameter(document, &parameters) {
+            Some(d) => panel_face::circle(&view, &hit.frame, at, d, color),
+            None => {
+                view.painter
+                    .circle_stroke(p, 4., egui::Stroke::new(2., color));
+            }
+        }
         let name = document.get(hit.part).map_or("", |e| e.name.as_str());
         panel_face::label(
             &view,
             p + egui::vec2(8., -8.),
-            &format!(
-                "{name} · {} · ({:.1}, {:.1})",
-                panel_face::face_label(hit.face),
-                at[0],
-                at[1]
-            ),
-            panel_face::HOVER,
+            &match &problem {
+                Some(problem) => problem.clone(),
+                None => format!(
+                    "{name} · {} · ({:.1}, {:.1})",
+                    panel_face::face_label(hit.face),
+                    at[0],
+                    at[1]
+                ),
+            },
+            color,
         );
         if !view.clicked {
             return false;
@@ -98,9 +113,102 @@ impl MachiningPanel {
     }
     /// Face points snap to whole millimeters and the face edges and center
     /// lines.
-    fn snapped(&self, document: &Document, hit: &FaceHit) -> [f64; 2] {
-        let _ = document;
+    fn snapped(&self, hit: &FaceHit) -> [f64; 2] {
         panel_face::snap(hit.at, hit.frame.size, 1., 5.)
+    }
+    fn mm(
+        field: &super::DimensionField,
+        document: &Document,
+        p: &EvaluatedParameters,
+    ) -> Option<f64> {
+        field
+            .resolve(document)
+            .ok()
+            .and_then(|d| d.value_in(Unit::Millimeter, Some(p)).ok())
+    }
+    /// The hole diameter a drilling click would place.
+    fn hover_diameter(&self, document: &Document, p: &EvaluatedParameters) -> Option<f64> {
+        (self.kind == Kind::Drill)
+            .then(|| Self::mm(&self.diameter, document, p))
+            .flatten()
+    }
+    /// Why a click at `at` would place a hole or pocket off the face.
+    pub(super) fn hover_problem(
+        &self,
+        document: &Document,
+        p: &EvaluatedParameters,
+        hit: &FaceHit,
+        at: [f64; 2],
+    ) -> Option<String> {
+        let half = match self.kind {
+            Kind::Drill => {
+                let r = self.hover_diameter(document, p)? / 2.;
+                [r, r]
+            }
+            Kind::Pocket => [
+                Self::mm(&self.size[0], document, p)? / 2.,
+                Self::mm(&self.size[1], document, p)? / 2.,
+            ],
+            _ => return None,
+        };
+        let size = hit.frame.size;
+        let off = (0..2).any(|k| at[k] - half[k] < -1e-6 || at[k] + half[k] > size[k] + 1e-6);
+        off.then(|| {
+            format!(
+                "Outside the {:.0} × {:.0} mm face here; move inward",
+                size[0], size[1]
+            )
+        })
+    }
+    /// Replace the hole list with literal centers.
+    pub(super) fn set_holes(&mut self, holes: &[[f64; 2]]) {
+        self.holes = holes
+            .iter()
+            .map(|[u, v]| format!("{}, {}", num(*u), num(*v)))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    /// The selected hole's coordinates, editable in the Inspector.
+    pub(super) fn show_selected_hole(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(i) = self.selected_hole else {
+            ui.small("Click a panel face to add a hole; click a hole to select and move it.");
+            return false;
+        };
+        let mut holes = self.hole_points();
+        let Some(mut at) = holes.get(i).copied() else {
+            self.selected_hole = None;
+            return false;
+        };
+        let mut changed = false;
+        ui.label(format!("Hole {} (the next face click moves it)", i + 1));
+        ui.horizontal(|ui| {
+            ui.label("u");
+            changed |= ui
+                .add(egui::DragValue::new(&mut at[0]).speed(0.5).suffix(" mm"))
+                .changed();
+            ui.label("v");
+            changed |= ui
+                .add(egui::DragValue::new(&mut at[1]).speed(0.5).suffix(" mm"))
+                .changed();
+        });
+        let mut remove = false;
+        ui.horizontal(|ui| {
+            remove = ui.small_button("Delete hole").clicked();
+            if ui.small_button("Add holes").clicked() {
+                self.selected_hole = None;
+            }
+        });
+        if remove {
+            holes.remove(i);
+            self.selected_hole = None;
+            self.set_holes(&holes);
+            return true;
+        }
+        if changed {
+            holes[i] = at;
+            self.set_holes(&holes);
+        }
+        changed
     }
     fn paint(
         &self,
@@ -216,11 +324,7 @@ impl MachiningPanel {
                     (None, Some(i)) if i < holes.len() => holes[i] = at,
                     _ => holes.push(at),
                 }
-                self.holes = holes
-                    .iter()
-                    .map(|[u, v]| format!("{}, {}", num(*u), num(*v)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                self.set_holes(&holes);
             }
             Kind::Pocket => self.center = [field(at[0]), field(at[1])],
             Kind::Hardware => self.at = [field(at[0]), field(at[1])],
