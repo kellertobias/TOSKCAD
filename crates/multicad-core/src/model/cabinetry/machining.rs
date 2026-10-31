@@ -22,6 +22,11 @@ pub const MACHINING_CUT_SCHEMA: u32 = 1;
 pub const MACHINING_CUT_CAPABILITY: &str = "cabinetry.machining_cut.1";
 pub const HARDWARE_PATTERN_KIND: &str = "cabinetry.hardware";
 pub const HARDWARE_PATTERN_CAPABILITY: &str = "cabinetry.hardware.1";
+/// Declared by a file whose machining uses System 32 shelf-pin rows, so a
+/// build that predates them refuses the file instead of failing to parse.
+pub const SHELF_PIN_CAPABILITY: &str = "cabinetry.shelf_pins.1";
+/// Declared by a file whose machining enters on the `inside` face.
+pub const INSIDE_FACE_CAPABILITY: &str = "cabinetry.machining_inside.1";
 pub const MAX_TARGETS: usize = 64;
 pub const MAX_HOLES: usize = 256;
 pub const MAX_PIN_ROWS: usize = 8;
@@ -366,6 +371,25 @@ impl MachiningCutDefinition {
 
 pub fn machinings(document: &Document) -> impl Iterator<Item = &Entity> {
     document.entities().filter(|e| is_kind(e, MACHINING_KIND))
+}
+/// The file capabilities that machining features added after
+/// `cabinetry.machining.1` need: shelf-pin rows and the `inside` face.
+/// Read from the stored JSON so an unreadable operation still declares them.
+pub fn machining_capabilities(document: &Document) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for entity in machinings(document) {
+        let EntityData::Extension { definition, .. } = &entity.data else {
+            continue;
+        };
+        let data = &definition.data;
+        if data.pointer("/kind/kind").and_then(|v| v.as_str()) == Some("shelf_pins") {
+            out.insert(SHELF_PIN_CAPABILITY.to_owned());
+        }
+        if data.pointer("/face/face").and_then(|v| v.as_str()) == Some("inside") {
+            out.insert(INSIDE_FACE_CAPABILITY.to_owned());
+        }
+    }
+    out
 }
 pub fn hardware_patterns(document: &Document) -> impl Iterator<Item = &Entity> {
     document

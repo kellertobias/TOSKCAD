@@ -286,6 +286,11 @@ fn one_apply_joins_several_pairs_and_stock_changes_rebuild_both_sides() {
             .capabilities()
             .contains(model::PANEL_JOINT_CUT_CAPABILITY)
     );
+    assert!(
+        !opened
+            .capabilities()
+            .contains(model::LOOSE_TENON_CAPABILITY)
+    );
     assert_eq!(&opened.document, f.s.document());
     let reopened = Compiler::default().compile(&opened.document, 0).unwrap();
     near(volume(&reopened, b), volume(&m, b));

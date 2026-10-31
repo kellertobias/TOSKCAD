@@ -846,5 +846,9 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }) {
         capabilities.insert(super::SLAB_HOLE_CAPABILITY.into());
     }
+    capabilities.extend(super::machining_capabilities(document));
+    if super::panel_joints_need_loose_tenon(document) {
+        capabilities.insert(super::LOOSE_TENON_CAPABILITY.into());
+    }
     capabilities
 }
