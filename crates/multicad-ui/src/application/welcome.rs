@@ -1,5 +1,10 @@
 use super::*;
 use crate::recent_projects::{RecentProject, RecentStore, RecentView, RecentWorker};
+/// Height left for the welcome list. The centered column sits in a horizontal
+/// row whose own available height is only one row tall.
+fn list_height(ui: &egui::Ui) -> f32 {
+    (ui.ctx().content_rect().bottom() - ui.cursor().top() - 80.).max(100.)
+}
 impl Application {
     /// Production startup has no acquired document or unsaved-close prompt.
     /// The internal empty slot is replaced before the first New/Open completes.
@@ -178,6 +183,7 @@ impl Application {
             });
         let mut command = None;
         let mut path = None;
+        let mut example = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(25,33,44))).show(ui,|ui| {
             ui.add_space(54.);
             let width=(ui.available_width()-64.).clamp(300.,760.);
@@ -192,12 +198,24 @@ impl Application {
                     ui.horizontal(|ui| {
                         if ui.add_sized([156.,40.],egui::Button::new("Open project…")).on_hover_text("Choose a .tcd project (or a legacy .multicad project) with the operating system file picker").clicked(){command=Some(Command::Open);}
                         if ui.add_sized([156.,40.],egui::Button::new("New project")).on_hover_text("Create a new editable project").clicked(){command=Some(Command::New);}
+                        if ui.add_sized([156.,40.],egui::Button::new("Examples…")).on_hover_text("Browse the bundled example projects; each opens as your own editable copy").clicked(){command=Some(Command::Examples);}
                     });
                     ui.add_space(30.);
+                    let history_loading=self.recent_worker.as_ref().is_some_and(|w| w.pending());
+                    if self.recents.is_empty() && !history_loading {
+                        // First launch, or no history: the same cards as Examples.
+                        ui.strong("Start from an example");
+                        ui.add_space(4.);
+                        ui.colored_label(Color32::GRAY,format!("{} Your own projects appear here after you open or save them.",self.copies_note()));
+                        ui.add_space(10.);
+                        egui::ScrollArea::vertical().id_salt("welcome-examples").max_height(list_height(ui)).min_scrolled_height(list_height(ui)).show(ui,|ui| {
+                            example=self.example_cards(ui,width);
+                        });
+                    } else {
                     ui.strong("Recent projects");
                     ui.add_space(10.);
                     if self.recents.is_empty() { ui.colored_label(Color32::GRAY,"Projects appear here after you open or save them."); }
-                    egui::ScrollArea::vertical().id_salt("welcome-recents").max_height((ui.available_height()-80.).max(100.)).show(ui,|ui| {
+                    egui::ScrollArea::vertical().id_salt("welcome-recents").max_height(list_height(ui)).min_scrolled_height(list_height(ui)).show(ui,|ui| {
                         for entry in self.recents.clone() {
                             let entry = &entry;
                             let response=egui::Frame::new().fill(Color32::from_rgb(33,44,60)).inner_margin(12.).corner_radius(5).show(ui,|ui| {
@@ -211,6 +229,7 @@ impl Application {
                             ui.add_space(8.);
                         }
                     });
+                    }
                     if self.message_error { ui.colored_label(Color32::LIGHT_RED,&self.message); }
                     if let Some(error)=&self.recent_error {ui.colored_label(Color32::GRAY,format!("Recent-project history: {error}"));}
                     if !self.recoveries.entries.is_empty() && ui.small_button("Recover unsaved work…").on_hover_text("Inspect existing recovery snapshots without changing their original files").clicked(){command=Some(Command::RecoverProjects);}
@@ -229,6 +248,7 @@ impl Application {
             self.message = error;
             self.message_error = true;
         }
+        self.run_example_choice(example);
         self.file_windows(&ctx);
         self.show_close_dialog(&ctx);
     }

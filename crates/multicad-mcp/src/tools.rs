@@ -58,8 +58,8 @@ use cabinetry::{
 };
 pub use engraving::EngravingArgs;
 use engraving::create_engraving_sketch;
-pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs};
-use fdm::{fdm_aid_report, remove_fdm_aid, set_fdm_aid, set_fdm_process};
+pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs, TabContactArgs};
+use fdm::{fdm_aid_report, fdm_tab_contact, remove_fdm_aid, set_fdm_aid, set_fdm_process};
 pub use text::{
     AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextAnchorArg, TextFontArg,
     TextStyleArgs,
@@ -366,8 +366,11 @@ tools! {
         "Remove an FDM aid feature and its Part; the target Part is untouched.",
         remove_fdm_aid;
     "fdm_aid_report" => NoArgs, "FDM aid report", true,
-        "Every FDM aid measured from the evaluated solids: bounds, volume, contact with its target and bridge partner (separated, contact or overlapping, distance and common volume), neighbouring Parts inside the fit clearance, and findings against its process allowances.",
+        "Every FDM aid measured from the evaluated solids: bounds, volume, contact with its target and bridge partner (separated, contact or overlapping, distance and common volume), neighbouring Parts inside the fit clearance, findings against its process allowances, the placement findings (contact_issues) the window refuses to apply, and a tab's exact contact near its own.",
         fdm_aid_report;
+    "fdm_tab_contact" => TabContactArgs, "FDM tab contact", true,
+        "Find a breakaway tab contact on a finished Part from its exact solid: give a point on or near its side (and optionally an outward build-plane direction); returns the outline point at the Part's lowest height and the outward angle about +Z for set_fdm_aid. A point inside the outline is refused. Changes nothing.",
+        fdm_tab_contact;
     "set_render_scene" => RenderSceneArgs, "Create or edit render scene", false,
         "Create or replace a render scene stored in the document: camera eye and target in millimeters (+Z up) with a vertical field of view or orthographic height, background color, sun (W/m²) and point (W) lights, display style (shaded, shaded_edges, xray, wireframe), an optional Part scope and whether removable FDM aids are left out. Holds no geometry.",
         set_render_scene;

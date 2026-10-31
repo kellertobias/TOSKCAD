@@ -44,7 +44,7 @@ pub use eval_cache::{
 };
 pub use external::*;
 pub use external_repair::*;
-pub use fdm::{AidContact, AidInspection};
+pub use fdm::{AidContact, AidInspection, TabContact};
 pub use levels::EnvelopeEvaluation;
 pub use occurrences::{MAX_MODEL_OCCURRENCES, OccurrenceSnapshot};
 pub use runtime::*;

@@ -5,6 +5,7 @@ pub mod camera;
 mod camera_gestures;
 pub mod controls;
 pub mod drawings;
+pub mod examples;
 pub mod external_references;
 pub mod file_picker;
 pub mod icons;

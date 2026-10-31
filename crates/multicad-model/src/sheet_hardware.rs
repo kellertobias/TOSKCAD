@@ -267,11 +267,11 @@ impl Model {
             let part = h.output.body;
             let (Some(layout), Some(head)) = (
                 self.snapshot().sheet_layouts.get(&h.sheet),
-                self.snapshot().bodies.get(&part),
+                self.sheet_head(document, part),
             ) else {
                 continue;
             };
-            let Some(solid) = self.solid(*head) else {
+            let Some(solid) = self.solid(head) else {
                 continue;
             };
             let sheet = model::read_sheet(document, h.sheet).map_err(|e| error(Some(id), e))?;

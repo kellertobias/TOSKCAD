@@ -32,6 +32,11 @@ pub fn run(directory: &Path) -> Result<(), Error> {
         "OCCT 7.9.3; constrained rectangle; valid solid; Boolean cut; tessellation; STEP round-trip: passed\n",
     )?;
     crate::modeling::smoke(directory).map_err(|e| -> Error { e.into() })?;
+    // The packaged executable must find and open its bundled examples.
+    let (examples, searched) = multicad_ui::examples::locate_bundled();
+    let receipt = crate::bundled_examples::verify(examples.as_deref(), &searched)
+        .map_err(|e| -> Error { e.into() })?;
+    println!("{receipt}");
     println!("Native runtime smoke check passed");
     Ok(())
 }

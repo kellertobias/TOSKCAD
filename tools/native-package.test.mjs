@@ -4,7 +4,9 @@ import {execFileSync,spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
-import {assembleRuntime,collectNotices,isNoticeFile,nativeSourceHash,peImports,runtimeExecutable} from './native-package.mjs';
+import {assembleRuntime,checkProjectContainer,collectNotices,isNoticeFile,nativeSourceHash,peImports,runtimeExecutable,validateExamples} from './native-package.mjs';
+import {readdirSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 
 // Use a real Mach-O to exercise native executable signing. This fixture never
 // creates a window and is not an application runtime or a shipped product.
@@ -66,6 +68,16 @@ test('native development layout includes a copied executable, identity pin and n
     assert.match(readme,/workflows remain under development/);
     assert.match(readme,/multicad --mcp serves a local MCP client over stdin\/stdout; it opens no network port/);
     assert.doesNotMatch(readme,/project format.*not implemented|CAD workspaces.*not implemented|unsigned native development host/);
+    // Every listed demo ships byte-identical, with its manifest, in the
+    // platform's resources folder; nothing else from examples/ is copied.
+    const examples=join(layout.resources,'examples');
+    const manifest=JSON.parse(readFileSync(new URL('../examples/examples.json',import.meta.url),'utf8'));
+    assert.deepEqual(readdirSync(examples).sort(),['examples.json',...manifest.examples.map(e=>e.file)].sort());
+    for(const name of readdirSync(examples))assert.deepEqual(readFileSync(join(examples,name)),readFileSync(new URL(`../examples/${name}`,import.meta.url)),name);
+    if(process.platform==='darwin')assert.equal(layout.resources,join(stage,'MultiCAD.app/Contents/Resources'));
+    else assert.equal(layout.resources,join(stage,'resources'));
+    assert.match(readme,/Bundled examples \(Examples, or the welcome screen with no recent projects\): Welded steel workbench, C-channel front panel/);
+    assert.match(readme,/editable copy in Documents\/ToskCAD Examples/);
     if(process.platform!=='win32')assert(statSync(layout.executable).mode&0o111);
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
@@ -128,5 +140,53 @@ test('Windows import reader detects a developer runtime dependency',()=>{
     writeFileSync(file,peFixture('KERNEL32.dll'));assert.deepEqual(peImports(file),['KERNEL32.dll']);
     writeFileSync(file,peFixture('VCRUNTIME140.dll'));assert.throws(()=>peImports(file),/Unbundled Windows runtime/);
     writeFileSync(file,'invalid');assert.throws(()=>peImports(file));
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+// A minimal format-2 container with the given canonical source text.
+function container(sourceText,{name='Fixture'}={}){
+  const source=Buffer.from(sourceText);
+  const manifest=Buffer.from(JSON.stringify({identity:{id:'00000000-0000-4000-8000-000000000001',name},source:{length:source.length,sha256:[...createHash('sha256').update(source).digest()]},required_capabilities:[],payloads:[],caches:[],recovery:null}));
+  const header=Buffer.alloc(52);header.write('MCADPRJ\0',0,'latin1');header.writeUInt32LE(2,8);header.writeBigUInt64LE(BigInt(manifest.length),12);
+  createHash('sha256').update(manifest).digest().copy(header,20);
+  return Buffer.concat([header,manifest,source]);
+}
+test('package validation lists every shipped demo and refuses missing, unlisted or damaged examples',()=>{
+  const shipped=validateExamples();
+  assert(shipped.examples.includes('welded-workbench.tcd')&&shipped.examples.includes('front-panel.tcd'));
+  for(const project of shipped.projects)assert.equal(project.version,2);
+  const directory=mkdtempSync(join(tmpdir(),'multicad-examples-'));
+  const manifest=examples=>writeFileSync(join(directory,'examples.json'),JSON.stringify({format:'toskcad.examples',version:1,examples}));
+  try{
+    writeFileSync(join(directory,'a.tcd'),container('{"name":"A"}'));
+    writeFileSync(join(directory,'b.tcd'),container('{"name":"B"}'));
+    mkdirSync(join(directory,'library'));writeFileSync(join(directory,'library/rails.tcd'),container('{"name":"Rails"}'));
+    manifest([{file:'a.tcd'},{file:'b.tcd',requires:['a.tcd','library/rails.tcd']}]);
+    assert.deepEqual(validateExamples(directory).files,['a.tcd','b.tcd','examples.json','library/rails.tcd']);
+    manifest([{file:'a.tcd'}]);
+    assert.throws(()=>validateExamples(directory),/Add b\.tcd to examples\/examples\.json/);
+    manifest([{file:'a.tcd'},{file:'b.tcd'},{file:'c.tcd'}]);
+    assert.throws(()=>validateExamples(directory),/c\.tcd is listed .* but missing/);
+    manifest([{file:'a.tcd'},{file:'b.tcd',requires:['../outside.tcd']}]);
+    assert.throws(()=>validateExamples(directory),/not a relative path/);
+    manifest([{file:'a.tcd'},{file:'b.tcd',requires:['library/gone.tcd']}]);
+    assert.throws(()=>validateExamples(directory),/requires library\/gone\.tcd, which is missing/);
+    manifest([{file:'a.tcd'},{file:'b.tcd'}]);
+    const good=readFileSync(join(directory,'a.tcd'));
+    const damaged=Buffer.from(good);damaged[damaged.length-2]^=1;writeFileSync(join(directory,'a.tcd'),damaged);
+    assert.throws(()=>validateExamples(directory),/a\.tcd: canonical source checksum mismatch/);
+    writeFileSync(join(directory,'a.tcd'),good.subarray(0,good.length-3));
+    assert.throws(()=>validateExamples(directory),/truncated/);
+    writeFileSync(join(directory,'a.tcd'),Buffer.concat([good,Buffer.from('x')]));
+    assert.throws(()=>validateExamples(directory),/trailing data/);
+    writeFileSync(join(directory,'a.tcd'),'{"not":"native"}');
+    assert.throws(()=>validateExamples(directory),/not a native ToskCAD project/);
+    writeFileSync(join(directory,'a.tcd'),container('{"path":"/Users/someone/cad/rail.tcd"}'));
+    assert.throws(()=>checkProjectContainer(join(directory,'a.tcd')),/absolute developer path/);
+    writeFileSync(join(directory,'a.tcd'),good);
+    writeFileSync(join(directory,'examples.json'),'{');
+    assert.throws(()=>validateExamples(directory),/not JSON/);
+    rmSync(join(directory,'examples.json'));
+    assert.throws(()=>validateExamples(directory),/Missing .*examples\.json/);
   }finally{rmSync(directory,{recursive:true,force:true});}
 });

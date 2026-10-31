@@ -72,6 +72,13 @@ fn packaged_runtime_smoke_emits_real_step_and_reports_output_errors() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // Debug builds fall back to the repository examples; a package checks
+    // its own Resources/resources copy the same way.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Bundled examples: ") && stdout.contains("C-channel front panel"),
+        "{stdout}"
+    );
     let step = std::fs::read_to_string(directory.path().join("native-smoke.step")).unwrap();
     assert!(step.starts_with("ISO-10303-21;"));
     assert!(step.contains("MANIFOLD_SOLID_BREP"));

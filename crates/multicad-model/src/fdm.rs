@@ -10,8 +10,8 @@ use multicad_core::{
     references::Origin,
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
-    SolidPairRelation,
+    BRepSelection, BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame,
+    Solid, SolidPairRelation,
 };
 
 /// Contact tolerance for aid inspections, within the native precision.
@@ -241,9 +241,106 @@ pub struct AidInspection {
     /// clearance (or touching, without a process), with their distance.
     pub crowded: Vec<(EntityId, f64)>,
     pub issues: Vec<String>,
+    /// The findings that make the aid's placement invalid: it misses or is
+    /// buried in what it serves, or it collides with or crowds a neighbour.
+    /// Each is also listed in `issues`. The window refuses to Apply an aid
+    /// with any of them; allowance findings stay advisory.
+    pub contact_issues: Vec<String>,
+    /// A tab's exact outline contact near its authored contact point, found
+    /// along its direction; the window offers it as a snap.
+    pub exact_contact: Option<TabContact>,
 }
 
+/// Where a breakaway tab meets a finished Part, derived from the Part's
+/// exact solid rather than from display triangles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabContact {
+    /// The nearest outline point, at the Part's lowest height: the tab's
+    /// contact point.
+    pub point_mm: [f64; 3],
+    /// Unit outward direction in the build plane.
+    pub outward: [f64; 2],
+    /// The outward direction about +Z in degrees, from +X.
+    pub angle_deg: f64,
+    /// How far the probe point was from the outline.
+    pub probe_distance_mm: f64,
+}
+
+/// Side of the probe cube used to find an outline point.
+const PROBE_MM: f64 = 1e-4;
+/// A probe on the hint side clears display chords of curved faces.
+const PROBE_OFFSET_MM: f64 = 1.;
+
 impl Model {
+    /// Find a tab contact on `target` near a world point. The point is
+    /// moved to just above the Part's lowest height, `outward_hint` (a
+    /// build-plane direction) moves it off the surface, and the exact
+    /// minimum distance to the Part gives the outline point and its outward
+    /// direction, to within the 0.1 µm probe. A point inside the outline is
+    /// refused.
+    pub fn fdm_tab_contact(
+        &self,
+        target: EntityId,
+        near_mm: [f64; 3],
+        outward_hint: Option<[f64; 2]>,
+    ) -> Result<TabContact, ModelError> {
+        let solid = self
+            .part_solid(target)
+            .ok_or_else(|| error(Some(target), "The Part has no evaluated solid"))?;
+        let b = solid.bounds().map_err(|e| error(Some(target), e))?;
+        if near_mm.iter().any(|v| !v.is_finite()) {
+            return Err(error(Some(target), "The contact point is not finite"));
+        }
+        let base = b.min[2];
+        let z = base + ((b.max[2] - base) * 0.5).min(0.05);
+        let mut xy = [near_mm[0], near_mm[1]];
+        if let Some(h) = outward_hint {
+            let n = h[0].hypot(h[1]);
+            if n.is_finite() && n > 1e-9 {
+                xy = [
+                    xy[0] + h[0] / n * PROBE_OFFSET_MM,
+                    xy[1] + h[1] / n * PROBE_OFFSET_MM,
+                ];
+            }
+        }
+        let half = PROBE_MM / 2.;
+        let probe = oriented_box(
+            [xy[0] - half, xy[1] - half, z - half],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            [PROBE_MM; 3],
+            target,
+            ["probe.a", "probe.b", "probe.c", "probe.d"],
+            self.policy,
+        )?;
+        let d = solid
+            .minimum_distance(BRepSelection::Whole, &probe, BRepSelection::Vertex(0))
+            .map_err(|e| error(Some(target), e))?;
+        if d.inner_solution || d.distance_mm <= CONTACT_MM {
+            return Err(error(
+                Some(target),
+                "The point is inside the part's outline at its base; pick a side face",
+            ));
+        }
+        let w = d.witnesses[0];
+        // Measured to one probe vertex, the witness segment is normal to
+        // the part at its outline point.
+        let along = [w.b_mm[0] - w.a_mm[0], w.b_mm[1] - w.a_mm[1]];
+        let length = along[0].hypot(along[1]);
+        if length < d.distance_mm * 0.5 {
+            return Err(error(
+                Some(target),
+                "No side of the part faces the point at its base; pick a side face",
+            ));
+        }
+        let outward = [along[0] / length, along[1] / length];
+        Ok(TabContact {
+            point_mm: [w.a_mm[0], w.a_mm[1], base],
+            outward,
+            angle_deg: outward[1].atan2(outward[0]).to_degrees(),
+            probe_distance_mm: d.distance_mm,
+        })
+    }
     /// The Part's current exact solid. A Part that is only a reusable
     /// Assembly component definition has no world body, so it is measured
     /// in its definition frame, the frame its aids are built in.
@@ -324,6 +421,14 @@ impl Model {
                 }
                 None => None,
             };
+            let exact_contact = match resolved {
+                ResolvedAid::Tab {
+                    origin, angle_rad, ..
+                } => self
+                    .fdm_tab_contact(aid.target, origin, Some([angle_rad.cos(), angle_rad.sin()]))
+                    .ok(),
+                _ => None,
+            };
             let touches = |c: &AidContact| c.relation != SolidPairRelation::Separated;
             match resolved {
                 ResolvedAid::Tab { .. } => {
@@ -382,6 +487,8 @@ impl Model {
                     }
                 }
             }
+            // Everything found so far concerns placement and contact.
+            let mut contact_issues = issues.clone();
             if let Some(p) = &process {
                 if let Some(t) = resolved.thickness_mm() {
                     if t + TOLERANCE_MM < p.min_thickness_mm() {
@@ -434,11 +541,13 @@ impl Model {
                     .map_err(|e| error(Some(candidate), e))?;
                 let d = pair.minimum_distance.distance_mm;
                 if pair.relation != SolidPairRelation::Separated || d + TOLERANCE_MM < clearance {
-                    issues.push(format!(
+                    let finding = format!(
                         "{} is {d:.3} mm from {}, inside the {clearance} mm fit clearance",
                         name,
                         label(candidate)
-                    ));
+                    );
+                    issues.push(finding.clone());
+                    contact_issues.push(finding);
                     crowded.push((candidate, d));
                 }
             }
@@ -454,6 +563,8 @@ impl Model {
                 volume_mm3: volume,
                 crowded,
                 issues,
+                contact_issues,
+                exact_contact,
             });
         }
         Ok(out)
