@@ -50,7 +50,13 @@ fn decode(bytes: &[u8]) -> Result<Preferences, String> {
     let value: Value = serde_json::from_slice(bytes).map_err(invalid)?;
     fields(
         &value,
-        &["application", "version", "length_unit", "workbenches"],
+        &[
+            "application",
+            "version",
+            "length_unit",
+            "workbenches",
+            "title_logo",
+        ],
     )?;
     if value["application"].as_str() != Some(APPLICATION)
         || value["version"].as_u64() != Some(VERSION)
@@ -88,7 +94,11 @@ fn decode(bytes: &[u8]) -> Result<Preferences, String> {
         }
         workbenches.insert(mode, list);
     }
+    let title_logo = value["title_logo"]
+        .as_bool()
+        .ok_or_else(|| invalid("title_logo must be a boolean"))?;
     let preferences = Preferences {
+        title_logo,
         length_unit,
         workbenches,
     };
@@ -112,6 +122,7 @@ fn encode(preferences: &Preferences) -> Result<Vec<u8>, String> {
         "version": VERSION,
         "length_unit": preferences.length_unit.symbol(),
         "workbenches": modes,
+        "title_logo": preferences.title_logo,
     }))
     .map_err(invalid)?;
     if bytes.len() > MAX_BYTES {
@@ -201,6 +212,7 @@ mod tests {
         assert_eq!(store.load().unwrap(), None);
         let mut preferences = Preferences::defaults(&registry);
         preferences.length_unit = LengthUnit::Inch;
+        preferences.title_logo = false;
         preferences.set_visible(Mode::Model, "Wood", false).unwrap();
         preferences
             .move_workbench(Mode::Export, "Render", -2)
@@ -227,12 +239,14 @@ mod tests {
         let path = root.path().join("preferences.json");
         for bytes in [
             &b"not json"[..],
-            br#"{"application":"other","version":1,"length_unit":"mm","workbenches":{}}"#,
-            br#"{"application":"multicad.preferences","version":2,"length_unit":"mm","workbenches":{}}"#,
-            br#"{"application":"multicad.preferences","version":1,"length_unit":"cm","workbenches":{}}"#,
-            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{"Woodshop":[]}}"#,
-            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{"Model":[{"title":"Wood"}]}}"#,
-            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"extra":1}"#,
+            br#"{"application":"other","version":1,"length_unit":"mm","workbenches":{},"title_logo":true}"#,
+            br#"{"application":"multicad.preferences","version":2,"length_unit":"mm","workbenches":{},"title_logo":true}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"cm","workbenches":{},"title_logo":true}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{"Woodshop":[]},"title_logo":true}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{"Model":[{"title":"Wood"}]},"title_logo":true}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"title_logo":true,"extra":1}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{}}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"title_logo":"no"}"#,
         ] {
             fs::write(&path, bytes).unwrap();
             assert!(

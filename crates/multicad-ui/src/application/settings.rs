@@ -49,6 +49,7 @@ impl Application {
                 .is_visible(&self.registry, self.mode, self.tab);
         self.preferences = preferences;
         crate::preferences::set_length_unit(self.preferences.length_unit);
+        crate::preferences::set_title_logo_default(self.preferences.title_logo);
         for project in &mut self.projects {
             project
                 .editor
@@ -168,9 +169,8 @@ impl Application {
                 });
                 ui.separator();
                 ui.heading("Drawings");
-                // CAD-177 owns the title-block logo preference; its control
-                // belongs in this section once that preference exists.
-                ui.small("Title-block logo: not available yet.");
+                ui.checkbox(&mut draft.title_logo, "Show app logo in title block on new pages")
+                    .on_hover_text("Default for new drawing pages. Each page keeps its own option in Page setup; existing pages are unchanged.");
                 ui.separator();
                 if ui
                     .button("Restore defaults")
@@ -265,6 +265,7 @@ mod tests {
         let defaults = first.preferences().clone();
         let mut changed = defaults.clone();
         changed.length_unit = LengthUnit::Inch;
+        changed.title_logo = false;
         changed.set_visible(Mode::Model, "Weld", false).unwrap();
         changed.move_workbench(Mode::Model, "Import", -8).unwrap();
         first.apply_preferences(changed.clone());
@@ -274,6 +275,7 @@ mod tests {
         let mut second = app(&store);
         assert_eq!(second.preferences(), &changed);
         assert_eq!(crate::preferences::length_unit(), LengthUnit::Inch);
+        assert!(!crate::preferences::title_logo_default());
         second.mode = Mode::Model;
         let model = titles(&second);
         assert_eq!(model[0], "Import");
@@ -283,6 +285,7 @@ mod tests {
         wait_saved(&mut second);
         assert_eq!(store.0.lock().unwrap().as_ref(), Some(&defaults));
         assert_eq!(crate::preferences::length_unit(), LengthUnit::Millimeter);
+        assert!(crate::preferences::title_logo_default());
         // The preference file is independent of the project document.
         assert_eq!(second.current().session.revision(), 0);
     }
@@ -503,5 +506,31 @@ mod tests {
                 .all(|row| row.unit != "in")
         );
         crate::preferences::set_length_unit(LengthUnit::Millimeter);
+    }
+    #[test]
+    fn title_logo_default_seeds_only_new_drawing_pages() {
+        use multicad_core::drawings;
+        let store = Memory::default();
+        let mut app = app(&store);
+        let new_page = app.registry.tool("drawing-new").unwrap().action;
+        app.invoke(Command::Mode(Mode::Drawings), &[], Channel::Ui)
+            .unwrap();
+        app.invoke(new_page, &[], Channel::Ui).unwrap();
+        let mut hidden = app.preferences().clone();
+        hidden.title_logo = false;
+        app.apply_preferences(hidden);
+        let add_page = app.registry.tool("sheet-page").unwrap().action;
+        app.invoke(add_page, &[], Channel::Ui).unwrap();
+        let document = app.current().session.document();
+        let book = drawings::books(document).next().unwrap();
+        let pages: Vec<bool> = drawings::read(document, book)
+            .unwrap()
+            .pages
+            .iter()
+            .map(|page| page.settings.app_logo)
+            .collect();
+        // The existing page keeps its logo; the new page follows Settings.
+        assert_eq!(pages, [true, false]);
+        crate::preferences::set_title_logo_default(true);
     }
 }

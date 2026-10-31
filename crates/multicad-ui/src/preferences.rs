@@ -26,6 +26,9 @@ pub struct Preferences {
     /// Per mode, workbench titles in display order. Missing modes or titles
     /// fall back to the established registry order, visible.
     pub workbenches: BTreeMap<Mode, Vec<WorkbenchPreference>>,
+    /// Default of the per-page "Show app logo in title block" option for
+    /// new drawing pages (CAD-177). Existing pages keep their own setting.
+    pub title_logo: bool,
 }
 impl Preferences {
     /// Millimetres and every workbench visible in the established order.
@@ -33,6 +36,7 @@ impl Preferences {
         let mut preferences = Self {
             length_unit: LengthUnit::default(),
             workbenches: BTreeMap::new(),
+            title_logo: true,
         };
         preferences.normalize(registry);
         preferences
@@ -155,6 +159,14 @@ impl Preferences {
 
 thread_local! {
     static LENGTH_UNIT: Cell<LengthUnit> = const { Cell::new(LengthUnit::Millimeter) };
+    static TITLE_LOGO: Cell<bool> = const { Cell::new(true) };
+}
+/// Seed for the app-logo option of new drawing pages on the UI thread.
+pub fn title_logo_default() -> bool {
+    TITLE_LOGO.with(Cell::get)
+}
+pub fn set_title_logo_default(shown: bool) {
+    TITLE_LOGO.with(|cell| cell.set(shown));
 }
 /// Display/input default for unqualified lengths on the UI thread. Document
 /// evaluation never reads it; values are stored with an explicit unit.
@@ -306,6 +318,7 @@ mod tests {
     fn normalization_drops_unknown_entries_and_appends_new_workbenches() {
         let registry = Registry::default();
         let mut preferences = Preferences {
+            title_logo: true,
             length_unit: LengthUnit::Inch,
             workbenches: BTreeMap::from([(
                 Mode::Export,
