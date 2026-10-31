@@ -77,6 +77,15 @@ impl Cache {
         let _ = self.try_write(document, tag, result);
     }
     fn try_write(&self, document: &Document, tag: u64, result: &DrawingEvaluation) -> Option<()> {
+        // Native failures can be transient (for example, memory pressure).
+        // Display the current failure, but allow the next open to retry it.
+        if result
+            .views
+            .values()
+            .any(|view| !matches!(view, multicad_core::drawings::ViewEvaluation::Ready { .. }))
+        {
+            return None;
+        }
         let path = self.path(document, tag)?;
         let bytes = serde_json::to_vec(result).ok()?;
         if bytes.len() as u64 + 32 > ENTRY_BYTES {
@@ -156,5 +165,14 @@ mod tests {
         assert!(cache.read(&doc, 0, 1).is_none());
         cache.write(&doc, 1, &result);
         assert_eq!(cache.read(&doc, 42, 1).unwrap(), result);
+        let mut failed = result.clone();
+        failed.views.insert(
+            multicad_core::document::EntityId::new(),
+            multicad_core::drawings::ViewEvaluation::Unresolved {
+                message: "Native preview failed".into(),
+            },
+        );
+        cache.write(&doc, 2, &failed);
+        assert!(cache.read(&doc, 42, 2).is_none());
     }
 }

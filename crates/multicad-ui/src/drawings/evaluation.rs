@@ -155,7 +155,11 @@ impl DrawingFeed {
             self.pending = false;
             match reply.result {
                 Ok(result) if result.stamp == reply.stamp => {
-                    if let Some(page) = self.page {
+                    if let Some(page) = self.page
+                        && result.views.values().all(|view| {
+                            matches!(view, multicad_core::drawings::ViewEvaluation::Ready { .. })
+                        })
+                    {
                         self.cache.push_back((page, result.clone()));
                         // Bound retained vectors and samples across all pages.
                         while self.cache.len() > 8 || {
@@ -263,15 +267,26 @@ mod page_tests {
     struct Publisher {
         requests: Arc<Mutex<usize>>,
         reply: Option<DrawingReply>,
+        fail_first: bool,
     }
     impl DrawingBackend for Publisher {
         fn request(&mut self, _: &Document, stamp: DrawingStamp) -> Result<(), String> {
-            *self.requests.lock().unwrap() += 1;
+            let mut requests = self.requests.lock().unwrap();
+            *requests += 1;
+            let mut views = std::collections::BTreeMap::new();
+            if self.fail_first && *requests == 1 {
+                views.insert(
+                    EntityId::new(),
+                    multicad_core::drawings::ViewEvaluation::Unresolved {
+                        message: "Transient native failure".into(),
+                    },
+                );
+            }
             self.reply = Some(DrawingReply {
                 stamp,
                 result: Ok(Arc::new(DrawingEvaluation {
                     stamp,
-                    views: Default::default(),
+                    views,
                     annotations: Default::default(),
                 })),
             });
@@ -293,6 +308,7 @@ mod page_tests {
             Box::new(Publisher {
                 requests: calls.clone(),
                 reply: None,
+                fail_first: false,
             })
         }));
         let mut document = Document::new("Fast drawing").unwrap();
@@ -328,6 +344,7 @@ mod page_tests {
             Box::new(Publisher {
                 requests: calls.clone(),
                 reply: None,
+                fail_first: false,
             })
         });
         let mut feed = DrawingFeed::default();
@@ -345,5 +362,42 @@ mod page_tests {
         feed.set_factory(factory);
         feed.schedule_page(document, 0, 0., pages[8]).unwrap();
         assert!(feed.result.is_none());
+    }
+
+    #[test]
+    fn an_unsuccessful_page_is_retried_on_reopen_instead_of_becoming_a_cache_hit() {
+        let requests = Arc::new(Mutex::new(0));
+        let calls = requests.clone();
+        let mut feed = DrawingFeed::default();
+        feed.set_factory(Arc::new(move || {
+            Box::new(Publisher {
+                requests: calls.clone(),
+                reply: None,
+                fail_first: true,
+            })
+        }));
+        let document = Document::new("Retry preview").unwrap();
+        let page = EntityId::new();
+        feed.schedule_page(document.clone(), 0, 0., page).unwrap();
+        feed.tick(0.);
+        feed.tick(0.);
+        assert!(
+            feed.result
+                .as_ref()
+                .unwrap()
+                .views
+                .values()
+                .any(|view| matches!(
+                    view,
+                    multicad_core::drawings::ViewEvaluation::Unresolved { .. }
+                ))
+        );
+        feed.clear();
+        feed.schedule_page(document, 0, 1., page).unwrap();
+        assert!(feed.pending());
+        feed.tick(1.);
+        feed.tick(1.);
+        assert_eq!(*requests.lock().unwrap(), 2);
+        assert!(feed.result.as_ref().unwrap().views.is_empty());
     }
 }
