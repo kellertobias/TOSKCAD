@@ -5,6 +5,6 @@
     { "file": "cabinet.tcd", "requires": ["libraries/cabinet-hardware-library.tcd"] },
     { "file": "welded-workbench.tcd" },
     { "file": "front-panel.tcd" },
-    { "file": "apartment.tcd", "requires": ["welded-workbench.tcd"] }
+    { "file": "apartment.tcd", "requires": ["cabinet.tcd", "libraries/cabinet-hardware-library.tcd", "welded-workbench.tcd"] }
   ]
 }

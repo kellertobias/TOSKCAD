@@ -50,12 +50,21 @@ fn write(document: &Document, path: &Path) {
     .unwrap();
     std::fs::write(path, bytes).unwrap();
 }
-fn workbench(document: &Document) -> EntityId {
-    let (_, record) = symbols::project_sources(document).unwrap()[0].clone();
+/// The outer Instance of the reference whose source path is `path`.
+fn reference(document: &Document, path: &str) -> EntityId {
+    let (_, record) = symbols::project_sources(document)
+        .unwrap()
+        .into_iter()
+        .find(|(_, s)| s.path == path)
+        .unwrap_or_else(|| panic!("no reference to {path}"));
     symbols::instances(document, record.definition).unwrap()[0]
         .1
         .instance
 }
+fn workbench(document: &Document) -> EntityId {
+    reference(document, "welded-workbench.tcd")
+}
+const SOURCES: [&str; 2] = ["cabinet.tcd", "welded-workbench.tcd"];
 /// World bounds and leaf count of everything below an outer Instance.
 fn bounds(model: &Model, instance: EntityId) -> ([f64; 3], [f64; 3], usize) {
     let mut lo = [f64::MAX; 3];
@@ -88,10 +97,20 @@ fn check_workbench(session: &Session) {
     near(hi[2] - lo[2], 900.);
     let shop = ROOMS[3].1;
     assert!(lo[0] >= shop[0] && hi[0] <= shop[2] && lo[1] >= shop[1] && hi[1] <= shop[3]);
+    // The cabinet: 800 wide, 500 deep plus 18 mm doors, 2000 high, its back
+    // on the right wall's inner face, all 64 leaves of the shipped cabinet.
+    let (lo, hi, count) = bounds(&model, reference(session.document(), "cabinet.tcd"));
+    assert_eq!(count, 64);
+    near(hi[0], 9_850.);
+    near(lo[0], 9_332.);
+    near(lo[1], 5_400.);
+    near(hi[1], 6_200.);
+    near(hi[2] - lo[2], 2000.);
+    assert!(lo[0] >= shop[0] && hi[0] <= shop[2] && lo[1] >= shop[1] && hi[1] <= shop[3]);
 }
 
 #[test]
-fn shipped_file_opens_with_rooms_walls_openings_and_the_workbench_reference() {
+fn shipped_file_opens_with_rooms_walls_openings_and_both_workshop_references() {
     let bytes = std::fs::read(shipped()).unwrap();
     // No developer path is stored anywhere in the file.
     let text = String::from_utf8_lossy(&bytes);
@@ -132,25 +151,32 @@ fn shipped_file_opens_with_rooms_walls_openings_and_the_workbench_reference() {
     assert_eq!((doors, windows), (4, 6));
     assert_eq!(model::slabs(&document).count(), 1);
 
-    // The workshop reference: one pinned definition recorded against the
-    // shipped workbench file, found next to the apartment and current.
-    let source = open_project(&examples().join("welded-workbench.tcd")).unwrap();
+    // The workshop references: one pinned definition per shipped example,
+    // recorded against its file, found next to the apartment and current.
     let records = symbols::project_sources(&document).unwrap();
-    assert_eq!(records.len(), 1);
-    let (_, record) = &records[0];
-    assert_eq!(record.path, "welded-workbench.tcd");
-    assert_eq!(record.document, source.id());
-    let definition = symbols::read_definition(&document, record.definition).unwrap();
-    assert_eq!(definition.name, "Welded steel workbench");
+    assert_eq!(records.len(), 2);
+    for (path, name) in [
+        ("cabinet.tcd", None),
+        ("welded-workbench.tcd", Some("Welded steel workbench")),
+    ] {
+        let source = open_project(&examples().join(path)).unwrap();
+        let (_, record) = records.iter().find(|(_, r)| r.path == path).unwrap();
+        assert_eq!(record.document, source.id());
+        let definition = symbols::read_definition(&document, record.definition).unwrap();
+        assert_eq!(definition.name, name.unwrap_or(source.name()));
+        assert!(definition.revision.starts_with("source "));
+    }
     let checks = check_references(&document, Some(&shipped()), &[]).unwrap();
-    assert_eq!(checks.len(), 1);
-    assert_eq!(
-        checks[0].state,
-        ProjectSourceState::Current,
-        "{}",
-        checks[0].summary()
-    );
-    assert!(checks[0].summary().contains(&definition.revision));
+    assert_eq!(checks.len(), 2);
+    for check in &checks {
+        assert_eq!(
+            check.state,
+            ProjectSourceState::Current,
+            "{}",
+            check.summary()
+        );
+        assert!(check.summary().contains(&check.revision));
+    }
     let session = Session::new(document).unwrap();
     check_workbench(&session);
 
@@ -212,7 +238,13 @@ fn shipped_file_opens_with_rooms_walls_openings_and_the_workbench_reference() {
     for (name, _) in ROOMS {
         assert!(pdf_text.contains(&name.to_uppercase()), "{name}");
     }
-    for needle in ["Floor plan", "AP-101", "1:50", "welded-workbench.tcd"] {
+    for needle in [
+        "Floor plan",
+        "AP-101",
+        "1:50",
+        "welded-workbench.tcd",
+        "cabinet.tcd",
+    ] {
         assert!(pdf_text.contains(needle), "{needle}");
     }
     // Optional visual evidence: MULTICAD_DRAWING_REVIEW=<dir> keeps the PDF.
@@ -225,7 +257,7 @@ fn shipped_file_opens_with_rooms_walls_openings_and_the_workbench_reference() {
 }
 
 #[test]
-fn the_examples_gallery_copies_the_referenced_workbench_next_to_the_apartment() {
+fn the_examples_gallery_copies_the_referenced_examples_next_to_the_apartment() {
     use multicad_ui::examples;
     let catalog = examples::load(&examples()).unwrap();
     let index = catalog
@@ -235,33 +267,47 @@ fn the_examples_gallery_copies_the_referenced_workbench_next_to_the_apartment() 
         .expect("the apartment is listed in examples.json");
     assert_eq!(
         referenced_files(&shipped()).unwrap(),
-        vec![PathBuf::from("welded-workbench.tcd")]
+        SOURCES.map(PathBuf::from).to_vec()
     );
     let resolver: examples::DependencyResolver =
         std::sync::Arc::new(|path: &Path| referenced_files(path));
+    let mut dependencies = catalog.dependencies(index, Some(&resolver)).unwrap();
+    dependencies.sort();
+    // The cabinet brings its own hardware library along.
     assert_eq!(
-        catalog.dependencies(index, Some(&resolver)).unwrap(),
-        vec!["welded-workbench.tcd".to_string()]
+        dependencies,
+        [
+            "cabinet.tcd",
+            "libraries/cabinet-hardware-library.tcd",
+            "welded-workbench.tcd"
+        ]
     );
     let directory = tempfile::tempdir().unwrap();
     let copies = directory.path().join("ToskCAD Examples");
     let copy = examples::instantiate(&catalog, index, &copies, Some(&resolver)).unwrap();
-    assert_eq!(
-        copy.copied_dependencies,
-        vec!["welded-workbench.tcd".to_string()]
-    );
+    assert_eq!(copy.copied_dependencies.len(), 3);
     let document = open_project(&copy.path).unwrap();
-    let check = &check_references(&document, Some(&copy.path), &[]).unwrap()[0];
-    assert_eq!(
-        check.state,
-        ProjectSourceState::Current,
-        "{}",
-        check.summary()
-    );
-    assert_eq!(
-        check.found.as_deref(),
-        Some(copies.join("welded-workbench.tcd").as_path())
-    );
+    for (check, file) in check_references(&document, Some(&copy.path), &[])
+        .unwrap()
+        .iter()
+        .zip(sorted_paths(&document))
+    {
+        assert_eq!(
+            check.state,
+            ProjectSourceState::Current,
+            "{}",
+            check.summary()
+        );
+        assert_eq!(check.found.as_deref(), Some(copies.join(&file).as_path()));
+    }
+}
+/// Reference paths in the order `check_references` reports them.
+fn sorted_paths(document: &Document) -> Vec<String> {
+    symbols::project_sources(document)
+        .unwrap()
+        .into_iter()
+        .map(|(_, s)| s.path)
+        .collect()
 }
 
 #[test]
@@ -276,9 +322,12 @@ fn a_copy_elsewhere_resolves_through_installed_examples_and_a_missing_source_is_
 
     // Nothing next to the copy: without bundled examples the source is
     // missing, said explicitly, and the pinned bench is still there.
-    let check = &check_references(&reopened, Some(&copy), &[]).unwrap()[0];
-    assert_eq!(check.state, ProjectSourceState::Missing);
-    assert!(check.summary().contains("pinned revision stays in use"));
+    let checks = check_references(&reopened, Some(&copy), &[]).unwrap();
+    assert_eq!(checks.len(), 2);
+    for check in &checks {
+        assert_eq!(check.state, ProjectSourceState::Missing);
+        assert!(check.summary().contains("pinned revision stays in use"));
+    }
     check_workbench(&Session::new(reopened.clone()).unwrap());
 
     // A clean installation: the examples bundled in the app's resources
@@ -286,27 +335,27 @@ fn a_copy_elsewhere_resolves_through_installed_examples_and_a_missing_source_is_
     let install = directory.path().join("ToskCAD");
     let resources = install.join("resources/examples");
     std::fs::create_dir_all(&resources).unwrap();
-    std::fs::copy(
-        examples().join("welded-workbench.tcd"),
-        resources.join("welded-workbench.tcd"),
-    )
-    .unwrap();
+    for file in SOURCES {
+        std::fs::copy(examples().join(file), resources.join(file)).unwrap();
+    }
     let bundled: Vec<_> = installed_example_dirs(&install.join("multicad"))
         .into_iter()
         .filter(|d| d.is_dir())
         .collect();
     assert_eq!(bundled.len(), 1);
-    let check = &check_references(&reopened, Some(&copy), &bundled).unwrap()[0];
-    assert_eq!(
-        check.state,
-        ProjectSourceState::Current,
-        "{}",
-        check.summary()
-    );
-    assert_eq!(
-        check.found.as_deref(),
-        Some(resources.join("welded-workbench.tcd").as_path())
-    );
+    let checks = check_references(&reopened, Some(&copy), &bundled).unwrap();
+    for (check, file) in checks.iter().zip(sorted_paths(&reopened)) {
+        assert_eq!(
+            check.state,
+            ProjectSourceState::Current,
+            "{}",
+            check.summary()
+        );
+        assert_eq!(
+            check.found.as_deref(),
+            Some(resources.join(&file).as_path())
+        );
+    }
 }
 
 #[test]
@@ -411,7 +460,7 @@ fn generator_rebuilds_the_shipped_project() {
             .unwrap()
             .into_iter()
             .map(|(_, def)| (def.name.clone(), def.revision.clone(), def.pin().unwrap()))
-            .collect::<Vec<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
     };
     assert_eq!(pins(fresh), pins(&shipped));
     let paths = |d: &Document| {
@@ -419,7 +468,7 @@ fn generator_rebuilds_the_shipped_project() {
             .unwrap()
             .into_iter()
             .map(|(_, s)| (s.path, s.document, s.source))
-            .collect::<Vec<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
     };
     assert_eq!(paths(fresh), paths(&shipped));
     let pages = |d: &Document| {

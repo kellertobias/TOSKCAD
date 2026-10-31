@@ -11,9 +11,9 @@
 //! - one floor slab on the "Apartment floor" level;
 //! - simple placeholder furniture boxes in the living room, kitchen and
 //!   bedroom;
-//! - in the workshop, a pinned project reference to the shipped welded
-//!   workbench (`examples/welded-workbench.tcd`) and a slot for the shipped
-//!   cabinet once its example exists (see [`CABINET_SOURCE`]);
+//! - in the workshop, pinned project references to the shipped welded
+//!   workbench (`examples/welded-workbench.tcd`) and the shipped cabinet
+//!   (`examples/cabinet.tcd`);
 //! - a drawing book: a dimensioned 1:50 floor plan with room names, hatched
 //!   wall cuts and door swings, a fitted isometric 3D view and a workshop
 //!   sheet naming the referenced sources and revisions, all with the
@@ -50,8 +50,8 @@ pub type Error = Box<dyn std::error::Error>;
 pub const DOCUMENT_NAME: &str = "Apartment with workshop";
 pub const DESCRIPTION: &str = "Apartment demo: a single-level apartment of about 10.3 × 8.3 m \
 with a living room, kitchen, bedroom and workshop, built from editable walls, doors, windows and \
-a floor slab. The workshop holds a pinned reference to the shipped welded workbench example; the \
-reference keeps its source file, revision and scale and reports a changed or missing source. \
+a floor slab. The workshop holds pinned references to the shipped cabinet and welded workbench examples; \
+each reference keeps its source file, revision and scale and reports a changed or missing source. \
 The drawing book has a dimensioned 1:50 floor plan with room names, hatched wall cuts and door \
 swings, a furnished 3D view and a workshop sheet. Layout demo only: no building-code, egress or \
 structural compliance is claimed.";
@@ -59,10 +59,8 @@ structural compliance is claimed.";
 pub const SHIPPED_PATH: &str = "examples/apartment.tcd";
 /// The referenced workbench example, relative to the repository root.
 pub const WORKBENCH_SOURCE: &str = "examples/welded-workbench.tcd";
-/// The referenced cabinet example (CAD-182), relative to the repository
-/// root. `None` until that example is shipped; set it to the cabinet's
-/// `.tcd` path and the generator places it at [`CABINET_PLACEMENT`].
-pub const CABINET_SOURCE: Option<&str> = None;
+/// The referenced cabinet example (CAD-182), relative to the repository root.
+pub const CABINET_SOURCE: &str = "examples/cabinet.tcd";
 pub const DISCLAIMER: &str =
     "Layout demo only: no building-code, egress, accessibility or structural compliance is claimed";
 
@@ -104,16 +102,17 @@ pub const WORKBENCH_PLACEMENT: Placement = Placement {
     translation_mm: [5_150., 6_800., 0.],
     rotation_xyzw: [0., 0., 0., 1.],
 };
-/// Reserved for the cabinet: its back against the workshop's right wall
-/// (inner face x = 9850), turned a quarter so its front faces the room,
-/// centered along y 5000–7000. Adjust to the cabinet's own origin when it
-/// is shipped.
+/// The cabinet's origin is its front-left-bottom carcass corner, width
+/// along +X, depth along +Y (front facing −Y; doors stand 18 mm proud).
+/// Turned −90° about Z its front faces the room (−X) and its back
+/// (local y = 500) stands against the workshop's right wall (inner face
+/// x = 9850); its 800 mm width spans y 5400–6200.
 pub const CABINET_PLACEMENT: Placement = Placement {
-    translation_mm: [9_850., 5_000., 0.],
+    translation_mm: [9_350., 6_200., 0.],
     rotation_xyzw: [
         0.,
         0.,
-        std::f64::consts::FRAC_1_SQRT_2,
+        -std::f64::consts::FRAC_1_SQRT_2,
         std::f64::consts::FRAC_1_SQRT_2,
     ],
 };
@@ -586,13 +585,17 @@ pub fn build(output: &Path) -> Result<Scenario, Error> {
         )?,
         source: WORKBENCH_SOURCE,
     }];
-    if let Some(source) = CABINET_SOURCE {
-        references.push(Reference {
-            label: "Cabinet",
-            instance: place_reference(&mut session, output, source, "Cabinet", CABINET_PLACEMENT)?,
-            source,
-        });
-    }
+    references.push(Reference {
+        label: "Cabinet",
+        instance: place_reference(
+            &mut session,
+            output,
+            CABINET_SOURCE,
+            "Cabinet",
+            CABINET_PLACEMENT,
+        )?,
+        source: CABINET_SOURCE,
+    });
 
     let mut scenario = Scenario {
         session,
@@ -794,36 +797,34 @@ fn build_drawings(s: &mut Scenario) -> Result<(), Error> {
         [1. / r6, 1. / r6, 2. / r6],
     )];
     let mut workshop = a3(PAGES[2], "Workshop and referenced examples");
-    // The referenced objects at 1:10, from above and from the front,
-    // centered on the workbench (the cabinet joins these views when it is
-    // referenced).
+    // The referenced objects at 1:25, from above and from the front: the
+    // workbench (x 5150–6650) and the cabinet (x 9332–9850), centered on
+    // their common extent.
     let refs: Vec<_> = s.references.iter().map(|r| r.instance).collect();
-    let [bx, by, _] = WORKBENCH_PLACEMENT.translation_mm;
+    let center = [7_500., 6_600., 1_000.];
     let mut top = view(
         "Workshop references, top",
         refs.clone(),
-        [bx + 750., by + 500., 0.],
+        [center[0], center[1], 0.],
         [1., 0., 0.],
         [0., 1., 0.],
     );
     let mut front = view(
         "Workshop references, front",
         refs,
-        [bx + 750., by, 450.],
+        [center[0], 0., center[2]],
         [1., 0., 0.],
         [0., 0., 1.],
     );
-    for (v, x) in [(&mut top, 120.), (&mut front, 300.)] {
-        v.scale = Scale {
-            numerator: 1,
-            denominator: 10,
-        };
-        v.position_mm = [x, 140.];
-    }
-    workshop.settings.scale = Scale {
+    let quarter = Scale {
         numerator: 1,
-        denominator: 10,
+        denominator: 25,
     };
+    for (v, y) in [(&mut top, 100.), (&mut front, 200.)] {
+        v.scale = quarter;
+        v.position_mm = [130., y];
+    }
+    workshop.settings.scale = quarter;
     workshop.views = vec![top, front];
     let ids = [plan.id, iso.id, workshop.id];
     let (book, prepared) = prepare_create(
@@ -967,7 +968,7 @@ fn build_drawings(s: &mut Scenario) -> Result<(), Error> {
     iso_page.annotations = vec![
         note(
             [20., 20.],
-            "Furnished apartment: living room, kitchen, bedroom and workshop with the referenced workbench",
+            "Furnished apartment: living room, kitchen, bedroom and workshop with the referenced cabinet and workbench",
         ),
         note([20., 26.], DISCLAIMER),
     ];
@@ -990,12 +991,6 @@ fn build_drawings(s: &mut Scenario) -> Result<(), Error> {
                 "{}: {} · {} · revision {}",
                 r.label, definition.name, source.path, definition.revision
             ),
-        ));
-    }
-    if CABINET_SOURCE.is_none() {
-        lines.push(note(
-            [20., 28. + 6. * s.references.len() as f64],
-            "Cabinet: reserved along the right wall until the cabinet example is shipped",
         ));
     }
     shop_page.annotations = lines;
