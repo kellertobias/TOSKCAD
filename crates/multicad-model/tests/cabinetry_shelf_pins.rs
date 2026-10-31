@@ -380,9 +380,10 @@ fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     for missing in [SHELF_PIN_CAPABILITY, INSIDE_FACE_CAPABILITY] {
         let mut older = project_file::supported_capabilities();
         older.remove(missing);
-        let refused = project_file::read(&mut bytes.as_slice(), Default::default(), &older)
-            .err()
-            .expect("an older build refuses the file");
+        let Err(refused) = project_file::read(&mut bytes.as_slice(), Default::default(), &older)
+        else {
+            panic!("an older build refuses the file")
+        };
         assert!(refused.to_string().contains(missing), "{refused}");
     }
     assert_eq!(&opened.document, f.s.document());

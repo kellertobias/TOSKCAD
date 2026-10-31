@@ -318,9 +318,9 @@ fn domino_edit_undo_reopen_and_delete_keep_paired_references() {
     assert!(panel_joints_need_loose_tenon(&opened.document));
     let mut older = project_file::supported_capabilities();
     older.remove(LOOSE_TENON_CAPABILITY);
-    let refused = project_file::read(&mut bytes.as_slice(), Default::default(), &older)
-        .err()
-        .expect("an older build refuses the file");
+    let Err(refused) = project_file::read(&mut bytes.as_slice(), Default::default(), &older) else {
+        panic!("an older build refuses the file")
+    };
     assert!(
         refused.to_string().contains(LOOSE_TENON_CAPABILITY),
         "{refused}"
