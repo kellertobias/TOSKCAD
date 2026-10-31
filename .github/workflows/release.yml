@@ -73,7 +73,7 @@ jobs:
     name: Build and test / ${{ matrix.target }}
     needs: metadata
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
