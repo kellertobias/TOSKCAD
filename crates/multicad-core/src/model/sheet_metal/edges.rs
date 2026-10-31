@@ -110,10 +110,13 @@ fn lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     add(a, scale(sub(b, a), t))
 }
 
+/// Start, end and straightness of an outline edge in base-frame mm.
+type LoopEdge = ([f64; 2], [f64; 2], bool);
+
 /// The base outline of a rectangle or captured-contour base. A sketch
 /// region base needs the solved sketch and returns `None`.
 pub fn sheet_outline(sheet: &ResolvedSheet) -> Option<SheetOutline> {
-    let (frame, loop2d): (SheetFrame, Vec<([f64; 2], [f64; 2], bool)>) = match &sheet.base {
+    let (frame, loop2d): (SheetFrame, Vec<LoopEdge>) = match &sheet.base {
         ResolvedBase::Rectangle {
             frame,
             length_mm: l,
@@ -283,6 +286,34 @@ pub fn check_flanges(
     parameters: &EvaluatedParameters,
     sheet: &SheetDefinition,
 ) -> Result<Vec<FlangeIssue>, DocumentError> {
+    Ok(review_flanges(document, parameters, sheet)?.issues)
+}
+
+/// The base outline, a guide for every flange that resolves on a straight
+/// edge, and the pre-check findings of a sheet definition. Invalid flanges
+/// have no guide but keep their findings, so a view can still show the
+/// rest of the sheet.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlangeReview {
+    /// The bend inputs every guide uses, with their sources.
+    pub thickness_mm: f64,
+    pub inside_radius_mm: f64,
+    pub radius_source: ValueSource,
+    pub k_factor: f64,
+    pub k_factor_source: ValueSource,
+    pub outline: Option<SheetOutline>,
+    pub guides: Vec<FlangeGuide>,
+    pub issues: Vec<FlangeIssue>,
+}
+
+/// Review the flanges of a sheet definition; see [`check_flanges`]. Fails
+/// only when the sheet itself (stock, base, radius, K-factor) does not
+/// resolve.
+pub fn review_flanges(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    sheet: &SheetDefinition,
+) -> Result<FlangeReview, DocumentError> {
     let mut issues = vec![];
     let mut seen = std::collections::BTreeMap::new();
     for (i, f) in sheet.flanges.iter().enumerate() {
@@ -329,7 +360,16 @@ pub fn check_flanges(
         }
     }
     let Some(outline) = outline else {
-        return Ok(issues);
+        return Ok(FlangeReview {
+            thickness_mm: resolved.thickness_mm,
+            inside_radius_mm: resolved.inside_radius_mm,
+            radius_source: resolved.radius_source,
+            k_factor: resolved.k_factor,
+            k_factor_source: resolved.k_factor_source,
+            outline: None,
+            guides: vec![],
+            issues,
+        });
     };
     let n = outline.edges.len();
     for f in flanges.iter().flatten() {
@@ -388,5 +428,28 @@ pub fn check_flanges(
             });
         }
     }
-    Ok(issues)
+    let values = (
+        resolved.thickness_mm,
+        resolved.inside_radius_mm,
+        resolved.radius_source,
+        resolved.k_factor,
+        resolved.k_factor_source,
+    );
+    let guides = flange_guides(
+        &ResolvedSheet {
+            flanges: flanges.into_iter().flatten().collect(),
+            ..resolved
+        },
+        &outline,
+    );
+    Ok(FlangeReview {
+        thickness_mm: values.0,
+        inside_radius_mm: values.1,
+        radius_source: values.2,
+        k_factor: values.3,
+        k_factor_source: values.4,
+        outline: Some(outline),
+        guides,
+        issues,
+    })
 }
