@@ -14,7 +14,11 @@ Export → Print writes a 3MF print package from finished Parts and their select
 
 A print request names what it packages in one of two ways:
 
-- **Selection.** Parts and Instances captured from the viewport selection when Export is entered, or when a Print command is run from another mode. Later viewport changes do not alter it until the next capture.
+- **Chosen Parts.** An explicit list of Parts, placed copies and placed Assemblies. It starts from the viewport selection captured when Export is entered, or when a Print command is run from another mode; later viewport changes do not alter it until the next capture. The **Printable Parts** list in Export → Print edits it directly, so no visit to Model is needed:
+  - it offers every world Part, placed copy (Instance, labelled `placed copy of <component>`) and placed Assembly that an explicit request packages without a skip (`print_candidates`). Component definitions, members of reusable Assemblies, owned scale geometry and removable aid Parts are not offered; aids travel with their targets;
+  - **All**, **None** and **Model selection** (back to the captured selection) adjust the list, and a count shows how many offered entries are chosen;
+  - a chosen identity the list does not offer (for example a captured definition Part) stays chosen, is shown as `Also chosen`, and Preview lists it as Not packaged with its reason;
+  - choosing changes only the Print workspace. The document, its history and the model selection are untouched. A changed list makes the current preview display-only and re-resolves it.
 - **Tag.** Every world Part carrying one exact, case-sensitive tag, and every placed occurrence of a Part carrying it. `printed` is proposed.
 
 Each packaged object is either a world Part or one placed occurrence:
@@ -59,7 +63,7 @@ The preview shows:
   - a Part that extends below the build plane z = 0;
   - a package whose lowest point is above the build plane.
 
-An empty package cannot be written. The preview says why: nothing was selected, nothing carries the tag, or no chosen entity resolves to a world Part or placed occurrence with a current solid.
+An empty package cannot be written. The preview says why: nothing was chosen in the Printable Parts list, nothing carries the tag, or no chosen entity resolves to a world Part or placed occurrence with a current solid.
 
 ## The package
 
@@ -102,6 +106,7 @@ A pending write keeps the window open until its result arrives. The receipt list
   - aid pairing under both aid policies;
   - placed occurrences chosen per path, with aids riding on them;
   - process records;
+  - the Printable Parts list offering Parts and placed copies, never aids, with every offered entry resolving without a skip;
   - exact tag selection;
   - missing identities;
   - request validation.
@@ -113,14 +118,15 @@ A pending write keeps the window open until its result arrives. The receipt list
   - selected Move/Copy copies as build items sharing one mesh, with per-item volumes, bounds and per-copy STL files;
   - a copy of a supported block bringing its support at the copy placement, and leaving it out;
   - a tag matching a world Part and its copies;
-  - two placed Instances of a reusable Assembly packaged at their nested placements, with the member Instance and the definition Part listed as not packaged.
+  - two placed Instances of a reusable Assembly packaged at their nested placements, with the member Instance and the definition Part listed as not packaged, and the Printable Parts list offering the placed racks but not the definition, its member or its Part.
 - [Native unit tests](../../crates/multicad-model/src/export/print.rs) refuse a readback whose per-object volumes or item count differ from the plan.
 - [Workspace tests](../../crates/multicad-ui/src/print/tests.rs) cover:
   - request settings;
   - current, stale and late previews;
   - blocked writes;
   - receipt attribution;
-  - rendered controls.
+  - rendered controls;
+  - choosing one or both of two untagged Parts with no model selection, stale previews after a change, and restoring the captured selection without a document edit.
 - [Application tests](../../crates/multicad-ui/src/application/print.rs) cover:
   - the Print tab;
   - the save dialog kind and suggested name;

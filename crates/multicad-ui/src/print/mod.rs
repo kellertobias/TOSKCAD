@@ -87,7 +87,14 @@ struct Pending {
 }
 pub struct PrintWorkspace {
     backend: Option<Box<dyn PrintBackend>>,
+    /// The explicit Parts and placed copies to package, chosen in the
+    /// picker or captured on entering Export.
     captured: Vec<EntityId>,
+    /// The model selection captured on entering Export, restorable after
+    /// picking.
+    entered: Vec<EntityId>,
+    /// Picker entries for the document revision they were listed from.
+    candidates: Option<((EntityId, u64), Result<Vec<PrintCandidate>, String>)>,
     by_tag: bool,
     tag: String,
     aids: AidPolicy,
@@ -108,6 +115,8 @@ impl Default for PrintWorkspace {
         Self {
             backend: None,
             captured: vec![],
+            entered: vec![],
+            candidates: None,
             by_tag: false,
             tag: DEFAULT_PRINT_TAG.into(),
             aids: AidPolicy::IncludeAll,
@@ -152,7 +161,36 @@ impl PrintWorkspace {
     /// The selection captured on entering Export; it chooses Parts until
     /// the next capture, independently of later viewport state.
     pub fn capture(&mut self, selected: Vec<EntityId>) {
+        self.entered = selected.clone();
         self.captured = selected;
+    }
+    /// Choose the explicit Parts and placed copies to package, in place of
+    /// the captured selection. Only this workspace changes; the document
+    /// and the model selection stay as they are.
+    pub fn choose(&mut self, parts: Vec<EntityId>) {
+        self.by_tag = false;
+        self.captured = parts;
+    }
+    pub fn chosen(&self) -> &[EntityId] {
+        &self.captured
+    }
+    /// Return to the selection captured on entering Export.
+    pub fn restore_captured(&mut self) {
+        self.captured = self.entered.clone();
+    }
+    /// The picker's entries for the current revision.
+    pub fn candidates(&mut self, s: &Session) -> Result<&[PrintCandidate], String> {
+        let key = (s.document().id(), s.revision());
+        if self.candidates.as_ref().is_none_or(|(k, _)| *k != key) {
+            self.candidates = Some((
+                key,
+                print_candidates(s.document()).map_err(|e| e.to_string()),
+            ));
+        }
+        match &self.candidates.as_ref().expect("listed").1 {
+            Ok(list) => Ok(list),
+            Err(error) => Err(error.clone()),
+        }
     }
     pub fn set_source_tag(&mut self, tag: Option<&str>) {
         self.by_tag = tag.is_some();
@@ -457,23 +495,12 @@ impl PrintWorkspace {
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
                 ui.heading("Printable Parts");
-                ui.radio_value(&mut self.by_tag, false, "Selection")
+                ui.radio_value(&mut self.by_tag, false, "Chosen Parts")
                     .on_hover_text(
-                        "Parts and placed copies selected in the viewport when Export was entered; each copy is packaged at its placement",
+                        "Choose world Parts, placed copies and placed Assemblies here; each copy is packaged at its placement. Entering Export starts from the model selection",
                     );
                 if !self.by_tag {
-                    ui.small(format!(
-                        "{} captured entit{}",
-                        self.captured.len(),
-                        if self.captured.len() == 1 { "y" } else { "ies" }
-                    ));
-                    for id in self.captured.iter().take(12) {
-                        ui.small(
-                            s.document()
-                                .get(*id)
-                                .map_or_else(|| format!("Missing {id}"), |e| e.name.clone()),
-                        );
-                    }
+                    self.source_picker(ui, s);
                 }
                 ui.radio_value(&mut self.by_tag, true, "Tag")
                     .on_hover_text(
@@ -566,6 +593,97 @@ impl PrintWorkspace {
                 PrintTool::Write => self.write_requested = true,
                 PrintTool::Cancel => self.notice = Some((self.cancel(), false)),
             }
+        }
+    }
+    /// The explicit source list: every Part, placed copy and placed
+    /// Assembly the package can hold, with the chosen ones ticked. Changing
+    /// it makes the current preview display-only until it re-resolves.
+    fn source_picker(&mut self, ui: &mut egui::Ui, s: &Session) {
+        let candidates = match self.candidates(s) {
+            Ok(list) => list.to_vec(),
+            Err(error) => {
+                ui.colored_label(egui::Color32::LIGHT_RED, error);
+                return;
+            }
+        };
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .small_button("All")
+                .on_hover_text("Choose every Part, placed copy and placed Assembly")
+                .clicked()
+            {
+                self.captured = candidates.iter().map(|c| c.entity).collect();
+            }
+            if ui
+                .small_button("None")
+                .on_hover_text("Clear the chosen list")
+                .clicked()
+            {
+                self.captured.clear();
+            }
+            if ui
+                .add_enabled(
+                    self.captured != self.entered,
+                    egui::Button::new("Model selection").small(),
+                )
+                .on_hover_text("Return to the selection captured when Export was entered")
+                .clicked()
+            {
+                self.restore_captured();
+            }
+        });
+        ui.small(format!(
+            "{} of {} chosen",
+            self.captured
+                .iter()
+                .filter(|id| candidates.iter().any(|c| c.entity == **id))
+                .count(),
+            candidates.len()
+        ));
+        if candidates.is_empty() {
+            ui.small("This project has no Part, placed copy or placed Assembly yet.");
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("print-source-picker")
+            .max_height(220.)
+            .show(ui, |ui| {
+                for c in &candidates {
+                    let mut on = self.captured.contains(&c.entity);
+                    let kind = match (c.kind, &c.source) {
+                        (PrintCandidateKind::Part, _) => "Part".to_owned(),
+                        (PrintCandidateKind::PlacedCopy, Some(source)) => {
+                            format!("placed copy of {source}")
+                        }
+                        (PrintCandidateKind::PlacedCopy, None) => "placed copy".to_owned(),
+                        (PrintCandidateKind::Assembly, _) => "placed Assembly".to_owned(),
+                    };
+                    if ui
+                        .checkbox(&mut on, format!("{} · {kind}", c.name))
+                        .on_hover_text(format!("Identity {}", c.entity))
+                        .changed()
+                    {
+                        if on {
+                            self.captured.push(c.entity);
+                        } else {
+                            self.captured.retain(|id| *id != c.entity);
+                        }
+                    }
+                }
+            });
+        // Chosen identities the picker does not offer (component definitions,
+        // aids or deleted entities) stay explicit; Preview lists their reason.
+        for id in self
+            .captured
+            .iter()
+            .filter(|id| !candidates.iter().any(|c| c.entity == **id))
+            .take(12)
+        {
+            ui.small(format!(
+                "Also chosen: {}",
+                s.document()
+                    .get(*id)
+                    .map_or_else(|| format!("missing {id}"), |e| e.name.clone())
+            ));
         }
     }
     fn show_preview(&self, ui: &mut egui::Ui, s: &Session, preview: &PrintPreview) {
