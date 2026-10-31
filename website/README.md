@@ -10,9 +10,10 @@ The palette uses `#4599D2`, sampled from the approved logo background, with rela
 
 - `assets/logo.png` copies the approved `assets/branding/toskcad-logo-blueprint-tosk-c.png`.
 - `assets/icon.png` copies `assets/branding/app/AppIcon.png`.
-- `assets/model.png` and `assets/parameters.png` copy `12-model.png` and `11-applied.png` from the native shared-workflow review. The [review notes](../docs/verification/native-shared-workflow-2026-10-29.md) describe the October 29, 2026 session and its limitations. These historical captures precede later layout changes.
-- `assets/drawings.png` copies the October 31, 2026 native cabinet drawing review's `cabinet-overview.png`. It shows generated drawing pages, rather than a desktop application window.
+- `assets/cabinet.png`, `assets/workbench.png`, `assets/front-panel.png` and `assets/apartment.png` are fresh native macOS captures from October 31, 2026. Each project was opened through the rebuilt application's Examples browser, which copies the bundled project and dependencies to an editable user folder. The captures show the Wood, Weld, Sheet metal and Architecture workbenches respectively.
+- The source projects are [`examples/cabinet.tcd`](../examples/cabinet.tcd), [`examples/welded-workbench.tcd`](../examples/welded-workbench.tcd), [`examples/front-panel.tcd`](../examples/front-panel.tcd) and [`examples/apartment.tcd`](../examples/apartment.tcd). Their descriptions and limitations are stored in the project files.
 
+The capture build is `artifacts/development/build-xJt76z/MultiCAD.app`, produced by `./build` with the pinned toolchain and lockfile. Its executable SHA-256 is `8eb05c1ce6253656e43afb90af96806b41134c1a0e213c7e96fbaa63730c00a4`. It includes the requested FDM tab label/order change and pre-existing local native-build changes, so it is evidence from the local working tree rather than a clean release build.
 All imagery belongs to this project; no stock photography or generated application screenshots are used. Keep captions and provenance current when replacing captures. The original local captures live under ignored `artifacts/`; the publication copies are tracked here.
 
 ## Deployment

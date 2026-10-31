@@ -9,7 +9,7 @@ function show(view) {
   for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.view === view));
 }
 controls.hidden = false;
-show('model');
+show('workbench');
 for (const button of buttons) button.addEventListener('click', () => show(button.dataset.view));
 const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 if (motion) {
