@@ -63,7 +63,7 @@ Selecting a card copies the example, then opens the copy through the ordinary op
 - Native interactive macOS evidence (first launch with no recents, Examples with recents, edit/save/reopen of each demo) is pending human review. Automated evidence: headless egui tests of the welcome screen and gallery, open-as-copy and original protection; catalog, copy and location unit tests; package layout and validation tests; the packaged self-test.
 - Windows and Linux layouts are covered by the packaging code and its tests on macOS only until CI runs them.
 - `multicad --mcp --project` does not refuse a bundled original; an MCP client could write one if the operating system allows it (a signed macOS bundle then fails its signature check).
-- The cabinet (CAD-182) and apartment (CAD-185) files are not on this branch yet; adding them means listing them in `examples/examples.json` (with the apartment's `requires`).
+- The cabinet (CAD-182) is listed first and requires `libraries/cabinet-hardware-library.tcd`, the pinned hardware symbols' source library. The library sits in a subfolder so it is copied with the cabinet but not shown as a demo of its own. The apartment (CAD-185) is not on this branch yet; adding it means listing it with its `requires`.
 
 ## Welded steel workbench (CAD-183)
 

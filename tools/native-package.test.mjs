@@ -72,11 +72,12 @@ test('native development layout includes a copied executable, identity pin and n
     // platform's resources folder; nothing else from examples/ is copied.
     const examples=join(layout.resources,'examples');
     const manifest=JSON.parse(readFileSync(new URL('../examples/examples.json',import.meta.url),'utf8'));
-    assert.deepEqual(readdirSync(examples).sort(),['examples.json',...manifest.examples.map(e=>e.file)].sort());
-    for(const name of readdirSync(examples))assert.deepEqual(readFileSync(join(examples,name)),readFileSync(new URL(`../examples/${name}`,import.meta.url)),name);
+    const shipped=['examples.json',...new Set(manifest.examples.flatMap(e=>[e.file,...(e.requires??[])]))];
+    assert.deepEqual(readdirSync(examples).sort(),[...new Set(shipped.map(f=>f.split('/')[0]))].sort());
+    for(const name of shipped)assert.deepEqual(readFileSync(join(examples,...name.split('/'))),readFileSync(new URL(`../examples/${name}`,import.meta.url)),name);
     if(process.platform==='darwin')assert.equal(layout.resources,join(stage,'MultiCAD.app/Contents/Resources'));
     else assert.equal(layout.resources,join(stage,'resources'));
-    assert.match(readme,/Bundled examples \(Examples, or the welcome screen with no recent projects\): Welded steel workbench, C-channel front panel/);
+    assert.match(readme,/Bundled examples \(Examples, or the welcome screen with no recent projects\): 2 m cabinet with doors, drawers and System 32 shelves, Welded steel workbench, C-channel front panel\./);
     assert.match(readme,/editable copy in Documents\/ToskCAD Examples/);
     if(process.platform!=='win32')assert(statSync(layout.executable).mode&0o111);
   }finally{rmSync(directory,{recursive:true,force:true});}

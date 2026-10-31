@@ -2,8 +2,9 @@
 //! transactional API that the window and the MCP server share.
 //!
 //! Run `cargo run -p multicad-app --example cabinet_demo -- examples` to
-//! regenerate `examples/cabinet-2m-doors-drawers.tcd` and the hardware
-//! library `examples/cabinet-hardware-library.tcd`. Identities are fresh on
+//! regenerate `examples/cabinet.tcd` and the hardware library
+//! `examples/libraries/cabinet-hardware-library.tcd` (listed in the
+//! cabinet's `requires` in `examples/examples.json`). Identities are fresh on
 //! every run, so the files are reproducible in content, not byte for byte.
 //!
 //! The cabinet, from bottom to top:
@@ -49,8 +50,10 @@ use std::{collections::BTreeMap, io::Write, path::Path};
 
 pub type Error = Box<dyn std::error::Error>;
 
-pub const CABINET_FILE: &str = "cabinet-2m-doors-drawers.tcd";
-pub const LIBRARY_FILE: &str = "cabinet-hardware-library.tcd";
+pub const CABINET_FILE: &str = "cabinet.tcd";
+/// In a subfolder, so the Examples gallery lists it only as the cabinet's
+/// requirement, not as a demo of its own.
+pub const LIBRARY_FILE: &str = "libraries/cabinet-hardware-library.tcd";
 pub const CABINET_NAME: &str = "2 m cabinet with doors, drawers and System 32 shelves";
 pub const LIBRARY_NAME: &str = "Cabinet hardware library";
 pub const PURCHASED: &str = "purchased";
@@ -2260,7 +2263,7 @@ fn set_info(
         name: name.into(),
         description: description.into(),
         preview: Some(preview),
-        capture_on_save: false,
+        capture_on_save: true,
     };
     let edits = project_file::info::edits(session.document(), &info)?;
     let prepared = session.prepare(Request {
@@ -2317,6 +2320,7 @@ pub fn archive(session: &Session) -> Result<Vec<u8>, Error> {
 }
 fn write_new_or_replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let directory = path.parent().ok_or("no directory")?;
+    std::fs::create_dir_all(directory)?;
     let mut file = tempfile::NamedTempFile::new_in(directory)?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
@@ -2352,7 +2356,8 @@ pub fn generate(directory: &Path) -> Result<serde_json::Value, Error> {
         if let Some(dump) = std::env::var_os("CABINET_DEMO_PREVIEW_DIR")
             && let Some(preview) = project_file::info::read(session.document())?.preview
         {
-            std::fs::write(Path::new(&dump).join(format!("{file}.png")), preview.png())?;
+            let name = file.replace('/', "-");
+            std::fs::write(Path::new(&dump).join(format!("{name}.png")), preview.png())?;
         }
     }
     Ok(serde_json::json!({

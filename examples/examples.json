@@ -2,6 +2,7 @@
   "format": "toskcad.examples",
   "version": 1,
   "examples": [
+    { "file": "cabinet.tcd", "requires": ["libraries/cabinet-hardware-library.tcd"] },
     { "file": "welded-workbench.tcd" },
     { "file": "front-panel.tcd" }
   ]
