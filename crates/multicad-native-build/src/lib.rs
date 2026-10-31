@@ -97,11 +97,22 @@ const OFF_OPTIONS: &[&str] = &[
     "XLIB",
 ];
 
+/// Windows `canonicalize` yields `\\?\D:\...` verbatim paths, which MSBuild
+/// rejects ("The network name cannot be found"); keep plain drive paths.
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|text| text.strip_prefix(r"\\?\")) {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
 pub fn build() -> PathBuf {
-    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repository root");
+    let repository = without_verbatim_prefix(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root"),
+    );
     let pin: serde_json::Value =
         serde_json::from_str(include_str!("../../../native-dependencies.json"))
             .expect("native dependency pin");
@@ -233,6 +244,19 @@ pub fn build() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_verbatim_drive_paths_lose_their_prefix_but_unc_shares_keep_it() {
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\D:\a\TOSKCAD")),
+            PathBuf::from(r"D:\a\TOSKCAD")
+        );
+        for kept in [r"\\?\UNC\server\share", "/Users/runner/work"] {
+            assert_eq!(
+                without_verbatim_prefix(PathBuf::from(kept)),
+                PathBuf::from(kept)
+            );
+        }
+    }
     #[test]
     fn native_source_edits_change_identity_without_depending_on_checkout_path() {
         let directory = tempfile::tempdir().unwrap();
