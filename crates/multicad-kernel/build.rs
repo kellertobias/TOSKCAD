@@ -28,6 +28,8 @@ fn main() {
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rustc-link-lib=user32");
+        // OCCT's OSD layer uses the registry and file-security APIs.
+        println!("cargo:rustc-link-lib=advapi32");
     }
     for path in [
         "src/lib.rs",
