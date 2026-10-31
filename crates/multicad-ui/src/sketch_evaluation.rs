@@ -257,13 +257,31 @@ fn evaluate(job: &Job, cancelled: &dyn Fn() -> bool) -> Result<Batch, String> {
                     message: e.to_string(),
                     diagnostics: Some(Arc::new(evaluated.evaluation.diagnostics.clone())),
                 })?;
-                let regions = evaluated
+                let regions = match evaluated
                     .regions_with_queries_and_interrupt(queries.as_ref(), Some(cancelled))
-                    .map_err(|e| SketchFailure {
-                        source: e.source,
-                        message: e.to_string(),
-                        diagnostics: Some(Arc::new(evaluated.evaluation.diagnostics.clone())),
-                    })?;
+                {
+                    Ok(regions) => regions,
+                    Err(e) if cancelled() => {
+                        return Err(SketchFailure {
+                            source: e.source,
+                            message: e.to_string(),
+                            diagnostics: Some(Arc::new(evaluated.evaluation.diagnostics.clone())),
+                        });
+                    }
+                    // A valid solved sketch and current plane remain editable
+                    // while native support wires are unavailable or need repair.
+                    // Publish no selectable profiles and no fill in that case;
+                    // never substitute authored curves for manufacturing input.
+                    Err(e) => Extraction {
+                        regions: vec![],
+                        diagnostics: vec![multicad_core::sketch_regions::Diagnostic {
+                            problem: Problem::QueryFailure,
+                            curves: vec![],
+                            at_mm: None,
+                            message: e.to_string(),
+                        }],
+                    },
+                };
                 Ok(SketchPresentation {
                     stamp: job.stamp,
                     evaluated: Arc::new(evaluated),
@@ -1306,6 +1324,16 @@ mod tests {
             })
         );
         assert!(current.geometry.is_empty());
+        assert!(current.regions.regions.is_empty());
+        assert!(current.fills.is_empty());
+        assert!(
+            current
+                .regions
+                .diagnostics
+                .iter()
+                .any(|d| d.problem == Problem::QueryFailure
+                    && d.message.contains("current exact native boundary receipt"))
+        );
         let parameter = Entity::new(
             "unrelated",
             EntityData::Parameter {
