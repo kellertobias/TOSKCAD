@@ -8,6 +8,9 @@ use multicad_core::{
 struct Draft {
     entity: Entity,
     style: Option<(EntityId, MaterialStyle)>,
+    /// A new manufacturing material created together with a stock draft when
+    /// the document has none yet (CAD-160). Committed in the same transaction.
+    companion: Option<Entity>,
 }
 #[derive(Default)]
 pub struct LibraryEditor {
@@ -36,7 +39,11 @@ impl LibraryEditor {
         } else {
             None
         };
-        self.draft = Some(Draft { entity, style });
+        self.draft = Some(Draft {
+            entity,
+            style,
+            companion: None,
+        });
         self.original = self.draft.clone();
         self.revision = s.revision();
         self.document = Some(s.document().id());
@@ -44,25 +51,30 @@ impl LibraryEditor {
     }
     fn create(&mut self, s: &Session, kind: usize) {
         let id = EntityId::new();
+        let mut companion = None;
         let entity = match kind {
-            0 => Entity::new(
-                "New material",
-                EntityData::Material {
-                    density_kg_m3: Some(700.),
-                    color_rgba: [150, 170, 190, 255],
-                    section_hatch: None,
-                },
-            ),
-            1 => LibraryDefinition::Stock(Stock {
-                material: s
+            0 => new_material("New material"),
+            1 => {
+                // Never let the stock point at itself: with no material in the
+                // document, draft a companion material committed alongside it.
+                let material = s
                     .document()
                     .entities()
                     .find(|e| matches!(e.data, EntityData::Material { .. }))
-                    .map_or(id, |e| e.id),
-                specification: stock_default(0),
-            })
-            .entity(id, "New stock")
-            .expect("finite defaults"),
+                    .map(|e| e.id)
+                    .unwrap_or_else(|| {
+                        let material = new_material("Stock material");
+                        let material_id = material.id;
+                        companion = Some(material);
+                        material_id
+                    });
+                LibraryDefinition::Stock(Stock {
+                    material,
+                    specification: stock_default(0),
+                })
+                .entity(id, "New stock")
+                .expect("finite defaults")
+            }
             2 => LibraryDefinition::Appearance(Appearance::default())
                 .entity(id, "New appearance")
                 .expect("finite defaults"),
@@ -73,6 +85,7 @@ impl LibraryEditor {
         self.draft = Some(Draft {
             entity,
             style: None,
+            companion,
         });
         self.original = None;
         self.document = Some(s.document().id());
@@ -86,7 +99,18 @@ impl LibraryEditor {
         let Some(d) = self.draft.as_ref() else {
             return Ok(());
         };
-        let mut entities = vec![d.entity.clone()];
+        if let Some(problem) = missing_prerequisite(d, s.document()) {
+            return Err(problem);
+        }
+        let mut entities = Vec::new();
+        if let Some(material) = d
+            .companion
+            .as_ref()
+            .filter(|m| stock_material(&d.entity) == Some(m.id))
+        {
+            entities.push(material.clone());
+        }
+        entities.push(d.entity.clone());
         if let Some((id, style)) = &d.style {
             entities.push(
                 LibraryDefinition::MaterialStyle(style.clone())
@@ -162,8 +186,15 @@ impl LibraryEditor {
                     });
                 }
                 if let Some(error) = &self.error { ui.colored_label(Color32::LIGHT_RED, error); }
+                let blocked = self.draft.as_ref().and_then(|d| missing_prerequisite(d, s.document()));
+                if let Some(problem) = &blocked {
+                    ui.colored_label(Color32::LIGHT_RED, problem);
+                    if ui.button("Create a material first").on_hover_text("Discard this stock draft and start a new manufacturing material").clicked() {
+                        self.create(s, 0);
+                    }
+                }
                 ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(self.dirty(), egui::Button::new("Apply library edits"))
+                    if ui.add_enabled(self.dirty() && blocked.is_none(), egui::Button::new("Apply library edits"))
                         .on_hover_text("Commit one undoable source transaction").clicked() {
                         self.error = self.apply(s).err();
                     }
@@ -256,10 +287,30 @@ fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft) {
                 number(ui, "Line width (paper)", &mut h.line_width_mm, " mm");
             }
             LibraryDefinition::Stock(stock) => {
-                let mut material = Some(stock.material);
-                choice(ui, "Manufacturing material", &mut material, s, 0);
-                if let Some(id) = material {
-                    stock.material = id;
+                let pending = d.companion.as_mut().filter(|m| m.id == stock.material);
+                let has_existing = s
+                    .document()
+                    .entities()
+                    .any(|e| matches!(e.data, EntityData::Material { .. }));
+                if let Some(material) = pending {
+                    ui.label("Manufacturing material (new)");
+                    ui.text_edit_singleline(&mut material.name)
+                        .on_hover_text("Created together with this stock in one undoable edit");
+                    ui.small(
+                        "No manufacturing material exists yet. Applying creates this material and the stock together.",
+                    );
+                }
+                if has_existing || d.companion.is_none() {
+                    let mut material = Some(stock.material);
+                    let label = if d.companion.is_some() {
+                        "Use existing material instead"
+                    } else {
+                        "Manufacturing material"
+                    };
+                    choice(ui, label, &mut material, s, 0);
+                    if let Some(id) = material {
+                        stock.material = id;
+                    }
                 }
                 let mut kind = stock_index(&stock.specification);
                 let old = kind;
@@ -290,6 +341,43 @@ fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft) {
             wire.data = serde_json::to_value(&definition).expect("serializable library draft");
             *inputs = definition.links();
         }
+    }
+}
+fn new_material(name: &str) -> Entity {
+    Entity::new(
+        name,
+        EntityData::Material {
+            density_kg_m3: Some(700.),
+            color_rgba: [150, 170, 190, 255],
+            section_hatch: None,
+        },
+    )
+}
+fn stock_material(entity: &Entity) -> Option<EntityId> {
+    let EntityData::Extension { definition, .. } = &entity.data else {
+        return None;
+    };
+    match serde_json::from_value::<LibraryDefinition>(definition.data.clone()) {
+        Ok(LibraryDefinition::Stock(stock)) => Some(stock.material),
+        _ => None,
+    }
+}
+/// Explains, by name, why a stock draft cannot be applied yet.
+fn missing_prerequisite(d: &Draft, document: &multicad_core::document::Document) -> Option<String> {
+    let material = stock_material(&d.entity)?;
+    if d.companion.as_ref().is_some_and(|m| m.id == material) {
+        return None;
+    }
+    let name = &d.entity.name;
+    match document.get(material) {
+        Some(e) if matches!(e.data, EntityData::Material { .. }) => None,
+        Some(e) => Some(format!(
+            "Stock '{name}' needs a manufacturing material, but '{}' is not a material.",
+            e.name
+        )),
+        None => Some(format!(
+            "Stock '{name}' needs a manufacturing material. Create or select a material first."
+        )),
     }
 }
 pub(super) fn choice(
@@ -526,6 +614,146 @@ mod tests {
         assert_eq!(s.activity().last().unwrap().actor.channel, Channel::Ui);
         s.undo(1, Actor::local(Channel::Ui)).unwrap();
         assert_eq!(s.document(), &before);
+    }
+    fn set_stock(editor: &mut LibraryEditor, f: impl FnOnce(&mut Stock)) {
+        let d = editor.draft.as_mut().unwrap();
+        let EntityData::Extension { definition, inputs } = &mut d.entity.data else {
+            panic!("stock draft")
+        };
+        let Ok(LibraryDefinition::Stock(mut stock)) =
+            serde_json::from_value::<LibraryDefinition>(definition.data.clone())
+        else {
+            panic!("stock draft")
+        };
+        f(&mut stock);
+        let definition_value = LibraryDefinition::Stock(stock);
+        definition.data = serde_json::to_value(&definition_value).unwrap();
+        *inputs = definition_value.links();
+    }
+    #[test]
+    fn new_stock_in_empty_library_drafts_a_companion_material_and_applies_once() {
+        let mut s = Session::new(Document::new("Empty stock").unwrap()).unwrap();
+        let before = s.document().clone();
+        let mut editor = LibraryEditor::default();
+        editor.open(&s);
+        editor.create(&s, 1);
+        let d = editor.draft.as_ref().unwrap();
+        let stock_id = d.entity.id;
+        let material = d.companion.clone().expect("companion material drafted");
+        assert_eq!(stock_material(&d.entity), Some(material.id));
+        assert_ne!(material.id, stock_id, "stock must never reference itself");
+        assert!(missing_prerequisite(d, s.document()).is_none());
+        // The real Apply button is enabled and commits both in one revision.
+        let ctx = egui::Context::default();
+        let mut rect = None;
+        for _ in 0..3 {
+            rect = frame(&ctx, &mut editor, &mut s, vec![]);
+        }
+        let pos = rect.expect("Apply is rendered").center();
+        frame(
+            &ctx,
+            &mut editor,
+            &mut s,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        assert_eq!(editor.error, None);
+        assert_eq!(s.revision(), 1);
+        assert!(matches!(
+            s.document().get(material.id).unwrap().data,
+            EntityData::Material { .. }
+        ));
+        assert!(matches!(
+            read(s.document().get(stock_id).unwrap()),
+            Ok(Some(LibraryDefinition::Stock(_)))
+        ));
+        assert!(diagnostics(s.document()).unwrap().is_empty());
+        s.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &before);
+    }
+    #[test]
+    fn stock_with_missing_material_is_blocked_by_name_and_preserves_source() {
+        let mut s = Session::new(Document::new("Missing stock material").unwrap()).unwrap();
+        let mut editor = LibraryEditor::default();
+        editor.open(&s);
+        editor.create(&s, 1);
+        let stock_id = editor.draft.as_ref().unwrap().entity.id;
+        editor.draft.as_mut().unwrap().entity.name = "Birch ply".into();
+        editor.draft.as_mut().unwrap().companion = None;
+        set_stock(&mut editor, |stock| stock.material = stock_id);
+        let before = s.document().clone();
+        let problem = missing_prerequisite(editor.draft.as_ref().unwrap(), s.document()).unwrap();
+        assert!(
+            problem.contains("Stock 'Birch ply'") && problem.contains("manufacturing material")
+        );
+        let error = editor.apply(&mut s).unwrap_err();
+        assert!(!error.contains("cycle"), "{error}");
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), 0);
+        // Apply is disabled and the explicit route to a material is offered.
+        let ctx = egui::Context::default();
+        let mut output: Option<egui::FullOutput> = None;
+        for _ in 0..2 {
+            if let Some(o) = output.as_mut() {
+                o.textures_delta.clear();
+            }
+            output = Some(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 800.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| editor.show(ui.ctx(), &mut s),
+            ));
+        }
+        let mut output = output.unwrap();
+        output.textures_delta.clear();
+        let shapes = output.shapes;
+        assert!(text_rect(&shapes, "Create a material first").is_some());
+        assert!(text_rect(&shapes, &problem).is_some());
+    }
+    #[test]
+    fn material_first_sequence_creates_panel_sheet_and_profile_stock() {
+        let mut s = Session::new(Document::new("Material first").unwrap()).unwrap();
+        let mut editor = LibraryEditor::default();
+        editor.open(&s);
+        editor.create(&s, 0);
+        let material = editor.draft.as_ref().unwrap().entity.id;
+        editor.apply(&mut s).unwrap();
+        for kind in 0..3 {
+            editor.draft = None;
+            editor.original = None;
+            editor.create(&s, 1);
+            assert!(editor.draft.as_ref().unwrap().companion.is_none());
+            set_stock(&mut editor, |stock| {
+                stock.specification = stock_default(kind)
+            });
+            let id = editor.draft.as_ref().unwrap().entity.id;
+            editor.apply(&mut s).unwrap();
+            let Ok(Some(LibraryDefinition::Stock(stock))) = read(s.document().get(id).unwrap())
+            else {
+                panic!("stock committed")
+            };
+            assert_eq!(stock.material, material);
+            assert_eq!(stock_index(&stock.specification), kind);
+        }
+        assert_eq!(s.revision(), 4);
+        assert!(diagnostics(s.document()).unwrap().is_empty());
     }
     #[test]
     fn invalid_and_stale_catalog_drafts_reject_without_source_edits() {

@@ -85,7 +85,11 @@ impl Application {
                         .on_hover_text("Select this document before saving or reviewing its edits")
                         .clicked()
                     {
-                        self.active = *index;
+                        if self.active != *index {
+                            self.leave_project_status();
+                            self.active = *index;
+                            self.enter_project_status();
+                        }
                         self.mode = if self.current().exchange.dirty() {
                             Mode::Export
                         } else if self.current().drawings.dirty() {

@@ -402,6 +402,7 @@ fn machining_schedule_groups_holes_by_size_and_lists_recesses() {
             actor(),
             name,
             &MachiningDefinition {
+                suppressed: false,
                 kind,
                 face: MachiningFace::Top,
                 targets: vec![side],

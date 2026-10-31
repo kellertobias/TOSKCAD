@@ -13,10 +13,12 @@ mod joint;
 mod machining;
 mod prepare;
 mod resolve;
+mod tenon;
 pub use joint::*;
 pub use machining::*;
 pub use prepare::*;
 pub use resolve::*;
+pub use tenon::*;
 
 use super::{
     common::parameter_links,

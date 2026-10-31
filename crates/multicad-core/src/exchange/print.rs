@@ -144,6 +144,84 @@ fn label(document: &Document, chosen: &Chosen) -> String {
         format!("{name} ({})", chosen.names.join(" / "))
     }
 }
+/// What a Print source picker offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PrintCandidateKind {
+    /// A world Part, packaged once at its own coordinates.
+    Part,
+    /// A placed Instance, packaged at its own placement; `source` names the
+    /// component it places.
+    PlacedCopy,
+    /// A placed Assembly; every leaf Part occurrence is packaged.
+    Assembly,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrintCandidate {
+    pub entity: EntityId,
+    pub name: String,
+    pub kind: PrintCandidateKind,
+    /// For a placed copy, the name of the component it places.
+    pub source: Option<String>,
+}
+/// The Parts, placed copies and placed Assemblies that an explicit Print
+/// selection packages without a skip: Parts, then placed copies, then
+/// placed Assemblies, each by name. Component
+/// definitions, members of reusable Assemblies, owned scale geometry and
+/// removable aids (which travel with their targets) are left out, exactly
+/// as [`resolve_print`] would skip them.
+pub fn print_candidates(document: &Document) -> Result<Vec<PrintCandidate>, DocumentError> {
+    let definitions = model::assembly_definition_parts(document)?;
+    let reusable = model::reusable_assemblies(document)?;
+    let aid_parts = model::aid_parts(document);
+    let mut components = BTreeSet::new();
+    let mut members = BTreeMap::new();
+    for entity in document.entities() {
+        match &entity.data {
+            EntityData::Instance { component, .. } => {
+                components.insert(*component);
+            }
+            EntityData::Assembly { instances } => {
+                for member in instances {
+                    members.insert(*member, entity.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    let definition_assembly = |id: &EntityId| reusable.contains(id) || components.contains(id);
+    let mut result = vec![];
+    for entity in document.entities() {
+        let (kind, source) = match &entity.data {
+            EntityData::Part { .. }
+                if !definitions.contains(&entity.id)
+                    && !aid_parts.contains(&entity.id)
+                    && model::scale_component_owner(document, entity.id)?.is_none() =>
+            {
+                (PrintCandidateKind::Part, None)
+            }
+            EntityData::Instance { component, .. }
+                if !members.get(&entity.id).is_some_and(definition_assembly) =>
+            {
+                (
+                    PrintCandidateKind::PlacedCopy,
+                    document.get(*component).map(|c| c.name.clone()),
+                )
+            }
+            EntityData::Assembly { .. } if !definition_assembly(&entity.id) => {
+                (PrintCandidateKind::Assembly, None)
+            }
+            _ => continue,
+        };
+        result.push(PrintCandidate {
+            entity: entity.id,
+            name: entity.name.clone(),
+            kind,
+            source,
+        });
+    }
+    result.sort_by(|a, b| (a.kind, &a.name, a.entity).cmp(&(b.kind, &b.name, b.entity)));
+    Ok(result)
+}
 /// Resolve a print request against one immutable document snapshot.
 /// Explicit identities that no longer exist fail instead of broadening the
 /// package. A chosen Instance or Assembly is walked to its leaf Part
@@ -669,6 +747,44 @@ mod tests {
         .unwrap();
         assert_eq!(without.parts.len(), 1);
         assert_eq!(without.skipped[0].name, "Tab (Spare)");
+    }
+    #[test]
+    fn print_candidates_offer_parts_and_placed_copies_but_not_aids() {
+        let mut f = fixture();
+        let mut placed = model::ComponentPlacementRequest::new(f.block, Default::default());
+        placed.name = "Spare".into();
+        let p = model::prepare_place_component(&f.s, f.s.revision(), actor(), &placed).unwrap();
+        f.s.commit(p.prepared).unwrap();
+        let candidates = print_candidates(f.s.document()).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| (c.entity, c.kind, c.source.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (f.block, PrintCandidateKind::Part, None),
+                (f.other, PrintCandidateKind::Part, None),
+                (
+                    placed.instance,
+                    PrintCandidateKind::PlacedCopy,
+                    Some("Block")
+                ),
+            ]
+        );
+        // Every offered entity resolves without a skip.
+        let all = resolve_print(
+            f.s.document(),
+            f.s.revision(),
+            &request(
+                PrintSource::Parts {
+                    parts: candidates.iter().map(|c| c.entity).collect(),
+                },
+                AidPolicy::IncludeAll,
+            ),
+        )
+        .unwrap();
+        assert!(all.skipped.is_empty(), "{:?}", all.skipped);
+        assert!(!candidates.iter().any(|c| c.entity == f.tab));
     }
     #[test]
     fn tags_choose_parts_exactly_and_missing_identities_fail() {

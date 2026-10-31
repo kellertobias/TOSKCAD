@@ -14,6 +14,8 @@ pub enum Kind {
     SavePrintPackage,
     /// A schedule CSV destination.
     SaveCsv,
+    /// An existing folder that receives an export bundle.
+    ChooseFolder,
 }
 #[derive(Clone, Debug)]
 pub struct Request {

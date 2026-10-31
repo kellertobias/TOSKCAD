@@ -74,6 +74,16 @@ Moving a sketch on a shared plane creates an independent translated plane.
 
 The viewport displays source wires and a configurable XY grid. Orbit, pan,
 projection, fit and the orientation cross reuse the shared camera controls.
+
+Project files store no camera. When a document's evaluated model first has
+world bounds and the viewport is laid out, the viewer frames the whole model
+once ([`initial_fit`](../../crates/multicad-ui/src/initial_fit.rs)). Until the
+user moves the camera it reframes when the viewport is resized, so a window
+restored at startup still shows the whole model; after any orbit, pan, zoom,
+Home or Fit it never overrides the view. An empty or failed model keeps the
+default view. **Home** returns to the standard orientation and frames the
+whole model, ignoring the selection; **Fit** keeps the current orientation and
+frames the selection, or everything when nothing is selected.
 Solid display styles require geometry supplied by future modeling modules.
 Face attachment, projected external geometry, constraint solving and region
 extraction remain separate work. These source wires establish no manufacturing
@@ -144,7 +154,7 @@ unavailable modeling modules remain disabled. Tooltips reflect active bindings.
 | E / R | Sketch editing | Line / rectangle |
 | Delete | Sketch editing | Delete selected geometry |
 | E / R | Model | Extrude / revolve when their modules are available |
-| F / Shift+F | Viewport | Fit / home view |
+| F / Shift+F | Viewport | Fit (current orientation) / Home (standard orientation, whole model) |
 | V / X / Escape | Viewport | Projection / transform gizmo / cancel interaction |
 | Cmd/Ctrl+F | Application | Focus tool finder |
 | Backtick | Outside text entry | Focus command input |

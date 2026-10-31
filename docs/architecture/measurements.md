@@ -63,6 +63,24 @@ highlight colors, including different faces on the same Part. Replacing one
 side preserves the other reference. Closing Measure removes its temporary
 overlay while visible saved pins remain.
 
+## Clearance viewport evidence
+
+Interference/Clearance results select into the viewport. The first known
+current-pose pair is selected when its report arrives; clicking a pair toggles
+it. The [marker](../../crates/multicad-ui/src/assembly/clearance_view.rs)
+highlights both occurrence roots and draws every native witness pair with A/B
+endpoint colors and a labeled distance. Contact and overlap add a ring, and
+overlap also adds a cross with its COMMON volume. Fit result frames both
+occurrence boxes and all witnesses by moving only the camera. Reveal targets
+outlines both occurrences over occluding geometry. An occurrence hidden from the
+draw list is always outlined from its native leaf placement.
+
+Witness endpoints and numbers come only from the exact report. Occurrence boxes
+come from display meshes and only locate the pair. A marker is built only when
+the viewed Scene is the complete model of the report's document, revision and
+source hash. Otherwise the Inspector says why markers are hidden. Sampled motion
+poses are not displayed, so witnesses cover the current pose only.
+
 ## Verification
 
 The [Inspector tests](../../crates/multicad-ui/src/inspection/tests.rs) use real

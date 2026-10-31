@@ -39,6 +39,19 @@ pub enum PanelJointKind {
     /// The corner block is split into `count` fingers along the corner,
     /// alternating A, B, A…; `fit` is the total gap at each finger face.
     Finger { count: u32, fit: Dimension },
+    /// Loose tenons (Domino style) between panels that meet face to edge:
+    /// paired rounded mortises and a tenon Part per pair.
+    LooseTenon(Box<LooseTenonSpec>),
+}
+impl PanelJointKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ButtAThrough | Self::ButtBThrough => "butt joint",
+            Self::Miter => "miter joint",
+            Self::Finger { .. } => "finger joint",
+            Self::LooseTenon(_) => "loose-tenon joint",
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,11 +107,15 @@ impl PanelJointDefinition {
             }
             check_dimension(fit, Unit::Millimeter)?;
         }
+        if let PanelJointKind::LooseTenon(spec) = &self.kind {
+            spec.validate()?;
+        }
         Ok(())
     }
     fn dimensions(&self) -> Vec<&Dimension> {
         match &self.kind {
             PanelJointKind::Finger { fit, .. } => vec![fit],
+            PanelJointKind::LooseTenon(spec) => spec.dimensions(),
             _ => vec![],
         }
     }
@@ -203,7 +220,7 @@ pub(super) fn validate_panel_joints(document: &Document) -> Result<(), DocumentE
     for e in panel_joint_cuts(document) {
         read_panel_joint_cut(document, e.id)?;
     }
-    Ok(())
+    super::tenon::validate_loose_tenons(document)
 }
 
 /// A prism removed from one panel: a planar polygon swept along `sweep`.
@@ -215,6 +232,9 @@ pub struct CutPrism {
     pub polygon: Vec<[f64; 2]>,
     /// A circle (center, radius) instead of the polygon, for drilled holes.
     pub circle: Option<([f64; 2], f64)>,
+    /// A slot instead of the polygon: the two end-circle centers and their
+    /// radius, for rounded mortises.
+    pub slot: Option<([f64; 2], [f64; 2], f64)>,
     pub sweep: [f64; 3],
 }
 /// The resolved corner of one joint pair.
@@ -259,6 +279,9 @@ pub fn resolve_panel_joint_pair(
         .pairs
         .get(pair)
         .ok_or_else(|| invalid("The joint has no such pair"))?;
+    if let PanelJointKind::LooseTenon(spec) = &joint.kind {
+        return super::tenon::resolve_loose_tenon(document, parameters, spec, p).map(|r| r.0);
+    }
     let a = panel_box(document, parameters, p.a)?;
     let b = panel_box(document, parameters, p.b)?;
     let axes = [a.u, a.v, a.normal()];
@@ -374,6 +397,7 @@ pub fn resolve_panel_joint_pair(
                 polygon
             },
             circle: None,
+            slot: None,
             sweep: dir(ee.map(|c| c * (to - from))),
         }
     };
@@ -396,6 +420,7 @@ pub fn resolve_panel_joint_pair(
                 full(vec![out_m, inn_m, a_corner]),
             )
         }
+        PanelJointKind::LooseTenon(_) => unreachable!("resolved above"),
         PanelJointKind::Finger { count, fit } => {
             let fit = number(fit, Unit::Millimeter, parameters)?;
             let n = *count as usize;
@@ -469,6 +494,29 @@ fn add_cut(
     })
 }
 
+/// Add the tenon Part of one loose-tenon pair, in the container of panel A.
+fn add_tenon(
+    document: &mut Document,
+    edits: &mut Vec<Mutation>,
+    joint: EntityId,
+    name: &str,
+    pair: usize,
+    pairs: usize,
+    beside: EntityId,
+) -> Result<CreatedBody, CommandError> {
+    let (steps, feature, body) = super::tenon::tenon_part(joint, name, pair, pairs)?;
+    *document = document.edited(&steps)?;
+    edits.extend(steps);
+    let index = crate::hierarchy::Index::new(document).map_err(|e| error(e.to_string()))?;
+    if let Some(parent) = index.parent(beside).map_err(|e| error(e.to_string()))? {
+        let mut state = document.hierarchy().clone();
+        state.members.entry(parent).or_default().push(body);
+        let step = Mutation::SetHierarchy(state);
+        *document = document.edited(std::slice::from_ref(&step))?;
+        edits.push(step);
+    }
+    Ok(CreatedBody { feature, body })
+}
 /// Create a joint and every panel's cut in one transaction. The corner of
 /// each pair is checked against the current panels before anything is
 /// staged; a native evaluator still builds the cut solids.
@@ -498,10 +546,23 @@ pub fn prepare_panel_joint(
             outputs.push(add_cut(&mut candidate, &mut edits, id, i, side, part)?);
         }
     }
+    if matches!(joint.kind, PanelJointKind::LooseTenon(_)) {
+        for (i, p) in joint.pairs.iter().enumerate() {
+            outputs.push(add_tenon(
+                &mut candidate,
+                &mut edits,
+                id,
+                name,
+                i,
+                joint.pairs.len(),
+                p.a,
+            )?);
+        }
+    }
     let prepared = session.prepare(Request {
         expected_revision,
         actor,
-        label: "Create joint".into(),
+        label: format!("Create {}", joint.kind.label()),
         edits,
     })?;
     Ok(PanelJointPrepared {
@@ -521,6 +582,13 @@ pub fn prepare_panel_joint_edit(
     revision(session, expected_revision)?;
     let document = session.document();
     let mut joint = read_panel_joint(document, id)?;
+    if matches!(joint.kind, PanelJointKind::LooseTenon(_))
+        != matches!(kind, PanelJointKind::LooseTenon(_))
+    {
+        return Err(error(
+            "A loose-tenon joint and a corner joint need different panel placements; delete the joint and create another",
+        ));
+    }
     joint.kind = kind.clone();
     joint.validate()?;
     for i in 0..joint.pairs.len() {
@@ -541,6 +609,11 @@ pub fn prepare_panel_joint_edit(
                     body: c.output.body,
                 })
         })
+        .chain(
+            super::tenon::joint_tenons(document, id)
+                .into_iter()
+                .map(|(_, feature, body)| CreatedBody { feature, body }),
+        )
         .collect();
     let prepared = session.prepare(Request {
         expected_revision,
@@ -572,6 +645,19 @@ pub fn prepare_panel_joint_delete(
         .map(|e| e.id)
         .collect();
     super::chain::remove_cuts(&mut candidate, &mut edits, &cuts, "joint")?;
+    for (_, feature, body) in super::tenon::joint_tenons(document, id) {
+        let mut state = candidate.hierarchy().clone();
+        for members in state.members.values_mut() {
+            members.retain(|m| *m != body && *m != feature);
+        }
+        let mut steps = vec![];
+        if &state != candidate.hierarchy() {
+            steps.push(Mutation::SetHierarchy(state));
+        }
+        steps.extend([Mutation::Remove(body), Mutation::Remove(feature)]);
+        candidate = candidate.edited(&steps)?;
+        edits.extend(steps);
+    }
     edits.push(Mutation::Remove(id));
     session.prepare(Request {
         expected_revision,

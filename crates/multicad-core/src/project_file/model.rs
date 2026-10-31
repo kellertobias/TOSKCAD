@@ -386,6 +386,12 @@ impl ProjectFile {
         }
         if crate::drawings::books(&self.document).any(|id| {
             crate::drawings::read(&self.document, id)
+                .is_ok_and(|book| crate::drawings::hides_app_logo(&book))
+        }) {
+            required.insert(crate::drawings::TITLE_LOGO_CAPABILITY.into());
+        }
+        if crate::drawings::books(&self.document).any(|id| {
+            crate::drawings::read(&self.document, id)
                 .is_ok_and(|book| crate::drawings::has_guided_views(&book))
         }) {
             required.insert(crate::drawings::GUIDED_VIEW_CAPABILITY.into());
@@ -458,6 +464,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::drawings::ANNOTATION_CAPABILITY.into(),
         crate::drawings::GUIDE_CAPABILITY.into(),
         crate::drawings::GUIDED_VIEW_CAPABILITY.into(),
+        crate::drawings::TITLE_LOGO_CAPABILITY.into(),
         "core.plane.offset.1".into(),
         crate::hierarchy::CAPABILITY.into(),
         crate::constraint_sketch::source::V2_CAPABILITY.into(),
@@ -510,6 +517,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::PANEL_JOINT_CUT_CAPABILITY.into(),
         crate::model::MACHINING_CAPABILITY.into(),
         crate::model::MACHINING_CUT_CAPABILITY.into(),
+        crate::model::LOOSE_TENON_CAPABILITY.into(),
         crate::model::HARDWARE_PATTERN_CAPABILITY.into(),
         crate::model::imports::STEP_SOURCE_CAPABILITY.into(),
         crate::model::imports::STEP_BODY_CAPABILITY.into(),

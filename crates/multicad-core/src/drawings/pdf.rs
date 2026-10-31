@@ -103,6 +103,14 @@ fn content(page: &PageRender) -> Vec<u8> {
         path.push_str(" h f");
         line(path);
     }
+    for r in &page.logos {
+        line(format!(
+            "q {} 0 0 {} {} cm /Logo Do Q",
+            n((r[2] - r[0]) * PT_PER_MM),
+            n((r[3] - r[1]) * PT_PER_MM),
+            p([r[0], r[3]])
+        ));
+    }
     for text in &page.texts {
         // Clockwise on paper is clockwise on the page: negate for y up.
         let (s, c) = (-text.angle_deg).to_radians().sin_cos();
@@ -122,6 +130,21 @@ fn content(page: &PageRender) -> Vec<u8> {
         out.push(b'\n');
     }
     out
+}
+
+/// The bundled logo as an RGB image XObject. The PNG's zlib data is reused
+/// unchanged with PNG predictors, so no pixels are resampled or recompressed.
+fn logo_image() -> Vec<u8> {
+    let [w, h] = super::logo_size();
+    let data = super::logo_idat();
+    let mut object = format!(
+        "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns {w} >> /Length {} >>\nstream\n",
+        data.len()
+    )
+    .into_bytes();
+    object.extend(data);
+    object.extend(b"\nendstream");
+    object
 }
 
 /// A PDF document from page renders, in the given order.
@@ -147,11 +170,18 @@ pub fn render_pdf(pages: &[PageRender], title: &str) -> Vec<u8> {
     info.extend(literal(title));
     info.extend(b" >>");
     objects.push(info);
+    // One shared logo image after the pages, when any page shows it.
+    let logo = 5 + 2 * pages.len();
     for (i, page) in pages.iter().enumerate() {
         let [w, h] = page.size_mm.map(|v| v * PT_PER_MM);
+        let xobject = if page.logos.is_empty() {
+            String::new()
+        } else {
+            format!(" /XObject << /Logo {logo} 0 R >>")
+        };
         objects.push(
             format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >>{xobject} >> /Contents {} 0 R >>",
                 n(w),
                 n(h),
                 6 + 2 * i
@@ -163,6 +193,9 @@ pub fn render_pdf(pages: &[PageRender], title: &str) -> Vec<u8> {
         object.extend(stream);
         object.extend(b"endstream");
         objects.push(object);
+    }
+    if pages.iter().any(|p| !p.logos.is_empty()) {
+        objects.push(logo_image());
     }
     let mut out = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
     let mut offsets = vec![];

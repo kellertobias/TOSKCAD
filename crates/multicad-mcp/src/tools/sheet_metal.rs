@@ -497,6 +497,20 @@ pub(super) fn set_sheet_forming(
         .iter()
         .map(|c| cutout(c, &document, &evaluated))
         .collect::<Result<_, _>>()?;
+    // Report every invalid bend and touching corner at once, before the
+    // native evaluator stops at the first one.
+    let issues = model::check_flanges(&document, &evaluated, &sheet)?;
+    if !issues.is_empty() {
+        return Err(ToolError::new(
+            "sheet_flanges_refused",
+            issues
+                .iter()
+                .map(|i| i.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .involving(feature));
+    }
     let out = json!({ "feature": feature, "part": sheet.output.body });
     let call_owned = call.clone();
     let prepared = with(host, move |target| {
@@ -513,6 +527,92 @@ pub(super) fn set_sheet_forming(
         )
     })??;
     finish(host, call, prepared, revision, out)
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SheetEdgesArgs {
+    /// The sheet feature whose base edges and flanges are reported.
+    pub feature: String,
+    /// Candidate flanges to review instead of the applied ones; nothing is
+    /// changed. Uses the same fields as set_sheet_forming.
+    #[serde(default)]
+    pub flanges: Option<Vec<FlangeArg>>,
+}
+
+fn source_json(s: model::ValueSource) -> &'static str {
+    match s {
+        model::ValueSource::Stock => "stock",
+        model::ValueSource::Part => "part",
+    }
+}
+
+/// Base edges, flange guides and pre-check findings of one sheet feature,
+/// applied or with candidate flanges.
+pub(super) fn sheet_edges(host: &dyn Host, _: &Request, args: SheetEdgesArgs) -> ToolResult {
+    let (document, revision, evaluated) = snapshot(host)?;
+    let feature = id(&args.feature)?;
+    let mut sheet = model::read_sheet(&document, feature)?;
+    let candidate = args.flanges.is_some();
+    if let Some(flanges) = &args.flanges {
+        sheet.flanges = flanges
+            .iter()
+            .map(|f| flange(f, &document, &evaluated))
+            .collect::<Result<_, _>>()?;
+    }
+    let review = model::review_flanges(&document, &evaluated, &sheet)?;
+    let edges = review.outline.as_ref().map(|o| {
+        o.edges
+            .iter()
+            .map(|e| {
+                json!({
+                    "edge": e.index, "label": format!("Edge {}", e.index + 1),
+                    "start_mm": e.start_mm, "end_mm": e.end_mm, "length_mm": e.length_mm,
+                    "outward": e.outward, "straight": e.straight,
+                    "flange": sheet.flanges.iter().position(|f| f.edge as usize == e.index),
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let guides = review.outline.as_ref().map_or(vec![], |o| {
+        review
+            .guides
+            .iter()
+            .map(|g| {
+                let mid = g.width_mm() / 2.;
+                json!({
+                    "flange": g.flange, "edge": g.edge, "kind": g.kind,
+                    "direction": match g.direction {
+                        BendDirection::Up => "up",
+                        BendDirection::Down => "down",
+                    },
+                    "bend_angles_deg": g.bends.iter().map(|b| b.1).collect::<Vec<_>>(),
+                    "inside_radius_mm": g.inside_radius_mm, "leg_mm": g.leg_mm,
+                    "span_mm": g.span_mm,
+                    "leg_start_mm": g.world(o, g.leg[0], mid),
+                    "leg_end_mm": g.world(o, g.leg[1], mid),
+                    "section_mm": g.section,
+                })
+            })
+            .collect()
+    });
+    Ok(json!({
+        "revision": revision,
+        "feature": feature,
+        "candidate": candidate,
+        "scope": "Base edges are numbered by their index in the base outer loop (the flange `edge`); labels count from 1. Guides are the mid-thickness cross-section of each flange (x outward from the edge, y along the material direction) from the stock thickness and the resolved inside radius; they annotate the folded part and are not manufacturing geometry. Issues are pre-check findings; collisions with the base or distant flanges are found only by native evaluation.",
+        "thickness_mm": review.thickness_mm,
+        "inside_radius_mm": review.inside_radius_mm,
+        "radius_source": source_json(review.radius_source),
+        "k_factor": review.k_factor,
+        "k_factor_source": source_json(review.k_factor_source),
+        "material_direction": review.outline.as_ref().map(|o| o.material),
+        "edges": edges,
+        "flanges": guides,
+        "issues": review.issues.iter().map(|i| json!({
+            "flanges": i.flanges, "edges": i.edges, "message": i.message,
+        })).collect::<Vec<_>>(),
+    }))
 }
 
 fn analysis_json(a: &multicad_model::ConversionAnalysis) -> Value {

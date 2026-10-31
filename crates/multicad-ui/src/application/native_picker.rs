@@ -63,13 +63,19 @@ impl Application {
                 FileAction::PreviewImage => Kind::PreviewImage,
                 FileAction::PrintPackage => Kind::SavePrintPackage,
                 FileAction::ScheduleCsv => Kind::SaveCsv,
+                FileAction::ExportFolder => Kind::ChooseFolder,
             },
-            directory: self
-                .current()
-                .path
-                .as_ref()
-                .and_then(|p| p.parent())
-                .map(|p| p.to_path_buf()),
+            directory: match action {
+                FileAction::ExportFolder => self.export_folder_start(),
+                _ => None,
+            }
+            .or_else(|| {
+                self.current()
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_path_buf())
+            }),
             suggested_name: match action {
                 FileAction::SymbolSave(id) => Some(self.symbol_filename(id)?),
                 FileAction::Save => Some(suggested),
@@ -110,6 +116,10 @@ impl Application {
             .file_action
             .is_some_and(|action| action == scope.action)
             && (matches!(scope.action, FileAction::Open | FileAction::Import)
+                // Choosing a folder reads no source; it only must return to
+                // the project that asked.
+                || (scope.action == FileAction::ExportFolder
+                    && self.current().local_id == scope.local)
                 || (self.current().local_id == scope.local
                     && self
                         .current()
@@ -142,6 +152,7 @@ impl Application {
                     FileAction::PreviewImage => self.read_preview_image(path),
                     FileAction::PrintPackage => self.submit_print_package(path),
                     FileAction::ScheduleCsv => self.write_schedule_csv(path),
+                    FileAction::ExportFolder => self.use_export_folder(path),
                 }
             }
             Ok(None) => {
@@ -177,10 +188,10 @@ impl Application {
         if self.replacement.is_some() {
             return;
         }
-        let title = if self.file_action == Some(FileAction::PrintPackage) {
-            "Print package file"
-        } else {
-            "Project file"
+        let title = match self.file_action {
+            Some(FileAction::PrintPackage) => "Print package file",
+            Some(FileAction::ExportFolder) => "Export output folder",
+            _ => "Project file",
         };
         if self.picker_scope.is_some() {
             // The OS sheet owns its controls. This layer also blocks shortcuts

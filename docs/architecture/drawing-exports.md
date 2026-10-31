@@ -7,10 +7,11 @@ millimeters with y down:
 
 - polylines with line width and dash;
 - arcs and filled arrowheads;
-- text lines with height and rotation.
+- text lines with height and rotation;
+- logo rectangles for the bundled application logo.
 
 Every item carries a role layer: border, title, visible, hidden, section,
-hatch, dimension, note, leader, weld, table or draft. The SVG, PDF and DXF
+hatch, dimension, note, leader, weld, table, draft or view label. The SVG, PDF and DXF
 writers all consume this render, so every format shows the same geometry,
 text and weights.
 
@@ -42,6 +43,10 @@ PDF page per drawing page, in plan order:
 - **Text.** Text uses standard Courier with WinAnsi encoding, matching the
   monospaced layout. ° Ø ± · × — map to their WinAnsi codes; other characters
   outside it become "?".
+- **Logo.** When a page shows the app logo, one shared RGB image XObject
+  holds the bundled 640 × 215 px PNG. Its zlib data is reused unchanged with
+  PNG predictors, so nothing is resampled; it prints above 300 dpi in the
+  title block. Pages without the logo reference no image.
 - **Determinism.** There are no timestamps or random identifiers, so
   identical source gives identical bytes. The document title is the project
   name.
@@ -57,7 +62,9 @@ ASCII DXF R12 file per page:
   [planar part DXF](planar-dxf.md).
 - **Layers.** These are SHEET_BORDER, SHEET_TITLE, VIEW_VISIBLE, VIEW_HIDDEN
   (DASHED linetype), VIEW_SECTION, VIEW_HATCH, DIMENSIONS, NOTES, LEADERS,
-  WELD_SYMBOLS, TABLES and SHEET_DRAFTING.
+  WELD_SYMBOLS, TABLES, SHEET_DRAFTING and VIEW_LABELS. R12 has no embedded
+  raster images, so the logo is omitted from drawing DXF; SVG embeds it as a
+  PNG data URI.
 - **Entities.** Lines, circles, arcs, solids (arrowheads) and text.
 - **Symbols.** Degree, diameter and plus-minus use `%%d`, `%%c` and `%%p`.
 - **Limits.** R12 has no per-entity lineweights; weights are carried by the
