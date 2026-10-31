@@ -32,6 +32,7 @@ impl FilePicker for NativePicker {
             Kind::PreviewImage => "Choose a PNG preview image",
             Kind::SavePrintPackage => "Save 3MF print package",
             Kind::SaveCsv => "Export schedule CSV",
+            Kind::ChooseFolder => "Choose export output folder",
         });
         dialog = match request.kind {
             Kind::ImportSource => dialog.add_filter("Source snapshot", &["json"]),
@@ -41,6 +42,7 @@ impl FilePicker for NativePicker {
             Kind::PreviewImage => dialog.add_filter("PNG image", &["png"]),
             Kind::SavePrintPackage => dialog.add_filter("3MF print package", &["3mf"]),
             Kind::SaveCsv => dialog.add_filter("CSV schedule", &["csv"]),
+            Kind::ChooseFolder => dialog,
             _ => dialog.add_filter("ToskCAD project", &["multicad"]),
         };
         if let Some(path) = &request.directory {
@@ -58,6 +60,8 @@ impl FilePicker for NativePicker {
             Kind::SaveProject | Kind::SavePrintPackage | Kind::SaveCsv
         ) {
             Box::pin(dialog.save_file())
+        } else if request.kind == Kind::ChooseFolder {
+            Box::pin(dialog.pick_folder())
         } else {
             Box::pin(dialog.pick_file())
         };

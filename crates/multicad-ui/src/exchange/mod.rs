@@ -1,5 +1,6 @@
 //! Saved output sets and nonblocking, attributable export jobs.
 mod backend;
+mod destination;
 mod form;
 mod schedule_csv;
 use crate::{egui, icons::Icon};
@@ -115,8 +116,38 @@ pub struct ExportWorkspace {
     catalog_key: Option<(EntityId, u64)>,
     planar_catalog: Option<PlanarCatalog>,
     schedule: schedule_csv::ScheduleCsv,
+    /// The output folder text and why it cannot be used, refreshed when the
+    /// text changes.
+    directory_check: Option<(String, Option<String>)>,
+    /// The panel asked for the native folder dialog.
+    folder_requested: bool,
 }
 impl ExportWorkspace {
+    /// The panel asked for the native folder dialog.
+    pub fn take_folder_request(&mut self) -> bool {
+        std::mem::take(&mut self.folder_requested)
+    }
+    #[cfg(test)]
+    pub fn request_folder_for_test(&mut self) {
+        self.folder_requested = true;
+    }
+    pub fn directory(&self) -> &str {
+        &self.directory
+    }
+    /// Use a folder chosen in the native dialog; returns why it cannot
+    /// receive a bundle, if it cannot.
+    pub fn set_directory(&mut self, directory: &str) -> Option<String> {
+        self.directory = directory.into();
+        self.directory_problem()
+    }
+    /// Why the current output folder cannot receive a bundle.
+    pub fn directory_problem(&mut self) -> Option<String> {
+        let text = self.directory.trim();
+        if self.directory_check.as_ref().is_none_or(|(d, _)| d != text) {
+            self.directory_check = Some((text.to_owned(), destination::diagnose(text)));
+        }
+        self.directory_check.as_ref().and_then(|(_, p)| p.clone())
+    }
     pub fn has_backend(&self) -> bool {
         self.backend.is_some()
     }
@@ -324,6 +355,10 @@ impl ExportWorkspace {
             ExportTool::Run => {
                 if let Some(path) = path {
                     self.directory = path.into();
+                }
+                // Checked afresh: the folder may have changed since it was typed.
+                if let Some(problem) = destination::diagnose(&self.directory) {
+                    return Err(problem);
                 }
                 if !self.current(s) {
                     return Err("Preview the current saved set before running it".into());
@@ -634,7 +669,9 @@ impl ExportWorkspace {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(22,16)).show(ui,|ui|{
    ui.heading("Output preview");ui.label("Saved scopes resolve current source identities, independently of model selection and visibility.");
    ui.horizontal_wrapped(|ui|{for tool in[ExportTool::Preview,ExportTool::Run,ExportTool::Cancel]{if ui.add_enabled(self.enabled(tool,s)&&(allow_io||tool==ExportTool::Cancel),egui::Button::new(tool.label())).on_hover_text(match tool{ExportTool::Preview=>"Resolve the current saved scope against native geometry",ExportTool::Run=>"Export the exact previewed snapshot into a verified output bundle",_=>"Cancel accepted jobs at the next safe boundary"}).clicked(){action=Some(tool);}}});
-   ui.label("Absolute output directory");ui.add(egui::TextEdit::singleline(&mut self.directory).desired_width(ui.available_width()).hint_text("Choose an existing absolute directory")).on_hover_text("The run creates a source- and provider-identified bundle. Unknown or modified bundles are never overwritten");
+   ui.label("Output folder");
+   ui.horizontal(|ui|{if ui.button("Choose folder…").on_hover_text("Choose the output folder in the system folder dialog").clicked(){self.folder_requested=true;}ui.add(egui::TextEdit::singleline(&mut self.directory).desired_width(ui.available_width()).hint_text("or type an existing absolute folder path")).on_hover_text("The run creates a source- and provider-identified bundle in this folder. Unknown or modified bundles are never overwritten");});
+   if !self.directory.trim().is_empty()&&let Some(problem)=self.directory_problem(){ui.colored_label(egui::Color32::LIGHT_YELLOW,problem);}
    if self.dirty(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Save or discard set edits before previewing or running.");}else if self.pending(){ui.label("Output job in progress…");}
    if let Some(error)=&self.error{ui.colored_label(egui::Color32::LIGHT_RED,error);}
    if self.backend.is_none(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Native output service is not installed.");}

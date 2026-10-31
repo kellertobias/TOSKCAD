@@ -1,6 +1,7 @@
 //! Native application composition over canonical sessions and declarative tools.
 pub use crate::storage::DocumentStorage;
 mod closing;
+mod export_folder;
 pub mod external_control;
 #[cfg(test)]
 #[path = "external_reference_app_tests.rs"]
@@ -123,6 +124,7 @@ enum FileAction {
     Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
     PrintPackage,
     ScheduleCsv,
+    ExportFolder,
 }
 struct CommandRecord {
     input: String,
@@ -2279,6 +2281,7 @@ impl Application {
                         self.message_error = error;
                     }
                     self.start_schedule_save();
+                    self.start_export_folder();
                 } else if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     let before = p.session.revision();
