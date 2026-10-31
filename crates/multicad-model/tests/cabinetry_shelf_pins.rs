@@ -373,6 +373,19 @@ fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     )
     .unwrap()
     .project;
+    // Shelf-pin rows on the inside face declare their file capabilities, so
+    // a build that predates them refuses the file instead of misparsing it.
+    assert!(opened.capabilities().contains(SHELF_PIN_CAPABILITY));
+    assert!(opened.capabilities().contains(INSIDE_FACE_CAPABILITY));
+    for missing in [SHELF_PIN_CAPABILITY, INSIDE_FACE_CAPABILITY] {
+        let mut older = project_file::supported_capabilities();
+        older.remove(missing);
+        let Err(refused) = project_file::read(&mut bytes.as_slice(), Default::default(), &older)
+        else {
+            panic!("an older build refuses the file")
+        };
+        assert!(refused.to_string().contains(missing), "{refused}");
+    }
     assert_eq!(&opened.document, f.s.document());
     assert_eq!(read_machining(&opened.document, op).unwrap(), five);
     let reopened = Compiler::default().compile(&opened.document, 0).unwrap();

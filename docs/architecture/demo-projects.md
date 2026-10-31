@@ -56,14 +56,14 @@ Selecting a card copies the example, then opens the copy through the ordinary op
 - **The example itself:** written as `<file>.tcd`. If that file exists unchanged, it is reused. If the user changed it, it is kept and a new copy `<stem> 2.tcd` (3, 4, …) is written. Files are written to a temporary name and renamed, and copies are made writable.
 - **Origin:** the status line reads "Opened your editable copy of the example “…” · path · the bundled original stays unchanged". The tab shows the copy's file name.
 - **Protection:** Save, Save As and the replace confirmation refuse any destination inside the bundled examples folder, including new names. Opening a bundled original with Open, a recent entry or the operating system opens a copy instead.
-- **Hook for cross-file references:** `ExampleLibrary::resolver` (`examples::DependencyResolver`) receives a bundled `.tcd` path and returns the bundled files it references. `bundled_examples::library()` and the self-test install `project_references::referenced_files`, which returns the stored paths of the file's [project references](project-references.md). The apartment's copy therefore gets `welded-workbench.tcd` beside it, where its reference finds the source again. The manifest's `requires` lists the same files so packaging copies them.
+- **Hook for cross-file references:** `ExampleLibrary::resolver` (`examples::DependencyResolver`) receives a bundled `.tcd` path and returns the bundled files it references. `bundled_examples::library()` and the self-test install `project_references::referenced_files`, which returns the stored paths of the file's [project references](project-references.md). The apartment's copy therefore gets `cabinet.tcd` (with the cabinet's own `libraries/cabinet-hardware-library.tcd`) and `welded-workbench.tcd` beside it, where its references find their sources again. The manifest's `requires` lists the same files so packaging copies them.
 
 ### Limitations
 
 - Native interactive macOS evidence (first launch with no recents, Examples with recents, edit/save/reopen of each demo) is pending human review. Automated evidence: headless egui tests of the welcome screen and gallery, open-as-copy and original protection; catalog, copy and location unit tests; package layout and validation tests; the packaged self-test.
 - Windows and Linux layouts are covered by the packaging code and its tests on macOS only until CI runs them.
 - `multicad --mcp --project` does not refuse a bundled original; an MCP client could write one if the operating system allows it (a signed macOS bundle then fails its signature check).
-- The cabinet (CAD-182) file is not on this branch yet; adding it means listing it in `examples/examples.json` and in the apartment's `requires`.
+- The cabinet (CAD-182) is listed first and requires `libraries/cabinet-hardware-library.tcd`, the pinned hardware symbols' source library. The library sits in a subfolder so it is copied with the cabinet but not shown as a demo of its own.
 
 ## Welded steel workbench (CAD-183)
 
@@ -147,7 +147,7 @@ cargo run -p multicad-app --example apartment_demo --locked --offline -- example
 | Windows | Six 1200 mm high windows with a 900 mm sill: two in the front wall, one in the kitchen side wall, one each in the bedroom and workshop back wall, one in the living room side wall |
 | Floor | One 200 mm screed slab on the "Apartment floor" level, 150 mm beyond the wall faces |
 | Furniture | Placeholder boxes, not manufacturing data: sofa and coffee table, bed and wardrobe, kitchen counter and dining table |
-| Workshop | A pinned [project reference](project-references.md) to `welded-workbench.tcd`, its 1500 × 1000 top at x 5150–6650, y 6800–7800, under the back window. The cabinet is reserved along the right wall (`CABINET_PLACEMENT`) |
+| Workshop | Pinned [project references](project-references.md) to `welded-workbench.tcd`, its 1500 × 1000 top at x 5150–6650, y 6800–7800 under the back window, and to `cabinet.tcd`, turned −90° with its back on the right wall (x 9332–9850 including the doors, y 5400–6200, 2000 high, all 64 leaves including its pinned hardware) |
 
 Room names are drawing notes; the canonical model has no room entity. No building-code, egress, accessibility or structural compliance is claimed.
 
@@ -155,15 +155,15 @@ Room names are drawing notes; the canonical model has no room entity. No buildin
 
 Three A3 pages with the standard title block:
 
-- **AP-101** floor plan at 1:50: walls cut 1000 mm above the floor with hatching, door gaps with leaves and swing arcs, window panes, furniture and the referenced workbench; room names with clear areas; overall outside dimensions and clear room widths and depths (associative to the wall faces);
+- **AP-101** floor plan at 1:50: walls cut 1000 mm above the floor with hatching, door gaps with leaves and swing arcs, window panes, furniture and the referenced cabinet and workbench; room names with clear areas; overall outside dimensions and clear room widths and depths (associative to the wall faces);
 - **AP-102** a fitted isometric view of the furnished apartment;
-- **AP-103** the workshop references at 1:10 from above and from the front, with notes naming each reference's source file and pinned revision.
+- **AP-103** the workshop references at 1:25 from above and from the front, with notes naming each reference's source file and pinned revision.
 
-### Cabinet hook
+### References
 
-`CABINET_SOURCE` in the generator is `None`. When the cabinet example (CAD-182) is shipped, set it to its path, check `CABINET_PLACEMENT` against the cabinet's origin, add the file to the apartment's `requires` in `examples/examples.json`, delete `examples/apartment.tcd` and run the generator again. The workshop sheet then lists both references.
+Each reference records its file name (`cabinet.tcd`, `welded-workbench.tcd`, both next to the apartment), the source document identity and hash, and pins the source's physical content as a static symbol definition with revision `source <hash>`. The workshop sheet AP-103 prints both. The cabinet's own pinned hardware symbols arrive as ordinary materialized geometry inside the cabinet's pin; the hardware library is needed only to edit the cabinet itself, not to open the apartment.
 
 ### Regeneration and drift
 
-The reference pins the workbench's content, so regenerating the workbench changes the apartment's pin. The app test `tests/apartment_demo.rs` compares the shipped file with a fresh build, including the pinned revision, and fails until the apartment is regenerated too. Until then, opening the shipped apartment reports its workbench reference as changed rather than replacing it.
+The references pin the cabinet's and the workbench's content, so regenerating either changes the apartment's pin. The app test `tests/apartment_demo.rs` compares the shipped file with a fresh build, including the pinned revision, and fails until the apartment is regenerated too. Until then, opening the shipped apartment reports that reference as changed rather than replacing it.
 

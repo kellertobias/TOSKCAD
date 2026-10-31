@@ -89,6 +89,19 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
+/// Every file below `dir`, recursively.
+fn bundle_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = vec![];
+    for entry in fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            out.extend(bundle_files(&entry.path()));
+        } else {
+            out.push(entry.path());
+        }
+    }
+    out
+}
 fn fixture(name: &str) -> Fixture {
     let dir = std::env::temp_dir().join(format!(
         "multicad-examples-{name}-{}-{}",
@@ -101,11 +114,12 @@ fn fixture(name: &str) -> Fixture {
     let bundle = dir.join("MultiCAD.app/Contents/Resources/examples");
     fs::create_dir_all(&bundle).unwrap();
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-    for entry in fs::read_dir(source).unwrap() {
-        let entry = entry.unwrap();
-        if entry.file_type().unwrap().is_file() {
-            fs::copy(entry.path(), bundle.join(entry.file_name())).unwrap();
-        }
+    // The whole bundle, including files in subfolders that examples
+    // require (such as the cabinet's hardware library).
+    for path in bundle_files(&source) {
+        let target = bundle.join(path.strip_prefix(&source).unwrap());
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(&path, target).unwrap();
     }
     let dir = dir.canonicalize().unwrap();
     Fixture {
@@ -303,10 +317,9 @@ fn recents_keep_their_list_and_examples_stay_reachable_from_welcome_and_the_file
 #[test]
 fn choosing_a_card_opens_an_editable_copy_and_originals_cannot_be_overwritten() {
     let f = fixture("copy");
-    let originals: BTreeMap<_, _> = fs::read_dir(&f.bundle)
-        .unwrap()
-        .map(|e| {
-            let path = e.unwrap().path();
+    let originals: BTreeMap<_, _> = bundle_files(&f.bundle)
+        .into_iter()
+        .map(|path| {
             let bytes = fs::read(&path).unwrap();
             (path, bytes)
         })

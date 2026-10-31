@@ -352,6 +352,10 @@ fn grooves_rabbets_pockets_and_holes_cut_every_target_panel() {
     .unwrap()
     .project;
     assert!(opened.capabilities().contains(MACHINING_CAPABILITY));
+    // Top/bottom/edge grooves, pockets and holes stay readable by builds
+    // that predate shelf-pin rows and the inside face.
+    assert!(!opened.capabilities().contains(SHELF_PIN_CAPABILITY));
+    assert!(!opened.capabilities().contains(INSIDE_FACE_CAPABILITY));
     assert_eq!(&opened.document, f.s.document());
     let reopened = Compiler::default().compile(&opened.document, 0).unwrap();
     near(volume(&reopened, f.side.body), volume(&m, f.side.body));

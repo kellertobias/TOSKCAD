@@ -161,6 +161,15 @@ impl PanelJointCutDefinition {
 pub fn panel_joints(document: &Document) -> impl Iterator<Item = &Entity> {
     document.entities().filter(|e| is_kind(e, PANEL_JOINT_KIND))
 }
+/// A panel joint whose kind is `loose_tenon` needs the loose-tenon file
+/// capability even before its tenon features exist, so an older build
+/// refuses the file instead of failing to parse the joint kind.
+pub fn panel_joints_need_loose_tenon(document: &Document) -> bool {
+    panel_joints(document).any(|entity| {
+        matches!(&entity.data, EntityData::Extension { definition, .. }
+            if definition.data.pointer("/kind/kind").and_then(|v| v.as_str()) == Some("loose_tenon"))
+    })
+}
 pub fn panel_joint_cuts(document: &Document) -> impl Iterator<Item = &Entity> {
     document.entities().filter(
         |e| matches!(&e.data, EntityData::Feature { definition, .. } if definition.type_id == PANEL_JOINT_CUT_TYPE),
