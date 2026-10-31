@@ -388,6 +388,19 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        registry.tools.push(Tool {
+            id: "settings",
+            label: "Settings",
+            icon: Icon::Settings,
+            action: Command::Extension("settings"),
+            aliases: &[
+                "preferences",
+                "units",
+                "inches",
+                "millimeters",
+                "workbenches",
+            ],
+        });
         for (id, label, icon) in [
             ("symbol", "Create symbol", Icon::Library),
             ("library", "Symbol library", Icon::Library),
