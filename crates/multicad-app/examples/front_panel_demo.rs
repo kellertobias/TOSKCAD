@@ -1445,7 +1445,7 @@ pub fn render_preview(solids: &[(&Solid, [u8; 3])], size: [usize; 2]) -> Result<
             let i = i as usize * 3;
             [mesh.vertices[i], mesh.vertices[i + 1], mesh.vertices[i + 2]]
         };
-        for t in mesh.indices.chunks_exact(3) {
+        for t in mesh.indices.as_chunks::<3>().0 {
             triangles.push(([p(t[0]), p(t[1]), p(t[2])], *rgb));
         }
     }
