@@ -753,6 +753,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::PANEL_TYPE,
                     super::PANEL_JOINT_CUT_TYPE,
                     super::MACHINING_CUT_TYPE,
+                    super::LOOSE_TENON_TYPE,
                     super::imports::STEP_BODY_TYPE,
                     super::imports::BOARD_TYPE,
                     super::imports::COMPONENT_TYPE,

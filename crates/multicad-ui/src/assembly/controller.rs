@@ -1,3 +1,4 @@
+use super::clearance_view::ClearanceMarker;
 use super::inspection::{AssemblyInspectionBackendFactory, InspectionPanel};
 use super::{
     AnchorPick, AnchorSide, AssemblyOutcome, AssemblySelection, AssemblyTool,
@@ -537,6 +538,18 @@ impl AssemblyController {
         form.fields.reset();
         Ok(())
     }
+    /// Viewport evidence of the selected Interference/Clearance result, only
+    /// when `scene` is the complete model the result was evaluated against.
+    pub fn clearance_marker(&self, session: &Session, scene: &Scene) -> Option<ClearanceMarker> {
+        self.inspection.as_ref()?.marker(session, scene)?.ok()
+    }
+    /// Consume an explicit Fit result request (camera framing only).
+    pub fn take_clearance_fit(&mut self) -> bool {
+        self.inspection.as_mut().is_some_and(|p| p.take_fit())
+    }
+    pub fn clearance_reveal(&self) -> bool {
+        self.inspection.as_ref().is_some_and(|p| p.reveal())
+    }
     pub fn display_leaf_offsets(
         &self,
         session: &Session,
@@ -655,7 +668,7 @@ impl AssemblyController {
             }
         }
         if let Some(p) = &mut self.inspection {
-            p.show(ui, session);
+            p.show(ui, session, self.base_scene.as_ref());
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);

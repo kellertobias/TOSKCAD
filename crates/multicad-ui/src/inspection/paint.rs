@@ -140,9 +140,9 @@ fn paint_value(
     }
     let position = project(label) + egui::vec2(6., -7.);
     let text = if name.is_empty() {
-        format!("{:.3} mm", v.minimum_mm)
+        crate::preferences::format_mm(v.minimum_mm)
     } else {
-        format!("{name} · {:.3} mm", v.minimum_mm)
+        format!("{name} · {}", crate::preferences::format_mm(v.minimum_mm))
     };
     painter.text(
         position,

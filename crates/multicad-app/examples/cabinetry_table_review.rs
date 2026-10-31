@@ -1028,6 +1028,7 @@ pub fn build() -> Result<Scenario, Error> {
         actor(),
         "Shelf pins",
         &MachiningDefinition {
+            suppressed: false,
             kind: MachiningKind::Drill {
                 holes: [[100., 100.], [100., 300.], [600., 100.], [600., 300.]]
                     .into_iter()

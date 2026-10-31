@@ -24,6 +24,9 @@ pub const HARDWARE_PATTERN_KIND: &str = "cabinetry.hardware";
 pub const HARDWARE_PATTERN_CAPABILITY: &str = "cabinetry.hardware.1";
 pub const MAX_TARGETS: usize = 64;
 pub const MAX_HOLES: usize = 256;
+pub const MAX_PIN_ROWS: usize = 8;
+/// The System 32 hole pitch.
+pub const SYSTEM32_PITCH_MM: f64 = 32.;
 const MARGIN_MM: f64 = 1.;
 const TOL: f64 = 1e-6;
 
@@ -55,6 +58,25 @@ pub enum MachiningFace {
     Edge {
         edge: PanelEdgeName,
     },
+    /// The top or bottom face that looks into the cabinet: toward the
+    /// carcass interior for a carcass panel, otherwise toward the other
+    /// target panels. Each target resolves its own face, so the inner faces
+    /// of a left and a right side take one operation.
+    Inside,
+}
+/// The edge a shelf-pin row offset is measured from, across the rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowEdge {
+    Start,
+    End,
+}
+/// One row of shelf-pin holes, `offset` from an edge across the row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShelfPinRow {
+    pub from: RowEdge,
+    pub offset: Dimension,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -86,6 +108,21 @@ pub enum MachiningKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         depth: Option<Dimension>,
     },
+    /// System 32 style shelf-pin rows: each row runs along `along` with
+    /// holes every `pitch` from `start` (from the start edge) up to `end`
+    /// (no hole center closer to the end edge). `count` fixes the number of
+    /// holes per row; without it the row fills the range. Blind holes only.
+    ShelfPins {
+        along: PanelAxis,
+        rows: Vec<ShelfPinRow>,
+        pitch: Dimension,
+        start: Dimension,
+        end: Dimension,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u32>,
+        diameter: Dimension,
+        depth: Dimension,
+    },
     /// A reusable hardware hole pattern placed at `at`, turned by
     /// `quarter_turns` × 90° counterclockwise in the face coordinates.
     Hardware {
@@ -102,6 +139,10 @@ pub struct MachiningDefinition {
     pub face: MachiningFace,
     /// Panel Parts that receive the operation.
     pub targets: Vec<EntityId>,
+    /// A suppressed operation keeps its cuts in each Part's history but
+    /// removes no material and reports no holes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suppressed: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -202,6 +243,20 @@ impl MachiningDefinition {
                     "Grooves, rabbets and pockets are cut into the top or bottom face",
                 ));
             }
+            MachiningKind::ShelfPins { .. } if edge => {
+                return Err(invalid(
+                    "Shelf-pin rows are drilled into a top, bottom or inside face",
+                ));
+            }
+            MachiningKind::ShelfPins { rows, count, .. }
+                if rows.is_empty()
+                    || rows.len() > MAX_PIN_ROWS
+                    || count.is_some_and(|c| c == 0 || c as usize > MAX_HOLES) =>
+            {
+                return Err(invalid(format!(
+                    "Shelf pins need 1–{MAX_PIN_ROWS} rows and 1–{MAX_HOLES} holes per row"
+                )));
+            }
             MachiningKind::Drill { holes, .. } if holes.is_empty() || holes.len() > MAX_HOLES => {
                 return Err(invalid(format!("A drilling needs 1–{MAX_HOLES} holes")));
             }
@@ -245,6 +300,19 @@ impl MachiningDefinition {
                 .chain([diameter])
                 .chain(depth)
                 .collect(),
+            MachiningKind::ShelfPins {
+                rows,
+                pitch,
+                start,
+                end,
+                diameter,
+                depth,
+                ..
+            } => rows
+                .iter()
+                .map(|r| &r.offset)
+                .chain([pitch, start, end, diameter, depth])
+                .collect(),
             MachiningKind::Hardware { at, .. } => at.iter().collect(),
         }
     }
@@ -273,6 +341,7 @@ impl MachiningDefinition {
             MachiningKind::Rabbet { .. } => "rabbet",
             MachiningKind::Pocket { .. } => "pocket",
             MachiningKind::Drill { .. } => "drilling",
+            MachiningKind::ShelfPins { .. } => "shelf pins",
             MachiningKind::Hardware { .. } => "hardware",
         }
     }
@@ -371,6 +440,8 @@ pub(super) fn validate_machining(document: &Document) -> Result<(), DocumentErro
 /// One drilled hole in world millimeters. `axis` points into the material.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedHole {
+    /// Center in the entry face's coordinates.
+    pub at: [f64; 2],
     pub center: [f64; 3],
     pub axis: [f64; 3],
     pub diameter_mm: f64,
@@ -378,14 +449,20 @@ pub struct ResolvedHole {
     pub through: bool,
 }
 /// A groove, rabbet or pocket: length and width on the face, and depth.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedRecess {
     pub kind: &'static str,
     pub size_mm: [f64; 2],
     pub depth_mm: f64,
+    /// The recess outline on the face, in face coordinates.
+    pub outline: Vec<[f64; 2]>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedMachining {
+    /// The face actually cut: `Inside` resolves to the top or bottom face.
+    pub face: MachiningFace,
+    /// The frame of that face.
+    pub frame: MachiningFaceFrame,
     pub prisms: Vec<CutPrism>,
     pub holes: Vec<ResolvedHole>,
     pub recesses: Vec<ResolvedRecess>,
@@ -393,13 +470,96 @@ pub struct ResolvedMachining {
 
 /// A face plane: a world point at face coordinates (0, 0), the two in-face
 /// axes, the inward direction and the extents of the face and into it.
-struct Face {
-    origin: [f64; 3],
-    a: [f64; 3],
-    b: [f64; 3],
-    inward: [f64; 3],
-    size: [f64; 2],
-    depth: f64,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MachiningFaceFrame {
+    pub origin: [f64; 3],
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+    pub inward: [f64; 3],
+    pub size: [f64; 2],
+    pub depth: f64,
+}
+type Face = MachiningFaceFrame;
+/// The frame of one face of a panel box. `Inside` must be resolved first
+/// (see [`resolve_machining_face`]); here it reads as the bottom face.
+pub fn panel_face_frame(b: &PanelBox, which: MachiningFace) -> MachiningFaceFrame {
+    face(b, which)
+}
+/// The rectangular box of a panel Part, for face placement.
+pub fn machining_panel_box(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    part: EntityId,
+) -> Result<PanelBox, DocumentError> {
+    super::joint::panel_box(document, parameters, part)
+}
+fn box_center(b: &PanelBox) -> [f64; 3] {
+    let n = b.normal();
+    let p = add(add(b.origin, b.u, b.length_mm / 2.), b.v, b.width_mm / 2.);
+    add(p, n, b.thickness_mm / 2.)
+}
+/// The face an operation enters on one target. `Inside` becomes the top or
+/// bottom face toward the carcass interior (carcass panels) or toward the
+/// other targets.
+pub fn resolve_machining_face(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    machining: &MachiningDefinition,
+    target: EntityId,
+) -> Result<MachiningFace, DocumentError> {
+    if machining.face != MachiningFace::Inside {
+        return Ok(machining.face);
+    }
+    let name = document
+        .get(target)
+        .map_or("A panel".into(), |e| e.name.clone());
+    let b = super::joint::panel_box(document, parameters, target)?;
+    let source = panel_feature(document, target)
+        .map(|f| read_panel(document, f))
+        .transpose()?;
+    let toward = match source.map(|p| p.source) {
+        Some(PanelSource::Carcass { carcass, .. }) => {
+            let c = resolve_carcass(document, parameters, &read_carcass(document, carcass)?)?;
+            let [w, h, d] = c.size_mm;
+            let (s, k) = c.rotation_rad.sin_cos();
+            let local = [w / 2., d / 2., h / 2.];
+            [
+                c.origin[0] + local[0] * k - local[1] * s,
+                c.origin[1] + local[0] * s + local[1] * k,
+                c.origin[2] + local[2],
+            ]
+        }
+        _ => {
+            let others: Vec<_> = machining
+                .targets
+                .iter()
+                .filter(|t| **t != target)
+                .map(|t| super::joint::panel_box(document, parameters, *t).map(|b| box_center(&b)))
+                .collect::<Result<_, _>>()?;
+            if others.is_empty() {
+                return Err(invalid(format!(
+                    "{name} is not a carcass panel; the inside face needs a carcass or other target panels to face"
+                )));
+            }
+            let n = others.len() as f64;
+            std::array::from_fn(|i| others.iter().map(|c| c[i]).sum::<f64>() / n)
+        }
+    };
+    let c = box_center(&b);
+    let side = dot3(
+        [toward[0] - c[0], toward[1] - c[1], toward[2] - c[2]],
+        b.normal(),
+    );
+    if side.abs() <= 1e-3 {
+        return Err(invalid(format!(
+            "Neither face of {name} looks into the cabinet; choose the top or bottom face"
+        )));
+    }
+    Ok(if side > 0. {
+        MachiningFace::Top
+    } else {
+        MachiningFace::Bottom
+    })
 }
 fn add(p: [f64; 3], d: [f64; 3], k: f64) -> [f64; 3] {
     [p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k]
@@ -417,7 +577,7 @@ fn face(b: &PanelBox, which: MachiningFace) -> Face {
             size: [l, w],
             depth: t,
         },
-        MachiningFace::Bottom => Face {
+        MachiningFace::Bottom | MachiningFace::Inside => Face {
             origin: b.origin,
             a: b.u,
             b: b.v,
@@ -482,18 +642,117 @@ impl Face {
             v: if flip { self.a } else { self.b },
             polygon,
             circle: circle.map(|(c, r)| (swap(c), r)),
+            slot: None,
             sweep: self.inward.map(|c| c * (depth + MARGIN_MM)),
         }
     }
-    fn point(&self, p: [f64; 2]) -> [f64; 3] {
+    /// A rounded slot from just outside the face to `depth` inside it: the
+    /// end-circle centers `a` and `b` and their radius, in face coordinates.
+    pub(super) fn slot_prism(&self, a: [f64; 2], b: [f64; 2], radius: f64, depth: f64) -> CutPrism {
+        let mut prism = self.prism(vec![], None, depth);
+        let flip = dot3(cross(self.a, self.b), self.inward) < 0.;
+        let swap = |[p, q]: [f64; 2]| if flip { [q, p] } else { [p, q] };
+        prism.slot = Some((swap(a), swap(b), radius));
+        prism
+    }
+    /// The world point at face coordinates `p`.
+    pub fn point(&self, p: [f64; 2]) -> [f64; 3] {
         add(add(self.origin, self.a, p[0]), self.b, p[1])
+    }
+    /// Face coordinates of a world point, and its distance into the face.
+    pub fn local(&self, w: [f64; 3]) -> ([f64; 2], f64) {
+        let d = [
+            w[0] - self.origin[0],
+            w[1] - self.origin[1],
+            w[2] - self.origin[2],
+        ];
+        ([dot3(d, self.a), dot3(d, self.b)], dot3(d, self.inward))
     }
 }
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+fn clamp_outline(polygon: &[[f64; 2]], size: [f64; 2]) -> Vec<[f64; 2]> {
+    polygon
+        .iter()
+        .map(|p| [p[0].clamp(0., size[0]), p[1].clamp(0., size[1])])
+        .collect()
+}
 fn rect(a: [f64; 2], b: [f64; 2]) -> Vec<[f64; 2]> {
     vec![[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]]
+}
+
+/// Hole centers of shelf-pin rows on a face of `size` (face coordinates),
+/// row by row from the start edge. Refuses rows that leave the face and
+/// ranges that hold no hole or fewer than a fixed count.
+pub fn shelf_pin_points(
+    parameters: &EvaluatedParameters,
+    kind: &MachiningKind,
+    size: [f64; 2],
+    name: &str,
+) -> Result<Vec<[f64; 2]>, DocumentError> {
+    let MachiningKind::ShelfPins {
+        along,
+        rows,
+        pitch,
+        start,
+        end,
+        count,
+        ..
+    } = kind
+    else {
+        return Ok(vec![]);
+    };
+    let mm = |d: &Dimension| number(d, Unit::Millimeter, parameters);
+    let (pitch, start, end) = (mm(pitch)?, mm(start)?, mm(end)?);
+    let (length, across) = match along {
+        PanelAxis::U => (size[0], size[1]),
+        PanelAxis::V => (size[1], size[0]),
+    };
+    if pitch <= TOL {
+        return Err(invalid("The shelf-pin pitch must be positive"));
+    }
+    if start < -TOL || end < -TOL {
+        return Err(invalid("Shelf-pin start and end limits cannot be negative"));
+    }
+    let last = length - end;
+    if start > last + TOL {
+        return Err(invalid(format!(
+            "The shelf-pin range from {start} mm to {end} mm before the end leaves no room on the {length} mm side of {name}"
+        )));
+    }
+    let fits = ((last - start) / pitch + 1e-9).floor() as usize + 1;
+    let n = match count {
+        Some(c) if *c as usize > fits => {
+            return Err(invalid(format!(
+                "{c} holes at {pitch} mm from {start} mm pass the end limit of {name}; {fits} fit"
+            )));
+        }
+        Some(c) => *c as usize,
+        None => fits,
+    };
+    if n * rows.len() > MAX_HOLES {
+        return Err(invalid(format!(
+            "The rows make {} holes on {name}; at most {MAX_HOLES} are allowed",
+            n * rows.len()
+        )));
+    }
+    let mut out = vec![];
+    for row in rows {
+        let offset = mm(&row.offset)?;
+        let c = match row.from {
+            RowEdge::Start => offset,
+            RowEdge::End => across - offset,
+        };
+        for k in 0..n {
+            let a = start + k as f64 * pitch;
+            out.push(match along {
+                PanelAxis::U => [a, c],
+                PanelAxis::V => [c, a],
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Resolve an operation on one target panel, refusing cuts that leave no
@@ -509,7 +768,8 @@ pub fn resolve_machining(
         .get(target)
         .map_or("A panel".into(), |e| e.name.clone());
     let b = super::joint::panel_box(document, parameters, target)?;
-    let f = face(&b, machining.face);
+    let which = resolve_machining_face(document, parameters, machining, target)?;
+    let f = face(&b, which);
     let m = MARGIN_MM;
     let [fl, fw] = f.size;
     let blind = |d: f64, what: &str| {
@@ -525,10 +785,15 @@ pub fn resolve_machining(
         }
     };
     let mut out = ResolvedMachining {
+        face: which,
+        frame: f,
         prisms: vec![],
         holes: vec![],
         recesses: vec![],
     };
+    if machining.suppressed {
+        return Ok(out);
+    }
     let drill = |out: &mut ResolvedMachining, at: [f64; 2], dia: f64, depth: Option<f64>| {
         let r = dia / 2.;
         if dia <= TOL {
@@ -545,7 +810,22 @@ pub fn resolve_machining(
             None => (f.depth + m, true),
         };
         out.prisms.push(f.prism(vec![], Some((at, r)), d));
+        if let Some(other) = out.holes.iter().find(|h| {
+            let gap = ((h.at[0] - at[0]).powi(2) + (h.at[1] - at[1]).powi(2)).sqrt();
+            gap < (h.diameter_mm + dia) / 2. - TOL
+        }) {
+            return Err(invalid(format!(
+                "Holes at ({}, {}) and ({}, {}) on {name} overlap; space them at least one diameter apart",
+                other.at[0], other.at[1], at[0], at[1]
+            )));
+        }
+        if out.holes.len() >= MAX_HOLES {
+            return Err(invalid(format!(
+                "The operation makes more than {MAX_HOLES} holes on {name}"
+            )));
+        }
         out.holes.push(ResolvedHole {
+            at,
             center: f.point(at),
             axis: f.inward,
             diameter_mm: dia,
@@ -572,12 +852,14 @@ pub fn resolve_machining(
                 PanelAxis::U => rect([-m, o], [fl + m, o + w]),
                 PanelAxis::V => rect([o, -m], [o + w, fw + m]),
             };
+            let outline = clamp_outline(&polygon, f.size);
             out.prisms.push(f.prism(polygon, None, d));
             let length = if *along == PanelAxis::U { fl } else { fw };
             out.recesses.push(ResolvedRecess {
                 kind: "groove",
                 size_mm: [length, w],
                 depth_mm: d,
+                outline,
             });
         }
         MachiningKind::Rabbet { edge, width, depth } => {
@@ -597,11 +879,13 @@ pub fn resolve_machining(
                 PanelEdgeName::VStart => rect([-m, -m], [fl + m, w]),
                 PanelEdgeName::VEnd => rect([-m, fw - w], [fl + m, fw + m]),
             };
+            let outline = clamp_outline(&polygon, f.size);
             out.prisms.push(f.prism(polygon, None, d));
             out.recesses.push(ResolvedRecess {
                 kind: "rabbet",
                 size_mm: [length, w],
                 depth_mm: d,
+                outline,
             });
         }
         MachiningKind::Pocket {
@@ -628,11 +912,13 @@ pub fn resolve_machining(
                     s[0], s[1]
                 )));
             }
+            let outline = rect(lo, hi);
             out.prisms.push(f.prism(rect(lo, hi), None, d));
             out.recesses.push(ResolvedRecess {
                 kind: "pocket",
                 size_mm: s,
                 depth_mm: d,
+                outline,
             });
         }
         MachiningKind::Drill {
@@ -644,6 +930,14 @@ pub fn resolve_machining(
             let depth = depth.as_ref().map(mm).transpose()?;
             for h in holes {
                 drill(&mut out, [mm(&h[0])?, mm(&h[1])?], dia, depth)?;
+            }
+        }
+        MachiningKind::ShelfPins {
+            diameter, depth, ..
+        } => {
+            let (dia, depth) = (mm(diameter)?, mm(depth)?);
+            for at in shelf_pin_points(parameters, &machining.kind, f.size, &name)? {
+                drill(&mut out, at, dia, Some(depth))?;
             }
         }
         MachiningKind::Hardware {
@@ -684,6 +978,101 @@ pub fn resolve_machining(
         }
     }
     Ok(out)
+}
+
+/// Resolve an operation on every target and refuse holes that overlap a hole
+/// of another operation on the same face. `existing` is the operation being
+/// edited, which is not compared with itself.
+pub fn check_machining(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    machining: &MachiningDefinition,
+    existing: Option<EntityId>,
+) -> Result<Vec<ResolvedMachining>, DocumentError> {
+    let mut out = vec![];
+    for &t in &machining.targets {
+        let r = resolve_machining(document, parameters, machining, t)?;
+        for other in machinings_of(document, t) {
+            if Some(other) == existing {
+                continue;
+            }
+            let op = read_machining(document, other)?;
+            let Ok(o) = resolve_machining(document, parameters, &op, t) else {
+                continue;
+            };
+            for h in &r.holes {
+                if let Some(clash) = o.holes.iter().find(|g| holes_overlap(h, g)) {
+                    let panel = document.get(t).map_or(String::new(), |e| e.name.clone());
+                    let op_name = document
+                        .get(other)
+                        .map_or(String::new(), |e| e.name.clone());
+                    return Err(invalid(format!(
+                        "A hole at ({:.1}, {:.1}) on {panel} overlaps a hole of {op_name} at ({:.1}, {:.1})",
+                        h.at[0], h.at[1], clash.at[0], clash.at[1]
+                    )));
+                }
+            }
+        }
+        out.push(r);
+    }
+    Ok(out)
+}
+fn holes_overlap(a: &ResolvedHole, b: &ResolvedHole) -> bool {
+    if dot3(a.axis, b.axis) < 1. - 1e-9 {
+        return false;
+    }
+    let d = [
+        b.center[0] - a.center[0],
+        b.center[1] - a.center[1],
+        b.center[2] - a.center[2],
+    ];
+    let along = dot3(d, a.axis);
+    if along.abs() > 1e-6 {
+        return false;
+    }
+    dot3(d, d).sqrt() < (a.diameter_mm + b.diameter_mm) / 2. - TOL
+}
+
+/// Shelf support levels of a carcass: offsets from the interior bottom to a
+/// shelf underside resting on pins in holes that both sides share. A pin
+/// is taken to be the hole diameter, so a shelf rests half a diameter above
+/// the hole center. Only levels with room for a shelf are listed.
+pub fn shelf_support_offsets(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    carcass: EntityId,
+) -> Result<Vec<f64>, DocumentError> {
+    let definition = read_carcass(document, carcass)?;
+    let resolved = resolve_carcass(document, parameters, &definition)?;
+    let t = stock_thickness(&read_panel_stock(document, definition.stock)?);
+    let bottom = resolved.origin[2] + t;
+    let interior = resolved.size_mm[1] - 2. * t;
+    let mut sides = [vec![], vec![]];
+    for (role, _, part) in carcass_panels(document, carcass)? {
+        let i = match role {
+            PanelRole::LeftSide => 0,
+            PanelRole::RightSide => 1,
+            _ => continue,
+        };
+        for op in machinings_of(document, part) {
+            let m = read_machining(document, op)?;
+            if !matches!(m.kind, MachiningKind::ShelfPins { .. }) {
+                continue;
+            }
+            for h in resolve_machining(document, parameters, &m, part)?.holes {
+                sides[i].push(h.center[2] + h.diameter_mm / 2. - bottom);
+            }
+        }
+    }
+    let mut levels: Vec<f64> = sides[0]
+        .iter()
+        .copied()
+        .filter(|z| sides[1].iter().any(|w| (w - z).abs() <= 1e-6))
+        .filter(|z| *z >= -1e-6 && z + t <= interior + 1e-6)
+        .collect();
+    levels.sort_by(f64::total_cmp);
+    levels.dedup_by(|a, b| (*a - *b).abs() <= 1e-6);
+    Ok(levels)
 }
 
 #[derive(Clone, Debug)]
@@ -764,9 +1153,7 @@ pub fn prepare_machining(
     check_name(name, "Machining")?;
     let document = session.document();
     machining.validate()?;
-    for t in &machining.targets {
-        resolve_machining(document, session.parameters(), machining, *t)?;
-    }
+    check_machining(document, session.parameters(), machining, None)?;
     let entity = Entity::new(name, machining.entity_data(document)?);
     let id = entity.id;
     let mut edits = vec![Mutation::Insert(entity)];
@@ -821,9 +1208,7 @@ pub fn prepare_machining_edit(
         ));
     }
     machining.validate()?;
-    for t in &machining.targets {
-        resolve_machining(document, session.parameters(), machining, *t)?;
-    }
+    check_machining(document, session.parameters(), machining, Some(id))?;
     let mut entity = document
         .get(id)
         .cloned()

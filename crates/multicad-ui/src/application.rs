@@ -2,6 +2,7 @@
 pub use crate::storage::DocumentStorage;
 mod closing;
 mod document_open;
+mod export_folder;
 pub mod external_control;
 #[cfg(test)]
 #[path = "external_reference_app_tests.rs"]
@@ -11,8 +12,10 @@ mod library;
 mod mechanical_imports;
 mod native_picker;
 mod print;
+mod render;
 mod save_preview;
 mod schedule_files;
+mod settings;
 mod symbol_files;
 mod welcome;
 #[cfg(test)]
@@ -59,6 +62,9 @@ pub struct Project {
     pub scene: crate::viewport::SceneFeed,
     /// External control audit and the changes awaiting review.
     pub control: multicad_core::control::ControlLedger,
+    /// The status line this project last showed, or a receipt from one of
+    /// its background jobs that finished while another tab was active.
+    status: Option<(String, bool)>,
 }
 impl Project {
     pub fn new(document: Document) -> Result<Self, String> {
@@ -85,6 +91,7 @@ impl Project {
             path: None,
             scene: Default::default(),
             control: Default::default(),
+            status: None,
         })
     }
     fn snapshot(&self) -> Result<ProjectFile, String> {
@@ -119,6 +126,7 @@ enum FileAction {
     Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
     PrintPackage,
     ScheduleCsv,
+    ExportFolder,
 }
 struct CommandRecord {
     input: String,
@@ -188,6 +196,11 @@ pub struct Application {
     trusted_clients: std::collections::BTreeSet<String>,
     review_preview: Option<external_control::ReviewPreview>,
     mechanical_imports: Option<crate::mechanical_import::MechanicalImportBackendRef>,
+    /// User-local Settings (CAD-187); never part of a project.
+    preferences: crate::preferences::Preferences,
+    preference_worker: Option<crate::preferences::PreferenceWorker>,
+    preference_error: Option<String>,
+    settings_open: bool,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -253,7 +266,12 @@ impl Application {
             mechanical_imports: None,
             sketch_queries: None,
             repair_set_checker: None,
+            preferences: crate::preferences::Preferences::defaults(&Registry::default()),
+            preference_worker: None,
+            preference_error: None,
+            settings_open: false,
         };
+        crate::preferences::set_length_unit(app.preferences.length_unit);
         app.discover_recoveries()?;
         Ok(app)
     }
@@ -410,7 +428,10 @@ impl Application {
         self.active_tool == Some((self.active, command))
             && match command {
                 Command::Modeling(_) => self.current().sketch.model_active(),
-                Command::Drawing(_) => self.current().drawings.dirty(),
+                Command::Drawing(_) => {
+                    let drawings = &self.current().drawings;
+                    drawings.dirty() || drawings.placing()
+                }
                 _ => false,
             }
     }
@@ -429,8 +450,30 @@ impl Application {
             self.close_measurement();
         }
         self.remember_current_view();
+        self.leave_project_status();
         self.active = index;
         self.restore_current_view();
+        self.enter_project_status();
+    }
+    /// Keep the status line with the project that produced it, so another
+    /// project never appears to confirm its receipts.
+    fn leave_project_status(&mut self) {
+        let status = (std::mem::take(&mut self.message), self.message_error);
+        self.message_error = false;
+        if !self.welcome
+            && let Some(leaving) = self.projects.get_mut(self.active)
+        {
+            leaving.status = Some(status).filter(|(message, _)| !message.is_empty());
+        }
+    }
+    /// Show the newly active project's own last status, or say which
+    /// project is now active.
+    fn enter_project_status(&mut self) {
+        (self.message, self.message_error) = self
+            .current_mut()
+            .status
+            .take()
+            .unwrap_or_else(|| (format!("Switched to {}", self.current().title()), false));
     }
     fn measurement_blocks(&self, command: Command) -> bool {
         self.current().sketch.measurement.active()
@@ -882,11 +925,13 @@ impl Application {
                     }
                     self.remember_current_view();
                 }
+                self.leave_project_status();
                 self.discard_welcome_placeholder();
                 self.projects.push(project);
                 self.active = self.projects.len() - 1;
                 self.mode = Mode::Parameters;
                 self.tab = 0;
+                self.message = format!("Created {}", self.current().title());
             }
             Command::NewWindow => {
                 std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
@@ -1017,8 +1062,9 @@ impl Application {
                 )
                 .map_err(|e| e.to_string())?;
                 p.session.commit(prepared).map_err(|e| e.to_string())?;
+                self.open_render_tab();
                 self.message = format!(
-                    "{name} · view captured ({}); hand it to Blender with the MCP blender_handoff tool",
+                    "{name} · camera and {} style captured from the render viewport",
                     render_display_label(display)
                 );
             }
@@ -1035,13 +1081,20 @@ impl Application {
                 p.sketch.camera = crate::render_view::restore(&scene.camera, height)?;
                 p.sketch
                     .set_display_style(crate::render_view::style_of(scene.display));
-                self.message = "Render view shown in the viewport".into();
+                let label = render_display_label(scene.display);
+                self.open_render_tab();
+                self.message =
+                    format!("Stored render camera and {label} style shown in the render viewport");
             }
             Command::Extension(
                 id @ (mechanical_imports::IMPORT_STEP
                 | mechanical_imports::IMPORT_KICAD
                 | mechanical_imports::IMPORT_UPDATE),
             ) => self.request_mechanical_import(id)?,
+            Command::Extension("settings") => {
+                self.settings_open = true;
+                self.message = "Settings opened".into();
+            }
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
@@ -1427,6 +1480,7 @@ impl Application {
                 | mechanical_imports::IMPORT_KICAD
                 | mechanical_imports::IMPORT_UPDATE),
             ) => self.mechanical_import_enabled(id),
+            Command::Extension("settings") => true,
             Command::Extension(_) => false,
             _ => true,
         }
@@ -1467,6 +1521,7 @@ impl Application {
             })
             .map_err(|e| e.to_string())?;
         project.editor.reload(&project.session);
+        self.leave_project_status();
         self.projects.push(project);
         self.active = self.projects.len() - 1;
         self.mode = Mode::Parameters;
@@ -1704,6 +1759,9 @@ impl Application {
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     }
+                    if icons::compact_button(ui,Icon::Settings,"Settings · measurement units and workbenches").clicked() {
+                        action=Some(Command::Extension("settings"));
+                    }
                     let user=icons::compact_button(ui,Icon::User,"Local user · session and controls");
                     egui::Popup::menu(&user).show(|ui| {
                         ui.strong("Local session");
@@ -1761,11 +1819,9 @@ impl Application {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    for (index, tab) in workspace.tabs.iter().enumerate() {
-                        if tab.requires_active_sketch && !self.current().sketch.editing {
-                            continue;
-                        }
-                        if controls::tab(
+                    for (index, hidden) in self.ribbon_tabs() {
+                        let tab = &workspace.tabs[index];
+                        let response = controls::tab(
                             ui,
                             tab.title,
                             self.tab == index,
@@ -1775,9 +1831,13 @@ impl Application {
                                 active_text: accent,
                                 active_background: Color32::WHITE,
                             },
-                        )
-                        .clicked()
-                        {
+                        );
+                        let response = if hidden {
+                            response.on_hover_text("Hidden in Settings · shown while one of its tools is active")
+                        } else {
+                            response
+                        };
+                        if response.clicked() {
                             self.tab = index;
                             self.current_mut().view_restore_pending=false;
                         }
@@ -1942,7 +2002,7 @@ impl Application {
             mode: self.mode,
             workspace: workspace.tabs[self.tab.min(workspace.tabs.len() - 1)].title,
             sketch_editing: self.current().sketch.editing,
-            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export),
+            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab(),
             text_input: ctx.text_edit_focused(),
             blocked: self.file_action.is_some()
                 || self.recovery_open
@@ -1950,6 +2010,7 @@ impl Application {
                 || self.find_open
                 || self.close_confirm
                 || self.history_open
+                || self.settings_open
                 || self.shortcut_help
                 || egui::Popup::is_any_open(ctx),
         }
@@ -1973,6 +2034,7 @@ impl Application {
             || self.replacement.is_some()
             || self.shortcut_help
             || self.history_open
+            || self.settings_open
             || self.close_confirm;
         // egui clears keyboard focus for Escape before this application pass.
         // Remember text ownership so that same key cannot also cancel a tool.
@@ -2000,6 +2062,8 @@ impl Application {
                 self.shortcut_help = false;
             } else if self.history_open {
                 self.history_open = false;
+            } else if self.settings_open {
+                self.settings_open = false;
             } else if self.close_confirm {
                 self.close_confirm = false;
             }
@@ -2025,19 +2089,16 @@ impl Application {
                 ShortcutAction::FindTool => self.focus_search = true,
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
-                    let count = self.registry.workspace(self.mode).tabs.len();
-                    for _ in 0..count {
-                        self.tab = if action == ShortcutAction::NextWorkspace {
-                            (self.tab + 1) % count
-                        } else {
-                            (self.tab + count - 1) % count
-                        };
-                        if !self.registry.workspace(self.mode).tabs[self.tab].requires_active_sketch
-                            || self.current().sketch.editing
-                        {
-                            break;
-                        }
-                    }
+                    // Cycle the ribbon's visible workbenches in their chosen order.
+                    let order: Vec<usize> =
+                        self.ribbon_tabs().into_iter().map(|(i, _)| i).collect();
+                    let count = order.len();
+                    let at = order.iter().position(|i| *i == self.tab).unwrap_or(0);
+                    self.tab = order[if action == ShortcutAction::NextWorkspace {
+                        (at + 1) % count
+                    } else {
+                        (at + count - 1) % count
+                    }];
                     ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
                     self.message = format!(
                         "{} workspace",
@@ -2073,7 +2134,7 @@ impl Application {
                 ShortcutAction::Pan(_) => {}
             }
         }
-        if !matches!(self.mode, Mode::Parameters | Mode::Export)
+        if (!matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab())
             && !self.shortcut_context(ctx).blocked
             && !self.focus_search
             && !self.focus_command
@@ -2113,6 +2174,7 @@ impl Application {
             self.cancel_pending_view_restore();
         }
         self.poll_recents(&ctx);
+        self.poll_preferences();
         self.poll_library(&ctx);
         self.drive_capture(&ctx);
         if self.drive_document_opens(&ctx) {
@@ -2152,8 +2214,13 @@ impl Application {
                 }
             }
         }
-        for p in &mut self.projects {
+        for (index, p) in self.projects.iter_mut().enumerate() {
             p.exchange.poll(&p.session);
+            if index != active
+                && let Some(notice) = p.exchange.take_notice()
+            {
+                p.status = Some(notice);
+            }
             if p.exchange.pending() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
@@ -2289,7 +2356,7 @@ impl Application {
                         .show(ui, |ui| p.editor.show(ui, &p.session));
                 } else if self.mode == Mode::Export && self.print_tab() {
                     self.show_print(ui);
-                } else if self.mode == Mode::Export {
+                } else if self.mode == Mode::Export && !self.render_tab() {
                     let allow_io = self.export_io_allowed();
                     let p = self.current_mut();
                     p.exchange.show(ui, &mut p.session, allow_io);
@@ -2298,6 +2365,7 @@ impl Application {
                         self.message_error = error;
                     }
                     self.start_schedule_save();
+                    self.start_export_folder();
                 } else if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     let before = p.session.revision();
@@ -2308,6 +2376,9 @@ impl Application {
                         ctx.request_repaint();
                     }
                 } else {
+                    if self.render_tab() {
+                        self.render_sidebar(ui);
+                    }
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
                     let before = p.session.revision();
@@ -2355,6 +2426,7 @@ impl Application {
                 });
             self.history_open = open;
         }
+        self.settings_window(&ctx);
         if self.shortcut_help {
             egui::Window::new("Keyboard shortcuts").open(&mut self.shortcut_help).show(&ctx,|ui|{
                 ui.label("WASD pans the view. Tab / Shift+Tab cycles ribbon workspaces. Text inputs keep their typing and Tab behavior.");
@@ -4217,6 +4289,9 @@ mod workbench_tests;
 const RIBBON_TAB_STRIP: f32 = 36.0;
 const RIBBON_BOTTOM_PAD: f32 = 2.0;
 const RIBBON_HEIGHT: f32 = RIBBON_TAB_STRIP + crate::ribbon_ui::TOOLS_HEIGHT + RIBBON_BOTTOM_PAD;
+#[cfg(test)]
+#[path = "application/open_fit_tests.rs"]
+mod open_fit_tests;
 fn render_display_label(display: multicad_core::model::RenderDisplay) -> &'static str {
     crate::render_view::style_of(display).label()
 }

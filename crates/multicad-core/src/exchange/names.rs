@@ -1,7 +1,7 @@
 use super::*;
 use crate::project_file::ContentHash;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -64,7 +64,6 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
         RevisionRule::Label(v) => filename_token(v),
     };
     let mut result = vec![];
-    let mut names = BTreeSet::new();
     for recipe in &plan.recipes {
         let subjects: Vec<_> = match recipe.output {
             RecipeOutput::ScheduleCsv { schedule } => {
@@ -154,27 +153,136 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
             ] {
                 stem = stem.replace(&format!("{{{token}}}"), &value);
             }
-            let filename = format!("{}.{}", filename_token(&stem), recipe.output.extension());
-            if filename.len() > 200 {
-                return Err(ExportError::new(
-                    ErrorKind::Invalid,
-                    Some(recipe.id),
-                    "Output filename exceeds 200 bytes; use a shorter naming rule",
-                ));
-            }
-            if !names.insert(filename.to_ascii_lowercase()) {
-                return Err(ExportError::new(
-                    ErrorKind::Invalid,
-                    Some(recipe.id),
-                    format!("Output filename collision: {filename}"),
-                ));
-            }
             result.push(NamedOutput {
                 recipe: recipe.id,
+                filename: format!("{}.{}", filename_token(&stem), recipe.output.extension()),
                 subject,
-                filename,
             });
         }
     }
+    let recipe_names: BTreeMap<EntityId, String> = plan
+        .recipes
+        .iter()
+        .map(|r| (r.id, filename_token(&r.name)))
+        .collect();
+    name_by_recipe(&mut result, &recipe_names);
+    disambiguate(&mut result)?;
+    for output in &result {
+        if output.filename.len() > 200 {
+            return Err(ExportError::new(
+                ErrorKind::Invalid,
+                Some(output.recipe),
+                "Output filename exceeds 200 bytes; use a shorter naming rule",
+            ));
+        }
+    }
     Ok(result)
+}
+/// Outputs of different, differently named recipes that would share a name
+/// (an assembly 3MF with and without aids, say) are told apart by their
+/// recipe names first, which reads better than an identity suffix.
+fn name_by_recipe(outputs: &mut [NamedOutput], recipe_names: &BTreeMap<EntityId, String>) {
+    let key = |name: &str| name.to_ascii_lowercase();
+    let mut groups = BTreeMap::<String, Vec<usize>>::new();
+    for (index, output) in outputs.iter().enumerate() {
+        groups.entry(key(&output.filename)).or_default().push(index);
+    }
+    let mut taken: BTreeSet<String> = groups.keys().cloned().collect();
+    for (name, members) in &groups {
+        if members.len() < 2 {
+            continue;
+        }
+        let tokens: Vec<String> = members
+            .iter()
+            .map(|i| {
+                recipe_names
+                    .get(&outputs[*i].recipe)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+        let distinct: BTreeSet<String> = tokens.iter().map(|t| key(t)).collect();
+        if distinct.len() != members.len() || tokens.iter().any(String::is_empty) {
+            continue;
+        }
+        let renamed: Vec<String> = members
+            .iter()
+            .zip(&tokens)
+            .map(|(i, token)| {
+                let (stem, extension) = outputs[*i]
+                    .filename
+                    .rsplit_once('.')
+                    .expect("generated names have an extension");
+                format!("{stem}_{token}.{extension}")
+            })
+            .collect();
+        if renamed.iter().any(|n| taken.contains(&key(n))) {
+            continue;
+        }
+        taken.remove(name);
+        for (i, new) in members.iter().zip(renamed) {
+            taken.insert(key(&new));
+            outputs[*i].filename = new;
+        }
+    }
+}
+/// Outputs whose names coincide (ignoring ASCII case, as macOS and Windows
+/// do) each get a short suffix from their recipe and subject identity, so
+/// duplicate Part names, several occurrences or repeated recipe names never
+/// overwrite one another. The suffix depends only on identity, so it stays
+/// the same however the plan is ordered. Unique names stay as they are.
+fn disambiguate(outputs: &mut [NamedOutput]) -> Result<(), ExportError> {
+    let key = |name: &str| name.to_ascii_lowercase();
+    let mut counts = BTreeMap::<String, usize>::new();
+    for output in outputs.iter() {
+        *counts.entry(key(&output.filename)).or_default() += 1;
+    }
+    let colliding: BTreeSet<String> = counts
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(name, _)| name)
+        .collect();
+    if colliding.is_empty() {
+        return Ok(());
+    }
+    let taken: BTreeSet<String> = outputs
+        .iter()
+        .map(|o| key(&o.filename))
+        .filter(|name| !colliding.contains(name))
+        .collect();
+    for length in [6, 12, 24] {
+        let mut renamed = vec![];
+        for output in outputs.iter() {
+            if !colliding.contains(&key(&output.filename)) {
+                renamed.push(None);
+                continue;
+            }
+            let bytes = serde_json::to_vec(&(output.recipe, &output.subject))
+                .map_err(|e| ExportError::new(ErrorKind::Invalid, None, e.to_string()))?;
+            let suffix = &ContentHash::of(&bytes).to_string()[..length];
+            let (stem, extension) = output
+                .filename
+                .rsplit_once('.')
+                .expect("generated names have an extension");
+            renamed.push(Some(format!("{stem}_{suffix}.{extension}")));
+        }
+        let mut seen = taken.clone();
+        if renamed.iter().flatten().all(|name| seen.insert(key(name))) {
+            for (output, name) in outputs.iter_mut().zip(renamed) {
+                if let Some(name) = name {
+                    output.filename = name;
+                }
+            }
+            return Ok(());
+        }
+    }
+    let first = outputs
+        .iter()
+        .find(|o| colliding.contains(&key(&o.filename)))
+        .expect("a collision");
+    Err(ExportError::new(
+        ErrorKind::Invalid,
+        Some(first.recipe),
+        format!("Output filename collision: {}", first.filename),
+    ))
 }

@@ -1171,6 +1171,36 @@ impl Scene {
     pub fn world_bounds(&self) -> Option<[Point; 2]> {
         self.world_bounds
     }
+    /// Display-mesh world box of one current native leaf occurrence, including
+    /// leaves hidden from the draw list. For viewport markers and framing only;
+    /// exact inspection values never come from display meshes.
+    pub fn leaf_display_bounds(
+        &self,
+        path: &multicad_core::model::OccurrencePath,
+    ) -> Option<[Point; 2]> {
+        let leaf = self
+            .assembly_evaluation()?
+            .leaves
+            .iter()
+            .find(|leaf| &leaf.path == path)?;
+        let local = self.geometries.get(&leaf.producer)?.nodes.first()?.bounds;
+        let transform = Transform::from_rigid_pose(leaf.pose).ok()?;
+        let mut world = Bounds::empty();
+        for corner in 0..8 {
+            world.include(transform.point(std::array::from_fn(|i| {
+                if corner & (1 << i) == 0 {
+                    local.min[i]
+                } else {
+                    local.max[i]
+                }
+            })));
+        }
+        Some([world.min, world.max])
+    }
+    /// Whether this view currently draws the canonical root instance.
+    pub fn displays_instance(&self, id: EntityId) -> bool {
+        self.instances.iter().any(|instance| instance.id == id)
+    }
     pub fn instance_bounds(&self, id: EntityId) -> Option<[Point; 2]> {
         let instance = self.instances.iter().find(|i| i.id == id)?;
         let local = self.geometries[&instance.geometry].nodes[0].bounds;

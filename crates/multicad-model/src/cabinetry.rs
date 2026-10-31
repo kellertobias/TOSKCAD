@@ -111,9 +111,10 @@ fn subtract(
 ) -> Result<Solid, ModelError> {
     let mut current: Option<Solid> = None;
     for (k, prism) in prisms.iter().enumerate() {
-        let outer: Vec<_> = match prism.circle {
-            Some((center, radius_mm)) => vec![CurvedEdge2d::Circle { center, radius_mm }],
-            None => {
+        let outer: Vec<_> = match (prism.circle, prism.slot) {
+            (Some((center, radius_mm)), _) => vec![CurvedEdge2d::Circle { center, radius_mm }],
+            (None, Some((a, b, r))) => slot_edges(a, b, r),
+            (None, None) => {
                 let n = prism.polygon.len();
                 (0..n)
                     .map(|i| CurvedEdge2d::Line {
@@ -163,6 +164,92 @@ fn subtract(
     Ok(solid)
 }
 
+/// A rounded slot, counterclockwise: the end-circle centers `a` and `b`
+/// with radius `r`. Coincident centers give a circle.
+fn slot_edges(a: [f64; 2], b: [f64; 2], r: f64) -> Vec<CurvedEdge2d> {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    if len <= 1e-9 {
+        return vec![CurvedEdge2d::Circle {
+            center: a,
+            radius_mm: r,
+        }];
+    }
+    let n = [-d[1] / len * r, d[0] / len * r];
+    let p = |c: [f64; 2], s: f64| [c[0] + n[0] * s, c[1] + n[1] * s];
+    vec![
+        CurvedEdge2d::Line {
+            a: p(a, -1.),
+            b: p(b, -1.),
+        },
+        CurvedEdge2d::Arc {
+            center: b,
+            a: p(b, -1.),
+            b: p(b, 1.),
+            clockwise: false,
+        },
+        CurvedEdge2d::Line {
+            a: p(b, 1.),
+            b: p(a, 1.),
+        },
+        CurvedEdge2d::Arc {
+            center: a,
+            a: p(a, 1.),
+            b: p(a, -1.),
+            clockwise: false,
+        },
+    ]
+}
+/// The tenons of one loose-tenon joint pair as one solid.
+pub(crate) fn build_loose_tenon(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    id: EntityId,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let tenons = model::resolve_loose_tenon_feature(document, parameters, id)
+        .map_err(|e| error(Some(id), e))?;
+    let mut out: Option<Solid> = None;
+    for (k, t) in tenons.iter().enumerate() {
+        let v = cross(t.axis, t.long);
+        let r = t.thickness_mm / 2.;
+        let half = (t.width_mm / 2. - r).max(0.);
+        let start = [0, 1, 2].map(|i| t.center[i] - t.axis[i] * t.into_face_mm);
+        let edges = slot_edges([-half, 0.], [half, 0.], r);
+        let origins: Vec<_> = (0..edges.len())
+            .map(|i| Origin {
+                source: id,
+                role: format!("tenon.{k}.{i}"),
+            })
+            .collect();
+        let profile = CurvedProfile {
+            frame: PlaneFrame {
+                origin: start,
+                u: t.long,
+                v,
+            },
+            outer: edges,
+            holes: vec![],
+        };
+        let length = t.into_face_mm + t.into_edge_mm;
+        let solid = Solid::extrude_curved_profile_vector_named(
+            &profile,
+            t.axis.map(|c| c * length),
+            id,
+            &origins,
+            policy,
+        )
+        .map_err(|e| error(Some(id), e))?;
+        out = Some(match out {
+            None => solid,
+            Some(prev) => prev
+                .boolean(&solid, BooleanOperation::Union, policy)
+                .map_err(|e| error(Some(id), e))?
+                .ok_or_else(|| error(Some(id), "The tenons could not be combined"))?,
+        });
+    }
+    out.ok_or_else(|| error(Some(id), "The joint has no tenons"))
+}
 /// Remove the other panel's share of each joint corner from a panel solid.
 pub(crate) fn build_joint_cut(
     document: &Document,
@@ -295,6 +382,8 @@ pub struct MachiningRecord {
     pub holes: Vec<model::ResolvedHole>,
     pub recesses: Vec<model::ResolvedRecess>,
     pub removed_mm3: f64,
+    /// The loose-tenon Part a joint mortise receives.
+    pub tenon: Option<EntityId>,
 }
 
 impl Model {
@@ -335,12 +424,72 @@ impl Model {
                     .map(|e| e.name.clone())
                     .unwrap_or_default(),
                 kind: op.label(),
-                face: op.face,
+                face: resolved.face,
                 material: Some(panel.stock_spec.material),
                 stock: panel.stock,
                 holes: resolved.holes,
                 recesses: resolved.recesses,
                 removed_mm3: volume(before)? - volume(after)?,
+                tenon: None,
+            });
+        }
+        // Loose-tenon joints: each panel's mortises, with the tenon Part.
+        for entity in model::panel_joint_cuts(document) {
+            let id = entity.id;
+            let e = |e: DocumentError| error(Some(id), e);
+            let cut = model::read_panel_joint_cut(document, id).map_err(e)?;
+            let joint = model::read_panel_joint(document, cut.joint).map_err(e)?;
+            let model::PanelJointKind::LooseTenon(spec) = &joint.kind else {
+                continue;
+            };
+            let (Some(before), Some(after)) = (self.solid(cut.input.producer), self.solid(id))
+            else {
+                continue;
+            };
+            let pair = joint.pairs[cut.pair as usize];
+            let (_, layout) =
+                model::resolve_loose_tenon(document, &parameters, spec, &pair).map_err(e)?;
+            let face_side = cut.side == layout.face_side;
+            let part = cut.output.body;
+            let panel = model::resolve_panel(
+                document,
+                &parameters,
+                &model::read_panel(
+                    document,
+                    model::panel_feature(document, part)
+                        .ok_or_else(|| error(Some(id), "The joined Part is not a panel"))?,
+                )
+                .map_err(e)?,
+            )
+            .map_err(e)?;
+            let volume = |s: &Solid| s.volume_mm3().map_err(|e| error(Some(id), e));
+            out.push(MachiningRecord {
+                part,
+                feature: id,
+                operation: cut.joint,
+                name: document
+                    .get(cut.joint)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default(),
+                kind: "loose-tenon mortise",
+                face: if face_side {
+                    layout.face
+                } else {
+                    model::MachiningFace::Edge { edge: layout.edge }
+                },
+                material: Some(panel.stock_spec.material),
+                stock: panel.stock,
+                holes: vec![],
+                recesses: if face_side {
+                    layout.face_mortises
+                } else {
+                    layout.edge_mortises
+                },
+                removed_mm3: volume(before)? - volume(after)?,
+                tenon: model::joint_tenons(document, cut.joint)
+                    .into_iter()
+                    .find(|(p, ..)| *p == cut.pair)
+                    .map(|(.., body)| body),
             });
         }
         Ok(out)

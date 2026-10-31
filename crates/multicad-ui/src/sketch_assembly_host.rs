@@ -143,6 +143,32 @@ impl SketchEditor {
         });
         Ok(Some(view))
     }
+    /// Paint the selected clearance result's witnesses, labeled distance and
+    /// occurrence outlines; an explicit Fit frames them by moving the camera.
+    pub(super) fn assembly_clearance_paint(
+        &mut self,
+        painter: &egui::Painter,
+        rect: Rect,
+        session: &Session,
+        scene: Option<&Arc<Scene>>,
+    ) {
+        let marker = scene.and_then(|scene| self.assembly.clearance_marker(session, scene));
+        let fit = self.assembly.take_clearance_fit();
+        let Some(marker) = marker else {
+            return;
+        };
+        if fit {
+            self.camera.fit(&marker.fit_points(), rect);
+            painter.ctx().request_repaint();
+        }
+        marker.paint(
+            painter,
+            rect,
+            self.camera,
+            self.assembly.clearance_reveal(),
+            self.solid.section.plane(),
+        );
+    }
     pub fn set_assembly_backend(&mut self, backend: Box<dyn crate::viewport::SceneBackend>) {
         self.assembly.set_backend(backend);
     }
@@ -385,6 +411,13 @@ impl SketchEditor {
     ) {
         let Some(pick) = self.assembly.anchor_pick() else {
             self.assembly_anchor = None;
+            if let Some(marker) = feed
+                .visible()
+                .filter(|_| feed.is_current(session.document().id(), session.revision()))
+                .and_then(|scene| self.assembly.clearance_marker(session, scene))
+            {
+                self.solid.highlight_reference(Some(marker.highlight()));
+            }
             return;
         };
         let Some(scene) = feed
