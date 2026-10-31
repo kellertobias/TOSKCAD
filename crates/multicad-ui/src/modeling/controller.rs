@@ -501,6 +501,26 @@ impl ModelToolController {
     pub fn wall_of(document: &multicad_core::document::Document, id: EntityId) -> Option<EntityId> {
         super::opening::wall_of_part(document, id)
     }
+    /// A machining form places features on panel faces in the viewport.
+    pub fn machining_picking(&self) -> bool {
+        matches!(&self.form, Some(ModelForm::Machining(panel)) if panel.picking())
+    }
+    pub fn machining_viewport(
+        &mut self,
+        session: &Session,
+        view: super::TerminationViewport<'_>,
+    ) -> bool {
+        let changed = match self.form.as_mut() {
+            Some(ModelForm::Machining(panel)) => {
+                panel.viewport(session.document(), session.revision(), view)
+            }
+            _ => false,
+        };
+        if changed {
+            self.invalidate();
+        }
+        changed
+    }
     pub fn opening_picking(&self) -> bool {
         matches!(&self.form, Some(ModelForm::Opening(panel)) if panel.picking())
     }
@@ -549,6 +569,25 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Machining(Box::new(super::machining::MachiningPanel::new(name))),
+        )
+    }
+    /// The System 32 shelf-pin tool: a machining form preset to shelf-pin
+    /// rows on the inside faces of `targets`.
+    pub fn begin_shelf_pins(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        targets: Vec<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Shelf pins", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Machining(Box::new(
+                super::machining::MachiningPanel::system32(name).with_targets(targets),
+            )),
         )
     }
     pub fn begin_joint(

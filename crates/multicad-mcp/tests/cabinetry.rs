@@ -276,3 +276,63 @@ fn mcp_machines_panels_with_grooves_holes_and_hardware() {
     let list = run("cut_list", json!({})).unwrap();
     assert_eq!(list["machining"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn mcp_drills_system32_rows_on_both_carcass_sides() {
+    let host = Headless::new(
+        Workspace::new(Document::new("System 32").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let ply = run(
+        "create_panel_stock",
+        json!({ "expected_revision": 0, "name": "Ply 18", "material_name": "Birch",
+        "thickness_mm": 18, "sheet_length_mm": 2800, "sheet_width_mm": 2070 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    run(
+        "set_carcass",
+        json!({ "expected_revision": 1, "name": "Cabinet", "width": mm(600.),
+        "height": mm(720.), "depth": mm(400.), "stock": ply, "back": "none" }),
+    )
+    .unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    let left = panel(&list, "Cabinet left side")["part"].clone();
+    let right = panel(&list, "Cabinet right side")["part"].clone();
+    let pins = json!({ "expected_revision": 2, "name": "Shelf pins", "kind": "shelf_pins",
+        "face": "inside", "targets": [left, right], "along": "v",
+        "rows": [{ "from": "start", "offset": mm(37.) }, { "from": "end", "offset": mm(37.) }],
+        "start": mm(100.), "end": mm(100.), "diameter": mm(5.), "depth": mm(10.) });
+    // Too deep for the 18 mm sides: refused, nothing changes.
+    let before = host.document();
+    let mut deep = pins.clone();
+    deep["depth"] = mm(18.);
+    assert!(
+        run("set_machining", deep)
+            .unwrap_err()
+            .message
+            .contains("cut through")
+    );
+    assert_eq!(host.document(), before);
+    let applied = run("set_machining", pins).unwrap();
+    assert_eq!(applied["cuts"].as_array().unwrap().len(), 2);
+    let levels = applied["shelf_supports"][0]["shelf_offsets_mm"]
+        .as_array()
+        .unwrap();
+    assert_eq!(levels.len(), 17);
+    assert_eq!(levels[0], 84.5);
+    let list = run("cut_list", json!({})).unwrap();
+    let ops = list["machining"].as_array().unwrap();
+    assert_eq!(ops.len(), 2);
+    let faces: Vec<_> = ops.iter().map(|o| o["face"]["face"].clone()).collect();
+    assert!(faces.contains(&json!("top")) && faces.contains(&json!("bottom")));
+    for op in ops {
+        assert_eq!(op["kind"], "shelf pins");
+        assert_eq!(op["holes"].as_array().unwrap().len(), 34);
+        assert_eq!(op["holes"][0]["face_mm"], json!([37.0, 100.0]));
+    }
+}

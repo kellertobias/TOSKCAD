@@ -178,7 +178,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_panel_stack` | yes | Face-to-face panel layers kept as their own Parts, optionally grouped |
 | `set_panel_joint`, `delete_panel_joint` | yes | Butt (A or B through), miter or finger joints on panel pairs overlapping at a corner; each panel gets its own cut |
 | `set_hardware_pattern` | yes | Reusable hardware hole pattern with per-material diameter and depth allowances |
-| `set_machining`, `delete_machining` | yes | Groove, rabbet, pocket, drilling or placed hardware pattern on one or more panels |
+| `set_machining`, `delete_machining` | yes | Groove, rabbet, pocket, drilling, System 32 shelf-pin rows or placed hardware pattern on one or more panels, on the top, bottom, inside or an edge face; suppression |
 | `import_step` | yes | Import or update a STEP file's solids from the exchange folder (see [imports](imports.md)) |
 | `import_kicad` | yes | Import or update a KiCad board, its holes and footprint components from the exchange folder |
 | `schedule` | no | BOM, panel cut list, machining, member cut list or weld schedule as rows, optionally written as CSV into the export folder (see [schedules](schedules.md)) |

@@ -1,6 +1,11 @@
-//! Machining inspector: cut a groove, rabbet, pocket, drilling or placed
-//! hardware pattern into one or more panels. Positions are panel face
-//! coordinates. An applied operation reopens with its targets fixed.
+//! Machining inspector: cut a groove, rabbet, pocket, drilling, System 32
+//! shelf-pin rows or a placed hardware pattern into one or more panels.
+//! Positions are panel face coordinates; the viewport places them on the
+//! visible panel face and draws the axes, offsets and cuts. An applied
+//! operation reopens with its targets fixed.
+#[cfg(test)]
+mod placement_tests;
+mod viewport;
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -12,7 +17,7 @@ use multicad_core::{
     document::{Document, EntityId},
     model::{
         self, MachiningDefinition, MachiningFace, MachiningKind, ModelPrepared, PanelAxis,
-        PanelEdgeName, length,
+        PanelEdgeName, RowEdge, SYSTEM32_PITCH_MM, ShelfPinRow, length,
     },
 };
 
@@ -43,6 +48,7 @@ enum Kind {
     Rabbet,
     Pocket,
     Drill,
+    ShelfPins,
     Hardware,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +56,16 @@ enum Side {
     Top,
     Bottom,
     Edge,
+    Inside,
 }
+/// The example System 32 settings the tool starts with: Ø5 × 10 mm blind
+/// holes in rows 37 mm in from the front and rear edges, every 32 mm from
+/// 100 mm above the bottom edge to 100 mm below the top edge. These are
+/// editable project defaults, not a hardware compatibility claim.
+pub(super) const SYSTEM32_DIAMETER_MM: f64 = 5.;
+pub(super) const SYSTEM32_DEPTH_MM: f64 = 10.;
+pub(super) const SYSTEM32_ROW_OFFSET_MM: f64 = 37.;
+pub(super) const SYSTEM32_LIMIT_MM: f64 = 100.;
 const EDGES: [(PanelEdgeName, &str); 4] = [
     (PanelEdgeName::UStart, "Length start"),
     (PanelEdgeName::UEnd, "Length end"),
@@ -78,6 +93,22 @@ pub(super) struct MachiningPanel {
     pattern: Option<EntityId>,
     at: [DimensionField; 2],
     turns: u8,
+    pin_along: PanelAxis,
+    pin_rows: Vec<(RowEdge, DimensionField)>,
+    pitch: DimensionField,
+    pin_start: DimensionField,
+    pin_end: DimensionField,
+    pin_count: Option<u32>,
+    /// The shelf-pin row a viewport click moves.
+    active_row: usize,
+    /// The drilled hole a viewport click moves; none adds a hole.
+    selected_hole: Option<usize>,
+    /// Place features by clicking panel faces in the viewport.
+    place: bool,
+    suppressed: bool,
+    hover: Option<super::panel_face::FaceHit>,
+    /// Why the last viewport click was refused.
+    pick_note: Option<String>,
     error: Option<String>,
 }
 fn field(v: f64) -> DimensionField {
@@ -116,8 +147,40 @@ impl MachiningPanel {
             pattern: None,
             at: [field(100.), field(100.)],
             turns: 0,
+            pin_along: PanelAxis::V,
+            pin_rows: vec![
+                (RowEdge::Start, field(SYSTEM32_ROW_OFFSET_MM)),
+                (RowEdge::End, field(SYSTEM32_ROW_OFFSET_MM)),
+            ],
+            pitch: field(SYSTEM32_PITCH_MM),
+            pin_start: field(SYSTEM32_LIMIT_MM),
+            pin_end: field(SYSTEM32_LIMIT_MM),
+            pin_count: None,
+            active_row: 0,
+            selected_hole: None,
+            place: true,
+            suppressed: false,
+            hover: None,
+            pick_note: None,
             error: None,
         }
+    }
+    /// The System 32 shelf-pin tool: rows on the inside faces of the chosen
+    /// panels with the example settings above.
+    pub fn system32(name: String) -> Self {
+        let mut form = Self::new(name);
+        form.kind = Kind::ShelfPins;
+        form.side = Side::Inside;
+        form.diameter = field(SYSTEM32_DIAMETER_MM);
+        form.depth = field(SYSTEM32_DEPTH_MM);
+        form
+    }
+    /// Seed new-operation targets, for example from the current selection.
+    pub fn with_targets(mut self, targets: Vec<EntityId>) -> Self {
+        if self.existing.is_none() {
+            self.targets = targets;
+        }
+        self
     }
     /// Open the operation that owns an applied machining cut.
     pub fn existing(document: &Document, cut: EntityId) -> Result<Self, String> {
@@ -131,10 +194,12 @@ impl MachiningPanel {
         );
         form.existing = Some(cut.operation);
         form.targets = op.targets.clone();
+        form.suppressed = op.suppressed;
         (form.side, form.edge) = match op.face {
             MachiningFace::Top => (Side::Top, form.edge),
             MachiningFace::Bottom => (Side::Bottom, form.edge),
             MachiningFace::Edge { edge } => (Side::Edge, edge),
+            MachiningFace::Inside => (Side::Inside, form.edge),
         };
         match &op.kind {
             MachiningKind::Groove {
@@ -179,6 +244,29 @@ impl MachiningPanel {
                     form.depth = of(d)?;
                 }
             }
+            MachiningKind::ShelfPins {
+                along,
+                rows,
+                pitch,
+                start,
+                end,
+                count,
+                diameter,
+                depth,
+            } => {
+                form.kind = Kind::ShelfPins;
+                form.pin_along = *along;
+                form.pin_rows = rows
+                    .iter()
+                    .map(|r| Ok((r.from, of(&r.offset)?)))
+                    .collect::<Result<_, String>>()?;
+                form.pitch = of(pitch)?;
+                form.pin_start = of(start)?;
+                form.pin_end = of(end)?;
+                form.pin_count = *count;
+                form.diameter = of(diameter)?;
+                form.depth = of(depth)?;
+            }
             MachiningKind::Hardware {
                 pattern,
                 at,
@@ -196,7 +284,11 @@ impl MachiningPanel {
         self.stamp
     }
     pub fn label(&self) -> &'static str {
-        "Machining"
+        if self.kind == Kind::ShelfPins {
+            "System 32 shelf pins"
+        } else {
+            "Machining"
+        }
     }
     fn hole_list(&self) -> Result<Vec<[multicad_core::constraint_sketch::Dimension; 2]>, String> {
         self.holes
@@ -252,6 +344,25 @@ impl MachiningPanel {
                 diameter: r(&self.diameter)?,
                 depth: (!self.through).then(|| r(&self.depth)).transpose()?,
             },
+            Kind::ShelfPins => MachiningKind::ShelfPins {
+                along: self.pin_along,
+                rows: self
+                    .pin_rows
+                    .iter()
+                    .map(|(from, offset)| {
+                        Ok(ShelfPinRow {
+                            from: *from,
+                            offset: r(offset)?,
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+                pitch: r(&self.pitch)?,
+                start: r(&self.pin_start)?,
+                end: r(&self.pin_end)?,
+                count: self.pin_count,
+                diameter: r(&self.diameter)?,
+                depth: r(&self.depth)?,
+            },
             Kind::Hardware => MachiningKind::Hardware {
                 pattern: self.pattern.ok_or("Choose a hardware pattern")?,
                 at: [r(&self.at[0])?, r(&self.at[1])?],
@@ -262,6 +373,7 @@ impl MachiningPanel {
             Side::Top => MachiningFace::Top,
             Side::Bottom => MachiningFace::Bottom,
             Side::Edge => MachiningFace::Edge { edge: self.edge },
+            Side::Inside => MachiningFace::Inside,
         };
         Ok(MachiningCommand {
             existing: self.existing,
@@ -270,6 +382,7 @@ impl MachiningPanel {
                 kind,
                 face,
                 targets: self.targets.clone(),
+                suppressed: self.suppressed,
             },
         })
     }
@@ -281,10 +394,22 @@ impl MachiningPanel {
         preview: PreviewState<'_>,
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
-        ui.strong("Machining");
+        ui.strong(self.label());
         ui.small("Modeled cuts in panel face coordinates (u along the length, v along the width). Not a CNC toolpath.");
+        ui.checkbox(&mut self.place, "Place on panel faces in the viewport")
+            .on_hover_text("Click a visible panel face to add it as a target and place the hole, pocket or row there. Values snap to whole millimeters and to the face edges and center lines.");
+        if let Some(note) = &self.pick_note {
+            ui.colored_label(egui::Color32::LIGHT_RED, note);
+        }
+        let mut changed = false;
+        if self.existing.is_some() {
+            changed |= ui
+                .checkbox(&mut self.suppressed, "Suppressed")
+                .on_hover_text("Keep the operation and its cuts but remove no material")
+                .changed();
+        }
         ui.label("Name");
-        let mut changed = ui
+        changed |= ui
             .add_enabled(
                 self.existing.is_none(),
                 egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
@@ -296,6 +421,7 @@ impl MachiningPanel {
                 (Kind::Rabbet, "Rabbet"),
                 (Kind::Pocket, "Pocket"),
                 (Kind::Drill, "Drill"),
+                (Kind::ShelfPins, "System 32"),
                 (Kind::Hardware, "Hardware"),
             ] {
                 changed |= ui.radio_value(&mut self.kind, kind, label).changed();
@@ -311,6 +437,10 @@ impl MachiningPanel {
                 .changed();
             changed |= ui
                 .radio_value(&mut self.side, Side::Bottom, "Bottom face")
+                .changed();
+            changed |= ui
+                .radio_value(&mut self.side, Side::Inside, "Inside")
+                .on_hover_text("The top or bottom face that looks into the cabinet, chosen per panel: a left and a right side both take their inner face")
                 .changed();
             if drilling {
                 changed |= ui.radio_value(&mut self.side, Side::Edge, "Edge").changed();
@@ -377,7 +507,19 @@ impl MachiningPanel {
                 if !self.through {
                     changed |= self.depth.show(ui, "Depth", "Blind hole depth");
                 }
+                if let Some(i) = self.selected_hole {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Hole {} selected: the next face click moves it",
+                            i + 1
+                        ));
+                        if ui.small_button("Add holes").clicked() {
+                            self.selected_hole = None;
+                        }
+                    });
+                }
             }
+            Kind::ShelfPins => changed |= self.show_shelf_pins(ui, document),
             Kind::Hardware => {
                 let patterns: Vec<_> = model::hardware_patterns(document)
                     .map(|e| (e.id, e.name.clone()))

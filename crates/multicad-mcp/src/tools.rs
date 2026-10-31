@@ -339,7 +339,7 @@ tools! {
         "Create or edit a reusable hardware hole pattern (hole positions, diameters, blind depths or through) with per-material diameter and depth allowances. Editing it rebuilds every placement, evaluated natively before commit.",
         set_hardware_pattern;
     "set_machining" => MachiningArgs, "Create or edit machining", false,
-        "Cut a groove, rabbet, pocket, drilling or placed hardware pattern into one or more panels, in panel face coordinates on the top, bottom or (drilling only) an edge face. Edits keep the targets. Cuts that leave no material, leave the face or would cut through a blind feature are refused. Modeled features only, not CNC toolpaths.",
+        "Cut a groove, rabbet, pocket, drilling, System 32 shelf-pin rows (kind shelf_pins: rows, pitch default 32 mm, start, end limit, optional count, diameter, blind depth) or placed hardware pattern into one or more panels, in panel face coordinates on the top, bottom, inside (each panel's face toward the carcass interior) or (drilling only) an edge face. Holes that overlap each other or another operation's holes are refused. Shelf-pin results list the carcass shelf offsets that rest on pins both sides share. Edits keep the targets. Cuts that leave no material, leave the face or would cut through a blind feature are refused. Modeled features only, not CNC toolpaths.",
         set_machining;
     "delete_machining" => DeleteMachiningArgs, "Delete machining", false,
         "Delete a machining operation and its cuts, restoring the panels.",

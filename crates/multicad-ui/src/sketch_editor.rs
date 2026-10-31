@@ -1109,6 +1109,34 @@ impl SketchEditor {
                 .into();
         Ok(())
     }
+    pub fn begin_shelf_pins(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before drilling shelf pins"
+                    .into(),
+            );
+        }
+        let document = session.document();
+        let (panels, refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        let targets = crate::modeling::with_opposite_sides(document, panels);
+        self.finish()?;
+        self.model
+            .begin_shelf_pins(session, resources, targets.clone(), channel)?;
+        self.message = crate::modeling::seeded_message(
+            "System 32 shelf pins",
+            document,
+            &targets,
+            &refused,
+            "click the inside face of each cabinet side in the viewport or tick the sides in the Inspector",
+        );
+        Ok(())
+    }
     pub fn begin_joint(
         &mut self,
         session: &Session,
@@ -3433,6 +3461,26 @@ impl SketchEditor {
         {
             self.message =
                 "Wall location picked · check the fit in the Inspector, then Preview".into();
+        }
+        if !self.measurement.active()
+            && self.model.machining_picking()
+            && self.model.machining_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Panel face placed · check the axes and offsets in the viewport and Inspector, then Preview"
+                    .into();
         }
         if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {

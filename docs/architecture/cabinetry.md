@@ -232,6 +232,12 @@ Both faces use the panel's (u, v) coordinates. Drilling can also enter an
 **edge face**. There the first coordinate runs along the edge from its
 start, and the second up the thickness from the bottom face.
 
+- **Inside.** Each target's top or bottom face that looks into the
+  cabinet: toward the carcass interior for a carcass panel, otherwise
+  toward the other targets. A carcass left side is cut on its top face and
+  the right side on its bottom face, so one operation reaches both inner
+  faces. A lone non-carcass target has no inside face and is refused.
+
 ### Kinds
 
 | Kind | Defined by |
@@ -240,10 +246,39 @@ start, and the second up the thickness from the bottom face.
 | Rabbet | Along one edge, with a width and depth |
 | Pocket | A rectangle with a center, size and depth |
 | Drilling | Holes of one diameter, blind with a depth or through |
+| Shelf pins | System 32 style rows of blind holes, described below |
 | Hardware | A placed hardware pattern, turned in quarter turns |
 
-All dimensions can be parameter expressions. Grooves, rabbets and pockets
-are cut into the top or bottom face only.
+All dimensions can be parameter expressions. Grooves, rabbets, pockets and
+shelf pins are cut into the top, bottom or inside face only.
+
+### System 32 shelf pins
+
+A shelf-pin operation holds:
+
+- the axis the rows run along (for a carcass side, v runs up the height);
+- up to eight rows, each an offset from the start or end edge across them;
+- the pitch, 32 mm by default;
+- the first hole center from the start edge and an end limit, the closest
+  a hole center may come to the end edge;
+- an optional fixed hole count per row; without it the row fills the range;
+- the hole diameter and blind depth.
+
+The tool's example settings are Ø5 × 10 mm holes in rows 37 mm in from
+the front and rear edges, from 100 mm above the bottom edge to 100 mm
+below the top edge. These are editable project choices, not a claim of
+compatibility with particular shelf supports or line-boring machines.
+
+Targeting both sides of a carcass with the inside face drills the same
+rows into each inner face. The rows are measured from each side's own
+edges, so they stay aligned while both sides share their size and
+position, and they rebuild when the carcass changes.
+
+`shelf_support_offsets` lists the shelf levels of a carcass: for every hole
+height both sides share, the offset from the interior bottom to a shelf
+underside that rests on a pin of the hole diameter, half a diameter above
+the hole center. Levels without room for a shelf below the top are left
+out. A carcass shelf set to one of these offsets rests on the pins.
 
 ### Hardware patterns
 
@@ -263,9 +298,11 @@ in the cut list.
 
 ### Edits and refusals
 
-Editing an operation changes its kind, sizes or face. Its targets are fixed
-when it is created. Deleting an operation removes its cuts, re-attaching
-later cuts on the same Part.
+Editing an operation changes its kind, sizes or face, or suppresses it. Its
+targets are fixed when it is created. A suppressed operation keeps its cuts
+in each Part's history but removes no material and reports no holes.
+Deleting an operation removes its cuts, re-attaching later cuts on the same
+Part.
 
 The resolver refuses:
 
@@ -273,7 +310,12 @@ The resolver refuses:
 - a groove that does not fit across the panel;
 - a rabbet that leaves no material;
 - a pocket or hole that leaves its face;
-- a groove, rabbet or pocket on an edge face.
+- a groove, rabbet, pocket or shelf-pin row on an edge face;
+- holes of one operation that overlap each other;
+- a hole that overlaps a hole of another operation on the same face of the
+  same panel;
+- shelf-pin limits that leave no hole, or fewer holes than a fixed count;
+- more than 256 holes on one panel.
 
 These are modeled solids, not CNC toolpaths, tool-access checks or
 machining certification.
@@ -282,9 +324,10 @@ machining certification.
 
 `Model::machining` lists every machining cut with:
 
-- the Part, operation, kind, face, Material and stock;
-- each hole's world center, axis into the material, diameter, depth and
-  whether it goes through;
+- the Part, operation, kind, the face actually cut (inside resolved to top
+  or bottom), Material and stock;
+- each hole's face coordinates, world center, axis into the material,
+  diameter, depth and whether it goes through;
 - each groove, rabbet or pocket's size and depth;
 - the volume measurably removed from the solid before the cut.
 
@@ -322,8 +365,23 @@ the producer contract for BOM and cut-list exports (CAD-89).
   `create_panel_stack`, `set_panel_joint`, `delete_panel_joint`,
   `set_hardware_pattern`, `set_machining`, `delete_machining` and
   `cut_list`.
-- **Machining in the window.** Model → Wood → **Drill / pocket**. Hardware
-  patterns are created through MCP for now.
+- **Machining in the window.** Model → Wood → **Drill / pocket**, and
+  Model → Wood → **System 32 shelf pins**, which opens the same form preset
+  to shelf-pin rows on the inside faces. Hardware patterns are created
+  through MCP for now.
+- **Placing on faces.** While either form is open, a click on a visible
+  rectangular panel face adds that panel as a target and takes its face. A
+  drilling click adds a hole, or selects an existing hole so that the next
+  click moves it; a pocket or hardware click sets its center; a groove
+  click sets its offset; a rabbet click picks the nearest edge; a
+  shelf-pin click moves the active row. Points snap to whole millimeters
+  and to the face edges and center lines. The viewport draws each target's
+  face outline and name, its u and v axes, the hovered point's offsets from
+  the start edges, and the resolved holes and recess outlines; a target the
+  current values refuse is outlined in red with the reason. The Inspector
+  edits the same values.
+- **MCP shelf pins.** `set_machining` with `kind: "shelf_pins"` and
+  `face: "inside"`; its result lists each carcass's `shelf_supports`.
 
 ## Limits
 

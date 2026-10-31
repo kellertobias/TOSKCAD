@@ -588,6 +588,22 @@ pub enum FaceArg {
     Top,
     Bottom,
     Edge,
+    /// Each panel's top or bottom face toward the carcass interior (or
+    /// toward the other targets).
+    Inside,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RowEdgeArg {
+    Start,
+    End,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShelfPinRowArg {
+    /// The edge across the rows the offset is measured from.
+    pub from: RowEdgeArg,
+    pub offset: Quantity,
 }
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -596,6 +612,7 @@ pub enum MachiningKindArg {
     Rabbet,
     Pocket,
     Drill,
+    ShelfPins,
     Hardware,
 }
 #[derive(Deserialize, JsonSchema)]
@@ -608,16 +625,32 @@ pub struct MachiningArgs {
     #[serde(default)]
     pub name: Option<String>,
     pub kind: MachiningKindArg,
-    /// top, bottom or edge (drilling and hardware only; then give `edge`).
+    /// top, bottom, inside or edge (drilling and hardware only; then give `edge`).
     pub face: FaceArg,
     /// Rabbets: the edge; edge faces: the edge drilled into.
     #[serde(default)]
     pub edge: Option<EdgeArg>,
     /// Panel Parts that receive the operation (fixed after creation).
     pub targets: Vec<String>,
-    /// Grooves: "u" or "v", the axis the groove runs along.
+    /// Grooves: "u" or "v", the axis the groove runs along. Shelf pins: the
+    /// axis the rows run along (default v).
     #[serde(default)]
     pub along: Option<GrainAxisArg>,
+    /// Shelf pins: the rows, each an offset from the start or end edge across them.
+    #[serde(default)]
+    pub rows: Vec<ShelfPinRowArg>,
+    /// Shelf pins: hole pitch along a row (default 32 mm, System 32).
+    #[serde(default)]
+    pub pitch: Option<Quantity>,
+    /// Shelf pins: first hole center from the start edge along the row.
+    #[serde(default)]
+    pub start: Option<Quantity>,
+    /// Shelf pins: no hole center closer than this to the end edge.
+    #[serde(default)]
+    pub end: Option<Quantity>,
+    /// Shelf pins: holes per row; omit to fill the range.
+    #[serde(default)]
+    pub count: Option<u32>,
     /// Grooves: distance from the start edge of the other axis.
     #[serde(default)]
     pub offset: Option<Quantity>,
@@ -644,6 +677,9 @@ pub struct MachiningArgs {
     pub at_mm: Option<[f64; 2]>,
     #[serde(default)]
     pub quarter_turns: u8,
+    /// Keep the operation and its cuts but remove no material (default false).
+    #[serde(default)]
+    pub suppressed: bool,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -796,6 +832,31 @@ pub(super) fn set_machining(host: &dyn Host, call: &Request, args: MachiningArgs
             diameter: need(&args.diameter, "a diameter")?,
             depth: opt(&args.depth, d, e)?,
         },
+        MachiningKindArg::ShelfPins => MachiningKind::ShelfPins {
+            along: match args.along {
+                Some(GrainAxisArg::U) => PanelAxis::U,
+                _ => PanelAxis::V,
+            },
+            rows: args
+                .rows
+                .iter()
+                .map(|r| {
+                    Ok(model::ShelfPinRow {
+                        from: match r.from {
+                            RowEdgeArg::Start => model::RowEdge::Start,
+                            RowEdgeArg::End => model::RowEdge::End,
+                        },
+                        offset: q(&r.offset, d, e)?,
+                    })
+                })
+                .collect::<Result<_, ToolError>>()?,
+            pitch: opt(&args.pitch, d, e)?.unwrap_or_else(|| length(model::SYSTEM32_PITCH_MM)),
+            start: need(&args.start, "a start")?,
+            end: need(&args.end, "an end limit")?,
+            count: args.count,
+            diameter: need(&args.diameter, "a diameter")?,
+            depth: need(&args.depth, "a depth")?,
+        },
         MachiningKindArg::Hardware => MachiningKind::Hardware {
             pattern: id(args
                 .pattern
@@ -809,11 +870,13 @@ pub(super) fn set_machining(host: &dyn Host, call: &Request, args: MachiningArgs
         },
     };
     let machining = MachiningDefinition {
+        suppressed: args.suppressed,
         kind,
         face: match args.face {
             FaceArg::Top => MachiningFace::Top,
             FaceArg::Bottom => MachiningFace::Bottom,
             FaceArg::Edge => MachiningFace::Edge { edge: edge()? },
+            FaceArg::Inside => MachiningFace::Inside,
         },
         targets: args
             .targets
@@ -840,9 +903,37 @@ pub(super) fn set_machining(host: &dyn Host, call: &Request, args: MachiningArgs
             )?,
         })
     })??;
+    // Carcasses whose sides carry shelf pins report where a shelf can rest.
+    let staged = prepared.model.prepared.document();
+    let carcasses: std::collections::BTreeSet<EntityId> = prepared
+        .model
+        .outputs
+        .iter()
+        .filter_map(|o| model::panel_feature(staged, o.body))
+        .filter_map(|f| model::read_panel(staged, f).ok())
+        .filter_map(|p| match p.source {
+            PanelSource::Carcass { carcass, .. } => Some(carcass),
+            _ => None,
+        })
+        .collect();
+    let supports = multicad_core::parameters::evaluate(staged)
+        .ok()
+        .map(|parameters| {
+            carcasses
+                .iter()
+                .filter_map(|c| {
+                    model::shelf_support_offsets(staged, &parameters, *c)
+                        .ok()
+                        .filter(|l| !l.is_empty())
+                        .map(|l| json!({ "carcass": c, "shelf_offsets_mm": l }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let out = json!({
         "operation": prepared.operation,
         "cuts": prepared.model.outputs.iter().map(|o| json!({ "part": o.body, "feature": o.feature })).collect::<Vec<_>>(),
+        "shelf_supports": supports,
     });
     finish(host, call, prepared.model.prepared, revision, out)
 }
@@ -897,8 +988,10 @@ pub(super) fn cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> Too
         })).collect::<Vec<_>>(),
         "machining": machining.iter().map(|m| json!({
             "part": m.part, "operation": m.operation, "name": m.name, "kind": m.kind,
+            "face": m.face,
             "material": m.material, "stock": m.stock, "removed_mm3": m.removed_mm3,
             "holes": m.holes.iter().map(|h| json!({
+                "face_mm": h.at,
                 "center_mm": h.center, "axis": h.axis, "diameter_mm": h.diameter_mm,
                 "depth_mm": h.depth_mm, "through": h.through,
             })).collect::<Vec<_>>(),

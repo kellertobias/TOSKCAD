@@ -335,7 +335,7 @@ impl Model {
                     .map(|e| e.name.clone())
                     .unwrap_or_default(),
                 kind: op.label(),
-                face: op.face,
+                face: resolved.face,
                 material: Some(panel.stock_spec.material),
                 stock: panel.stock,
                 holes: resolved.holes,
