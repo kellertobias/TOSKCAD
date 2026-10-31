@@ -506,10 +506,10 @@ fn asynchronous_drawing_completion_requests_a_frame_to_refresh_inspector_and_rib
         entities: vec![source],
     };
     let ctx = egui::Context::default();
-    // Start the request without consuming its already queued test reply.
+    // The first tick dispatches immediately, without consuming the queued reply.
     editor.tick_views(&ctx, &session);
-    assert!(editor.feed.tick(1.));
     assert!(editor.feed.pending());
+    assert!(editor.feed.result.is_none());
     let mut was_ready = false;
     let output = ctx.run_ui(
         egui::RawInput {
