@@ -108,6 +108,18 @@ the clearances. It moves and rotates with the target's placement.
   - Applied slabs and stairs reopen from the model tree as feature edits
     that keep their Part.
   - The stair form shows its geometric check live.
+  - **Slab outlines** use the same plan outline editor as wall paths (see
+    [walls](walls.md#access)): draw on the level floor plane with snapping,
+    rectangle by dimensions, corner and segment adjustment with live
+    lengths, exact corner fields and red self-crossing diagnostics. A slab
+    outline always closes; **Finish** closes it.
+  - **Room boundary.** A floor can take its outline from exactly one closed
+    wall chosen by name: its **Inside faces** (default), its **Wall path**
+    (keeps the path's expressions) or its **Outside faces**. **Use room
+    boundary** copies those corners into the outline and takes the wall's
+    level. The chosen room's boundary is drawn as green dashes in the
+    viewport; no other room is included. The copy is not linked: a later
+    wall edit does not move the slab.
 - **MCP:** `set_level`, `create_slab`, `set_stair`, `create_envelope` and
   `check_clearances`. Mutations are evaluated natively before commit.
 
