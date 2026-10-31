@@ -45,7 +45,7 @@ const SPECIALIZED: [(&str, &str); 7] = [
     ("Wood", "drill"),
     ("Sheet metal", "sheet"),
     ("Weld", "tube"),
-    ("FDM aids", "fdm-aid"),
+    ("FDM", "fdm-aid"),
 ];
 #[test]
 fn specialized_model_tools_keep_their_workbench_through_cancel_and_restart() {

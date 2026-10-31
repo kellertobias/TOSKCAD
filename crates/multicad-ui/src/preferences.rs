@@ -54,7 +54,15 @@ impl Preferences {
                 .map(|tab| tab.title)
                 .collect();
             let mut entries: Vec<WorkbenchPreference> = Vec::new();
-            for entry in stored.get(&mode).into_iter().flatten() {
+            let legacy_fdm = mode == Mode::Model
+                && stored
+                    .get(&mode)
+                    .is_some_and(|entries| entries.iter().any(|entry| entry.title == "FDM aids"));
+            for stored_entry in stored.get(&mode).into_iter().flatten() {
+                let mut entry = stored_entry.clone();
+                if mode == Mode::Model && entry.title == "FDM aids" {
+                    entry.title = "FDM".into();
+                }
                 if installed.contains(&entry.title.as_str())
                     && !entries.iter().any(|e| e.title == entry.title)
                 {
@@ -68,6 +76,15 @@ impl Preferences {
                         visible: true,
                     });
                 }
+            }
+            if legacy_fdm && let Some(index) = entries.iter().position(|entry| entry.title == "FDM")
+            {
+                let fdm = entries.remove(index);
+                let before = entries
+                    .iter()
+                    .position(|entry| entry.title == "Relationships")
+                    .unwrap_or(entries.len());
+                entries.insert(before, fdm);
             }
             for entry in &mut entries {
                 if entry.title == ALWAYS_VISIBLE {
@@ -257,6 +274,37 @@ mod tests {
         }
     }
     #[test]
+    fn legacy_fdm_preferences_keep_visibility_and_move_before_relationships() {
+        let registry = Registry::default();
+        let mut preferences = Preferences::defaults(&registry);
+        let entries = preferences.workbenches.get_mut(&Mode::Model).unwrap();
+        let index = entries
+            .iter()
+            .position(|entry| entry.title == "FDM")
+            .unwrap();
+        let mut fdm = entries.remove(index);
+        fdm.title = "FDM aids".into();
+        fdm.visible = false;
+        let after = entries
+            .iter()
+            .position(|entry| entry.title == "Relationships")
+            .unwrap()
+            + 1;
+        entries.insert(after, fdm);
+        preferences.normalize(&registry);
+        let entries = &preferences.workbenches[&Mode::Model];
+        let fdm = entries
+            .iter()
+            .position(|entry| entry.title == "FDM")
+            .unwrap();
+        assert!(!entries[fdm].visible);
+        assert_eq!(entries[fdm + 1].title, "Relationships");
+        assert!(!entries.iter().any(|entry| entry.title == "FDM aids"));
+        let normalized = preferences.clone();
+        preferences.normalize(&registry);
+        assert_eq!(preferences, normalized);
+    }
+    #[test]
     fn hide_show_and_reorder_change_only_navigation_order() {
         let registry = Registry::default();
         let mut preferences = Preferences::defaults(&registry);
@@ -271,7 +319,7 @@ mod tests {
         assert!(!model.contains(&"Wood"));
         assert_eq!(&model[..3], ["Sheet metal", "Common", "Architecture"]);
         let materials = model.iter().position(|t| *t == "Materials").unwrap();
-        assert_eq!(model[materials + 1], "FDM aids");
+        assert_eq!(model[materials + 1], "Relationships");
         // Other modes are untouched; showing it again restores it in place.
         assert_eq!(
             titles(&preferences, &registry, Mode::Export),
