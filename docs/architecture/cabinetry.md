@@ -117,6 +117,28 @@ and feature identities.
 - **Stock changes.** A panel follows its new stock in both its Material and
   its stock assignment.
 
+### Editing a cabinet in the window
+
+Selecting a cabinet's group, a carcass panel Part or a panel feature shows
+**Edit cabinet "<name>"** in the Inspector
+(`crates/multicad-ui/src/modeling/cabinet_edit.rs`). It reopens the saved
+carcass definition — envelope, placement, construction, back, shelves and
+front band — in the Panel / carcass form. Starting Panel / carcass from the
+ribbon always drafts a new cabinet.
+
+While the form is open:
+
+- the viewport draws the planned envelope with width, height and depth
+  dimensions and an outline and height for each shelf. The guide uses the
+  same planner as Apply and is display only;
+- the Inspector lists how many panels are kept, which roles are added and
+  which panels are removed. A removed panel that a joint or machining still
+  uses is named with that operation, and Preview refuses the edit until it
+  is deleted or the panel is kept.
+
+Preview builds the whole cabinet; Apply commits it as one undoable
+"Edit carcass" transaction on the same carcass.
+
 ### What the planner refuses
 
 The planner reports these cases instead of building overlapping or invalid
