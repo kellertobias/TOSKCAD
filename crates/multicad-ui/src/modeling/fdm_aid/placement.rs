@@ -143,6 +143,19 @@ impl FdmAidPanel {
         if !finished_parts(document).iter().any(|(p, _)| *p == part) {
             return Err("Pick a finished Part; aids cannot serve aids".into());
         }
+        // Contacts go on the chosen finished Part; only a bridge end may
+        // land on a second Part.
+        if role != PickRole::End
+            && let Some(target) = self.target
+            && target != part
+        {
+            let name = document
+                .get(target)
+                .map_or("the chosen Part", |e| e.name.as_str());
+            return Err(format!(
+                "Pick on {name}, the chosen finished Part; choose another Part in the list to switch"
+            ));
+        }
         let p = surface.point_mm;
         let how = if surface.exact_plane {
             "on the exact plane"
@@ -197,6 +210,7 @@ impl FdmAidPanel {
             }
             _ => return Err("This pick does not apply to the chosen aid".into()),
         };
+        self.seed_note = None;
         self.placed();
         Ok(message)
     }
@@ -300,7 +314,12 @@ impl FdmAidPanel {
                 _ => None,
             }
         } else {
-            let finished: Vec<EntityId> = finished_parts(document).iter().map(|p| p.0).collect();
+            let finished: Vec<EntityId> = match (role, self.target) {
+                (PickRole::End, _) | (_, None) => {
+                    finished_parts(document).iter().map(|p| p.0).collect()
+                }
+                (_, Some(target)) => vec![target],
+            };
             let hit = scene.pick_screen_matching(
                 view.camera,
                 view.rect,

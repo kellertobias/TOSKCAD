@@ -181,12 +181,14 @@ aids at the copy placement.
 ## Placing in the viewer
 
 A new aid opens ready to pick. The Inspector numbers stay editable, and
-picks only fill them in:
+picks only fill them in. Contacts go on the chosen finished Part, and a
+click on another Part is refused; with no Part chosen yet, the clicked
+finished Part becomes the target.
 
 - **Tab: Pick contact.** Click a side face of a finished Part. The
   contact is the clicked point at the Part's exact lowest height, and the
   direction is the face's outward normal in the build plane. A top or
-  bottom face is refused. The clicked Part becomes the target.
+  bottom face is refused.
 - **Bridge: Pick start, Pick end.** The start sets the target. An end on
   a different Part makes it the second Part.
 - **Support: Pick footprint.** The footprint is centred under the click.

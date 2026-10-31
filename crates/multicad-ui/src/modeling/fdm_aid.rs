@@ -669,6 +669,16 @@ mod tests {
             )
             .is_err()
         );
+        // The contact goes on the chosen finished Part, not a neighbour.
+        let error = tab
+            .pick_surface(
+                doc,
+                post,
+                surface([60., 5., 20.], [-1., 0., 0.], true),
+                Some(0.),
+            )
+            .unwrap_err();
+        assert!(error.contains("chosen finished Part"), "{error}");
         assert_eq!(tab.stamp(), stamp);
 
         // Bridge: start on the block, end on the post makes it the second Part.
