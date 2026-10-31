@@ -803,7 +803,7 @@ pub fn build() -> Result<Scenario, Error> {
 
     // Materials and the 1.5 mm aluminium sheet stock.
     let aluminium = material("EN AW-5754 H22", 2670., [196, 200, 206, 255]);
-    let petg = material("PETG", 1270., [232, 112, 36, 255]);
+    let petg = material("PETG", 1270., [24, 26, 29, 255]);
     let button_material = material("Push button (illustrative)", 1100., [200, 40, 40, 255]);
     let display_material = material("Display module (illustrative)", 1850., [30, 110, 70, 255]);
     let stock = LibraryDefinition::Stock(Stock {

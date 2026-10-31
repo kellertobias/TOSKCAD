@@ -532,14 +532,14 @@ pub fn build(output: &Path) -> Result<Scenario, Error> {
         furniture(
             &mut session,
             "Sofa",
-            [600., 3300.],
-            [2200., 900., 800.],
+            [350., 1800.],
+            [900., 2200., 800.],
             fabric.id,
         )?,
         furniture(
             &mut session,
             "Coffee table",
-            [1150., 2200.],
+            [1700., 2400.],
             [1100., 600., 400.],
             oak.id,
         )?,
