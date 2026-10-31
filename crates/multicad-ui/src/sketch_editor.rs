@@ -1086,7 +1086,7 @@ impl SketchEditor {
         self.finish()?;
         self.model.begin_wall(session, resources, channel)?;
         self.message =
-            "Wall · choose a type, enter path points and openings in the Inspector, then Preview"
+            "Wall · choose a type, draw the path in the viewport or enter corners and openings in the Inspector, then Preview"
                 .into();
         Ok(())
     }
@@ -3433,6 +3433,25 @@ impl SketchEditor {
         {
             self.message =
                 "Wall location picked · check the fit in the Inspector, then Preview".into();
+        }
+        if !self.measurement.active()
+            && self.model.outline_active()
+            && self.model.outline_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Outline changed · check the dimensions in the Inspector, then Preview".into();
         }
         if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {

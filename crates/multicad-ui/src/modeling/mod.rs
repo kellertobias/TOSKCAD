@@ -27,6 +27,7 @@ pub(crate) mod native_fixture;
 mod object_basis;
 mod opening;
 mod operation_guide;
+mod outline;
 mod placement;
 mod primitive;
 mod revolve;
@@ -319,7 +320,7 @@ impl ModelingTool {
                 "Usage: sheet (choose sheet stock, base size and edge flanges, hems or jogs, optionally override the inside radius and K-factor in the Inspector, then Preview and Apply)"
             }
             Self::Wall => {
-                "Usage: wall (choose or define a wall type, enter path points and doors/windows in the Inspector, then Preview and Apply)"
+                "Usage: wall (choose or define a wall type, draw the path in the viewport or enter its corners, add doors/windows in the Inspector, then Preview and Apply)"
             }
             Self::Door | Self::Window => {
                 "Usage: door / window-tool (click a wall face in the viewport or choose the wall, segment and offset, pick or define a type in the Inspector, then Preview and Apply)"
