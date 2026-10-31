@@ -17,6 +17,7 @@ pub mod materials;
 pub mod model;
 pub mod parameters;
 pub mod project_file;
+pub mod project_path;
 pub mod references;
 pub mod schedules;
 pub mod sketch;

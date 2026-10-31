@@ -64,6 +64,9 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
+    // Finder "open document" requests can arrive before the first frame.
+    #[cfg(target_os = "macos")]
+    native_window::observe_open_documents();
     eframe::run_native(
         "ToskCAD",
         options,

@@ -11,7 +11,7 @@ model or chat.
 
 | Mode | Start | Document | Transport |
 | --- | --- | --- | --- |
-| Headless | `multicad --mcp [--project FILE.multicad] [--export-dir DIR] [--read-only]` | The `--project` file, opened or created on first save; otherwise an unsaved document | The client launches the process and talks over stdin/stdout |
+| Headless | `multicad --mcp [--project FILE.tcd] [--export-dir DIR] [--read-only]` | The `--project` file, opened or created on first save; otherwise an unsaved document | The client launches the process and talks over stdin/stdout |
 | Window | `multicad --mcp --app [--socket PATH]` | The project open in the desktop window | The bridge connects to the window's same-user local socket |
 
 A typical client configuration:
@@ -19,7 +19,7 @@ A typical client configuration:
 ```json
 { "mcpServers": { "multicad": {
     "command": "/Applications/MultiCAD.app/Contents/MacOS/multicad",
-    "args": ["--mcp", "--project", "/Users/me/parts/bracket.multicad",
+    "args": ["--mcp", "--project", "/Users/me/parts/bracket.tcd",
              "--export-dir", "/Users/me/parts/out"] } } }
 ```
 
@@ -45,6 +45,8 @@ Neither mode opens a network port, and remote control is not offered.
 - **Project.** `save_project` writes only the headless `--project` file. It uses
   the desktop's atomic, conflict-checked project store. A file changed by
   another writer is not replaced. In window mode, saving stays with the window.
+  `--project` must end in `.tcd` (any case) or, for an existing project, the
+  legacy `.multicad`, which is saved in place and never renamed.
 - **Exports.** `export_step` writes only into `--export-dir`, using a bare
   `.step` or `.stp` file name. It writes to a hidden partial file, reads the file
   back, then renames it. It fails without an export folder. In window mode,

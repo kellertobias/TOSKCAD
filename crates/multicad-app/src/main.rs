@@ -20,7 +20,8 @@ use multicad_core::BuildInfo;
 use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 
 enum Action {
-    Run,
+    /// Launch the window, optionally opening one native project file.
+    Run(Option<PathBuf>),
     Help,
     Version,
     Diagnostics,
@@ -33,11 +34,18 @@ fn parse_action(arguments: impl Iterator<Item = OsString>) -> Result<Action, Str
         return mcp::parse(&arguments[1..]).map(Action::Mcp);
     }
     match arguments.as_slice() {
-        [] => Ok(Action::Run),
+        [] => Ok(Action::Run(None)),
         [option] => match option.to_str() {
             Some("--help" | "-h") => Ok(Action::Help),
             Some("--version" | "-V") => Ok(Action::Version),
             Some("--diagnostics") => Ok(Action::Diagnostics),
+            // File associations on Windows and Linux pass the document path.
+            Some(path)
+                if !path.starts_with('-')
+                    && multicad_core::project_path::is_project_path(std::path::Path::new(path)) =>
+            {
+                Ok(Action::Run(Some(PathBuf::from(path))))
+            }
             _ => Err(format!(
                 "unsupported argument {:?}; see --help",
                 option.to_string_lossy()
@@ -57,10 +65,12 @@ fn main() -> ExitCode {
     };
     let build = BuildInfo::current();
     let result = match action {
-        Action::Run => run_application().inspect_err(|error| record_startup_error(error)),
+        Action::Run(project) => {
+            run_application(project).inspect_err(|error| record_startup_error(error))
+        }
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [--help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.multicad] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n\nLaunches the native application host with no arguments.\nIncludes Parameters, constrained Sketch and initial New body extrusion. Native .multicad containers include atomic saves, embedded payloads, explicit JSON import and recovery copies. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.",
+                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Parameters, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.",
                 build.product, build.version
             );
             Ok(())
@@ -71,7 +81,7 @@ fn main() -> ExitCode {
         }
         Action::Diagnostics => {
             println!(
-                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters; constrained Sketch; initial New body extrusion\nNative project format: versioned .multicad container; atomic saves and explicit recovery copies\nMCP server: local stdio (multicad --mcp), rmcp 3.8.0\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
+                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Parameters; constrained Sketch; initial New body extrusion\nNative project format: versioned .tcd container (legacy .multicad accepted); atomic saves and explicit recovery copies\nMCP server: local stdio (multicad --mcp), rmcp 3.8.0\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
                 build.product,
                 build.version,
                 build.target_os,
@@ -105,9 +115,10 @@ fn record_startup_error(error: &str) {
         let _ = log.keep();
     }
 }
-fn run_application() -> Result<(), String> {
+fn run_application(project: Option<PathBuf>) -> Result<(), String> {
     let mut app =
         multicad_ui::application::Application::welcome(Box::new(files::ProjectStore::default()))?;
+    app.request_open_documents(project);
     app.set_recent_store(Box::new(recent_projects::RecentFileStore::default()));
     app.set_library_store(Box::new(library::LibraryFileStore::default()));
     app.set_sketch_queries(std::sync::Arc::new(|| {
@@ -139,4 +150,27 @@ fn run_application() -> Result<(), String> {
         )));
         Ok(Box::new(app))
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    fn parse(values: &[&str]) -> Result<Action, String> {
+        parse_action(values.iter().map(OsString::from))
+    }
+    #[test]
+    fn a_single_project_path_launches_the_window_with_that_document() {
+        for name in ["Cabinet.tcd", "/p/UPPER.TCD", "legacy.multicad"] {
+            assert!(
+                matches!(parse(&[name]), Ok(Action::Run(Some(path))) if path == Path::new(name)),
+                "{name}"
+            );
+        }
+        assert!(matches!(parse(&[]), Ok(Action::Run(None))));
+        for rejected in ["project.mcad", "board.step", "-x.tcd", "a.tcd.json"] {
+            assert!(parse(&[rejected]).is_err(), "{rejected}");
+        }
+        assert!(parse(&["a.tcd", "b.tcd"]).is_err());
+    }
 }

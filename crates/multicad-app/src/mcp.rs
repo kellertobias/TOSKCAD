@@ -58,9 +58,9 @@ pub fn parse(arguments: &[OsString]) -> Result<Options, String> {
         return Err("--socket requires --app".into());
     }
     if let Some(project) = &options.project
-        && project.extension().is_none_or(|e| e != "multicad")
+        && !multicad_core::project_path::is_project_path(project)
     {
-        return Err("--project must name a .multicad file".into());
+        return Err("--project must name a .tcd (or legacy .multicad) file".into());
     }
     Ok(options)
 }
@@ -165,5 +165,16 @@ mod tests {
         assert!(app.app && app.socket == Some(PathBuf::from("/tmp/s")));
         assert!(parse(&args(&["--app", "--project", "a.multicad"])).is_err());
         assert!(parse(&args(&["--socket", "/tmp/s"])).is_err());
+    }
+    #[test]
+    fn project_scope_accepts_tcd_in_any_case_and_legacy_multicad() {
+        for name in ["a.tcd", "A.TCD", "dir/b.Tcd", "legacy.multicad"] {
+            let parsed = parse(&args(&["--project", name])).unwrap();
+            assert_eq!(parsed.project, Some(PathBuf::from(name)));
+        }
+        for name in ["a.tcd.json", "a", "a.step"] {
+            let error = parse(&args(&["--project", name])).unwrap_err();
+            assert!(error.contains(".tcd"), "{error}");
+        }
     }
 }

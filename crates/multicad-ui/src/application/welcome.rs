@@ -189,7 +189,7 @@ impl Application {
                     });
                     ui.add_space(20.);
                     ui.horizontal(|ui| {
-                        if ui.add_sized([156.,40.],egui::Button::new("Open project…")).on_hover_text("Choose a .multicad project with the operating system file picker").clicked(){command=Some(Command::Open);}
+                        if ui.add_sized([156.,40.],egui::Button::new("Open project…")).on_hover_text("Choose a .tcd project (or a legacy .multicad project) with the operating system file picker").clicked(){command=Some(Command::Open);}
                         if ui.add_sized([156.,40.],egui::Button::new("New project")).on_hover_text("Create a new editable project").clicked(){command=Some(Command::New);}
                     });
                     ui.add_space(30.);

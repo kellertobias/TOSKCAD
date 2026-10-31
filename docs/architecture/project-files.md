@@ -1,8 +1,47 @@
 # Native project files
 
-The native application opens and saves `.multicad` containers. Editable source,
-critical provider payloads and pinned symbol definitions survive together. A
-loaded display cache requires explicit provider validation before reuse.
+The native application opens and saves ToskCAD project containers. New projects
+use the `.tcd` extension. Editable source, critical provider payloads and pinned
+symbol definitions survive together. A loaded display cache requires explicit
+provider validation before reuse.
+
+## File names and associations
+
+The user's decision of 2026-10-31 (CAD-179): `.tcd` is the native ToskCAD project
+extension. Only the file name changed; the container below is unchanged.
+
+- **Matching:** `.tcd` is compared case-insensitively, so `.TCD` is accepted.
+  Source: [`project_path`](../../crates/multicad-core/src/project_path.rs).
+- **New files:** Save and Save As suggest `<name>.tcd`. A name that already ends in
+  `.tcd` or `.TCD` keeps that extension. A legacy `.multicad` name is replaced by
+  `.tcd` and never doubled (`Cabinet.multicad` becomes `Cabinet.tcd`). A
+  dialog result with no extension gets `.tcd`. Reusable symbol-library files use
+  the same rule.
+- **Legacy `.multicad` files:** Open, recent projects, library entries and
+  `multicad --mcp --project` still accept them. Save on an open legacy file
+  replaces that file in place, with the usual stamp/conflict check. Nothing is
+  renamed, moved or converted automatically. To get a `.tcd` copy, use Save As.
+- **Other extensions are refused** for native saves, so a source snapshot JSON
+  cannot be overwritten with a native container.
+- **Open dialogs** list `tcd`, `TCD`, `multicad` and `MULTICAD`.
+- **Command line:** `multicad PROJECT.tcd` opens that project in the window. This
+  is the path Windows and Linux file associations use.
+- **macOS:** the app bundle exports `de.tokenet.toskcad.project` (`.tcd`) and
+  `de.tokenet.multicad.project` (legacy `.multicad`), both conforming to
+  `public.data`, and declares both as Editor document types with rank Owner.
+  The app replaces AppKit's open-documents Apple Event handler when it starts
+  launching, so a Finder double-click, *Open With* or a drop on the Dock icon
+  queues the files. Each opens through the ordinary open path in its own tab; an
+  already open file is activated instead of read again.
+- **Linux:** the archive layout's `multicad.desktop` passes `%f` and lists
+  `application/x-toskcad-project` and `application/x-multicad-project`.
+  `share/mime/packages/toskcad.xml` defines both globs case-insensitively.
+  Nothing installs these files yet.
+- **Windows:** no installer or registry association exists yet.
+- **Not renamed:** internal recovery snapshots keep their `.recovery.multicad`
+  names inside the per-user recovery folder. Review example generators and
+  existing files under `artifacts/` keep their recorded names; they open as
+  legacy projects.
 
 The container codec is owned by
 [`project_file`](../../crates/multicad-core/src/project_file/mod.rs). This reference

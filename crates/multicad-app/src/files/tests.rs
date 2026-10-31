@@ -530,3 +530,57 @@ fn discovery_retains_the_newest_512_checked_summaries_independently_of_directory
     );
     assert!(store.restore_recovery(latest).is_ok());
 }
+#[test]
+fn tcd_is_the_native_extension_and_legacy_multicad_projects_reopen_unrenamed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = ProjectStore::new(dir.path().join("recovery"));
+    let project = project(dir.path());
+    // An existing legacy project keeps opening and saving in place.
+    let legacy = dir.path().join("existing.multicad");
+    let legacy_saved = store
+        .save_project(&legacy, &project, SaveMode::Create)
+        .unwrap();
+    let legacy_bytes = std::fs::read(&legacy).unwrap();
+    let reopened = store.open_project(&legacy).unwrap();
+    assert_eq!(reopened.file.document, project.document);
+    assert_eq!(reopened.file.resources.payloads, project.resources.payloads);
+    store
+        .save_project(
+            &legacy,
+            &reopened.file,
+            SaveMode::Replace(legacy_saved.stamp),
+        )
+        .unwrap();
+    // A new copy uses .tcd (either case) and carries every payload unchanged.
+    for name in ["copy.tcd", "UPPER.TCD"] {
+        let copy = dir.path().join(name);
+        let saved = store
+            .save_project(&copy, &reopened.file, SaveMode::Create)
+            .unwrap();
+        let loaded = store.open_project(&copy).unwrap();
+        assert_eq!(loaded.file.document, project.document);
+        assert_eq!(loaded.file.resources.payloads, project.resources.payloads);
+        assert_eq!(loaded.stamp, Some(saved.stamp));
+        // Same container: only the file name differs from the legacy project.
+        assert_eq!(std::fs::read(&copy).unwrap(), legacy_bytes);
+        // Explicit-create protection still refuses to replace an existing copy.
+        assert!(
+            store
+                .save_project(&copy, &reopened.file, SaveMode::Create)
+                .is_err()
+        );
+    }
+    // The legacy file was neither renamed nor removed.
+    assert!(legacy.is_file());
+    assert!(!dir.path().join("existing.tcd").exists());
+    for rejected in ["source.json", "no-extension", "copy.tcd.json"] {
+        let error = store
+            .save_project(&dir.path().join(rejected), &project, SaveMode::Create)
+            .unwrap_err();
+        assert!(
+            matches!(&error, StorageError::Message(m) if m.contains(".tcd")),
+            "{error:?}"
+        );
+        assert!(!dir.path().join(rejected).exists());
+    }
+}

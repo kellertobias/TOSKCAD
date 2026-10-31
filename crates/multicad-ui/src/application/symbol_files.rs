@@ -52,7 +52,7 @@ impl Application {
             }
             name.push(character);
         }
-        Ok(format!("{name}.multicad"))
+        Ok(multicad_core::project_path::project_file_name(&name))
     }
     pub(super) fn load_symbol_library(&mut self, path: PathBuf) -> Result<(), String> {
         if self.file_busy() {

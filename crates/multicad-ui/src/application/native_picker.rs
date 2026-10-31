@@ -34,7 +34,7 @@ impl Application {
             .path
             .as_ref()
             .and_then(|p| p.file_name())
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(|p| multicad_core::project_path::project_file_name(&p.to_string_lossy()))
             .unwrap_or_else(|| {
                 let name = self
                     .current()
@@ -45,14 +45,7 @@ impl Application {
                     .filter(|c| !c.is_control() && !"<>:\"/\\|?*".contains(*c))
                     .take(120)
                     .collect::<String>();
-                format!(
-                    "{}.multicad",
-                    if name.trim().is_empty() {
-                        "Untitled"
-                    } else {
-                        name.trim()
-                    }
-                )
+                multicad_core::project_path::project_file_name(&name)
             });
         let request = PickerRequest {
             id: self.picker_generation,
@@ -223,6 +216,7 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
     struct Storage;
     impl DocumentStorage for Storage {
@@ -299,12 +293,49 @@ mod tests {
         assert_eq!(app.current().session.revision(), 0);
     }
     #[test]
+    fn save_as_from_a_legacy_project_suggests_one_tcd_extension_in_its_folder() {
+        for (existing, suggested) in [
+            (
+                "/private/tmp/projects/Old Cabinet.multicad",
+                "Old Cabinet.tcd",
+            ),
+            ("/private/tmp/projects/Kept.TCD", "Kept.TCD"),
+            ("/private/tmp/projects/Rev 1.2.tcd", "Rev 1.2.tcd"),
+        ] {
+            let mut app = Application::new(Box::new(Storage)).unwrap();
+            app.pending_files.clear();
+            app.current_mut().path = Some(PathBuf::from(existing));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            app.set_file_picker(Box::new(Picker(requests.clone())));
+            app.invoke(Command::SaveAs, &[], Channel::Ui).unwrap();
+            app.start_native_picker().unwrap();
+            let request = requests.lock().unwrap()[0].clone();
+            assert_eq!(request.kind, Kind::SaveProject);
+            assert_eq!(request.suggested_name.as_deref(), Some(suggested));
+            assert_eq!(
+                request.directory.as_deref(),
+                Some(Path::new("/private/tmp/projects"))
+            );
+            // The legacy file itself is never renamed by choosing Save As.
+            assert_eq!(app.current().path.as_deref(), Some(Path::new(existing)));
+        }
+    }
+    #[test]
+    fn untitled_documents_suggest_their_name_with_tcd() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        app.set_file_picker(Box::new(Picker(requests.clone())));
+        app.invoke(Command::SaveAs, &[], Channel::Ui).unwrap();
+        assert_eq!(app.file_path, "Untitled.tcd");
+    }
+    #[test]
     fn native_save_has_filter_name_and_cancellation_leaves_source_and_history_unchanged() {
         let (mut app, requests) = app();
         let source = app.current().session.document().clone();
         let request = requests.lock().unwrap()[0].clone();
         assert_eq!(request.kind, Kind::SaveProject);
-        assert_eq!(request.suggested_name.as_deref(), Some("Untitled.multicad"));
+        assert_eq!(request.suggested_name.as_deref(), Some("Untitled.tcd"));
         assert!(request.directory.is_none());
         assert!(app.file_busy());
         app.accept_picker_reply(Reply {
