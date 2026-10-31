@@ -58,9 +58,10 @@ pub fn verify(root: Option<&Path>, searched: &[PathBuf]) -> Result<String, Strin
         names.push(card.info.name.clone());
     }
     Ok(format!(
-        "Bundled examples: {} opened ({})",
+        "Bundled examples: {} opened ({}) from {}",
         names.len(),
-        names.join(", ")
+        names.join(", "),
+        root.display()
     ))
 }
 
