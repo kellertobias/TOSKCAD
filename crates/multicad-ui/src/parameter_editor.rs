@@ -23,7 +23,9 @@ impl Default for Row {
             name: String::new(),
             description: String::new(),
             expression: String::new(),
-            unit: "mm".into(),
+            // New rows default to the Settings length unit (CAD-187); the
+            // unit is stored explicitly with the parameter.
+            unit: crate::preferences::length_unit().symbol().into(),
             exposed: false,
         }
     }
@@ -36,7 +38,7 @@ impl Row {
         self.name.is_empty()
             && self.description.is_empty()
             && self.expression.is_empty()
-            && self.unit == "mm"
+            && crate::preferences::LengthUnit::from_symbol(&self.unit).is_some()
             && !self.exposed
     }
     fn entity(&self, document: &Document) -> Entity {
@@ -54,6 +56,30 @@ impl Row {
                 exposed: self.exposed,
                 inputs,
             },
+        }
+    }
+}
+/// Role, plus the Settings-unit equivalent of a length in another unit.
+fn value_help(value: &multicad_core::parameters::ParameterValue) -> String {
+    let preferred = crate::preferences::length_unit();
+    match value
+        .quantity
+        .in_unit(multicad_core::parameters::Unit::Millimeter)
+    {
+        Some(mm) if value.unit != preferred.unit() => {
+            format!("{:?} · {}", value.role, preferred.format_mm(mm))
+        }
+        _ => format!("{:?}", value.role),
+    }
+}
+impl ParameterEditor {
+    /// Blank, unsaved rows adopt a changed default length unit; authored
+    /// parameters keep their declared units.
+    pub fn adopt_length_unit(&mut self, unit: crate::preferences::LengthUnit) {
+        for row in self.rows.iter_mut().chain(self.baseline.iter_mut()) {
+            if row.empty() {
+                row.unit = unit.symbol().into();
+            }
         }
     }
 }
@@ -491,7 +517,7 @@ impl ParameterEditor {
                                         value.quantity.in_unit(value.unit).unwrap_or(0.0),
                                         value.unit.symbol()
                                     ))
-                                    .on_hover_text(format!("{:?}", value.role));
+                                    .on_hover_text(value_help(value));
                                 } else {
                                     ui.label("-");
                                 }

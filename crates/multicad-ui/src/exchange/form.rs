@@ -339,7 +339,7 @@ impl Draft {
                         remove = Some(index);
                     }
                 });
-                output_controls(ui, &mut recipe.output);
+                output_controls(ui, &mut recipe.name, &mut recipe.output);
                 if matches!(recipe.output, RecipeOutput::PlanarDxf { .. }) {
                     planar_controls(ui, recipe.id, bindings, geometry, fresh_planar);
                 }
@@ -357,6 +357,17 @@ impl Draft {
                     .desired_width(ui.available_width()),
             );
             ui.small("{project}, {set}, {part}, {id}, {occurrence}, {recipe}, {revision}, {page}");
+            ui.small(naming_help(&self.source.naming.template));
+            if ui
+                .add_enabled(
+                    self.source.naming.template != DEFAULT_NAMING_TEMPLATE,
+                    egui::Button::new("Use readable names"),
+                )
+                .on_hover_text(format!("Set the template to {DEFAULT_NAMING_TEMPLATE}"))
+                .clicked()
+            {
+                self.source.naming.template = DEFAULT_NAMING_TEMPLATE.into();
+            }
             let mut custom = matches!(self.source.naming.revision, RevisionRule::Label(_));
             if ui
                 .checkbox(&mut custom, "Use an authored revision label")
@@ -375,7 +386,7 @@ impl Draft {
                     "Content-hash revision stays stable when the identical source is reopened.",
                 );
             }
-            ui.small("Preview shows the exact portable filenames. Collisions block the whole run.");
+            ui.small("Preview lists the exact resolved filenames before Run.");
         });
         self.sync_query();
         request_planar
@@ -491,7 +502,7 @@ fn planar_controls(
         });
     }
 }
-fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
+fn output_controls(ui: &mut egui::Ui, name: &mut String, output: &mut RecipeOutput) {
     let mut kind = match output {
         RecipeOutput::Step { .. } => 0,
         RecipeOutput::Mesh { format, .. } => match format {
@@ -539,6 +550,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
             }
         });
     if kind != old {
+        let previous = output.clone();
         *output = match kind {
             0 => Recipe::step("STEP").output,
             1..=4 => RecipeOutput::Mesh {
@@ -577,6 +589,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
                 schedule: ScheduleSpec::new(ScheduleKind::Bom),
             },
         };
+        rename_generated(name, &previous, output);
     }
     if kind == 2 {
         ui.small("STL stores no unit: coordinates use the chosen unit, which is named in the file header.");
@@ -703,4 +716,24 @@ fn units_control(ui: &mut egui::Ui, units: &mut LengthUnit) {
 fn aids_control(ui: &mut egui::Ui, aids: &mut AidPolicy) {
     let mut exclude = *aids == AidPolicy::ExcludeRemovable;
     if ui.checkbox(&mut exclude,"Exclude removable design aids").on_hover_text("Leave out Parts produced by FDM aid features (tabs, bridges, supports). Aids are classified by their feature, never by name or tag; the preview lists what was left out").changed(){*aids=if exclude{AidPolicy::ExcludeRemovable}else{AidPolicy::IncludeAll};}
+}
+/// A recipe still named after its old format follows the new one; an
+/// authored name is kept, and Preview shows the actual format beside it.
+pub(super) fn rename_generated(name: &mut String, previous: &RecipeOutput, output: &RecipeOutput) {
+    if previous.is_generated_name(name) {
+        *name = output.format_label().into();
+    }
+}
+/// How a filename template reads, for the naming section.
+pub(super) fn naming_help(template: &str) -> String {
+    let base = if template == DEFAULT_NAMING_TEMPLATE {
+        "Readable names: project and Part, e.g. Cabinet_Side_panel.step; the extension names the format."
+    } else {
+        "Custom template."
+    };
+    format!(
+        "{base} Outputs that would share a name each get a short 6-character suffix from their \
+         identity, e.g. _3fa9c2, so nothing is overwritten. The bundle folder and its manifest \
+         keep the full Part, occurrence, source and provider identities."
+    )
 }

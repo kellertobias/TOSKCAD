@@ -64,7 +64,8 @@ impl Application {
             .tabs
             .iter()
             .position(|t| t.title == view.workspace)
-            .unwrap_or(0);
+            .filter(|tab| self.preferences.is_visible(&self.registry, view.mode, *tab))
+            .unwrap_or_else(|| self.first_visible_tab(view.mode));
         if self.registry.workspace(self.mode).tabs[self.tab].requires_active_sketch
             && !self.current().sketch.editing
         {

@@ -393,7 +393,8 @@ impl DrawingEditor {
         }
         if tool == DrawingTool::NewDocument || (tool == DrawingTool::AddPage && self.book.is_none())
         {
-            let page = Page::new("1");
+            let mut page = Page::new("1");
+            page.settings.app_logo = crate::preferences::title_logo_default();
             self.selected = Some(page.id);
             let (id, prepared) = drawings::prepare_create(
                 session,
@@ -409,7 +410,8 @@ impl DrawingEditor {
             let selected = self.selected;
             let action = match tool {
                 DrawingTool::AddPage => {
-                    let page = Page::new(drawings::next_number(&book));
+                    let mut page = Page::new(drawings::next_number(&book));
+                    page.settings.app_logo = crate::preferences::title_logo_default();
                     self.selected = Some(page.id);
                     PageAction::Add(page)
                 }

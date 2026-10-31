@@ -409,7 +409,12 @@ fn export_sets_and_schedules_match_the_saved_project() {
                 p.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with(&r.name.replace(' ', "_"))
+                    // Readable default names: {project}_{part}.
+                    .starts_with(&format!(
+                        "{}_{}",
+                        multicad_core::exchange::filename_token(session.document().name()),
+                        multicad_core::exchange::filename_token(&r.name)
+                    ))
             })
             .unwrap_or_else(|| panic!("no DXF for {}", r.name));
         let text = std::fs::read_to_string(path).unwrap();

@@ -629,8 +629,8 @@ fn show_pairs(
                     let (label, color) = clearance_view::relation_style(values.relation);
                     ui.colored_label(color, label);
                     ui.label(format!(
-                        "Minimum clearance: {:.6} mm",
-                        values.minimum_clearance_mm
+                        "Minimum clearance: {}",
+                        crate::preferences::format_mm(values.minimum_clearance_mm)
                     ));
                     ui.label(format!(
                         "Overlap volume: {:.6} mm³",

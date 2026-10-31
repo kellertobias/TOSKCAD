@@ -652,6 +652,26 @@ fn placed_assembly_occurrences_are_packaged_at_their_nested_world_placements() {
     }
     let skipped: BTreeSet<_> = p.selection.skipped.iter().map(|s| s.entity).collect();
     assert_eq!(skipped, BTreeSet::from([member.instance, f.post]));
+    // The Print source picker offers exactly the placed racks and world
+    // Parts, never the reusable definition, its member or its Part.
+    let candidates = print_candidates(f.s.document()).unwrap();
+    let offered: BTreeSet<_> = candidates.iter().map(|c| c.entity).collect();
+    assert!(offered.contains(&roots[0]) && offered.contains(&roots[1]));
+    for hidden in [member.instance, f.post, rack.assembly] {
+        assert!(!offered.contains(&hidden));
+    }
+    let left = candidates.iter().find(|c| c.entity == roots[0]).unwrap();
+    assert_eq!(left.kind, PrintCandidateKind::PlacedCopy);
+    assert_eq!(left.source.as_deref(), Some("Rack"));
+    let all = preview(
+        &f.s,
+        &request(offered.into_iter().collect(), AidPolicy::IncludeAll, false),
+    );
+    assert!(
+        all.selection.skipped.is_empty(),
+        "{:?}",
+        all.selection.skipped
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("racks.3mf");
     write(&f.s, &r, &p.key, &path).unwrap();

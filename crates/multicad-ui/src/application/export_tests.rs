@@ -229,3 +229,89 @@ fn accepted_write_guards_quit_until_hidden_tab_reply_and_file_dialog_blocks_new_
         "Export keyboard input cannot move a hidden model camera"
     );
 }
+fn finish_run(state: &Arc<Mutex<State>>) {
+    let (id, d, r, key, a) = state.lock().unwrap().run.take().unwrap();
+    state.lock().unwrap().replies.push_back(ExportReply {
+        id,
+        document: d.id(),
+        revision: r,
+        actor: a.clone(),
+        result: ExportResult::Run(Ok(RunReceipt {
+            actor: a,
+            key,
+            directory: "/private/tmp/verified".into(),
+            files: vec![],
+            reused: false,
+        })),
+    });
+}
+#[test]
+fn export_receipts_stay_with_their_document_when_tabs_change() {
+    let ctx = egui::Context::default();
+    // A receipt shown in its own project is replaced when another project
+    // becomes active, and comes back with that project.
+    let (mut app, state) = fixture();
+    app.current_mut()
+        .session
+        .apply(Request {
+            expected_revision: 1,
+            actor: Actor::local(Channel::Ui),
+            label: "Name".into(),
+            edits: vec![Mutation::RenameDocument("Room".into())],
+        })
+        .unwrap();
+    ready(&mut app);
+    let source_revision = app.current().session.revision();
+    app.invoke(
+        Command::Export(ExportTool::Run),
+        &["/private/tmp"],
+        Channel::Mcp,
+    )
+    .unwrap();
+    finish_run(&state);
+    frame(&mut app, &ctx);
+    assert!(
+        app.message.contains(&format!(
+            "from \u{201c}Room\u{201d} revision {source_revision}"
+        )),
+        "{}",
+        app.message
+    );
+    let receipt = app.message.clone();
+    app.invoke(Command::New, &[], Channel::Ui).unwrap();
+    app.activate_project(0);
+    assert_eq!(app.message, receipt, "the project keeps its own status");
+    app.activate_project(1);
+    assert!(
+        !app.message.contains("Exported"),
+        "another project's receipt is not shown: {}",
+        app.message
+    );
+    assert!(
+        !app.message.contains("Room") && app.message.contains("Untitled"),
+        "the new project's own status: {}",
+        app.message
+    );
+    // A receipt that arrives while another tab is active never reaches the
+    // active project's status; it waits for its own project.
+    app.activate_project(0);
+    app.invoke(Command::Mode(Mode::Export), &[], Channel::Ui)
+        .unwrap();
+    ready(&mut app);
+    app.invoke(
+        Command::Export(ExportTool::Run),
+        &["/private/tmp"],
+        Channel::Mcp,
+    )
+    .unwrap();
+    app.activate_project(1);
+    finish_run(&state);
+    frame(&mut app, &ctx);
+    assert!(!app.message.contains("Exported"), "{}", app.message);
+    app.activate_project(0);
+    assert!(
+        app.message.contains("from \u{201c}Room\u{201d}"),
+        "{}",
+        app.message
+    );
+}

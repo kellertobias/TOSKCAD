@@ -407,7 +407,7 @@ impl Exporter {
         let blocked = if objects.is_empty() {
             Some(match &request.source {
                 PrintSource::Parts { parts } if parts.is_empty() => {
-                    "Select finished Parts or placed copies before entering Export, or choose Parts by tag".into()
+                    "Choose finished Parts or placed copies in the Printable Parts list, or choose Parts by tag".into()
                 }
                 PrintSource::Tag { tag } => {
                     format!(

@@ -19,6 +19,7 @@ pub mod model_tree;
 pub mod modeling;
 pub mod navigation;
 pub mod parameter_editor;
+pub mod preferences;
 pub mod preview_capture;
 pub mod recent_projects;
 pub mod reference_repair;
