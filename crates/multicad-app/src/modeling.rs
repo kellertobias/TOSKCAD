@@ -88,6 +88,30 @@ impl SceneBackend for Backend {
         Some(SceneReply { stamp, result })
     }
 }
+/// Native aid inspections as scene review data.
+fn aid_reviews(
+    inspections: &Result<Vec<multicad_model::AidInspection>, String>,
+) -> Result<Vec<viewport::AidReview>, String> {
+    let list = inspections.as_ref().map_err(Clone::clone)?;
+    Ok(list
+        .iter()
+        .map(|a| viewport::AidReview {
+            feature: a.feature,
+            part: a.part,
+            target: a.target.part,
+            touches_target: a.target.relation != multicad_kernel::SolidPairRelation::Separated,
+            target_distance_mm: a.target.distance_mm,
+            crowded: a.crowded.clone(),
+            issues: a.issues.clone(),
+            contact_issues: a.contact_issues.clone(),
+            bounds_mm: a.bounds_mm,
+            exact_contact: a.exact_contact.map(|c| viewport::ExactContact {
+                point_mm: c.point_mm,
+                angle_deg: c.angle_deg,
+            }),
+        })
+        .collect())
+}
 fn scene(
     document: &Document,
     model: &ModelSnapshot,
@@ -262,6 +286,9 @@ fn scene(
         .and_then(|scene| scene.with_native_bounds(model.stamp.source_hash, native_bounds))
         .and_then(|scene| scene.with_envelope_boxes(model.envelope_boxes.clone()))
         .and_then(|scene| scene.with_guide_outlines(model.guide_outlines.clone()))
+        .and_then(|scene| {
+            scene.with_fdm_reviews(model.stamp.source_hash, aid_reviews(&model.fdm_aids))
+        })
         .map(Arc::new)
         .map_err(invalid)
 }

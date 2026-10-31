@@ -62,6 +62,10 @@ struct Candidate {
     pending: bool,
     scene: Option<Arc<Scene>>,
     requires_info: bool,
+    /// An FDM aid feature whose native placement review gates Apply.
+    aid: Option<EntityId>,
+    /// Why a ready preview still cannot be applied.
+    blocked: Option<String>,
 }
 struct Discovery {
     cut: CutDiscovery,
@@ -1111,6 +1115,11 @@ impl ModelToolController {
                     | ModelRequest::Advanced(_)
                     | ModelRequest::Alignment(_)
             ) || !matches!(execution, Execution::Create),
+            aid: match request {
+                ModelRequest::FdmAid(command) => Some(command.request.feature),
+                _ => None,
+            },
+            blocked: None,
         });
         self.error = None;
         Ok(())
@@ -1212,6 +1221,9 @@ impl ModelToolController {
             candidate.pending = false;
             match result {
                 Ok(scene) => {
+                    candidate.blocked = candidate
+                        .aid
+                        .and_then(|aid| super::fdm_aid::placement_block(&scene, aid));
                     candidate.scene = Some(scene);
                     self.error = None;
                 }
@@ -1223,6 +1235,15 @@ impl ModelToolController {
         }
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
+        self.preview_visible(session, resources)
+            && self
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.blocked.is_none())
+    }
+    /// The current preview may be shown, though a placement review can
+    /// still refuse to Apply it.
+    fn preview_visible(&self, session: &Session, resources: &ProjectResources) -> bool {
         self.current(session, resources, false).is_ok()
             && self.error.is_none()
             && self.candidate.as_ref().is_some_and(|candidate| {
@@ -1231,6 +1252,21 @@ impl ModelToolController {
                     && self.stamp() == Some(candidate.form)
                     && session.validate_preview(&candidate.prepared).is_ok()
             })
+    }
+    /// The native placement review of the previewed FDM aid.
+    pub(crate) fn fdm_review(&self) -> Option<super::fdm_aid::Review> {
+        let candidate = self.candidate.as_ref()?;
+        let scene = candidate.scene.as_ref()?;
+        let aid = candidate.aid?;
+        Some(super::fdm_aid::Review {
+            stamp: candidate.form,
+            result: match scene.fdm_review(aid) {
+                Some(Ok(review)) => Ok(review.clone()),
+                Some(Err(error)) => Err(error.to_owned()),
+                None => Err("The native preview carried no inspection of this aid".into()),
+            },
+            blocked: candidate.blocked.clone(),
+        })
     }
     pub fn candidate_instances(&self) -> Vec<EntityId> {
         self.candidate
@@ -1250,6 +1286,9 @@ impl ModelToolController {
                 );
             }
             self.current(session, resources, true)?;
+            if let Some(blocked) = self.candidate.as_ref().and_then(|c| c.blocked.clone()) {
+                return Err(blocked);
+            }
             if !self.can_apply(session, resources) {
                 return Err(
                     "Wait for a successful native preview of the current modeling inputs".into(),
@@ -1288,7 +1327,7 @@ impl ModelToolController {
         session: &Session,
         resources: &ProjectResources,
     ) -> Option<Arc<Scene>> {
-        if self.can_apply(session, resources) {
+        if self.preview_visible(session, resources) {
             return self
                 .candidate
                 .as_ref()
@@ -1379,6 +1418,10 @@ impl ModelToolController {
             ui.small("Preview rebuilds this producer and its downstream model. Apply retains all body, feature and profile identities.");
             ui.separator();
         }
+        let review = self.fdm_review();
+        if let Some(ModelForm::FdmAid(panel)) = self.form.as_mut() {
+            panel.set_review(review);
+        }
         let event = self
             .form
             .as_mut()
@@ -1424,6 +1467,7 @@ impl ModelToolController {
 mod context;
 mod edge_treatment;
 mod face_inputs;
+mod fdm;
 mod groups;
 mod legacy;
 mod operation_interaction;
