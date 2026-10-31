@@ -303,7 +303,7 @@ impl ModelingTool {
                 "Usage: joint (choose panel pairs that overlap at a corner and a butt, miter or finger joint in the Inspector, then Preview and Apply)"
             }
             Self::FdmAid => {
-                "Usage: fdm-aid (choose tab, bridge or support, the finished Part and process allowances in the Inspector, then Preview and Apply)"
+                "Usage: fdm-aid (choose tab, bridge or support, pick its contact and direction on the finished Part in the viewer or enter them in the Inspector, then Preview and Apply)"
             }
             Self::Weld => {
                 "Usage: weld (attach a weld to a member connection with mark, symbol, size, process and notes, or order the weld sequence, in the Inspector; Preview and Apply)"
