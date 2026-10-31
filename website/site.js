@@ -49,6 +49,13 @@ preview.querySelector('[data-preview="next"]').addEventListener('click', () => s
 zoom.addEventListener('click', () => {
   const enlarged = preview.classList.toggle('is-zoomed');
   zoom.setAttribute('aria-pressed', String(enlarged));
+  requestAnimationFrame(() => {
+    const pane = preview.querySelector('.preview-image');
+    pane.scrollTo(
+      enlarged ? (pane.scrollWidth - pane.clientWidth) / 2 : 0,
+      enlarged ? (pane.scrollHeight - pane.clientHeight) / 2 : 0,
+    );
+  });
 });
 preview.addEventListener('click', event => {
   if (event.target === preview) preview.close();
