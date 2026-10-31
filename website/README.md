@@ -4,6 +4,8 @@
 
 Open `website/index.html` in a browser to preview the page. JavaScript enables the screenshot switcher. Without JavaScript, all screenshots remain visible. Reduced motion disables entrances and transitions.
 
+The palette uses `#4599D2`, sampled from the approved logo background, with related pale-blue surfaces and navy text. Gallery images have bounded display sizes beside workspace explanations; their links open the full-size originals.
+
 ## Assets and evidence
 
 - `assets/logo.png` copies the approved `assets/branding/toskcad-logo-blueprint-tosk-c.png`.

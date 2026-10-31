@@ -13,7 +13,7 @@ show('model');
 for (const button of buttons) button.addEventListener('click', () => show(button.dataset.view));
 const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 if (motion) {
-  const targets = document.querySelectorAll('.brand, nav a, .wordmark, h1, .intro p, .action, .section-head h2, .section-head p, .gallery-controls, .development h2, .development-copy p, .resource-links a, footer > *');
+  const targets = document.querySelectorAll('.brand, nav a, .wordmark, h1, .intro p, .action, .section-head h2, .section-head p, .gallery-controls, .workflow h2, .workflow p, .workflow dl > div, .development h2, .development-copy p, .resource-links a, footer > *');
   const observer = new IntersectionObserver(entries => {
     entries.forEach(entry => {
       if (!entry.isIntersecting) return;
