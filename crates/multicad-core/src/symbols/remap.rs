@@ -55,6 +55,8 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::PANEL_TYPE => {
             model::PanelDefinition::from_definition(d)?;
         }
+        model::CARCASS_KIND => typed::<model::CarcassDefinition>(d)?.validate()?,
+        model::STACK_KIND => typed::<model::StackDefinition>(d)?.validate()?,
         model::MACHINING_KIND => typed::<model::MachiningDefinition>(d)?.validate()?,
         model::MACHINING_CUT_TYPE => {
             typed::<model::MachiningCutDefinition>(d)?.definition()?;

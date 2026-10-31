@@ -434,3 +434,30 @@ fn reference_paths_are_portable_and_never_absolute() {
         "welded-workbench.tcd"
     );
 }
+
+#[test]
+fn the_shipped_cabinet_with_its_pinned_hardware_is_referenced() {
+    let source = open_project(&examples().join("cabinet.tcd")).unwrap();
+    let content = reference_content(&source).unwrap();
+    let request = ProjectReferenceRequest::new(
+        content,
+        &source,
+        "cabinet.tcd",
+        "Cabinet",
+        placement(1000., 0., true),
+    )
+    .unwrap();
+    let mut session = Session::new(Document::new("Cabinet host").unwrap()).unwrap();
+    let prepared = symbols::prepare_project_reference(&session, 0, actor(), &request).unwrap();
+    let instance = prepared.instances[0];
+    session.commit(prepared.prepared).unwrap();
+    let host = compile(&session);
+    let (lo, hi, count) = leaf_bounds(&host, instance);
+    let original = Compiler::default().compile(&source, 0).unwrap();
+    eprintln!(
+        "cabinet leaves {count} (source leaves {}, source bodies {}), bounds {lo:?} {hi:?}",
+        original.snapshot().leaf_occurrences.len(),
+        original.snapshot().bodies.len()
+    );
+    assert!(count > 0);
+}

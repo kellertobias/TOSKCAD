@@ -43,7 +43,8 @@ record of where that content came from.
 ### Provider allowlist
 
 Symbol remapping only rewrites identities in schemas it has audited. CAD-185
-adds `weldment.member`, `cabinetry.panel`, `cabinetry.machining`,
+adds `weldment.member`, `cabinetry.panel`, `cabinetry.carcass`,
+`cabinetry.stack`, `cabinetry.machining`,
 `cabinetry.machining_cut`, `cabinetry.hardware`, `cabinetry.joint`,
 `cabinetry.joint_cut`, `cabinetry.loose_tenon` and the `materials.*` library
 records. Each is first decoded by its typed schema, which rejects unknown
@@ -125,7 +126,13 @@ The gallery copies an example together with the files it references:
 `referenced_files` returns a project's stored reference paths and is
 installed as the gallery's `DependencyResolver` in
 `bundled_examples::library()` and the packaged self-test. A copy in
-`<Documents>/ToskCAD Examples/` thus finds `welded-workbench.tcd` beside it.
+`<Documents>/ToskCAD Examples/` thus finds `cabinet.tcd` and
+`welded-workbench.tcd` beside it.
+
+A referenced project that itself places pinned symbols (the cabinet's
+hardware) is pinned with their materialized geometry as ordinary entities;
+its own symbol records and definitions stay in the source file, so nested
+pins never occur.
 
 ## Limitations
 
