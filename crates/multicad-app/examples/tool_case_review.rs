@@ -637,6 +637,7 @@ pub fn build() -> Result<Scenario, Error> {
         &CarcassRequest::new(
             "Tool case",
             CarcassDefinition {
+                cabinet: None,
                 origin: xyz([0., 0., CASTER_H]),
                 rotation: angle(0.),
                 width: length(CASE[0]),

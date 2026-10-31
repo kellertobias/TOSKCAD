@@ -141,6 +141,7 @@ fn band(thickness: f64, allowance: f64) -> Band {
 }
 fn cabinet(f: &Fixture) -> CarcassDefinition {
     CarcassDefinition {
+        cabinet: None,
         origin: [length(0.), length(0.), length(0.)],
         rotation: angle(0.),
         width: Dimension::Expression {
@@ -167,6 +168,201 @@ fn bounds(m: &Model, s: &Session, part: EntityId) -> multicad_kernel::Bounds {
     let head = m.snapshot().bodies[&part];
     let _ = s;
     m.solid(head).unwrap().bounds().unwrap()
+}
+
+fn explicit_cabinet(f: &Fixture) -> CarcassDefinition {
+    let mut definition = cabinet(f);
+    definition.width = length(800.);
+    definition.height = length(2000.);
+    definition.depth = length(600.);
+    definition.cabinet = Some(model::CabinetOptions {
+        toe_clearance: length(100.),
+        shelf_stock: f.ply,
+        shelves: vec![
+            model::CabinetShelf {
+                key: 0,
+                underside: length(500.),
+                depth: length(420.),
+                stock: None,
+                support: model::ShelfSupport::Fixed,
+            },
+            model::CabinetShelf {
+                key: 3,
+                underside: length(1053.5),
+                depth: length(350.),
+                stock: Some(f.hdf),
+                support: model::ShelfSupport::System32,
+            },
+        ],
+        joinery: Default::default(),
+        pins: Default::default(),
+    });
+    definition
+}
+
+#[test]
+fn explicit_cabinet_floor_datum_independent_shelves_and_stable_rows_are_native() {
+    let mut f = fixture();
+    let definition = explicit_cabinet(&f);
+    let created = model::prepare_carcass(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        &CarcassRequest::new("Tall cabinet", definition.clone()),
+    )
+    .unwrap();
+    let carcass = created.carcass;
+    checked(&mut f.s, created.model.prepared);
+    let native = compile(&f.s);
+    let cuts = native.cut_list(f.s.document()).unwrap();
+    let bottom = record(&cuts, "Tall cabinet bottom");
+    near(bounds(&native, &f.s, bottom.part).min[2], 100.);
+    let side = record(&cuts, "Tall cabinet left side");
+    pair(side.cut.finished_mm, [2000., 600.]);
+    near(bounds(&native, &f.s, side.part).min[2], 0.);
+    let fixed = record(&cuts, "Tall cabinet shelf 1");
+    pair(fixed.cut.finished_mm, [764., 420.]);
+    near(fixed.cut.thickness_mm, 18.);
+    let adjustable = record(&cuts, "Tall cabinet shelf 4");
+    pair(adjustable.cut.finished_mm, [762., 350.]);
+    near(adjustable.cut.thickness_mm, 6.);
+    assert_eq!(adjustable.stock, f.hdf);
+    near(bounds(&native, &f.s, adjustable.part).min[2], 1053.5);
+
+    // Remove the first row and move the cabinet; the retained fourth shelf
+    // still owns its original Part, stock, depth and local floor dimension.
+    let mut edited = definition;
+    edited.cabinet.as_mut().unwrap().shelves.remove(0);
+    edited.origin = [length(200.), length(100.), length(50.)];
+    edited.rotation = angle(90.);
+    edited.back = Back::None;
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &edited).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    let result = compile(&f.s);
+    let changed = result.cut_list(f.s.document()).unwrap();
+    let retained = record(&changed, "Tall cabinet shelf 4");
+    assert_eq!(retained.part, adjustable.part);
+    assert_eq!(retained.stock, f.hdf);
+    near(bounds(&result, &f.s, retained.part).min[2], 1103.5);
+    near(bounds(&result, &f.s, bottom.part).min[2], 150.);
+    assert_eq!(changed.len(), 5);
+    f.s.undo(f.s.revision(), actor()).unwrap();
+    assert_eq!(compile(&f.s).cut_list(f.s.document()).unwrap(), cuts);
+    f.s.redo(f.s.revision(), actor()).unwrap();
+    assert_eq!(compile(&f.s).cut_list(f.s.document()).unwrap(), changed);
+
+    let project = ProjectFile::new(f.s.document().clone()).unwrap();
+    assert!(project.capabilities().contains(model::CABINET_CAPABILITY));
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let mut old_reader = project_file::supported_capabilities();
+    old_reader.remove(model::CABINET_CAPABILITY);
+    assert!(project_file::read(&mut bytes.as_slice(), Default::default(), &old_reader).is_err());
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(&opened.document, f.s.document());
+    assert_eq!(
+        Compiler::default()
+            .compile(&opened.document, 0)
+            .unwrap()
+            .cut_list(&opened.document)
+            .unwrap(),
+        changed
+    );
+}
+
+#[test]
+fn explicit_cabinet_bad_sizes_collisions_keys_and_support_levels_are_source_neutral() {
+    let f = fixture();
+    let original = f.s.document().clone();
+    let definition = explicit_cabinet(&f);
+    let mut invalid = vec![];
+    let mut d = definition.clone();
+    d.cabinet.as_mut().unwrap().toe_clearance = length(-1.);
+    invalid.push((d, "Toe clearance"));
+    let mut d = definition.clone();
+    d.cabinet.as_mut().unwrap().shelves[0].depth = length(600.);
+    invalid.push((d, "requested depth"));
+    let mut d = definition.clone();
+    d.cabinet.as_mut().unwrap().shelves[1].underside = length(501.);
+    invalid.push((d, "overlaps"));
+    let mut d = definition.clone();
+    d.cabinet.as_mut().unwrap().shelves[1].underside = length(1000.);
+    invalid.push((d, "System 32 support level"));
+    let mut d = definition.clone();
+    d.cabinet.as_mut().unwrap().shelves[1].key = 0;
+    invalid.push((d, "distinct stable slots"));
+    let mut d = definition;
+    d.cabinet.as_mut().unwrap().shelves[0].underside = length(105.);
+    invalid.push((d, "does not fit"));
+    for (d, message) in invalid {
+        let error = model::prepare_carcass(
+            &f.s,
+            f.s.revision(),
+            actor(),
+            &CarcassRequest::new("Invalid", d),
+        )
+        .err()
+        .expect("invalid cabinet refused");
+        assert!(error.to_string().contains(message), "{error}");
+        assert_eq!(f.s.document(), &original);
+    }
+}
+
+#[test]
+fn explicit_cabinet_default_stock_updates_inheriting_shelves_only() {
+    let mut f = fixture();
+    let definition = explicit_cabinet(&f);
+    let created = model::prepare_carcass(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        &CarcassRequest::new("Stock cabinet", definition.clone()),
+    )
+    .unwrap();
+    let carcass = created.carcass;
+    checked(&mut f.s, created.model.prepared);
+    let before = compile(&f.s).cut_list(f.s.document()).unwrap();
+    let thicker = stock(f.ply_material, 24., Grain::AlongLength, "Birch ply 24");
+    let thicker_id = thicker.id;
+    let p = prepare_library(&f.s, f.s.revision(), actor(), &[thicker]).unwrap();
+    f.s.commit(p).unwrap();
+    let original = f.s.document().clone();
+    let mut changed = definition;
+    changed.cabinet.as_mut().unwrap().shelf_stock = thicker_id;
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), carcass, &changed).unwrap();
+    // Native preview is a candidate, not a source mutation.
+    Compiler::default()
+        .compile(p.model.prepared.document(), f.s.revision() + 1)
+        .unwrap();
+    assert_eq!(f.s.document(), &original);
+    checked(&mut f.s, p.model.prepared);
+    let after = compile(&f.s).cut_list(f.s.document()).unwrap();
+    for name in [
+        "Stock cabinet shelf 1",
+        "Stock cabinet shelf 4",
+        "Stock cabinet left side",
+    ] {
+        assert_eq!(record(&before, name).part, record(&after, name).part);
+    }
+    assert_eq!(record(&after, "Stock cabinet shelf 1").stock, thicker_id);
+    near(
+        record(&after, "Stock cabinet shelf 1").cut.thickness_mm,
+        24.,
+    );
+    assert_eq!(
+        record(&after, "Stock cabinet shelf 4"),
+        record(&before, "Stock cabinet shelf 4")
+    );
+    assert_eq!(
+        record(&after, "Stock cabinet left side"),
+        record(&before, "Stock cabinet left side")
+    );
 }
 
 #[test]

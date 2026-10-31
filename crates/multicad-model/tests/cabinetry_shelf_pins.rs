@@ -80,6 +80,7 @@ fn fixture() -> Fixture {
     s.commit(prepare_library(&s, 0, actor(), &[birch, ply]).unwrap())
         .unwrap();
     let definition = CarcassDefinition {
+        cabinet: None,
         origin: [length(0.), length(0.), length(0.)],
         rotation: angle(0.),
         width: length(600.),

@@ -90,6 +90,7 @@ fn fixture() -> Fixture {
         &CarcassRequest::new(
             "Case",
             CarcassDefinition {
+                cabinet: None,
                 origin: [length(0.), length(0.), length(0.)],
                 rotation: angle(0.),
                 width: multicad_core::constraint_sketch::Dimension::Expression {

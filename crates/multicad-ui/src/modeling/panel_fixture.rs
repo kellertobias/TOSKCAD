@@ -94,6 +94,7 @@ fn carcass_with(six: bool) -> (Session, EntityId, EntityId) {
         &CarcassRequest::new(
             "Cabinet",
             CarcassDefinition {
+                cabinet: None,
                 origin: [length(0.), length(0.), length(0.)],
                 rotation: angle(0.),
                 width: length(600.),

@@ -8,12 +8,14 @@
 //! The modeled solid is the finished panel, edge banding included. Core cut
 //! dimensions subtract banding, add banding allowances and any panel
 //! oversize, and are reported along and across the grain.
+mod cabinet;
 mod chain;
 mod joint;
 mod machining;
 mod prepare;
 mod resolve;
 mod tenon;
+pub use cabinet::*;
 pub use joint::*;
 pub use machining::*;
 pub use prepare::*;
@@ -238,6 +240,10 @@ pub struct CarcassDefinition {
     pub construction: Construction,
     pub back: Back,
     pub shelves: Shelves,
+    /// Explicit shelf rows and floor datum for the Cabinet generator. Older
+    /// carcasses retain their original evenly spaced/offset shelf contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cabinet: Option<CabinetOptions>,
     /// Banding on the front edges of the sides, top, bottom and shelves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub front_band: Option<Band>,
@@ -356,6 +362,9 @@ impl PanelDefinition {
 }
 impl CarcassDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
+        if let Some(cabinet) = &self.cabinet {
+            cabinet.validate()?;
+        }
         if self.stock.is_nil() || self.back.stock().is_some_and(|s| s.is_nil()) {
             return Err(invalid("A carcass needs panel stock"));
         }
@@ -375,6 +384,9 @@ impl CarcassDefinition {
     }
     fn lengths(&self) -> Vec<&Dimension> {
         let mut out: Vec<&Dimension> = self.origin.iter().collect();
+        if let Some(cabinet) = &self.cabinet {
+            out.extend(cabinet.dimensions());
+        }
         out.extend([&self.width, &self.height, &self.depth]);
         if let Back::Inset { recess, .. } = &self.back {
             out.push(recess);
@@ -399,16 +411,31 @@ impl CarcassDefinition {
         if !matches!(self.back, Back::None) {
             roles.push(PanelRole::Back);
         }
-        roles.extend(
-            (0..self.shelves.layout.count()).map(|index| PanelRole::Shelf {
-                index: index as u32,
-            }),
-        );
+        if let Some(cabinet) = &self.cabinet {
+            roles.extend(
+                cabinet
+                    .shelves
+                    .iter()
+                    .map(|s| PanelRole::Shelf { index: s.key }),
+            );
+        } else {
+            roles.extend(
+                (0..self.shelves.layout.count()).map(|index| PanelRole::Shelf {
+                    index: index as u32,
+                }),
+            );
+        }
         roles
     }
     pub fn stock_for(&self, role: PanelRole) -> Option<EntityId> {
         match role {
             PanelRole::Back => self.back.stock(),
+            PanelRole::Shelf { index } if self.cabinet.is_some() => {
+                let cabinet = self.cabinet.as_ref()?;
+                cabinet
+                    .shelf(index)
+                    .map(|s| s.stock.unwrap_or(cabinet.shelf_stock))
+            }
             _ => Some(self.stock),
         }
     }
@@ -419,6 +446,14 @@ impl CarcassDefinition {
         links.push(Link::new(self.stock, "stock"));
         if let Some(back) = self.back.stock() {
             links.push(Link::new(back, "back_stock"));
+        }
+        if let Some(cabinet) = &self.cabinet {
+            links.push(Link::new(cabinet.shelf_stock, "shelf_stock"));
+            for shelf in &cabinet.shelves {
+                if let Some(stock) = shelf.stock {
+                    links.push(Link::new(stock, format!("shelf_stock/{}", shelf.key)));
+                }
+            }
         }
         links
     }

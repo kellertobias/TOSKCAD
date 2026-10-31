@@ -100,6 +100,7 @@ fn cabinet_document() -> Document {
     let request = model::CarcassRequest::new(
         "Cabinet 1",
         model::CarcassDefinition {
+            cabinet: None,
             origin: [model::length(0.), model::length(0.), model::length(0.)],
             rotation: model::angle(0.),
             width: model::length(600.),

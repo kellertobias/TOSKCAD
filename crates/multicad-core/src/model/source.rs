@@ -853,6 +853,11 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         capabilities.insert(super::SLAB_HOLE_CAPABILITY.into());
     }
     capabilities.extend(super::machining_capabilities(document));
+    if super::carcasses(document)
+        .any(|e| super::read_carcass(document, e.id).is_ok_and(|c| c.cabinet.is_some()))
+    {
+        capabilities.insert(super::CABINET_CAPABILITY.into());
+    }
     if super::panel_joints_need_loose_tenon(document) {
         capabilities.insert(super::LOOSE_TENON_CAPABILITY.into());
     }

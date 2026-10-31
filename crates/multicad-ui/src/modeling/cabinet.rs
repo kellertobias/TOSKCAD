@@ -402,6 +402,7 @@ impl CabinetPanel {
                     }
                 };
                 let definition = CarcassDefinition {
+                    cabinet: None,
                     origin,
                     rotation: self.rotation.resolve(document)?,
                     width: self.width.resolve(document)?,

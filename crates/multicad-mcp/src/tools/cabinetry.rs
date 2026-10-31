@@ -298,6 +298,7 @@ pub(super) fn set_carcass(host: &dyn Host, call: &Request, args: CarcassArgs) ->
     };
     let origin = args.origin_mm.unwrap_or([0.; 3]);
     let definition = CarcassDefinition {
+        cabinet: None,
         origin: origin.map(length),
         rotation: angle(args.rotation_deg),
         width: q(&args.width, d, e)?,

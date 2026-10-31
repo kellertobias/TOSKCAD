@@ -992,6 +992,7 @@ pub fn build() -> Result<Scenario, Error> {
         &CarcassRequest::new(
             "Cabinet",
             CarcassDefinition {
+                cabinet: None,
                 origin: point(&session, ["#100", "#20", "=$table_height - 440 mm"])?,
                 rotation: angle(0.),
                 width: dim(&session, "=$cabinet_width")?,

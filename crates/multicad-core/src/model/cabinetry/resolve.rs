@@ -265,6 +265,7 @@ pub fn resolve_carcass(
     carcass: &CarcassDefinition,
 ) -> Result<ResolvedCarcass, DocumentError> {
     let p = parameters;
+    carcass.validate()?;
     let t = stock_thickness(&read_panel_stock(document, carcass.stock)?);
     let (w, h, d) = (
         mm(&carcass.width, p)?,
@@ -282,6 +283,20 @@ pub fn resolve_carcass(
         mm(&carcass.origin[2], p)?,
     ];
     let rotation_rad = number(&carcass.rotation, Unit::Radian, p)?;
+    let toe = carcass
+        .cabinet
+        .as_ref()
+        .map_or(Ok(0.), |c| mm(&c.toe_clearance, p))?;
+    if toe < 0. || toe + 2. * t >= h - EPS {
+        return Err(invalid(
+            "Toe clearance must be nonnegative and leave space above the bottom panel",
+        ));
+    }
+    if toe > EPS && carcass.construction == Construction::TopBottomFullWidth {
+        return Err(invalid(
+            "Toe clearance requires full-height side panels; choose Sides full height",
+        ));
+    }
     let front = carcass
         .front_band
         .as_ref()
@@ -299,7 +314,7 @@ pub fn resolve_carcass(
                 ));
             }
             let y = d - r - bt;
-            (d, y, Some(([t, y, t], [w - t, d - r, h - t])))
+            (d, y, Some(([t, y, toe + t], [w - t, d - r, h - t])))
         }
         Back::Overlay { stock } => {
             let bt = stock_thickness(&read_panel_stock(document, *stock)?);
@@ -331,8 +346,8 @@ pub fn resolve_carcass(
         ),
         (
             PanelRole::Bottom,
-            [plates_x[0], 0., 0.],
-            [plates_x[1], body_depth, t],
+            [plates_x[0], 0., toe],
+            [plates_x[1], body_depth, toe + t],
         ),
     ];
     if let Some((min, max)) = back {
@@ -340,7 +355,10 @@ pub fn resolve_carcass(
     }
     let setback = mm(&carcass.shelves.setback, p)?;
     let clearance = mm(&carcass.shelves.clearance, p)?;
-    let count = carcass.shelves.layout.count();
+    let count = carcass
+        .cabinet
+        .as_ref()
+        .map_or_else(|| carcass.shelves.layout.count(), |c| c.shelves.len());
     if count > 0 {
         if setback < 0. || clearance < 0. {
             return Err(invalid("Shelf setback and clearance cannot be negative"));
@@ -350,45 +368,120 @@ pub fn resolve_carcass(
         }
     }
     let interior = h - 2. * t;
-    let bottoms: Vec<f64> = match &carcass.shelves.layout {
-        ShelfLayout::Even { count } => {
-            let n = *count as f64;
-            let gap = (interior - n * t) / (n + 1.);
-            if *count > 0 && gap <= EPS {
+    let bottoms: Vec<f64> = if let Some(cabinet) = &carcass.cabinet {
+        read_panel_stock(document, cabinet.shelf_stock)?;
+        let mut intervals = vec![];
+        for shelf in &cabinet.shelves {
+            let z = mm(&shelf.underside, p)?;
+            let depth = mm(&shelf.depth, p)?;
+            let thickness = stock_thickness(&read_panel_stock(
+                document,
+                shelf.stock.unwrap_or(cabinet.shelf_stock),
+            )?);
+            if z < toe + t - EPS || z + thickness > h - t + EPS {
                 return Err(invalid(format!(
-                    "{count} shelves do not fit the cabinet interior"
+                    "Shelf {} underside/thickness does not fit between the bottom and top panels",
+                    shelf.key + 1
                 )));
             }
-            (0..*count)
-                .map(|i| t + (i as f64 + 1.) * gap + i as f64 * t)
-                .collect()
-        }
-        ShelfLayout::Offsets { offsets } => {
-            let mut out = vec![];
-            for (i, o) in offsets.iter().enumerate() {
-                let z = t + mm(o, p)?;
-                if z < t - EPS || z + t > h - t + EPS {
-                    return Err(invalid(format!(
-                        "Shelf {} is outside the cabinet interior",
-                        i + 1
-                    )));
-                }
-                if out.last().is_some_and(|prev: &f64| z < prev + t - EPS) {
-                    return Err(invalid(format!(
-                        "Shelf {} overlaps the shelf below; list offsets bottom to top",
-                        i + 1
-                    )));
-                }
-                out.push(z);
+            if depth <= EPS || setback + depth > rear + EPS {
+                return Err(invalid(format!(
+                    "Shelf {} requested depth {depth} mm does not fit before the back; change its depth or the back configuration",
+                    shelf.key + 1
+                )));
             }
-            out
+            if intervals
+                .iter()
+                .any(|(lo, hi): &(f64, f64)| z < *hi - EPS && z + thickness > *lo + EPS)
+            {
+                return Err(invalid(format!(
+                    "Shelf {} overlaps another shelf",
+                    shelf.key + 1
+                )));
+            }
+            if shelf.support == ShelfSupport::System32 {
+                let diameter = mm(&cabinet.pins.diameter, p)?;
+                let start = toe + t + mm(&cabinet.pins.start, p)?;
+                let end = h - t - mm(&cabinet.pins.end_clearance, p)?;
+                let center = z - diameter / 2.;
+                let level = (center - start) / SYSTEM32_PITCH_MM;
+                if diameter <= EPS
+                    || center < start - EPS
+                    || center > end + EPS
+                    || (level - level.round()).abs() > EPS
+                {
+                    return Err(invalid(format!(
+                        "Shelf {} must rest on a System 32 support level (underside = first hole center + 32 mm × level + pin radius)",
+                        shelf.key + 1
+                    )));
+                }
+            }
+            intervals.push((z, z + thickness));
+        }
+        cabinet
+            .shelves
+            .iter()
+            .map(|s| mm(&s.underside, p))
+            .collect::<Result<_, _>>()?
+    } else {
+        match &carcass.shelves.layout {
+            ShelfLayout::Even { count } => {
+                let n = *count as f64;
+                let gap = (interior - n * t) / (n + 1.);
+                if *count > 0 && gap <= EPS {
+                    return Err(invalid(format!(
+                        "{count} shelves do not fit the cabinet interior"
+                    )));
+                }
+                (0..*count)
+                    .map(|i| t + (i as f64 + 1.) * gap + i as f64 * t)
+                    .collect()
+            }
+            ShelfLayout::Offsets { offsets } => {
+                let mut out = vec![];
+                for (i, o) in offsets.iter().enumerate() {
+                    let z = t + mm(o, p)?;
+                    if z < t - EPS || z + t > h - t + EPS {
+                        return Err(invalid(format!(
+                            "Shelf {} is outside the cabinet interior",
+                            i + 1
+                        )));
+                    }
+                    if out.last().is_some_and(|prev: &f64| z < prev + t - EPS) {
+                        return Err(invalid(format!(
+                            "Shelf {} overlaps the shelf below; list offsets bottom to top",
+                            i + 1
+                        )));
+                    }
+                    out.push(z);
+                }
+                out
+            }
         }
     };
     for (i, z) in bottoms.into_iter().enumerate() {
+        let (key, thickness, end, gap) = if let Some(cabinet) = &carcass.cabinet {
+            let shelf = &cabinet.shelves[i];
+            (
+                shelf.key,
+                stock_thickness(&read_panel_stock(
+                    document,
+                    shelf.stock.unwrap_or(cabinet.shelf_stock),
+                )?),
+                setback + mm(&shelf.depth, p)?,
+                if shelf.support == ShelfSupport::Fixed {
+                    0.
+                } else {
+                    clearance
+                },
+            )
+        } else {
+            (i as u32, t, rear, clearance)
+        };
         boxes.push((
-            PanelRole::Shelf { index: i as u32 },
-            [t + clearance, setback, z],
-            [w - t - clearance, rear, z + t],
+            PanelRole::Shelf { index: key },
+            [t + gap, setback, z],
+            [w - t - gap, end, z + thickness],
         ));
     }
     let (s, c) = rotation_rad.sin_cos();

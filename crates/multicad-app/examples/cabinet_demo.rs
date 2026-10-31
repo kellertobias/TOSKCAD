@@ -825,6 +825,7 @@ pub fn build_cabinet(hardware: &Hardware) -> Result<Cabinet, Error> {
         &CarcassRequest::new(
             "Cabinet",
             CarcassDefinition {
+                cabinet: None,
                 origin: zero(),
                 rotation: angle(0.),
                 width: dim(s, "=$cabinet_width")?,
