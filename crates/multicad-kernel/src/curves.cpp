@@ -72,7 +72,7 @@ Handle(Geom2d_Curve) curve(const CurvedEdgeData &edge) {
     GCE2d_MakeSegment segment(p2(edge.a), p2(edge.b));
     if (!segment.IsDone())
       throw std::runtime_error("Degenerate exact line");
-    return segment.Value();
+    return Handle(Geom2d_Curve)(segment.Value());
   }
   if (edge.kind == 2 || edge.kind == 3) {
     const auto direction = edge.kind == 2 ? gp_Dir2d(edge.a.x - edge.center.x,
