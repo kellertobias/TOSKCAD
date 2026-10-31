@@ -105,7 +105,7 @@ impl<T: Send + 'static> Runtime<T> {
         cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
         publish: impl Fn(&Document, &Model, u64) -> Result<T, ModelError> + Send + 'static,
     ) -> Result<Self, String> {
-        Self::with_worker_cache(compiler, cached, move |document, model, _, tag| {
+        Self::with_worker_cache(compiler, true, cached, move |document, model, _, tag| {
             publish(document, model, tag)
         })
     }
@@ -115,10 +115,11 @@ impl<T: Send + 'static> Runtime<T> {
         + Send
         + 'static,
     ) -> Result<Self, String> {
-        Self::with_worker_cache(compiler, |_, _, _| None, publish)
+        Self::with_worker_cache(compiler, false, |_, _, _| None, publish)
     }
     fn with_worker_cache(
         compiler: Compiler,
+        reuse_model: bool,
         cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
         publish: impl Fn(&Document, &Model, &ModelSnapshot, u64) -> Result<T, ModelError>
         + Send
@@ -175,20 +176,41 @@ impl<T: Send + 'static> Runtime<T> {
                         }
                         continue;
                     }
-                    let result = match &job.sources {
-                        Some(roots) => compiler.compile_sources_cached(
-                            &mut cache,
-                            &job.document,
-                            job.revision,
-                            roots,
-                            Some(&superseded),
-                        ),
-                        None => compiler.compile_cached(
-                            &mut cache,
-                            &job.document,
-                            job.revision,
-                            Some(&superseded),
-                        ),
+                    // Page tags select a derived publication, not new geometry.
+                    // Retain even uncacheable architecture providers when the
+                    // entire immutable source, revision and scope are identical.
+                    let unchanged = reuse_model
+                        && retained.as_ref().is_some_and(|model| {
+                            let snapshot = model.snapshot();
+                            snapshot.stamp.document == job.document.id()
+                                && snapshot.stamp.revision == job.revision
+                                && match (&snapshot.scope, &job.sources) {
+                                    (crate::EvaluationScope::Full, None) => true,
+                                    (crate::EvaluationScope::Sources(a), Some(b)) => a == b,
+                                    _ => false,
+                                }
+                                && multicad_core::project_file::ContentHash::document(&job.document)
+                                    .ok()
+                                    == Some(snapshot.stamp.source_hash)
+                        });
+                    let result = if unchanged {
+                        Ok(retained.take().expect("matching retained drawing model"))
+                    } else {
+                        match &job.sources {
+                            Some(roots) => compiler.compile_sources_cached(
+                                &mut cache,
+                                &job.document,
+                                job.revision,
+                                roots,
+                                Some(&superseded),
+                            ),
+                            None => compiler.compile_cached(
+                                &mut cache,
+                                &job.document,
+                                job.revision,
+                                Some(&superseded),
+                            ),
+                        }
                     };
                     if superseded() {
                         continue;

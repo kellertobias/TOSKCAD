@@ -31,6 +31,63 @@ fn reply<T: Send + 'static>(runtime: &mut Runtime<T>) -> ModelReply<T> {
 }
 
 #[test]
+fn drawing_page_tags_reuse_the_owned_model_but_same_revision_changed_source_rebuilds() {
+    let mut session = Session::new(Document::new("Page model reuse").unwrap()).unwrap();
+    let primitive = PrimitiveRequest::new(
+        "Panel",
+        PrimitiveParameters::Box {
+            size: [length(10.), length(20.), length(30.)],
+            frame: Default::default(),
+        },
+    );
+    let prepared =
+        model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &primitive).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let source = primitive.body;
+    let mut runtime = Runtime::with_cached_model_publisher(
+        Compiler::default(),
+        |_, _, _| None,
+        move |_, model, tag| {
+            // Observe ownership without exporting or dereferencing a native
+            // handle. A fresh compile must allocate its own live solid map.
+            Ok((
+                model.solid(source).unwrap() as *const _ as usize,
+                model.snapshot().shapes.len(),
+                tag,
+            ))
+        },
+    )
+    .unwrap();
+    runtime.request_tagged(session.document(), 1, 1).unwrap();
+    let first = reply(&mut runtime).result.unwrap();
+    runtime.request_tagged(session.document(), 1, 2).unwrap();
+    let second = reply(&mut runtime).result.unwrap();
+    assert_eq!(first.0, second.0);
+    assert_eq!(second.2, 2);
+    let additional = PrimitiveRequest::new(
+        "Another panel",
+        PrimitiveParameters::Box {
+            size: std::array::from_fn(|_| length(5.)),
+            frame: Default::default(),
+        },
+    );
+    let prepared = model::prepare_primitive(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        &additional,
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    // Revisions alone cannot authorize reuse (drafts share a base revision).
+    runtime.request_tagged(session.document(), 1, 3).unwrap();
+    let changed = reply(&mut runtime).result.unwrap();
+    assert_ne!(first.0, changed.0);
+    assert_eq!(changed.1, first.1 + 1);
+    assert_eq!(changed.2, 3);
+}
+
+#[test]
 fn publisher_panic_delivers_a_terminal_failure_and_refuses_future_requests() {
     let mut session = Session::new(Document::new("Publisher failure").unwrap()).unwrap();
     let primitive = PrimitiveRequest::new(
