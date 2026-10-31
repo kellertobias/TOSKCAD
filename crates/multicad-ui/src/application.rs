@@ -1698,6 +1698,7 @@ impl Application {
         }
     }
     fn ribbon(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 0.0;
         let workspace = self.registry.workspace(self.mode).clone();
         self.tab = self.tab.min(workspace.tabs.len() - 1);
         if workspace.tabs[self.tab].requires_active_sketch && !self.current().sketch.editing {
@@ -1748,7 +1749,7 @@ impl Application {
                 left: crate::theme::GUTTER,
                 right: crate::theme::GUTTER,
                 top: 0,
-                bottom: 8,
+                bottom: RIBBON_BOTTOM_PAD as i8,
             })
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -2197,8 +2198,10 @@ impl Application {
                     .inner_margin(egui::Margin::symmetric(8, 2)),
             )
             .show(ui, |ui| self.header(ui));
+        // Tab strip plus the tool strip with its labels and captions, so tool
+        // labels never extend under the content panels (CAD-154).
         egui::Panel::top("ribbon")
-            .exact_size(153.)
+            .exact_size(RIBBON_HEIGHT)
             .frame(egui::Frame::new())
             .show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("command-entry")
@@ -4141,6 +4144,13 @@ mod ribbon_layout_tests {
 #[cfg(test)]
 #[path = "application/inspector_tests.rs"]
 mod inspector_tests;
+#[cfg(test)]
+#[path = "application/ribbon_fit_tests.rs"]
+mod ribbon_fit_tests;
+/// Workspace tab strip: 30 pt tabs with 3 pt frame margins.
+const RIBBON_TAB_STRIP: f32 = 36.0;
+const RIBBON_BOTTOM_PAD: f32 = 2.0;
+const RIBBON_HEIGHT: f32 = RIBBON_TAB_STRIP + crate::ribbon_ui::TOOLS_HEIGHT + RIBBON_BOTTOM_PAD;
 fn render_display_label(display: multicad_core::model::RenderDisplay) -> &'static str {
     crate::render_view::style_of(display).label()
 }
