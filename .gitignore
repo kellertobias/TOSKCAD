@@ -16,3 +16,6 @@ Thumbs.db
 *.swo
 
 # Retain Cargo.lock: this workspace ships an application.
+
+# Local website design review artifacts
+/.taste-skill/

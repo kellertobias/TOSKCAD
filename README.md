@@ -1,4 +1,28 @@
-# MultiCAD
+<p align="center">
+  <img src="website/assets/logo.png" alt="ToskCAD blueprint logo" width="760">
+</p>
+
+# ToskCAD
+
+Native parametric CAD built in Rust, with exact Open CASCADE geometry and a shared transactional document API for the desktop UI and local MCP control.
+
+[Project website](https://kellertobias.github.io/TOSKCAD/) · [Build guide](docs/BUILDING.md) · [Contributing](CONTRIBUTING.md) · [Verification notes](docs/verification)
+
+ToskCAD is under active development. Expect unfinished workflows and changing project formats. macOS interactive checks and Windows/Linux CI evidence are separate; verify the documented limits before using outputs for fabrication.
+
+## Application screenshots
+
+The images below are real native macOS application captures from October 29, 2026. The interface continues to evolve. They are separate from the offline HTML mockup.
+
+![Native Model workspace with a slotted plate and independent panel instances](website/assets/model.png)
+
+![Native Parameters table with named values and explicit rebuild controls](website/assets/parameters.png)
+
+The cabinet pages below are generated drawing output from the native drawing review on October 31, 2026.
+
+![Cabinet front, isometric and side drawing pages](website/assets/drawings.png)
+
+## Project foundation
 
 The first native CAD dependency laboratory is under [spikes/native-foundation](spikes/native-foundation/README.md). It tests real constrained profiles, source-built OCCT solids/STEP, a Rust window and proof-only file/session behavior. It is separate from the native application host and does not establish completed application workflows.
 
@@ -6,7 +30,7 @@ An open-source native parametric CAD application planned for macOS, Windows and 
 
 The [product plan](https://plans.tokenet.de/CAD/48) is maintained in PLAINER. [CAD-107](https://plans.tokenet.de/CAD/107) establishes the local repository and kernel-neutral bootstrap. [CAD-49](https://plans.tokenet.de/CAD/49) must prove the native geometry/solver/UI foundation before dependency integration and desktop packaging in [CAD-50](https://plans.tokenet.de/CAD/50).
 
-## Native development
+## Build from source
 
 ```sh
 ./build
@@ -31,7 +55,11 @@ The [symbol checkpoint](docs/verification/native-symbols-2026-10-29.md) records 
 
 [Associative feature transfer](docs/architecture/0021-associative-feature-transfer.md) derives holes and supported outer-face cutouts through explicit occurrence paths. Each receiving Part stores its diameter, clearance and cut depth; missing source references require explicit repair. The [native transfer checkpoint](docs/verification/native-feature-transfer-2026-10-28.md) records multi-material rail examples, source edits, native GUI repair and validation limits.
 
-[CI and releases](.github/workflows/release.yml) keep Forgejo authoritative and GitHub responsible for builds and tag-only hosted releases. Publishing remains disabled until the repositories and mirror tag reconciliation are verified. No remote is configured and nothing has been pushed. See [RELEASING.md](docs/RELEASING.md).
+[CI and releases](.github/workflows/release.yml) keep Forgejo authoritative for future branch mirroring and GitHub responsible for builds and tag-only hosted releases. The public publication repository is [TOSKCAD](https://github.com/kellertobias/TOSKCAD). Application releases remain disabled until deployed mirror tag reconciliation is verified. See [RELEASING.md](docs/RELEASING.md).
+
+## Project website
+
+The short [GitHub Pages site](https://kellertobias.github.io/TOSKCAD/) lives in `website/` and uses plain HTML, CSS and JavaScript. The [Pages workflow](.github/workflows/pages.yml) deploys that directory after changes land on `main`; it is independent of application release publication. See [website/README.md](website/README.md) for preview instructions and screenshot provenance.
 
 ## UX reference
 
