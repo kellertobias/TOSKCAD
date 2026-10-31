@@ -130,6 +130,7 @@ pub(super) fn show(
         }
         Operation::Edit{request,definition,values}=>{
             summary(ui,definition);ui.small(format!("Instance: {}",instance_label(document,request.record)));
+            if let Ok(instance)=symbols::read_instance(document,request.record)&&let Ok(Some((_,source)))=symbols::project_source_of(document,instance.definition){ui.small(format!("Referenced project: {} · pinned revision {}",source.path,definition.revision));}
             changed|=values.show(ui,definition);
             ui.small("Only this instance's exposed inputs change. Move changes its shared 2D/3D placement.");
         }
