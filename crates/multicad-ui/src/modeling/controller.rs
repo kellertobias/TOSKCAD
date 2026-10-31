@@ -1433,6 +1433,7 @@ pub use operation_interaction::OperationViewport;
 mod scale_interaction;
 pub use placement_interaction::PlacementViewportResult;
 mod proof;
+mod sheet;
 mod termination;
 #[cfg(test)]
 mod tests;

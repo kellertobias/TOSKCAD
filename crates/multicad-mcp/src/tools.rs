@@ -81,12 +81,12 @@ use render::{assign_appearance, blender_handoff, create_appearance, set_render_s
 use schedules::schedule;
 pub use schedules::{ScheduleArgs, ScheduleKindArg};
 pub use sheet_metal::{
-    ConvertSheetArgs, SheetDxfArgs, SheetFastenersArgs, SheetFormingArgs, SheetPartArgs,
-    SheetStockArgs, UnfoldSheetArgs,
+    ConvertSheetArgs, SheetDxfArgs, SheetEdgesArgs, SheetFastenersArgs, SheetFormingArgs,
+    SheetPartArgs, SheetStockArgs, UnfoldSheetArgs,
 };
 use sheet_metal::{
     convert_to_sheet, create_sheet_stock, export_sheet_dxf, set_sheet_fasteners, set_sheet_forming,
-    set_sheet_part, sheet_hardware, sheet_metal, unfold_sheet,
+    set_sheet_part, sheet_edges, sheet_hardware, sheet_metal, unfold_sheet,
 };
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, FaceArg, InspectVerticalCutoutArgs,
@@ -422,6 +422,9 @@ tools! {
     "sheet_metal" => NoArgs, "Sheet-metal records", true,
         "Every sheet Part measured from its evaluated solid: thickness and measured thickness, inside radius and K-factor with their source, volume, and the developed flat pattern of the same feature with its size and area.",
         sheet_metal;
+    "sheet_edges" => SheetEdgesArgs, "Sheet edges and flange guides", true,
+        "Base edges of one sheet feature (index, label, world ends, length, outward direction, straightness and the flange on it), a guide per flange (kind, direction, bend angles, inside radius, leg, flange span, world leg start and end, mid-thickness cross-section) from the stock thickness and resolved radius with their sources, and pre-check findings (invalid bends, insets that leave no flange, reliefs wider than their inset, neighboring flanges touching at a corner). Pass candidate flanges to review them without changing the document.",
+        sheet_edges;
     "unfold_sheet" => UnfoldSheetArgs, "Unfold sheet part", true,
         "Develop one sheet Part without changing it: closed cut loops, bend lines (id, order, up/down, angle, inside radius, allowance, flat line), drill points for circular cutouts, size and area in explicit millimeters, and scoped diagnostics (hole-to-bend proximity, short legs, tight radii, missing or shallow reliefs as rules of thumb; stock-sheet fit against the model; tooling data that is not defined). Parts that are not sheet parts, or that later features change, are refused.",
         unfold_sheet;

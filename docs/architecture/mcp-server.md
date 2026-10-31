@@ -204,7 +204,8 @@ schema is generated from the Rust argument types with schemars and returned by
 | `place_weld_plan` | yes | Weld symbols at projected joints and a weld sequence table on a drawing page |
 | `create_sheet_stock` | yes | Sheet-metal stock (thickness, sheet size, default inside radius and K-factor) on an existing or new Material (see [sheet metal](sheet-metal.md)) |
 | `set_sheet_part` | yes | Create or edit a sheet Part with a rectangle or sketch-region base and optional radius and K-factor overrides, evaluated natively before commit |
-| `set_sheet_forming` | yes | Replace a sheet part's flanges, hems, jogs, reliefs and cutouts; touching or overlapping material is refused |
+| `set_sheet_forming` | yes | Replace a sheet part's flanges, hems, jogs, reliefs and cutouts; invalid bends and touching corners are refused with every finding, other touching or overlapping material by native evaluation |
+| `sheet_edges` | no | Numbered base edges of one sheet feature, a guide per flange (bend angles, radius, leg, world leg ends, cross-section) and flange pre-check findings, for the applied or candidate flanges |
 | `convert_to_sheet` | yes | Analyze a Part's solid as a constant-thickness plate and create a sheet Part from its stationary face, or report why it cannot |
 | `sheet_metal` | no | Sheet Parts measured from their solids, bend inputs with their sources and the developed flat pattern |
 | `unfold_sheet` | no | Developed pattern of one sheet Part: cut loops, bend lines, drill points, millimeter units and scoped diagnostics |

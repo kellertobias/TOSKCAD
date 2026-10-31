@@ -2,6 +2,8 @@
 //! or edit an applied sheet part. Thickness comes from the stock; the inside
 //! radius and K-factor come from the stock unless overridden here. Sheet
 //! stock is defined in Model → Materials.
+mod edges;
+
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -14,7 +16,7 @@ use multicad_core::{
     document::{Document, EntityId},
     materials::{self, LibraryDefinition, StockKind},
     model::{
-        self, BendDirection, BodyOutput, Cutout, Flange, FlangeKind, ModelPrepared,
+        self, BendDirection, BodyOutput, Cutout, Flange, FlangeKind, FlangeReview, ModelPrepared,
         MountingPattern, PanelPlane, SheetBase, SheetDefinition, SheetRequest,
     },
 };
@@ -177,11 +179,23 @@ impl FlangeRow {
             relief: None,
         })
     }
-    fn show(&mut self, ui: &mut egui::Ui, label: &str) -> bool {
-        let mut changed = ui.checkbox(&mut self.on, label).changed();
-        if !self.on {
-            return changed;
-        }
+    /// One line describing the flange, for rows that are not expanded.
+    fn summary(&self) -> String {
+        let text = |f: &DimensionField| f.text.trim().to_owned();
+        let side = if self.down { "down" } else { "up" };
+        let shape = match self.kind {
+            RowKind::Bend => format!("Bend {}° {side}", text(&self.angle)),
+            RowKind::Hem => format!("Hem {side} · gap {} mm", text(&self.gap)),
+            RowKind::Jog => format!(
+                "Jog {}° {side} · offset {} mm",
+                text(&self.angle),
+                text(&self.offset)
+            ),
+        };
+        format!("{shape} · leg {} mm", text(&self.length))
+    }
+    fn show_fields(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
         ui.horizontal(|ui| {
             for (kind, text) in [
                 (RowKind::Bend, "Bend"),
@@ -243,6 +257,11 @@ pub(super) struct SheetPanel {
     kept_fasteners: Vec<MountingPattern>,
     /// Flanges on the four rectangle edges, when the form can edit them.
     rows: Option<[FlangeRow; 4]>,
+    /// The edge whose flange is expanded in the Inspector and dimensioned
+    /// in the viewer.
+    selected: Option<usize>,
+    /// The viewer target under the pointer.
+    hover: Option<edges::Target>,
     plane: PanelPlane,
     origin: [DimensionField; 3],
     length: DimensionField,
@@ -269,6 +288,8 @@ impl SheetPanel {
             kept_forming: (vec![], vec![]),
             kept_fasteners: vec![],
             rows: Some(std::array::from_fn(|_| FlangeRow::new())),
+            selected: None,
+            hover: None,
             plane: PanelPlane::Xy,
             origin: [field(0., "mm"), field(0., "mm"), field(0., "mm")],
             length: field(200., "mm"),
@@ -325,6 +346,7 @@ impl SheetPanel {
                 }
             }
             if shown {
+                form.selected = rows.iter().position(|r| r.on);
                 form.rows = Some(rows);
                 form.kept_forming.0.clear();
             }
@@ -352,6 +374,16 @@ impl SheetPanel {
         if self.name.trim().is_empty() || self.name.len() > 1000 {
             return Err("Enter a name with 1–1000 bytes".into());
         }
+        Ok(SheetCommand {
+            editing: self.existing.is_some(),
+            feature: self.feature,
+            name: self.name.clone(),
+            sheet: self.definition(document)?,
+        })
+    }
+    /// The sheet definition the form describes, shared by the Inspector
+    /// and the viewer.
+    fn definition(&self, document: &Document) -> Result<SheetDefinition, String> {
         let stock = self
             .stock
             .ok_or("Choose sheet stock; define it in Model → Materials")?;
@@ -368,36 +400,47 @@ impl SheetPanel {
                 width: self.width.resolve(document)?,
             },
         };
-        Ok(SheetCommand {
-            editing: self.existing.is_some(),
-            feature: self.feature,
-            name: self.name.clone(),
-            sheet: SheetDefinition {
-                output: BodyOutput { body: self.body },
-                stock,
-                base,
-                reverse: self.reverse,
-                inside_radius: self
-                    .radius_override
-                    .then(|| self.radius.resolve(document))
-                    .transpose()?,
-                k_factor: self
-                    .k_override
-                    .then(|| self.k_factor.resolve(document))
-                    .transpose()?,
-                flanges: match &self.rows {
-                    Some(rows) => rows
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, r)| r.on)
-                        .map(|(edge, r)| r.flange(edge as u32, document))
-                        .collect::<Result<_, _>>()?,
-                    None => self.kept_forming.0.clone(),
-                },
-                cutouts: self.kept_forming.1.clone(),
-                fasteners: self.kept_fasteners.clone(),
+        Ok(SheetDefinition {
+            output: BodyOutput { body: self.body },
+            stock,
+            base,
+            reverse: self.reverse,
+            inside_radius: self
+                .radius_override
+                .then(|| self.radius.resolve(document))
+                .transpose()?,
+            k_factor: self
+                .k_override
+                .then(|| self.k_factor.resolve(document))
+                .transpose()?,
+            flanges: match &self.rows {
+                Some(rows) => rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.on)
+                    .map(|(edge, r)| r.flange(edge as u32, document))
+                    .collect::<Result<_, _>>()?,
+                None => self.kept_forming.0.clone(),
             },
+            cutouts: self.kept_forming.1.clone(),
+            fasteners: self.kept_fasteners.clone(),
         })
+    }
+    /// Outline, flange guides and pre-check findings of the current inputs;
+    /// `None` while the stock or base does not resolve.
+    pub fn review(&self, document: &Document) -> Option<FlangeReview> {
+        let sheet = self.definition(document).ok()?;
+        let parameters = multicad_core::parameters::evaluate(document).ok()?;
+        model::review_flanges(document, &parameters, &sheet).ok()
+    }
+    /// Whether the viewer offers edge picking: the form edits the flanges
+    /// of a rectangle base.
+    pub fn edge_picking(&self) -> bool {
+        self.rows.is_some()
+    }
+    fn edited(&mut self) {
+        self.stamp.changed();
+        self.error = None;
     }
     pub fn show(
         &mut self,
@@ -498,23 +541,69 @@ impl SheetPanel {
         }
         ui.separator();
         ui.strong("Flanges");
-        match &mut self.rows {
-            Some(rows) => {
-                for (row, label) in rows.iter_mut().zip([
-                    "Edge 1 · along length at v = 0",
-                    "Edge 2 · along width at u = length",
-                    "Edge 3 · along length at v = width",
-                    "Edge 4 · along width at u = 0",
-                ]) {
-                    changed |= row.show(ui, label);
+        if self.rows.is_some() {
+            ui.small(
+                "Click a base edge here or in the viewport to add or select its flange; the \
+                 viewport shows its bend, leg and direction.",
+            );
+            let review = self.review(document);
+            if let Some(edge) = self.diagram(ui, review.as_ref()) {
+                changed |= self.pick_edge(edge);
+            }
+            let selected = self.selected;
+            let mut select = None;
+            if let Some(rows) = &mut self.rows {
+                for (edge, (row, label)) in rows.iter_mut().zip(edges::EDGE_TEXT).enumerate() {
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut row.on, "").changed() {
+                            changed = true;
+                            select = Some(edge);
+                        }
+                        if ui
+                            .selectable_label(selected == Some(edge), label)
+                            .on_hover_text("Show this flange's values and dimensions")
+                            .clicked()
+                        {
+                            select = Some(edge);
+                        }
+                    });
+                    if !row.on {
+                        continue;
+                    }
+                    if selected == Some(edge) {
+                        ui.indent(("sheet-flange", edge), |ui| {
+                            changed |= row.show_fields(ui);
+                        });
+                    } else {
+                        ui.small(format!("    {}", row.summary()));
+                    }
                 }
             }
-            None => {
-                ui.small(format!(
-                    "{} flange(s) are kept as they are; edit them through MCP set_sheet_forming.",
-                    self.kept_forming.0.len()
-                ));
+            if select.is_some() {
+                self.selected = select;
             }
+            if let Some(review) = &review {
+                if let Some(g) = self
+                    .selected
+                    .and_then(|e| review.guides.iter().find(|g| g.edge == e))
+                {
+                    ui.small(format!(
+                        "Edge {} as built: {} · {} · t {} mm",
+                        g.edge + 1,
+                        edges::bend_text(g),
+                        edges::leg_text(g),
+                        review.thickness_mm
+                    ));
+                }
+                for issue in &review.issues {
+                    ui.colored_label(egui::Color32::LIGHT_RED, &issue.message);
+                }
+            }
+        } else {
+            ui.small(format!(
+                "{} flange(s) are kept as they are; edit them through MCP set_sheet_forming.",
+                self.kept_forming.0.len()
+            ));
         }
         if !self.kept_forming.1.is_empty() {
             ui.small(format!(
@@ -661,10 +750,212 @@ mod tests {
         let rows = edit.rows.as_ref().unwrap();
         assert!(rows[0].on && rows[2].on && !rows[1].on);
         assert_eq!(rows[2].kind, RowKind::Hem);
+        // Reopening selects the first applied flange and guides both edges.
+        assert_eq!(edit.selected, Some(0));
+        let review = edit.review(s.document()).unwrap();
+        let edges: Vec<_> = review.guides.iter().map(|g| g.edge).collect();
+        assert_eq!(edges, vec![0, 2]);
+        assert_eq!(review.guides[1].kind, "hem");
         // A K-factor outside 0–1 is refused before any geometry exists.
         edit.k_override = true;
         edit.k_factor = field(2., "ratio");
         let command = edit.request(s.document(), true).unwrap();
         assert!(command.prepare(&s, Actor::local(Channel::Ui)).is_err());
+    }
+
+    const RECT: egui::Rect = egui::Rect {
+        min: egui::Pos2::ZERO,
+        max: egui::Pos2::new(800., 600.),
+    };
+    fn camera() -> crate::camera::Camera {
+        crate::camera::Camera {
+            yaw: 0.5,
+            pitch: 0.6,
+            scale: 2.5,
+            target: [100., 50., 0.],
+            perspective: false,
+        }
+    }
+    fn screen(p: [f64; 3]) -> egui::Pos2 {
+        let s = camera().project(p.map(|v| v as f32), RECT);
+        egui::pos2(s[0], s[1])
+    }
+    /// One viewer frame with the pointer at `pointer`; returns whether the
+    /// definition changed and every text the overlay painted.
+    fn frame(
+        form: &mut SheetPanel,
+        s: &Session,
+        pointer: egui::Pos2,
+        clicked: bool,
+    ) -> (bool, Vec<String>) {
+        let ctx = egui::Context::default();
+        let mut changed = false;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(RECT),
+                ..Default::default()
+            },
+            |ui| {
+                changed = form.viewport(
+                    s.document(),
+                    crate::modeling::TerminationViewport {
+                        scene: None,
+                        report: None,
+                        camera: camera(),
+                        rect: RECT,
+                        pointer: Some(pointer),
+                        clicked,
+                        painter: ui.painter(),
+                        section: None,
+                    },
+                );
+            },
+        );
+        output.textures_delta.clear();
+        let texts = output
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        (changed, texts)
+    }
+    fn compile_error(s: &Session, command: &SheetCommand) -> Option<String> {
+        let prepared = command.prepare(s, Actor::local(Channel::Ui)).unwrap();
+        Compiler::default()
+            .compile(prepared.prepared.document(), s.revision() + 1)
+            .err()
+            .map(|e| e.message)
+    }
+
+    #[test]
+    fn viewer_edge_clicks_and_inspector_rows_build_the_same_checked_sheet() {
+        let s = session();
+        let mut form = SheetPanel::new(s.document(), "Front panel".into());
+        assert!(form.edge_picking());
+        // Hovering identifies edge 1 (v = 0) without changing anything.
+        let edge1 = screen([100., 0., 0.]);
+        let (changed, texts) = frame(&mut form, &s, edge1, false);
+        assert!(!changed);
+        assert_eq!(form.hover, Some(edges::Target::Edge(0)));
+        assert!(!form.rows.as_ref().unwrap()[0].on);
+        for label in ["1", "2", "3", "4"] {
+            assert!(texts.iter().any(|t| t == label), "{texts:?}");
+        }
+        let caption = texts.iter().find(|t| t.starts_with("Sheet edges")).unwrap();
+        assert!(
+            caption.contains("t 2 mm (stock) · R 2 mm (stock) · K 0.4 (stock)"),
+            "{caption}"
+        );
+        // Clicking it adds a 90° flange and shows its bend and leg.
+        let (changed, texts) = frame(&mut form, &s, edge1, true);
+        assert!(changed);
+        assert_eq!(form.selected, Some(0));
+        assert!(form.rows.as_ref().unwrap()[0].on);
+        assert!(texts.iter().any(|t| t == "Leg 20 mm"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "90° up · R 2 mm"), "{texts:?}");
+        // Clicking the selected edge again keeps it.
+        assert!(!frame(&mut form, &s, edge1, true).0);
+        // The handle at the leg end flips the flange down.
+        let review = form.review(s.document()).unwrap();
+        let outline = review.outline.as_ref().unwrap();
+        let g = &review.guides[0];
+        let handle = screen(g.world(outline, g.leg[1], g.width_mm() / 2.));
+        let (changed, texts) = frame(&mut form, &s, handle, true);
+        assert!(changed);
+        assert!(form.rows.as_ref().unwrap()[0].down);
+        assert!(texts.iter().any(|t| t == "90° down · R 2 mm"), "{texts:?}");
+
+        // The same intent typed into the Inspector rows.
+        let mut typed = SheetPanel::new(s.document(), "Front panel".into());
+        let row = &mut typed.rows.as_mut().unwrap()[0];
+        row.on = true;
+        row.down = true;
+        let visual = form.request(s.document(), true).unwrap().sheet;
+        let inspector = typed.request(s.document(), true).unwrap().sheet;
+        assert_eq!(visual.flanges, inspector.flanges);
+        assert_eq!(visual.base, inspector.base);
+        let command = form.request(s.document(), true).unwrap();
+        assert_eq!(compile_error(&s, &command), None);
+        let prepared = command.prepare(&s, Actor::local(Channel::Ui)).unwrap();
+        let records = Compiler::default()
+            .compile(prepared.prepared.document(), 1)
+            .unwrap()
+            .sheet_metal(prepared.prepared.document())
+            .unwrap();
+        assert_eq!(records[0].bends.len(), 1);
+        assert_eq!(records[0].bends[0].edge, 0);
+        assert_eq!(records[0].bends[0].angle_deg, 90.);
+    }
+
+    #[test]
+    fn neighboring_flanges_and_invalid_bends_are_diagnosed_on_their_edges() {
+        let s = session();
+        let mut form = SheetPanel::new(s.document(), "Tray".into());
+        assert!(frame(&mut form, &s, screen([100., 0., 0.]), true).0);
+        assert!(frame(&mut form, &s, screen([200., 50., 0.]), true).0);
+        assert_eq!(form.selected, Some(1));
+        let review = form.review(s.document()).unwrap();
+        assert_eq!(review.issues.len(), 1);
+        assert_eq!(review.issues[0].edges, vec![0, 1]);
+        let (_, texts) = frame(&mut form, &s, egui::pos2(1., 1.), false);
+        assert!(
+            texts.iter().any(|t| t.ends_with("1 flange problem(s)")),
+            "{texts:?}"
+        );
+        // Native evaluation refuses the same corner.
+        let command = form.request(s.document(), true).unwrap();
+        let native = compile_error(&s, &command).unwrap();
+        assert!(native.contains("Flanges 1 and 2"), "{native}");
+        // A corner inset clears both the pre-check and native evaluation.
+        form.rows.as_mut().unwrap()[1].inset = field(5., "mm");
+        assert_eq!(form.review(s.document()).unwrap().issues, vec![]);
+        let command = form.request(s.document(), true).unwrap();
+        assert_eq!(compile_error(&s, &command), None);
+        // An invalid bend is named with its edge, and the edge has no guide.
+        form.rows.as_mut().unwrap()[1].angle = field(190., "deg");
+        let review = form.review(s.document()).unwrap();
+        assert_eq!(review.issues.len(), 1);
+        assert!(
+            review.issues[0]
+                .message
+                .starts_with("Flange on edge 2: the bend angle"),
+            "{}",
+            review.issues[0].message
+        );
+        assert!(review.guides.iter().all(|g| g.edge != 1));
+        // The Inspector shows the finding and the numbered edge list.
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360., 1600.),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                form.show(ui, s.document(), true, PreviewState::default());
+            },
+        );
+        output.textures_delta.clear();
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().replace('\n', " ")),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.starts_with("Flange on edge 2: the bend angle")),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|t| t == "Edge 1 · along length at v = 0"));
+        assert!(texts.iter().any(|t| t == "base face · u →"));
     }
 }

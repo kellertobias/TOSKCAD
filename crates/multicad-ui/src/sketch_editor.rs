@@ -3521,6 +3521,7 @@ impl SketchEditor {
                 && !self.editing
                 && !self.picking
                 && !self.moving
+                && !self.model.sheet_edge_picking()
                 && !self.has_pending_edits();
             self.solid.show(
                 ui,
@@ -3551,6 +3552,25 @@ impl SketchEditor {
             if self.guides {
                 self.paint_guides(&painter, scene, rect);
             }
+        }
+        if !self.measurement.active()
+            && self.model.sheet_edge_picking()
+            && self.model.sheet_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Sheet flange edge chosen · adjust it in the Inspector, then Preview".into();
         }
         if !self.measurement.active()
             && let Some(context) = model_context
