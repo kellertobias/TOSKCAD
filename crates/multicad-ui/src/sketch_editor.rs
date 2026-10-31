@@ -187,7 +187,8 @@ pub struct SketchEditor {
     materials: crate::materials::MaterialsEditor,
     pub measurement: crate::inspection::MeasurementInspector,
     measure_pin_allowed: bool,
-    fitted_model_document: Option<EntityId>,
+    initial_fit: crate::initial_fit::InitialFit,
+    home_requested: bool,
     tree: crate::model_tree::ModelTree,
     tree_selection: std::collections::BTreeSet<EntityId>,
     /// Sketch selected as a whole (not merely open) when Extrude/Revolve began.
@@ -282,7 +283,8 @@ impl Default for SketchEditor {
             materials: Default::default(),
             measurement: Default::default(),
             measure_pin_allowed: true,
-            fitted_model_document: None,
+            initial_fit: Default::default(),
+            home_requested: false,
             tree: Default::default(),
             tree_selection: Default::default(),
             whole_sketch: None,
@@ -630,6 +632,16 @@ impl SketchEditor {
             && !self.assembly.active()
             && !self.transfer.active()
             && !self.picking
+    }
+    /// The cabinet behind a single selected cabinet group or carcass panel.
+    fn selected_carcass(
+        &self,
+        document: &Document,
+    ) -> Option<crate::modeling::cabinet_edit::CarcassTarget> {
+        if self.tree_selection.len() != 1 {
+            return None;
+        }
+        crate::modeling::cabinet_edit::carcass_target(document, *self.tree_selection.first()?)
     }
     fn selected_applied_feature(&self, document: &Document) -> Option<(EntityId, bool)> {
         if self.tree_selection.len() != 1 {
@@ -1267,11 +1279,10 @@ impl SketchEditor {
     pub fn request_fit(&mut self) {
         self.fit_requested = true;
     }
+    /// Standard orientation framing the whole model; applied on the next
+    /// frame, when the current evaluated bounds are known.
     pub fn home_view(&mut self) {
-        self.camera = Camera {
-            target: [0.; 3],
-            ..Default::default()
-        };
+        self.home_requested = true;
     }
     pub fn toggle_transform(&mut self) {
         if self.model_interaction_active() {
@@ -2714,6 +2725,12 @@ impl SketchEditor {
                             self.external_inspector(ui,session,id,resources);
                             if self.external.active(){return;}
                         }
+                        if let Some(target)=self.selected_carcass(session.document()) {
+                            let ready=self.feature_edit_ready(session,feed,target.feature);
+                            if ui.add_enabled(ready,egui::Button::new(format!("Edit cabinet \u{201c}{}\u{201d}",target.name))).on_hover_text("Reopen this cabinet's saved envelope, construction, back and shelf settings; Preview shows the whole cabinet before one undoable Apply").on_disabled_hover_text("Requires an installed native modeling provider and no pending tool").clicked()
+                                && let Err(error)=self.begin_feature_edit(session,resources,feed,target.feature,Channel::Ui) {self.message=error;}
+                            if self.model_active() {return;}
+                        }
                         if let Some((feature,latest))=self.selected_applied_feature(session.document()) {
                             let ready=self.feature_edit_ready(session,feed,feature);
                             if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this producer's saved controls or its recorded operation group; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires an installed native modeling provider, a supported readable source feature, and no pending tool").clicked()
@@ -3056,15 +3073,26 @@ impl SketchEditor {
                 Err(error) => self.message = error,
             }
         }
-        if self.fitted_model_document != Some(session.document().id())
-            && !transfer_source_view
+        let model_bounds = scene.as_ref().and_then(|scene| scene.world_bounds());
+        if std::mem::take(&mut self.home_requested) {
+            self.camera = crate::initial_fit::home(
+                self.camera,
+                model_bounds,
+                self.viewport_rect.unwrap_or(Rect::NOTHING),
+            );
+            self.initial_fit.settle();
+        }
+        if !transfer_source_view
             && !anchor_view
-            && scene
-                .as_ref()
-                .is_some_and(|scene| scene.world_bounds().is_some())
+            && let Some(camera) = self.initial_fit.update(
+                session.document().id(),
+                model_bounds,
+                self.camera,
+                self.viewport_rect,
+            )
         {
-            self.fit_requested = true;
-            self.fitted_model_document = Some(session.document().id());
+            self.camera = camera;
+            ui.ctx().request_repaint();
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
@@ -3452,6 +3480,9 @@ impl SketchEditor {
         {
             self.message =
                 "Outline changed · check the dimensions in the Inspector, then Preview".into();
+        }
+        if let Some(guide) = self.model.cabinet_guide(session) {
+            guide.paint(&painter, self.camera, rect);
         }
         if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {
@@ -4291,10 +4322,8 @@ impl SketchEditor {
                     },
                 );
                 if actions.home {
-                    self.camera = Camera {
-                        target: [0.; 3],
-                        ..Default::default()
-                    };
+                    self.home_requested = true;
+                    ui.ctx().request_repaint();
                 }
                 if actions.fit || self.fit_requested {
                     self.fit_requested = false;
@@ -7279,6 +7308,14 @@ mod tests {
 #[cfg(test)]
 #[path = "sketch_editor/feature_edit_tests.rs"]
 mod feature_edit_tests;
+
+#[cfg(test)]
+#[path = "sketch_editor/cabinet_edit_tests.rs"]
+mod cabinet_edit_tests;
+
+#[cfg(test)]
+#[path = "sketch_editor/open_fit_tests.rs"]
+mod open_fit_tests;
 
 #[cfg(test)]
 mod inspector_tests;

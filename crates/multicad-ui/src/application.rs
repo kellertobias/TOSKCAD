@@ -4217,6 +4217,9 @@ mod workbench_tests;
 const RIBBON_TAB_STRIP: f32 = 36.0;
 const RIBBON_BOTTOM_PAD: f32 = 2.0;
 const RIBBON_HEIGHT: f32 = RIBBON_TAB_STRIP + crate::ribbon_ui::TOOLS_HEIGHT + RIBBON_BOTTOM_PAD;
+#[cfg(test)]
+#[path = "application/open_fit_tests.rs"]
+mod open_fit_tests;
 fn render_display_label(display: multicad_core::model::RenderDisplay) -> &'static str {
     crate::render_view::style_of(display).label()
 }

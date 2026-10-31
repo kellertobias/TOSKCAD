@@ -226,7 +226,12 @@ pub fn toolbar_with_tools(
             ui.spacing_mut().interact_size.y = 24.0;
             ui.spacing_mut().button_padding = Vec2::new(3.0, 2.0);
             ui.horizontal(|ui| {
-                actions.home = icons::compact_button(ui, Icon::Home, "Home view").clicked();
+                actions.home = icons::compact_button(
+                    ui,
+                    Icon::Home,
+                    "Home view: standard orientation framing the whole model",
+                )
+                .clicked();
                 actions.fit = icons::compact_button(
                     ui,
                     Icon::Fit,

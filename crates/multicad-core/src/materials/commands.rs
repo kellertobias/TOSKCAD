@@ -16,15 +16,20 @@ pub fn prepare_library(
 ) -> Result<Prepared, CommandError> {
     let mut edits = Vec::new();
     let mut ids = BTreeSet::new();
+    let batch: BTreeSet<EntityId> = entities.iter().map(|e| e.id).collect();
     for e in entities {
         if !ids.insert(e.id) {
             return Err(DocumentError::Duplicate(e.id).into());
         }
-        if !matches!(e.data, EntityData::Material { .. }) && read(e)?.is_none() {
+        let definition = read(e)?;
+        if !matches!(e.data, EntityData::Material { .. }) && definition.is_none() {
             return Err(DocumentError::Invalid(
                 "Expected a manufacturing library definition".into(),
             )
             .into());
+        }
+        if let Some(definition) = &definition {
+            check_prerequisites(session.document(), &batch, e, definition)?;
         }
         if let Some(old) = session.document().get(e.id) {
             let same = match (&old.data, &e.data) {
@@ -65,6 +70,42 @@ pub fn prepare_library(
         return Err(DocumentError::Invalid(d.message).into());
     }
     Ok(preview)
+}
+/// Names a missing or self-referencing prerequisite before the edit reaches
+/// dependency ordering, where it would otherwise surface as an opaque
+/// self-cycle (CAD-160: stock created before any manufacturing material).
+fn check_prerequisites(
+    document: &Document,
+    batch: &BTreeSet<EntityId>,
+    entity: &Entity,
+    definition: &LibraryDefinition,
+) -> Result<(), DocumentError> {
+    let kind = match definition {
+        LibraryDefinition::Stock(_) => "Stock",
+        LibraryDefinition::MaterialStyle(_) => "Material defaults",
+        LibraryDefinition::PartProperties(_) => "Part properties",
+        LibraryDefinition::Appearance(_) => "Appearance",
+        LibraryDefinition::Hatch(_) => "Section style",
+    };
+    for link in definition.links() {
+        let role = match link.role.as_str() {
+            "material" => "manufacturing material",
+            other => other,
+        };
+        if link.target == entity.id {
+            return Err(DocumentError::Invalid(format!(
+                "{kind} '{}' cannot use itself as its {role}. Create or select a {role} first.",
+                entity.name
+            )));
+        }
+        if document.get(link.target).is_none() && !batch.contains(&link.target) {
+            return Err(DocumentError::Invalid(format!(
+                "{kind} '{}' requires a {role}, but {} does not exist. Create or select a {role} first.",
+                entity.name, link.target
+            )));
+        }
+    }
+    Ok(())
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
