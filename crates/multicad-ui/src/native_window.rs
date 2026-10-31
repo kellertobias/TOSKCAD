@@ -21,7 +21,35 @@ mod ffi {
         fn quit_guard_contract_test() -> bool;
         fn poll_trackpad(view: usize) -> NativeTouchFrame;
         fn trackpad_contract_test() -> bool;
+        fn observe_open_documents();
+        fn take_opened_documents() -> Vec<String>;
+        fn open_documents_contract_test() -> bool;
     }
+    extern "Rust" {
+        fn wake_for_opened_documents();
+    }
+}
+/// Context to repaint when the operating system asks to open a document while
+/// the window is idle. Set from the live frame; never holds native handles.
+static OPEN_WAKER: std::sync::OnceLock<eframe::egui::Context> = std::sync::OnceLock::new();
+fn wake_for_opened_documents() {
+    if let Some(ctx) = OPEN_WAKER.get() {
+        ctx.request_repaint();
+    }
+}
+/// Must run on the main thread before the event loop starts launching, so the
+/// handler is in place for documents that launch the application.
+pub(crate) fn observe_open_documents() {
+    ffi::observe_open_documents();
+}
+// Polled by the live application frame; unit tests use the contract probe.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn take_opened_documents(ctx: &eframe::egui::Context) -> Vec<std::path::PathBuf> {
+    let _ = OPEN_WAKER.set(ctx.clone());
+    ffi::take_opened_documents()
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect()
 }
 fn quit_guard_result(status: u8) -> Result<(), &'static str> {
     match status {
@@ -107,6 +135,10 @@ mod tests {
     #[test]
     fn trackpad_observer_preserves_host_callbacks_and_tracks_exactly_three_contacts() {
         assert!(ffi::trackpad_contract_test());
+    }
+    #[test]
+    fn finder_open_documents_events_queue_only_file_paths_in_order() {
+        assert!(ffi::open_documents_contract_test());
     }
     #[test]
     fn quit_guard_failures_never_report_protection_as_installed() {

@@ -1,6 +1,7 @@
 //! Native application composition over canonical sessions and declarative tools.
 pub use crate::storage::DocumentStorage;
 mod closing;
+mod document_open;
 pub mod external_control;
 #[cfg(test)]
 #[path = "external_reference_app_tests.rs"]
@@ -154,6 +155,7 @@ pub struct Application {
     picker_scope: Option<native_picker::PickerScope>,
     picker_started: bool,
     picker_generation: u64,
+    document_opens: std::collections::VecDeque<PathBuf>,
     find_open: bool,
     find: String,
     find_index: usize,
@@ -218,6 +220,7 @@ impl Application {
             picker_scope: None,
             picker_started: false,
             picker_generation: 0,
+            document_opens: Default::default(),
             find_open: false,
             find: String::new(),
             find_index: 0,
@@ -2069,6 +2072,9 @@ impl Application {
         self.poll_recents(&ctx);
         self.poll_library(&ctx);
         self.drive_capture(&ctx);
+        if self.drive_document_opens(&ctx) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
         self.poll_files();
         self.handle_close_request(&ctx);
         controls::block_modal_background(

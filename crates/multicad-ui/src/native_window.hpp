@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "rust/cxx.h"
 namespace multicad::window {
 struct NativeTouchFrame;
 NativeTouchFrame poll_trackpad(std::size_t view) noexcept;
@@ -10,4 +11,8 @@ bool position_buttons(std::size_t view, double header_height) noexcept;
 // implementation, 5 runtime installation failure.
 std::uint8_t install_quit_guard(std::size_t view) noexcept;
 bool quit_guard_contract_test() noexcept;
+// Replaces AppKit's open-documents handler once the application starts launching.
+void observe_open_documents() noexcept;
+rust::Vec<rust::String> take_opened_documents() noexcept;
+bool open_documents_contract_test() noexcept;
 }
