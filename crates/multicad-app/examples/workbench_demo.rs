@@ -1144,6 +1144,7 @@ pub fn build() -> Result<Scenario, Error> {
             },
             face: MachiningFace::Top,
             targets: vec![worktop],
+            suppressed: false,
         },
     )?;
     let grid_id = grid.operation;
@@ -1171,6 +1172,7 @@ pub fn build() -> Result<Scenario, Error> {
             },
             face: MachiningFace::Bottom,
             targets: vec![worktop],
+            suppressed: false,
         },
     )?;
     let pilot_id = pilot.operation;
@@ -1300,7 +1302,7 @@ pub fn render_preview(session: &Session, parts: &[EntityId]) -> Result<ColorImag
             let i = i as usize * 3;
             [mesh.vertices[i], mesh.vertices[i + 1], mesh.vertices[i + 2]]
         };
-        for t in mesh.indices.chunks_exact(3) {
+        for t in mesh.indices.as_chunks::<3>().0 {
             triangles.push(([v(t[0]), v(t[1]), v(t[2])], color));
         }
     }
