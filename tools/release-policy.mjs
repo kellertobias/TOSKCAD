@@ -18,10 +18,10 @@ export function githubRepositoryUrl(environment = process.env) {
   const repository = environment.GITHUB_REPOSITORY;
   if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/u.test(repository || "") ||
       /^\.+$/u.test(repository?.split("/")[1] || "")) {
-    throw new Error("GITHUB_REPOSITORY must identify the real GitHub mirror");
+    throw new Error("GITHUB_REPOSITORY must identify the GitHub repository");
   }
   if (environment.GITHUB_SERVER_URL && environment.GITHUB_SERVER_URL !== "https://github.com") {
-    throw new Error("This release adapter targets GitHub, not the Forgejo origin");
+    throw new Error("This release adapter targets github.com");
   }
   return `https://github.com/${repository}.git`;
 }
@@ -31,10 +31,9 @@ export function requirePublicationEnvironment(environment = process.env) {
     environment.GITHUB_ACTIONS !== "true" ||
     environment.GITHUB_EVENT_NAME !== "push" ||
     environment.GITHUB_REF !== "refs/heads/main" ||
-    environment.MULTICAD_RELEASES_ENABLED !== "true" ||
-    environment.FORGEJO_TAG_RECONCILIATION_VERIFIED !== "true"
+    environment.MULTICAD_RELEASES_ENABLED !== "true"
   ) {
-    throw new Error("Publication requires an enabled, mirror-verified GitHub main push");
+    throw new Error("Publication requires an enabled, trusted GitHub main push");
   }
   githubRepositoryUrl(environment);
   requireCommit(environment.GITHUB_SHA);

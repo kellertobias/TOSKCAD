@@ -74,7 +74,7 @@ test('tag-only configuration has no npm or release-commit plugin',()=>{
 });
 
 test('publication is disabled unless every trusted activation condition is present',()=>{
-  const env={GITHUB_ACTIONS:'true',GITHUB_EVENT_NAME:'push',GITHUB_REF:'refs/heads/main',GITHUB_REPOSITORY:'example/mirror',GITHUB_SHA:'a'.repeat(40),MULTICAD_EXPECTED_RELEASE_VERSION:'1.2.3',MULTICAD_RELEASES_ENABLED:'true',FORGEJO_TAG_RECONCILIATION_VERIFIED:'true',GITHUB_TOKEN:'test-only'};
+  const env={GITHUB_ACTIONS:'true',GITHUB_EVENT_NAME:'push',GITHUB_REF:'refs/heads/main',GITHUB_REPOSITORY:'example/application',GITHUB_SHA:'a'.repeat(40),MULTICAD_EXPECTED_RELEASE_VERSION:'1.2.3',MULTICAD_RELEASES_ENABLED:'true',GITHUB_TOKEN:'test-only'};
   assert.doesNotThrow(()=>requirePublicationEnvironment(env));
   for(const key of Object.keys(env)){const copy={...env};delete copy[key];assert.throws(()=>requirePublicationEnvironment(copy),undefined,key);}
   assert.throws(()=>requirePublicationEnvironment({...env,GITHUB_EVENT_NAME:'pull_request'}));

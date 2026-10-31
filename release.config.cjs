@@ -1,7 +1,7 @@
 const { releasePlugins } = require("./tools/semantic-release-plugins.cjs");
 
-// Forgejo owns branches. GitHub owns tag-only releases of mirrored commits.
-// The future GitHub repository is supplied by Actions, never guessed here.
+// GitHub owns branches and tag-only releases on tested commits.
+// Actions supplies the repository; no tracked release/version commits.
 module.exports = {
   branches: ["main"],
   tagFormat: "v${version}",

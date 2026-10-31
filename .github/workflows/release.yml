@@ -1,7 +1,6 @@
 name: CI and release
 
-# Forgejo owns branches. Its push mirror sends commits to GitHub. Only GitHub
-# mints release tags on the exact tested commit; no release branch commits.
+# GitHub owns branches and tag-only releases on the exact tested commit.
 on:
   push:
     branches: ["**"]
@@ -120,8 +119,7 @@ jobs:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.metadata.outputs.release == 'true' &&
-      vars.MULTICAD_RELEASES_ENABLED == 'true' &&
-      vars.FORGEJO_TAG_RECONCILIATION_VERIFIED == 'true'
+      vars.MULTICAD_RELEASES_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -149,12 +147,11 @@ jobs:
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: node tools/package-release.mjs verify "$VERSION" "$GITHUB_SHA"
-      - name: Create tag-only release on the tested mirrored commit
+      - name: Create tag-only release on the tested commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
           MULTICAD_RELEASES_ENABLED: ${{ vars.MULTICAD_RELEASES_ENABLED }}
-          FORGEJO_TAG_RECONCILIATION_VERIFIED: ${{ vars.FORGEJO_TAG_RECONCILIATION_VERIFIED }}
           MULTICAD_EXPECTED_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: npm run release
       - name: Verify the tag and unchanged tracked files
