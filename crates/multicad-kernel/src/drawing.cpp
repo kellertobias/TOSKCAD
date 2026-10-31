@@ -52,7 +52,12 @@ void drawing_add(DrawingJob &job,const Shape &shape,bool hatch,bool cross,double
   job.inputs.push_back({shape.value,hatch,cross,angle,spacing});
 }
 static TopoDS_Shape common(const TopoDS_Shape &a,const TopoDS_Shape &b) {
-  BRepAlgoAPI_Common op(a,b); op.SetNonDestructive(true); op.SetRunParallel(false); op.Build();
+  // The two-shape constructor performs Build immediately. Configure first and
+  // build once: sections and every hatch line otherwise intersect twice.
+  BRepAlgoAPI_Common op;
+  TopTools_ListOfShape arguments,tools;arguments.Append(a);tools.Append(b);
+  op.SetArguments(arguments);op.SetTools(tools);
+  op.SetNonDestructive(true); op.SetRunParallel(false); op.Build();
   if(!op.IsDone() || op.HasErrors()) throw std::runtime_error("Drawing intersection failed");
   return op.Shape();
 }
@@ -176,15 +181,19 @@ static void hatch_face(Collector &out,const TopoDS_Face &face,const DrawingInput
     const double requested=std::ceil(diagonal/input.spacing)+2.;
     if(!std::isfinite(requested)||requested>20000)throw std::runtime_error("Section hatch line budget exceeded");
     const int count=static_cast<int>(requested);
+    // Intersect one compound of parallel hatch lines with the face. A separate
+    // Boolean per line repeatedly rebuilds the same face's intersection data.
+    TopoDS_Compound lines;BRep_Builder builder;builder.MakeCompound(lines);
     for(int i=-count;i<=count;++i) {
       const auto p=center.Translated(perpendicular*(i*input.spacing));
       auto line=BRepBuilderAPI_MakeEdge(p.Translated(direction*(-diagonal-1.)),p.Translated(direction*(diagonal+1.))).Edge();
-      auto clipped=common(face,line);
-      for(TopExp_Explorer it(clipped,TopAbs_EDGE);it.More();it.Next()) {
-        BRepAdaptor_Curve curve(TopoDS::Edge(it.Current()));
-        auto a=curve.Value(curve.FirstParameter()),b=curve.Value(curve.LastParameter());
-        if(a.Distance(b)>1e-7)out.add(projected_line(a,b,job.frame),source,3);
-      }
+      builder.Add(lines,line);
+    }
+    auto clipped=common(face,lines);
+    for(TopExp_Explorer it(clipped,TopAbs_EDGE);it.More();it.Next()) {
+      BRepAdaptor_Curve curve(TopoDS::Edge(it.Current()));
+      auto a=curve.Value(curve.FirstParameter()),b=curve.Value(curve.LastParameter());
+      if(a.Distance(b)>1e-7)out.add(projected_line(a,b,job.frame),source,3);
     }
   }
 }
@@ -227,25 +236,26 @@ rust::Vec<DrawingCurveData> drawing_run(DrawingJob &job) {
   try {
     if(job.section&&job.section_only)return section_only(job);
     Collector out(job);Handle(HLRBRep_Algo) algo=new HLRBRep_Algo();
-    std::vector<TopoDS_Shape> shapes; bool any=false;
+    std::vector<TopoDS_Shape> shapes; std::vector<double> volumes; bool any=false;
     const bool bounded=job.section&&limited(job);
     const FrameBounds bounds=bounded?frame_bounds(job):FrameBounds{};
     for(const auto &input:job.inputs) {
       auto shape=bounded?limited_section(input.shape,job,bounds):job.section?section_shape(input.shape,job):input.shape;
       shapes.push_back(shape);
-      if(volume(shape)>0.) {algo->Add(shape,0);any=true;}
+      volumes.push_back(volume(shape));
+      if(volumes.back()>0.) {algo->Add(shape,0);any=true;}
     }
     if(shapes.empty())throw std::runtime_error("Drawing has no source solids");
     if(!any)return {};
     algo->Projector(HLRAlgo_Projector(job.frame));algo->Update();algo->Hide();
     HLRBRep_HLRToShape curves(algo);
     for(uint32_t i=0;i<shapes.size();++i) {
-      const auto &shape=shapes[i];if(volume(shape)<=0.)continue;
+      const auto &shape=shapes[i];if(volumes[i]<=0.)continue;
       out.add(curves.VCompound(shape),i,0);out.add(curves.OutLineVCompound(shape),i,0);
       if(job.tangents)out.add(curves.Rg1LineVCompound(shape),i,0);
       if(job.hidden) {out.add(curves.HCompound(shape),i,1);out.add(curves.OutLineHCompound(shape),i,1);if(job.tangents)out.add(curves.Rg1LineHCompound(shape),i,1);}
       const auto &input=job.inputs[i];
-      if(!job.section || volume(input.shape)-volume(shape)<=1e-9)continue;
+      if(!job.section || volume(input.shape)-volumes[i]<=1e-9)continue;
       const auto plane_origin=job.frame.Location().Translated(gp_Vec(job.frame.Direction())*job.offset);
       for(TopExp_Explorer it(shape,TopAbs_FACE);it.More();it.Next()) {
         const auto face=TopoDS::Face(it.Current());BRepAdaptor_Surface surface(face);
