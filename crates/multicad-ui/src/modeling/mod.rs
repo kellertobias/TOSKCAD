@@ -29,6 +29,9 @@ mod object_basis;
 mod opening;
 mod operation_guide;
 mod outline;
+mod panel_face;
+#[cfg(test)]
+pub(crate) mod panel_fixture;
 mod placement;
 mod primitive;
 mod revolve;
@@ -54,6 +57,7 @@ pub use gizmo::{GizmoBasis, PlacementViewport};
 use multicad_core::document::EntityId;
 pub use object_basis::{ObjectGizmoBasis, object_gizmo_basis};
 pub use operation_guide::{GuideLine, ProfileGuide, anchor as profile_anchor};
+pub(crate) use panel_face::{seeded_message, selected_panels, with_opposite_sides};
 pub use placement::{PlacementCommand, PlacementMode};
 pub use scale_gizmo::ScaleViewport;
 pub use scaling::ScaleCommand;
@@ -80,6 +84,8 @@ pub enum ModelingTool {
     Panel,
     Joint,
     Machining,
+    ShelfPins,
+    LooseTenon,
     FdmAid,
     Member,
     Connection,
@@ -88,7 +94,7 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 33] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
@@ -99,6 +105,8 @@ impl ModelingTool {
         Self::Panel,
         Self::Joint,
         Self::Machining,
+        Self::ShelfPins,
+        Self::LooseTenon,
         Self::FdmAid,
         Self::Member,
         Self::Connection,
@@ -148,6 +156,8 @@ impl ModelingTool {
             Self::Panel => "panel",
             Self::Joint => "joint",
             Self::Machining => "drill",
+            Self::ShelfPins => "system32",
+            Self::LooseTenon => "domino",
             Self::FdmAid => "fdm-aid",
             Self::Member => "tube",
             Self::Connection => "cope",
@@ -185,6 +195,8 @@ impl ModelingTool {
             Self::Panel => "Panel / carcass",
             Self::Joint => "Panel joint",
             Self::Machining => "Drill / pocket",
+            Self::ShelfPins => "System 32 shelf pins",
+            Self::LooseTenon => "Domino joint",
             Self::FdmAid => "Tab / bridge / support",
             Self::Member => "Tube / profile",
             Self::Connection => "Miter / cope",
@@ -219,8 +231,8 @@ impl ModelingTool {
             Self::Cutout => crate::icons::Icon::Cut,
             Self::Level => crate::icons::Icon::Edge,
             Self::Panel => crate::icons::Icon::Box,
-            Self::Joint => crate::icons::Icon::Link,
-            Self::Machining => crate::icons::Icon::Cut,
+            Self::Joint | Self::LooseTenon => crate::icons::Icon::Link,
+            Self::Machining | Self::ShelfPins => crate::icons::Icon::Cut,
             Self::FdmAid => crate::icons::Icon::Edge,
             Self::Member => crate::icons::Icon::Box,
             Self::Connection => crate::icons::Icon::Cut,
@@ -258,6 +270,8 @@ impl ModelingTool {
             Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
             Self::Machining => &["groove", "dado", "rabbet", "pocket", "hardware-holes"],
+            Self::ShelfPins => &["shelf-pins", "shelf-pin-holes", "system-32", "line-boring"],
+            Self::LooseTenon => &["loose-tenon", "domino-joint", "floating-tenon", "mortise"],
             Self::FdmAid => &[
                 "support",
                 "tab",
@@ -297,7 +311,13 @@ impl ModelingTool {
                 "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
             }
             Self::Machining => {
-                "Usage: drill (choose a groove, rabbet, pocket, drilling or hardware pattern and target panels in the Inspector, then Preview and Apply)"
+                "Usage: drill (choose a groove, rabbet, pocket, drilling or hardware pattern, click target panel faces in the viewport or tick them in the Inspector, then Preview and Apply)"
+            }
+            Self::ShelfPins => {
+                "Usage: system32 (select cabinet sides or click their inside faces, set rows, pitch, limits, diameter and depth in the Inspector, then Preview and Apply)"
+            }
+            Self::LooseTenon => {
+                "Usage: domino (select or click the two mating panels, set the tenon, spacing, mortise depths and fits in the Inspector, then Preview and Apply)"
             }
             Self::Joint => {
                 "Usage: joint (choose panel pairs that overlap at a corner and a butt, miter or finger joint in the Inspector, then Preview and Apply)"
@@ -372,6 +392,12 @@ impl ModelingTool {
             }
             Self::Machining => {
                 "Requires rectangular panels and no pending edits. Cuts are modeled geometry, not CNC toolpaths."
+            }
+            Self::ShelfPins => {
+                "Requires rectangular panels and no pending edits. Rows are blind holes on each panel's inside face; settings are project choices, not a hardware compatibility claim."
+            }
+            Self::LooseTenon => {
+                "Requires two rectangular panels where one panel's edge lies flat on the other's face, and no pending edits. Modeled mortises and tenons, not toolpaths or a machine compatibility claim."
             }
             Self::Joint => {
                 "Requires rectangular panels that overlap at a right-angle corner, one full thickness of each, and no pending edits."

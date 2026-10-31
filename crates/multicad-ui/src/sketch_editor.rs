@@ -57,6 +57,9 @@ mod tool_guide;
 #[cfg(test)]
 #[path = "sketch_tool_guide_tests.rs"]
 mod tool_guide_tests;
+#[cfg(test)]
+#[path = "sketch_tool_target_tests.rs"]
+mod tool_target_tests;
 #[path = "sketch_transfer_host.rs"]
 mod transfer_host;
 #[cfg(test)]
@@ -1119,11 +1122,82 @@ impl SketchEditor {
                     .into(),
             );
         }
+        let document = session.document();
+        let (targets, refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
         self.finish()?;
-        self.model.begin_machining(session, resources, channel)?;
-        self.message =
-            "Drill / pocket · choose an operation and target panels in the Inspector, then Preview"
-                .into();
+        self.model
+            .begin_machining(session, resources, targets.clone(), channel)?;
+        self.message = crate::modeling::seeded_message(
+            "Drill / pocket",
+            document,
+            &targets,
+            &refused,
+            "click a panel face in the viewport or tick target panels in the Inspector",
+        );
+        Ok(())
+    }
+    pub fn begin_loose_tenon(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before joining panels"
+                    .into(),
+            );
+        }
+        let document = session.document();
+        let (panels, mut refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        if panels.len() > 2 {
+            refused.push(format!(
+                "{} panels are selected; the first pair uses two",
+                panels.len()
+            ));
+        }
+        let pair = [panels.first().copied(), panels.get(1).copied()];
+        let targets: Vec<_> = pair.iter().flatten().copied().collect();
+        self.finish()?;
+        self.model
+            .begin_loose_tenon(session, resources, pair, channel)?;
+        self.message = crate::modeling::seeded_message(
+            "Domino joint",
+            document,
+            &targets,
+            &refused,
+            "click the panel whose face receives the joint, then the panel whose edge meets it",
+        );
+        Ok(())
+    }
+    pub fn begin_shelf_pins(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before drilling shelf pins"
+                    .into(),
+            );
+        }
+        let document = session.document();
+        let (panels, refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        let targets = crate::modeling::with_opposite_sides(document, panels);
+        self.finish()?;
+        self.model
+            .begin_shelf_pins(session, resources, targets.clone(), channel)?;
+        self.message = crate::modeling::seeded_message(
+            "System 32 shelf pins",
+            document,
+            &targets,
+            &refused,
+            "click the inside face of each cabinet side in the viewport or tick the sides in the Inspector",
+        );
         Ok(())
     }
     pub fn begin_joint(
@@ -1138,10 +1212,26 @@ impl SketchEditor {
                     .into(),
             );
         }
+        let document = session.document();
+        let (panels, mut refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        if panels.len() > 2 {
+            refused.push(format!(
+                "{} panels are selected; the first pair uses two",
+                panels.len()
+            ));
+        }
+        let pair = [panels.first().copied(), panels.get(1).copied()];
+        let targets: Vec<_> = pair.iter().flatten().copied().collect();
         self.finish()?;
-        self.model.begin_joint(session, resources, channel)?;
-        self.message =
-            "Panel joint · choose panel pairs and a joint in the Inspector, then Preview".into();
+        self.model.begin_joint(session, resources, pair, channel)?;
+        self.message = crate::modeling::seeded_message(
+            "Panel joint",
+            document,
+            &targets,
+            &refused,
+            "click panel A and panel B in the viewport or choose the pairs in the Inspector",
+        );
         Ok(())
     }
     pub fn begin_cabinet(
@@ -1249,11 +1339,26 @@ impl SketchEditor {
                     .into(),
             );
         }
+        let selection: Vec<_> = self.tree_selection.iter().copied().collect();
+        let (target, note) =
+            crate::modeling::ModelToolController::fdm_seed(session.document(), &selection);
         self.finish()?;
-        self.model.begin_fdm_aid(session, resources, channel)?;
-        self.message =
-            "Tab / bridge / support · choose the finished Part and sizes in the Inspector, then Preview"
-                .into();
+        self.model
+            .begin_fdm_aid(session, resources, &selection, channel)?;
+        self.message = match (target, note) {
+            (Some(part), _) => format!(
+                "Tab / bridge / support · finished Part from the selection: {} · set the sizes in the Inspector, then Preview",
+                session
+                    .document()
+                    .get(part)
+                    .map_or(String::new(), |e| e.name.clone())
+            ),
+            (None, Some(note)) => format!("Tab / bridge / support · {note}"),
+            (None, None) => {
+                "Tab / bridge / support · choose the finished Part and sizes in the Inspector, then Preview"
+                    .into()
+            }
+        };
         Ok(())
     }
     pub fn begin_architecture(
@@ -3475,6 +3580,46 @@ impl SketchEditor {
         }
         if let Some(guide) = self.model.cabinet_guide(session) {
             guide.paint(&painter, self.camera, rect);
+        }
+        if !self.measurement.active()
+            && self.model.machining_picking()
+            && self.model.machining_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Panel face placed · check the axes and offsets in the viewport and Inspector, then Preview"
+                    .into();
+        }
+        if !self.measurement.active()
+            && self.model.joint_picking()
+            && self.model.joint_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Joint panel picked · check the pair, mortises and tenons in the viewport and Inspector, then Preview"
+                    .into();
         }
         if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {

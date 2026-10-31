@@ -330,7 +330,7 @@ tools! {
         "Record panel Parts as face-to-face stack layers in order, keeping each layer's Part, material and stock; optionally group them as one assembly. Contact is checked by cut_list.",
         create_panel_stack;
     "set_panel_joint" => PanelJointArgs, "Create or edit panel joint", false,
-        "Join panel pairs that overlap at a right-angle corner (the corner block must be both panels' full thickness): butt with A or B through, a 45° miter, or fingers with a count and fit. Each panel gets its own cut feature; an edit changes the kind, count or fit of every pair. Both sides of every pair are evaluated natively before commit.",
+        "Join panel pairs that overlap at a right-angle corner (the corner block must be both panels' full thickness): butt with A or B through, a 45° miter, or fingers with a count and fit; or join panels that meet face to edge with Domino-style loose tenons (kind loose_tenon, `tenon` settings; defaults are a Festool DOMINO 8 × 22 × 40 mm example): paired rounded mortises plus a tenon Part per pair. A loose-tenon joint cannot be edited into a corner joint or back. Each panel gets its own cut feature; an edit changes the kind, count or fit of every pair. Both sides of every pair are evaluated natively before commit.",
         set_panel_joint;
     "delete_panel_joint" => DeleteJointArgs, "Delete panel joint", false,
         "Delete a panel joint and its cuts, restoring the panels. Later joint cuts on the same Parts are re-attached.",
@@ -339,7 +339,7 @@ tools! {
         "Create or edit a reusable hardware hole pattern (hole positions, diameters, blind depths or through) with per-material diameter and depth allowances. Editing it rebuilds every placement, evaluated natively before commit.",
         set_hardware_pattern;
     "set_machining" => MachiningArgs, "Create or edit machining", false,
-        "Cut a groove, rabbet, pocket, drilling or placed hardware pattern into one or more panels, in panel face coordinates on the top, bottom or (drilling only) an edge face. Edits keep the targets. Cuts that leave no material, leave the face or would cut through a blind feature are refused. Modeled features only, not CNC toolpaths.",
+        "Cut a groove, rabbet, pocket, drilling, System 32 shelf-pin rows (kind shelf_pins: rows, pitch default 32 mm, start, end limit, optional count, diameter, blind depth) or placed hardware pattern into one or more panels, in panel face coordinates on the top, bottom, inside (each panel's face toward the carcass interior) or (drilling only) an edge face. Holes that overlap each other or another operation's holes are refused. Shelf-pin results list the carcass shelf offsets that rest on pins both sides share. Edits keep the targets. Cuts that leave no material, leave the face or would cut through a blind feature are refused. Modeled features only, not CNC toolpaths.",
         set_machining;
     "delete_machining" => DeleteMachiningArgs, "Delete machining", false,
         "Delete a machining operation and its cuts, restoring the panels.",

@@ -193,11 +193,61 @@ inside both finished panels.
 | Butt, B through | Loses the block and is shortened by B's thickness | Keeps the whole block |
 | Miter | Keeps the half beside its body | Keeps the other half; the split runs from the outside corner to the inside corner |
 | Fingers | Keeps fingers 1, 3, 5… | Keeps fingers 2, 4… |
+| Loose tenon | Mortises in its face or end | The matching mortises; see below |
 
 A finger joint splits the block into `count` equal fingers along the corner.
 Its `fit` is the total gap at each finger face, split between the two
 panels. A miter between panels of different thickness follows the block
 diagonal, so it is 45° only for equal thicknesses.
+
+### Loose tenons (Domino style)
+
+A loose-tenon joint joins panels that meet **face to edge**: one panel's
+edge face lies flat on the other panel's top or bottom face, as a cabinet
+top between two sides does. The joint finds which panel of each pair
+offers the face and which the edge, so pair order does not matter. It
+needs no corner block.
+
+Each pair takes `count` tenons, evenly spaced along the contact between an
+`inset` from each end, centered across the edge panel's thickness unless an
+`offset` moves them. A tenon is a rounded slot shape: its `thickness` is
+the cutter diameter, its `width` runs along the joint and includes the
+rounded ends, and its `length` runs from mortise to mortise.
+
+- The **face mortise** goes `face_depth` into the face panel.
+- The **end mortise** goes `edge_depth` into the edge panel's end.
+- Each mortise is the tenon section lengthened by its own play
+  (`face_play`, `edge_play`; 0 is tight) and thickened by `fit`.
+- The tenon sits centered on the contact plane in the depth the mortises
+  leave over: with 15 + 28 mm mortises and a 40 mm tenon, 1.5 mm clearance
+  at each end.
+
+Creating the joint adds a joint cut to each panel and one more Part per
+pair, named "<joint> tenons", built by a `cabinetry.loose_tenon` feature
+from the same resolution. A panel or carcass change therefore rebuilds both
+mortises and the tenons together. Opening a tenon Part reopens its joint.
+
+The example values are a Festool DOMINO 8 × 22 × 40 mm tenon, cut with the
+8 mm DF 500 cutter: 15 mm into an 18 mm face (leaving 3 mm), 28 mm into the
+mating end, tight in the end mortise and with 6 mm play along the face
+mortise, two per joint 60 mm from the ends. The tenon size comes from
+Festool's published tenon range; the depths and plays are this project's
+example choices. Neither is a tested compatibility claim for a machine or
+cutter.
+
+A loose-tenon joint refuses, before staging anything:
+
+- panels that do not meet face to edge;
+- a face mortise that leaves less than 2 mm of the face panel;
+- an end mortise as deep as the edge panel is long there;
+- mortises shallower in total than the tenon is long;
+- a tenon or mortise that leaves the face or the end, including through
+  insets, offsets or a short contact;
+- tenons that overlap along the joint;
+- a width smaller than the thickness, and 0 or more than 32 tenons.
+
+An edit changes the tenon, spacing, depths and fits; it cannot turn a
+loose-tenon joint into a corner joint or back.
 
 ### Cut features
 
@@ -215,7 +265,8 @@ reports its shortened finished size.
 
 - **Edits.** Editing a joint changes its kind, finger count or fit for every
   pair. Its pairs are fixed when it is created.
-- **Deletion.** Deleting a joint removes its cuts and restores the panels.
+- **Deletion.** Deleting a joint removes its cuts and any tenon Parts, and
+  restores the panels.
   A later joint cut on the same Part is re-attached to the feature before
   it; any other later feature must be removed first.
 - **Removed panels.** A carcass edit refuses to remove a panel that a joint
@@ -254,6 +305,12 @@ Both faces use the panel's (u, v) coordinates. Drilling can also enter an
 **edge face**. There the first coordinate runs along the edge from its
 start, and the second up the thickness from the bottom face.
 
+- **Inside.** Each target's top or bottom face that looks into the
+  cabinet: toward the carcass interior for a carcass panel, otherwise
+  toward the other targets. A carcass left side is cut on its top face and
+  the right side on its bottom face, so one operation reaches both inner
+  faces. A lone non-carcass target has no inside face and is refused.
+
 ### Kinds
 
 | Kind | Defined by |
@@ -262,10 +319,39 @@ start, and the second up the thickness from the bottom face.
 | Rabbet | Along one edge, with a width and depth |
 | Pocket | A rectangle with a center, size and depth |
 | Drilling | Holes of one diameter, blind with a depth or through |
+| Shelf pins | System 32 style rows of blind holes, described below |
 | Hardware | A placed hardware pattern, turned in quarter turns |
 
-All dimensions can be parameter expressions. Grooves, rabbets and pockets
-are cut into the top or bottom face only.
+All dimensions can be parameter expressions. Grooves, rabbets, pockets and
+shelf pins are cut into the top, bottom or inside face only.
+
+### System 32 shelf pins
+
+A shelf-pin operation holds:
+
+- the axis the rows run along (for a carcass side, v runs up the height);
+- up to eight rows, each an offset from the start or end edge across them;
+- the pitch, 32 mm by default;
+- the first hole center from the start edge and an end limit, the closest
+  a hole center may come to the end edge;
+- an optional fixed hole count per row; without it the row fills the range;
+- the hole diameter and blind depth.
+
+The tool's example settings are Ø5 × 10 mm holes in rows 37 mm in from
+the front and rear edges, from 100 mm above the bottom edge to 100 mm
+below the top edge. These are editable project choices, not a claim of
+compatibility with particular shelf supports or line-boring machines.
+
+Targeting both sides of a carcass with the inside face drills the same
+rows into each inner face. The rows are measured from each side's own
+edges, so they stay aligned while both sides share their size and
+position, and they rebuild when the carcass changes.
+
+`shelf_support_offsets` lists the shelf levels of a carcass: for every hole
+height both sides share, the offset from the interior bottom to a shelf
+underside that rests on a pin of the hole diameter, half a diameter above
+the hole center. Levels without room for a shelf below the top are left
+out. A carcass shelf set to one of these offsets rests on the pins.
 
 ### Hardware patterns
 
@@ -285,9 +371,11 @@ in the cut list.
 
 ### Edits and refusals
 
-Editing an operation changes its kind, sizes or face. Its targets are fixed
-when it is created. Deleting an operation removes its cuts, re-attaching
-later cuts on the same Part.
+Editing an operation changes its kind, sizes or face, or suppresses it. Its
+targets are fixed when it is created. A suppressed operation keeps its cuts
+in each Part's history but removes no material and reports no holes.
+Deleting an operation removes its cuts, re-attaching later cuts on the same
+Part.
 
 The resolver refuses:
 
@@ -295,7 +383,12 @@ The resolver refuses:
 - a groove that does not fit across the panel;
 - a rabbet that leaves no material;
 - a pocket or hole that leaves its face;
-- a groove, rabbet or pocket on an edge face.
+- a groove, rabbet, pocket or shelf-pin row on an edge face;
+- holes of one operation that overlap each other;
+- a hole that overlaps a hole of another operation on the same face of the
+  same panel;
+- shelf-pin limits that leave no hole, or fewer holes than a fixed count;
+- more than 256 holes on one panel.
 
 These are modeled solids, not CNC toolpaths, tool-access checks or
 machining certification.
@@ -304,11 +397,16 @@ machining certification.
 
 `Model::machining` lists every machining cut with:
 
-- the Part, operation, kind, face, Material and stock;
-- each hole's world center, axis into the material, diameter, depth and
-  whether it goes through;
+- the Part, operation, kind, the face actually cut (inside resolved to top
+  or bottom), Material and stock;
+- each hole's face coordinates, world center, axis into the material,
+  diameter, depth and whether it goes through;
 - each groove, rabbet or pocket's size and depth;
 - the volume measurably removed from the solid before the cut.
+
+Loose-tenon joints add one record per panel and pair, of kind
+"loose-tenon mortise": the face or end it is cut into, each mortise's
+length, thickness and depth, and the tenon Part it receives.
 
 The MCP `cut_list` tool includes these records, and each cut record lists
 its panel's operations.
@@ -339,13 +437,42 @@ the producer contract for BOM and cut-list exports (CAD-89).
   rectangle panel edits it in place.
 - **Joints in the window.** Model → Wood → **Panel joint** joins panel
   pairs. Opening a joint cut reopens its joint to change the kind, count or
-  fit.
+  fit. Model → Wood → **Domino joint** opens the same form preset to loose
+  tenons, seeded with up to two selected panels. In both, clicking panels
+  on their visible faces fills panel A, then panel B, of the next pair; for
+  loose tenons the viewport draws both panels, every mortise outline and
+  each tenon's insertion direction, or the reason the values are refused.
 - **MCP.** `create_panel_stock`, `set_carcass`, `create_panel`,
   `create_panel_stack`, `set_panel_joint`, `delete_panel_joint`,
   `set_hardware_pattern`, `set_machining`, `delete_machining` and
   `cut_list`.
-- **Machining in the window.** Model → Wood → **Drill / pocket**. Hardware
-  patterns are created through MCP for now.
+- **Machining in the window.** Model → Wood → **Drill / pocket**, and
+  Model → Wood → **System 32 shelf pins**, which opens the same form preset
+  to shelf-pin rows on the inside faces. Hardware patterns are created
+  through MCP for now.
+- **Targets from the selection.** Drill / pocket starts with the selected
+  rectangular panels as targets (a selected panel feature counts for its
+  Part), Panel joint and Domino joint with the first two as panel A and B,
+  and System 32 shelf pins with both sides of a selected carcass side. The
+  status line names the targets taken and every selected item that is not
+  a rectangular panel; nothing else is chosen for you. Targets can still
+  be added or removed in the Inspector or the viewport before Apply.
+- **Placing on faces.** While either form is open, a click on a visible
+  rectangular panel face adds that panel as a target and takes its face. A
+  drilling click adds a hole, or selects an existing hole so that the next
+  click moves it; a pocket or hardware click sets its center; a groove
+  click sets its offset; a rabbet click picks the nearest edge; a
+  shelf-pin click moves the active row. Points snap to whole millimeters
+  and to the face edges and center lines. The viewport draws each target's
+  face outline and name, its u and v axes, the hovered point's offsets from
+  the start edges, and the resolved holes and recess outlines; a target the
+  current values refuse is outlined in red with the reason, and the hole or
+  pocket under the pointer turns red with a note where it would leave the
+  face. A selected hole shows its u and v in the Inspector, where it can be
+  typed or deleted. The Inspector edits the same values, and an edit keeps
+  the operation, its cut features and its targets.
+- **MCP shelf pins.** `set_machining` with `kind: "shelf_pins"` and
+  `face: "inside"`; its result lists each carcass's `shelf_supports`.
 
 ## Limits
 
@@ -363,7 +490,8 @@ the producer contract for BOM and cut-list exports (CAD-89).
 - **Joint geometry.**
   - Joints need square, overlapping rectangular panels.
   - There are no angled (non-90°) corner miters, T-joints, dados or
-    through-tenons.
+    through-tenons. Loose tenons need a face-to-edge contact; edge-to-edge
+    (panel widening) joints are not supported.
   - A joint's panel pairs cannot be changed after creation.
   - A carcass back recess is a position; cut a rabbet or groove for it
     with a machining operation.

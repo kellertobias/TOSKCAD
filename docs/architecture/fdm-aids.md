@@ -134,7 +134,12 @@ aids at the copy placement.
 - **Window.** Model → FDM aids → **Tab / bridge / support**. The form
   places a tab, bridge or support for a finished Part. Preview builds the
   native solid and Apply commits it. Opening an applied aid edits it in
-  place, keeping its Part.
+  place, keeping its Part. A new aid takes its finished Part from the
+  selection: one selected finished Part (or a feature of it). With nothing
+  selected it takes the document's only finished Part. Several selected
+  Parts, a selected print aid or a non-Part leave the choice open, and the
+  form and status line say why; the tool never falls back to an unrelated
+  first Part.
 - **MCP.** `set_fdm_process`, `set_fdm_aid`, `remove_fdm_aid` and
   `fdm_aid_report`.
 - **Undo.** Creating, editing and removing aids and processes are single
