@@ -217,6 +217,15 @@ pub(super) fn author(
         let e = bound.get(id).ok_or(DocumentError::Missing(id))?;
         super::remap::validate_entity(e)?;
         queue.extend(e.references().iter().map(|l| l.target));
+        // Boolean tools depend on frozen producers, while their Part identities
+        // are metadata. Keep that metadata even for consumed, non-visible tools.
+        if let EntityData::Feature { definition, .. } = &e.data
+            && definition.type_id == crate::model::BOOLEAN_TYPE
+        {
+            let boolean = crate::model::BooleanDefinition::from_definition(definition)?;
+            queue.push_back(boolean.target.body);
+            queue.extend(boolean.tools.iter().map(|tool| tool.body));
+        }
         if matches!(e.data, EntityData::Assembly { .. }) {
             for m in bound.entities() {
                 if let EntityData::Extension { definition, .. } = &m.data
