@@ -18,6 +18,18 @@ export function nativeSourceHash(source){
   return hash.digest('hex');
 }
 
+// Native project files: .tcd for new projects; .multicad stays openable. Both
+// name the same container, so both document types open in ToskCAD as Editor.
+export const PROJECT_TYPES=[
+  {uti:'de.tokenet.toskcad.project',mime:'application/x-toskcad-project',extension:'tcd',name:'ToskCAD Project'},
+  {uti:'de.tokenet.multicad.project',mime:'application/x-multicad-project',extension:'multicad',name:'ToskCAD Project (legacy .multicad)'},
+];
+function macOSDocumentTypes(){
+  const strings=values=>`<array>${values.map(value=>`<string>${escapeXML(value)}</string>`).join('')}</array>`;
+  const documents=PROJECT_TYPES.map(type=>`<dict><key>CFBundleTypeName</key><string>${escapeXML(type.name)}</string><key>CFBundleTypeRole</key><string>Editor</string><key>LSHandlerRank</key><string>Owner</string><key>CFBundleTypeIconFile</key><string>AppIcon.icns</string><key>LSItemContentTypes</key>${strings([type.uti])}</dict>`).join('');
+  const exported=PROJECT_TYPES.map(type=>`<dict><key>UTTypeIdentifier</key><string>${type.uti}</string><key>UTTypeDescription</key><string>${escapeXML(type.name)}</string><key>UTTypeConformsTo</key>${strings(['public.data','public.content'])}<key>UTTypeIconFile</key><string>AppIcon.icns</string><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key>${strings([type.extension])}<key>public.mime-type</key>${strings([type.mime])}</dict></dict>`).join('');
+  return `<key>CFBundleDocumentTypes</key><array>${documents}</array><key>UTExportedTypeDeclarations</key><array>${exported}</array>`;
+}
 export function runtimeExecutable(stage,platform=process.platform){return platform==='darwin'?join(stage,'MultiCAD.app/Contents/MacOS/multicad'):join(stage,platform==='win32'?'multicad.exe':'multicad');}
 // The current development/archive policy is ad-hoc signing. Seal the outer
 // bundle after its resources; a copied executable signature does not seal a
@@ -33,9 +45,11 @@ export function assembleRuntime(stage,binary,version){
   const executable=runtimeExecutable(stage);mkdirSync(dirname(executable),{recursive:true});copyFileSync(binary,executable);
   if(process.platform==='darwin'){
     const contents=join(stage,'MultiCAD.app/Contents');
-    writeFileSync(join(contents,'Info.plist'),`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>multicad</string><key>CFBundleIdentifier</key><string>de.tokenet.multicad</string><key>CFBundleName</key><string>ToskCAD</string><key>CFBundleDisplayName</key><string>ToskCAD</string><key>CFBundleIconFile</key><string>AppIcon.icns</string><key>CFBundlePackageType</key><string>APPL</string><key>NSPrincipalClass</key><string>NSApplication</string><key>CFBundleShortVersionString</key><string>${escapeXML(version.split('-')[0])}</string><key>CFBundleVersion</key><string>${escapeXML(version.split('-')[0])}</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>\n`);
+    writeFileSync(join(contents,'Info.plist'),`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>multicad</string><key>CFBundleIdentifier</key><string>de.tokenet.multicad</string><key>CFBundleName</key><string>ToskCAD</string><key>CFBundleDisplayName</key><string>ToskCAD</string><key>CFBundleIconFile</key><string>AppIcon.icns</string><key>CFBundlePackageType</key><string>APPL</string><key>NSPrincipalClass</key><string>NSApplication</string><key>CFBundleShortVersionString</key><string>${escapeXML(version.split('-')[0])}</string><key>CFBundleVersion</key><string>${escapeXML(version.split('-')[0])}</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/>${macOSDocumentTypes()}</dict></plist>\n`);
   }else if(process.platform==='linux'){
-    writeFileSync(join(stage,'multicad.desktop'),'[Desktop Entry]\nType=Application\nName=ToskCAD\nExec=multicad\nIcon=multicad\nTerminal=false\nCategories=Graphics;Engineering;\n');
+    writeFileSync(join(stage,'multicad.desktop'),`[Desktop Entry]\nType=Application\nName=ToskCAD\nExec=multicad %f\nIcon=multicad\nTerminal=false\nCategories=Graphics;Engineering;\nMimeType=${PROJECT_TYPES.map(type=>type.mime).join(';')};\n`);
+    const mime=join(stage,'share/mime/packages');mkdirSync(mime,{recursive:true});
+    writeFileSync(join(mime,'toskcad.xml'),`<?xml version="1.0" encoding="UTF-8"?>\n<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">\n${PROJECT_TYPES.map(type=>`  <mime-type type="${type.mime}">\n    <comment>${escapeXML(type.name)}</comment>\n    <glob pattern="*.${type.extension}" case-sensitive="false"/>\n  </mime-type>\n`).join('')}</mime-info>\n`);
     const icons=join(stage,'share/icons/hicolor/512x512/apps');mkdirSync(icons,{recursive:true});
     copyFileSync(join(root,'assets/branding/app/multicad.png'),join(icons,'multicad.png'));
   }
@@ -48,7 +62,7 @@ export function assembleRuntime(stage,binary,version){
   // Fonts vendored in the source tree for sketch text ship their licence texts.
   const fonts=join(root,'crates/multicad-core/fonts'),fontNotices=join(resources,'third-party/bundled-fonts');mkdirSync(fontNotices,{recursive:true});
   for(const name of readdirSync(fonts))if(isNoticeFile(join(fonts,name)))copyFileSync(join(fonts,name),join(fontNotices,name));
-  writeFileSync(join(stage,'README.txt'),`ToskCAD ${version} native development build.\nIncludes parameter editing, constrained sketches and initial native solid extrusion.\nNative .multicad projects support save/open, embedded resources and explicit recovery.\nSpecialized workspaces and drawing and 3D export workflows remain under development.\nRun with no arguments to open the native window; --diagnostics is headless.\nmulticad --mcp serves a local MCP client over stdin/stdout; it opens no network port.\nmacOS: open MultiCAD.app. Windows: run multicad.exe. Linux: run ./multicad on an Ubuntu 24.04+ desktop with graphics drivers.\nNo Python, Node.js, FreeCAD or source checkout is required at runtime.\n${process.platform==='darwin'?'This macOS bundle is ad-hoc signed, without publisher signing or notarization.':'This development build is not publisher-signed.'}\nSource and third-party notices accompany release archives.\n`);
+  writeFileSync(join(stage,'README.txt'),`ToskCAD ${version} native development build.\nIncludes parameter editing, constrained sketches and initial native solid extrusion.\nNative .tcd projects support save/open, embedded resources and explicit recovery; existing .multicad projects still open and save in place.\nSpecialized workspaces and drawing and 3D export workflows remain under development.\nRun with no arguments to open the native window, or pass one PROJECT.tcd to open it; --diagnostics is headless.\nmulticad --mcp serves a local MCP client over stdin/stdout; it opens no network port.\nmacOS: open MultiCAD.app. Windows: run multicad.exe. Linux: run ./multicad on an Ubuntu 24.04+ desktop with graphics drivers.\nNo Python, Node.js, FreeCAD or source checkout is required at runtime.\n${process.platform==='darwin'?'This macOS bundle is ad-hoc signed, without publisher signing or notarization.':'This development build is not publisher-signed.'}\nSource and third-party notices accompany release archives.\n`);
   sealMacOSBundle(resources);
   return {executable,resources};
 }

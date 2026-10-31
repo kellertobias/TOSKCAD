@@ -46,7 +46,13 @@ test('native development layout includes a copied executable, identity pin and n
     const iconName=process.platform==='darwin'?'AppIcon.icns':process.platform==='win32'?'AppIcon.ico':'AppIcon.png';
     assert.deepEqual(readFileSync(join(layout.resources,iconName)),readFileSync(new URL(`../assets/branding/app/${iconName}`,import.meta.url)));
     if(process.platform==='linux'){
-      assert.match(readFileSync(join(stage,'multicad.desktop'),'utf8'),/^Icon=multicad$/m);
+      const desktop=readFileSync(join(stage,'multicad.desktop'),'utf8');
+      assert.match(desktop,/^Icon=multicad$/m);
+      assert.match(desktop,/^Exec=multicad %f$/m);
+      assert.match(desktop,/^MimeType=application\/x-toskcad-project;application\/x-multicad-project;$/m);
+      const mime=readFileSync(join(stage,'share/mime/packages/toskcad.xml'),'utf8');
+      assert.match(mime,/<glob pattern="\*\.tcd" case-sensitive="false"\/>/);
+      assert.match(mime,/<glob pattern="\*\.multicad" case-sensitive="false"\/>/);
       assert.deepEqual(readFileSync(join(stage,'share/icons/hicolor/512x512/apps/multicad.png')),readFileSync(new URL('../assets/branding/app/multicad.png',import.meta.url)));
     }
     assert(readFileSync(join(layout.resources,'OCCT-LGPL-EXCEPTION.txt'),'utf8').length>100);
@@ -55,7 +61,8 @@ test('native development layout includes a copied executable, identity pin and n
     assert.match(cantarell,/Jakub Steiner/);
     const readme=readFileSync(join(stage,'README.txt'),'utf8');
     assert.match(readme,/constrained sketches and initial native solid extrusion/);
-    assert.match(readme,/Native \.multicad projects support save\/open/);
+    assert.match(readme,/Native \.tcd projects support save\/open/);
+    assert.match(readme,/existing \.multicad projects still open and save in place/);
     assert.match(readme,/workflows remain under development/);
     assert.match(readme,/multicad --mcp serves a local MCP client over stdin\/stdout; it opens no network port/);
     assert.doesNotMatch(readme,/project format.*not implemented|CAD workspaces.*not implemented|unsigned native development host/);
@@ -71,6 +78,16 @@ test('macOS development bundle declares its principal class and seals every reso
     assert.equal(execFileSync('plutil',['-extract','NSPrincipalClass','raw','-o','-',plist],{encoding:'utf8'}).trim(),'NSApplication');
     assert.equal(execFileSync('plutil',['-extract','CFBundleIconFile','raw','-o','-',plist],{encoding:'utf8'}).trim(),'AppIcon.icns');
     assert.equal(execFileSync('plutil',['-extract','CFBundleShortVersionString','raw','-o','-',plist],{encoding:'utf8'}).trim(),'1.2.3');
+    // Document types: .tcd is the current ToskCAD project; .multicad stays openable.
+    const info=JSON.parse(execFileSync('plutil',['-convert','json','-o','-',plist],{encoding:'utf8'}));
+    const exported=Object.fromEntries(info.UTExportedTypeDeclarations.map(type=>[type.UTTypeIdentifier,type]));
+    assert.deepEqual(exported['de.tokenet.toskcad.project'].UTTypeTagSpecification['public.filename-extension'],['tcd']);
+    assert.deepEqual(exported['de.tokenet.multicad.project'].UTTypeTagSpecification['public.filename-extension'],['multicad']);
+    assert.equal(exported['de.tokenet.toskcad.project'].UTTypeDescription,'ToskCAD Project');
+    for(const type of Object.values(exported))assert(type.UTTypeConformsTo.includes('public.data'));
+    assert.deepEqual(info.CFBundleDocumentTypes.map(type=>[type.LSItemContentTypes,type.CFBundleTypeRole,type.LSHandlerRank]),
+      [[['de.tokenet.toskcad.project'],'Editor','Owner'],[['de.tokenet.multicad.project'],'Editor','Owner']]);
+    execFileSync('plutil',['-lint',plist]);
     execFileSync('codesign',['--verify','--deep','--strict',bundle]);
     const signature=spawnSync('codesign',['--display','--verbose=2',bundle],{encoding:'utf8'});
     assert.equal(signature.status,0,signature.stderr);
