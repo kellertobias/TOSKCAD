@@ -812,6 +812,15 @@ impl ResolvedWall {
     }
     /// Plan symbols in world X/Y: door leaves and swing arcs, window panes.
     pub fn plan_symbols(&self, plan: &WallPlan) -> PlanSymbols {
+        self.plan_symbols_at(plan, None)
+    }
+    /// Plan symbols for a plan cut `cut_mm` above the wall base. An opening
+    /// the cut passes through (sill <= cut < head) gets its door leaf and
+    /// swing or window panes; the cut solid supplies its void and jambs. An
+    /// opening wholly above or below the cut is not visible in the cut and is
+    /// outlined as `overhead` (dashed) lines on both wall faces and jambs.
+    /// `None` draws every opening as cut, with window jamb lines.
+    pub fn plan_symbols_at(&self, plan: &WallPlan, cut_mm: Option<f64>) -> PlanSymbols {
         let mut out = PlanSymbols::default();
         for o in &self.openings {
             let seg = plan.segments[o.segment];
@@ -822,6 +831,18 @@ impl ResolvedWall {
                 )
             };
             let (a, b) = (o.offset_mm, o.offset_mm + o.width_mm);
+            if let Some(cut) = cut_mm
+                && !(o.sill_mm <= cut && cut < o.sill_mm + o.height_mm)
+            {
+                for across in [plan.left_mm, plan.right_mm] {
+                    out.overhead.push([at(a, across), at(b, across)]);
+                }
+                for along in [a, b] {
+                    out.overhead
+                        .push([at(along, plan.left_mm), at(along, plan.right_mm)]);
+                }
+                continue;
+            }
             match &o.kind {
                 OpeningKind::Door { hinge, swing } => {
                     let face = match swing {
@@ -858,9 +879,11 @@ impl ResolvedWall {
                     for across in [mid - gap, mid + gap] {
                         out.lines.push([at(a, across), at(b, across)]);
                     }
-                    for along in [a, b] {
-                        out.lines
-                            .push([at(along, plan.left_mm), at(along, plan.right_mm)]);
+                    if cut_mm.is_none() {
+                        for along in [a, b] {
+                            out.lines
+                                .push([at(along, plan.left_mm), at(along, plan.right_mm)]);
+                        }
                     }
                 }
             }
@@ -874,6 +897,8 @@ impl ResolvedWall {
 pub struct PlanSymbols {
     pub lines: Vec<[[f64; 2]; 2]>,
     pub arcs: Vec<([f64; 2], f64, f64, f64)>,
+    /// Outlines of openings above or below the plan cut, drawn dashed.
+    pub overhead: Vec<[[f64; 2]; 2]>,
 }
 
 // ---- Transactions ----------------------------------------------------------
@@ -1448,5 +1473,12 @@ mod tests {
         let (c, r, s, e) = symbols.arcs[0];
         assert_eq!((c, r), ([500., 100.], 900.));
         assert!((e - s - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        // Cut through the door: leaf and swing. Above its head: dashed outline.
+        let cut = w.plan_symbols_at(&plan, Some(1000.));
+        assert_eq!((cut.lines.len(), cut.arcs.len()), (1, 1));
+        assert!(cut.overhead.is_empty());
+        let above = w.plan_symbols_at(&plan, Some(2200.));
+        assert!(above.lines.is_empty() && above.arcs.is_empty());
+        assert_eq!(above.overhead.len(), 4);
     }
 }

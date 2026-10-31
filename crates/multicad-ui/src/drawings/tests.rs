@@ -30,7 +30,8 @@ fn editor_pages_preserve_independent_drafts_and_undoable_authored_content() {
     editor
         .invoke(&mut session, DrawingTool::Text, Channel::Ui)
         .unwrap();
-    editor.draft.as_mut().unwrap().notes[0].text = "User authored note".into();
+    *editor.pending_note_text().unwrap() = "User authored note".into();
+    editor.finish_placement().unwrap();
     editor
         .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
         .unwrap();
@@ -134,6 +135,8 @@ fn source_deleted_during_draft_keeps_it_until_explicit_discard() {
     editor
         .invoke(&mut session, DrawingTool::Text, Channel::Ui)
         .unwrap();
+    *editor.pending_note_text().unwrap() = "Retained note".into();
+    editor.finish_placement().unwrap();
     let id = editor.book.unwrap();
     session
         .apply(multicad_core::commands::Request {
@@ -324,13 +327,13 @@ impl DrawingBackend for TestPublisher {
         self.reply = None;
     }
 }
-fn publish_editor(editor: &mut DrawingEditor, session: &Session) {
+pub(super) fn publish_editor(editor: &mut DrawingEditor, session: &Session) {
     let ctx = egui::Context::default();
     editor.tick_views(&ctx, session);
     editor.feed.tick(1.);
     editor.feed.tick(2.);
 }
-fn view_editor(fail: bool) -> (DrawingEditor, Session, EntityId) {
+pub(super) fn view_editor(fail: bool) -> (DrawingEditor, Session, EntityId) {
     let mut doc = Document::new("View UI").unwrap();
     let part = multicad_core::document::Entity::new(
         "Panel",
@@ -613,8 +616,12 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
         canvas::show(ui, &page, 0, 1, result.as_deref(), None, None, None);
     });
     assert!(
-        canvas.contains("Section A-A"),
+        canvas.lines().any(|l| l == "Section A-A"),
         "the plan view shows the section guide label: {canvas}"
+    );
+    assert!(
+        canvas.contains("Section A-A — Scale 1:1") && canvas.contains("Plan — Scale 1:1"),
+        "every view prints its actual scale: {canvas}"
     );
     // A plan looking along the section normal cannot see the cut edge-on.
     let mut facing = page.clone();
@@ -622,7 +629,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let canvas = painted_text(|ui| {
         canvas::show(ui, &facing, 0, 1, result.as_deref(), None, None, None);
     });
-    assert!(!canvas.contains("Section A-A"), "{canvas}");
+    assert!(!canvas.lines().any(|l| l == "Section A-A"), "{canvas}");
     editor
         .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
         .unwrap();
@@ -729,6 +736,23 @@ fn sheet_annotations_add_edit_move_copy_and_apply_as_one_page_edit() {
     ] {
         assert!(editor.enabled(tool, &session), "{tool:?}");
         editor.invoke(&mut session, tool, Channel::Ui).unwrap();
+        // Drafting tools are placed with clicks on the sheet.
+        let [x, y] = [103.95, 73.5];
+        let clicks: &[[f64; 2]] = match tool {
+            DrawingTool::DraftLine => &[[x, y], [x + 30., y]],
+            DrawingTool::DraftCircle => &[[x, y], [x + 10., y]],
+            DrawingTool::DraftArc => &[[x, y], [x + 10., y], [x, y + 10.]],
+            DrawingTool::Hatch => &[[x, y], [x + 20., y], [x + 20., y + 15.], [x, y + 15.]],
+            DrawingTool::DraftDimension => &[[x, y], [x + 30., y], [x + 15., y - 6.]],
+            _ => &[],
+        };
+        for p in clicks {
+            editor.placement_click(*p, false).unwrap();
+        }
+        if tool == DrawingTool::Hatch {
+            editor.finish_placement().unwrap();
+        }
+        assert!(!editor.placing(), "{tool:?}");
     }
     let page = editor.draft.as_ref().unwrap();
     assert_eq!(page.annotations.len(), 8);
@@ -814,4 +838,82 @@ fn sheet_annotations_add_edit_move_copy_and_apply_as_one_page_edit() {
         .unwrap();
     let stored = drawings::read(session.document(), editor.book.unwrap()).unwrap();
     assert!(stored.pages[0].annotations.is_empty());
+}
+#[test]
+fn fit_modes_keep_or_choose_a_standard_scale_and_discard_restores_the_saved_page() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    let id = editor.selected_view.unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    let saved = editor.draft.clone().unwrap();
+    let before = saved.views[0].scale;
+    publish_editor(&mut editor, &session);
+
+    editor.fit_mode = drawings::FitMode::KeepScale;
+    editor.fit_view(id, &session).unwrap();
+    let kept = &editor.draft.as_ref().unwrap().views[0];
+    assert_eq!(kept.scale, before, "Keep current scale retains the ratio");
+
+    publish_editor(&mut editor, &session);
+    editor.fit_mode = drawings::FitMode::Standard;
+    editor.fit_view(id, &session).unwrap();
+    let fitted = editor.draft.as_ref().unwrap().views[0].scale;
+    assert!(drawings::standard_scales().contains(&fitted), "{fitted:?}");
+    let inspector = painted_text(|ui| editor.inspector(ui, &mut session));
+    assert!(
+        inspector.contains(&format!("Scale {}", drawings::scale_text(fitted))),
+        "{inspector}"
+    );
+    assert!(inspector.contains("Standard scale"), "{inspector}");
+
+    // Discard is source-neutral: the saved page and revision are untouched.
+    let revision = session.revision();
+    editor
+        .invoke(&mut session, DrawingTool::Discard, Channel::Ui)
+        .unwrap();
+    assert_eq!(session.revision(), revision);
+    assert_eq!(editor.draft.as_ref().unwrap(), &saved);
+}
+#[test]
+fn native_sheet_paints_the_professional_title_block_and_decodes_the_logo() {
+    let mut page = drawings::Page::new("D-7");
+    page.info.title = "Cabinet front".into();
+    page.info.project = "Workshop".into();
+    let canvas = painted_text(|ui| {
+        canvas::show(ui, &page, 2, 4, None, None, None, None);
+    });
+    for expected in [
+        "Title",
+        "Cabinet front",
+        "Project",
+        "Workshop",
+        "Drawn by",
+        "Drawing no.",
+        "D-7",
+        "Units",
+        "Sheet",
+        "2 / 4",
+        "First angle",
+    ] {
+        assert!(
+            canvas.lines().any(|l| l == expected),
+            "{expected}: {canvas}"
+        );
+    }
+    let context = egui::Context::default();
+    let mut size = None;
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        size = canvas::logo_texture(ui.ctx()).map(|t| t.size());
+    });
+    output.drop_without_applying_deltas();
+    let [w, h] = drawings::logo_size();
+    assert_eq!(size, Some([w as usize, h as usize]), "bundled logo decodes");
 }

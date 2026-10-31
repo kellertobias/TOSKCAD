@@ -33,6 +33,8 @@ impl DrawingEditor {
         if let Some(error) = &self.feed.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
+        self.note_inspector(ui);
+        self.draft_placement_inspector(ui);
         if self.selected_view.is_some() {
             self.views_inspector(ui, session);
             return;
@@ -144,6 +146,11 @@ impl DrawingEditor {
                 .range(0.0..=500.),
         );
         ui.checkbox(&mut page.settings.title_block, "Show title block").on_hover_text("Keep the saved drawing information and print its field layout inside the page margins");
+        ui.add_enabled(
+            page.settings.title_block,
+            egui::Checkbox::new(&mut page.settings.app_logo, "Show app logo in title block"),
+        )
+        .on_hover_text("Print the ToskCAD logo beside the project name; when off, the project field uses the full width. Saved with this page");
         ui.separator();
         ui.strong("Drawing information");
         for (label, value) in [

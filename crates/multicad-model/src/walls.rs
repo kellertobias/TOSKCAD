@@ -1,6 +1,8 @@
 //! Native wall evaluation: the planned outline is extruded to the wall
 //! height and each opening is subtracted as an exact prism with stable face
-//! roles. Downward drawing views also receive door swings and window panes.
+//! roles. Downward drawing views draw walls as a plan cut: the solid is
+//! sectioned at a plan cut height and hatched, and receive door swings,
+//! window panes and dashed outlines of openings the cut does not pass.
 use crate::{DrawingBody, Model, ModelError, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
@@ -10,8 +12,143 @@ use multicad_core::{
     references::Origin,
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, DrawingProjection, DrawingSolid, GeometryError,
+    GeometryPolicy, PlaneFrame, ProjectedVector, Solid,
 };
+
+/// Plan cut above a wall's base in a downward projection view; the same as
+/// the floor-plan guide default. Guided plans and section views cut at
+/// their own plane instead.
+pub(crate) const DEFAULT_PLAN_CUT_MM: f64 = 1000.;
+/// Section hatch of cut walls whose material has no hatch style: 45° lines
+/// at this paper spacing and line width, at any view scale. A material hatch
+/// style (including an explicit "none") replaces it.
+pub(crate) const WALL_HATCH_ANGLE_DEG: f64 = 45.;
+pub(crate) const WALL_HATCH_SPACING_MM: f64 = 1.5;
+pub(crate) const WALL_HATCH_LINE_MM: f64 = 0.13;
+/// Paper line widths of the plan hierarchy: cut walls are drawn by the
+/// section role (0.5 mm); geometry seen below the cut, door leaves and
+/// window panes are thinner; swings and overhead outlines are thinnest.
+pub(crate) const PLAN_PROJECTED_MM: f64 = 0.18;
+const PLAN_SYMBOL_MM: f64 = 0.18;
+const PLAN_THIN_MM: f64 = 0.13;
+
+/// A wall body in a downward view and where the plan cuts it, in world Z.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WallCut {
+    pub index: usize,
+    pub feature: EntityId,
+    pub base_z: f64,
+    pub cut_z: f64,
+}
+
+fn view_normal(view: &multicad_core::drawings::DrawingView) -> [f64; 3] {
+    let f = &view.frame;
+    [
+        f.u[1] * f.v[2] - f.u[2] * f.v[1],
+        f.u[2] * f.v[0] - f.u[0] * f.v[2],
+        f.u[0] * f.v[1] - f.u[1] * f.v[0],
+    ]
+}
+
+/// The wall bodies of a view looking straight down, with their plan cut.
+/// A projection cuts each wall [`DEFAULT_PLAN_CUT_MM`] above its base; a
+/// section (including a guided floor plan) cuts at its own plane. Other
+/// views, details and views looking up return nothing.
+pub(crate) fn wall_cuts(
+    document: &Document,
+    view: &multicad_core::drawings::DrawingView,
+    bodies: &[DrawingBody<'_>],
+) -> Result<Vec<WallCut>, ModelError> {
+    let n = view_normal(view);
+    if matches!(view.kind, ViewKind::Detail { .. }) || n[2] < 1. - 1e-9 {
+        return Ok(vec![]);
+    }
+    let walls: Vec<_> = bodies
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| wall_feature(document, b.identity).map(|w| (i, w)))
+        .collect();
+    if walls.is_empty() {
+        return Ok(vec![]);
+    }
+    let parameters = multicad_core::parameters::evaluate(document).map_err(|e| error(None, e))?;
+    walls
+        .into_iter()
+        .map(|(index, feature)| {
+            let e = |e: multicad_core::document::DocumentError| error(Some(feature), e);
+            let source = model::read_wall(document, feature).map_err(e)?;
+            let wall = model::resolve_wall(document, &parameters, &source).map_err(e)?;
+            let cut_z = match view.kind {
+                ViewKind::Section { offset_mm, .. } => view.frame.origin_mm[2] + offset_mm,
+                _ => wall.base_z_mm + DEFAULT_PLAN_CUT_MM,
+            };
+            Ok(WallCut {
+                index,
+                feature,
+                base_z: wall.base_z_mm,
+                cut_z,
+            })
+        })
+        .collect()
+}
+
+/// Project a downward projection view with its walls drawn as plan cuts:
+/// the other bodies keep the view's projection, and each group of walls
+/// sharing a cut is sectioned there, looking down to its base. Returned
+/// source indices refer to `solids`.
+pub(crate) fn project_plan(
+    solids: &[DrawingSolid<'_>],
+    options: DrawingProjection,
+    origin_z: f64,
+    cuts: &[WallCut],
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let mut groups: std::collections::BTreeMap<(u64, u64), Vec<usize>> = Default::default();
+    for c in cuts {
+        groups
+            .entry((c.cut_z.to_bits(), c.base_z.to_bits()))
+            .or_default()
+            .push(c.index);
+    }
+    let walls: std::collections::BTreeSet<usize> = cuts.iter().map(|c| c.index).collect();
+    let mut out = vec![];
+    let mut run = |indices: Vec<usize>, options: DrawingProjection| {
+        if indices.is_empty() {
+            return Ok::<(), GeometryError>(());
+        }
+        let subset: Vec<_> = indices
+            .iter()
+            .map(|&i| DrawingSolid {
+                solid: solids[i].solid,
+                hatch: solids[i].hatch,
+            })
+            .collect();
+        for mut v in multicad_kernel::project_drawing(&subset, options)? {
+            v.source_index = indices[v.source_index];
+            out.push(v);
+        }
+        Ok(())
+    };
+    run(
+        (0..solids.len()).filter(|i| !walls.contains(i)).collect(),
+        options,
+    )?;
+    for ((cut, base), indices) in groups {
+        let (cut, base) = (f64::from_bits(cut), f64::from_bits(base));
+        run(
+            indices,
+            DrawingProjection {
+                section_offset_mm: Some(cut - origin_z),
+                section_only: false,
+                section_depth_mm: Some(cut - base + 1.),
+                section_u_mm: None,
+                section_v_mm: None,
+                ..options
+            },
+        )?;
+    }
+    Ok(out)
+}
 
 fn edges(l: &Loop) -> Vec<CurvedEdge2d> {
     let n = l.points.len();
@@ -178,8 +315,9 @@ fn wall_feature(document: &Document, part: EntityId) -> Option<EntityId> {
     })
 }
 
-/// Door swings and window panes of walls in a view looking straight down or
-/// up, in the view's model-plane coordinates.
+/// Door swings, window panes and opening outlines of walls in a view looking
+/// straight down or up, in the view's model-plane coordinates. A downward
+/// view draws them for its plan cut; a view looking up draws every opening.
 pub(crate) fn plan_vectors(
     document: &Document,
     view: &multicad_core::drawings::DrawingView,
@@ -187,14 +325,11 @@ pub(crate) fn plan_vectors(
     vectors: &mut Vec<DrawingVector>,
 ) -> Result<(), ModelError> {
     let f = &view.frame;
-    let n = [
-        f.u[1] * f.v[2] - f.u[2] * f.v[1],
-        f.u[2] * f.v[0] - f.u[0] * f.v[2],
-        f.u[0] * f.v[1] - f.u[1] * f.v[0],
-    ];
+    let n = view_normal(view);
     if matches!(view.kind, ViewKind::Detail { .. }) || n[2].abs() < 1. - 1e-9 {
         return Ok(());
     }
+    let cuts = wall_cuts(document, view, bodies)?;
     let walls: Vec<_> = bodies
         .iter()
         .filter_map(|b| wall_feature(document, b.identity).map(|w| (b.identity, w)))
@@ -222,18 +357,39 @@ pub(crate) fn plan_vectors(
         let source = model::read_wall(document, feature).map_err(e)?;
         let wall = model::resolve_wall(document, &parameters, &source).map_err(e)?;
         let plan = wall.plan().map_err(e)?;
-        let symbols = wall.plan_symbols(&plan);
-        let vector = |curve: VectorCurve, preview_mm: Vec<[f64; 2]>| DrawingVector {
+        let cut = cuts
+            .iter()
+            .find(|c| c.feature == feature)
+            .map(|c| c.cut_z - c.base_z);
+        let symbols = wall.plan_symbols_at(&plan, cut);
+        let vector = |role: VectorRole,
+                      width: f64,
+                      curve: VectorCurve,
+                      preview_mm: Vec<[f64; 2]>| DrawingVector {
             source: part,
             material_part: part,
-            role: VectorRole::Visible,
+            role,
             curve,
             preview_mm,
-            line_width_mm: 0.18,
+            line_width_mm: width,
         };
         for [a, b] in symbols.lines {
             let (a, b) = (project(a), project(b));
-            vectors.push(vector(VectorCurve::Line { a, b }, vec![a, b]));
+            vectors.push(vector(
+                VectorRole::Visible,
+                PLAN_SYMBOL_MM,
+                VectorCurve::Line { a, b },
+                vec![a, b],
+            ));
+        }
+        for [a, b] in symbols.overhead {
+            let (a, b) = (project(a), project(b));
+            vectors.push(vector(
+                VectorRole::Hidden,
+                PLAN_THIN_MM,
+                VectorCurve::Line { a, b },
+                vec![a, b],
+            ));
         }
         for (center, radius, start, end) in symbols.arcs {
             let steps = 24;
@@ -244,6 +400,8 @@ pub(crate) fn plan_vectors(
                 })
                 .collect();
             vectors.push(vector(
+                VectorRole::Visible,
+                PLAN_THIN_MM,
                 VectorCurve::Ellipse {
                     center: project(center),
                     u: axis([1., 0.]),

@@ -2,10 +2,11 @@
 //! guides, and place slabs, pedestals and stairs on a level. Slabs and stairs
 //! are features with one output Part; the others are reusable source entities.
 use super::{
-    FormStamp, PreviewState,
+    FormStamp, PreviewState, TerminationViewport,
     dimension::DimensionField,
     form::{self, FormAction, ModelEvent, ModelRequest},
     guide_fields::GuideFields,
+    outline::{OutlineEditor, OutlineKind, plan_targets},
 };
 use crate::{controls, egui};
 use multicad_core::{
@@ -48,6 +49,67 @@ impl ArchitectureKind {
             Self::Guide => "Drawing guide",
         }
     }
+}
+
+/// Which line of a closed room a floor outline follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RoomBoundary {
+    /// The wall faces inside the room.
+    Inside,
+    /// The drawn wall path, keeping its parameter expressions.
+    Path,
+    /// The outer wall faces.
+    Outside,
+}
+impl RoomBoundary {
+    const ALL: [Self; 3] = [Self::Inside, Self::Path, Self::Outside];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Inside => "Inside faces",
+            Self::Path => "Wall path",
+            Self::Outside => "Outside faces",
+        }
+    }
+}
+
+/// The closed walls a floor outline can follow, by feature and name.
+pub(super) fn rooms(document: &Document) -> Vec<(EntityId, String)> {
+    model::walls(document)
+        .filter(|e| model::read_wall(document, e.id).is_ok_and(|w| w.closed))
+        .map(|e| (e.id, e.name.clone()))
+        .collect()
+}
+
+/// The explicit boundary of exactly one closed room. Path keeps the authored
+/// dimensions; face boundaries are the planned miter corners in millimeters.
+pub(super) fn room_boundary(
+    document: &Document,
+    wall: EntityId,
+    boundary: RoomBoundary,
+) -> Result<Vec<[Dimension; 2]>, String> {
+    let source = model::read_wall(document, wall).map_err(|e| e.to_string())?;
+    if !source.closed {
+        return Err("Choose a wall that is closed into a room".into());
+    }
+    if boundary == RoomBoundary::Path {
+        return Ok(source.path);
+    }
+    let parameters = multicad_core::parameters::evaluate(document).map_err(|e| e.to_string())?;
+    let plan = model::resolve_wall(document, &parameters, &source)
+        .and_then(|r| r.plan())
+        .map_err(|e| e.to_string())?;
+    let points = match boundary {
+        RoomBoundary::Outside => plan.outer.points,
+        _ => plan
+            .holes
+            .first()
+            .map(|h| h.points.clone())
+            .ok_or("The room has no inside boundary")?,
+    };
+    Ok(points
+        .iter()
+        .map(|p| [length(p[0]), length(p[1])])
+        .collect())
 }
 
 /// The typed intent sent to native preview and Apply.
@@ -166,7 +228,11 @@ pub(super) struct ArchitecturePanel {
     height: DimensionField,
     slab_thickness: DimensionField,
     level: Option<EntityId>,
-    outline: String,
+    outline: OutlineEditor,
+    /// The one room whose boundary the outline was taken from, if any.
+    room: Option<EntityId>,
+    room_boundary: RoomBoundary,
+    targets: Option<(u64, Vec<[f64; 2]>)>,
     override_thickness: bool,
     thickness: DimensionField,
     /// Vertical-cutout holes of the edited slab, kept as they are; the
@@ -184,12 +250,6 @@ pub(super) struct ArchitecturePanel {
     label: String,
     guide: GuideFields,
     error: Option<String>,
-}
-fn literal(d: &Dimension) -> String {
-    match d {
-        Dimension::Literal { value, .. } => format!("{value}"),
-        Dimension::Expression { expression } => expression.text.clone(),
-    }
 }
 fn mm(value: f64) -> Result<DimensionField, String> {
     DimensionField::from_dimension(&length(value), "mm")
@@ -231,7 +291,14 @@ impl ArchitecturePanel {
             height: mm(2750.)?,
             slab_thickness: mm(200.)?,
             level,
-            outline: "0, 0\n6000, 0\n6000, 4000\n0, 4000".into(),
+            outline: OutlineEditor::from_mm(
+                OutlineKind::SlabOutline,
+                &[[0., 0.], [6000., 0.], [6000., 4000.], [0., 4000.]],
+                true,
+            ),
+            room: None,
+            room_boundary: RoomBoundary::Inside,
+            targets: None,
             override_thickness: false,
             thickness: mm(200.)?,
             holes: vec![],
@@ -260,12 +327,7 @@ impl ArchitecturePanel {
             };
             panel.body = slab.output.body;
             panel.level = Some(slab.level);
-            panel.outline = slab
-                .outline
-                .iter()
-                .map(|[x, y]| format!("{}, {}", literal(x), literal(y)))
-                .collect::<Vec<_>>()
-                .join("\n");
+            panel.outline = OutlineEditor::new(OutlineKind::SlabOutline, &slab.outline, true)?;
             panel.override_thickness = slab.thickness.is_some();
             panel.holes = slab.holes.clone();
             if let Some(t) = &slab.thickness {
@@ -316,23 +378,98 @@ impl ArchitecturePanel {
         }
         Ok(())
     }
-    fn outline(&self) -> Result<Vec<[Dimension; 2]>, String> {
-        self.outline
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .enumerate()
-            .map(|(i, line)| {
-                let values: Vec<f64> = line
-                    .split(',')
-                    .map(|v| v.trim().parse::<f64>())
-                    .collect::<Result<_, _>>()
-                    .map_err(|_| format!("Outline line {} must be \"x, y\" in mm", i + 1))?;
-                match values.as_slice() {
-                    [x, y] if x.is_finite() && y.is_finite() => Ok([length(*x), length(*y)]),
-                    _ => Err(format!("Outline line {} must be \"x, y\" in mm", i + 1)),
-                }
+    /// Replace the outline with the chosen room's boundary.
+    fn use_room(&mut self, document: &Document) -> Result<(), String> {
+        let wall = self
+            .room
+            .ok_or("Choose the room whose boundary the floor follows")?;
+        let points = room_boundary(document, wall, self.room_boundary)?;
+        self.outline.set_dimensions(&points, true)?;
+        if let Ok(source) = model::read_wall(document, wall)
+            && source.level.is_some()
+        {
+            self.level = source.level;
+        }
+        Ok(())
+    }
+    fn plane_z(&self, document: &Document) -> f64 {
+        multicad_core::parameters::evaluate(document)
+            .ok()
+            .and_then(|p| {
+                self.level
+                    .and_then(|l| model::resolve_level(document, &p, l).ok())
             })
-            .collect()
+            .map_or(0., |l| l.elevation_mm)
+    }
+    /// True while the slab or pedestal outline is shown on the plan.
+    pub fn outlines(&self) -> bool {
+        matches!(
+            self.kind,
+            ArchitectureKind::Slab | ArchitectureKind::Pedestal
+        )
+    }
+    /// Draw and edit the outline on the plan; returns whether inputs changed.
+    pub fn viewport(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        view: TerminationViewport<'_>,
+    ) -> bool {
+        if !self.outlines() {
+            return false;
+        }
+        if self.targets.as_ref().is_none_or(|(r, _)| *r != revision) {
+            self.targets = Some((revision, plan_targets(document, self.feature)));
+        }
+        let targets = self
+            .targets
+            .as_ref()
+            .map(|(_, t)| t.clone())
+            .unwrap_or_default();
+        let z = self.plane_z(document);
+        // The chosen room's boundary is shown so its scope is explicit.
+        if let Some(wall) = self.room
+            && let Ok(points) = room_boundary(document, wall, self.room_boundary)
+            && let Ok(parameters) = multicad_core::parameters::evaluate(document)
+        {
+            let screen: Vec<egui::Pos2> = points
+                .iter()
+                .filter_map(|[x, y]| {
+                    let x = x
+                        .value_in(
+                            multicad_core::parameters::Unit::Millimeter,
+                            Some(&parameters),
+                        )
+                        .ok()?;
+                    let y = y
+                        .value_in(
+                            multicad_core::parameters::Unit::Millimeter,
+                            Some(&parameters),
+                        )
+                        .ok()?;
+                    let s = view
+                        .camera
+                        .project([x as f32, y as f32, z as f32], view.rect);
+                    Some(egui::pos2(s[0], s[1]))
+                })
+                .collect();
+            if screen.len() >= 3 {
+                let mut closed = screen.clone();
+                closed.push(screen[0]);
+                view.painter.extend(egui::Shape::dashed_line(
+                    &closed,
+                    egui::Stroke::new(2., egui::Color32::from_rgb(110, 210, 120)),
+                    10.,
+                    5.,
+                ));
+            }
+        }
+        let changed = self.outline.viewport(document, &view, z, &targets);
+        if changed {
+            self.stamp.changed();
+            self.error = None;
+        }
+        changed
     }
     fn stair(&self, document: &Document) -> Result<StairDefinition, String> {
         Ok(StairDefinition {
@@ -412,7 +549,7 @@ impl ArchitecturePanel {
                         } else {
                             SlabKind::Slab
                         },
-                        outline: self.outline()?,
+                        outline: self.outline.dimensions(document)?,
                         thickness: (pedestal || self.override_thickness)
                             .then(|| self.thickness.resolve(document))
                             .transpose()?,
@@ -548,14 +685,37 @@ impl ArchitecturePanel {
             ArchitectureKind::Slab | ArchitectureKind::Pedestal => {
                 ui.label("Level");
                 changed |= Self::level_combo(ui, "slab-level", &levels, &mut self.level, None);
-                ui.label("Outline points (x, y in mm, one per line)");
-                changed |= ui
-                    .add(
-                        egui::TextEdit::multiline(&mut self.outline)
-                            .desired_rows(4)
-                            .desired_width(ui.available_width()),
-                    )
-                    .changed();
+                let rooms = rooms(document);
+                ui.label("Room boundary");
+                Self::level_combo(
+                    ui,
+                    "slab-room",
+                    &rooms,
+                    &mut self.room,
+                    Some("None (draw or enter the outline)"),
+                );
+                if self.room.is_some() {
+                    ui.horizontal_wrapped(|ui| {
+                        for b in RoomBoundary::ALL {
+                            ui.radio_value(&mut self.room_boundary, b, b.label());
+                        }
+                    });
+                    let name = rooms
+                        .iter()
+                        .find(|(id, _)| Some(*id) == self.room)
+                        .map_or("", |(_, n)| n.as_str());
+                    ui.small(format!(
+                        "Only {name}'s boundary (green dashes in the viewport) is used; other rooms are not included. The outline is copied, so later wall edits do not move it."
+                    ));
+                    if ui.button("Use room boundary").clicked() {
+                        match self.use_room(document) {
+                            Ok(()) => changed = true,
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                }
+                let plane = format!("the level floor (z = {} mm)", self.plane_z(document));
+                changed |= self.outline.show(ui, document, &plane);
                 if self.kind == ArchitectureKind::Pedestal {
                     changed |= self.thickness.show(
                         ui,
@@ -835,12 +995,131 @@ mod tests {
         );
 
         panel.kind = ArchitectureKind::Slab;
-        panel.outline = "0, 0\nfour, 0".into();
+        panel.outline.set_text(1, 0, "four");
         assert!(
             panel
                 .request(session.document(), true)
                 .unwrap_err()
-                .contains("Outline line 2")
+                .contains("Corner 2 x")
         );
+    }
+
+    /// Two closed 200 mm rooms side by side on the ground level.
+    fn two_rooms(session: &mut Session, level: EntityId) -> [EntityId; 2] {
+        use multicad_core::model::{
+            Justification, NewType, NewTypeKind, WallChange, WallDefinition, WallRequest,
+            WallTypeDefinition,
+        };
+        let ty = NewType::new(
+            "Wall 200",
+            NewTypeKind::Wall(WallTypeDefinition {
+                thickness: length(200.),
+                height: length(2500.),
+                justification: Justification::Center,
+                material: None,
+            }),
+        );
+        let mut walls = [EntityId::new(); 2];
+        for (k, x0) in [0., 6000.].into_iter().enumerate() {
+            let path = [[0., 0.], [4000., 0.], [4000., 3000.], [0., 3000.]]
+                .iter()
+                .map(|p| [length(p[0] + x0), length(p[1])])
+                .collect();
+            let request = WallRequest::new(
+                format!("Room {}", k + 1),
+                WallDefinition {
+                    output: BodyOutput {
+                        body: EntityId::new(),
+                    },
+                    wall_type: ty.id,
+                    path,
+                    closed: true,
+                    level: Some(level),
+                    base_z: length(0.),
+                    thickness: None,
+                    height: None,
+                    justification: None,
+                    openings: vec![],
+                    cutouts: vec![],
+                },
+            );
+            let types = if k == 0 { vec![ty.clone()] } else { vec![] };
+            let prepared = model::prepare_wall_change(
+                session,
+                session.revision(),
+                Actor::local(Channel::Ui),
+                &types,
+                &WallChange::Create(&request),
+            )
+            .unwrap();
+            walls[k] = prepared.outputs[0].feature;
+            session.commit(prepared.prepared).unwrap();
+        }
+        walls
+    }
+
+    #[test]
+    fn a_floor_reuses_one_explicit_room_boundary_and_previews_only_that_room() {
+        let mut session = Session::new(Document::new("Room floor").unwrap()).unwrap();
+        let panel = ArchitecturePanel::new(session.document(), "Ground".into()).unwrap();
+        let prepared = apply(&mut session, &panel);
+        session.commit(prepared.prepared).unwrap();
+        let level = model::levels(session.document()).next().unwrap().id;
+        let [first, second] = two_rooms(&mut session, level);
+        assert_eq!(rooms(session.document()).len(), 2);
+
+        let mut floor = ArchitecturePanel::new(session.document(), "Floor".into()).unwrap();
+        assert!(floor.outlines());
+        assert!(
+            floor.use_room(session.document()).is_err(),
+            "a room must be chosen"
+        );
+        floor.room = Some(second);
+        floor.room_boundary = RoomBoundary::Inside;
+        floor.use_room(session.document()).unwrap();
+        let points = floor.outline.positions(session.document()).unwrap();
+        // Only room 2's inside faces: 3800 x 2800 between x = 6100 and 9900.
+        assert_eq!(points.len(), 4);
+        assert!(points.iter().all(|p| (6100. ..=9900.).contains(&p[0])));
+        let prepared = apply(&mut session, &floor);
+        let feature = prepared.outputs[0].feature;
+        let model = Compiler::default()
+            .compile(prepared.prepared.document(), session.revision())
+            .unwrap();
+        let volume = model.snapshot().shapes[&feature].volume_mm3;
+        assert!((volume - 3800. * 2800. * 200.).abs() < 1e-3, "{volume}");
+
+        // The wall path keeps its authored dimensions; outside faces grow.
+        floor.room = Some(first);
+        floor.room_boundary = RoomBoundary::Path;
+        floor.use_room(session.document()).unwrap();
+        assert_eq!(
+            floor.outline.dimensions(session.document()).unwrap(),
+            model::read_wall(session.document(), first).unwrap().path
+        );
+        floor.room_boundary = RoomBoundary::Outside;
+        floor.use_room(session.document()).unwrap();
+        let points = floor.outline.positions(session.document()).unwrap();
+        assert!(points.contains(&[-100., -100.]) && points.contains(&[4100., 3100.]));
+
+        // The boundary overlay and outline paint through the viewport path.
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let view = TerminationViewport {
+                scene: None,
+                report: None,
+                camera: crate::camera::Camera::default(),
+                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640., 480.)),
+                pointer: None,
+                clicked: false,
+                painter: &painter,
+                section: None,
+            };
+            assert!(!floor.viewport(session.document(), session.revision(), view));
+        })
+        .drop_without_applying_deltas();
+        let missing = room_boundary(session.document(), EntityId::new(), RoomBoundary::Inside);
+        assert!(missing.is_err());
     }
 }

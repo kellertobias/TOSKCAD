@@ -134,17 +134,39 @@ appear in one wall (as the record above) and in any number of slabs.
 
 ## Plan representation
 
-A drawing view whose frame looks straight down or up gets extra vectors for
-each wall in the view, alongside the projected or sectioned solid:
+A drawing view whose frame looks straight down draws walls as an
+architectural plan: a horizontal cut through the wall solid.
 
-- **Doors:** the leaf drawn open at 90° from the hinge on the swing-side face,
-  plus a quarter-circle swing arc.
-- **Windows:** two pane lines along the wall, plus a jamb line at each end.
+- **Cut height.** A section view, including a generated floor plan guide
+  view, cuts at its own plane (the guide's cut height above its level). A
+  plain top projection, which is what a newly placed view is, cuts each wall
+  1000 mm above its base (the floor-plan guide default) and looks down to
+  the base; other Parts in the view keep the ordinary projection. The cut
+  is the native section of the actual wall solid, so door and window voids,
+  jambs and vertical cutouts appear exactly where the solid has them.
+- **Hatching.** Cut wall faces are hatched. The material's section hatch
+  style is used when it has one (an explicit "none" style turns hatching
+  off). Without one, walls get a default of 45° lines, 1.5 mm apart on paper
+  at any scale, 0.13 mm wide. Hatching is drawing output only; it never
+  changes the wall solid.
+- **Line weights.** Cut wall outlines 0.5 mm; geometry seen below the cut
+  (for example a window sill), door leaves and window panes 0.18 mm; door
+  swings and dashed outlines 0.13 mm.
+- **Openings and the cut height.** For an opening the cut passes through
+  (sill <= cut < head):
+  - **Doors:** the leaf drawn open at 90° from the hinge on the swing-side
+    face, plus a quarter-circle swing arc, inside the real gap in the cut.
+  - **Windows:** two pane lines inside the cut void; the jambs come from the
+    cut and the sill below is drawn as projected lines.
 
-The vectors carry the wall Part's identity. The Part's material supplies the
-section hatch, so a horizontal section view gives a hatched floor plan with
-door swings and window symbols. These symbols reach PDF and DXF through the
-shared page render.
+  An opening wholly above or below the cut is not visible in the cut wall.
+  It is outlined with dashed (hidden) lines on both wall faces and at its
+  jambs, with no swing or panes.
+- **Views looking up** keep every door and window symbol, drawn as if cut.
+
+The vectors carry the wall Part's identity and regenerate with every wall,
+opening, type, level or guide change. These symbols reach PDF and DXF
+through the shared page render.
 
 ## Access
 
@@ -152,6 +174,35 @@ shared page render.
   same tool. Preview builds the native wall, Apply commits it, and an applied
   wall reopens in the same form for editing. The wall form keeps the wall's
   vertical cutouts and says how many there are.
+  - **Drawing the path.** The path is a corner list edited by the shared
+    plan outline editor (`crates/multicad-ui/src/modeling/outline.rs`; the
+    floor slab form uses the same editor). **Draw in viewport** clears the
+    corners and takes clicks on the wall base plane (level elevation plus
+    base elevation). Clicks snap, in this order, to the first corner
+    (closes the room), to corners of this path and of other walls (path and
+    face corners) and slabs, to orthogonal lines from the previous corner,
+    and to a 10/50/100/500 mm grid (default 10 mm; each snap can be turned
+    off). A dashed rubber band shows the pending segment's length and angle.
+    **Next segment** appends a corner at a typed length and angle. Enter
+    finishes an open path; Esc or **Cancel drawing** restores the previous
+    corners. **Rectangle by dimensions** replaces the corners with a closed
+    rectangle from a corner, width and depth.
+  - **Adjusting.** While the form is open the viewport shows every segment
+    with its length and a numbered handle per corner. Clicking a handle
+    picks that corner up; the next click places it (with the same snapping)
+    while dashed lines show both neighbouring lengths live; Esc cancels the
+    move. Clicking a segment selects it; its length can then be typed (the
+    end corner moves along the segment) or the segment split at its
+    midpoint. The Inspector lists each corner's x and y as exact fields
+    (millimeters or `=$parameter` expressions, kept untouched unless
+    edited) and each segment's length; selection is shared between the
+    viewport and the list. **Paste coordinates** still replaces all corners
+    from `x, y` lines.
+  - **Outline diagnostics.** Too few corners, zero-length segments, a path
+    that doubles back and self-crossing segments are reported in the
+    Inspector with the corner or segment to fix, and drawn in red in the
+    viewport with a marker at the crossing point. The native planner stays
+    authoritative at Preview.
 - **Room tools.** Sketch → Room and Model → Architecture → **Door**,
   **Window** and **Vertical cutout** work on an existing wall; the vertical
   cutout also works on floor slabs alone. A wall Part selected in the tree is
@@ -214,8 +265,19 @@ shared page render.
   works on any wall face; the outline preview is drawn on the wall's left
   face. Centering uses literal widths; a width written as an expression
   places the start side at the click.
-- **Path editing in the window.** The Inspector accepts numeric path points
-  only. A path coordinate stored as an expression shows its formula and must
-  be edited through the API.
+- **Path editing in the window.** Corners are picked up and placed by
+  clicks; there is no press-and-drag of a handle. A corner stored as an
+  expression shows its formula; moving it in the viewport replaces it with
+  a literal. Arc segments are not supported. The overlay is drawn on the
+  base plane in any camera orientation; from a steep side view the plane is
+  edge-on and clicks do not hit it.
+- **Plan drawing.** The 1000 mm cut of a plain top projection is fixed; use
+  a floor plan guide (or a section view) for another cut height. The view
+  depth of a plain projection reaches the wall base, so things below the
+  base are not drawn for walls. Door and window frames, reveals with
+  splayed jambs and sill boards are not modeled, so the plan shows the
+  rectangular void only. Cut and projected lines follow the line weights
+  above; there is no per-view line-weight setting. This presentation
+  follows the user's stated convention, not a named drafting standard.
 - **Not certified.** These are geometric tools only; they carry no building
   code, accessibility or structural certification.

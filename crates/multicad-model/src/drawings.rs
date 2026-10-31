@@ -275,20 +275,27 @@ impl Model {
             })
             .collect::<Result<_, _>>()?;
         let scale = view.scale.numerator as f64 / view.scale.denominator as f64;
+        // Walls in a downward view are drawn as an architectural plan cut.
+        let wall_cuts = crate::walls::wall_cuts(document, view, &bodies)?;
+        let plan_wall = |i: usize| wall_cuts.iter().any(|c| c.index == i);
         let inputs: Vec<_> = bodies
             .iter()
             .zip(&properties)
-            .map(|(body, props)| DrawingSolid {
+            .enumerate()
+            .map(|(i, (body, props))| DrawingSolid {
                 solid: body.shape.solid(),
-                hatch: props
-                    .hatch
-                    .as_ref()
-                    .filter(|h| h.pattern != HatchPattern::None)
-                    .map(|h| DrawingHatch {
+                hatch: match props.hatch.as_ref() {
+                    Some(h) => (h.pattern != HatchPattern::None).then(|| DrawingHatch {
                         angle_rad: h.angle_deg.to_radians(),
                         spacing_mm: h.spacing_mm / scale,
                         cross: h.pattern == HatchPattern::Cross,
                     }),
+                    None => plan_wall(i).then(|| DrawingHatch {
+                        angle_rad: crate::walls::WALL_HATCH_ANGLE_DEG.to_radians(),
+                        spacing_mm: crate::walls::WALL_HATCH_SPACING_MM / scale,
+                        cross: false,
+                    }),
+                },
             })
             .collect();
         let options = DrawingProjection {
@@ -337,8 +344,12 @@ impl Model {
         };
         // The kernel validates its own approximation interval. A scale demanding
         // more precision than the native contract supports fails explicitly.
-        let output = multicad_kernel::project_drawing(&inputs, options)
-            .map_err(|e| error(Some(view.id), e))?;
+        let output = if view.kind == ViewKind::Projection && !wall_cuts.is_empty() {
+            crate::walls::project_plan(&inputs, options, view.frame.origin_mm[2], &wall_cuts)
+        } else {
+            multicad_kernel::project_drawing(&inputs, options)
+        }
+        .map_err(|e| error(Some(view.id), e))?;
         if output.is_empty() {
             return Err(error(
                 Some(view.id),
@@ -358,9 +369,15 @@ impl Model {
                             .hatch
                             .as_ref()
                             .map(|h| h.line_width_mm)
-                            .unwrap_or(0.18)
+                            .unwrap_or(if plan_wall(v.source_index) {
+                                crate::walls::WALL_HATCH_LINE_MM
+                            } else {
+                                0.18
+                            })
                     } else if v.role == VectorRole::Section {
                         0.5
+                    } else if plan_wall(v.source_index) {
+                        crate::walls::PLAN_PROJECTED_MM
                     } else {
                         0.25
                     },
