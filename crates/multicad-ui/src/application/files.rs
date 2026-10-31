@@ -405,6 +405,7 @@ impl Application {
             }
             self.remember_current_view();
         }
+        self.leave_project_status();
         self.discard_welcome_placeholder();
         self.projects.push(p);
         self.active = self.projects.len() - 1;

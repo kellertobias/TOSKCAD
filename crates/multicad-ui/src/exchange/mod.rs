@@ -497,20 +497,24 @@ impl ExportWorkspace {
                             continue;
                         }
                         let text = format!(
-                            "{} {} file(s) · {} ({:?}) · revision {}",
+                            "{} {} file(s) from {} revision {} · {} ({:?})",
                             if receipt.reused { "Reused" } else { "Exported" },
                             receipt.files.len(),
+                            source_name(s, p.document),
+                            p.revision,
                             p.actor.id,
                             p.actor.channel,
-                            p.revision
                         );
                         self.notice = Some((format!("{text} · {}", receipt.directory), false));
                         self.remember(reply.id, text, Some(receipt.directory));
                     }
                     Err(e) => {
                         let text = format!(
-                            "Export failed · {} ({:?}) · revision {} · {e}",
-                            p.actor.id, p.actor.channel, p.revision
+                            "Export failed for {} revision {} · {} ({:?}) · {e}",
+                            source_name(s, p.document),
+                            p.revision,
+                            p.actor.id,
+                            p.actor.channel,
                         );
                         self.notice = Some((text.clone(), true));
                         self.error = Some(e.to_string());
@@ -663,3 +667,13 @@ impl ExportWorkspace {
 
 #[cfg(test)]
 mod tests;
+
+/// The originating document's name for a job receipt, so a receipt never
+/// reads as if it came from whichever project is active when it is shown.
+fn source_name(s: &Session, document: EntityId) -> String {
+    if s.document().id() == document {
+        format!("\u{201c}{}\u{201d}", s.document().name())
+    } else {
+        "another document".into()
+    }
+}

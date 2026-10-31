@@ -59,6 +59,9 @@ pub struct Project {
     pub scene: crate::viewport::SceneFeed,
     /// External control audit and the changes awaiting review.
     pub control: multicad_core::control::ControlLedger,
+    /// The status line this project last showed, or a receipt from one of
+    /// its background jobs that finished while another tab was active.
+    status: Option<(String, bool)>,
 }
 impl Project {
     pub fn new(document: Document) -> Result<Self, String> {
@@ -85,6 +88,7 @@ impl Project {
             path: None,
             scene: Default::default(),
             control: Default::default(),
+            status: None,
         })
     }
     fn snapshot(&self) -> Result<ProjectFile, String> {
@@ -404,8 +408,30 @@ impl Application {
             self.close_measurement();
         }
         self.remember_current_view();
+        self.leave_project_status();
         self.active = index;
         self.restore_current_view();
+        self.enter_project_status();
+    }
+    /// Keep the status line with the project that produced it, so another
+    /// project never appears to confirm its receipts.
+    fn leave_project_status(&mut self) {
+        let status = (std::mem::take(&mut self.message), self.message_error);
+        self.message_error = false;
+        if !self.welcome
+            && let Some(leaving) = self.projects.get_mut(self.active)
+        {
+            leaving.status = Some(status).filter(|(message, _)| !message.is_empty());
+        }
+    }
+    /// Show the newly active project's own last status, or say which
+    /// project is now active.
+    fn enter_project_status(&mut self) {
+        (self.message, self.message_error) = self
+            .current_mut()
+            .status
+            .take()
+            .unwrap_or_else(|| (format!("Switched to {}", self.current().title()), false));
     }
     fn measurement_blocks(&self, command: Command) -> bool {
         self.current().sketch.measurement.active()
@@ -846,11 +872,13 @@ impl Application {
                     }
                     self.remember_current_view();
                 }
+                self.leave_project_status();
                 self.discard_welcome_placeholder();
                 self.projects.push(project);
                 self.active = self.projects.len() - 1;
                 self.mode = Mode::Parameters;
                 self.tab = 0;
+                self.message = format!("Created {}", self.current().title());
             }
             Command::NewWindow => {
                 std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
@@ -1427,6 +1455,7 @@ impl Application {
             })
             .map_err(|e| e.to_string())?;
         project.editor.reload(&project.session);
+        self.leave_project_status();
         self.projects.push(project);
         self.active = self.projects.len() - 1;
         self.mode = Mode::Parameters;
@@ -2101,8 +2130,13 @@ impl Application {
                 }
             }
         }
-        for p in &mut self.projects {
+        for (index, p) in self.projects.iter_mut().enumerate() {
             p.exchange.poll(&p.session);
+            if index != active
+                && let Some(notice) = p.exchange.take_notice()
+            {
+                p.status = Some(notice);
+            }
             if p.exchange.pending() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }

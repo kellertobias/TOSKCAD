@@ -95,11 +95,14 @@ impl Application {
         let active = self.active;
         for (index, p) in self.projects.iter_mut().enumerate() {
             p.print.poll(&p.session);
-            if let Some((message, error)) = p.print.take_notice()
-                && index == active
-            {
-                self.message = message;
-                self.message_error = error;
+            if let Some((message, error)) = p.print.take_notice() {
+                if index == active {
+                    self.message = message;
+                    self.message_error = error;
+                } else {
+                    // Kept for the project that ran the job, shown on return.
+                    p.status = Some((message, error));
+                }
             }
             if p.print.pending() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
