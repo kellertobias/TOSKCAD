@@ -514,8 +514,8 @@ fn show_pairs(ui: &mut egui::Ui, document: &Document, report: &PairReport) {
                     };
                     ui.colored_label(color, label);
                     ui.label(format!(
-                        "Minimum clearance: {:.6} mm",
-                        values.minimum_clearance_mm
+                        "Minimum clearance: {}",
+                        crate::preferences::format_mm(values.minimum_clearance_mm)
                     ));
                     ui.label(format!(
                         "Overlap volume: {:.6} mm³",

@@ -49,6 +49,11 @@ impl Application {
                 .is_visible(&self.registry, self.mode, self.tab);
         self.preferences = preferences;
         crate::preferences::set_length_unit(self.preferences.length_unit);
+        for project in &mut self.projects {
+            project
+                .editor
+                .adopt_length_unit(self.preferences.length_unit);
+        }
         if hidden_active {
             let title = self.registry.workspace(self.mode).tabs[self.tab].title;
             self.tab = self.first_visible_tab(self.mode);
@@ -456,6 +461,47 @@ mod tests {
         let (restore, _) = find(&nodes, "Restore defaults");
         click(&mut app, &ctx, restore);
         assert_eq!(app.preferences(), &Preferences::defaults(&app.registry));
+        crate::preferences::set_length_unit(LengthUnit::Millimeter);
+    }
+    #[test]
+    fn switching_units_changes_no_document_value_and_only_blank_rows_adopt_it() {
+        let store = Memory::default();
+        let mut app = app(&store);
+        app.example().unwrap();
+        let document = app.current().session.document().clone();
+        let revision = app.current().session.revision();
+        let values: Vec<_> = app
+            .current()
+            .session
+            .parameters()
+            .values
+            .values()
+            .map(|v| (v.quantity, v.unit))
+            .collect();
+        let mut inches = app.preferences().clone();
+        inches.length_unit = LengthUnit::Inch;
+        app.apply_preferences(inches);
+        let p = app.current();
+        assert_eq!(p.session.document(), &document);
+        assert_eq!(p.session.revision(), revision);
+        assert!(!p.editor.dirty(), "a unit switch is not a pending edit");
+        let after: Vec<_> = p
+            .session
+            .parameters()
+            .values
+            .values()
+            .map(|v| (v.quantity, v.unit))
+            .collect();
+        assert_eq!(after, values, "stored units and quantities are unchanged");
+        let blank = p.editor.rows.last().unwrap();
+        assert!(blank.name.is_empty());
+        assert_eq!(blank.unit, "in");
+        // Authored rows keep their declared units.
+        assert!(
+            p.editor.rows[..p.editor.rows.len() - 1]
+                .iter()
+                .all(|row| row.unit != "in")
+        );
         crate::preferences::set_length_unit(LengthUnit::Millimeter);
     }
 }
