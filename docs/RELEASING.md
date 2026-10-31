@@ -4,7 +4,7 @@
 
 This follows ToskLight's repository model: the developer upstream (`origin`, once created) is Forgejo. Its infrastructure-managed push mirror sends branches to GitHub. GitHub Actions runs the builds/tests and creates `vVERSION` tags plus hosted GitHub Releases on the exact mirrored, tested commit.
 
-GitHub must not create release commits, update tracked manifests/changelogs or push branches back to Forgejo. There is no Forgejo Actions release workflow and no Forgejo credential in GitHub. The repository URLs/owner names are not guessed: the repositories do not exist yet, no remote is configured, and the publisher derives the GitHub mirror from `GITHUB_REPOSITORY` when Actions eventually runs.
+GitHub must not create release commits, update tracked manifests/changelogs or push branches back to Forgejo. There is no Forgejo Actions release workflow and no Forgejo credential in GitHub. The public GitHub publication repository is `kellertobias/TOSKCAD`. The checkout uses a `github` publication remote; a Forgejo `origin` and its managed mirror remain to be configured. The user authorized the initial direct GitHub bootstrap push. The publisher derives the repository from `GITHUB_REPOSITORY`.
 
 ## Activation prerequisites — publication is off by default
 
@@ -16,7 +16,7 @@ Before enabling releases:
 4. Confirm main/tag protection allows the ephemeral GitHub repository token to create release tags and hosted release assets; the release job alone has `contents: write`.
 5. Set the GitHub repository variable `FORGEJO_TAG_RECONCILIATION_VERIFIED=true` only after that verification, then `MULTICAD_RELEASES_ENABLED=true` when release publication is wanted.
 
-Neither variable is preset here. Unset/false variables keep publication skipped while builds/checks still run. No repository, mirror, secret, tag, hosted release, signing setup or push is created by this local configuration. No token values belong in source control.
+Neither variable is preset here. Unset/false variables keep publication skipped while builds/checks still run. The public GitHub repository and the initial source push are authorized separately from release activation. No Forgejo mirror, secret, tag, hosted release or signing setup is created by the Pages workflow. No token values belong in source control.
 
 ## Version contract
 
@@ -57,3 +57,9 @@ The preview uses disposable local clones/bare storage; it neither changes source
 From a clean committed source checkout, `npm run release:package -- 0.1.0` produces the current host's native runtime and corresponding-source archives under `artifacts/release/`. It runs native tests, builds and executes that binary, and validates its version/SHA/target before archiving. This is local artifact generation, not a release. Remove/move older local output versions before aggregating a complete package set; verification deliberately rejects stale extras.
 
 Completed releases are no-ops on repeated semantic analysis. An interrupted provider upload can leave a tag/draft requiring explicit inspection and repair of that same release; do not move/delete public tags or mint a different version to conceal it. Hosted API behavior, private mirror access, protected tags, deployed reconciliation, Windows/Linux archives and actual GitHub runs cannot be validated until the repositories and infrastructure exist.
+
+## Project website publication
+
+GitHub Pages serves `website/` at https://kellertobias.github.io/TOSKCAD/. The separate `.github/workflows/pages.yml` publishes a static artifact on website changes to `main` or a manual dispatch. Its deployment job has `pages: write` and `id-token: write`; application release activation variables remain independent and unset.
+
+The public GitHub bootstrap does not establish deployed Forgejo mirroring or tag reconciliation. Complete the activation prerequisites above before enabling application release publication.
