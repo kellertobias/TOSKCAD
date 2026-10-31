@@ -52,6 +52,11 @@ mod snap_host_tests;
 mod symbol_host;
 #[path = "sketch_text_tool.rs"]
 mod text_tool;
+#[path = "sketch_tool_guide.rs"]
+mod tool_guide;
+#[cfg(test)]
+#[path = "sketch_tool_guide_tests.rs"]
+mod tool_guide_tests;
 #[path = "sketch_transfer_host.rs"]
 mod transfer_host;
 #[cfg(test)]
@@ -1950,19 +1955,7 @@ impl SketchEditor {
         self.tool = Some(tool);
         self.clear_drawing_progress();
         self.snap_assist.clear();
-        self.message = match tool {
-            DrawTool::Circle => "Click the center, then the radius · Esc cancels",
-            DrawTool::Arc => "Click the center, start, then end · Esc cancels",
-            DrawTool::Polyline => {
-                "Click connected vertices; click the first vertex to close · Esc ends"
-            }
-            DrawTool::Spline => {
-                "Click control poles · Enter finishes · click the first pole to close · Esc cancels"
-            }
-            tool if tool.multi_point() => tool.mode_prompt(0),
-            _ => "Click the first point, then the second point · Esc cancels",
-        }
-        .into();
+        self.set_tool_status();
         Ok(())
     }
     pub fn operation_ready(&self) -> bool {
@@ -2160,10 +2153,7 @@ impl SketchEditor {
                 self.message = "Spline control pole budget reached · Enter finishes".into();
             } else {
                 self.spline_poles.push((input.point, input.anchor));
-                self.message = format!(
-                    "{} control poles · Enter finishes · click the first pole to close",
-                    self.spline_poles.len()
-                );
+                self.set_tool_status();
             }
         }
     }
@@ -2635,7 +2625,7 @@ impl SketchEditor {
                     else if self.picking{Some(Owner::Plane)}
                     else if self.moving{Some(Owner::Move)}
                     else if self.operations.tool().is_some(){Some(Owner::Operation)}
-                    else if self.tool.is_some(){Some(Owner::Drawing)}else{None};
+                    else if self.tool.is_some_and(|tool|tool.guide(0,0).finish_action){Some(Owner::Drawing)}else{None};
                 let accent=if sketch_mode{crate::registry::Mode::Sketch.color()}else{crate::registry::Mode::Model.color()};
                 crate::inspector_actions::scope(ui,owner,accent,|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
@@ -2740,7 +2730,7 @@ impl SketchEditor {
                         }
                         if self.editing && let Some(tool)=self.tool {
                             ui.strong(tool.label());
-                            ui.small(tool.usage());
+                            self.tool_guide_ui(ui, tool);
                             if ui.checkbox(&mut self.construction,"Construction geometry").on_hover_text("Construction curves constrain the sketch but are excluded from solid profiles").changed() {self.message=if self.construction {"Construction drawing on"}else{"Construction drawing off"}.into();}
                             if tool==DrawTool::Arc {ui.checkbox(&mut self.arc_clockwise,"Clockwise arc").on_hover_text("Direction around the sketch's positive normal");}
                             if tool.corner() {
@@ -2753,12 +2743,14 @@ impl SketchEditor {
                                 ui.small(format!("{} control poles",self.spline_poles.len()));
                                 if ui.add_enabled(!self.spline_poles.is_empty(),egui::Button::new("Remove last pole")).on_hover_text("Remove only the last uncommitted control pole").clicked() {self.spline_poles.pop();}
                             }
-                            use crate::inspector_actions::{self,Button,Owner};
-                            let clicked=inspector_actions::row(ui,Owner::Drawing,None,
-                                Button::new("Finish spline",tool==DrawTool::Spline&&self.can_finish_spline(),"Finish the pending spline; other drawing tools commit through viewport gestures"),
-                                Button::new("Cancel drawing",true,"Cancel uncommitted drawing input; retain existing geometry"));
-                            if clicked.apply && let Err(error)=self.finish_spline(session,false,Channel::Ui){self.message=error;}
-                            if clicked.cancel{self.cancel();}
+                            if tool==DrawTool::Spline {
+                                use crate::inspector_actions::{self,Button,Owner};
+                                let clicked=inspector_actions::row(ui,Owner::Drawing,None,
+                                    Button::new("Finish spline",self.can_finish_spline(),"Commit the pending open spline; needs at least four control poles"),
+                                    Button::new("Cancel drawing",true,"Discard the uncommitted control poles and end the tool; existing geometry stays"));
+                                if clicked.apply && let Err(error)=self.finish_spline(session,false,Channel::Ui){self.message=error;}
+                                if clicked.cancel{self.cancel();}
+                            }
                             ui.separator();
                         }
                         if let Some(id) = self.selected {
@@ -3986,9 +3978,7 @@ impl SketchEditor {
                         if tool == DrawTool::Arc && self.arc_start.is_none() {
                             if (p[0] - a[0]).hypot(p[1] - a[1]) >= 1e-7 {
                                 self.arc_start = Some((p, anchor));
-                                self.message =
-                                    "Choose the arc end · endpoint follows the chosen radius"
-                                        .into();
+                                self.set_tool_status();
                             }
                         } else {
                             let start = point(a, self.first_anchor);
@@ -4051,12 +4041,15 @@ impl SketchEditor {
                                 self.polyline_segments = segments + 1;
                                 self.first = Some(end.1);
                                 self.first_anchor = Some(end.0);
-                                self.message="Continue the polyline · click its first vertex to close · Esc ends".into();
+                                self.set_committed_status(tool);
+                            } else {
+                                self.set_committed_status(tool);
                             }
                         }
                     } else {
                         self.first = Some(p);
                         self.first_anchor = anchor;
+                        self.set_tool_status();
                     }
                 }
             }

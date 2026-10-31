@@ -41,38 +41,6 @@ impl DrawTool {
             _ => 2,
         }
     }
-    pub fn mode_prompt(self, clicked: usize) -> &'static str {
-        match (self, clicked) {
-            (Self::RectangleCenter, 0) => "Click the rectangle center · Esc cancels",
-            (Self::RectangleCenter, _) => "Click a corner · Esc cancels",
-            (Self::RectangleCenterTwo, 0) => "Click the rectangle center · Esc cancels",
-            (Self::RectangleCenterTwo, 1) => "Click one corner · Esc cancels",
-            (Self::RectangleCenterTwo, _) => {
-                "Click toward the neighbouring corner (same distance from the center) · Esc cancels"
-            }
-            (Self::RectangleThree, 0) => "Click the first corner · Esc cancels",
-            (Self::RectangleThree, 1) => "Click the second corner of the first edge · Esc cancels",
-            (Self::RectangleThree, _) => "Click to set the rectangle height · Esc cancels",
-            (Self::CircleTwoRadius, 0) => "Click the first point on the circle · Esc cancels",
-            (Self::CircleTwoRadius, 1) => "Click the second point on the circle · Esc cancels",
-            (Self::CircleTwoRadius, _) => {
-                "Click to choose the center side and radius · Esc cancels"
-            }
-            (Self::CircleThree, 0) => "Click the first point on the circle · Esc cancels",
-            (Self::CircleThree, 1) => "Click the second point on the circle · Esc cancels",
-            (Self::CircleThree, _) => "Click the third point on the circle · Esc cancels",
-            (Self::Fillet, _) => {
-                "Click a corner of two lines or arcs to round it with the Inspector radius · Esc ends"
-            }
-            (Self::Chamfer, _) => {
-                "Click a corner of two lines or arcs to chamfer it by the Inspector setback · Esc ends"
-            }
-            (Self::Text, _) => {
-                "Click to place the Inspector text at its anchor · click a letter to edit it · Esc ends"
-            }
-            _ => "Click the first point, then the second point · Esc cancels",
-        }
-    }
 }
 
 fn input_point(click: Click) -> PointInput {
@@ -262,7 +230,7 @@ impl SketchEditor {
             } else {
                 self.arc_start = Some(click);
             }
-            self.message = tool.mode_prompt(clicks.len() + 1).into();
+            self.set_tool_status();
             return;
         }
         let result = mode_input(tool, &clicks, click)
@@ -285,7 +253,7 @@ impl SketchEditor {
                 self.first = None;
                 self.first_anchor = None;
                 self.arc_start = None;
-                self.message = tool.mode_prompt(0).into();
+                self.set_committed_status(tool);
             }
         }
     }
