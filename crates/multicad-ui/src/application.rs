@@ -10,6 +10,7 @@ mod library;
 mod mechanical_imports;
 mod native_picker;
 mod print;
+mod render;
 mod save_preview;
 mod schedule_files;
 mod symbol_files;
@@ -973,8 +974,9 @@ impl Application {
                 )
                 .map_err(|e| e.to_string())?;
                 p.session.commit(prepared).map_err(|e| e.to_string())?;
+                self.open_render_tab();
                 self.message = format!(
-                    "{name} · view captured ({}); hand it to Blender with the MCP blender_handoff tool",
+                    "{name} · camera and {} style captured from the render viewport",
                     render_display_label(display)
                 );
             }
@@ -991,7 +993,10 @@ impl Application {
                 p.sketch.camera = crate::render_view::restore(&scene.camera, height)?;
                 p.sketch
                     .set_display_style(crate::render_view::style_of(scene.display));
-                self.message = "Render view shown in the viewport".into();
+                let label = render_display_label(scene.display);
+                self.open_render_tab();
+                self.message =
+                    format!("Stored render camera and {label} style shown in the render viewport");
             }
             Command::Extension(
                 id @ (mechanical_imports::IMPORT_STEP
@@ -1891,7 +1896,7 @@ impl Application {
             mode: self.mode,
             workspace: workspace.tabs[self.tab.min(workspace.tabs.len() - 1)].title,
             sketch_editing: self.current().sketch.editing,
-            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export),
+            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab(),
             text_input: ctx.text_edit_focused(),
             blocked: self.file_action.is_some()
                 || self.recovery_open
@@ -2020,7 +2025,7 @@ impl Application {
                 ShortcutAction::Pan(_) => {}
             }
         }
-        if !matches!(self.mode, Mode::Parameters | Mode::Export)
+        if (!matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab())
             && !self.shortcut_context(ctx).blocked
             && !self.focus_search
             && !self.focus_command
@@ -2231,7 +2236,7 @@ impl Application {
                         .show(ui, |ui| p.editor.show(ui, &p.session));
                 } else if self.mode == Mode::Export && self.print_tab() {
                     self.show_print(ui);
-                } else if self.mode == Mode::Export {
+                } else if self.mode == Mode::Export && !self.render_tab() {
                     let allow_io = self.export_io_allowed();
                     let p = self.current_mut();
                     p.exchange.show(ui, &mut p.session, allow_io);
@@ -2250,6 +2255,9 @@ impl Application {
                         ctx.request_repaint();
                     }
                 } else {
+                    if self.render_tab() {
+                        self.render_sidebar(ui);
+                    }
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
                     let before = p.session.revision();

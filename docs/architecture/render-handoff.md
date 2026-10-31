@@ -96,14 +96,24 @@ invalid or stale, or no Part in scope has a current solid.
 
 ## Access
 
-- **Window.** Export → Render:
-  - **Capture render view** stores the current viewport camera and display
+- **Window.** Export → Render shows the 3D viewport with a **Render
+  scene** sidebar (`crates/multicad-ui/src/application/render.rs`). The
+  sidebar lists the stored scene's projection, eye, target, display style,
+  light count and scope, and says whether the visible viewport currently
+  shows the stored camera. Common and Print keep their own forms.
+  - **Capture render view** stores the render viewport's camera and display
     style in the document's render scene, creating one with a default sun
     if there is none. It is one undoable transaction.
-  - **Show render view** sets the viewport to the stored camera and
+  - **Show render view** sets the render viewport to the stored camera and
     display style.
 
-  Both only set camera state; nothing renders or animates while idle.
+  Either command switches to the Render tab first, so its receipt always
+  describes the viewport in front of the user. Both only set camera state;
+  nothing renders or animates while idle.
+- **Blender handoff in the window.** The Render sidebar states plainly
+  that the window does not write the handoff yet, and that an automation
+  client connected through external control can write it. The ribbon's
+  Blender handoff button stays disabled.
 - **MCP.** `set_render_scene`, `create_appearance`, `assign_appearance` and
   `blender_handoff`. The handoff writes `NAME.glb` and `NAME.render.json`
   into the server's export folder, through partial files that are renamed
