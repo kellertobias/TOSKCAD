@@ -3,6 +3,7 @@
   "version": 1,
   "examples": [
     { "file": "welded-workbench.tcd" },
-    { "file": "front-panel.tcd" }
+    { "file": "front-panel.tcd" },
+    { "file": "apartment.tcd", "requires": ["welded-workbench.tcd"] }
   ]
 }
