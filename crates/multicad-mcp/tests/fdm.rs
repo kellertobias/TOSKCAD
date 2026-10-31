@@ -94,16 +94,66 @@ fn mcp_adds_inspects_edits_and_removes_fdm_aids() {
     assert_eq!(s["issues"], json!([]));
     let t = aids.iter().find(|a| a["name"] == "Tab").unwrap();
     assert_eq!(t["target"]["relation"], "overlapping");
+    assert_eq!(t["contact_issues"], json!([]));
+    let snap = &t["exact_contact"]["origin_mm"];
+    assert!((snap[0].as_f64().unwrap() - 40.).abs() < 1e-4, "{snap}");
+
+    // The exact contact query places a tab on the block's +Y side without
+    // changing anything; a point inside the outline is refused.
+    let contact = run(
+        "fdm_tab_contact",
+        json!({ "target": part, "near_mm": [12, 25, 6] }),
+    )
+    .unwrap();
+    assert_eq!(contact["revision"], 6);
+    let origin = contact["origin_mm"].as_array().unwrap();
+    assert!((origin[0].as_f64().unwrap() - 12.).abs() < 1e-4);
+    assert!((origin[1].as_f64().unwrap() - 20.).abs() < 1e-6);
+    assert_eq!(origin[2].as_f64().unwrap(), 0.);
+    assert!((contact["angle_deg"].as_f64().unwrap() - 90.).abs() < 1e-3);
+    let inside = run(
+        "fdm_tab_contact",
+        json!({ "target": part, "near_mm": [12, 10, 6] }),
+    )
+    .unwrap_err();
+    assert!(inside.to_string().contains("inside"), "{inside}");
+    // A tab placed off the part is reported with a placement finding.
+    let off = run(
+        "set_fdm_aid",
+        json!({ "expected_revision": 6, "name": "Off", "kind": "tab",
+            "target": part, "origin_mm": [12, 25, 0], "angle_deg": 90,
+            "length": mm(8.), "width": mm(6.), "thickness": mm(0.4) }),
+    )
+    .unwrap();
+    let report = run("fdm_aid_report", json!({})).unwrap();
+    let o = report["aids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Off")
+        .unwrap()
+        .clone();
+    assert!(
+        o["contact_issues"][0]
+            .as_str()
+            .unwrap()
+            .contains("does not touch")
+    );
+    run(
+        "remove_fdm_aid",
+        json!({ "expected_revision": 7, "aid": off["aid"] }),
+    )
+    .unwrap();
 
     // Edit the support gap below the process gap: the report says so.
     let edited = run(
         "set_fdm_aid",
-        json!({ "expected_revision": 6, "aid": support_aid, "kind": "support",
+        json!({ "expected_revision": 8, "aid": support_aid, "kind": "support",
             "target": part, "process": process, "footprint_mm": [5, 5],
             "length": mm(30.), "width": mm(10.), "base": mm(-10.), "gap": mm(0.1) }),
     )
     .unwrap();
-    assert_eq!(edited["revision"], 7);
+    assert_eq!(edited["revision"], 9);
     assert_eq!(edited["aid"], support["aid"]);
     assert_eq!(edited["part"], support["part"]);
     let report = run("fdm_aid_report", json!({})).unwrap();
@@ -124,7 +174,7 @@ fn mcp_adds_inspects_edits_and_removes_fdm_aids() {
     // A support footprint with nothing above it is refused; nothing changes.
     let refused = run(
         "set_fdm_aid",
-        json!({ "expected_revision": 7, "name": "Stray", "kind": "support",
+        json!({ "expected_revision": 9, "name": "Stray", "kind": "support",
             "target": part, "footprint_mm": [200, 200],
             "length": mm(5.), "width": mm(5.), "gap": mm(0.2) }),
     )
@@ -134,7 +184,7 @@ fn mcp_adds_inspects_edits_and_removes_fdm_aids() {
     assert!(
         run(
             "set_fdm_aid",
-            json!({ "expected_revision": 7, "name": "Gapless", "kind": "support",
+            json!({ "expected_revision": 9, "name": "Gapless", "kind": "support",
                 "target": part, "footprint_mm": [5, 5],
                 "length": mm(5.), "width": mm(5.) }),
         )
@@ -143,10 +193,10 @@ fn mcp_adds_inspects_edits_and_removes_fdm_aids() {
 
     let removed = run(
         "remove_fdm_aid",
-        json!({ "expected_revision": 7, "aid": support_aid }),
+        json!({ "expected_revision": 9, "aid": support_aid }),
     )
     .unwrap();
-    assert_eq!(removed["revision"], 8);
+    assert_eq!(removed["revision"], 10);
     let report = run("fdm_aid_report", json!({})).unwrap();
     assert_eq!(report["aids"].as_array().unwrap().len(), 1);
 }

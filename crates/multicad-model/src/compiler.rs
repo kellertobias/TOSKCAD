@@ -76,6 +76,9 @@ pub struct ModelSnapshot {
     pub member_paths: BTreeMap<EntityId, model::PathSegment>,
     /// Sheet-metal base layouts by sheet feature.
     pub sheet_layouts: BTreeMap<EntityId, crate::sheet_metal::SheetLayout>,
+    /// FDM aid inspections of a full evaluation, so a preview can show and
+    /// gate an aid's contacts; an inspection failure is kept as its message.
+    pub fdm_aids: Result<Vec<crate::AidInspection>, String>,
 }
 impl ModelSnapshot {
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
@@ -1152,11 +1155,15 @@ impl Compiler {
                 panel_frames,
                 member_paths,
                 sheet_layouts,
+                fdm_aids: Ok(vec![]),
             },
         };
         if full {
             model.snapshot.envelope_boxes = model.envelope_boxes(document);
             model.snapshot.guide_outlines = model.guide_outlines(document);
+            if model::aids(document).next().is_some() {
+                model.snapshot.fdm_aids = model.fdm_aids(document).map_err(|e| e.to_string());
+            }
         }
         Ok(model)
     }

@@ -3560,6 +3560,24 @@ impl SketchEditor {
                 "Wall location picked · check the fit in the Inspector, then Preview".into();
         }
         if !self.measurement.active()
+            && self.model.fdm_aid_active()
+            && let Some(message) = self.model.fdm_aid_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message = message;
+        }
+        if !self.measurement.active()
             && self.model.outline_active()
             && self.model.outline_viewport(
                 session,

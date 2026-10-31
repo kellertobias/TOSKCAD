@@ -1,6 +1,8 @@
 //! FDM aid inspector: add or edit a breakaway tab, thin bridge or removable
 //! support as its own Part serving a finished Part. The finished Part is
-//! never changed; a support's height is derived from it natively.
+//! never changed; a support's height is derived from it natively. Contacts
+//! and directions can be picked on the part in the viewer (`placement`).
+mod placement;
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -16,6 +18,7 @@ use multicad_core::{
         length,
     },
 };
+pub(crate) use placement::{PickRole, Review, placement_block};
 
 /// The typed intent sent to native preview and Apply.
 #[derive(Clone, Debug)]
@@ -167,6 +170,9 @@ pub(super) struct FdmAidPanel {
     /// Why the finished Part was not taken from the selection.
     seed_note: Option<String>,
     error: Option<String>,
+    picking: Option<PickRole>,
+    hover: Option<placement::Hover>,
+    review: Option<Review>,
 }
 impl FdmAidPanel {
     pub fn new(document: &Document, name: String) -> Self {
@@ -200,6 +206,10 @@ impl FdmAidPanel {
             base: field(0., "mm"),
             gap: field(0.2, "mm"),
             error: None,
+            // A new aid starts by picking its contact on the part.
+            picking: Some(PickRole::Contact),
+            hover: None,
+            review: None,
         }
     }
     pub fn existing(document: &Document, feature: EntityId) -> Result<Self, String> {
@@ -207,6 +217,7 @@ impl FdmAidPanel {
         let mut form = Self::new(document, String::new());
         form.existing = Some(feature);
         form.feature = feature;
+        form.picking = None;
         form.body = aid.output.body;
         form.name = document
             .get(aid.output.body)
@@ -330,6 +341,18 @@ impl FdmAidPanel {
             },
         })
     }
+    /// The preview state Apply sees: a ready preview whose native contact
+    /// check refuses the placement is not ready to Apply.
+    fn apply_gate<'a>(&self, preview: PreviewState<'a>) -> PreviewState<'a> {
+        if self
+            .current_review()
+            .is_some_and(|review| review.blocked.is_some())
+        {
+            PreviewState::Idle
+        } else {
+            preview
+        }
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -346,7 +369,11 @@ impl FdmAidPanel {
                     (AidKind::Bridge, "Bridge"),
                     (AidKind::Support, "Support"),
                 ] {
-                    changed |= ui.radio_value(&mut self.kind, kind, label).changed();
+                    if ui.radio_value(&mut self.kind, kind, label).changed() {
+                        changed = true;
+                        self.picking = Some(PickRole::Contact);
+                        self.hover = None;
+                    }
                 }
             });
         }
@@ -386,6 +413,7 @@ impl FdmAidPanel {
             "None · contact checks only",
         );
         ui.separator();
+        changed |= self.show_placement(ui, document);
         match self.kind {
             AidKind::Tab => {
                 for (axis, f) in ["X", "Y", "Z"].iter().zip(&mut self.origin) {
@@ -452,7 +480,10 @@ impl FdmAidPanel {
         if let Err(error) = &validation {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
-        let action = form::actions(ui, validation.is_ok(), changed, self.stamp, preview);
+        // A ready preview whose native contact check refuses the placement
+        // offers Preview again but never Apply.
+        let gate = self.apply_gate(preview);
+        let action = form::actions(ui, validation.is_ok(), changed, self.stamp, gate);
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
@@ -478,7 +509,7 @@ impl FdmAidPanel {
                 }
             },
             Some(FormAction::Apply)
-                if preview.ready(self.stamp) && self.request(document, enabled).is_ok() =>
+                if gate.ready(self.stamp) && self.request(document, enabled).is_ok() =>
             {
                 Some(ModelEvent::Apply)
             }
@@ -559,5 +590,223 @@ mod tests {
             .prepare(&s, Actor::local(Channel::Ui))
             .unwrap_err();
         assert!(error.contains("thickness"), "{error}");
+    }
+
+    fn surface(
+        point: [f64; 3],
+        normal: [f64; 3],
+        exact_plane: bool,
+    ) -> crate::viewport::SurfacePoint {
+        crate::viewport::SurfacePoint {
+            point_mm: point,
+            normal,
+            exact_plane,
+        }
+    }
+    fn second_part(s: &mut Session) -> EntityId {
+        let post = PrimitiveRequest::new(
+            "Post",
+            PrimitiveParameters::Box {
+                size: [length(10.), length(10.), length(30.)],
+                frame: PrimitiveFrame {
+                    origin: [length(60.), length(0.), length(0.)],
+                    ..Default::default()
+                },
+            },
+        );
+        let p =
+            model::prepare_primitive(s, s.revision(), Actor::local(Channel::Ui), &post).unwrap();
+        s.commit(p.prepared).unwrap();
+        post.body
+    }
+
+    #[test]
+    fn picks_fill_the_inspector_coordinates_for_each_aid_kind() {
+        let (mut s, block) = session();
+        let post = second_part(&mut s);
+        let doc = s.document();
+        // Tab: an exact -Y face pick sits at the given base, pointing -Y.
+        let mut tab = FdmAidPanel::new(doc, "Tab".into());
+        assert_eq!(tab.picking, Some(PickRole::Contact));
+        let stamp = tab.stamp();
+        let message = tab
+            .pick_surface(
+                doc,
+                block,
+                surface([12.5, 0., 20.], [0., -1., 0.], true),
+                Some(15.),
+            )
+            .unwrap();
+        assert!(message.contains("exact plane"), "{message}");
+        assert_ne!(tab.stamp(), stamp);
+        assert_eq!(tab.picking, None);
+        assert_eq!(tab.target, Some(block));
+        assert_eq!(tab.origin_mm(doc).unwrap(), [12.5, 0., 15.]);
+        assert_eq!(tab.angle_text(), "-90");
+        // Aim the direction in the build plane, in whole degrees.
+        tab.picking = Some(PickRole::Direction);
+        tab.aim(doc, [22.4, 9.8, 15.]).unwrap();
+        assert_eq!(tab.angle_text(), "45");
+        assert!(tab.aim(doc, [12.5, 0., 15.]).is_err());
+        // A top-face pick and an aid Part are refused without a change.
+        tab.picking = Some(PickRole::Contact);
+        let stamp = tab.stamp();
+        let error = tab
+            .pick_surface(
+                doc,
+                block,
+                surface([10., 10., 25.], [0., 0., 1.], true),
+                Some(15.),
+            )
+            .unwrap_err();
+        assert!(error.contains("side face"), "{error}");
+        assert!(
+            tab.pick_surface(
+                doc,
+                EntityId::new(),
+                surface([0.; 3], [1., 0., 0.], true),
+                None
+            )
+            .is_err()
+        );
+        // The contact goes on the chosen finished Part, not a neighbour.
+        let error = tab
+            .pick_surface(
+                doc,
+                post,
+                surface([60., 5., 20.], [-1., 0., 0.], true),
+                Some(0.),
+            )
+            .unwrap_err();
+        assert!(error.contains("chosen finished Part"), "{error}");
+        assert_eq!(tab.stamp(), stamp);
+
+        // Bridge: start on the block, end on the post makes it the second Part.
+        let mut bridge = FdmAidPanel::new(doc, "Bridge".into());
+        bridge.kind = AidKind::Bridge;
+        bridge
+            .pick_surface(
+                doc,
+                block,
+                surface([40., 10., 20.], [1., 0., 0.], true),
+                Some(15.),
+            )
+            .unwrap();
+        assert_eq!(bridge.picking, Some(PickRole::End));
+        bridge
+            .pick_surface(
+                doc,
+                post,
+                surface([60., 5., 20.], [-1., 0., 0.], true),
+                Some(0.),
+            )
+            .unwrap();
+        assert_eq!(bridge.picking, None);
+        assert_eq!((bridge.target, bridge.other), (Some(block), Some(post)));
+        assert_eq!(bridge.origin_mm(doc).unwrap(), [40., 10., 20.]);
+        let command = bridge.request(doc, true).unwrap();
+        assert!(matches!(
+            command.request.aid.shape,
+            AidShape::Bridge { other: Some(o), .. } if o == post
+        ));
+
+        // Support: the footprint centres under the pick.
+        let mut support = FdmAidPanel::new(doc, "Support".into());
+        support.kind = AidKind::Support;
+        support.length = field(10., "mm");
+        support.width = field(4., "mm");
+        support
+            .pick_surface(
+                doc,
+                block,
+                surface([20., 10., 15.], [0., 0., -1.], true),
+                Some(15.),
+            )
+            .unwrap();
+        assert_eq!(support.origin_mm(doc).unwrap(), [15., 8., 0.]);
+        // Aimed at +Y, the footprint is re-centred on the same point.
+        support.picking = Some(PickRole::Direction);
+        support.aim(doc, [20., 30., 0.]).unwrap();
+        assert_eq!(support.angle_text(), "90");
+        support.picking = Some(PickRole::Contact);
+        support
+            .pick_surface(
+                doc,
+                block,
+                surface([20., 10., 15.], [0., 0., -1.], true),
+                Some(15.),
+            )
+            .unwrap();
+        assert_eq!(support.origin_mm(doc).unwrap(), [22., 5., 0.]);
+        let prepared = support
+            .request(doc, true)
+            .unwrap()
+            .prepare(&s, Actor::local(Channel::Ui))
+            .unwrap();
+        Compiler::default()
+            .compile(prepared.prepared.document(), s.revision() + 1)
+            .unwrap();
+    }
+
+    #[test]
+    fn typed_inspector_values_drive_the_marker_and_direction_handle() {
+        let (s, block) = session();
+        let doc = s.document();
+        let mut tab = FdmAidPanel::new(doc, "Tab".into());
+        tab.pick_surface(
+            doc,
+            block,
+            surface([12.5, 0., 20.], [0., -1., 0.], true),
+            Some(15.),
+        )
+        .unwrap();
+        // Typed coordinates replace the picked ones as the marker position
+        // the viewer draws from, with no pick involved.
+        tab.origin[0] = field(30., "mm");
+        tab.origin[1] = field(20., "mm");
+        assert_eq!(tab.origin_mm(doc).unwrap(), [30., 20., 15.]);
+        // The direction handle starts from the typed contact: aiming at a
+        // point straight +X of it gives 0 degrees, not the picked -90.
+        tab.picking = Some(PickRole::Direction);
+        tab.aim(doc, [40., 20., 15.]).unwrap();
+        assert_eq!(tab.angle_text(), "0");
+        // An incomplete typed value hides the marker instead of drawing a
+        // stale position, and the handle cannot be aimed from it.
+        tab.origin[0].text = "not a number".into();
+        assert_eq!(tab.origin_mm(doc), None);
+        tab.picking = Some(PickRole::Direction);
+        assert!(tab.aim(doc, [40., 20., 15.]).is_err());
+    }
+
+    #[test]
+    fn a_blocked_review_keeps_preview_but_never_lets_apply_through() {
+        let (s, block) = session();
+        let mut form = FdmAidPanel::new(s.document(), "Tab".into());
+        let ready = PreviewState::Ready { stamp: form.stamp };
+        let review = |blocked: Option<&str>, stamp| Review {
+            stamp,
+            result: Err("not measured".into()),
+            blocked: blocked.map(Into::into),
+        };
+        assert!(form.apply_gate(ready).ready(form.stamp));
+        form.set_review(Some(review(
+            Some("The tab does not touch Block"),
+            form.stamp,
+        )));
+        assert!(!form.apply_gate(ready).ready(form.stamp));
+        // A review of older inputs does not apply to the current ones.
+        let old = form.stamp;
+        form.pick_surface(
+            s.document(),
+            block,
+            surface([12.5, 0., 20.], [0., -1., 0.], true),
+            Some(15.),
+        )
+        .unwrap();
+        form.set_review(Some(review(Some("stale"), old)));
+        let ready = PreviewState::Ready { stamp: form.stamp };
+        assert!(form.apply_gate(ready).ready(form.stamp));
+        form.set_review(Some(review(None, form.stamp)));
+        assert!(form.apply_gate(ready).ready(form.stamp));
     }
 }
