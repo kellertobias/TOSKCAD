@@ -2,9 +2,10 @@
 //! coordinates, set explicit instance overrides and place doors and windows
 //! by segment and offset. New types and the wall commit in one transaction.
 use super::{
-    FormStamp, PreviewState,
+    FormStamp, PreviewState, TerminationViewport,
     dimension::DimensionField,
     form::{self, FormAction, ModelEvent, ModelRequest},
+    outline::{OutlineEditor, OutlineKind, plan_targets},
 };
 use crate::{controls, egui};
 use multicad_core::{
@@ -16,6 +17,7 @@ use multicad_core::{
         OpeningKind, OpeningTypeDefinition, Swing, WallChange, WallDefinition, WallRequest,
         WallTypeDefinition, length,
     },
+    parameters::Unit,
 };
 
 /// The typed wall intent sent to native preview and Apply.
@@ -105,8 +107,9 @@ pub(super) struct WallPanel {
     height: DimensionField,
     justification: Justification,
     override_size: bool,
-    path: String,
-    closed: bool,
+    outline: OutlineEditor,
+    /// Snap targets from other walls and slabs, cached per document revision.
+    targets: Option<(u64, Vec<[f64; 2]>)>,
     level: Option<EntityId>,
     base_z: DimensionField,
     openings: Vec<OpeningRow>,
@@ -136,8 +139,8 @@ impl WallPanel {
             height: DimensionField::from_dimension(&length(2500.), "mm")?,
             justification: Justification::Center,
             override_size: false,
-            path: "0, 0\n4000, 0".into(),
-            closed: false,
+            outline: OutlineEditor::from_mm(OutlineKind::WallPath, &[[0., 0.], [4000., 0.]], false),
+            targets: None,
             level: model::levels(document).next().map(|e| e.id),
             base_z: DimensionField::from_dimension(&length(0.), "mm")?,
             openings: vec![],
@@ -159,13 +162,7 @@ impl WallPanel {
         panel.height =
             DimensionField::from_dimension(wall.height.as_ref().unwrap_or(&ty.height), "mm")?;
         panel.justification = wall.justification.unwrap_or(ty.justification);
-        panel.path = wall
-            .path
-            .iter()
-            .map(|[x, y]| format!("{}, {}", literal(x), literal(y)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        panel.closed = wall.closed;
+        panel.outline = OutlineEditor::new(OutlineKind::WallPath, &wall.path, wall.closed)?;
         panel.level = wall.level;
         panel.base_z = DimensionField::from_dimension(&wall.base_z, "mm")?;
         panel.cutouts = wall.cutouts.clone();
@@ -192,26 +189,47 @@ impl WallPanel {
     pub fn label(&self) -> &'static str {
         "Wall"
     }
-    fn points(&self) -> Result<Vec<[Dimension; 2]>, String> {
-        self.path
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .enumerate()
-            .map(|(i, line)| {
-                let values: Vec<f64> = line
-                    .split(',')
-                    .map(|v| v.trim().parse::<f64>())
-                    .collect::<Result<_, _>>()
-                    .map_err(|_| format!("Path line {} must be \"x, y\" in millimeters", i + 1))?;
-                match values.as_slice() {
-                    [x, y] if x.is_finite() && y.is_finite() => Ok([length(*x), length(*y)]),
-                    _ => Err(format!(
-                        "Path line {} must be \"x, y\" in millimeters",
-                        i + 1
-                    )),
-                }
-            })
-            .collect()
+    /// World height of the plane the path is drawn on: level plus base.
+    fn plane_z(&self, document: &Document) -> f64 {
+        let parameters = match multicad_core::parameters::evaluate(document) {
+            Ok(p) => p,
+            Err(_) => return 0.,
+        };
+        let level = self
+            .level
+            .and_then(|l| model::resolve_level(document, &parameters, l).ok())
+            .map_or(0., |l| l.elevation_mm);
+        let base = self
+            .base_z
+            .resolve(document)
+            .ok()
+            .and_then(|d| d.value_in(Unit::Millimeter, Some(&parameters)).ok())
+            .unwrap_or(0.);
+        level + base
+    }
+    /// Draw and edit the path on the plan; returns whether inputs changed.
+    pub fn viewport(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        view: TerminationViewport<'_>,
+    ) -> bool {
+        if self.targets.as_ref().is_none_or(|(r, _)| *r != revision) {
+            let exclude = self.editing.then_some(self.feature);
+            self.targets = Some((revision, plan_targets(document, exclude)));
+        }
+        let targets = self
+            .targets
+            .as_ref()
+            .map(|(_, t)| t.clone())
+            .unwrap_or_default();
+        let z = self.plane_z(document);
+        let changed = self.outline.viewport(document, &view, z, &targets);
+        if changed {
+            self.stamp.changed();
+            self.error = None;
+        }
+        changed
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<WallCommand, String> {
         if !enabled {
@@ -289,8 +307,8 @@ impl WallPanel {
             wall: WallDefinition {
                 output: BodyOutput { body: self.body },
                 wall_type,
-                path: self.points()?,
-                closed: self.closed,
+                path: self.outline.dimensions(document)?,
+                closed: self.outline.closed(),
                 level: self.level,
                 base_z: self.base_z.resolve(document)?,
                 thickness: overrides
@@ -396,18 +414,13 @@ impl WallPanel {
             .response
             .on_hover_text("Side of the drawn path the wall occupies, looking along the path");
         ui.separator();
-        ui.label("Path points (x, y in mm, one per line)");
-        changed |= ui
-            .add(
-                egui::TextEdit::multiline(&mut self.path)
-                    .desired_rows(4)
-                    .desired_width(ui.available_width()),
-            )
-            .changed();
-        changed |= ui.checkbox(&mut self.closed, "Close into a room").changed();
-        changed |= self
-            .base_z
-            .show(ui, "Base elevation", "Height of the wall base above Z = 0");
+        changed |= self.base_z.show(
+            ui,
+            "Base elevation",
+            "Height of the wall base above its level",
+        );
+        let plane = format!("the wall base plane (z = {} mm)", self.plane_z(document));
+        changed |= self.outline.show(ui, document, &plane);
         ui.separator();
         ui.strong("Doors and windows");
         let opening_types: Vec<_> = model::opening_types(document)
@@ -578,7 +591,9 @@ mod tests {
             panel.wall_type.is_none(),
             "an empty project starts with a new type"
         );
-        panel.path = "0, 0\n4000, 0\n4000, 3000".into();
+        panel
+            .outline
+            .set_points(&[[0., 0.], [4000., 0.], [4000., 3000.]], false);
         panel.openings.push(OpeningRow::new(false).unwrap());
         let mut window = OpeningRow::new(true).unwrap();
         window.segment = 2;
@@ -620,12 +635,60 @@ mod tests {
                 < 1e-3
         );
 
-        // Malformed path lines are reported, not guessed.
-        edit.path = "0, 0\nfour, 0".into();
+        // Malformed corner fields are reported, not guessed.
+        edit.outline = OutlineEditor::from_mm(OutlineKind::WallPath, &[[0., 0.]], false);
+        edit.outline.paste_points("0, 0\n4000, 0").unwrap();
+        let mut broken = WallPanel::existing(session.document(), feature, "Wall 1".into()).unwrap();
+        broken.outline = OutlineEditor::new(
+            OutlineKind::WallPath,
+            &[[length(0.), length(0.)], [length(1.), length(0.)]],
+            false,
+        )
+        .unwrap();
+        broken.outline.set_text(1, 0, "four");
         assert!(
-            edit.request(session.document(), true)
+            broken
+                .request(session.document(), true)
                 .unwrap_err()
-                .contains("Path line 2")
+                .contains("Corner 2 x")
         );
+    }
+
+    #[test]
+    fn a_room_drawn_by_viewport_clicks_previews_as_a_closed_wall_and_cancel_keeps_it() {
+        let session = Session::new(Document::new("Drawn room").unwrap()).unwrap();
+        let document = session.document();
+        let mut panel = WallPanel::new(document, "Room".into()).unwrap();
+        panel.outline.start_drawing();
+        for raw in [
+            [2., 3.],
+            [4004., -2.],
+            [3998., 3003.],
+            [-3., 2996.],
+            [4., 4.],
+        ] {
+            let points = panel.outline.positions(document).unwrap();
+            panel.outline.click(raw, &points, &[], 25.);
+        }
+        assert!(panel.outline.closed() && !panel.outline.capturing());
+        let command = panel.request(document, true).unwrap();
+        assert!(command.wall.closed);
+        let prepared = command
+            .prepare(&session, Actor::local(Channel::Ui))
+            .unwrap();
+        let model = Compiler::default()
+            .compile(prepared.prepared.document(), 0)
+            .unwrap();
+        let volume = model.snapshot().shapes[&prepared.outputs[0].feature].volume_mm3;
+        // Centerline perimeter 14 m x 200 mm x 2500 mm.
+        assert!((volume - 14000. * 200. * 2500.).abs() < 1e-3, "{volume}");
+
+        // Redrawing then cancelling restores the closed room exactly.
+        let before = panel.outline.dimensions(document).unwrap();
+        panel.outline.start_drawing();
+        panel.outline.click([500., 500.], &[], &[], 25.);
+        assert!(panel.outline.cancel());
+        assert_eq!(panel.outline.dimensions(document).unwrap(), before);
+        assert!(panel.outline.closed());
     }
 }

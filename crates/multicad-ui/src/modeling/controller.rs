@@ -520,6 +520,30 @@ impl ModelToolController {
         }
         changed
     }
+    /// A wall or slab outline is shown and edited on the plan.
+    pub fn outline_active(&self) -> bool {
+        match &self.form {
+            Some(ModelForm::Wall(_)) => true,
+            Some(ModelForm::Architecture(panel)) => panel.outlines(),
+            _ => false,
+        }
+    }
+    pub fn outline_viewport(
+        &mut self,
+        session: &Session,
+        view: super::TerminationViewport<'_>,
+    ) -> bool {
+        let (document, revision) = (session.document(), session.revision());
+        let changed = match self.form.as_mut() {
+            Some(ModelForm::Wall(panel)) => panel.viewport(document, revision, view),
+            Some(ModelForm::Architecture(panel)) => panel.viewport(document, revision, view),
+            _ => false,
+        };
+        if changed {
+            self.invalidate();
+        }
+        changed
+    }
     pub fn begin_sheet(
         &mut self,
         session: &Session,
