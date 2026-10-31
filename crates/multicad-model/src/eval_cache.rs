@@ -244,7 +244,13 @@ impl<'a> Session<'a> {
     ) -> Self {
         cache.clock += 1;
         let mut salt = FORMAT.to_vec();
-        salt.extend(format!("|{:?}|{:?}|", compiler.policy, compiler.mesh).bytes());
+        salt.extend(
+            format!(
+                "|{:?}|{:?}|{}|",
+                compiler.policy, compiler.mesh, compiler.omit_display
+            )
+            .bytes(),
+        );
         let volatile_sketches = document
             .entities()
             .filter(|e| sketch_external::is_occurrence_reference(document, e.id))

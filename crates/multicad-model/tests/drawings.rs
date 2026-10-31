@@ -17,6 +17,52 @@ use multicad_model::*;
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
+#[test]
+fn drawing_only_compilation_preserves_exact_vectors_and_separates_display_cache_entries() {
+    let fixture = Fixture::new();
+    let document = fixture.s.document();
+    let revision = fixture.s.revision();
+    let mut cache = EvaluationCache::default();
+    let full = Compiler::default()
+        .compile_cached(&mut cache, document, revision, None)
+        .unwrap();
+    assert!(
+        full.snapshot()
+            .shapes
+            .values()
+            .all(|s| !s.mesh.indices.is_empty())
+    );
+    let exact = Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile_cached(&mut cache, document, revision, None)
+    .unwrap();
+    assert!(
+        exact
+            .snapshot()
+            .shapes
+            .values()
+            .all(|s| s.mesh.indices.is_empty() && s.edges.is_empty() && s.vertices.is_empty())
+    );
+    assert_eq!(
+        full.drawings(document, revision, &DrawingProviders::default())
+            .unwrap(),
+        exact
+            .drawings(document, revision, &DrawingProviders::default())
+            .unwrap()
+    );
+    let full_again = Compiler::default()
+        .compile_cached(&mut cache, document, revision, None)
+        .unwrap();
+    assert!(
+        full_again
+            .snapshot()
+            .shapes
+            .values()
+            .all(|s| !s.mesh.indices.is_empty())
+    );
+}
 fn commit(s: &mut Session, edits: Vec<Mutation>) {
     s.apply(Request {
         expected_revision: s.revision(),

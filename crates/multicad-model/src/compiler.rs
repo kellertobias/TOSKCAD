@@ -279,6 +279,9 @@ impl Model {
 pub struct Compiler {
     pub policy: GeometryPolicy,
     pub mesh: MeshOptions,
+    /// Exact derived operations can omit viewport-only tessellation and picking
+    /// geometry. Native solids, topology and dimensional references remain complete.
+    pub omit_display: bool,
 }
 pub const MAX_MODEL_FEATURES: usize = 4096;
 pub const MAX_MODEL_TRIANGLES: usize = 4_000_000;
@@ -523,11 +526,27 @@ impl Compiler {
                     bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
                     volume_mm3: solid.volume_mm3().map_err(|e| error(Some(id), e))?,
                     solid_count: solid.solid_count().map_err(|e| error(Some(id), e))?,
-                    mesh: solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?,
-                    edges: solid
-                        .display_edges(self.mesh.linear_deflection_mm)
-                        .map_err(|e| error(Some(id), e))?,
-                    vertices: solid.display_vertices().map_err(|e| error(Some(id), e))?,
+                    mesh: if self.omit_display {
+                        Mesh {
+                            vertices: vec![],
+                            indices: vec![],
+                            face_indices: vec![],
+                        }
+                    } else {
+                        solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?
+                    },
+                    edges: if self.omit_display {
+                        vec![]
+                    } else {
+                        solid
+                            .display_edges(self.mesh.linear_deflection_mm)
+                            .map_err(|e| error(Some(id), e))?
+                    },
+                    vertices: if self.omit_display {
+                        vec![]
+                    } else {
+                        solid.display_vertices().map_err(|e| error(Some(id), e))?
+                    },
                     topology: topology.clone(),
                 };
                 triangles = triangles.saturating_add(snapshot.mesh.indices.len() / 3);
@@ -998,11 +1017,27 @@ impl Compiler {
                 bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
                 volume_mm3: solid.volume_mm3().map_err(|e| error(Some(id), e))?,
                 solid_count: solid.solid_count().map_err(|e| error(Some(id), e))?,
-                mesh: solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?,
-                edges: solid
-                    .display_edges(self.mesh.linear_deflection_mm)
-                    .map_err(|e| error(Some(id), e))?,
-                vertices: solid.display_vertices().map_err(|e| error(Some(id), e))?,
+                mesh: if self.omit_display {
+                    Mesh {
+                        vertices: vec![],
+                        indices: vec![],
+                        face_indices: vec![],
+                    }
+                } else {
+                    solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?
+                },
+                edges: if self.omit_display {
+                    vec![]
+                } else {
+                    solid
+                        .display_edges(self.mesh.linear_deflection_mm)
+                        .map_err(|e| error(Some(id), e))?
+                },
+                vertices: if self.omit_display {
+                    vec![]
+                } else {
+                    solid.display_vertices().map_err(|e| error(Some(id), e))?
+                },
                 topology: topology.clone(),
             };
             triangles = triangles.saturating_add(snapshot.mesh.indices.len() / 3);
