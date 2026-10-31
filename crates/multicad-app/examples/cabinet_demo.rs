@@ -2325,10 +2325,12 @@ fn write_new_or_replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     let file = file.persist(path)?;
-    let mut permissions = file.metadata()?.permissions();
     #[cfg(unix)]
-    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
-    file.set_permissions(permissions)?;
+    {
+        let mut permissions = file.metadata()?.permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
+        file.set_permissions(permissions)?;
+    }
     Ok(())
 }
 
