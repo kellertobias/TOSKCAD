@@ -454,10 +454,7 @@ fn the_shipped_cabinet_with_its_pinned_hardware_is_referenced() {
     let host = compile(&session);
     let (lo, hi, count) = leaf_bounds(&host, instance);
     let original = Compiler::default().compile(&source, 0).unwrap();
-    eprintln!(
-        "cabinet leaves {count} (source leaves {}, source bodies {}), bounds {lo:?} {hi:?}",
-        original.snapshot().leaf_occurrences.len(),
-        original.snapshot().bodies.len()
-    );
-    assert!(count > 0);
+    // All physical leaves of the source, including its pinned hardware.
+    assert_eq!(count, original.snapshot().leaf_occurrences.len());
+    assert!((hi[2] - lo[2] - 2000.).abs() < 1., "{lo:?} {hi:?}");
 }
