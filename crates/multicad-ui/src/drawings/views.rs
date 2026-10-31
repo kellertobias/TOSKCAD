@@ -57,8 +57,12 @@ impl DrawingEditor {
                 self.draft.clone(),
             ));
             match self.candidate_document(session).and_then(|document| {
-                self.feed
-                    .schedule(document, session.revision(), ctx.input(|i| i.time))
+                self.feed.schedule_page(
+                    document,
+                    session.revision(),
+                    ctx.input(|i| i.time),
+                    self.draft.as_ref().expect("page with views").id,
+                )
             }) {
                 Ok(()) => {}
                 Err(error) => {

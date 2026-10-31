@@ -1,0 +1,2 @@
+Reference: toskcad-logo-blueprint-tosk-c.png.
+Print conversion: preserve the approved emblem and horizontal ToskCAD wordmark. The entire small word TOSK, rotated counterclockwise, belongs to the LEFT of the C. No K inside the C; no TK abbreviation. Black drafting strokes and typography on a white background. Generated with imagegen, then normalized to 640 pixels wide and neutral RGB with macOS ColorSync for the existing title-block PNG/PDF contract. App icon and website branding are unchanged.

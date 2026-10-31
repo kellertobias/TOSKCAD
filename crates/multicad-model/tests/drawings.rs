@@ -774,3 +774,47 @@ fn invalid_section_limits_are_rejected_before_they_enter_the_document() {
         matches!(&e.views[&f.view], ViewEvaluation::Unresolved { message } if message.contains("no projected edges"))
     );
 }
+
+#[test]
+fn selected_page_publication_omits_unrelated_views_and_rejects_a_missing_page() {
+    let mut f = Fixture::new();
+    let mut book = read(f.s.document(), f.book).unwrap();
+    let mut other = Page::new("2");
+    let unrelated = view(EntityId::new());
+    let unrelated_id = unrelated.id;
+    other.views.push(unrelated);
+    book.pages.push(other);
+    let edits = replace_edits(f.s.document(), f.book, &book).unwrap();
+    commit(&mut f.s, edits);
+    let model = Compiler::default()
+        .compile(f.s.document(), f.s.revision())
+        .unwrap();
+    let providers = DrawingProviders::default();
+    let selected = model
+        .drawing_page(f.s.document(), f.s.revision(), &providers, f.page)
+        .unwrap();
+    assert!(matches!(
+        selected.views[&f.view],
+        ViewEvaluation::Ready { .. }
+    ));
+    assert!(!selected.views.contains_key(&unrelated_id));
+    assert!(
+        selected
+            .checked_page(f.s.document(), f.s.revision(), f.book, f.page)
+            .is_ok()
+    );
+    let all = model
+        .drawings(f.s.document(), f.s.revision(), &providers)
+        .unwrap();
+    assert!(matches!(
+        all.views[&unrelated_id],
+        ViewEvaluation::Unresolved { .. }
+    ));
+    assert!(
+        model
+            .drawing_page(f.s.document(), f.s.revision(), &providers, EntityId::new())
+            .unwrap_err()
+            .message
+            .contains("missing")
+    );
+}

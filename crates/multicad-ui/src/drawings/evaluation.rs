@@ -1,7 +1,7 @@
 //! Latest-source drawing publication. The UI polls owned vectors and never
 //! evaluates native geometry or accepts a reply for a different source snapshot.
 use multicad_core::{
-    document::Document,
+    document::{Document, EntityId},
     drawings::{DrawingEvaluation, DrawingStamp},
     project_file::ContentHash,
 };
@@ -12,6 +12,14 @@ pub struct DrawingReply {
 }
 pub trait DrawingBackend {
     fn request(&mut self, document: &Document, stamp: DrawingStamp) -> Result<(), String>;
+    fn request_page(
+        &mut self,
+        document: &Document,
+        stamp: DrawingStamp,
+        _page: EntityId,
+    ) -> Result<(), String> {
+        self.request(document, stamp)
+    }
     fn poll(&mut self) -> Option<DrawingReply>;
     fn cancel(&mut self) {}
     /// Build these schedules for the snapshot on a native worker, apart
@@ -36,6 +44,7 @@ pub(super) struct DrawingFeed {
     expected: Option<DrawingStamp>,
     queued: Option<(Document, f64)>,
     pending: bool,
+    page: Option<EntityId>,
     pub result: Option<Arc<DrawingEvaluation>>,
     pub error: Option<String>,
 }
@@ -59,7 +68,22 @@ impl DrawingFeed {
         }
         self.backend.as_mut()
     }
-    pub fn schedule(&mut self, document: Document, revision: u64, now: f64) -> Result<(), String> {
+    pub fn schedule_page(
+        &mut self,
+        document: Document,
+        revision: u64,
+        now: f64,
+        page: EntityId,
+    ) -> Result<(), String> {
+        self.page = Some(page);
+        self.schedule_inner(document, revision, now)
+    }
+    fn schedule_inner(
+        &mut self,
+        document: Document,
+        revision: u64,
+        now: f64,
+    ) -> Result<(), String> {
         if let Some(backend) = self.backend.as_mut() {
             backend.cancel();
         }
@@ -125,7 +149,11 @@ impl DrawingFeed {
             let Some(stamp) = self.expected else {
                 return changed;
             };
-            match backend.request(&document, stamp) {
+            let request = match self.page {
+                Some(page) => backend.request_page(&document, stamp, page),
+                None => backend.request(&document, stamp),
+            };
+            match request {
                 Ok(()) => {
                     self.pending = true;
                     self.error = None;
@@ -140,5 +168,44 @@ impl DrawingFeed {
     }
     pub fn pending(&self) -> bool {
         self.pending || self.queued.is_some()
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+    use std::sync::Mutex;
+    struct Backend(Arc<Mutex<Vec<EntityId>>>);
+    impl DrawingBackend for Backend {
+        fn request(&mut self, _: &Document, _: DrawingStamp) -> Result<(), String> {
+            panic!("A page preview must not request every page")
+        }
+        fn request_page(
+            &mut self,
+            _: &Document,
+            _: DrawingStamp,
+            page: EntityId,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push(page);
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<DrawingReply> {
+            None
+        }
+    }
+    #[test]
+    fn page_changes_request_the_selected_page_even_when_source_revision_is_unchanged() {
+        let pages = Arc::new(Mutex::new(Vec::new()));
+        let output = pages.clone();
+        let mut feed = DrawingFeed::default();
+        feed.set_factory(Arc::new(move || Box::new(Backend(output.clone()))));
+        let document = Document::new("Page previews").unwrap();
+        let first = EntityId::new();
+        let second = EntityId::new();
+        feed.schedule_page(document.clone(), 0, 0., first).unwrap();
+        feed.tick(1.);
+        feed.schedule_page(document, 0, 1., second).unwrap();
+        feed.tick(2.);
+        assert_eq!(*pages.lock().unwrap(), vec![first, second]);
     }
 }

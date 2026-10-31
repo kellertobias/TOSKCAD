@@ -1,7 +1,7 @@
 //! Native drawing composition, sharing the bounded geometry worker while keeping
 //! native solids and projection operations off the UI thread.
 use multicad_core::{
-    document::Document,
+    document::{Document, EntityId},
     drawings::{DrawingEvaluation, DrawingStamp},
     schedules::ScheduleSpec,
 };
@@ -37,17 +37,38 @@ fn build_tables(document: &Document, model: &multicad_model::Model, mask: u64) -
         })
         .collect()
 }
+/// Request tags identify pages without changing the canonical document/hash.
+fn page_ids(document: &Document) -> Result<Vec<EntityId>, ModelError> {
+    let mut pages = Vec::new();
+    for id in multicad_core::drawings::books(document) {
+        let book = multicad_core::drawings::read(document, id).map_err(|e| ModelError {
+            entity: Some(id),
+            message: e.to_string(),
+        })?;
+        pages.extend(book.pages.into_iter().map(|page| page.id));
+    }
+    Ok(pages)
+}
 impl Backend {
     pub fn new() -> Self {
         Self {
-            runtime: Runtime::with_model_publisher(Compiler::default(), |document, model, _| {
-                model
-                    .drawings(
-                        document,
-                        model.snapshot().stamp.revision,
-                        &DrawingProviders::default(),
-                    )
-                    .map(Arc::new)
+            runtime: Runtime::with_model_publisher(Compiler::default(), |document, model, tag| {
+                let revision = model.snapshot().stamp.revision;
+                let providers = DrawingProviders::default();
+                if tag == 0 {
+                    model.drawings(document, revision, &providers).map(Arc::new)
+                } else {
+                    let page = page_ids(document)?
+                        .get((tag - 1) as usize)
+                        .copied()
+                        .ok_or_else(|| ModelError {
+                            entity: None,
+                            message: "The selected drawing page is missing".into(),
+                        })?;
+                    model
+                        .drawing_page(document, revision, &providers, page)
+                        .map(Arc::new)
+                }
             }),
             expected: None,
             schedules: None,
@@ -66,6 +87,23 @@ impl DrawingBackend for Backend {
         stamp.check(document, stamp.revision)?;
         let runtime = self.runtime.as_mut().map_err(|e| e.clone())?;
         let generation = runtime.request(document, stamp.revision)?;
+        self.expected = Some((generation, stamp));
+        Ok(())
+    }
+    fn request_page(
+        &mut self,
+        document: &Document,
+        stamp: DrawingStamp,
+        page: EntityId,
+    ) -> Result<(), String> {
+        stamp.check(document, stamp.revision)?;
+        let index = page_ids(document)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .position(|id| *id == page)
+            .ok_or("The selected drawing page is missing")?;
+        let runtime = self.runtime.as_mut().map_err(|e| e.clone())?;
+        let generation = runtime.request_tagged(document, stamp.revision, index as u64 + 1)?;
         self.expected = Some((generation, stamp));
         Ok(())
     }

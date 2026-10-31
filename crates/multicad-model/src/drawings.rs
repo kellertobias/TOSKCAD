@@ -470,6 +470,33 @@ impl Model {
         providers: &DrawingProviders,
         budget: DrawingBudget,
     ) -> Result<DrawingEvaluation, ModelError> {
+        self.drawings_selected(document, revision, providers, budget, None)
+    }
+    /// Publish only the page currently being inspected. Other pages do not
+    /// delay its dimensions or consume its preview budget.
+    pub fn drawing_page(
+        &self,
+        document: &Document,
+        revision: u64,
+        providers: &DrawingProviders,
+        page: EntityId,
+    ) -> Result<DrawingEvaluation, ModelError> {
+        self.drawings_selected(
+            document,
+            revision,
+            providers,
+            DrawingBudget::default(),
+            Some(page),
+        )
+    }
+    fn drawings_selected(
+        &self,
+        document: &Document,
+        revision: u64,
+        providers: &DrawingProviders,
+        budget: DrawingBudget,
+        selected_page: Option<EntityId>,
+    ) -> Result<DrawingEvaluation, ModelError> {
         if self.snapshot().scope != crate::EvaluationScope::Full {
             return Err(error(
                 None,
@@ -486,12 +513,33 @@ impl Model {
         {
             return Err(error(None, "Invalid drawing publication budget"));
         }
+        if let Some(selected) = selected_page {
+            let mut found = false;
+            for id in books(document) {
+                found |= read(document, id)
+                    .map_err(|e| error(Some(id), e))?
+                    .pages
+                    .iter()
+                    .any(|page| page.id == selected);
+            }
+            if !found {
+                return Err(error(
+                    Some(selected),
+                    "The selected drawing page is missing",
+                ));
+            }
+        }
         let mut views = BTreeMap::new();
         let (mut vectors_used, mut points_used) = (0usize, 0usize);
         let mut exhausted = false;
         for id in books(document) {
             let book = read(document, id).map_err(|e| error(Some(id), e))?;
-            for view in book.pages.iter().flat_map(|p| &p.views) {
+            for view in book
+                .pages
+                .iter()
+                .filter(|p| selected_page.is_none_or(|id| p.id == id))
+                .flat_map(|p| &p.views)
+            {
                 let mut evaluation = if exhausted || views.len() >= budget.views {
                     ViewEvaluation::Unresolved{message:"Drawing publication budget exceeded; reduce the number or complexity of views".into()}
                 } else {
@@ -518,7 +566,11 @@ impl Model {
         let mut annotations = BTreeMap::new();
         for id in books(document) {
             let book = read(document, id).map_err(|e| error(Some(id), e))?;
-            for page in &book.pages {
+            for page in book
+                .pages
+                .iter()
+                .filter(|p| selected_page.is_none_or(|id| p.id == id))
+            {
                 for annotation in &page.annotations {
                     if matches!(annotation.kind, AnnotationKind::Dimension { .. }) {
                         annotations.insert(annotation.id, self.dimension(page, annotation));

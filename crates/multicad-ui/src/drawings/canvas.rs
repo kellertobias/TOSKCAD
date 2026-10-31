@@ -347,7 +347,8 @@ fn annotations(
                             Some(AnnotationEvaluation::Detached { message }) => {
                                 format!("Detached dimension: {message}")
                             }
-                            _ => "Dimension pending".into(),
+                            None if evaluation.is_none() => continue,
+                            _ => "Dimension result unavailable".into(),
                         };
                         painter.text(
                             to([anchor[0], anchor[1] + 12.]),

@@ -33,6 +33,12 @@ impl DrawingEditor {
         if let Some(error) = &self.feed.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
+        if self.feed.pending() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Building this drawing page…");
+            });
+        }
         self.note_inspector(ui);
         self.draft_placement_inspector(ui);
         if self.selected_view.is_some() {
