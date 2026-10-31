@@ -3949,6 +3949,26 @@ impl SketchEditor {
                 && self.overlay_visible(e.id)
         }) {
             if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
+                if self.selected == Some(e.id)
+                    && (self.editing || self.acquiring_profiles())
+                    && self.tool.is_none()
+                    && !self.moving
+                    && !self.external.active()
+                    && (!self.has_pending_edits() || self.acquiring_profiles())
+                    && let Some(current) = self.sketch_evaluation.current(e.id)
+                    && current.stamp.document == session.document().id()
+                    && current.stamp.revision == session.revision()
+                {
+                    let hover = response
+                        .hover_pos()
+                        .and_then(|p| self.camera.on_plane(p, rect, frame));
+                    for fill in current.fills.iter() {
+                        let selected = self.profiles.selected().contains(&fill.intent);
+                        if selected || hover.is_some_and(|p| fill.contains(p)) {
+                            fill.paint(&painter, self.camera, rect, frame, selected);
+                        }
+                    }
+                }
                 let constrained = self.read_solved_source(doc, e.id, session.revision()).ok();
                 let conflicted_curves: std::collections::BTreeSet<_> = constrained
                     .as_ref()

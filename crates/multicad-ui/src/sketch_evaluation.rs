@@ -85,6 +85,7 @@ pub struct SketchPresentation {
     pub evaluated: Arc<EvaluatedSketch>,
     pub geometry: Arc<[Geometry]>,
     pub regions: Arc<Extraction>,
+    pub fills: Arc<[crate::sketch_region_fill::RegionFill]>,
 }
 #[derive(Clone, Debug)]
 pub struct SketchFailure {
@@ -267,6 +268,11 @@ fn evaluate(job: &Job, cancelled: &dyn Fn() -> bool) -> Result<Batch, String> {
                     stamp: job.stamp,
                     evaluated: Arc::new(evaluated),
                     geometry: geometry.into(),
+                    fills: regions
+                        .regions
+                        .iter()
+                        .map(crate::sketch_region_fill::RegionFill::new)
+                        .collect(),
                     regions: Arc::new(regions),
                 })
             });
