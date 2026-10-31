@@ -423,3 +423,70 @@ fn native_set_editor_clicks_create_save_reopen_and_lists_exact_unsupported_recip
     reopened.load(&s, new).unwrap();
     assert!(reopened.draft == w.draft);
 }
+#[test]
+fn recipe_format_is_shown_beside_its_name_and_generated_names_follow_format_changes() {
+    // The default recipe is named after its format; switching to PDF renames
+    // it, so neither the preview nor the filename keeps saying STEP.
+    let mut recipe = Recipe::step("STEP");
+    let previous = recipe.output.clone();
+    recipe.output = RecipeOutput::Pdf;
+    form::rename_generated(&mut recipe.name, &previous, &recipe.output);
+    assert_eq!(recipe.name, "PDF");
+    assert_eq!(recipe_title(&recipe), "PDF (.pdf)");
+    // An authored name is kept; the actual format is still displayed.
+    let mut authored = Recipe::step("Room drawings");
+    let previous = authored.output.clone();
+    authored.output = RecipeOutput::Pdf;
+    form::rename_generated(&mut authored.name, &previous, &authored.output);
+    assert_eq!(authored.name, "Room drawings");
+    assert_eq!(recipe_title(&authored), "Room drawings · PDF (.pdf)");
+    // An old saved set whose recipe still says STEP shows PDF first-hand.
+    let stale = Recipe {
+        name: "STEP".into(),
+        ..authored.clone()
+    };
+    assert_eq!(recipe_title(&stale), "STEP · PDF (.pdf)");
+    // Format label and extension agree for every format.
+    for (output, label, extension) in [
+        (Recipe::step("x").output, "STEP", "step"),
+        (RecipeOutput::Pdf, "PDF", "pdf"),
+        (
+            RecipeOutput::DrawingDxf {
+                units: LengthUnit::Millimeter,
+                layers: Default::default(),
+            },
+            "Drawing DXF",
+            "dxf",
+        ),
+    ] {
+        assert_eq!(output.format_label(), label);
+        assert_eq!(output.extension(), extension);
+    }
+    // The receipt names the formats actually written.
+    let file = |recipe: EntityId| WrittenFile {
+        artifact: ExportArtifact {
+            output: NamedOutput {
+                recipe,
+                subject: OutputSubject::Pages(vec![]),
+                filename: "Room.pdf".into(),
+            },
+            producer: EntityId::new(),
+            solid: EntityId::new(),
+            bounds_mm: [[0.; 3], [1.; 3]],
+            volume_mm3: 0.,
+            solid_count: 0,
+            planar: None,
+            mesh: None,
+            drawing: None,
+            schedule: None,
+        },
+        content_hash: ContentHash::of(b"pdf"),
+        bytes: 3,
+    };
+    let formats = BTreeMap::from([(recipe.id, "PDF"), (authored.id, "STEP")]);
+    assert_eq!(
+        receipt_formats(&formats, &[file(recipe.id), file(recipe.id)]),
+        " · PDF"
+    );
+    assert_eq!(receipt_formats(&formats, &[]), "");
+}

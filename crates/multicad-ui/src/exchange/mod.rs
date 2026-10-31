@@ -88,6 +88,8 @@ struct Pending {
     run: bool,
     expected: Option<PreviewKey>,
     catalog_scope: Option<Scope>,
+    /// Format of each previewed recipe, for the run receipt.
+    formats: BTreeMap<EntityId, &'static str>,
 }
 struct JobSummary {
     id: EntityId,
@@ -230,6 +232,7 @@ impl ExportWorkspace {
                 run: false,
                 expected: None,
                 catalog_scope: None,
+                formats: BTreeMap::new(),
             },
         );
         self.scheduled = None;
@@ -266,6 +269,7 @@ impl ExportWorkspace {
                 run: false,
                 expected: None,
                 catalog_scope: Some(scope),
+                formats: BTreeMap::new(),
             },
         );
         Ok("Loading current native planar faces…".into())
@@ -359,6 +363,12 @@ impl ExportWorkspace {
                         run: true,
                         expected: Some(preview.key.clone()),
                         catalog_scope: None,
+                        formats: preview
+                            .selection
+                            .recipes
+                            .iter()
+                            .map(|r| (r.id, r.output.format_label()))
+                            .collect(),
                     },
                 );
                 Ok(format!(
@@ -497,9 +507,10 @@ impl ExportWorkspace {
                             continue;
                         }
                         let text = format!(
-                            "{} {} file(s) from {} revision {} · {} ({:?})",
+                            "{} {} file(s){} from {} revision {} · {} ({:?})",
                             if receipt.reused { "Reused" } else { "Exported" },
                             receipt.files.len(),
+                            receipt_formats(&p.formats, &receipt.files),
                             source_name(s, p.document),
                             p.revision,
                             p.actor.id,
@@ -631,9 +642,10 @@ impl ExportWorkspace {
     if let Some(preview)=&self.preview{
      let current=self.current(s);if !current{ui.colored_label(egui::Color32::LIGHT_YELLOW,"Previous preview · display only. Resolve the current source before Run.");}
      ui.label(format!("{} matched source occurrence(s) · {} selected page(s) · revision {}",preview.selection.parts.len(),preview.selection.pages.len(),preview.key.source.revision));
-     for report in &preview.recipes{let name=preview.selection.recipes.iter().find(|r|r.id==report.recipe).map_or("Recipe",|r|r.name.as_str());match &report.status{RecipeStatus::Ready=>{ui.label(format!("{name} · Ready · {} file(s)",report.files));},RecipeStatus::Empty=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Empty"));},RecipeStatus::Unsupported(reason)=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Unsupported · {reason}"));}}}
+     ui.small(format!("Provider · {}",preview.provider));
+     for report in &preview.recipes{let name=preview.selection.recipes.iter().find(|r|r.id==report.recipe).map_or_else(||"Recipe".to_owned(),recipe_title);match &report.status{RecipeStatus::Ready=>{ui.label(format!("{name} · Ready · {} file(s)",report.files));},RecipeStatus::Empty=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Empty"));},RecipeStatus::Unsupported(reason)=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Unsupported · {reason}"));}}}
      ui.collapsing("Matched parts and occurrences",|ui|{for part in &preview.selection.parts {let path=if part.occurrence_names.is_empty(){part.name.clone()}else{format!("{} / {}",part.occurrence_names.join(" / "),part.name)};ui.label(path).on_hover_text(format!("Part {} · occurrence path {:?}",part.reference.part,part.reference.occurrence_path));}});
-     ui.separator();for artifact in &preview.artifacts{let label=match &artifact.output.subject{OutputSubject::Part(reference)=>preview.selection.parts.iter().find(|p|p.reference==*reference).map(|p|if p.occurrence_names.is_empty(){p.name.clone()}else{format!("{} · {}",p.name,p.occurrence_names.join(" / "))}).unwrap_or_else(||"Part".into()),OutputSubject::Parts(parts)=>format!("Assembly · {} part(s)",parts.len()),_=>"Drawing".into()};ui.strong(label);if let Some(drawing)=&artifact.drawing{ui.label(format!("{} page(s) · {} vector item(s) · {} text line(s)",drawing.pages.len(),drawing.vectors,drawing.texts));}else if let Some(mesh)=&artifact.mesh{ui.label(format!("{} object(s) · {} placement(s) · {} triangles · chord {} mm",mesh.objects,mesh.build_items,mesh.triangles,mesh.chord_deviation_mm));}else if let Some(planar)=&artifact.planar{ui.label(format!("1:1 · {:.3} mm² · {} outer / {} inner loop(s)",planar.area_mm2,planar.outer_loops,planar.inner_loops));}else{ui.label(format!("{:.3} mm³ · {} solid(s)",artifact.volume_mm3,artifact.solid_count));}ui.add(egui::Label::new(&artifact.output.filename).truncate()).on_hover_text(&artifact.output.filename);}
+     ui.separator();for artifact in &preview.artifacts{let label=match &artifact.output.subject{OutputSubject::Part(reference)=>preview.selection.parts.iter().find(|p|p.reference==*reference).map(|p|if p.occurrence_names.is_empty(){p.name.clone()}else{format!("{} · {}",p.name,p.occurrence_names.join(" / "))}).unwrap_or_else(||"Part".into()),OutputSubject::Parts(parts)=>format!("Assembly · {} part(s)",parts.len()),_=>"Drawing".into()};ui.strong(label);if let Some(drawing)=&artifact.drawing{ui.label(format!("{} page(s) · {} vector item(s) · {} text line(s)",drawing.pages.len(),drawing.vectors,drawing.texts));}else if let Some(mesh)=&artifact.mesh{ui.label(format!("{} object(s) · {} placement(s) · {} triangles · chord {} mm",mesh.objects,mesh.build_items,mesh.triangles,mesh.chord_deviation_mm));}else if let Some(planar)=&artifact.planar{ui.label(format!("1:1 · {:.3} mm² · {} outer / {} inner loop(s)",planar.area_mm2,planar.outer_loops,planar.inner_loops));}else{ui.label(format!("{:.3} mm³ · {} solid(s)",artifact.volume_mm3,artifact.solid_count));}let format=preview.selection.recipes.iter().find(|r|r.id==artifact.output.recipe).map_or("Unknown format",|r|r.output.format_label());ui.add(egui::Label::new(format!("{format} · {}",artifact.output.filename)).truncate()).on_hover_text(&artifact.output.filename);}
      for excluded in &preview.excluded{let name=s.document().get(excluded.reference.part).map_or("Part",|e|e.name.as_str());ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("Not exported: {name} · {}",match excluded.reason{ExclusionReason::ConsumedProducer=>"consumed by a later operation",ExclusionReason::NoCurrentSolid=>"no current unsuppressed solid"}));}
      if !preview.selection.pages.is_empty(){ui.separator();for(index,page)in preview.selection.pages.iter().enumerate(){ui.label(format!("Page {} · {} · {} · {} × {} mm",index+1,page.number,page.title,page.paper_mm[0],page.paper_mm[1]));}}
      ui.collapsing("Source identities",|ui|{ui.monospace(format!("Source {}",preview.key.source.source_hash));for part in &preview.selection.parts{ui.monospace(format!("Part {} · occurrences {:?}",part.reference.part,part.reference.occurrence_path));}});
@@ -675,5 +687,36 @@ fn source_name(s: &Session, document: EntityId) -> String {
         format!("\u{201c}{}\u{201d}", s.document().name())
     } else {
         "another document".into()
+    }
+}
+
+/// A recipe's preview title: its actual format and extension, with the
+/// authored name first when it says something else.
+pub(super) fn recipe_title(recipe: &Recipe) -> String {
+    let format = format!(
+        "{} (.{})",
+        recipe.output.format_label(),
+        recipe.output.extension()
+    );
+    if recipe.output.is_generated_name(&recipe.name) {
+        format
+    } else {
+        format!("{} · {format}", recipe.name.trim())
+    }
+}
+/// The formats actually written, in recipe order, e.g. ` · PDF, STEP`.
+fn receipt_formats(formats: &BTreeMap<EntityId, &'static str>, files: &[WrittenFile]) -> String {
+    let mut written: Vec<&str> = vec![];
+    for file in files {
+        if let Some(label) = formats.get(&file.artifact.output.recipe)
+            && !written.contains(label)
+        {
+            written.push(label);
+        }
+    }
+    if written.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", written.join(", "))
     }
 }

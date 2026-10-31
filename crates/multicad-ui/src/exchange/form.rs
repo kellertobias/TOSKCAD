@@ -339,7 +339,7 @@ impl Draft {
                         remove = Some(index);
                     }
                 });
-                output_controls(ui, &mut recipe.output);
+                output_controls(ui, &mut recipe.name, &mut recipe.output);
                 if matches!(recipe.output, RecipeOutput::PlanarDxf { .. }) {
                     planar_controls(ui, recipe.id, bindings, geometry, fresh_planar);
                 }
@@ -491,7 +491,7 @@ fn planar_controls(
         });
     }
 }
-fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
+fn output_controls(ui: &mut egui::Ui, name: &mut String, output: &mut RecipeOutput) {
     let mut kind = match output {
         RecipeOutput::Step { .. } => 0,
         RecipeOutput::Mesh { format, .. } => match format {
@@ -539,6 +539,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
             }
         });
     if kind != old {
+        let previous = output.clone();
         *output = match kind {
             0 => Recipe::step("STEP").output,
             1..=4 => RecipeOutput::Mesh {
@@ -577,6 +578,7 @@ fn output_controls(ui: &mut egui::Ui, output: &mut RecipeOutput) {
                 schedule: ScheduleSpec::new(ScheduleKind::Bom),
             },
         };
+        rename_generated(name, &previous, output);
     }
     if kind == 2 {
         ui.small("STL stores no unit: coordinates use the chosen unit, which is named in the file header.");
@@ -703,4 +705,11 @@ fn units_control(ui: &mut egui::Ui, units: &mut LengthUnit) {
 fn aids_control(ui: &mut egui::Ui, aids: &mut AidPolicy) {
     let mut exclude = *aids == AidPolicy::ExcludeRemovable;
     if ui.checkbox(&mut exclude,"Exclude removable design aids").on_hover_text("Leave out Parts produced by FDM aid features (tabs, bridges, supports). Aids are classified by their feature, never by name or tag; the preview lists what was left out").changed(){*aids=if exclude{AidPolicy::ExcludeRemovable}else{AidPolicy::IncludeAll};}
+}
+/// A recipe still named after its old format follows the new one; an
+/// authored name is kept, and Preview shows the actual format beside it.
+pub(super) fn rename_generated(name: &mut String, previous: &RecipeOutput, output: &RecipeOutput) {
+    if previous.is_generated_name(name) {
+        *name = output.format_label().into();
+    }
 }

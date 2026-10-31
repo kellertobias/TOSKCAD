@@ -139,6 +139,31 @@ pub enum RecipeOutput {
     },
 }
 impl RecipeOutput {
+    /// The provider format's display name. Previews and receipts show it
+    /// beside the editable recipe name, which may say anything.
+    pub fn format_label(&self) -> &'static str {
+        match self {
+            Self::Step { .. } => "STEP",
+            Self::Mesh { format, .. } => match format {
+                MeshFormat::Obj => "OBJ",
+                MeshFormat::Stl => "STL",
+                MeshFormat::ThreeMf => "3MF",
+                MeshFormat::Glb => "GLB",
+            },
+            Self::PlanarDxf { .. } => "Planar DXF",
+            Self::DrawingDxf { .. } => "Drawing DXF",
+            Self::Pdf => "PDF",
+            Self::ScheduleCsv { .. } => "Schedule CSV",
+        }
+    }
+    /// Whether `name` is the name this format would generate, so a format
+    /// change may replace it without discarding an authored name.
+    pub fn is_generated_name(&self, name: &str) -> bool {
+        let name = name.trim();
+        name.is_empty()
+            || name.eq_ignore_ascii_case(self.format_label())
+            || (matches!(self, Self::Pdf) && name.eq_ignore_ascii_case("Multi-page PDF"))
+    }
     pub fn extension(&self) -> &'static str {
         match self {
             Self::Step { .. } => "step",
