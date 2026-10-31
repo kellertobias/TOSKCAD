@@ -38,6 +38,8 @@ pub trait PrintBackend {
     fn poll(&mut self) -> Option<PrintReply>;
     fn pending(&self) -> bool;
 }
+/// The document and revision a cached listing answers.
+type SourceKey = (EntityId, u64);
 pub type PrintBackendFactory = Arc<dyn Fn() -> Box<dyn PrintBackend> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +96,7 @@ pub struct PrintWorkspace {
     /// picking.
     entered: Vec<EntityId>,
     /// Picker entries for the document revision they were listed from.
-    candidates: Option<((EntityId, u64), Result<Vec<PrintCandidate>, String>)>,
+    candidates: Option<(SourceKey, Result<Vec<PrintCandidate>, String>)>,
     by_tag: bool,
     tag: String,
     aids: AidPolicy,
