@@ -89,10 +89,10 @@ static gp_Pnt frame_point(const DrawingJob &job,double u,double v,double n) {
 // far limit (or beyond all geometry) up to the cut plane.
 static TopoDS_Shape limited_section(const TopoDS_Shape &shape,const DrawingJob &job,const FrameBounds &b) {
   double u[2],v[2];lateral(job,b,u,v);
-  const double far=job.depth?job.offset-job.depth_mm:b.lo[2];
-  if(job.offset-far<=1e-9 || u[1]-u[0]<=1e-9 || v[1]-v[0]<=1e-9 || u[0]>=b.hi[0] || u[1]<=b.lo[0] || v[0]>=b.hi[1] || v[1]<=b.lo[1]) return TopoDS_Compound();
-  const gp_Ax2 axes(frame_point(job,u[0],v[0],far),job.frame.Direction(),job.frame.XDirection());
-  return common(shape,BRepPrimAPI_MakeBox(axes,u[1]-u[0],v[1]-v[0],job.offset-far).Solid());
+  const double far_limit=job.depth?job.offset-job.depth_mm:b.lo[2];
+  if(job.offset-far_limit<=1e-9 || u[1]-u[0]<=1e-9 || v[1]-v[0]<=1e-9 || u[0]>=b.hi[0] || u[1]<=b.lo[0] || v[0]>=b.hi[1] || v[1]<=b.lo[1]) return TopoDS_Compound();
+  const gp_Ax2 axes(frame_point(job,u[0],v[0],far_limit),job.frame.Direction(),job.frame.XDirection());
+  return common(shape,BRepPrimAPI_MakeBox(axes,u[1]-u[0],v[1]-v[0],job.offset-far_limit).Solid());
 }
 static TopoDS_Shape section_shape(const TopoDS_Shape &shape,const DrawingJob &job) {
   const auto origin=job.frame.Location().Translated(gp_Vec(job.frame.Direction())*job.offset);

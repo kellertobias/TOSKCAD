@@ -1,6 +1,11 @@
 fn main() {
     let root = multicad_native_build::build();
-    cxx_build::bridge("src/lib.rs")
+    let mut build = cxx_build::bridge("src/lib.rs");
+    // The adapter throws C++ exceptions; MSVC needs unwind semantics for them.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        build.flag("/EHsc");
+    }
+    build
         .file("src/bridge.cpp")
         .file("src/curves.cpp")
         .file("src/ruled.cpp")
