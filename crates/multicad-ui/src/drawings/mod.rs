@@ -3,10 +3,14 @@ mod annotations;
 mod canvas;
 mod evaluation;
 mod inspector;
+mod placement;
 mod schedules;
 mod views;
 pub use evaluation::{DrawingBackend, DrawingBackendFactory, DrawingReply};
+pub use placement::Placement;
 pub use schedules::ScheduleStatus;
+#[cfg(test)]
+mod placement_tests;
 #[cfg(test)]
 mod tests;
 use crate::{egui, icons::Icon};
@@ -201,6 +205,12 @@ pub struct DrawingEditor {
     schedules: schedules::ScheduleState,
     /// How Fit view to page chooses the view scale.
     fit_mode: drawings::FitMode,
+    /// A note or sheet drafting being placed on the paper; not yet in the draft.
+    placement: Option<Placement>,
+    /// Focus the pending note's text field on the next frame.
+    focus_note: bool,
+    /// The paper's screen rectangle and scale from the last frame.
+    last_paper: Option<(egui::Rect, f32)>,
 }
 impl DrawingEditor {
     pub fn dirty(&self) -> bool {
@@ -288,6 +298,7 @@ impl DrawingEditor {
         channel: Channel,
     ) -> Result<(), String> {
         if tool == DrawingTool::Discard {
+            self.cancel_placement();
             self.draft = self.original.clone();
             if self
                 .book
@@ -326,6 +337,9 @@ impl DrawingEditor {
             }
             return self.add_view(kind);
         }
+        if channel == Channel::Ui && placement::is_drafting(tool) {
+            return self.begin_draft(tool);
+        }
         if DrawingTool::ANNOTATIONS.contains(&tool) {
             return self.add_annotation(session, tool);
         }
@@ -336,6 +350,9 @@ impl DrawingEditor {
             self.selected.ok_or("Add a page first")?;
             self.schedules.chooser = true;
             return Ok(());
+        }
+        if tool == DrawingTool::Text && channel == Channel::Ui {
+            return self.begin_note();
         }
         if tool == DrawingTool::Text {
             let page = self.draft.as_mut().ok_or("Add a page first")?;
@@ -525,6 +542,10 @@ impl DrawingEditor {
                     self.section_pick.map(|(_, first)| first),
                     self.selected_annotation,
                 );
+                self.last_paper = event.paper;
+                if let Some((paper, scale)) = event.paper {
+                    self.placement_overlay(ui, paper, scale);
+                }
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
@@ -542,6 +563,10 @@ impl DrawingEditor {
                 });
             }
         });
+        if self.placing() {
+            event.view = None;
+            event.annotation = None;
+        }
         if let Some(id) = event.view {
             self.selected_view = Some(id);
         }

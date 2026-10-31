@@ -30,7 +30,8 @@ fn editor_pages_preserve_independent_drafts_and_undoable_authored_content() {
     editor
         .invoke(&mut session, DrawingTool::Text, Channel::Ui)
         .unwrap();
-    editor.draft.as_mut().unwrap().notes[0].text = "User authored note".into();
+    *editor.pending_note_text().unwrap() = "User authored note".into();
+    editor.finish_placement().unwrap();
     editor
         .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
         .unwrap();
@@ -134,6 +135,8 @@ fn source_deleted_during_draft_keeps_it_until_explicit_discard() {
     editor
         .invoke(&mut session, DrawingTool::Text, Channel::Ui)
         .unwrap();
+    *editor.pending_note_text().unwrap() = "Retained note".into();
+    editor.finish_placement().unwrap();
     let id = editor.book.unwrap();
     session
         .apply(multicad_core::commands::Request {
@@ -324,13 +327,13 @@ impl DrawingBackend for TestPublisher {
         self.reply = None;
     }
 }
-fn publish_editor(editor: &mut DrawingEditor, session: &Session) {
+pub(super) fn publish_editor(editor: &mut DrawingEditor, session: &Session) {
     let ctx = egui::Context::default();
     editor.tick_views(&ctx, session);
     editor.feed.tick(1.);
     editor.feed.tick(2.);
 }
-fn view_editor(fail: bool) -> (DrawingEditor, Session, EntityId) {
+pub(super) fn view_editor(fail: bool) -> (DrawingEditor, Session, EntityId) {
     let mut doc = Document::new("View UI").unwrap();
     let part = multicad_core::document::Entity::new(
         "Panel",
@@ -733,6 +736,23 @@ fn sheet_annotations_add_edit_move_copy_and_apply_as_one_page_edit() {
     ] {
         assert!(editor.enabled(tool, &session), "{tool:?}");
         editor.invoke(&mut session, tool, Channel::Ui).unwrap();
+        // Drafting tools are placed with clicks on the sheet.
+        let [x, y] = [103.95, 73.5];
+        let clicks: &[[f64; 2]] = match tool {
+            DrawingTool::DraftLine => &[[x, y], [x + 30., y]],
+            DrawingTool::DraftCircle => &[[x, y], [x + 10., y]],
+            DrawingTool::DraftArc => &[[x, y], [x + 10., y], [x, y + 10.]],
+            DrawingTool::Hatch => &[[x, y], [x + 20., y], [x + 20., y + 15.], [x, y + 15.]],
+            DrawingTool::DraftDimension => &[[x, y], [x + 30., y], [x + 15., y - 6.]],
+            _ => &[],
+        };
+        for p in clicks {
+            editor.placement_click(*p, false).unwrap();
+        }
+        if tool == DrawingTool::Hatch {
+            editor.finish_placement().unwrap();
+        }
+        assert!(!editor.placing(), "{tool:?}");
     }
     let page = editor.draft.as_ref().unwrap();
     assert_eq!(page.annotations.len(), 8);

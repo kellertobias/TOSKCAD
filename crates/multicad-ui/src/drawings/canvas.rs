@@ -10,6 +10,8 @@ pub(super) struct CanvasEvent {
     pub annotation: Option<EntityId>,
     /// While picking a section line: the clicked paper point, in mm.
     pub pick_mm: Option<[f64; 2]>,
+    /// The paper's screen rectangle and points per paper millimeter.
+    pub paper: Option<(egui::Rect, f32)>,
 }
 /// `picking` is `Some(first point)` while a section line is being picked.
 #[allow(clippy::too_many_arguments)]
@@ -220,6 +222,7 @@ pub(super) fn show(
         view: clicked.filter(|_| annotation.is_none()),
         annotation,
         pick_mm: None,
+        paper: Some((paper, scale)),
     };
     if let Some(first) = picking {
         let response = ui
@@ -246,6 +249,7 @@ pub(super) fn show(
                 view: None,
                 annotation: None,
                 pick_mm: Some(to_paper(position)),
+                paper: Some((paper, scale)),
             };
         }
     } else {
