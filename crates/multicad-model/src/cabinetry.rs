@@ -433,23 +433,56 @@ impl Model {
                 tenon: None,
             });
         }
-        // Loose-tenon joints: each panel's mortises, with the tenon Part.
+        // Paired face-to-edge joinery: mortises or circular dowel holes.
         for entity in model::panel_joint_cuts(document) {
             let id = entity.id;
             let e = |e: DocumentError| error(Some(id), e);
             let cut = model::read_panel_joint_cut(document, id).map_err(e)?;
             let joint = model::read_panel_joint(document, cut.joint).map_err(e)?;
-            let model::PanelJointKind::LooseTenon(spec) = &joint.kind else {
-                continue;
-            };
+            let pair = joint.pairs[cut.pair as usize];
+            let dowels = matches!(joint.kind, model::PanelJointKind::Dowels(_));
+            let (_, layout) = match &joint.kind {
+                model::PanelJointKind::LooseTenon(spec) => {
+                    model::resolve_loose_tenon(document, &parameters, spec, &pair)
+                }
+                model::PanelJointKind::Dowels(spec) => {
+                    model::resolve_dowels(document, &parameters, spec, &pair)
+                }
+                _ => continue,
+            }
+            .map_err(e)?;
             let (Some(before), Some(after)) = (self.solid(cut.input.producer), self.solid(id))
             else {
                 continue;
             };
-            let pair = joint.pairs[cut.pair as usize];
-            let (_, layout) =
-                model::resolve_loose_tenon(document, &parameters, spec, &pair).map_err(e)?;
             let face_side = cut.side == layout.face_side;
+            let frame = if face_side {
+                layout.face_frame
+            } else {
+                layout.edge_frame
+            };
+            let recesses = if face_side {
+                &layout.face_mortises
+            } else {
+                &layout.edge_mortises
+            };
+            let holes = if dowels {
+                layout
+                    .tenons
+                    .iter()
+                    .zip(recesses)
+                    .map(|(hole, recess)| model::ResolvedHole {
+                        at: frame.local(hole.center).0,
+                        center: hole.center,
+                        axis: frame.inward,
+                        diameter_mm: recess.size_mm[0],
+                        depth_mm: recess.depth_mm,
+                        through: false,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
             let part = cut.output.body;
             let panel = model::resolve_panel(
                 document,
@@ -471,7 +504,11 @@ impl Model {
                     .get(cut.joint)
                     .map(|e| e.name.clone())
                     .unwrap_or_default(),
-                kind: "loose-tenon mortise",
+                kind: if dowels {
+                    "dowel drilling"
+                } else {
+                    "loose-tenon mortise"
+                },
                 face: if face_side {
                     layout.face
                 } else {
@@ -479,8 +516,10 @@ impl Model {
                 },
                 material: Some(panel.stock_spec.material),
                 stock: panel.stock,
-                holes: vec![],
-                recesses: if face_side {
+                holes,
+                recesses: if dowels {
+                    vec![]
+                } else if face_side {
                     layout.face_mortises
                 } else {
                     layout.edge_mortises

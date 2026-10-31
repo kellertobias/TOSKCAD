@@ -273,6 +273,9 @@ impl JointPanel {
                 form.tenon = TenonFields::of(spec)?;
                 Kind::LooseTenon
             }
+            PanelJointKind::Dowels(_) => {
+                return Err("Edit dowel connections through the Cabinet inspector".into());
+            }
         };
         Ok(form)
     }

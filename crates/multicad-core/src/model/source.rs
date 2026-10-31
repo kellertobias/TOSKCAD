@@ -861,5 +861,11 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     if super::panel_joints_need_loose_tenon(document) {
         capabilities.insert(super::LOOSE_TENON_CAPABILITY.into());
     }
+    if super::panel_joints(document).any(|e| {
+        super::read_panel_joint(document, e.id)
+            .is_ok_and(|j| matches!(j.kind, super::PanelJointKind::Dowels(_)))
+    }) {
+        capabilities.insert(super::DOWEL_CAPABILITY.into());
+    }
     capabilities
 }

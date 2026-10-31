@@ -42,6 +42,8 @@ pub enum PanelJointKind {
     /// Loose tenons (Domino style) between panels that meet face to edge:
     /// paired rounded mortises and a tenon Part per pair.
     LooseTenon(Box<LooseTenonSpec>),
+    /// Paired circular blind holes on a face-to-edge panel contact.
+    Dowels(Box<DowelSpec>),
 }
 impl PanelJointKind {
     pub fn label(&self) -> &'static str {
@@ -50,6 +52,7 @@ impl PanelJointKind {
             Self::Miter => "miter joint",
             Self::Finger { .. } => "finger joint",
             Self::LooseTenon(_) => "loose-tenon joint",
+            Self::Dowels(_) => "dowel joint",
         }
     }
 }
@@ -110,12 +113,16 @@ impl PanelJointDefinition {
         if let PanelJointKind::LooseTenon(spec) = &self.kind {
             spec.validate()?;
         }
+        if let PanelJointKind::Dowels(spec) = &self.kind {
+            spec.validate()?;
+        }
         Ok(())
     }
     fn dimensions(&self) -> Vec<&Dimension> {
         match &self.kind {
             PanelJointKind::Finger { fit, .. } => vec![fit],
             PanelJointKind::LooseTenon(spec) => spec.dimensions(),
+            PanelJointKind::Dowels(spec) => spec.dimensions(),
             _ => vec![],
         }
     }
@@ -291,6 +298,9 @@ pub fn resolve_panel_joint_pair(
     if let PanelJointKind::LooseTenon(spec) = &joint.kind {
         return super::tenon::resolve_loose_tenon(document, parameters, spec, p).map(|r| r.0);
     }
+    if let PanelJointKind::Dowels(spec) = &joint.kind {
+        return super::dowel::resolve_dowels(document, parameters, spec, p).map(|r| r.0);
+    }
     let a = panel_box(document, parameters, p.a)?;
     let b = panel_box(document, parameters, p.b)?;
     let axes = [a.u, a.v, a.normal()];
@@ -429,7 +439,7 @@ pub fn resolve_panel_joint_pair(
                 full(vec![out_m, inn_m, a_corner]),
             )
         }
-        PanelJointKind::LooseTenon(_) => unreachable!("resolved above"),
+        PanelJointKind::LooseTenon(_) | PanelJointKind::Dowels(_) => unreachable!("resolved above"),
         PanelJointKind::Finger { count, fit } => {
             let fit = number(fit, Unit::Millimeter, parameters)?;
             let n = *count as usize;

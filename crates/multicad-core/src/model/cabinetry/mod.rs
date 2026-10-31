@@ -10,12 +10,14 @@
 //! oversize, and are reported along and across the grain.
 mod cabinet;
 mod chain;
+mod dowel;
 mod joint;
 mod machining;
 mod prepare;
 mod resolve;
 mod tenon;
 pub use cabinet::*;
+pub use dowel::*;
 pub use joint::*;
 pub use machining::*;
 pub use prepare::*;

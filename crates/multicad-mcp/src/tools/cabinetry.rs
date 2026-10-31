@@ -454,6 +454,42 @@ pub enum JointKindArg {
     Finger,
     /// Domino-style loose tenons between panels that meet face to edge.
     LooseTenon,
+    Dowels,
+}
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DowelArgs {
+    #[serde(default)]
+    pub diameter: Option<Quantity>,
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub inset: Option<Quantity>,
+    #[serde(default)]
+    pub offset: Option<Quantity>,
+    #[serde(default)]
+    pub face_depth: Option<Quantity>,
+    #[serde(default)]
+    pub edge_depth: Option<Quantity>,
+    /// Total diametral allowance in the receiving holes.
+    #[serde(default)]
+    pub fit: Option<Quantity>,
+}
+impl DowelArgs {
+    fn spec(&self, d: &Document, e: &EvaluatedParameters) -> Result<model::DowelSpec, ToolError> {
+        let or = |v: &Option<Quantity>, default: f64| {
+            opt(v, d, e).map(|v| v.unwrap_or_else(|| length(default)))
+        };
+        Ok(model::DowelSpec {
+            diameter: or(&self.diameter, 8.)?,
+            count: self.count.unwrap_or(2),
+            inset: or(&self.inset, 50.)?,
+            offset: or(&self.offset, 0.)?,
+            face_depth: or(&self.face_depth, 12.)?,
+            edge_depth: or(&self.edge_depth, 20.)?,
+            fit: or(&self.fit, 0.2)?,
+        })
+    }
 }
 /// Loose-tenon settings; omitted values use the example Festool DOMINO
 /// 8 × 22 × 40 mm tenon, 15 mm face and 28 mm end mortises, 6 mm face play,
@@ -513,6 +549,8 @@ pub struct PanelJointArgs {
     /// Loose tenons: the tenon, spacing, mortise depths and fits.
     #[serde(default)]
     pub tenon: Option<TenonArgs>,
+    #[serde(default)]
+    pub dowels: Option<DowelArgs>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -537,6 +575,11 @@ pub(super) fn set_panel_joint(host: &dyn Host, call: &Request, args: PanelJointA
         JointKindArg::ButtAThrough => PanelJointKind::ButtAThrough,
         JointKindArg::ButtBThrough => PanelJointKind::ButtBThrough,
         JointKindArg::Miter => PanelJointKind::Miter,
+        JointKindArg::Dowels => PanelJointKind::Dowels(Box::new(
+            args.dowels
+                .unwrap_or_default()
+                .spec(&document, &evaluated)?,
+        )),
         JointKindArg::Finger => PanelJointKind::Finger {
             count: args
                 .finger_count

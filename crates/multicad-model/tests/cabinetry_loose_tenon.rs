@@ -146,6 +146,123 @@ fn joint(f: &Fixture, spec: LooseTenonSpec) -> PanelJointDefinition {
 }
 
 #[test]
+fn paired_dowels_are_exact_circular_holes_with_matching_records_and_persistence() {
+    let mut f = fixture();
+    let (side, top) = (f.part(PanelRole::RightSide), f.part(PanelRole::Top));
+    let source = f.s.document().clone();
+    let mut definition = joint(&f, domino());
+    definition.kind = PanelJointKind::Dowels(Box::default());
+    let p =
+        prepare_panel_joint(&f.s, f.s.revision(), actor(), "Paired dowels", &definition).unwrap();
+    let id = p.joint;
+    assert_eq!(p.model.outputs.len(), 2);
+    Compiler::default()
+        .compile(p.model.prepared.document(), f.s.revision() + 1)
+        .unwrap();
+    assert_eq!(f.s.document(), &source);
+    checked(&mut f.s, p.model.prepared);
+    let m = compile(&f.s);
+    let area = PI * 4.1_f64.powi(2);
+    near(volume(&m, side), 18. * 400. * 720. - 2. * area * 12.);
+    near(volume(&m, top), 18. * 400. * 564. - 2. * area * 20.);
+    assert_eq!(solid(&m, side).solid_count().unwrap(), 1);
+    assert_eq!(solid(&m, top).solid_count().unwrap(), 1);
+    assert!(joint_tenons(f.s.document(), id).is_empty());
+    let records: Vec<_> = m
+        .machining(f.s.document())
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.operation == id)
+        .collect();
+    assert_eq!(records.len(), 2);
+    let a = records.iter().find(|r| r.part == side).unwrap();
+    let b = records.iter().find(|r| r.part == top).unwrap();
+    for record in &records {
+        assert_eq!(record.kind, "dowel drilling");
+        assert_eq!(record.holes.len(), 2);
+        assert!(record.recesses.is_empty());
+        assert!(record.tenon.is_none());
+    }
+    for (a, b) in a.holes.iter().zip(&b.holes) {
+        for i in 0..3 {
+            near(a.center[i], b.center[i]);
+            near(a.axis[i], -b.axis[i]);
+        }
+        near(a.diameter_mm, 8.2);
+        near(b.diameter_mm, 8.2);
+        near(a.depth_mm, 12.);
+        near(b.depth_mm, 20.);
+    }
+    near(a.removed_mm3, 2. * area * 12.);
+    near(b.removed_mm3, 2. * area * 20.);
+    let mut moved = f.definition.clone();
+    moved.width = length(700.);
+    moved.origin = [length(30.), length(50.), length(20.)];
+    let p = prepare_carcass_edit(&f.s, f.s.revision(), actor(), f.carcass, &moved).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    let records = compile(&f.s).machining(f.s.document()).unwrap();
+    let holes = &records.iter().find(|r| r.part == side).unwrap().holes;
+    near(holes[0].center[0], 712.);
+    near(holes[0].center[1], 100.);
+    near(holes[0].center[2], 731.);
+    let with_joint = f.s.document().clone();
+    let deleted = prepare_panel_joint_delete(&f.s, f.s.revision(), actor(), id).unwrap();
+    checked(&mut f.s, deleted);
+    assert!(compile(&f.s).machining(f.s.document()).unwrap().is_empty());
+    near(volume(&compile(&f.s), top), 18. * 400. * 664.);
+    f.s.undo(f.s.revision(), actor()).unwrap();
+    assert_eq!(f.s.document(), &with_joint);
+    let project = ProjectFile::new(f.s.document().clone()).unwrap();
+    assert!(project.capabilities().contains(DOWEL_CAPABILITY));
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(&opened.document, f.s.document());
+    Compiler::default().compile(&opened.document, 0).unwrap();
+}
+
+#[test]
+fn paired_dowels_refuse_edge_breakout_bad_depths_and_overlapping_holes_without_mutation() {
+    let f = fixture();
+    let source = f.s.document().clone();
+    let mut invalid = vec![];
+    let mut s = DowelSpec::default();
+    s.diameter = length(17.);
+    invalid.push(s);
+    let mut s = DowelSpec::default();
+    s.face_depth = length(17.);
+    invalid.push(s);
+    let mut s = DowelSpec::default();
+    s.edge_depth = length(1000.);
+    invalid.push(s);
+    let mut s = DowelSpec::default();
+    s.offset = length(10.);
+    invalid.push(s);
+    let mut s = DowelSpec::default();
+    s.count = 32;
+    s.inset = length(190.);
+    invalid.push(s);
+    let mut s = DowelSpec::default();
+    s.fit = length(-0.1);
+    invalid.push(s);
+    for spec in invalid {
+        let mut definition = joint(&f, domino());
+        definition.kind = PanelJointKind::Dowels(Box::new(spec));
+        assert!(
+            prepare_panel_joint(&f.s, f.s.revision(), actor(), "Invalid dowels", &definition)
+                .is_err()
+        );
+        assert_eq!(f.s.document(), &source);
+    }
+}
+
+#[test]
 fn a_domino_joint_cuts_paired_mortises_and_builds_tenons() {
     let mut f = fixture();
     let (side, top) = (f.part(PanelRole::RightSide), f.part(PanelRole::Top));
