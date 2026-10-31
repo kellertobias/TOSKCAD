@@ -232,6 +232,10 @@ impl JointPanel {
         form.kind = Kind::LooseTenon;
         form
     }
+    /// Every chosen panel of every pair, in order.
+    pub fn pair_parts(&self) -> Vec<EntityId> {
+        self.pairs.iter().flatten().flatten().copied().collect()
+    }
     /// Seed the first pair, for example from two selected panels.
     pub fn with_pair(mut self, a: Option<EntityId>, b: Option<EntityId>) -> Self {
         if self.existing.is_none() {

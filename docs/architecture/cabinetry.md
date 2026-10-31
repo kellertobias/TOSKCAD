@@ -428,6 +428,13 @@ the producer contract for BOM and cut-list exports (CAD-89).
   Model → Wood → **System 32 shelf pins**, which opens the same form preset
   to shelf-pin rows on the inside faces. Hardware patterns are created
   through MCP for now.
+- **Targets from the selection.** Drill / pocket starts with the selected
+  rectangular panels as targets (a selected panel feature counts for its
+  Part), Panel joint and Domino joint with the first two as panel A and B,
+  and System 32 shelf pins with both sides of a selected carcass side. The
+  status line names the targets taken and every selected item that is not
+  a rectangular panel; nothing else is chosen for you. Targets can still
+  be added or removed in the Inspector or the viewport before Apply.
 - **Placing on faces.** While either form is open, a click on a visible
   rectangular panel face adds that panel as a target and takes its face. A
   drilling click adds a hole, or selects an existing hole so that the next

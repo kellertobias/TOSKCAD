@@ -503,6 +503,16 @@ impl ModelToolController {
     pub fn wall_of(document: &multicad_core::document::Document, id: EntityId) -> Option<EntityId> {
         super::opening::wall_of_part(document, id)
     }
+    /// The targets the open machining, joint or print-aid form would act on
+    /// (machining targets, joint pair panels, or the aid's finished Part).
+    pub fn form_targets(&self) -> Option<Vec<EntityId>> {
+        match &self.form {
+            Some(ModelForm::Machining(panel)) => Some(panel.target_parts().to_vec()),
+            Some(ModelForm::Joint(panel)) => Some(panel.pair_parts()),
+            Some(ModelForm::FdmAid(panel)) => Some(panel.target().into_iter().collect()),
+            _ => None,
+        }
+    }
     /// A joint form picks its panel pairs in the viewport.
     pub fn joint_picking(&self) -> bool {
         matches!(&self.form, Some(ModelForm::Joint(panel)) if panel.picking())
@@ -579,10 +589,13 @@ impl ModelToolController {
             ))),
         )
     }
+    /// Drill / pocket, with its targets seeded (for example from the
+    /// selected panels).
     pub fn begin_machining(
         &mut self,
         session: &Session,
         resources: &ProjectResources,
+        targets: Vec<EntityId>,
         channel: Channel,
     ) -> Result<(), String> {
         let name = GeneratedNames::new(session.document()).numbered("Machining", "");
@@ -590,7 +603,9 @@ impl ModelToolController {
             session,
             resources,
             channel,
-            ModelForm::Machining(Box::new(super::machining::MachiningPanel::new(name))),
+            ModelForm::Machining(Box::new(
+                super::machining::MachiningPanel::new(name).with_targets(targets),
+            )),
         )
     }
     /// The System 32 shelf-pin tool: a machining form preset to shelf-pin
@@ -612,10 +627,12 @@ impl ModelToolController {
             )),
         )
     }
+    /// Panel joint, with its first pair seeded from up to two panels.
     pub fn begin_joint(
         &mut self,
         session: &Session,
         resources: &ProjectResources,
+        pair: [Option<EntityId>; 2],
         channel: Channel,
     ) -> Result<(), String> {
         let name = GeneratedNames::new(session.document()).numbered("Joint", "");
@@ -623,7 +640,9 @@ impl ModelToolController {
             session,
             resources,
             channel,
-            ModelForm::Joint(Box::new(super::joint::JointPanel::new(name))),
+            ModelForm::Joint(Box::new(
+                super::joint::JointPanel::new(name).with_pair(pair[0], pair[1]),
+            )),
         )
     }
     /// The loose-tenon (Domino) tool: the joint form preset to loose tenons,
@@ -711,10 +730,13 @@ impl ModelToolController {
             ))),
         )
     }
+    /// Tab / bridge / support, its finished Part taken from `selection`
+    /// (see [`super::fdm_aid::seed_target`]).
     pub fn begin_fdm_aid(
         &mut self,
         session: &Session,
         resources: &ProjectResources,
+        selection: &[EntityId],
         channel: Channel,
     ) -> Result<(), String> {
         let name = GeneratedNames::new(session.document()).numbered("Print aid", "");
@@ -722,11 +744,20 @@ impl ModelToolController {
             session,
             resources,
             channel,
-            ModelForm::FdmAid(Box::new(super::fdm_aid::FdmAidPanel::new(
+            ModelForm::FdmAid(Box::new(super::fdm_aid::FdmAidPanel::with_selection(
                 session.document(),
                 name,
+                selection,
             ))),
         )
+    }
+    /// The finished Part a new print aid would take from `selection`, and
+    /// why none was taken.
+    pub fn fdm_seed(
+        document: &multicad_core::document::Document,
+        selection: &[EntityId],
+    ) -> (Option<EntityId>, Option<String>) {
+        super::fdm_aid::seed_target(document, selection)
     }
     pub fn begin_architecture(
         &mut self,

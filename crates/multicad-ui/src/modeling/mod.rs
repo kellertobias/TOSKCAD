@@ -29,7 +29,7 @@ mod opening;
 mod operation_guide;
 mod panel_face;
 #[cfg(test)]
-mod panel_fixture;
+pub(crate) mod panel_fixture;
 mod placement;
 mod primitive;
 mod revolve;

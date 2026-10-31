@@ -175,6 +175,10 @@ impl MachiningPanel {
         form.depth = field(SYSTEM32_DEPTH_MM);
         form
     }
+    /// The panels the operation targets.
+    pub fn target_parts(&self) -> &[EntityId] {
+        &self.targets
+    }
     /// Seed new-operation targets, for example from the current selection.
     pub fn with_targets(mut self, targets: Vec<EntityId>) -> Self {
         if self.existing.is_none() {
