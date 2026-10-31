@@ -16,6 +16,33 @@ All face-attached sketches use `multicad_core::sketch::prepare_new` with
 to its source feature, so it follows that face through rebuilds and survives
 save and reopen. Creating one is a single undoable transaction.
 
+## Drawing tool guidance
+
+While a drawing tool is active, the Inspector shows guidance derived from
+the tool's real gesture state (`crates/multicad-ui/src/sketch_tool_guide.rs`):
+
+- **Step**: the next viewport click, for example "Step 1 of 2 · Click the
+  first corner" and then "Step 2 of 2 · Click the opposite corner" for
+  Rectangle. The status line repeats it with a short Escape hint.
+- **Pending input**: clicks that are not in the sketch yet ("Pending: first
+  corner · not in the sketch yet"), or for Polyline the segments of the open
+  chain that are already committed.
+- **Commit**: how geometry enters the sketch. Line, Rectangle, Circle, Arc
+  and the other rectangle and circle modes commit on their final click, with
+  no Apply; the tool stays active and the status line reports "Rectangle
+  committed · Undo removes it". Polyline commits one segment per click after
+  the first. Fillet, Chamfer and Text apply on each click.
+- **Escape**: Esc discards only uncommitted clicks and ends the tool.
+  Geometry already committed stays; Undo removes it.
+
+Only Spline has a completion action: the fixed action bar shows Apply
+(accessibility label "Finish spline"), disabled until four control poles
+exist, and Cancel. Enter finishes the same way, and clicking the first pole
+commits a closed spline. Other drawing tools reserve no action bar; their
+Inspector offers **Clear pending points** (keeps the tool active) and
+**End <tool> (Esc)**. The command-line syntax remains available under the
+collapsed **Command entry** section.
+
 ## MCP
 
 `create_engraving_sketch` takes a source feature, a face ordinal from
@@ -30,4 +57,5 @@ ambiguous faces are refused as `invalid_request`, an old revision as
   toolpaths and engraving on curved surfaces are not specified.
 - The Create engraving and Abort buttons use placeholder icons until the
   reviewed artwork is integrated (CAD-137).
-- Not checked in the running window.
+- Not checked in the running window. Drawing-tool guidance is covered by
+  headless Inspector and canvas tests only.
