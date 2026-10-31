@@ -3,6 +3,7 @@
 //! oversize. Panel stock is defined in Model → Materials.
 use super::{
     FormStamp, PreviewState,
+    cabinet_edit::{self, CabinetGuide},
     dimension::DimensionField,
     form::{self, FormAction, ModelEvent, ModelRequest},
 };
@@ -182,6 +183,8 @@ pub(super) struct CabinetPanel {
     edges: [bool; 4],
     oversize: DimensionField,
     error: Option<String>,
+    /// Display-only envelope guide for (stamp, source revision).
+    guide: Option<(FormStamp, u64, Option<CabinetGuide>)>,
 }
 impl CabinetPanel {
     pub fn new(document: &Document, name: String) -> Self {
@@ -231,7 +234,26 @@ impl CabinetPanel {
             edges: [false; 4],
             oversize: field(0., "mm"),
             error: None,
+            guide: None,
         }
+    }
+    /// Viewport dimensions of the carcass being drafted, planned exactly as
+    /// Apply would plan it; `None` for panels or an invalid draft.
+    pub fn guide(&mut self, document: &Document, revision: u64) -> Option<&CabinetGuide> {
+        if self
+            .guide
+            .as_ref()
+            .is_none_or(|(stamp, rev, _)| *stamp != self.stamp || *rev != revision)
+        {
+            let guide = match self.request(document, true) {
+                Ok(CabinetCommand::Carcass { request, .. }) => {
+                    cabinet_edit::carcass_guide(document, &request.definition).ok()
+                }
+                _ => None,
+            };
+            self.guide = Some((self.stamp, revision, guide));
+        }
+        self.guide.as_ref().and_then(|(.., g)| g.as_ref())
     }
     /// Open an applied panel: a carcass panel opens its carcass.
     pub fn existing(document: &Document, feature: EntityId) -> Result<Self, String> {
@@ -496,6 +518,10 @@ impl CabinetPanel {
             Kind::Panel => changed |= self.show_panel(ui),
         }
         ui.separator();
+        if self.kind == Kind::Carcass {
+            self.show_role_changes(ui, document, enabled);
+            ui.small("The viewport shows the envelope dimensions and shelf heights of this draft.");
+        }
         form::preview_status(ui, self.stamp, preview);
         let validation = self.request(document, enabled);
         if let Err(error) = &validation {
@@ -532,6 +558,35 @@ impl CabinetPanel {
                 Some(ModelEvent::Apply)
             }
             _ => None,
+        }
+    }
+    fn show_role_changes(&self, ui: &mut egui::Ui, document: &Document, enabled: bool) {
+        let (Some(carcass), Ok(CabinetCommand::Carcass { request, .. })) =
+            (self.existing, self.request(document, enabled))
+        else {
+            return;
+        };
+        let changes = cabinet_edit::role_changes(document, carcass, &request.definition);
+        ui.small(format!(
+            "Keeps {} panel(s) with their Parts, drilling and joints.",
+            changes.kept
+        ));
+        if !changes.added.is_empty() {
+            ui.small(format!("Adds: {}", changes.added.join(", ")));
+        }
+        for (name, blocker) in &changes.removed {
+            match blocker {
+                Some(by) => ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    format!(
+                        "Cannot remove {name}: {by} uses it. Delete {by} first or keep the panel."
+                    ),
+                ),
+                None => ui.colored_label(
+                    egui::Color32::LIGHT_YELLOW,
+                    format!("Removes {name} and its manufacturing record."),
+                ),
+            };
         }
     }
     fn show_origin(&mut self, ui: &mut egui::Ui, help: &str) -> bool {
@@ -817,5 +872,219 @@ mod tests {
         assert_eq!(command.edit_id(), Some(feature));
         let prepared = command.prepare(&s, Actor::local(Channel::Ui)).unwrap();
         assert_eq!(prepared.outputs[0].feature, feature);
+    }
+
+    fn ui() -> Actor {
+        Actor::local(Channel::Ui)
+    }
+    /// The reported fixture: 600 × 720 × 560 mm, 18 mm stock, inset back and
+    /// one shelf, committed as "Cabinet 1".
+    fn cabinet_fixture() -> (Session, EntityId, EntityId) {
+        let mut s = session();
+        let form = CabinetPanel::new(s.document(), "Cabinet 1".into());
+        assert_eq!(form.back, BackKind::Inset);
+        let CabinetCommand::Carcass { request, .. } = form.request(s.document(), true).unwrap()
+        else {
+            panic!("carcass")
+        };
+        let carcass = request.carcass;
+        let prepared = model::prepare_carcass(&s, s.revision(), ui(), &request).unwrap();
+        Compiler::default()
+            .compile(prepared.model.prepared.document(), 1)
+            .unwrap();
+        s.commit(prepared.model.prepared).unwrap();
+        let group = model::read_carcass(s.document(), carcass)
+            .unwrap()
+            .group
+            .unwrap();
+        (s, carcass, group)
+    }
+    fn drill(s: &mut Session, name: &str, target: EntityId) -> EntityId {
+        let p = model::prepare_machining(
+            s,
+            s.revision(),
+            ui(),
+            name,
+            &model::MachiningDefinition {
+                kind: model::MachiningKind::Drill {
+                    holes: vec![[length(100.), length(100.)]],
+                    diameter: length(5.),
+                    depth: Some(length(10.)),
+                },
+                face: model::MachiningFace::Top,
+                targets: vec![target],
+            },
+        )
+        .unwrap();
+        Compiler::default()
+            .compile(p.model.prepared.document(), 1)
+            .unwrap();
+        s.commit(p.model.prepared).unwrap();
+        p.operation
+    }
+
+    #[test]
+    fn selecting_the_cabinet_group_reopens_its_saved_definition() {
+        let (s, carcass, group) = cabinet_fixture();
+        let d = s.document();
+        let panels = model::carcass_panels(d, carcass).unwrap();
+        // Group, carcass, any panel Part and any panel feature resolve.
+        let target = cabinet_edit::carcass_target(d, group).expect("group opens the cabinet");
+        assert_eq!(target.carcass, carcass);
+        assert_eq!(target.name, "Cabinet 1");
+        for id in [carcass, panels[2].1, panels[3].2] {
+            assert_eq!(
+                cabinet_edit::carcass_target(d, id).unwrap().carcass,
+                carcass
+            );
+        }
+        let form = CabinetPanel::existing(d, target.feature).unwrap();
+        assert_eq!(form.kind, Kind::Carcass);
+        assert_eq!(form.existing, Some(carcass));
+        assert_eq!(form.name, "Cabinet 1");
+        let value = |f: &DimensionField| match f.resolve(d).unwrap() {
+            Dimension::Literal { value, .. } => value,
+            _ => panic!("literal"),
+        };
+        assert_eq!(
+            [value(&form.width), value(&form.height), value(&form.depth)],
+            [600., 720., 560.]
+        );
+        assert_eq!(form.back, BackKind::Inset);
+        assert_eq!(value(&form.recess), 10.);
+        assert!(!form.offsets);
+        assert_eq!(form.shelf_count, 1);
+        // A rectangle panel or unrelated entity is not a cabinet.
+        let mut rect = CabinetPanel::new(d, "Loose".into());
+        rect.kind = Kind::Panel;
+        let p = rect.request(d, true).unwrap().prepare(&s, ui()).unwrap();
+        let loose = p.outputs[0].body;
+        assert!(cabinet_edit::carcass_target(p.prepared.document(), loose).is_none());
+        assert!(cabinet_edit::carcass_target(d, d.id()).is_none());
+    }
+
+    #[test]
+    fn width_and_shelf_edit_applies_once_keeps_identities_and_drilling() {
+        let (mut s, carcass, group) = cabinet_fixture();
+        let before_panels = model::carcass_panels(s.document(), carcass).unwrap();
+        let left = before_panels
+            .iter()
+            .find(|(r, ..)| *r == model::PanelRole::LeftSide)
+            .unwrap()
+            .2;
+        let holes = drill(&mut s, "Hinge holes", left);
+        let before = s.document().clone();
+        let revision = s.revision();
+        let target = cabinet_edit::carcass_target(s.document(), group).unwrap();
+        let mut form = CabinetPanel::existing(s.document(), target.feature).unwrap();
+        form.width = field(800., "mm");
+        form.shelf_count = 2;
+        form.stamp.changed();
+        // Visual dimensions follow the draft before Preview.
+        let guide = form.guide(s.document(), revision).unwrap().clone();
+        let labels: Vec<_> = guide.dimensions.iter().map(|d| d.label.as_str()).collect();
+        assert_eq!(labels, ["Width 800 mm", "Height 720 mm", "Depth 560 mm"]);
+        assert_eq!(guide.shelves.len(), 2);
+        assert_eq!(guide.edges.len(), 12);
+        let changes = cabinet_edit::role_changes(
+            s.document(),
+            carcass,
+            &match form.request(s.document(), true).unwrap() {
+                CabinetCommand::Carcass { request, .. } => request.definition,
+                _ => unreachable!(),
+            },
+        );
+        assert_eq!(changes.kept, 6, "sides, top, bottom, back, shelf 1");
+        assert_eq!(changes.added, ["shelf 2"]);
+        assert!(changes.removed.is_empty());
+        let command = form.request(s.document(), true).unwrap();
+        assert!(
+            matches!(command, CabinetCommand::Carcass { existing: Some(id), .. } if id == carcass)
+        );
+        let prepared = command.prepare(&s, ui()).unwrap();
+        let model = Compiler::default()
+            .compile(prepared.prepared.document(), 1)
+            .unwrap();
+        let list = model.cut_list(prepared.prepared.document()).unwrap();
+        let top = list.iter().find(|r| r.name == "Cabinet 1 top").unwrap();
+        assert_eq!(top.cut.finished_mm[0], 764.);
+        s.commit(prepared.prepared).unwrap();
+        assert_eq!(s.revision(), revision + 1, "one undoable edit");
+        let d = s.document();
+        assert_eq!(model::carcasses(d).count(), 1, "no Cabinet 2");
+        let after = model::carcass_panels(d, carcass).unwrap();
+        for panel in &before_panels {
+            assert!(after.contains(panel), "retained identity {panel:?}");
+        }
+        assert_eq!(after.len(), before_panels.len() + 1);
+        let added = after.iter().find(|p| !before_panels.contains(p)).unwrap();
+        assert!(d.hierarchy().members[&group].contains(&added.2));
+        assert_eq!(model::machinings_of(d, left), vec![holes]);
+        s.undo(s.revision(), ui()).unwrap();
+        assert_eq!(s.document(), &before);
+    }
+
+    #[test]
+    fn removing_a_drilled_shelf_is_named_and_refused_without_source_change() {
+        let (mut s, carcass, group) = cabinet_fixture();
+        let shelf = model::carcass_panels(s.document(), carcass)
+            .unwrap()
+            .into_iter()
+            .find(|(r, ..)| matches!(r, model::PanelRole::Shelf { .. }))
+            .unwrap()
+            .2;
+        drill(&mut s, "Shelf pins", shelf);
+        let before = s.document().clone();
+        let target = cabinet_edit::carcass_target(s.document(), group).unwrap();
+        let mut form = CabinetPanel::existing(s.document(), target.feature).unwrap();
+        form.shelf_count = 0;
+        let CabinetCommand::Carcass { request, .. } = form.request(s.document(), true).unwrap()
+        else {
+            panic!("carcass")
+        };
+        let changes = cabinet_edit::role_changes(s.document(), carcass, &request.definition);
+        assert!(changes.blocked());
+        assert_eq!(
+            changes.removed,
+            [(
+                "Cabinet 1 shelf 1".to_string(),
+                Some("Shelf pins".to_string())
+            )]
+        );
+        let error = form
+            .request(s.document(), true)
+            .unwrap()
+            .prepare(&s, ui())
+            .unwrap_err();
+        assert!(error.contains("Shelf pins"), "{error}");
+        assert_eq!(s.document(), &before);
+    }
+
+    #[test]
+    fn envelope_guide_paints_dimensions_and_rejects_invalid_drafts() {
+        let (s, _, group) = cabinet_fixture();
+        let target = cabinet_edit::carcass_target(s.document(), group).unwrap();
+        let mut form = CabinetPanel::existing(s.document(), target.feature).unwrap();
+        let guide = form.guide(s.document(), s.revision()).unwrap().clone();
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+        let mut camera = crate::camera::Camera::default();
+        let points: Vec<[f32; 3]> = guide
+            .edges
+            .iter()
+            .flatten()
+            .map(|p| p.map(|v| v as f32))
+            .collect();
+        camera.fit(&points, rect);
+        let ctx = egui::Context::default();
+        let mut labels = 0;
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            labels = guide.paint(ui.painter(), camera, rect);
+        });
+        output.textures_delta.clear();
+        assert_eq!(labels, 4, "three envelope dimensions and one shelf height");
+        // A draft the planner refuses has no guide, like Preview.
+        form.width = field(20., "mm");
+        form.stamp.changed();
+        assert!(form.guide(s.document(), s.revision()).is_none());
     }
 }

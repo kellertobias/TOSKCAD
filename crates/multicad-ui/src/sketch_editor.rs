@@ -631,6 +631,16 @@ impl SketchEditor {
             && !self.transfer.active()
             && !self.picking
     }
+    /// The cabinet behind a single selected cabinet group or carcass panel.
+    fn selected_carcass(
+        &self,
+        document: &Document,
+    ) -> Option<crate::modeling::cabinet_edit::CarcassTarget> {
+        if self.tree_selection.len() != 1 {
+            return None;
+        }
+        crate::modeling::cabinet_edit::carcass_target(document, *self.tree_selection.first()?)
+    }
     fn selected_applied_feature(&self, document: &Document) -> Option<(EntityId, bool)> {
         if self.tree_selection.len() != 1 {
             return None;
@@ -2714,6 +2724,12 @@ impl SketchEditor {
                             self.external_inspector(ui,session,id,resources);
                             if self.external.active(){return;}
                         }
+                        if let Some(target)=self.selected_carcass(session.document()) {
+                            let ready=self.feature_edit_ready(session,feed,target.feature);
+                            if ui.add_enabled(ready,egui::Button::new(format!("Edit cabinet \u{201c}{}\u{201d}",target.name))).on_hover_text("Reopen this cabinet's saved envelope, construction, back and shelf settings; Preview shows the whole cabinet before one undoable Apply").on_disabled_hover_text("Requires an installed native modeling provider and no pending tool").clicked()
+                                && let Err(error)=self.begin_feature_edit(session,resources,feed,target.feature,Channel::Ui) {self.message=error;}
+                            if self.model_active() {return;}
+                        }
                         if let Some((feature,latest))=self.selected_applied_feature(session.document()) {
                             let ready=self.feature_edit_ready(session,feed,feature);
                             if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this producer's saved controls or its recorded operation group; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires an installed native modeling provider, a supported readable source feature, and no pending tool").clicked()
@@ -3433,6 +3449,9 @@ impl SketchEditor {
         {
             self.message =
                 "Wall location picked · check the fit in the Inspector, then Preview".into();
+        }
+        if let Some(guide) = self.model.cabinet_guide(session) {
+            guide.paint(&painter, self.camera, rect);
         }
         if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {
@@ -7260,6 +7279,10 @@ mod tests {
 #[cfg(test)]
 #[path = "sketch_editor/feature_edit_tests.rs"]
 mod feature_edit_tests;
+
+#[cfg(test)]
+#[path = "sketch_editor/cabinet_edit_tests.rs"]
+mod cabinet_edit_tests;
 
 #[cfg(test)]
 mod inspector_tests;

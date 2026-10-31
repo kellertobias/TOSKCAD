@@ -7,6 +7,7 @@ mod body_choices;
 mod boolean;
 mod boolean_edit;
 mod cabinet;
+pub mod cabinet_edit;
 mod controller;
 pub(crate) mod dimension;
 mod edge_treatment;

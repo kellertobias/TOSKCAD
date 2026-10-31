@@ -582,6 +582,18 @@ impl ModelToolController {
             ))),
         )
     }
+    /// Envelope dimensions of the open Panel / carcass form, for the viewport.
+    pub fn cabinet_guide(
+        &mut self,
+        session: &Session,
+    ) -> Option<super::cabinet_edit::CabinetGuide> {
+        match self.form.as_mut() {
+            Some(ModelForm::Cabinet(form)) => {
+                form.guide(session.document(), session.revision()).cloned()
+            }
+            _ => None,
+        }
+    }
     pub fn begin_weldment(
         &mut self,
         session: &Session,
