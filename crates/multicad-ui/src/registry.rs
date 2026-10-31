@@ -669,6 +669,25 @@ impl Registry {
             })
             .collect()
     }
+    /// Ribbon tab of `mode` that offers `command`: `current` when it does
+    /// (a tool listed on several tabs stays where it was started), else the
+    /// first tab listing it (CAD-162).
+    pub fn workbench_tab(
+        &self,
+        mode: Mode,
+        command: Command,
+        current: Option<usize>,
+    ) -> Option<usize> {
+        let tabs = &self.workspace(mode).tabs;
+        let offers = |tab: &RibbonTab| {
+            tab.tools
+                .iter()
+                .any(|id| self.tool(id).is_some_and(|tool| tool.action == command))
+        };
+        current
+            .filter(|index| tabs.get(*index).is_some_and(offers))
+            .or_else(|| tabs.iter().position(offers))
+    }
     pub fn workspace(&self, mode: Mode) -> &Workspace {
         self.workspaces
             .iter()

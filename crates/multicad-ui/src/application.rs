@@ -137,6 +137,9 @@ pub struct Application {
     pub mode: Mode,
     pub registry: Registry,
     tab: usize,
+    /// Specialized tool last started per project, highlighted while its
+    /// form or page draft is open.
+    active_tool: Option<(usize, Command)>,
     storage: FileWorker,
     pending_files: BTreeMap<u64, PendingFile>,
     replacement: Option<Replacement>,
@@ -201,6 +204,7 @@ impl Application {
             mode: Mode::Parameters,
             registry: Registry::default(),
             tab: 0,
+            active_tool: None,
             storage: FileWorker::new(storage)?,
             pending_files: BTreeMap::new(),
             replacement: None,
@@ -387,6 +391,25 @@ impl Application {
             project.sketch.set_assembly_query_factory(factory.clone());
         }
         self.assembly_queries = Some(factory);
+    }
+    /// Tab to show when `command` starts in `mode`: the originating
+    /// workbench when it offers the command, else the first tab offering
+    /// it, else the current tab within the same mode (CAD-162).
+    fn workbench_tab(&self, mode: Mode, command: Command) -> usize {
+        let current = (self.mode == mode).then_some(self.tab);
+        self.registry
+            .workbench_tab(mode, command, current)
+            .or(current)
+            .unwrap_or(0)
+    }
+    /// Ribbon highlight for the specialized tool whose form is open.
+    fn tool_active(&self, command: Command) -> bool {
+        self.active_tool == Some((self.active, command))
+            && match command {
+                Command::Modeling(_) => self.current().sketch.model_active(),
+                Command::Drawing(_) => self.current().drawings.dirty(),
+                _ => false,
+            }
     }
     fn close_measurement(&mut self) {
         let p = self.current_mut();
@@ -657,8 +680,19 @@ impl Application {
                 }
                 let p = self.current_mut();
                 p.drawings.invoke(&mut p.session, tool, channel)?;
+                // Page Apply / Discard finish the current task in place.
+                let keep = self.mode == Mode::Drawings
+                    && matches!(
+                        tool,
+                        crate::drawings::DrawingTool::Apply | crate::drawings::DrawingTool::Discard
+                    );
+                self.tab = if keep {
+                    self.tab
+                } else {
+                    self.workbench_tab(Mode::Drawings, command)
+                };
                 self.mode = Mode::Drawings;
-                self.tab = 0;
+                self.active_tool = Some((self.active, command));
                 self.message = format!(
                     "{} · revision {}",
                     tool.label(),
@@ -1130,8 +1164,9 @@ impl Application {
                     tool,
                     channel,
                 )?;
+                self.tab = self.workbench_tab(Mode::Model, command);
                 self.mode = Mode::Model;
-                self.tab = 0;
+                self.active_tool = Some((self.active, command));
                 self.message = format!(
                     "{} · choose controls in the Inspector, then Preview",
                     tool.label()
@@ -1755,6 +1790,7 @@ impl Application {
                 ui.set_width(ui.available_width());
                 let context = ui.ctx().clone();
                 let sketch = &self.current().sketch;
+                let tool_active = |command| self.tool_active(command);
                 action = crate::ribbon_ui::show_selectable(
                     ui,
                     &self.registry,
@@ -1766,7 +1802,7 @@ impl Application {
                     |command| match command {
                         Command::Draw(tool) => sketch.editing && sketch.tool == Some(tool),
                         Command::Construction => sketch.editing && sketch.construction(),
-                        _ => false,
+                        command => tool_active(command),
                     },
                 );
             });
@@ -4147,6 +4183,9 @@ mod inspector_tests;
 #[cfg(test)]
 #[path = "application/ribbon_fit_tests.rs"]
 mod ribbon_fit_tests;
+#[cfg(test)]
+#[path = "application/workbench_tests.rs"]
+mod workbench_tests;
 /// Workspace tab strip: 30 pt tabs with 3 pt frame margins.
 const RIBBON_TAB_STRIP: f32 = 36.0;
 const RIBBON_BOTTOM_PAD: f32 = 2.0;
