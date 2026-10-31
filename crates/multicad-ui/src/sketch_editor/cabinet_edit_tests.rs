@@ -21,7 +21,7 @@ impl SceneBackend for Silent {
     }
 }
 
-fn cabinet() -> (Session, EntityId, EntityId) {
+pub(super) fn cabinet() -> (Session, EntityId, EntityId) {
     let mut s = Session::new(Document::new("Cabinet edit").unwrap()).unwrap();
     let birch = Entity::new(
         "Birch",

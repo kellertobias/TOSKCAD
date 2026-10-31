@@ -4141,6 +4141,9 @@ mod ribbon_layout_tests {
 #[cfg(test)]
 #[path = "application/inspector_tests.rs"]
 mod inspector_tests;
+#[cfg(test)]
+#[path = "application/open_fit_tests.rs"]
+mod open_fit_tests;
 fn render_display_label(display: multicad_core::model::RenderDisplay) -> &'static str {
     crate::render_view::style_of(display).label()
 }
