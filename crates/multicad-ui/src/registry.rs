@@ -535,6 +535,7 @@ impl Default for Registry {
                     ),
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
+                    tab("FDM", &["fdm-aid"]),
                     RibbonTab {
                         title: "Relationships",
                         tools: crate::assembly::AssemblyTool::ALL
@@ -544,7 +545,6 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: false,
                     },
-                    tab("FDM aids", &["fdm-aid"]),
                     tab("Materials", &["materials"]),
                     tab("Import", &["import-step", "import-kicad", "import-update"]),
                 ],
@@ -956,7 +956,7 @@ mod tests {
                         | ModelingTool::Weld
                         | ModelingTool::Sheet
                 ),
-                "Copy shares the Move / Copy ribbon entry; Boolean is offered as Join / Subtract / Intersect; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM aids tabs"
+                "Copy shares the Move / Copy ribbon entry; Boolean is offered as Join / Subtract / Intersect; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM tabs"
             );
             if matches!(
                 tool,
@@ -997,7 +997,7 @@ mod tests {
                     .workspace(Mode::Model)
                     .tabs
                     .iter()
-                    .find(|t| t.title == "FDM aids");
+                    .find(|t| t.title == "FDM");
                 assert!(fdm.unwrap().tools.contains(&tool.id()));
                 assert_eq!(registry.resolve("support").unwrap().id, tool.id());
             }
