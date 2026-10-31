@@ -38,18 +38,19 @@ h1 { font-size: clamp(36px, 4.8vw, 72px); font-weight: 550; line-height: 1.02; l
 .section-head { display: grid; grid-template-columns: 1.2fr 1fr; align-items: baseline; gap: 48px; margin-bottom: 28px; }
 h2 { font-size: clamp(30px, 3vw, 44px); font-weight: 550; letter-spacing: -.035em; line-height: 1.05; margin: 0; }
 .section-head p, .workflow > div > p { font-size: 18px; line-height: 1.55; margin: 0; max-width: 460px; }
-.gallery-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
 [hidden] { display: none !important; }
-.gallery-controls button { font: inherit; font-size: 18px; min-height: 48px; padding: 12px 24px; border: 0; background: var(--muted); color: var(--ink); cursor: pointer; transition: transform .2s, background .2s; }
-.gallery-controls button[aria-pressed=true] { background: var(--action); color: var(--white); }
-.gallery-controls button:hover { transform: translateY(-2px); }
 figure { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); align-items: center; gap: 40px; margin: 0; }
-figure + figure { margin-top: 48px; }
+figure + figure { margin-top: 72px; }
+figure:nth-of-type(even) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); }
+figure:nth-of-type(even) > a { grid-column: 2; grid-row: 1; }
+figure:nth-of-type(even) > figcaption { grid-column: 1; grid-row: 1; }
 figure > a { display: block; }
-figure img { display: block; width: 100%; max-height: 410px; object-fit: contain; height: auto; }
+figure > a img { display: block; width: 100%; max-height: 410px; object-fit: contain; height: auto; }
 figcaption { font-size: 18px; line-height: 1.55; }
 h3 { font-size: 24px; line-height: 1.12; font-weight: 550; letter-spacing: -.025em; margin: 0 0 18px; }
 figcaption p { margin: 0 0 16px; }
+.supporting-shot { display: block; max-width: 300px; margin-block: 24px; font-size: 16px; }
+.supporting-shot img { display: block; width: 100%; height: auto; margin-bottom: 10px; }
 .capture-note { font-size: 16px; margin-bottom: 0; }
 .workflow { padding-block: 56px; background: var(--muted); display: grid; grid-template-columns: 1fr 1.15fr; gap: 64px; }
 .workflow > div > p { margin-top: 24px; }
@@ -65,11 +66,9 @@ footer > a:first-child { font-size: 24px; letter-spacing: -.04em; text-decoratio
 footer p, footer > a:last-child { font-size: 16px; }
 footer p { margin: 0; }
 .reveal { animation: enter .7s both; animation-delay: var(--delay, 0ms); }
-.shot-enter { animation: shot .4s both; }
 @keyframes enter { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes shot { from { opacity: .4; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 1000px) {
-  figure { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 28px; }
+  figure { gap: 28px; }
   h3 { font-size: 24px; }
   figcaption { font-size: 18px; }
 }
@@ -79,9 +78,10 @@ footer p { margin: 0; }
   .hero { padding-bottom: 36px; }
   .wordmark { padding-block: 16px; max-height: 230px; }
   .application { padding-block: 44px; }
-  figure { grid-template-columns: 1fr; gap: 24px; }
+  figure, figure:nth-of-type(even) { grid-template-columns: 1fr; gap: 24px; }
+  figure:nth-of-type(even) > a, figure:nth-of-type(even) > figcaption { grid-column: auto; grid-row: auto; }
   figure > a { max-width: 600px; width: 100%; margin-inline: auto; }
-  figure img { max-height: 340px; }
+  figure > a img { max-height: 340px; }
   .workflow, .development { grid-template-columns: 1fr; gap: 28px; padding-block: 44px; }
   footer { flex-wrap: wrap; }
 }
@@ -93,8 +93,6 @@ footer p { margin: 0; }
   nav a:first-child { display: none; }
   h1 { font-size: 38px; }
   .intro p, figcaption { font-size: 18px; }
-  .gallery-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .gallery-controls button { flex: 1; padding: 12px 14px; font-size: 16px; }
   footer { display: block; }
   footer p { margin-block: 18px; }
   .wordmark { min-height: 120px; }
