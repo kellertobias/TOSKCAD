@@ -1158,6 +1158,7 @@ mod tests {
             generation: 1,
         };
         let report = ReferenceReport {
+            sketch_supports: Default::default(),
             external_results: Default::default(),
             external_errors: Default::default(),
             revision: session.revision(),

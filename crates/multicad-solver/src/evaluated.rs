@@ -174,6 +174,7 @@ pub struct EvaluatedSketch {
     canonical: Source,
     pub evaluation: Evaluation,
     pub resolved_rhs: BTreeMap<EntityId, Measurement>,
+    support: Option<Result<sketch_regions::SketchSupport, String>>,
 }
 fn error(sketch: EntityId, message: impl Into<String>) -> InputError {
     InputError {
@@ -279,6 +280,37 @@ impl EvaluatedSketch {
         let solved = self
             .solved()
             .ok_or_else(|| error(self.sketch, "Sketch has no current valid solved profiles"))?;
+        if let Some(support) = &self.support {
+            let support = support.as_ref().map_err(|e| error(self.sketch, e))?;
+            if support.document != self.stamp.document
+                || support.revision != self.stamp.revision
+                || support.source_hash != self.stamp.source_hash
+            {
+                return Err(error(
+                    self.sketch,
+                    "Supporting face receipt is stale; rebuild before selecting a region",
+                ));
+            }
+            let frame = &support.contours.frame;
+            if frame.origin_mm != self.frame.origin
+                || frame.u != self.frame.u
+                || frame.v != self.frame.v
+            {
+                return Err(error(
+                    self.sketch,
+                    "Supporting face receipt belongs to a different sketch frame",
+                ));
+            }
+            let construction = solved
+                .curves
+                .iter()
+                .filter(|c| c.construction)
+                .map(|c| c.id)
+                .collect();
+            return support
+                .regions(&self.geometry()?, &construction, queries, interrupt)
+                .map_err(|e| error(self.sketch, e.message));
+        }
         sketch_regions::extract_evaluated_with_queries_and_interrupt(
             &solved.points,
             &solved.curves,
@@ -406,5 +438,13 @@ fn evaluate_checked(
         canonical: source,
         evaluation,
         resolved_rhs,
+        support: sketch_regions::supporting_face(document, sketch).map(|_| {
+            report
+                .and_then(|r| r.sketch_supports.get(&sketch))
+                .cloned()
+                .unwrap_or_else(|| {
+                    Err("Supporting face requires a current exact native boundary receipt".into())
+                })
+        }),
     })
 }

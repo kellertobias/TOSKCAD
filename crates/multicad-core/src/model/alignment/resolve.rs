@@ -119,6 +119,7 @@ fn datum(
     let report = ReferenceReport {
         revision,
         entries,
+        sketch_supports: Default::default(),
         external_results: Default::default(),
         external_errors: Default::default(),
     };

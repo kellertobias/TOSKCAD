@@ -329,6 +329,10 @@ pub struct ReferenceReport {
     pub external_results: BTreeMap<EntityId, crate::sketch_external::ExternalResultReceipt>,
     #[serde(default)]
     pub external_errors: BTreeMap<EntityId, String>,
+    /// Exact native supporting-face wires for derived sketch region formation.
+    /// These are evaluated receipts, never authored/projected sketch curves.
+    #[serde(default)]
+    pub sketch_supports: BTreeMap<EntityId, Result<crate::sketch_regions::SketchSupport, String>>,
 }
 impl ReferenceReport {
     /// Geometry publication omits validated non-driving measurements and export
@@ -376,6 +380,7 @@ impl ReferenceReport {
             entries,
             external_results: self.external_results.clone(),
             external_errors: self.external_errors.clone(),
+            sketch_supports: self.sketch_supports.clone(),
         })
     }
     pub fn all_resolved(&self) -> bool {
@@ -431,6 +436,7 @@ pub fn inspect(
         revision,
         entries,
         external_results: BTreeMap::new(),
+        sketch_supports: BTreeMap::new(),
         external_errors: document
             .entities()
             .filter(|e| crate::sketch_external::is_occurrence_reference(document, e.id))

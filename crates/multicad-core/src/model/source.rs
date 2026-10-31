@@ -816,6 +816,12 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    if document
+        .entities()
+        .any(|entity| crate::sketch_regions::supporting_face(document, entity.id).is_some())
+    {
+        capabilities.insert(crate::sketch_regions::FACE_SKETCH_REGIONS_CAPABILITY.into());
+    }
     if document.entities().any(|entity| {
         matches!(&entity.data, EntityData::Feature { definition, .. }
             if [EXTRUDE_TYPE, super::REVOLVE_TYPE].contains(&definition.type_id.as_str())

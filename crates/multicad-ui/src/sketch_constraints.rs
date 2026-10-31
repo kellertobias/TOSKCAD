@@ -2505,6 +2505,7 @@ mod tests {
         assert!(editor.semantic_preview().is_some());
         assert!(editor.canonical_draft);
         editor.set_evaluation(Some(ReferenceReport {
+            sketch_supports: Default::default(),
             external_results: Default::default(),
             external_errors: Default::default(),
             revision: session.revision(),

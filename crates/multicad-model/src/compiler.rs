@@ -177,7 +177,10 @@ impl Profiles<'_> {
             .chain(region.holes.iter().flat_map(|h| &h.edges))
             .map(|edge| Origin {
                 source: edge.authored,
-                role: "profile.edge".into(),
+                role: edge
+                    .fragment
+                    .map(|hash| format!("profile.edge.{hash}"))
+                    .unwrap_or_else(|| "profile.edge".into()),
             })
             .collect();
         Ok((

@@ -277,6 +277,8 @@ pub fn prepare_revolve(
                 .chain(&output.region.holes)
                 .flat_map(|b| &b.curves)
                 .any(|id| !curves.contains(id))
+                && crate::sketch_regions::supporting_face(session.document(), request.sketch)
+                    .is_none()
             {
                 return Err(error(
                     "Selected profile contains missing or construction curve identities",

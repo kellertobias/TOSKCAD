@@ -28,6 +28,7 @@ mod sheet_forming;
 mod sheet_hardware;
 pub mod sheet_metal;
 mod sheet_unfold;
+mod sketch_support;
 mod split;
 mod symbols;
 mod targets;

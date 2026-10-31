@@ -326,6 +326,7 @@ fn echoed_prepare_input_cannot_hide_a_different_canonical_binding_in_its_candida
                 report: ReferenceReport {
                     revision: fixture.session.revision(),
                     entries: vec![],
+                    sketch_supports: Default::default(),
                     external_results: Default::default(),
                     external_errors: Default::default(),
                 },

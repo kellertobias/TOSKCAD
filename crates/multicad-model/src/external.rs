@@ -121,6 +121,7 @@ impl Sources<'_> {
         sketch: Option<EntityId>,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<(), ModelError> {
+        self.populate_supports(report, sketch, interrupt)?;
         if report.external_errors.is_empty() && report.external_results.is_empty() {
             return Ok(());
         }

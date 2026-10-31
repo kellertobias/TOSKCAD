@@ -7,7 +7,44 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, f64::consts::TAU};
 
+mod arrangement;
+pub use arrangement::{extract_cells, extract_line_cells};
+mod support;
+
+/// A native receipt for the finite face supporting a sketch. Coordinates are
+/// in the current sketch frame; edge identities derive from semantic topology,
+/// never evaluation-local ordinals or viewport geometry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchSupport {
+    pub document: EntityId,
+    pub revision: u64,
+    pub source_hash: crate::project_file::ContentHash,
+    pub contours: crate::manufacturing::PlanarContours,
+    pub edges: Vec<Vec<EntityId>>,
+}
+
+/// The direct face link of a sketch's plane. Datum and offset-only planes do
+/// not acquire a finite supporting perimeter.
+pub fn supporting_face(
+    document: &crate::document::Document,
+    sketch: EntityId,
+) -> Option<(EntityId, &crate::document::Link)> {
+    use crate::document::EntityData;
+    let EntityData::Sketch { plane, .. } = &document.get(sketch)?.data else {
+        return None;
+    };
+    let EntityData::Plane {
+        anchor: Some(link), ..
+    } = &document.get(*plane)?.data
+    else {
+        return None;
+    };
+    (link.role == "face" && link.geometry.is_some()).then_some((*plane, link))
+}
+
 pub const DEFAULT_TOLERANCE_MM: f64 = 1e-7;
+pub const FACE_SKETCH_REGIONS_CAPABILITY: &str = "sketch.face_regions.1";
 type Point = [f64; 2];
 
 /// Stable selection intent: authored curve identities, independent of loop
@@ -44,6 +81,9 @@ pub enum ExactCurve {
 pub struct Edge {
     pub authored: EntityId,
     pub reversed: bool,
+    /// Semantic split identity for native side-edge provenance. The authored
+    /// curve still owns selection intent; no coordinates enter this identity.
+    pub fragment: Option<crate::project_file::ContentHash>,
     pub curve: ExactCurve,
 }
 
@@ -282,7 +322,7 @@ impl Region {
 
 /// Pin the selected bounded area, including its holes. A new inner loop changes
 /// this intent instead of silently changing a previously selected profile.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegionIntent {
     pub outer: BoundaryIntent,
@@ -308,7 +348,9 @@ impl Extraction {
     /// Exact authored identity match; no nearest area, index or coordinate
     /// fallback when a boundary has been removed, split or acquired a new hole.
     pub fn resolve(&self, intent: &RegionIntent) -> Option<&Region> {
-        self.regions.iter().find(|r| r.intent() == *intent)
+        let mut matches = self.regions.iter().filter(|r| r.intent() == *intent);
+        let region = matches.next()?;
+        matches.next().is_none().then_some(region)
     }
 }
 
@@ -828,6 +870,7 @@ fn extract_impl(
         .map(|c| Edge {
             authored: c.id,
             reversed: false,
+            fragment: None,
             curve: match c.kind {
                 CurveKind::BSpline {
                     ref poles,
@@ -864,6 +907,7 @@ fn extract_impl(
             Ok(contours) => edges.extend(contours.into_iter().map(|c| Edge {
                 authored: c.id,
                 reversed: false,
+                fragment: None,
                 curve: ExactCurve::BSpline {
                     poles: c.poles,
                     basis: c.basis,
