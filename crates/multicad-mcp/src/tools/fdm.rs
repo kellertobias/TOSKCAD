@@ -99,6 +99,18 @@ pub struct ProcessArgs {
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct TabContactArgs {
+    /// The finished Part the tab will serve.
+    pub target: String,
+    /// A world point on or just outside the Part's side, in millimeters.
+    pub near_mm: [f64; 3],
+    /// Optional build-plane direction (x, y) pointing away from the part;
+    /// it moves the probe off a point that lies on the surface.
+    #[serde(default)]
+    pub outward: Option<[f64; 2]>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemoveAidArgs {
     pub expected_revision: u64,
     /// Aid feature ID.
@@ -254,6 +266,27 @@ pub(super) fn set_fdm_process(host: &dyn Host, call: &Request, args: ProcessArgs
     })?
 }
 
+/// The exact tab contact near a point: the outline point at the part's
+/// base and its outward direction, ready for `set_fdm_aid`.
+pub(super) fn fdm_tab_contact(host: &dyn Host, call: &Request, args: TabContactArgs) -> ToolResult {
+    let (document, revision, _) = snapshot(host)?;
+    let target = id(&args.target)?;
+    if model::aid_parts(&document).contains(&target) {
+        return Err(ToolError::invalid("An aid cannot serve another aid"));
+    }
+    let model = compile(&document, revision, call)?;
+    let c = model.fdm_tab_contact(target, args.near_mm, args.outward)?;
+    Ok(json!({
+        "revision": revision,
+        "target": target,
+        "origin_mm": c.point_mm,
+        "angle_deg": c.angle_deg,
+        "outward": c.outward,
+        "probe_distance_mm": c.probe_distance_mm,
+        "scope": "Measured from the target's exact solid to within 0.1 µm; the tab sits on the part's lowest height with +Z as the build direction.",
+    }))
+}
+
 fn relation(r: SolidPairRelation) -> &'static str {
     match r {
         SolidPairRelation::Separated => "separated",
@@ -286,6 +319,10 @@ pub(super) fn fdm_aid_report(host: &dyn Host, call: &Request, _: super::NoArgs) 
             })),
             "crowded": a.crowded.iter().map(|(p, d)| json!({ "part": p, "distance_mm": d })).collect::<Vec<_>>(),
             "issues": a.issues,
+            "contact_issues": a.contact_issues,
+            "exact_contact": a.exact_contact.map(|c| json!({
+                "origin_mm": c.point_mm, "angle_deg": c.angle_deg,
+            })),
         })).collect::<Vec<Value>>(),
     }))
 }
