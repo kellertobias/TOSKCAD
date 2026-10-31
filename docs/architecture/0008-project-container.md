@@ -20,6 +20,8 @@ an entity variant, so the file also needs explicit capability requirements.
 ## Decision
 
 Use a streaming `.multicad` container with a fixed signature and format version.
+(Revised 2026-10-31: new projects use the `.tcd` extension for the same container;
+`.multicad` stays openable. See [project files](project-files.md#file-names-and-associations).)
 A bounded JSON manifest identifies canonical source, critical payloads and advisory
 caches. SHA-256 checks protect the manifest and each content entry. Entries are
 ordered byte sequences rather than extracted paths.

@@ -51,6 +51,7 @@ The user's decision of 2026-10-30: Add to Library marks the file as listed in th
 - **One library per user installation.** The index lives at `<per-user app data>/MultiCAD/library/library.json`, next to recovery data: `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on Windows, `$XDG_STATE_HOME` or `~/.local/state` on Linux. It is never inside the application bundle.
   - A persistent `.library.json.lock` is shared by all application instances, and the index is replaced atomically (temporary file, fsync, rename, directory fsync).
   - The UI offers no library selection. `LibraryFileStore::new(root)` accepts a different root for tests.
+- **Paths are kept as listed.** Entries and recent projects that point at legacy `.multicad` files keep opening from that path; neither list rewrites or renames files when `.tcd` became the native extension (CAD-179).
 - **An entry** (index version 2) holds the entry id, the document id, the absolute canonical path, the last known name and description, and the time it was first listed.
 - **"Marked as listed" means the index entry plus the sidebar status.** Nothing is written into the project file: no marker, no copy. A marker would change and dirty the user's file.
 - **Explicit only:** listing happens only through *Add to Library*. Save never lists a file. Listing never edits open documents, so consuming projects keep their embedded pinned definitions (CAD-70).
