@@ -8,9 +8,11 @@
 //! Thickness comes from the stock. The inside bend radius and K-factor come
 //! from the stock unless the part overrides them; both values stay separate
 //! editable inputs and are never universal constants.
+mod edges;
 mod hardware;
 mod prepare;
 mod resolve;
+pub use edges::*;
 pub use hardware::*;
 pub use prepare::*;
 pub use resolve::*;
