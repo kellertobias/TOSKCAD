@@ -12,7 +12,7 @@ ToskCAD is under active development. Expect unfinished workflows and changing pr
 
 ## Application screenshots
 
-These are native macOS screenshots from a local build on October 31, 2026. The cabinet, welded workbench, front panel and apartment are included in the application's Examples browser. Each opens as an editable copy.
+These are native macOS screenshots from a local build on October 31, 2026. The cabinet, welded workbench, front panel and apartment are included in the application's Examples browser. Each opens as an editable copy. The captures use closer cameras; the cabinet shows its open pose and the panel shows its assigned materials in the assembly preview.
 
 ![Built-in plywood cabinet in the Wood workbench](website/assets/cabinet.png)
 
@@ -21,6 +21,8 @@ These are native macOS screenshots from a local build on October 31, 2026. The c
 ![Built-in aluminium front panel in the Sheet metal workbench](website/assets/front-panel.png)
 
 ![Built-in apartment with workshop in the Architecture workbench](website/assets/apartment.png)
+
+The website also includes the model-derived [weld plan](website/assets/workbench-weld-plan.svg), [cabinet connector plan](website/assets/cabinet-connector-plan.svg) and [apartment floor plan](website/assets/apartment-plan.svg). Click an image there to inspect it in the page preview.
 
 ## Project foundation
 
