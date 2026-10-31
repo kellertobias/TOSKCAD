@@ -11,6 +11,8 @@ use multicad_ui::{
     schedules::{ScheduleReply, ScheduleTable},
 };
 use std::sync::Arc;
+#[path = "drawings/cache.rs"]
+mod cache;
 type Tables = Vec<(ScheduleSpec, Result<ScheduleTable, String>)>;
 pub struct Backend {
     runtime: Result<Runtime<Arc<DrawingEvaluation>>, String>,
@@ -51,25 +53,40 @@ fn page_ids(document: &Document) -> Result<Vec<EntityId>, ModelError> {
 }
 impl Backend {
     pub fn new() -> Self {
+        Self::with_cache(cache::Cache::installed())
+    }
+    pub(crate) fn with_cache(cache: Option<cache::Cache>) -> Self {
+        let reader = cache.clone();
         Self {
-            runtime: Runtime::with_model_publisher(Compiler::default(), |document, model, tag| {
-                let revision = model.snapshot().stamp.revision;
-                let providers = DrawingProviders::default();
-                if tag == 0 {
-                    model.drawings(document, revision, &providers).map(Arc::new)
-                } else {
-                    let page = page_ids(document)?
-                        .get((tag - 1) as usize)
-                        .copied()
-                        .ok_or_else(|| ModelError {
-                            entity: None,
-                            message: "The selected drawing page is missing".into(),
-                        })?;
-                    model
-                        .drawing_page(document, revision, &providers, page)
-                        .map(Arc::new)
-                }
-            }),
+            runtime: Runtime::with_cached_model_publisher(
+                Compiler {
+                    omit_display: true,
+                    ..Default::default()
+                },
+                move |document, revision, tag| {
+                    reader.as_ref()?.read(document, revision, tag).map(Arc::new)
+                },
+                move |document, model, tag| {
+                    let revision = model.snapshot().stamp.revision;
+                    let providers = DrawingProviders::default();
+                    let result = if tag == 0 {
+                        model.drawings(document, revision, &providers)
+                    } else {
+                        let page = page_ids(document)?
+                            .get((tag - 1) as usize)
+                            .copied()
+                            .ok_or_else(|| ModelError {
+                                entity: None,
+                                message: "The selected drawing page is missing".into(),
+                            })?;
+                        model.drawing_page(document, revision, &providers, page)
+                    }?;
+                    if let Some(cache) = &cache {
+                        cache.write(document, tag, &result);
+                    }
+                    Ok(Arc::new(result))
+                },
+            ),
             expected: None,
             schedules: None,
             expected_schedules: None,
@@ -172,6 +189,117 @@ mod tests {
     };
     use multicad_ui::drawings::{DrawingEditor, DrawingTool, ScheduleStatus};
     use std::time::{Duration, Instant};
+
+    fn preview(backend: &mut Backend, session: &Session, page: EntityId) -> Arc<DrawingEvaluation> {
+        let stamp = DrawingStamp {
+            document: session.document().id(),
+            revision: session.revision(),
+            source_hash: multicad_core::project_file::ContentHash::document(session.document())
+                .unwrap(),
+        };
+        backend
+            .request_page(session.document(), stamp, page)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(reply) = backend.poll() {
+                return reply.result.unwrap();
+            }
+            assert!(Instant::now() < deadline, "Drawing preview timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn persisted_native_page_matches_fresh_vectors_and_rebuilds_after_corruption_or_view_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let mut session = Session::new(Document::new("Native cached drawing").unwrap()).unwrap();
+        add_box(&mut session, "Panel", 0.);
+        let source = session
+            .document()
+            .entities()
+            .find(|e| matches!(e.data, multicad_core::document::EntityData::Part { .. }))
+            .unwrap()
+            .id;
+        let mut page = drawings::Page::new("1");
+        page.views.push(drawings::DrawingView {
+            id: EntityId::new(),
+            name: "Front".into(),
+            source: drawings::ViewSource::Model {
+                entities: vec![source],
+            },
+            frame: multicad_core::references::ReferenceFrame {
+                origin_mm: [0.; 3],
+                u: [1., 0., 0.],
+                v: [0., 1., 0.],
+            },
+            kind: drawings::ViewKind::Projection,
+            position_mm: [50., 50.],
+            scale: drawings::Scale {
+                numerator: 1,
+                denominator: 1,
+            },
+            hidden_lines: false,
+            tangent_edges: false,
+            paper_chord_tolerance_mm: 0.01,
+            guide: None,
+        });
+        let (book, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            "Drawing",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let mut first = Backend::with_cache(Some(cache.clone()));
+        let original = preview(&mut first, &session, page.id);
+        assert!(
+            original
+                .views
+                .values()
+                .all(|v| matches!(v, drawings::ViewEvaluation::Ready { .. }))
+        );
+        drop(first);
+        let mut reopened = Backend::with_cache(Some(cache.clone()));
+        assert_eq!(original, preview(&mut reopened, &session, page.id));
+        let entry = std::fs::read_dir(directory.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::write(entry, b"corrupt optional cache").unwrap();
+        let mut rebuilt = Backend::with_cache(Some(cache.clone()));
+        assert_eq!(original, preview(&mut rebuilt, &session, page.id));
+        page.views[0].hidden_lines = true;
+        let prepared = drawings::prepare(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            book,
+            drawings::PageAction::Replace(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let actual = preview(&mut rebuilt, &session, page.id);
+        let model = Compiler::default()
+            .compile(session.document(), session.revision())
+            .unwrap();
+        let expected = model
+            .drawing_page(
+                session.document(),
+                session.revision(),
+                &DrawingProviders::default(),
+                page.id,
+            )
+            .unwrap();
+        assert_eq!(*actual, expected);
+        assert_ne!(actual.stamp.source_hash, original.stamp.source_hash);
+        assert_ne!(actual.views, original.views);
+    }
 
     fn add_box(session: &mut Session, name: &str, x: f64) {
         let request = PrimitiveRequest::new(

@@ -98,8 +98,28 @@ impl<T: Send + 'static> Runtime<T> {
             publish(document, model, tag)
         })
     }
+    /// Consult a detached publication cache on the worker before compiling any
+    /// native geometry. The caller must validate all source/build dependencies.
+    pub fn with_cached_model_publisher(
+        compiler: Compiler,
+        cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
+        publish: impl Fn(&Document, &Model, u64) -> Result<T, ModelError> + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::with_worker_cache(compiler, cached, move |document, model, _, tag| {
+            publish(document, model, tag)
+        })
+    }
     fn with_model_and_snapshot(
         compiler: Compiler,
+        publish: impl Fn(&Document, &Model, &ModelSnapshot, u64) -> Result<T, ModelError>
+        + Send
+        + 'static,
+    ) -> Result<Self, String> {
+        Self::with_worker_cache(compiler, |_, _, _| None, publish)
+    }
+    fn with_worker_cache(
+        compiler: Compiler,
+        cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
         publish: impl Fn(&Document, &Model, &ModelSnapshot, u64) -> Result<T, ModelError>
         + Send
         + 'static,
@@ -140,6 +160,21 @@ impl<T: Send + 'static> Runtime<T> {
                         slots.pending.take().expect("pending job")
                     };
                     let superseded = || worker.latest.load(Ordering::Acquire) != job.generation;
+                    if job.sources.is_none()
+                        && job.options.cut_targets.is_empty()
+                        && let Some(publication) = cached(&job.document, job.revision, job.tag)
+                    {
+                        let Ok(mut slots) = worker.slots.lock() else {
+                            return;
+                        };
+                        if !slots.stop && !superseded() {
+                            slots.reply = Some(ModelReply {
+                                generation: job.generation,
+                                result: Ok(publication),
+                            });
+                        }
+                        continue;
+                    }
                     let result = match &job.sources {
                         Some(roots) => compiler.compile_sources_cached(
                             &mut cache,
@@ -328,5 +363,31 @@ impl<T> Drop for Runtime<T> {
         slots.pending = None;
         slots.reply = None;
         self.shared.wake.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod publication_cache_tests {
+    use super::*;
+    #[test]
+    fn a_cached_publication_skips_native_compilation_and_the_publisher() {
+        let document = Document::new("Detached cache").unwrap();
+        let mut runtime = Runtime::with_cached_model_publisher(
+            Compiler::default(),
+            |_, revision, tag| Some((revision, tag)),
+            |_, _, _| panic!("A valid cached publication must bypass the native publisher"),
+        )
+        .unwrap();
+        let generation = runtime.request_tagged(&document, 7, 2).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(reply) = runtime.poll() {
+                assert_eq!(reply.generation, generation);
+                assert_eq!(reply.result.unwrap(), (7, 2));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 }

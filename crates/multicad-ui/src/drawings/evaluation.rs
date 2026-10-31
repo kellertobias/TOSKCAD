@@ -45,6 +45,7 @@ pub(super) struct DrawingFeed {
     queued: Option<(Document, f64)>,
     pending: bool,
     page: Option<EntityId>,
+    cache: std::collections::VecDeque<(EntityId, Arc<DrawingEvaluation>)>,
     pub result: Option<Arc<DrawingEvaluation>>,
     pub error: Option<String>,
 }
@@ -57,6 +58,7 @@ impl DrawingFeed {
         self.error = None;
         self.queued = None;
         self.pending = false;
+        self.cache.clear();
     }
     pub fn has_factory(&self) -> bool {
         self.factory.is_some()
@@ -75,6 +77,10 @@ impl DrawingFeed {
         now: f64,
         page: EntityId,
     ) -> Result<(), String> {
+        if self.page != Some(page) {
+            self.queued = None;
+            self.pending = false;
+        }
         self.page = Some(page);
         self.schedule_inner(document, revision, now)
     }
@@ -95,7 +101,27 @@ impl DrawingFeed {
         self.expected = Some(stamp);
         self.result = None;
         self.error = None;
-        self.queued = Some((document, now + 0.12));
+        // Page navigation starts immediately. Only rapid changes to the same
+        // page are debounced; a completed page returns in this very frame.
+        if let Some(index) = self.cache.iter().position(|(page, result)| {
+            Some(*page) == self.page
+                && result.stamp.document == stamp.document
+                && result.stamp.source_hash == stamp.source_hash
+        }) {
+            let (page, mut result) = self.cache.remove(index).expect("cached page");
+            Arc::make_mut(&mut result).stamp = stamp;
+            self.cache.push_back((page, result.clone()));
+            self.result = Some(result);
+            self.queued = None;
+            self.pending = false;
+            return Ok(());
+        }
+        let due = if self.queued.is_some() || self.pending {
+            now + 0.12
+        } else {
+            now
+        };
+        self.queued = Some((document, due));
         self.pending = false;
         Ok(())
     }
@@ -129,6 +155,31 @@ impl DrawingFeed {
             self.pending = false;
             match reply.result {
                 Ok(result) if result.stamp == reply.stamp => {
+                    if let Some(page) = self.page {
+                        self.cache.push_back((page, result.clone()));
+                        // Bound retained vectors and samples across all pages.
+                        while self.cache.len() > 8 || {
+                            let (vectors, points) =
+                                self.cache.iter().fold((0, 0), |(v, p), (_, r)| {
+                                    r.views.values().fold((v, p), |(v, p), view| match view {
+                                        multicad_core::drawings::ViewEvaluation::Ready {
+                                            vectors,
+                                            ..
+                                        } => (
+                                            v + vectors.len(),
+                                            p + vectors
+                                                .iter()
+                                                .map(|v| v.preview_mm.len())
+                                                .sum::<usize>(),
+                                        ),
+                                        _ => (v, p),
+                                    })
+                                });
+                            vectors > 200_000 || points > 2_000_000
+                        } {
+                            self.cache.pop_front();
+                        }
+                    }
                     self.result = Some(result);
                     self.error = None;
                 }
@@ -207,5 +258,92 @@ mod page_tests {
         feed.schedule_page(document, 0, 1., second).unwrap();
         feed.tick(2.);
         assert_eq!(*pages.lock().unwrap(), vec![first, second]);
+    }
+
+    struct Publisher {
+        requests: Arc<Mutex<usize>>,
+        reply: Option<DrawingReply>,
+    }
+    impl DrawingBackend for Publisher {
+        fn request(&mut self, _: &Document, stamp: DrawingStamp) -> Result<(), String> {
+            *self.requests.lock().unwrap() += 1;
+            self.reply = Some(DrawingReply {
+                stamp,
+                result: Ok(Arc::new(DrawingEvaluation {
+                    stamp,
+                    views: Default::default(),
+                    annotations: Default::default(),
+                })),
+            });
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<DrawingReply> {
+            self.reply.take()
+        }
+        fn cancel(&mut self) {
+            self.reply = None;
+        }
+    }
+    #[test]
+    fn repeated_pages_publish_in_the_same_frame_but_changed_content_is_never_reused() {
+        let requests = Arc::new(Mutex::new(0));
+        let calls = requests.clone();
+        let mut feed = DrawingFeed::default();
+        feed.set_factory(Arc::new(move || {
+            Box::new(Publisher {
+                requests: calls.clone(),
+                reply: None,
+            })
+        }));
+        let mut document = Document::new("Fast drawing").unwrap();
+        let pages = [EntityId::new(), EntityId::new()];
+        for page in pages {
+            feed.schedule_page(document.clone(), 4, 0., page).unwrap();
+            feed.tick(0.); // First use starts without a debounce delay.
+            feed.tick(0.);
+            assert!(feed.result.is_some());
+        }
+        let start = std::time::Instant::now();
+        for page in pages {
+            feed.clear(); // Also retain previews across leaving/reopening Drawings.
+            feed.schedule_page(document.clone(), 0, 0., page).unwrap();
+            assert!(!feed.pending());
+            assert_eq!(feed.result.as_ref().unwrap().stamp.revision, 0);
+        }
+        eprintln!("Same-frame repeat page lookup: {:?}", start.elapsed() / 2);
+        assert_eq!(*requests.lock().unwrap(), 2);
+        document.rename("Changed source").unwrap();
+        feed.schedule_page(document, 0, 0., pages[0]).unwrap();
+        assert!(feed.result.is_none());
+        assert!(feed.pending());
+        feed.tick(1.);
+        assert_eq!(*requests.lock().unwrap(), 3);
+    }
+
+    #[test]
+    fn page_cache_evicts_old_entries_and_factory_replacement_invalidates_them() {
+        let requests = Arc::new(Mutex::new(0));
+        let calls = requests.clone();
+        let factory: DrawingBackendFactory = Arc::new(move || {
+            Box::new(Publisher {
+                requests: calls.clone(),
+                reply: None,
+            })
+        });
+        let mut feed = DrawingFeed::default();
+        feed.set_factory(factory.clone());
+        let document = Document::new("Bounded previews").unwrap();
+        let pages: Vec<_> = (0..9).map(|_| EntityId::new()).collect();
+        for page in &pages {
+            feed.schedule_page(document.clone(), 0, 0., *page).unwrap();
+            feed.tick(0.);
+            feed.tick(0.);
+        }
+        feed.schedule_page(document.clone(), 0, 0., pages[0])
+            .unwrap();
+        assert!(feed.result.is_none());
+        feed.set_factory(factory);
+        feed.schedule_page(document, 0, 0., pages[8]).unwrap();
+        assert!(feed.result.is_none());
     }
 }
