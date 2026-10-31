@@ -89,6 +89,7 @@ pub mod sketch_tools;
 
 pub mod theme;
 pub mod tool_artwork;
+pub mod tool_search;
 
 #[cfg(target_os = "macos")]
 mod native_window;

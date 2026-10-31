@@ -1629,13 +1629,17 @@ impl Application {
                                     let enabled = self.enabled(tool.action);
                                     let selected = enabled && self.find_index == index;
                                     if enabled {index+=1;}
+                                    // Where the tool lives and, for a format
+                                    // search, what it writes (CAD-157).
+                                    let place = self.registry.location(tool.action).map(|(mode, tab)| format!("{} › {tab}", mode.title())).unwrap_or_default();
+                                    let note = crate::tool_search::note(&self.find, tool.id).map(|note| format!("\n{note}")).unwrap_or_default();
                                     let response = ui
                                         .add_enabled(
                                             enabled,
-                                            egui::Button::new(tool.label).selected(selected),
+                                            egui::Button::new(tool.label).shortcut_text(place.as_str()).selected(selected),
                                         )
-                                        .on_disabled_hover_text("Unavailable in this context")
-                                        .on_hover_text(self.command_help(tool.action,tool.label,ui.ctx()));
+                                        .on_disabled_hover_text(format!("Unavailable in this context{note}"))
+                                        .on_hover_text(format!("{}{note}", self.command_help(tool.action,tool.label,ui.ctx())));
                                     if selected && find_step != 0 {response.scroll_to_me(Some(egui::Align::Center));}
                                     if response.clicked() {
                                         action = Some(tool.action);
@@ -4183,6 +4187,9 @@ mod inspector_tests;
 #[cfg(test)]
 #[path = "application/ribbon_fit_tests.rs"]
 mod ribbon_fit_tests;
+#[cfg(test)]
+#[path = "application/tool_search_tests.rs"]
+mod tool_search_tests;
 #[cfg(test)]
 #[path = "application/workbench_tests.rs"]
 mod workbench_tests;
