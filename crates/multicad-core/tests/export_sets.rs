@@ -512,3 +512,33 @@ fn pdf_recipe_plans_one_ordered_page_bundle_and_other_recipes_keep_individual_id
         matches!(&files[0].subject,OutputSubject::Pages(pages) if pages==&vec![PageRef{book,page:bid},PageRef{book,page:aid}])
     );
 }
+#[test]
+fn differently_named_recipes_of_one_format_are_told_apart_by_recipe_name() {
+    let (mut s, ids) = parts();
+    let d = SetDefinition {
+        scope: Scope {
+            root: ScopeRoot::Explicit {
+                entities: vec![ids[0]],
+            },
+            tags: None,
+        },
+        recipes: vec![Recipe::step("Rough"), Recipe::step("Final")],
+        ..Default::default()
+    };
+    let set = save(&mut s, &d);
+    let files = filenames(
+        &resolve(s.document(), s.revision(), set).unwrap(),
+        "Named outputs",
+    )
+    .unwrap();
+    assert_eq!(
+        files
+            .iter()
+            .map(|f| f.filename.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "Named_outputs_Panel_Rough.step",
+            "Named_outputs_Panel_Final.step"
+        ])
+    );
+}

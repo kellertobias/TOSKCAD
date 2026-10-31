@@ -160,6 +160,12 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
             });
         }
     }
+    let recipe_names: BTreeMap<EntityId, String> = plan
+        .recipes
+        .iter()
+        .map(|r| (r.id, filename_token(&r.name)))
+        .collect();
+    name_by_recipe(&mut result, &recipe_names);
     disambiguate(&mut result)?;
     for output in &result {
         if output.filename.len() > 200 {
@@ -171,6 +177,54 @@ pub fn filenames(plan: &ResolvedSet, project: &str) -> Result<Vec<NamedOutput>, 
         }
     }
     Ok(result)
+}
+/// Outputs of different, differently named recipes that would share a name
+/// (an assembly 3MF with and without aids, say) are told apart by their
+/// recipe names first, which reads better than an identity suffix.
+fn name_by_recipe(outputs: &mut [NamedOutput], recipe_names: &BTreeMap<EntityId, String>) {
+    let key = |name: &str| name.to_ascii_lowercase();
+    let mut groups = BTreeMap::<String, Vec<usize>>::new();
+    for (index, output) in outputs.iter().enumerate() {
+        groups.entry(key(&output.filename)).or_default().push(index);
+    }
+    let mut taken: BTreeSet<String> = groups.keys().cloned().collect();
+    for (name, members) in &groups {
+        if members.len() < 2 {
+            continue;
+        }
+        let tokens: Vec<String> = members
+            .iter()
+            .map(|i| {
+                recipe_names
+                    .get(&outputs[*i].recipe)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+        let distinct: BTreeSet<String> = tokens.iter().map(|t| key(t)).collect();
+        if distinct.len() != members.len() || tokens.iter().any(String::is_empty) {
+            continue;
+        }
+        let renamed: Vec<String> = members
+            .iter()
+            .zip(&tokens)
+            .map(|(i, token)| {
+                let (stem, extension) = outputs[*i]
+                    .filename
+                    .rsplit_once('.')
+                    .expect("generated names have an extension");
+                format!("{stem}_{token}.{extension}")
+            })
+            .collect();
+        if renamed.iter().any(|n| taken.contains(&key(n))) {
+            continue;
+        }
+        taken.remove(name);
+        for (i, new) in members.iter().zip(renamed) {
+            taken.insert(key(&new));
+            outputs[*i].filename = new;
+        }
+    }
 }
 /// Outputs whose names coincide (ignoring ASCII case, as macOS and Windows
 /// do) each get a short suffix from their recipe and subject identity, so
