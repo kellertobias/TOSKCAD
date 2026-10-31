@@ -1048,7 +1048,7 @@ pub fn page_conflicts(
             }
         }
     }
-    let mut placed: Vec<(String, [f64; 4], bool)> = vec![];
+    let mut placed: Vec<(String, [f64; 4], Option<[f64; 4]>, bool)> = vec![];
     for annotation in &page.annotations {
         let (graphic, dimension) = match &annotation.kind {
             AnnotationKind::Dimension { .. } => match evaluation.annotations.get(&annotation.id) {
@@ -1068,7 +1068,26 @@ pub fn page_conflicts(
             None => graphic_bounds(&graphic),
         };
         if let Some(b) = bounds {
-            placed.push((format!("annotation {}", annotation.id), b, dimension));
+            // Leaders intentionally touch the model. Only their text and
+            // weld-symbol block compete with views and other annotations;
+            // the complete graphic still has to fit the sheet/title bounds.
+            let collision = match &annotation.kind {
+                AnnotationKind::Leader { points_mm, .. }
+                | AnnotationKind::Weld { points_mm, .. } => {
+                    let mut label = graphic.clone();
+                    let count = points_mm.len().saturating_sub(1).min(label.lines.len());
+                    label.lines.drain(..count);
+                    label.arrows.clear();
+                    graphic_bounds(&label)
+                }
+                _ => Some(b),
+            };
+            placed.push((
+                format!("annotation {}", annotation.id),
+                b,
+                collision,
+                dimension,
+            ));
         }
     }
     let inside = |b: [f64; 4]| {
@@ -1082,21 +1101,21 @@ pub fn page_conflicts(
             problems.push(format!("View {name} overlaps the title block"));
         }
     }
-    for (i, (name, b, dimension)) in placed.iter().enumerate() {
-        if !inside(*b) {
+    for (i, (name, full, collision, dimension)) in placed.iter().enumerate() {
+        if !inside(*full) {
             problems.push(format!("The {name} extends outside the printable area"));
         }
-        if title.is_some_and(|t| overlap(*b, t)) {
+        if title.is_some_and(|t| overlap(*full, t)) {
             problems.push(format!("The {name} overlaps the title block"));
         }
-        if !dimension {
+        if !dimension && let Some(b) = collision {
             for (view, v) in &views {
                 if overlap(*b, *v) {
                     problems.push(format!("The {name} overlaps view {view}"));
                 }
             }
-            for (other, o, other_dimension) in &placed[i + 1..] {
-                if !other_dimension && overlap(*b, *o) {
+            for (other, _, o, other_dimension) in &placed[i + 1..] {
+                if !other_dimension && o.is_some_and(|o| overlap(*b, o)) {
                     problems.push(format!("The {name} overlaps the {other}"));
                 }
             }

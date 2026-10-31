@@ -355,3 +355,92 @@ fn page_conflicts_report_title_block_overlaps_and_off_page_annotations() {
         "{problems:?}"
     );
 }
+
+#[test]
+fn leader_and_weld_labels_can_point_into_a_view_but_still_report_real_conflicts() {
+    for weld in [false, true] {
+        let mut page = Page::new("1");
+        let v = view(1);
+        let doc = Document::new("Leader layout").unwrap();
+        let evaluation = DrawingEvaluation {
+            stamp: DrawingStamp {
+                document: doc.id(),
+                revision: 0,
+                source_hash: multicad_core::project_file::ContentHash::document(&doc).unwrap(),
+            },
+            views: [(
+                v.id,
+                ViewEvaluation::Ready {
+                    vectors: vec![DrawingVector {
+                        source: EntityId::new(),
+                        material_part: EntityId::new(),
+                        role: VectorRole::Visible,
+                        curve: VectorCurve::Line {
+                            a: [-20., -20.],
+                            b: [20., 20.],
+                        },
+                        preview_mm: vec![[-20., -20.], [20., 20.]],
+                        line_width_mm: 0.25,
+                    }],
+                    warnings: vec![],
+                },
+            )]
+            .into(),
+            annotations: Default::default(),
+        };
+        page.views.push(v);
+        let callout = |target, label| Annotation {
+            id: EntityId::new(),
+            kind: if weld {
+                AnnotationKind::Weld {
+                    points_mm: vec![target, label],
+                    symbol: WeldSymbol::Fillet,
+                    side: WeldSide::Both,
+                    size: "a3".into(),
+                    length: String::new(),
+                    all_around: false,
+                    field: false,
+                    tail: "W1".into(),
+                }
+            } else {
+                AnnotationKind::Leader {
+                    points_mm: vec![target, label],
+                    text: "Part".into(),
+                }
+            },
+        };
+        page.annotations = vec![callout([100., 100.], [30., 50.])];
+        let clear = page_conflicts(&page, 0, 1, &evaluation).unwrap();
+        assert!(clear.is_empty(), "a leader must reach the model: {clear:?}");
+        let g = sheet_graphic(&page.annotations[0]);
+        page.annotations.push(note(g.text_mm, "Text"));
+        assert!(
+            page_conflicts(&page, 0, 1, &evaluation)
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("overlaps the annotation"))
+        );
+        page.annotations = vec![callout([100., 100.], [90., 90.])];
+        assert!(
+            page_conflicts(&page, 0, 1, &evaluation)
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("overlaps view"))
+        );
+        page.annotations = vec![callout([-2., 100.], [30., 50.])];
+        assert!(
+            page_conflicts(&page, 0, 1, &evaluation)
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("outside the printable area"))
+        );
+        let [w, h] = page.settings.dimensions();
+        page.annotations = vec![callout([100., 100.], [w - 60., h - 20.])];
+        assert!(
+            page_conflicts(&page, 0, 1, &evaluation)
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("title block"))
+        );
+    }
+}
