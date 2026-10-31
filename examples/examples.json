@@ -1,0 +1,8 @@
+{
+  "format": "toskcad.examples",
+  "version": 1,
+  "examples": [
+    { "file": "welded-workbench.tcd" },
+    { "file": "front-panel.tcd" }
+  ]
+}
