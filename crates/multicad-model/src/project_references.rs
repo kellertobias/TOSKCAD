@@ -181,3 +181,19 @@ pub fn bundled_example_dirs() -> Vec<PathBuf> {
     dirs.retain(|d| d.is_dir());
     dirs
 }
+
+/// The projects a native project file references, as their stored paths
+/// relative to that file's folder (with `/` separators). This is the hook
+/// the bundled Examples use to copy an example's referenced projects next to
+/// the user's copy (`multicad_ui::examples::DependencyResolver`).
+pub fn referenced_files(project: &Path) -> Result<Vec<PathBuf>, String> {
+    let document = open_project(project)?;
+    let mut files = symbols::project_sources(&document)
+        .map_err(|e| format!("{}: {e}", project.display()))?
+        .into_iter()
+        .map(|(_, source)| source.path.split('/').collect::<PathBuf>())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    Ok(files)
+}

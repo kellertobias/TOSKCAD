@@ -3,7 +3,17 @@ use multicad_ui::{
     application::DocumentStorage,
     examples::{self, ExampleLibrary},
 };
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+/// Cross-file project references (CAD-185): an example's referenced
+/// projects are bundled dependencies copied next to the user's copy, where
+/// the reference finds them again.
+pub fn resolver() -> examples::DependencyResolver {
+    Arc::new(|path: &Path| multicad_model::project_references::referenced_files(path))
+}
 
 /// Bundled examples next to the executable; copies in the user's documents.
 pub fn library() -> ExampleLibrary {
@@ -20,7 +30,7 @@ pub fn library() -> ExampleLibrary {
         bundle,
         searched,
         copies,
-        resolver: None,
+        resolver: Some(resolver()),
     }
 }
 
@@ -54,7 +64,7 @@ pub fn verify(root: Option<&Path>, searched: &[PathBuf]) -> Result<String, Strin
         store
             .open_project(&entry.path)
             .map_err(|e| format!("The example {} does not open: {e}", entry.file))?;
-        catalog.dependencies(index, None)?;
+        catalog.dependencies(index, Some(&resolver()))?;
         names.push(card.info.name.clone());
     }
     Ok(format!(

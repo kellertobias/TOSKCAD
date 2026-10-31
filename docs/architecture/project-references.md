@@ -116,10 +116,16 @@ revision, the state and the file.
 `bundled_example_dirs` returns the existing folders among the
 `MULTICAD_EXAMPLES_DIR` override, `MultiCAD.app/Contents/Resources/examples`
 (macOS) and `resources/examples` next to the executable (Windows and Linux
-archive layout, see `tools/native-package.mjs`). Copying `examples/` there is
-part of the Examples bundling (CAD-186). A user's copy of the apartment saved
-in another folder therefore still resolves the workbench from the
-installation.
+archive layout), the same layout the Examples gallery
+(`multicad_ui::examples::candidates`, CAD-186) packages. A user's copy of the
+apartment saved in another folder therefore still resolves the workbench from
+the installation.
+
+The gallery copies an example together with the files it references:
+`referenced_files` returns a project's stored reference paths and is
+installed as the gallery's `DependencyResolver` in
+`bundled_examples::library()` and the packaged self-test. A copy in
+`<Documents>/ToskCAD Examples/` thus finds `welded-workbench.tcd` beside it.
 
 ## Limitations
 
