@@ -15,6 +15,7 @@ mod print;
 mod render;
 mod save_preview;
 mod schedule_files;
+mod settings;
 mod symbol_files;
 mod welcome;
 #[cfg(test)]
@@ -195,6 +196,11 @@ pub struct Application {
     trusted_clients: std::collections::BTreeSet<String>,
     review_preview: Option<external_control::ReviewPreview>,
     mechanical_imports: Option<crate::mechanical_import::MechanicalImportBackendRef>,
+    /// User-local Settings (CAD-187); never part of a project.
+    preferences: crate::preferences::Preferences,
+    preference_worker: Option<crate::preferences::PreferenceWorker>,
+    preference_error: Option<String>,
+    settings_open: bool,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -260,7 +266,12 @@ impl Application {
             mechanical_imports: None,
             sketch_queries: None,
             repair_set_checker: None,
+            preferences: crate::preferences::Preferences::defaults(&Registry::default()),
+            preference_worker: None,
+            preference_error: None,
+            settings_open: false,
         };
+        crate::preferences::set_length_unit(app.preferences.length_unit);
         app.discover_recoveries()?;
         Ok(app)
     }
@@ -1077,6 +1088,10 @@ impl Application {
                 | mechanical_imports::IMPORT_KICAD
                 | mechanical_imports::IMPORT_UPDATE),
             ) => self.request_mechanical_import(id)?,
+            Command::Extension("settings") => {
+                self.settings_open = true;
+                self.message = "Settings opened".into();
+            }
             Command::Extension(id) => {
                 return Err(format!("The '{id}' module is not installed yet"));
             }
@@ -1462,6 +1477,7 @@ impl Application {
                 | mechanical_imports::IMPORT_KICAD
                 | mechanical_imports::IMPORT_UPDATE),
             ) => self.mechanical_import_enabled(id),
+            Command::Extension("settings") => true,
             Command::Extension(_) => false,
             _ => true,
         }
@@ -1740,6 +1756,9 @@ impl Application {
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     }
+                    if icons::compact_button(ui,Icon::Settings,"Settings · measurement units and workbenches").clicked() {
+                        action=Some(Command::Extension("settings"));
+                    }
                     let user=icons::compact_button(ui,Icon::User,"Local user · session and controls");
                     egui::Popup::menu(&user).show(|ui| {
                         ui.strong("Local session");
@@ -1797,11 +1816,9 @@ impl Application {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    for (index, tab) in workspace.tabs.iter().enumerate() {
-                        if tab.requires_active_sketch && !self.current().sketch.editing {
-                            continue;
-                        }
-                        if controls::tab(
+                    for (index, hidden) in self.ribbon_tabs() {
+                        let tab = &workspace.tabs[index];
+                        let response = controls::tab(
                             ui,
                             tab.title,
                             self.tab == index,
@@ -1811,9 +1828,13 @@ impl Application {
                                 active_text: accent,
                                 active_background: Color32::WHITE,
                             },
-                        )
-                        .clicked()
-                        {
+                        );
+                        let response = if hidden {
+                            response.on_hover_text("Hidden in Settings · shown while one of its tools is active")
+                        } else {
+                            response
+                        };
+                        if response.clicked() {
                             self.tab = index;
                             self.current_mut().view_restore_pending=false;
                         }
@@ -1986,6 +2007,7 @@ impl Application {
                 || self.find_open
                 || self.close_confirm
                 || self.history_open
+                || self.settings_open
                 || self.shortcut_help
                 || egui::Popup::is_any_open(ctx),
         }
@@ -2009,6 +2031,7 @@ impl Application {
             || self.replacement.is_some()
             || self.shortcut_help
             || self.history_open
+            || self.settings_open
             || self.close_confirm;
         // egui clears keyboard focus for Escape before this application pass.
         // Remember text ownership so that same key cannot also cancel a tool.
@@ -2036,6 +2059,8 @@ impl Application {
                 self.shortcut_help = false;
             } else if self.history_open {
                 self.history_open = false;
+            } else if self.settings_open {
+                self.settings_open = false;
             } else if self.close_confirm {
                 self.close_confirm = false;
             }
@@ -2061,19 +2086,16 @@ impl Application {
                 ShortcutAction::FindTool => self.focus_search = true,
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
-                    let count = self.registry.workspace(self.mode).tabs.len();
-                    for _ in 0..count {
-                        self.tab = if action == ShortcutAction::NextWorkspace {
-                            (self.tab + 1) % count
-                        } else {
-                            (self.tab + count - 1) % count
-                        };
-                        if !self.registry.workspace(self.mode).tabs[self.tab].requires_active_sketch
-                            || self.current().sketch.editing
-                        {
-                            break;
-                        }
-                    }
+                    // Cycle the ribbon's visible workbenches in their chosen order.
+                    let order: Vec<usize> =
+                        self.ribbon_tabs().into_iter().map(|(i, _)| i).collect();
+                    let count = order.len();
+                    let at = order.iter().position(|i| *i == self.tab).unwrap_or(0);
+                    self.tab = order[if action == ShortcutAction::NextWorkspace {
+                        (at + 1) % count
+                    } else {
+                        (at + count - 1) % count
+                    }];
                     ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
                     self.message = format!(
                         "{} workspace",
@@ -2149,6 +2171,7 @@ impl Application {
             self.cancel_pending_view_restore();
         }
         self.poll_recents(&ctx);
+        self.poll_preferences();
         self.poll_library(&ctx);
         self.drive_capture(&ctx);
         if self.drive_document_opens(&ctx) {
@@ -2400,6 +2423,7 @@ impl Application {
                 });
             self.history_open = open;
         }
+        self.settings_window(&ctx);
         if self.shortcut_help {
             egui::Window::new("Keyboard shortcuts").open(&mut self.shortcut_help).show(&ctx,|ui|{
                 ui.label("WASD pans the view. Tab / Shift+Tab cycles ribbon workspaces. Text inputs keep their typing and Tab behavior.");

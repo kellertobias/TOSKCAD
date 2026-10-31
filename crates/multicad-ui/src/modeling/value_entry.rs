@@ -20,6 +20,7 @@ pub enum ValueKind {
     Angle,
 }
 impl ValueKind {
+    /// Canonical unit of `ValueEntry::value` (millimetres or degrees).
     pub fn unit(self) -> &'static str {
         match self {
             Self::Distance => "mm",
@@ -81,6 +82,9 @@ pub enum EntryEffect {
 #[derive(Clone, Debug)]
 pub struct ValueEntry {
     kind: ValueKind,
+    /// Display/typing unit for distances, fixed when the entry opens
+    /// (CAD-187). `value` itself always stays in millimetres.
+    length: crate::preferences::LengthUnit,
     value: f64,
     drag: Option<(f64, f64)>,
     text: Option<String>,
@@ -91,6 +95,7 @@ impl ValueEntry {
     pub fn new(kind: ValueKind, value: f64) -> Self {
         Self {
             kind,
+            length: crate::preferences::length_unit(),
             value,
             drag: None,
             text: None,
@@ -126,11 +131,30 @@ impl ValueEntry {
             self.value = value;
         }
     }
+    /// Unit shown and typed: the Settings length unit for distances.
+    pub fn unit(&self) -> &'static str {
+        match self.kind {
+            ValueKind::Distance => self.length.symbol(),
+            ValueKind::Angle => self.kind.unit(),
+        }
+    }
+    fn shown(&self, value: f64) -> f64 {
+        match self.kind {
+            ValueKind::Distance => self.length.from_mm(value),
+            ValueKind::Angle => value,
+        }
+    }
+    fn canonical(&self, typed: f64) -> f64 {
+        match self.kind {
+            ValueKind::Distance => self.length.to_mm(typed),
+            ValueKind::Angle => typed,
+        }
+    }
     /// Field text including the unit, e.g. `25 mm` or `-12.5|  mm` while typing.
     pub fn display(&self) -> String {
         match &self.text {
-            Some(text) => format!("{text}| {}", self.kind.unit()),
-            None => format!("{} {}", format_number(self.value), self.kind.unit()),
+            Some(text) => format!("{text}| {}", self.unit()),
+            None => format!("{} {}", format_number(self.shown(self.value)), self.unit()),
         }
     }
     fn evaluate(&mut self) -> EntryEffect {
@@ -140,7 +164,7 @@ impl ValueEntry {
                 Err(error) => EntryEffect::Invalid(error),
             };
         };
-        match parse(text).and_then(|value| self.kind.validate(value)) {
+        match parse(text).and_then(|value| self.kind.validate(self.canonical(value))) {
             Ok(value) => {
                 self.value = value;
                 EntryEffect::Preview(value)
@@ -178,7 +202,7 @@ impl ValueEntry {
             }
             EntryInput::Focus => {
                 if self.text.is_none() {
-                    self.text = Some(format_number(self.value));
+                    self.text = Some(format_number(self.shown(self.value)));
                     self.replace_text = true;
                 }
                 EntryEffect::None
@@ -268,6 +292,26 @@ impl AngleTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inch_preference_shows_and_reads_inches_but_previews_millimetres() {
+        use crate::preferences::{LengthUnit, set_length_unit};
+        set_length_unit(LengthUnit::Inch);
+        let mut entry = ValueEntry::new(ValueKind::Distance, 25.4);
+        set_length_unit(LengthUnit::Millimeter);
+        assert_eq!(entry.display(), "1 in");
+        assert_eq!(entry.handle(EntryInput::Focus), EntryEffect::None);
+        assert_eq!(entry.display(), "1| in");
+        let mut last = EntryEffect::None;
+        for c in "2".chars() {
+            last = entry.handle(EntryInput::Char(c));
+        }
+        assert_eq!(last, EntryEffect::Preview(50.8));
+        assert_eq!(entry.handle(EntryInput::Enter), EntryEffect::Commit(50.8));
+        // Angles ignore the length preference.
+        set_length_unit(LengthUnit::Inch);
+        assert_eq!(ValueEntry::new(ValueKind::Angle, 90.).display(), "90 °");
+        set_length_unit(LengthUnit::Millimeter);
+    }
     fn typed(entry: &mut ValueEntry, text: &str) -> EntryEffect {
         let mut last = EntryEffect::None;
         for c in text.chars() {
