@@ -2,6 +2,7 @@
 pub use crate::storage::DocumentStorage;
 mod closing;
 mod document_open;
+mod export_folder;
 pub mod external_control;
 #[cfg(test)]
 #[path = "external_reference_app_tests.rs"]
@@ -11,6 +12,7 @@ mod library;
 mod mechanical_imports;
 mod native_picker;
 mod print;
+mod render;
 mod save_preview;
 mod schedule_files;
 mod symbol_files;
@@ -59,6 +61,9 @@ pub struct Project {
     pub scene: crate::viewport::SceneFeed,
     /// External control audit and the changes awaiting review.
     pub control: multicad_core::control::ControlLedger,
+    /// The status line this project last showed, or a receipt from one of
+    /// its background jobs that finished while another tab was active.
+    status: Option<(String, bool)>,
 }
 impl Project {
     pub fn new(document: Document) -> Result<Self, String> {
@@ -85,6 +90,7 @@ impl Project {
             path: None,
             scene: Default::default(),
             control: Default::default(),
+            status: None,
         })
     }
     fn snapshot(&self) -> Result<ProjectFile, String> {
@@ -119,6 +125,7 @@ enum FileAction {
     Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
     PrintPackage,
     ScheduleCsv,
+    ExportFolder,
 }
 struct CommandRecord {
     input: String,
@@ -429,8 +436,30 @@ impl Application {
             self.close_measurement();
         }
         self.remember_current_view();
+        self.leave_project_status();
         self.active = index;
         self.restore_current_view();
+        self.enter_project_status();
+    }
+    /// Keep the status line with the project that produced it, so another
+    /// project never appears to confirm its receipts.
+    fn leave_project_status(&mut self) {
+        let status = (std::mem::take(&mut self.message), self.message_error);
+        self.message_error = false;
+        if !self.welcome
+            && let Some(leaving) = self.projects.get_mut(self.active)
+        {
+            leaving.status = Some(status).filter(|(message, _)| !message.is_empty());
+        }
+    }
+    /// Show the newly active project's own last status, or say which
+    /// project is now active.
+    fn enter_project_status(&mut self) {
+        (self.message, self.message_error) = self
+            .current_mut()
+            .status
+            .take()
+            .unwrap_or_else(|| (format!("Switched to {}", self.current().title()), false));
     }
     fn measurement_blocks(&self, command: Command) -> bool {
         self.current().sketch.measurement.active()
@@ -882,11 +911,13 @@ impl Application {
                     }
                     self.remember_current_view();
                 }
+                self.leave_project_status();
                 self.discard_welcome_placeholder();
                 self.projects.push(project);
                 self.active = self.projects.len() - 1;
                 self.mode = Mode::Parameters;
                 self.tab = 0;
+                self.message = format!("Created {}", self.current().title());
             }
             Command::NewWindow => {
                 std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
@@ -1017,8 +1048,9 @@ impl Application {
                 )
                 .map_err(|e| e.to_string())?;
                 p.session.commit(prepared).map_err(|e| e.to_string())?;
+                self.open_render_tab();
                 self.message = format!(
-                    "{name} · view captured ({}); hand it to Blender with the MCP blender_handoff tool",
+                    "{name} · camera and {} style captured from the render viewport",
                     render_display_label(display)
                 );
             }
@@ -1035,7 +1067,10 @@ impl Application {
                 p.sketch.camera = crate::render_view::restore(&scene.camera, height)?;
                 p.sketch
                     .set_display_style(crate::render_view::style_of(scene.display));
-                self.message = "Render view shown in the viewport".into();
+                let label = render_display_label(scene.display);
+                self.open_render_tab();
+                self.message =
+                    format!("Stored render camera and {label} style shown in the render viewport");
             }
             Command::Extension(
                 id @ (mechanical_imports::IMPORT_STEP
@@ -1467,6 +1502,7 @@ impl Application {
             })
             .map_err(|e| e.to_string())?;
         project.editor.reload(&project.session);
+        self.leave_project_status();
         self.projects.push(project);
         self.active = self.projects.len() - 1;
         self.mode = Mode::Parameters;
@@ -1942,7 +1978,7 @@ impl Application {
             mode: self.mode,
             workspace: workspace.tabs[self.tab.min(workspace.tabs.len() - 1)].title,
             sketch_editing: self.current().sketch.editing,
-            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export),
+            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab(),
             text_input: ctx.text_edit_focused(),
             blocked: self.file_action.is_some()
                 || self.recovery_open
@@ -2073,7 +2109,7 @@ impl Application {
                 ShortcutAction::Pan(_) => {}
             }
         }
-        if !matches!(self.mode, Mode::Parameters | Mode::Export)
+        if (!matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab())
             && !self.shortcut_context(ctx).blocked
             && !self.focus_search
             && !self.focus_command
@@ -2152,8 +2188,13 @@ impl Application {
                 }
             }
         }
-        for p in &mut self.projects {
+        for (index, p) in self.projects.iter_mut().enumerate() {
             p.exchange.poll(&p.session);
+            if index != active
+                && let Some(notice) = p.exchange.take_notice()
+            {
+                p.status = Some(notice);
+            }
             if p.exchange.pending() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
@@ -2289,7 +2330,7 @@ impl Application {
                         .show(ui, |ui| p.editor.show(ui, &p.session));
                 } else if self.mode == Mode::Export && self.print_tab() {
                     self.show_print(ui);
-                } else if self.mode == Mode::Export {
+                } else if self.mode == Mode::Export && !self.render_tab() {
                     let allow_io = self.export_io_allowed();
                     let p = self.current_mut();
                     p.exchange.show(ui, &mut p.session, allow_io);
@@ -2298,6 +2339,7 @@ impl Application {
                         self.message_error = error;
                     }
                     self.start_schedule_save();
+                    self.start_export_folder();
                 } else if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     let before = p.session.revision();
@@ -2308,6 +2350,9 @@ impl Application {
                         ctx.request_repaint();
                     }
                 } else {
+                    if self.render_tab() {
+                        self.render_sidebar(ui);
+                    }
                     let sketch_mode = self.mode == Mode::Sketch;
                     let p = self.current_mut();
                     let before = p.session.revision();
