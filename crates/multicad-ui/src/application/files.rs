@@ -84,6 +84,9 @@ impl Application {
         Ok(())
     }
     pub(super) fn save_to(&mut self, path: PathBuf) -> Result<(), String> {
+        if self.protects_bundled_example(&path) {
+            return Err(examples_gallery::PROTECTED.into());
+        }
         self.remember_current_view();
         let p = self.current();
         if p.pending_edits() {
@@ -112,6 +115,9 @@ impl Application {
         self.begin_save(path, mode)
     }
     pub(super) fn submit_save(&mut self, path: PathBuf, mode: SaveMode) -> Result<(), String> {
+        if self.protects_bundled_example(&path) {
+            return Err(examples_gallery::PROTECTED.into());
+        }
         let p = self.current();
         let project = p.snapshot()?;
         let local = p.local_id;
@@ -135,6 +141,9 @@ impl Application {
         Ok(())
     }
     pub(super) fn load_path(&mut self, path: PathBuf) -> Result<(), String> {
+        if let Some(result) = self.redirect_bundled_open(&path) {
+            return result;
+        }
         if let Some(index) = self
             .projects
             .iter()
@@ -484,6 +493,7 @@ impl Application {
     }
     pub(super) fn file_windows(&mut self, ctx: &egui::Context) {
         self.native_picker_window(ctx);
+        self.examples_window(ctx);
         if let Some(replacement) = &self.replacement {
             let path = replacement.path.clone();
             let local = replacement.local;

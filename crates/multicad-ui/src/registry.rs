@@ -53,6 +53,8 @@ pub enum Command {
     ImportSource,
     ImportArtwork,
     RecoverProjects,
+    /// Gallery of bundled example projects (CAD-186).
+    Examples,
     RecoverySnapshot,
     Open,
     New,
@@ -188,6 +190,13 @@ impl Default for Registry {
                 icon: Icon::Page,
                 action: Command::RecoverProjects,
                 aliases: &["recover"],
+            },
+            Tool {
+                id: "examples",
+                label: "Examples",
+                icon: Icon::Page,
+                action: Command::Examples,
+                aliases: &["example", "demo", "sample", "gallery"],
             },
             Tool {
                 id: "recovery-snapshot",

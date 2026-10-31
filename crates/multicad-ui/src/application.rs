@@ -2,6 +2,7 @@
 pub use crate::storage::DocumentStorage;
 mod closing;
 mod document_open;
+mod examples_gallery;
 mod export_folder;
 pub mod external_control;
 #[cfg(test)]
@@ -142,6 +143,7 @@ pub struct Application {
     recents: Vec<crate::recent_projects::RecentProject>,
     recent_error: Option<String>,
     library: library::LibraryState,
+    examples: examples_gallery::ExamplesState,
     pub active: usize,
     pub mode: Mode,
     pub registry: Registry,
@@ -215,6 +217,7 @@ impl Application {
             recents: vec![],
             recent_error: None,
             library: Default::default(),
+            examples: Default::default(),
             active: 0,
             mode: Mode::Parameters,
             registry: Registry::default(),
@@ -552,6 +555,7 @@ impl Application {
                     | Command::NewWindow
                     | Command::Open
                     | Command::RecoverProjects
+                    | Command::Examples
                     | Command::KeyboardShortcuts
             )
         {
@@ -565,6 +569,7 @@ impl Application {
                     | Command::SaveAs
                     | Command::ImportSource
                     | Command::RecoverProjects
+                    | Command::Examples
                     | Command::RecoverySnapshot
                     | Command::NewWindow
             )
@@ -997,6 +1002,10 @@ impl Application {
                 self.recovery_open = true;
                 self.discover_recoveries()?;
             }
+            Command::Examples => {
+                self.examples.open = true;
+                self.reload_examples();
+            }
             Command::RecoverySnapshot => self.snapshot_now(self.active)?,
             Command::Extension("materials") => {
                 let p = self.current_mut();
@@ -1331,6 +1340,7 @@ impl Application {
                     | Command::NewWindow
                     | Command::Open
                     | Command::RecoverProjects
+                    | Command::Examples
                     | Command::KeyboardShortcuts
             )
         {
@@ -1555,6 +1565,7 @@ impl Application {
                         ("Import source snapshot…", Command::ImportSource),
                         ("Create recovery snapshot", Command::RecoverySnapshot),
                         ("Recover projects…", Command::RecoverProjects),
+                        ("Examples…", Command::Examples),
                     ] {
                         if ui.add_enabled(self.enabled(command), egui::Button::new(label)).clicked() {
                             action = Some(command);
@@ -2176,6 +2187,7 @@ impl Application {
         self.poll_recents(&ctx);
         self.poll_preferences();
         self.poll_library(&ctx);
+        self.poll_examples(&ctx);
         self.drive_capture(&ctx);
         if self.drive_document_opens(&ctx) {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
