@@ -1,4 +1,4 @@
-//! Generator for the shipped welded workbench demo (CAD-183):
+//! Generator for the shipped workbench with a welded frame (CAD-183):
 //! `examples/welded-workbench.tcd` at the repository root.
 //!
 //! Everything is built through the typed transaction API that the window
@@ -11,11 +11,13 @@
 //!   between the side stretchers;
 //! - four flat bar 40×5 mounting tabs butted to the inside of the front and
 //!   back rails, flush with the frame top;
-//! - 18 connections, each with a 3 mm fillet weld, in an authored weld
+//! - 22 connections, each with a 3 mm fillet weld, in an authored weld
 //!   sequence;
 //! - a 40 mm solid beech worktop resting on the frame with a 10 × 10 grid of
 //!   through holes whose diameter, pitch and edge offsets are parameters,
 //!   and four blind screw pilot holes over the tabs;
+//! - an under-bench woodworking vise with two beech jaws, metal guide rods,
+//!   a bored housing, simplified lead screw and sliding handle;
 //! - a drawing book (assembly, weld plan, worktop drilling, schedules) whose
 //!   tables come from `multicad_model::schedules`, and export sets for the
 //!   frame and the worktop;
@@ -53,11 +55,18 @@ use multicad_model::{
 };
 use multicad_ui::egui::{Color32, ColorImage};
 
+#[path = "workbench_demo/upgrade.rs"]
+mod upgrade;
+#[path = "workbench_demo/vise.rs"]
+mod vise;
+
 pub type Error = Box<dyn std::error::Error>;
-pub const DOCUMENT_NAME: &str = "Welded steel workbench";
+pub const DOCUMENT_NAME: &str = "Workbench with a welded frame";
 pub const DESCRIPTION: &str = "Workbench demo: a welded underframe of RHS 60×40×3 steel tube \
-(mitered top frame, legs, stretchers and mounting tabs, 18 fillet welds in a sequence) carrying \
-a 40 mm solid beech worktop with a 10 × 10 grid of Ø20 through holes. Edit top_length, \
+(mitered top frame, legs, stretchers and mounting tabs, 22 fillet welds in a sequence) carrying \
+a 40 mm solid beech worktop with a 10 × 10 grid of Ø20 through holes and an under-bench \
+woodworking vise with wooden jaws, guide rods, a sliding handle and a simplified lead screw. \
+Wood, Weld and Common tools share this project. Edit top_length, \
 top_depth, frame_height, hole_diameter, hole_pitch or the edge offsets in Parameters; the frame, \
 the grid, the drawings and the schedules follow. Geometry demo only: no load rating, weld \
 strength or fabrication approval.";
@@ -216,6 +225,7 @@ pub struct Scenario {
     pub top_stock: EntityId,
     pub frame: Frame,
     pub worktop: EntityId,
+    pub vise: Vec<EntityId>,
     pub grid: EntityId,
     pub pilots: EntityId,
     pub book: EntityId,
@@ -230,6 +240,7 @@ impl Scenario {
     pub fn parts(&self) -> Vec<EntityId> {
         let mut all = self.frame.members();
         all.push(self.worktop);
+        all.extend(&self.vise);
         all
     }
 }
@@ -644,7 +655,7 @@ fn a3(number: &str, title: &str) -> Page {
     };
     page.info = DrawingInfo {
         title: title.into(),
-        author: "MultiCAD".into(),
+        author: "ToskCAD".into(),
         project: DOCUMENT_NAME.into(),
         revision: "A".into(),
         checker: "Pending human review".into(),
@@ -677,7 +688,15 @@ pub fn tables(session: &Session) -> Result<Tables, Error> {
     let bom = model.bom(document, &BomOptions::default())?;
     Ok(Tables {
         panels: schedules::cut_list_schedule(document, revision, &model.cut_list(document)?)?,
-        machining: schedules::machining_schedule(document, revision, &model.machining(document)?)?,
+        machining: schedules::machining_schedule(
+            document,
+            revision,
+            &model
+                .machining(document)?
+                .into_iter()
+                .filter(|r| document.get(r.part).is_some_and(|p| p.name == "Worktop"))
+                .collect::<Vec<_>>(),
+        )?,
         members: schedules::member_cut_schedule(document, revision, &groups)?,
         bom: schedules::bom_schedule(&bom),
         welds: schedules::weld_schedule(document, revision, &model.weld_schedule(document)?)?,
@@ -699,12 +718,59 @@ fn table_annotations(
     let mut welds = weld_plan_annotations(
         &model.weld_schedule(session.document())?,
         weld_view,
-        [215., 20.],
+        [15., 205.],
     );
-    welds.push(note([15., 272.], DISCLAIMER));
+    for left in [true, false] {
+        let mut entries: Vec<_> = welds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| match &a.kind {
+                AnnotationKind::Weld { points_mm, .. }
+                    if (points_mm[0][0] < weld_view.position_mm[0]) == left =>
+                {
+                    Some((i, points_mm[0][1]))
+                }
+                _ => None,
+            })
+            .collect();
+        entries.sort_by(|a, b| a.1.total_cmp(&b.1));
+        for (row, (index, _)) in entries.iter().enumerate() {
+            if let AnnotationKind::Weld {
+                points_mm, tail, ..
+            } = &mut welds[*index].kind
+            {
+                *points_mm = vec![
+                    points_mm[0],
+                    [
+                        if left { 15. } else { 245. },
+                        28. + row as f64
+                            * (162. / (entries.len().saturating_sub(1).max(1)) as f64).min(17.),
+                    ],
+                ];
+                *tail = tail.split_whitespace().next().unwrap_or("").to_string();
+            }
+        }
+    }
+    for a in &mut welds {
+        if let AnnotationKind::Table {
+            columns,
+            rows,
+            widths_mm,
+            ..
+        } = &mut a.kind
+            && columns.last().is_some_and(|c| c == "Notes")
+        {
+            columns.pop();
+            widths_mm.pop();
+            for row in rows {
+                row.pop();
+            }
+        }
+    }
+    welds.push(note([15., 355.], DISCLAIMER));
     let drilling = vec![
-        table(&t.machining, [15., 190.]),
-        table(&t.panels, [15., 200. + rows(&t.machining)]),
+        table(&t.machining, [15., 175.]),
+        table(&t.panels, [15., 185. + rows(&t.machining)]),
         note(
             [15., 264.],
             "Grid: 10 rows × 10 columns, through; diameter, pitch and edge offsets are the hole_* parameters",
@@ -734,14 +800,22 @@ pub fn page(session: &Session, book: EntityId, number: &str) -> Result<Page, Err
 /// Replace the weld plan, drilling and schedule tables with ones from the
 /// current model; views and associative dimensions are left alone.
 pub fn refresh_tables(session: &mut Session, book: EntityId) -> Result<(), Error> {
-    let weld_page = page(session, book, PAGES[1])?;
+    let mut weld_page = page(session, book, PAGES[1])?;
+    weld_page.settings.orientation = Orientation::Portrait;
+    weld_page.views[0].position_mm = [140., 120.];
     let [welds, drilling, schedule] = table_annotations(session, &weld_page.views[0])?;
     for (number, annotations) in [
         (PAGES[1], welds),
         (PAGES[2], drilling),
         (PAGES[3], schedule),
     ] {
-        let mut page = page(session, book, number)?;
+        let mut page = if number == PAGES[1] {
+            weld_page.clone()
+        } else {
+            page(session, book, number)?
+        };
+        page.info.project = DOCUMENT_NAME.into();
+        page.info.author = "ToskCAD".into();
         page.annotations = annotations;
         let prepared = prepare(
             session,
@@ -772,11 +846,27 @@ pub fn stale_tables(session: &Session, book: EntityId) -> Result<Vec<String>, Er
                     stale.push(e);
                 }
             } else if title == "Weld sequence" {
-                let expected = weld_plan_annotations(
+                let mut expected = weld_plan_annotations(
                     &model.weld_schedule(session.document())?,
                     &page.views[0],
                     [0., 0.],
                 );
+                for a in &mut expected {
+                    if let AnnotationKind::Table {
+                        columns,
+                        rows,
+                        widths_mm,
+                        ..
+                    } = &mut a.kind
+                        && columns.last().is_some_and(|c| c == "Notes")
+                    {
+                        columns.pop();
+                        widths_mm.pop();
+                        for row in rows {
+                            row.pop();
+                        }
+                    }
+                }
                 let same = expected.last().is_some_and(
                     |e| matches!(&e.kind, AnnotationKind::Table { rows: r, .. } if r == rows),
                 );
@@ -793,10 +883,12 @@ fn build_drawings(
     session: &mut Session,
     frame: &Frame,
     worktop: EntityId,
+    vise: &[EntityId],
 ) -> Result<(EntityId, [EntityId; 4]), Error> {
     let model = Compiler::default().compile(session.document(), session.revision())?;
     let mut everything = frame.members();
     everything.push(worktop);
+    everything.extend(vise);
     let mut assembly = a3(PAGES[0], "Workbench assembly");
     let front = view(
         "Front",
@@ -1041,6 +1133,13 @@ pub fn build() -> Result<Scenario, Error> {
         "=($top_depth - 9 * $hole_pitch) / 2",
         "Worktop front edge to the first grid row; centered by default",
     );
+    let vise_opening = parameter("vise_opening", "80", "Clear distance between the vise jaws");
+    let vise_center_x = parameter(
+        "vise_center_x",
+        "=$top_length / 5",
+        "Vise center along the front edge",
+    );
+    let vise_jaw_width = parameter("vise_jaw_width", "240", "Width of the two beech vise jaws");
     let all = [
         &top_length,
         &top_depth,
@@ -1051,6 +1150,9 @@ pub fn build() -> Result<Scenario, Error> {
         &hole_pitch,
         &hole_edge_x,
         &hole_edge_y,
+        &vise_opening,
+        &vise_center_x,
+        &vise_jaw_width,
     ];
     let mut edits: Vec<_> = all.iter().map(|p| Mutation::Insert((*p).clone())).collect();
     let rows: Vec<EntityId> = all.iter().map(|p| p.id).collect();
@@ -1108,6 +1210,7 @@ pub fn build() -> Result<Scenario, Error> {
     let (steel, beech, rhs, flat, plate, top_stock) = ids;
 
     let frame = build_frame(&mut session, rhs, flat, plate)?;
+    let vise = vise::build(&mut session, top_stock, steel, beech)?;
 
     // The worktop rests on the frame top.
     let request = PanelRequest::new(
@@ -1179,7 +1282,7 @@ pub fn build() -> Result<Scenario, Error> {
     checked(&mut session, pilot.model.prepared)?;
     tag(&mut session, &[worktop], TOP_TAG)?;
 
-    let (book, pages) = build_drawings(&mut session, &frame, worktop)?;
+    let (book, pages) = build_drawings(&mut session, &frame, worktop, &vise)?;
     let (frame_set, worktop_set) = build_export_sets(&mut session, worktop)?;
     let mut scenario = Scenario {
         session,
@@ -1192,6 +1295,7 @@ pub fn build() -> Result<Scenario, Error> {
         top_stock,
         frame,
         worktop,
+        vise,
         grid: grid_id,
         pilots: pilot_id,
         book,
@@ -1433,6 +1537,23 @@ mod files;
 
 #[cfg(not(test))]
 fn main() -> Result<(), Error> {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if let [flag, input, output] = arguments.as_slice()
+        && flag == "--upgrade-vise"
+    {
+        return upgrade::run(std::path::Path::new(input), std::path::Path::new(output));
+    }
+    if let [flag, input, output] = arguments.as_slice()
+        && flag == "--refresh-drawings"
+    {
+        return upgrade::refresh(std::path::Path::new(input), std::path::Path::new(output));
+    }
+    if arguments.len() != 1 {
+        return Err(
+            "Usage: workbench_demo NEW_FILE.tcd | --upgrade-vise INPUT.tcd NEW_FILE.tcd".into(),
+        );
+    }
+
     use multicad_ui::{application::DocumentStorage, storage::SaveMode};
     let path = std::env::args_os().nth(1).ok_or(
         "Usage: cargo run -p multicad-app --example workbench_demo -- NEW_FILE.tcd (for example examples/welded-workbench.tcd)",

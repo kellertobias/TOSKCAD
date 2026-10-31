@@ -1,5 +1,4 @@
-//! Pinned references to other native projects (CAD-185): the shipped welded
-//! workbench is placed into another project as a reference, evaluates
+//! Pinned references to other native projects (CAD-185): the shipped workbench with a welded frame is placed into another project as a reference, evaluates
 //! natively at its new pose, survives save/reopen and copies elsewhere, and
 //! reports a changed or missing source explicitly without losing its
 //! pinned content.
@@ -80,7 +79,7 @@ fn leaf_bounds(model: &Model, instance: EntityId) -> ([f64; 3], [f64; 3], usize)
 fn the_shipped_workbench_is_placed_as_a_pinned_reference() {
     let source = open_project(&workbench()).unwrap();
     let content = reference_content(&source).unwrap();
-    assert_eq!(content.name, "Welded steel workbench");
+    assert_eq!(content.name, "Workbench with a welded frame");
     assert!(
         content.revision.starts_with("source "),
         "{}",
@@ -96,7 +95,10 @@ fn the_shipped_workbench_is_placed_as_a_pinned_reference() {
         .entities()
         .filter(|e| matches!(e.data, EntityData::Part { .. }))
         .count();
-    assert_eq!(parts, 20, "every member, foot plate and the worktop");
+    assert_eq!(
+        parts, 37,
+        "32 physical bench/vise parts plus five consumed Boolean tools"
+    );
 
     let dir = temp("place");
     let host_path = dir.join("Workshop.tcd");
@@ -120,13 +122,13 @@ fn the_shipped_workbench_is_placed_as_a_pinned_reference() {
     let (record, source_record) = &sources[0];
     assert_eq!(source_record.path, "welded-workbench.tcd");
     assert_eq!(source_record.document, source.id());
-    // The pinned content compiles natively at its placement: 20 leaves, the
-    // 1500 × 1000 bench turned a quarter, standing on the floor, 900 high.
+    // The pinned content compiles natively at its placement: 32 leaves, the
+    // 1500 × 1205 bench including the open vise turned a quarter, standing on the floor, 900 high.
     let model = compile(&session);
     let (lo, hi, count) = leaf_bounds(&model, instance);
-    assert_eq!(count, 20);
+    assert_eq!(count, 32);
     let size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-    assert!((size[0] - 1000.).abs() < 1., "{size:?}");
+    assert!((size[0] - 1205.).abs() < 1., "{size:?}");
     assert!((size[1] - 1500.).abs() < 1., "{size:?}");
     assert!((size[2] - 900.).abs() < 1., "{size:?}");
     assert!(lo[2].abs() < 1e-6, "{lo:?}");
@@ -149,7 +151,7 @@ fn the_shipped_workbench_is_placed_as_a_pinned_reference() {
         symbols::project_sources(session.document()).unwrap().len(),
         1
     );
-    assert_eq!(compile(&session).snapshot().leaf_occurrences.len(), 40);
+    assert_eq!(compile(&session).snapshot().leaf_occurrences.len(), 64);
 
     // Save, reopen: the reference requires its capability and still checks
     // current against the file next to it.
@@ -235,7 +237,7 @@ fn a_copy_elsewhere_resolves_through_bundled_examples_and_a_missing_source_keeps
         check.summary()
     );
     let session = Session::new(reopened).unwrap();
-    assert_eq!(compile(&session).snapshot().leaf_occurrences.len(), 20);
+    assert_eq!(compile(&session).snapshot().leaf_occurrences.len(), 32);
 
     // Another project at the same path is reported, not adopted.
     save(&Document::new("Something else").unwrap(), &source_file);
@@ -324,7 +326,7 @@ fn a_changed_source_is_reported_and_updated_only_explicitly() {
     .unwrap();
     session.commit(prepared.prepared).unwrap();
     let (lo, hi, count) = leaf_bounds(&compile(&session), instance);
-    assert_eq!(count, 20);
+    assert_eq!(count, 32);
     assert!((hi[0] - lo[0] - 1800.).abs() < 1., "{lo:?} {hi:?}");
     assert!((lo[0] - 500.).abs() < 1., "the placement is kept: {lo:?}");
     let check = &check_references(session.document(), Some(&host), &[]).unwrap()[0];
@@ -360,7 +362,7 @@ fn a_different_revision_of_a_referenced_project_is_not_placed_silently() {
         .unwrap();
     let mut changed = content.clone();
     changed.revision = "source changed".into();
-    changed.name = "Welded steel workbench (edited)".into();
+    changed.name = "Workbench with a welded frame (edited)".into();
     let request = ProjectReferenceRequest::new(
         changed,
         &source,
