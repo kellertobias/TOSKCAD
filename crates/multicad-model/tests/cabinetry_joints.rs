@@ -124,6 +124,7 @@ fn joint(
     pairs: &[(EntityId, EntityId)],
 ) -> EntityId {
     let def = PanelJointDefinition {
+        generated_by: None,
         kind,
         pairs: pairs
             .iter()
@@ -327,6 +328,7 @@ fn impossible_corners_and_finger_counts_are_refused() {
             actor(),
             "Bad",
             &PanelJointDefinition {
+                generated_by: None,
                 kind,
                 pairs: vec![PanelJointPair { a, b }],
             },

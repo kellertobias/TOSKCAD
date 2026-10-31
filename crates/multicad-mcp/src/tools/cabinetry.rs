@@ -632,7 +632,11 @@ pub(super) fn set_panel_joint(host: &dyn Host, call: &Request, args: PanelJointA
                 actor,
                 name.as_deref()
                     .ok_or_else(|| ToolError::invalid("A new joint needs a name"))?,
-                &PanelJointDefinition { kind, pairs },
+                &PanelJointDefinition {
+                    generated_by: None,
+                    kind,
+                    pairs,
+                },
             )?,
         })
     })??;
@@ -982,6 +986,7 @@ pub(super) fn set_machining(host: &dyn Host, call: &Request, args: MachiningArgs
         },
     };
     let machining = MachiningDefinition {
+        generated_by: None,
         suppressed: args.suppressed,
         kind,
         face: match args.face {

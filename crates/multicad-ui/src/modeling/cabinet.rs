@@ -907,6 +907,7 @@ mod tests {
             ui(),
             name,
             &model::MachiningDefinition {
+                generated_by: None,
                 kind: model::MachiningKind::Drill {
                     holes: vec![[length(100.), length(100.)]],
                     diameter: length(5.),

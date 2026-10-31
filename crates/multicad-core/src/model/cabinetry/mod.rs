@@ -10,6 +10,7 @@
 //! oversize, and are reported along and across the grain.
 mod cabinet;
 mod chain;
+mod connections;
 mod dowel;
 mod joint;
 mod machining;
@@ -610,6 +611,18 @@ pub fn carcass_panels(
 pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError> {
     for e in carcasses(document) {
         read_carcass(document, e.id)?;
+    }
+    for entity in panel_joints(document) {
+        let joint = read_panel_joint(document, entity.id)?;
+        if let Some(owner) = joint.generated_by {
+            connections::check_owner(document, owner, joint.pairs.iter().flat_map(|p| [p.a, p.b]))?;
+        }
+    }
+    for entity in machinings(document) {
+        let op = read_machining(document, entity.id)?;
+        if let Some(owner) = op.generated_by {
+            connections::check_owner(document, owner, op.targets.iter().copied())?;
+        }
     }
     let mut roles = BTreeSet::new();
     for e in panels(document) {

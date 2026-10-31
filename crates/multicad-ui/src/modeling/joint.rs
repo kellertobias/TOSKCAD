@@ -318,7 +318,11 @@ impl JointPanel {
         Ok(JointCommand {
             existing: self.existing,
             name: self.name.clone(),
-            joint: PanelJointDefinition { kind, pairs },
+            joint: PanelJointDefinition {
+                generated_by: None,
+                kind,
+                pairs,
+            },
         })
     }
     pub fn show(

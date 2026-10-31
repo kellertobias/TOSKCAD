@@ -590,6 +590,7 @@ fn machining(
         actor(),
         name,
         &MachiningDefinition {
+            generated_by: None,
             kind,
             face,
             targets,
@@ -880,6 +881,7 @@ pub fn build_cabinet(hardware: &Hardware) -> Result<Cabinet, Error> {
         actor(),
         "Carcass Dominos",
         &PanelJointDefinition {
+            generated_by: None,
             kind: PanelJointKind::LooseTenon(Box::new(domino_spec())),
             pairs: horizontal
                 .iter()
@@ -1260,6 +1262,7 @@ pub fn build_cabinet(hardware: &Hardware) -> Result<Cabinet, Error> {
             actor(),
             &format!("Drawer {n} box fingers"),
             &PanelJointDefinition {
+                generated_by: None,
                 kind: PanelJointKind::Finger {
                     count: 5,
                     fit: length(0.2),

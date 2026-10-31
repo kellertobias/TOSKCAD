@@ -191,7 +191,7 @@ fn explicit_cabinet(f: &Fixture) -> CarcassDefinition {
                 underside: length(1053.5),
                 depth: length(350.),
                 stock: Some(f.hdf),
-                support: model::ShelfSupport::System32,
+                support: model::ShelfSupport::System32 { level: 28 },
             },
         ],
         joinery: Default::default(),
@@ -290,10 +290,11 @@ fn explicit_cabinet_bad_sizes_collisions_keys_and_support_levels_are_source_neut
     invalid.push((d, "requested depth"));
     let mut d = definition.clone();
     d.cabinet.as_mut().unwrap().shelves[1].underside = length(501.);
+    d.cabinet.as_mut().unwrap().shelves[1].support = model::ShelfSupport::Fixed;
     invalid.push((d, "overlaps"));
     let mut d = definition.clone();
-    d.cabinet.as_mut().unwrap().shelves[1].underside = length(1000.);
-    invalid.push((d, "System 32 support level"));
+    d.cabinet.as_mut().unwrap().shelves[1].support = model::ShelfSupport::System32 { level: 10000 };
+    invalid.push((d, "does not fit"));
     let mut d = definition.clone();
     d.cabinet.as_mut().unwrap().shelves[1].key = 0;
     invalid.push((d, "distinct stable slots"));
@@ -363,6 +364,204 @@ fn explicit_cabinet_default_stock_updates_inheriting_shelves_only() {
         record(&after, "Stock cabinet left side"),
         record(&before, "Stock cabinet left side")
     );
+}
+
+#[test]
+fn cabinet_connections_follow_parameters_levels_joinery_and_user_owned_dependencies() {
+    let mut f = fixture();
+    let mut definition = explicit_cabinet(&f);
+    definition.width = length(300.);
+    definition.height = length(400.);
+    definition.depth = length(220.);
+    definition.back = Back::None;
+    let depth = Dimension::Expression {
+        expression: BoundExpression::bind(f.s.document(), "=$cab_width / 4", "mm", None).unwrap(),
+    };
+    let c = definition.cabinet.as_mut().unwrap();
+    c.toe_clearance = length(20.);
+    c.shelves[0].underside = length(200.);
+    c.shelves[0].depth = depth.clone();
+    c.shelves[1].depth = depth;
+    c.shelves[1].support = model::ShelfSupport::System32 { level: 3 };
+    let created = model::prepare_carcass(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        &CarcassRequest::new("Connected", definition.clone()),
+    )
+    .unwrap();
+    let id = created.carcass;
+    checked(&mut f.s, created.model.prepared);
+    let joints = |s: &Session| {
+        model::panel_joints(s.document())
+            .filter(|e| {
+                model::read_panel_joint(s.document(), e.id)
+                    .unwrap()
+                    .generated_by
+                    == Some(id)
+            })
+            .map(|e| e.id)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let operations = |s: &Session| {
+        model::machinings(s.document())
+            .filter(|e| {
+                model::read_machining(s.document(), e.id)
+                    .unwrap()
+                    .generated_by
+                    == Some(id)
+            })
+            .map(|e| e.id)
+            .collect::<Vec<_>>()
+    };
+    let original_joints = joints(&f.s);
+    assert_eq!(original_joints.len(), 6);
+    let pins = operations(&f.s);
+    assert_eq!(pins.len(), 1);
+    let list = compile(&f.s).cut_list(f.s.document()).unwrap();
+    let adjustable = record(&list, "Connected shelf 4").part;
+    let fixed = record(&list, "Connected shelf 1").part;
+    let side = record(&list, "Connected left side").part;
+    near(bounds(&compile(&f.s), &f.s, adjustable).min[2], 173.5);
+    let holes = |s: &Session| {
+        compile(s)
+            .machining(s.document())
+            .unwrap()
+            .into_iter()
+            .find(|r| r.operation == pins[0] && r.part == side)
+            .unwrap()
+            .holes
+    };
+    assert!(
+        holes(&f.s)
+            .iter()
+            .any(|h| (h.center[1] - 133.).abs() < 1e-6)
+    );
+    set_parameter(&mut f.s, f.width, "640");
+    assert_eq!(joints(&f.s), original_joints);
+    assert_eq!(operations(&f.s), pins);
+    assert!(
+        holes(&f.s)
+            .iter()
+            .any(|h| (h.center[1] - 143.).abs() < 1e-6)
+    );
+    let current = compile(&f.s).cut_list(f.s.document()).unwrap();
+    pair(
+        record(&current, "Connected shelf 4").cut.finished_mm,
+        [262., 160.],
+    );
+    // Moving the bottom datum keeps the selected adjustable level and moves
+    // its pin support together, while the fixed shelf retains 200 mm.
+    definition.cabinet.as_mut().unwrap().toe_clearance = length(30.);
+    let before = f.s.document().clone();
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &definition).unwrap();
+    Compiler::default()
+        .compile(p.model.prepared.document(), f.s.revision() + 1)
+        .unwrap();
+    assert_eq!(f.s.document(), &before);
+    checked(&mut f.s, p.model.prepared);
+    let m = compile(&f.s);
+    near(bounds(&m, &f.s, adjustable).min[2], 183.5);
+    near(bounds(&m, &f.s, fixed).min[2], 200.);
+    assert_eq!(joints(&f.s), original_joints);
+    assert_eq!(operations(&f.s), pins);
+    let snapshot = f.s.document().clone();
+    assert!(
+        model::prepare_panel_joint_delete(
+            &f.s,
+            f.s.revision(),
+            actor(),
+            *original_joints.first().unwrap()
+        )
+        .is_err()
+    );
+    assert!(model::prepare_machining_delete(&f.s, f.s.revision(), actor(), pins[0]).is_err());
+    assert_eq!(f.s.document(), &snapshot);
+    // Switching connection family replaces only owned connection geometry.
+    definition.cabinet.as_mut().unwrap().joinery =
+        model::CabinetJoinery::Domino(Box::new(model::LooseTenonSpec {
+            thickness: length(6.),
+            width: length(20.),
+            length: length(40.),
+            count: 2,
+            inset: length(60.),
+            offset: None,
+            face_depth: length(12.),
+            edge_depth: length(30.),
+            face_play: length(0.),
+            edge_play: length(0.),
+            fit: length(0.1),
+        }));
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &definition).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    assert_eq!(joints(&f.s).len(), 6);
+    assert!(joints(&f.s).is_disjoint(&original_joints));
+    let m = compile(&f.s);
+    let records = m.machining(f.s.document()).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.kind == "loose-tenon mortise")
+            .count(),
+        12
+    );
+    assert_eq!(records.iter().filter(|r| r.kind == "shelf pins").count(), 2);
+    assert!(
+        records
+            .iter()
+            .filter(|r| r.kind == "loose-tenon mortise")
+            .all(|r| r.tenon.is_some())
+    );
+    // Making the fixed shelf adjustable removes its two fixed joints only.
+    definition.cabinet.as_mut().unwrap().shelves[0].support =
+        model::ShelfSupport::System32 { level: 0 };
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &definition).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    assert_eq!(joints(&f.s).len(), 4);
+    assert_eq!(operations(&f.s), pins);
+    assert!(
+        !compile(&f.s)
+            .machining(f.s.document())
+            .unwrap()
+            .iter()
+            .any(|r| r.part == fixed && r.kind == "loose-tenon mortise")
+    );
+    let user = model::prepare_machining(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "User cable hole",
+        &model::MachiningDefinition {
+            generated_by: None,
+            kind: model::MachiningKind::Drill {
+                holes: vec![[length(20.), length(20.)]],
+                diameter: length(3.),
+                depth: None,
+            },
+            face: model::MachiningFace::Top,
+            targets: vec![adjustable],
+            suppressed: false,
+        },
+    )
+    .unwrap();
+    let user_id = user.operation;
+    checked(&mut f.s, user.model.prepared);
+    let mut remove = definition.clone();
+    remove.cabinet.as_mut().unwrap().shelves.remove(1);
+    let snapshot = f.s.document().clone();
+    let error = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &remove)
+        .err()
+        .expect("user machining blocks panel removal");
+    assert!(error.to_string().contains("User cable hole"), "{error}");
+    assert_eq!(f.s.document(), &snapshot);
+    let deleted = model::prepare_machining_delete(&f.s, f.s.revision(), actor(), user_id).unwrap();
+    checked(&mut f.s, deleted);
+    let p = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &remove).unwrap();
+    checked(&mut f.s, p.model.prepared);
+    assert_eq!(joints(&f.s).len(), 4);
+    assert_eq!(operations(&f.s), pins);
+    assert!(f.s.document().get(adjustable).is_none());
+    assert!(f.s.document().get(fixed).is_some());
 }
 
 #[test]

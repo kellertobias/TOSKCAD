@@ -86,6 +86,8 @@ pub struct ShelfPinRow {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachiningKind {
+    /// System 32 settings evaluated from the explicit owning cabinet.
+    CabinetShelfPins,
     /// A groove or dado running the full panel length along `along`,
     /// `offset` from the start edge of the other axis.
     Groove {
@@ -140,6 +142,8 @@ pub enum MachiningKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachiningDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_by: Option<EntityId>,
     pub kind: MachiningKind,
     pub face: MachiningFace,
     /// Panel Parts that receive the operation.
@@ -229,6 +233,9 @@ impl HardwarePatternDefinition {
 }
 impl MachiningDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
+        if self.generated_by.is_some_and(|id| id.is_nil()) {
+            return Err(invalid("Cabinet machining owner identity is nil"));
+        }
         if self.targets.is_empty() || self.targets.len() > MAX_TARGETS {
             return Err(invalid(format!(
                 "Machining needs 1–{MAX_TARGETS} target panels"
@@ -239,6 +246,13 @@ impl MachiningDefinition {
         }
         let edge = matches!(self.face, MachiningFace::Edge { .. });
         match &self.kind {
+            MachiningKind::CabinetShelfPins
+                if self.generated_by.is_none() || self.face != MachiningFace::Inside =>
+            {
+                return Err(invalid(
+                    "Generated shelf pins require a Cabinet owner and its inside faces",
+                ));
+            }
             MachiningKind::Groove { .. }
             | MachiningKind::Rabbet { .. }
             | MachiningKind::Pocket { .. }
@@ -283,6 +297,7 @@ impl MachiningDefinition {
     }
     fn dimensions(&self) -> Vec<&Dimension> {
         match &self.kind {
+            MachiningKind::CabinetShelfPins => vec![],
             MachiningKind::Groove {
                 offset,
                 width,
@@ -323,6 +338,10 @@ impl MachiningDefinition {
     }
     fn inputs(&self, document: &Document) -> Result<Vec<Link>, DocumentError> {
         let mut links = parameter_links(self.dimensions());
+        if let Some(owner) = self.generated_by {
+            super::connections::check_owner(document, owner, self.targets.iter().copied())?;
+            links.push(Link::new(owner, "cabinet"));
+        }
         for (i, part) in self.targets.iter().enumerate() {
             let feature = panel_feature(document, *part)
                 .ok_or_else(|| invalid(format!("{part} is not a panel")))?;
@@ -347,6 +366,7 @@ impl MachiningDefinition {
             MachiningKind::Pocket { .. } => "pocket",
             MachiningKind::Drill { .. } => "drilling",
             MachiningKind::ShelfPins { .. } => "shelf pins",
+            MachiningKind::CabinetShelfPins => "shelf pins",
             MachiningKind::Hardware { .. } => "hardware",
         }
     }
@@ -382,8 +402,14 @@ pub fn machining_capabilities(document: &Document) -> BTreeSet<String> {
             continue;
         };
         let data = &definition.data;
-        if data.pointer("/kind/kind").and_then(|v| v.as_str()) == Some("shelf_pins") {
+        if matches!(
+            data.pointer("/kind/kind").and_then(|v| v.as_str()),
+            Some("shelf_pins" | "cabinet_shelf_pins")
+        ) {
             out.insert(SHELF_PIN_CAPABILITY.to_owned());
+        }
+        if data.get("generated_by").is_some() {
+            out.insert(CABINET_CAPABILITY.to_owned());
         }
         if data.pointer("/face/face").and_then(|v| v.as_str()) == Some("inside") {
             out.insert(INSIDE_FACE_CAPABILITY.to_owned());
@@ -787,6 +813,19 @@ pub fn resolve_machining(
     machining: &MachiningDefinition,
     target: EntityId,
 ) -> Result<ResolvedMachining, DocumentError> {
+    if matches!(machining.kind, MachiningKind::CabinetShelfPins) {
+        let owner = machining
+            .generated_by
+            .ok_or_else(|| invalid("Generated shelf pins have no Cabinet owner"))?;
+        let mut derived = super::connections::pin_definition(document, parameters, owner)?;
+        if derived.targets != machining.targets {
+            return Err(invalid(
+                "Generated shelf pins no longer target the Cabinet sides",
+            ));
+        }
+        derived.suppressed = machining.suppressed;
+        return resolve_machining(document, parameters, &derived, target);
+    }
     let mm = |d: &Dimension| number(d, Unit::Millimeter, parameters);
     let name = document
         .get(target)
@@ -859,6 +898,7 @@ pub fn resolve_machining(
         Ok(())
     };
     match &machining.kind {
+        MachiningKind::CabinetShelfPins => unreachable!("resolved above"),
         MachiningKind::Groove {
             along,
             offset,
@@ -1069,8 +1109,14 @@ pub fn shelf_support_offsets(
     let definition = read_carcass(document, carcass)?;
     let resolved = resolve_carcass(document, parameters, &definition)?;
     let t = stock_thickness(&read_panel_stock(document, definition.stock)?);
-    let bottom = resolved.origin[2] + t;
-    let interior = resolved.size_mm[1] - 2. * t;
+    let toe = definition.cabinet.as_ref().map_or(Ok(0.), |c| {
+        number(&c.toe_clearance, Unit::Millimeter, parameters)
+    })?;
+    let shelf_thickness = definition.cabinet.as_ref().map_or(Ok(t), |c| {
+        read_panel_stock(document, c.shelf_stock).map(|s| stock_thickness(&s))
+    })?;
+    let bottom = resolved.origin[2] + toe + t;
+    let interior = resolved.size_mm[1] - toe - 2. * t;
     let mut sides = [vec![], vec![]];
     for (role, _, part) in carcass_panels(document, carcass)? {
         let i = match role {
@@ -1080,7 +1126,10 @@ pub fn shelf_support_offsets(
         };
         for op in machinings_of(document, part) {
             let m = read_machining(document, op)?;
-            if !matches!(m.kind, MachiningKind::ShelfPins { .. }) {
+            if !matches!(
+                m.kind,
+                MachiningKind::ShelfPins { .. } | MachiningKind::CabinetShelfPins
+            ) {
                 continue;
             }
             for h in resolve_machining(document, parameters, &m, part)?.holes {
@@ -1092,7 +1141,7 @@ pub fn shelf_support_offsets(
         .iter()
         .copied()
         .filter(|z| sides[1].iter().any(|w| (w - z).abs() <= 1e-6))
-        .filter(|z| *z >= -1e-6 && z + t <= interior + 1e-6)
+        .filter(|z| *z >= -1e-6 && z + shelf_thickness <= interior + 1e-6)
         .collect();
     levels.sort_by(f64::total_cmp);
     levels.dedup_by(|a, b| (*a - *b).abs() <= 1e-6);
@@ -1226,6 +1275,11 @@ pub fn prepare_machining_edit(
 ) -> Result<MachiningPrepared, CommandError> {
     revision(session, expected_revision)?;
     let document = session.document();
+    if read_machining(document, id)?.generated_by.is_some() {
+        return Err(error(
+            "Edit this generated support through its Cabinet inspector",
+        ));
+    }
     if read_machining(document, id)?.targets != machining.targets {
         return Err(error(
             "An operation keeps its target panels; delete it and create another to change them",
@@ -1262,6 +1316,22 @@ pub fn prepare_machining_edit(
 }
 /// Delete an operation and its cuts, restoring the panels.
 pub fn prepare_machining_delete(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    id: EntityId,
+) -> Result<Prepared, CommandError> {
+    if read_machining(session.document(), id)?
+        .generated_by
+        .is_some()
+    {
+        return Err(error(
+            "Remove this generated support through its Cabinet inspector",
+        ));
+    }
+    prepare_owned_machining_delete(session, expected_revision, actor, id)
+}
+pub(super) fn prepare_owned_machining_delete(
     session: &Session,
     expected_revision: u64,
     actor: Actor,

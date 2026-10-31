@@ -11,7 +11,7 @@ pub const DOWEL_CAPABILITY: &str = "cabinetry.dowel.1";
 #[serde(rename_all = "snake_case")]
 pub enum ShelfSupport {
     Fixed,
-    System32,
+    System32 { level: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -20,7 +20,8 @@ pub struct CabinetShelf {
     /// Stable slot, independent of row order. Removing a different shelf must
     /// not repoint this panel's downstream features to its neighbor.
     pub key: u32,
-    /// Local floor to the shelf underside, including toe clearance.
+    /// Local floor to the fixed shelf underside. Retained when adjustable
+    /// support is selected; that mode positions it by its canonical level.
     pub underside: Dimension,
     /// Finished front-to-back size; never silently shortened to fit a back.
     pub depth: Dimension,
@@ -89,12 +90,12 @@ impl DowelSpec {
     deny_unknown_fields
 )]
 pub enum CabinetJoinery {
-    Dowels(DowelSpec),
-    Domino(LooseTenonSpec),
+    Dowels(Box<DowelSpec>),
+    Domino(Box<LooseTenonSpec>),
 }
 impl Default for CabinetJoinery {
     fn default() -> Self {
-        Self::Dowels(DowelSpec::default())
+        Self::Dowels(Box::default())
     }
 }
 impl CabinetJoinery {
@@ -155,6 +156,22 @@ pub struct CabinetOptions {
     pub pins: CabinetPins,
 }
 impl CabinetOptions {
+    pub fn underside_mm(
+        &self,
+        shelf: &CabinetShelf,
+        parameters: &crate::parameters::EvaluatedParameters,
+        body_thickness_mm: f64,
+    ) -> Result<f64, DocumentError> {
+        let mm = |d: &Dimension| crate::model::common::number(d, Unit::Millimeter, parameters);
+        match shelf.support {
+            ShelfSupport::Fixed => mm(&shelf.underside),
+            ShelfSupport::System32 { level } => Ok(mm(&self.toe_clearance)?
+                + body_thickness_mm
+                + mm(&self.pins.start)?
+                + level as f64 * SYSTEM32_PITCH_MM
+                + mm(&self.pins.diameter)? / 2.),
+        }
+    }
     pub(super) fn validate(&self) -> Result<(), DocumentError> {
         if self.shelf_stock.is_nil() || self.shelves.len() > MAX_SHELVES {
             return Err(invalid(

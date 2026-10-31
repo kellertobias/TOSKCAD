@@ -128,6 +128,7 @@ fn fixture() -> Fixture {
 /// 100 mm above the bottom edge to 100 mm below the top edge.
 fn pins(targets: Vec<EntityId>) -> MachiningDefinition {
     MachiningDefinition {
+        generated_by: None,
         kind: MachiningKind::ShelfPins {
             along: PanelAxis::V,
             rows: vec![

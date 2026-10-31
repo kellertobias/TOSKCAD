@@ -65,6 +65,9 @@ pub struct PanelJointPair {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PanelJointDefinition {
+    /// Generated connections are edited through their owning cabinet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_by: Option<EntityId>,
     pub kind: PanelJointKind,
     /// Panel Part pairs that share this joint's settings.
     pub pairs: Vec<PanelJointPair>,
@@ -87,6 +90,9 @@ pub struct PanelJointCutDefinition {
 
 impl PanelJointDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
+        if self.generated_by.is_some_and(|id| id.is_nil()) {
+            return Err(invalid("Cabinet connection owner identity is nil"));
+        }
         if self.pairs.is_empty() || self.pairs.len() > MAX_JOINT_PAIRS {
             return Err(invalid(format!(
                 "A joint needs 1–{MAX_JOINT_PAIRS} panel pairs"
@@ -130,6 +136,14 @@ impl PanelJointDefinition {
     /// both sides.
     fn inputs(&self, document: &Document) -> Result<Vec<Link>, DocumentError> {
         let mut links = parameter_links(self.dimensions());
+        if let Some(owner) = self.generated_by {
+            super::connections::check_owner(
+                document,
+                owner,
+                self.pairs.iter().flat_map(|p| [p.a, p.b]),
+            )?;
+            links.push(Link::new(owner, "cabinet"));
+        }
         for (i, p) in self.pairs.iter().enumerate() {
             for (side, part) in [("a", p.a), ("b", p.b)] {
                 let feature = panel_feature(document, part)
@@ -601,6 +615,11 @@ pub fn prepare_panel_joint_edit(
     revision(session, expected_revision)?;
     let document = session.document();
     let mut joint = read_panel_joint(document, id)?;
+    if joint.generated_by.is_some() {
+        return Err(error(
+            "Edit this generated connection through its Cabinet inspector",
+        ));
+    }
     if matches!(joint.kind, PanelJointKind::LooseTenon(_))
         != matches!(kind, PanelJointKind::LooseTenon(_))
     {
@@ -649,6 +668,22 @@ pub fn prepare_panel_joint_edit(
 /// re-attached to the feature before the removed cut; any other later
 /// feature must be removed first.
 pub fn prepare_panel_joint_delete(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    id: EntityId,
+) -> Result<crate::commands::Prepared, CommandError> {
+    if read_panel_joint(session.document(), id)?
+        .generated_by
+        .is_some()
+    {
+        return Err(error(
+            "Remove this generated connection through its Cabinet inspector",
+        ));
+    }
+    prepare_owned_joint_delete(session, expected_revision, actor, id)
+}
+pub(super) fn prepare_owned_joint_delete(
     session: &Session,
     expected_revision: u64,
     actor: Actor,

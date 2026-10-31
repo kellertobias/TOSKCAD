@@ -163,6 +163,19 @@ pub fn prepare_carcass(
     actor: Actor,
     request: &CarcassRequest,
 ) -> Result<CarcassPrepared, CommandError> {
+    let base = prepare_carcass_base(session, expected_revision, actor.clone(), request)?;
+    if request.definition.cabinet.is_some() {
+        super::connections::finish(session, expected_revision, actor, base)
+    } else {
+        Ok(base)
+    }
+}
+fn prepare_carcass_base(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    request: &CarcassRequest,
+) -> Result<CarcassPrepared, CommandError> {
     revision(session, expected_revision)?;
     check_name(&request.name, "Carcass")?;
     let document = session.document();
@@ -252,6 +265,23 @@ fn carcass_panel(carcass: EntityId, role: PanelRole, body: EntityId) -> PanelDef
 /// shelves or a back that are no longer needed are removed and new ones are
 /// created. Panels follow stock changes in their material and assignment.
 pub fn prepare_carcass_edit(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    id: EntityId,
+    definition: &CarcassDefinition,
+) -> Result<CarcassPrepared, CommandError> {
+    revision(session, expected_revision)?;
+    let old = read_carcass(session.document(), id)?;
+    if old.cabinet.is_none() && definition.cabinet.is_none() {
+        return prepare_carcass_edit_base(session, expected_revision, actor, id, definition);
+    }
+    let clean = super::connections::clean_before_edit(session, &actor, id, definition)?;
+    let stage = Session::new(clean)?;
+    let base = prepare_carcass_edit_base(&stage, stage.revision(), actor.clone(), id, definition)?;
+    super::connections::finish(session, expected_revision, actor, base)
+}
+fn prepare_carcass_edit_base(
     session: &Session,
     expected_revision: u64,
     actor: Actor,

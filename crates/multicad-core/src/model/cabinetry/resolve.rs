@@ -372,7 +372,7 @@ pub fn resolve_carcass(
         read_panel_stock(document, cabinet.shelf_stock)?;
         let mut intervals = vec![];
         for shelf in &cabinet.shelves {
-            let z = mm(&shelf.underside, p)?;
+            let z = cabinet.underside_mm(shelf, p, t)?;
             let depth = mm(&shelf.depth, p)?;
             let thickness = stock_thickness(&read_panel_stock(
                 document,
@@ -399,7 +399,7 @@ pub fn resolve_carcass(
                     shelf.key + 1
                 )));
             }
-            if shelf.support == ShelfSupport::System32 {
+            if matches!(shelf.support, ShelfSupport::System32 { .. }) {
                 let diameter = mm(&cabinet.pins.diameter, p)?;
                 let start = toe + t + mm(&cabinet.pins.start, p)?;
                 let end = h - t - mm(&cabinet.pins.end_clearance, p)?;
@@ -421,7 +421,7 @@ pub fn resolve_carcass(
         cabinet
             .shelves
             .iter()
-            .map(|s| mm(&s.underside, p))
+            .map(|s| cabinet.underside_mm(s, p, t))
             .collect::<Result<_, _>>()?
     } else {
         match &carcass.shelves.layout {

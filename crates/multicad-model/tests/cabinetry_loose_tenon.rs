@@ -137,6 +137,7 @@ fn domino() -> LooseTenonSpec {
 }
 fn joint(f: &Fixture, spec: LooseTenonSpec) -> PanelJointDefinition {
     PanelJointDefinition {
+        generated_by: None,
         kind: PanelJointKind::LooseTenon(Box::new(spec)),
         pairs: vec![PanelJointPair {
             a: f.part(PanelRole::RightSide),

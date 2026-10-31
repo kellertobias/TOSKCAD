@@ -403,6 +403,7 @@ fn machining_schedule_groups_holes_by_size_and_lists_recesses() {
             actor(),
             name,
             &MachiningDefinition {
+                generated_by: None,
                 suppressed: false,
                 kind,
                 face: MachiningFace::Top,

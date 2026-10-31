@@ -1029,6 +1029,7 @@ pub fn build() -> Result<Scenario, Error> {
         actor(),
         "Shelf pins",
         &MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Drill {
                 holes: [[100., 100.], [100., 300.], [600., 100.], [600., 300.]]
@@ -1077,6 +1078,7 @@ pub fn build() -> Result<Scenario, Error> {
         actor(),
         "Upstand corner",
         &PanelJointDefinition {
+            generated_by: None,
             kind: PanelJointKind::Finger {
                 count: 5,
                 fit: length(0.2),

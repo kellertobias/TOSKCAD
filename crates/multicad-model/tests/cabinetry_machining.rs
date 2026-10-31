@@ -159,6 +159,7 @@ fn grooves_rabbets_pockets_and_holes_cut_every_target_panel() {
         &mut f.s,
         "Back groove",
         MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Groove {
                 along: PanelAxis::U,
@@ -179,6 +180,7 @@ fn grooves_rabbets_pockets_and_holes_cut_every_target_panel() {
         &mut f.s,
         "Top rabbet",
         MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Rabbet {
                 edge: PanelEdgeName::UEnd,
@@ -194,6 +196,7 @@ fn grooves_rabbets_pockets_and_holes_cut_every_target_panel() {
         &mut f.s,
         "Hinge cup",
         MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Pocket {
                 center: [length(100.), length(200.)],
@@ -208,6 +211,7 @@ fn grooves_rabbets_pockets_and_holes_cut_every_target_panel() {
         &mut f.s,
         "Shelf pins",
         MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Drill {
                 holes: vec![[length(300.), length(100.)], [length(300.), length(300.)]],
@@ -222,6 +226,7 @@ fn grooves_rabbets_pockets_and_holes_cut_every_target_panel() {
         &mut f.s,
         "Cable hole",
         MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Drill {
                 holes: vec![[length(450.), length(200.)]],
@@ -237,6 +242,7 @@ fn grooves_rabbets_pockets_and_holes_cut_every_target_panel() {
         &mut f.s,
         "Dowels",
         MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Drill {
                 holes: vec![[length(50.), length(9.)], [length(550.), length(9.)]],
@@ -392,6 +398,7 @@ fn hardware_patterns_follow_their_source_and_material_allowances() {
         &mut f.s,
         "Hinge plates",
         MachiningDefinition {
+            generated_by: None,
             suppressed: false,
             kind: MachiningKind::Hardware {
                 pattern: hinge,
@@ -441,6 +448,7 @@ fn unreachable_or_impossible_machining_is_refused() {
             actor(),
             "Bad",
             &MachiningDefinition {
+                generated_by: None,
                 suppressed: false,
                 kind,
                 face,

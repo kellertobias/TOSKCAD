@@ -1137,6 +1137,7 @@ pub fn build() -> Result<Scenario, Error> {
         actor(),
         "Hole grid 10 × 10",
         &MachiningDefinition {
+            generated_by: None,
             kind: MachiningKind::Drill {
                 holes: grid_holes(&session)?,
                 diameter: dim(&session, "=$hole_diameter")?,
@@ -1165,6 +1166,7 @@ pub fn build() -> Result<Scenario, Error> {
         actor(),
         "Tab screw pilots",
         &MachiningDefinition {
+            generated_by: None,
             kind: MachiningKind::Drill {
                 holes: pilots,
                 diameter: length(PILOT_DIAMETER_MM),

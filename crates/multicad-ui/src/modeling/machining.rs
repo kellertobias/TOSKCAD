@@ -206,6 +206,9 @@ impl MachiningPanel {
             MachiningFace::Inside => (Side::Inside, form.edge),
         };
         match &op.kind {
+            MachiningKind::CabinetShelfPins => {
+                return Err("Edit generated shelf supports through the Cabinet inspector".into());
+            }
             MachiningKind::Groove {
                 along,
                 offset,
@@ -383,6 +386,7 @@ impl MachiningPanel {
             existing: self.existing,
             name: self.name.clone(),
             machining: MachiningDefinition {
+                generated_by: None,
                 kind,
                 face,
                 targets: self.targets.clone(),
