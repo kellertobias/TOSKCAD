@@ -130,7 +130,7 @@ fn a_tab_picked_on_the_curved_side_is_checked_natively_snapped_and_applied() {
     let scene = canonical(&s);
     let mut c = ModelToolController::default();
     c.set_backend(Box::new(native_fixture::NativeBackend::new()));
-    c.begin_fdm_aid(&s, &Default::default(), Channel::Ui)
+    c.begin_fdm_aid(&s, &Default::default(), &[], Channel::Ui)
         .unwrap();
     assert!(c.fdm_aid_active() && c.fdm_aid_picking());
     // Looking at the knob's +X side: hovering shows a pick, clicking sets it.
@@ -186,7 +186,7 @@ fn a_crowding_tab_is_shown_but_cannot_apply_and_cancel_is_source_neutral() {
     let revision = s.revision();
     let mut c = ModelToolController::default();
     c.set_backend(Box::new(native_fixture::NativeBackend::new()));
-    c.begin_fdm_aid(&s, &Default::default(), Channel::Ui)
+    c.begin_fdm_aid(&s, &Default::default(), &[], Channel::Ui)
         .unwrap();
     // A top-face pick is refused and changes nothing.
     let stamp = c.stamp();

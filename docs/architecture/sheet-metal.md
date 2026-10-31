@@ -7,7 +7,9 @@ The window and the MCP server use the same core API.
 | --- | --- |
 | `crates/multicad-core/src/model/sheet_metal/` | Source types, resolution of stock and bend inputs, and transactions |
 | `crates/multicad-model/src/sheet_metal.rs` | Native sheet solids, flat patterns, sheet records and solid conversion |
-| `crates/multicad-ui/src/modeling/sheet.rs` | The window's Base sheet form |
+| `crates/multicad-core/src/model/sheet_metal/edges.rs` | Base edges, flange guides and the flange pre-check |
+| `crates/multicad-ui/src/modeling/sheet.rs` | The window's Sheet part / flanges form |
+| `crates/multicad-ui/src/modeling/sheet/edges.rs` | Edge picking, flange guides and the numbered edge diagram |
 | `crates/multicad-mcp/src/tools/sheet_metal.rs` | MCP tools |
 
 ## Sheet stock
@@ -120,6 +122,37 @@ A cutout is a circle or rectangle cut through one face:
 A flange cutout moves with its leg when the angle, radius or thickness
 changes. A cutout must lie wholly inside its face. The evaluator checks
 that it removes exactly its area times the thickness.
+
+### Choosing edges and checking flanges
+
+`sheet_outline` numbers the base outline from the resolved sheet: each
+edge's world ends, length, outward direction and whether it is straight.
+Rectangle and captured-contour bases have an outline; a sketch-region base
+needs its solved sketch and has none. Edges are numbered from 1 in the
+window and in labels, and by their 0-based `edge` index in the source.
+
+`flange_guides` gives each flange its mid-thickness cross-section, built
+from the stock thickness and the flange's resolved inside radius:
+
+- a bend turns the mid-surface on a radius r + t/2 about an axis on the
+  inside of the bend, starting at the base edge;
+- the guide carries the flange span after its insets, the leg start and
+  end, and every bend's signed angle.
+
+A guide annotates the folded part; it is not manufacturing geometry. The
+test compares the guides swept over their spans with the bounds of the
+native folded solid.
+
+`check_flanges` (and `review_flanges`, which also returns the outline and
+guides) reports before native evaluation:
+
+- every invalid bend, each flange resolved on its own;
+- insets that leave no flange, and reliefs wider than their inset;
+- two flanges on neighboring edges with no inset at their shared corner,
+  which touch there.
+
+An empty result does not prove the part is valid: collisions with the base
+or with distant flanges are found by native evaluation.
 
 ### What the evaluator refuses
 
@@ -370,10 +403,25 @@ nothing.
   places a rectangular base sheet from sheet stock, with an optional
   reversed side, radius and K-factor overrides, and a bend, hem or jog with
   an equal corner inset on each edge. Preview builds the native solid and
-  Apply commits it. Opening an applied sheet part edits it in place.
+  Apply commits it. Opening an applied sheet part edits it in place and
+  selects its first flange.
   Sketch-region or converted bases, flanges the form cannot show and
   cutouts are kept unchanged.
+  - While the form edits a rectangle base, the 3D viewer draws the base
+    outline with numbered edges and highlights the edge under the pointer.
+    Clicking an edge adds its flange or selects it; part selection is off
+    while the form is open.
+  - The selected flange shows its guide, its bend label (angle, direction,
+    inside radius) and its leg length. A handle at the leg end flips it up
+    or down. A caption states the thickness, radius and K-factor with
+    their sources.
+  - The Inspector shows a clickable numbered edge diagram, expands the
+    selected flange's values and summarizes the others. Pre-check findings
+    are listed and their edges drawn in red in both views.
+  - The viewer and the Inspector edit the same rows, so both produce the
+    same checked transaction.
 - **MCP.** `create_sheet_stock`, `set_sheet_part`, `set_sheet_forming`,
+  `sheet_edges`,
   `set_sheet_fasteners`, `sheet_hardware`,
   `convert_to_sheet`, `sheet_metal`, `unfold_sheet` and `export_sheet_dxf`.
   `export_sheet_dxf` writes into the server's export folder.

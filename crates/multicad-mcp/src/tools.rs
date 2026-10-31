@@ -81,12 +81,12 @@ use render::{assign_appearance, blender_handoff, create_appearance, set_render_s
 use schedules::schedule;
 pub use schedules::{ScheduleArgs, ScheduleKindArg};
 pub use sheet_metal::{
-    ConvertSheetArgs, SheetDxfArgs, SheetFastenersArgs, SheetFormingArgs, SheetPartArgs,
-    SheetStockArgs, UnfoldSheetArgs,
+    ConvertSheetArgs, SheetDxfArgs, SheetEdgesArgs, SheetFastenersArgs, SheetFormingArgs,
+    SheetPartArgs, SheetStockArgs, UnfoldSheetArgs,
 };
 use sheet_metal::{
     convert_to_sheet, create_sheet_stock, export_sheet_dxf, set_sheet_fasteners, set_sheet_forming,
-    set_sheet_part, sheet_hardware, sheet_metal, unfold_sheet,
+    set_sheet_part, sheet_edges, sheet_hardware, sheet_metal, unfold_sheet,
 };
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, FaceArg, InspectVerticalCutoutArgs,
@@ -330,7 +330,7 @@ tools! {
         "Record panel Parts as face-to-face stack layers in order, keeping each layer's Part, material and stock; optionally group them as one assembly. Contact is checked by cut_list.",
         create_panel_stack;
     "set_panel_joint" => PanelJointArgs, "Create or edit panel joint", false,
-        "Join panel pairs that overlap at a right-angle corner (the corner block must be both panels' full thickness): butt with A or B through, a 45° miter, or fingers with a count and fit. Each panel gets its own cut feature; an edit changes the kind, count or fit of every pair. Both sides of every pair are evaluated natively before commit.",
+        "Join panel pairs that overlap at a right-angle corner (the corner block must be both panels' full thickness): butt with A or B through, a 45° miter, or fingers with a count and fit; or join panels that meet face to edge with Domino-style loose tenons (kind loose_tenon, `tenon` settings; defaults are a Festool DOMINO 8 × 22 × 40 mm example): paired rounded mortises plus a tenon Part per pair. A loose-tenon joint cannot be edited into a corner joint or back. Each panel gets its own cut feature; an edit changes the kind, count or fit of every pair. Both sides of every pair are evaluated natively before commit.",
         set_panel_joint;
     "delete_panel_joint" => DeleteJointArgs, "Delete panel joint", false,
         "Delete a panel joint and its cuts, restoring the panels. Later joint cuts on the same Parts are re-attached.",
@@ -339,7 +339,7 @@ tools! {
         "Create or edit a reusable hardware hole pattern (hole positions, diameters, blind depths or through) with per-material diameter and depth allowances. Editing it rebuilds every placement, evaluated natively before commit.",
         set_hardware_pattern;
     "set_machining" => MachiningArgs, "Create or edit machining", false,
-        "Cut a groove, rabbet, pocket, drilling or placed hardware pattern into one or more panels, in panel face coordinates on the top, bottom or (drilling only) an edge face. Edits keep the targets. Cuts that leave no material, leave the face or would cut through a blind feature are refused. Modeled features only, not CNC toolpaths.",
+        "Cut a groove, rabbet, pocket, drilling, System 32 shelf-pin rows (kind shelf_pins: rows, pitch default 32 mm, start, end limit, optional count, diameter, blind depth) or placed hardware pattern into one or more panels, in panel face coordinates on the top, bottom, inside (each panel's face toward the carcass interior) or (drilling only) an edge face. Holes that overlap each other or another operation's holes are refused. Shelf-pin results list the carcass shelf offsets that rest on pins both sides share. Edits keep the targets. Cuts that leave no material, leave the face or would cut through a blind feature are refused. Modeled features only, not CNC toolpaths.",
         set_machining;
     "delete_machining" => DeleteMachiningArgs, "Delete machining", false,
         "Delete a machining operation and its cuts, restoring the panels.",
@@ -425,6 +425,9 @@ tools! {
     "sheet_metal" => NoArgs, "Sheet-metal records", true,
         "Every sheet Part measured from its evaluated solid: thickness and measured thickness, inside radius and K-factor with their source, volume, and the developed flat pattern of the same feature with its size and area.",
         sheet_metal;
+    "sheet_edges" => SheetEdgesArgs, "Sheet edges and flange guides", true,
+        "Base edges of one sheet feature (index, label, world ends, length, outward direction, straightness and the flange on it), a guide per flange (kind, direction, bend angles, inside radius, leg, flange span, world leg start and end, mid-thickness cross-section) from the stock thickness and resolved radius with their sources, and pre-check findings (invalid bends, insets that leave no flange, reliefs wider than their inset, neighboring flanges touching at a corner). Pass candidate flanges to review them without changing the document.",
+        sheet_edges;
     "unfold_sheet" => UnfoldSheetArgs, "Unfold sheet part", true,
         "Develop one sheet Part without changing it: closed cut loops, bend lines (id, order, up/down, angle, inside radius, allowance, flat line), drill points for circular cutouts, size and area in explicit millimeters, and scoped diagnostics (hole-to-bend proximity, short legs, tight radii, missing or shallow reliefs as rules of thumb; stock-sheet fit against the model; tooling data that is not defined). Parts that are not sheet parts, or that later features change, are refused.",
         unfold_sheet;

@@ -1,5 +1,7 @@
 //! Assembly tools share canonical transactions with external control. Native
 //! candidate evaluation and interference queries run outside the UI thread.
+mod clearance_view;
+pub use clearance_view::ClearanceMarker;
 mod controller;
 mod forms;
 mod inspection;

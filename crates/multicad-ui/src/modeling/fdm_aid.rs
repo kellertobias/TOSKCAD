@@ -66,6 +66,61 @@ fn finished_parts(document: &Document) -> Vec<(EntityId, String)> {
         .map(|e| (e.id, e.name.clone()))
         .collect()
 }
+/// The finished Part a new aid starts with, from the selection: the one
+/// selected finished Part (a selected feature counts for its Part). Without
+/// a selection, the document's only finished Part. Anything else leaves the
+/// choice open with the reason, never an unrelated first Part.
+pub(super) fn seed_target(
+    document: &Document,
+    selection: &[EntityId],
+) -> (Option<EntityId>, Option<String>) {
+    let parts = finished_parts(document);
+    let finished = |id: EntityId| parts.iter().any(|(p, _)| *p == id);
+    let name = |id: EntityId| document.get(id).map_or(String::new(), |e| e.name.clone());
+    if selection.is_empty() {
+        return match parts.as_slice() {
+            [(only, _)] => (Some(*only), None),
+            [] => (None, None),
+            _ => (
+                None,
+                Some("Select the finished Part first, or choose it below".into()),
+            ),
+        };
+    }
+    let mut chosen: Vec<EntityId> = vec![];
+    let mut refused = vec![];
+    for &id in selection {
+        match super::panel_face::selected_part(document, id) {
+            Some(part) if finished(part) => {
+                if !chosen.contains(&part) {
+                    chosen.push(part);
+                }
+            }
+            Some(part) => refused.push(format!(
+                "{} is a print aid, not a finished Part",
+                name(part)
+            )),
+            None => refused.push(format!("{} is not a Part", name(id))),
+        }
+    }
+    match chosen.as_slice() {
+        [one] => (Some(*one), None),
+        [] => (
+            None,
+            Some(format!(
+                "{}; choose the finished Part below",
+                refused.join("; ")
+            )),
+        ),
+        many => (
+            None,
+            Some(format!(
+                "{} Parts are selected; choose the one the aid serves",
+                many.len()
+            )),
+        ),
+    }
+}
 fn processes(document: &Document) -> Vec<(EntityId, String)> {
     model::processes(document)
         .map(|e| (e.id, e.name.clone()))
@@ -112,6 +167,8 @@ pub(super) struct FdmAidPanel {
     overlap: DimensionField,
     base: DimensionField,
     gap: DimensionField,
+    /// Why the finished Part was not taken from the selection.
+    seed_note: Option<String>,
     error: Option<String>,
     picking: Option<PickRole>,
     hover: Option<placement::Hover>,
@@ -119,14 +176,24 @@ pub(super) struct FdmAidPanel {
 }
 impl FdmAidPanel {
     pub fn new(document: &Document, name: String) -> Self {
+        Self::with_selection(document, name, &[])
+    }
+    /// The finished Part the aid serves, once chosen.
+    pub fn target(&self) -> Option<EntityId> {
+        self.target
+    }
+    /// A new aid whose finished Part comes from the selection.
+    pub fn with_selection(document: &Document, name: String, selection: &[EntityId]) -> Self {
+        let (target, seed_note) = seed_target(document, selection);
         Self {
+            seed_note,
             stamp: FormStamp::new(),
             kind: AidKind::Tab,
             existing: None,
             feature: EntityId::new(),
             body: EntityId::new(),
             name,
-            target: finished_parts(document).first().map(|p| p.0),
+            target,
             process: processes(document).first().map(|p| p.0),
             other: None,
             origin: [field(0., "mm"), field(0., "mm"), field(0., "mm")],
@@ -323,13 +390,20 @@ impl FdmAidPanel {
             .changed();
         let parts = finished_parts(document);
         ui.label("Finished Part");
-        changed |= combo(
+        let picked = combo(
             ui,
             "fdm-aid-target",
             &parts,
             &mut self.target,
             "Choose a Part",
         );
+        if picked {
+            self.seed_note = None;
+        }
+        changed |= picked;
+        if let Some(note) = &self.seed_note {
+            ui.colored_label(egui::Color32::LIGHT_RED, note);
+        }
         ui.label("Process allowances");
         changed |= combo(
             ui,

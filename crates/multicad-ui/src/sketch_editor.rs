@@ -52,6 +52,14 @@ mod snap_host_tests;
 mod symbol_host;
 #[path = "sketch_text_tool.rs"]
 mod text_tool;
+#[path = "sketch_tool_guide.rs"]
+mod tool_guide;
+#[cfg(test)]
+#[path = "sketch_tool_guide_tests.rs"]
+mod tool_guide_tests;
+#[cfg(test)]
+#[path = "sketch_tool_target_tests.rs"]
+mod tool_target_tests;
 #[path = "sketch_transfer_host.rs"]
 mod transfer_host;
 #[cfg(test)]
@@ -1114,11 +1122,82 @@ impl SketchEditor {
                     .into(),
             );
         }
+        let document = session.document();
+        let (targets, refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
         self.finish()?;
-        self.model.begin_machining(session, resources, channel)?;
-        self.message =
-            "Drill / pocket · choose an operation and target panels in the Inspector, then Preview"
-                .into();
+        self.model
+            .begin_machining(session, resources, targets.clone(), channel)?;
+        self.message = crate::modeling::seeded_message(
+            "Drill / pocket",
+            document,
+            &targets,
+            &refused,
+            "click a panel face in the viewport or tick target panels in the Inspector",
+        );
+        Ok(())
+    }
+    pub fn begin_loose_tenon(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before joining panels"
+                    .into(),
+            );
+        }
+        let document = session.document();
+        let (panels, mut refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        if panels.len() > 2 {
+            refused.push(format!(
+                "{} panels are selected; the first pair uses two",
+                panels.len()
+            ));
+        }
+        let pair = [panels.first().copied(), panels.get(1).copied()];
+        let targets: Vec<_> = pair.iter().flatten().copied().collect();
+        self.finish()?;
+        self.model
+            .begin_loose_tenon(session, resources, pair, channel)?;
+        self.message = crate::modeling::seeded_message(
+            "Domino joint",
+            document,
+            &targets,
+            &refused,
+            "click the panel whose face receives the joint, then the panel whose edge meets it",
+        );
+        Ok(())
+    }
+    pub fn begin_shelf_pins(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before drilling shelf pins"
+                    .into(),
+            );
+        }
+        let document = session.document();
+        let (panels, refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        let targets = crate::modeling::with_opposite_sides(document, panels);
+        self.finish()?;
+        self.model
+            .begin_shelf_pins(session, resources, targets.clone(), channel)?;
+        self.message = crate::modeling::seeded_message(
+            "System 32 shelf pins",
+            document,
+            &targets,
+            &refused,
+            "click the inside face of each cabinet side in the viewport or tick the sides in the Inspector",
+        );
         Ok(())
     }
     pub fn begin_joint(
@@ -1133,10 +1212,26 @@ impl SketchEditor {
                     .into(),
             );
         }
+        let document = session.document();
+        let (panels, mut refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        if panels.len() > 2 {
+            refused.push(format!(
+                "{} panels are selected; the first pair uses two",
+                panels.len()
+            ));
+        }
+        let pair = [panels.first().copied(), panels.get(1).copied()];
+        let targets: Vec<_> = pair.iter().flatten().copied().collect();
         self.finish()?;
-        self.model.begin_joint(session, resources, channel)?;
-        self.message =
-            "Panel joint · choose panel pairs and a joint in the Inspector, then Preview".into();
+        self.model.begin_joint(session, resources, pair, channel)?;
+        self.message = crate::modeling::seeded_message(
+            "Panel joint",
+            document,
+            &targets,
+            &refused,
+            "click panel A and panel B in the viewport or choose the pairs in the Inspector",
+        );
         Ok(())
     }
     pub fn begin_cabinet(
@@ -1244,11 +1339,26 @@ impl SketchEditor {
                     .into(),
             );
         }
+        let selection: Vec<_> = self.tree_selection.iter().copied().collect();
+        let (target, note) =
+            crate::modeling::ModelToolController::fdm_seed(session.document(), &selection);
         self.finish()?;
-        self.model.begin_fdm_aid(session, resources, channel)?;
-        self.message =
-            "Tab / bridge / support · choose the finished Part and sizes in the Inspector, then Preview"
-                .into();
+        self.model
+            .begin_fdm_aid(session, resources, &selection, channel)?;
+        self.message = match (target, note) {
+            (Some(part), _) => format!(
+                "Tab / bridge / support · finished Part from the selection: {} · set the sizes in the Inspector, then Preview",
+                session
+                    .document()
+                    .get(part)
+                    .map_or(String::new(), |e| e.name.clone())
+            ),
+            (None, Some(note)) => format!("Tab / bridge / support · {note}"),
+            (None, None) => {
+                "Tab / bridge / support · choose the finished Part and sizes in the Inspector, then Preview"
+                    .into()
+            }
+        };
         Ok(())
     }
     pub fn begin_architecture(
@@ -1961,19 +2071,7 @@ impl SketchEditor {
         self.tool = Some(tool);
         self.clear_drawing_progress();
         self.snap_assist.clear();
-        self.message = match tool {
-            DrawTool::Circle => "Click the center, then the radius · Esc cancels",
-            DrawTool::Arc => "Click the center, start, then end · Esc cancels",
-            DrawTool::Polyline => {
-                "Click connected vertices; click the first vertex to close · Esc ends"
-            }
-            DrawTool::Spline => {
-                "Click control poles · Enter finishes · click the first pole to close · Esc cancels"
-            }
-            tool if tool.multi_point() => tool.mode_prompt(0),
-            _ => "Click the first point, then the second point · Esc cancels",
-        }
-        .into();
+        self.set_tool_status();
         Ok(())
     }
     pub fn operation_ready(&self) -> bool {
@@ -2171,10 +2269,7 @@ impl SketchEditor {
                 self.message = "Spline control pole budget reached · Enter finishes".into();
             } else {
                 self.spline_poles.push((input.point, input.anchor));
-                self.message = format!(
-                    "{} control poles · Enter finishes · click the first pole to close",
-                    self.spline_poles.len()
-                );
+                self.set_tool_status();
             }
         }
     }
@@ -2646,7 +2741,7 @@ impl SketchEditor {
                     else if self.picking{Some(Owner::Plane)}
                     else if self.moving{Some(Owner::Move)}
                     else if self.operations.tool().is_some(){Some(Owner::Operation)}
-                    else if self.tool.is_some(){Some(Owner::Drawing)}else{None};
+                    else if self.tool.is_some_and(|tool|tool.guide(0,0).finish_action){Some(Owner::Drawing)}else{None};
                 let accent=if sketch_mode{crate::registry::Mode::Sketch.color()}else{crate::registry::Mode::Model.color()};
                 crate::inspector_actions::scope(ui,owner,accent,|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
@@ -2757,7 +2852,7 @@ impl SketchEditor {
                         }
                         if self.editing && let Some(tool)=self.tool {
                             ui.strong(tool.label());
-                            ui.small(tool.usage());
+                            self.tool_guide_ui(ui, tool);
                             if ui.checkbox(&mut self.construction,"Construction geometry").on_hover_text("Construction curves constrain the sketch but are excluded from solid profiles").changed() {self.message=if self.construction {"Construction drawing on"}else{"Construction drawing off"}.into();}
                             if tool==DrawTool::Arc {ui.checkbox(&mut self.arc_clockwise,"Clockwise arc").on_hover_text("Direction around the sketch's positive normal");}
                             if tool.corner() {
@@ -2770,12 +2865,14 @@ impl SketchEditor {
                                 ui.small(format!("{} control poles",self.spline_poles.len()));
                                 if ui.add_enabled(!self.spline_poles.is_empty(),egui::Button::new("Remove last pole")).on_hover_text("Remove only the last uncommitted control pole").clicked() {self.spline_poles.pop();}
                             }
-                            use crate::inspector_actions::{self,Button,Owner};
-                            let clicked=inspector_actions::row(ui,Owner::Drawing,None,
-                                Button::new("Finish spline",tool==DrawTool::Spline&&self.can_finish_spline(),"Finish the pending spline; other drawing tools commit through viewport gestures"),
-                                Button::new("Cancel drawing",true,"Cancel uncommitted drawing input; retain existing geometry"));
-                            if clicked.apply && let Err(error)=self.finish_spline(session,false,Channel::Ui){self.message=error;}
-                            if clicked.cancel{self.cancel();}
+                            if tool==DrawTool::Spline {
+                                use crate::inspector_actions::{self,Button,Owner};
+                                let clicked=inspector_actions::row(ui,Owner::Drawing,None,
+                                    Button::new("Finish spline",self.can_finish_spline(),"Commit the pending open spline; needs at least four control poles"),
+                                    Button::new("Cancel drawing",true,"Discard the uncommitted control poles and end the tool; existing geometry stays"));
+                                if clicked.apply && let Err(error)=self.finish_spline(session,false,Channel::Ui){self.message=error;}
+                                if clicked.cancel{self.cancel();}
+                            }
                             ui.separator();
                         }
                         if let Some(id) = self.selected {
@@ -3502,6 +3599,46 @@ impl SketchEditor {
         if let Some(guide) = self.model.cabinet_guide(session) {
             guide.paint(&painter, self.camera, rect);
         }
+        if !self.measurement.active()
+            && self.model.machining_picking()
+            && self.model.machining_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Panel face placed · check the axes and offsets in the viewport and Inspector, then Preview"
+                    .into();
+        }
+        if !self.measurement.active()
+            && self.model.joint_picking()
+            && self.model.joint_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Joint panel picked · check the pair, mortises and tenons in the viewport and Inspector, then Preview"
+                    .into();
+        }
         if !self.measurement.active() && self.external.active() {
             if self.external.pointer(crate::external_references::Pointer {
                 camera: self.camera,
@@ -3547,6 +3684,7 @@ impl SketchEditor {
                 && !self.editing
                 && !self.picking
                 && !self.moving
+                && !self.model.sheet_edge_picking()
                 && !self.has_pending_edits();
             self.solid.show(
                 ui,
@@ -3577,6 +3715,25 @@ impl SketchEditor {
             if self.guides {
                 self.paint_guides(&painter, scene, rect);
             }
+        }
+        if !self.measurement.active()
+            && self.model.sheet_edge_picking()
+            && self.model.sheet_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Sheet flange edge chosen · adjust it in the Inspector, then Preview".into();
         }
         if !self.measurement.active()
             && let Some(context) = model_context
@@ -3703,6 +3860,7 @@ impl SketchEditor {
             scene.as_ref(),
             self.solid.section.plane(),
         );
+        self.assembly_clearance_paint(&painter, rect, session, scene.as_ref());
         if !self.measurement.active()
             && scene.is_none()
             && response.clicked()
@@ -4054,9 +4212,7 @@ impl SketchEditor {
                         if tool == DrawTool::Arc && self.arc_start.is_none() {
                             if (p[0] - a[0]).hypot(p[1] - a[1]) >= 1e-7 {
                                 self.arc_start = Some((p, anchor));
-                                self.message =
-                                    "Choose the arc end · endpoint follows the chosen radius"
-                                        .into();
+                                self.set_tool_status();
                             }
                         } else {
                             let start = point(a, self.first_anchor);
@@ -4119,12 +4275,15 @@ impl SketchEditor {
                                 self.polyline_segments = segments + 1;
                                 self.first = Some(end.1);
                                 self.first_anchor = Some(end.0);
-                                self.message="Continue the polyline · click its first vertex to close · Esc ends".into();
+                                self.set_committed_status(tool);
+                            } else {
+                                self.set_committed_status(tool);
                             }
                         }
                     } else {
                         self.first = Some(p);
                         self.first_anchor = anchor;
+                        self.set_tool_status();
                     }
                 }
             }

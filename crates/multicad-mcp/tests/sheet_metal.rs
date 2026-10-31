@@ -1,4 +1,5 @@
 //! External control creates sheet stock, builds and edits a sheet part,
+//! reports its base edges, flange guides and flange findings,
 //! converts an extruded plate, reads the sheet records, and is refused for a
 //! solid that cannot be converted without changing the document.
 use multicad_core::{
@@ -376,6 +377,99 @@ fn mcp_attaches_hardware_with_holes_and_separate_parts() {
             ] }),
         )
         .is_err()
+    );
+    assert_eq!(host.document(), before);
+}
+
+#[test]
+fn mcp_reports_sheet_edges_guides_and_flange_findings() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Sheet edges").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let steel = run(
+        "create_sheet_stock",
+        json!({ "expected_revision": 0, "name": "DC01 1.0", "material_name": "DC01",
+        "thickness_mm": 1, "sheet_length_mm": 2000, "sheet_width_mm": 1000,
+        "inside_bend_radius_mm": 1, "k_factor": 0.4 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = run(
+        "set_sheet_part",
+        json!({ "expected_revision": 1, "name": "Front panel", "stock": steel,
+        "plane": "xy", "length": mm(200.), "width": mm(100.) }),
+    )
+    .unwrap();
+    let feature = created["feature"].as_str().unwrap().to_owned();
+    run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 2, "feature": feature,
+        "flanges": [{ "edge": 0, "kind": "bend", "length": mm(20.) }] }),
+    )
+    .unwrap();
+    let out = run("sheet_edges", json!({ "feature": feature })).unwrap();
+    assert_eq!(out["revision"], 3);
+    assert_eq!(out["candidate"], false);
+    near(&out["thickness_mm"], 1.);
+    assert_eq!(out["radius_source"], "stock");
+    assert_eq!(out["material_direction"], json!([0., 0., 1.]));
+    let edges = out["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 4);
+    assert_eq!(edges[0]["label"], "Edge 1");
+    assert_eq!(edges[0]["end_mm"], json!([200., 0., 0.]));
+    assert_eq!(edges[0]["outward"], json!([0., -1., 0.]));
+    assert_eq!(edges[0]["flange"], 0);
+    assert_eq!(edges[1]["flange"], Value::Null);
+    let guide = &out["flanges"][0];
+    assert_eq!(guide["edge"], 0);
+    assert_eq!(guide["direction"], "up");
+    near(&guide["bend_angles_deg"][0], 90.);
+    near(&guide["leg_mm"], 20.);
+    // Mid-thickness leg end: r + t/2 beyond the edge, t + r + 20 high.
+    near(&guide["leg_end_mm"][1], -1.5);
+    near(&guide["leg_end_mm"][2], 22.);
+    assert_eq!(out["issues"], json!([]));
+
+    // Candidate flanges are reviewed without changing the document.
+    let before = host.document();
+    let flanges = json!([
+        { "edge": 0, "kind": "bend", "length": mm(20.) },
+        { "edge": 1, "kind": "bend", "length": mm(20.) },
+        { "edge": 2, "kind": "bend", "angle_deg": 200, "length": mm(20.) }
+    ]);
+    let candidate = run(
+        "sheet_edges",
+        json!({ "feature": feature, "flanges": flanges }),
+    )
+    .unwrap();
+    assert_eq!(candidate["candidate"], true);
+    let issues = candidate["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    assert_eq!(issues[0]["edges"], json!([2]));
+    assert_eq!(issues[1]["edges"], json!([0, 1]));
+    assert_eq!(candidate["flanges"].as_array().unwrap().len(), 2);
+    assert_eq!(host.document(), before);
+    // set_sheet_forming refuses the same flanges with every finding.
+    let error = run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 3, "feature": feature, "flanges": flanges }),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "sheet_flanges_refused");
+    assert!(
+        error.message.contains("edge 3: the bend angle"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("edges 1 and 2 touch"),
+        "{}",
+        error.message
     );
     assert_eq!(host.document(), before);
 }

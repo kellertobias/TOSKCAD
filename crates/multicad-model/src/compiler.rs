@@ -732,6 +732,14 @@ impl Compiler {
                         &solids,
                     )?
                 }
+                (model::LOOSE_TENON_TYPE, model::LOOSE_TENON_SCHEMA) => {
+                    crate::cabinetry::build_loose_tenon(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                    )?
+                }
                 (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA) => {
                     crate::cabinetry::build_machining_cut(
                         document,

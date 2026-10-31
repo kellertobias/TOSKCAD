@@ -732,7 +732,13 @@ mod tests {
                     tab.title
                 );
                 let expected: &[&str] = match (workspace.mode, tab.title) {
-                    (Mode::Model, "Wood") => &["Panel / carcass", "Drill / pocket", "Panel joint"],
+                    (Mode::Model, "Wood") => &[
+                        "Panel / carcass",
+                        "Drill / pocket",
+                        "System 32 shelf pins",
+                        "Panel joint",
+                        "Domino joint",
+                    ],
                     (Mode::Model, "Sheet metal") => &["Sheet part / flanges"],
                     (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],
                     _ => &[],

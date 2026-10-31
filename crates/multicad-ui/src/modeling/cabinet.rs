@@ -913,6 +913,7 @@ mod tests {
                 },
                 face: model::MachiningFace::Top,
                 targets: vec![target],
+                suppressed: false,
             },
         )
         .unwrap();
