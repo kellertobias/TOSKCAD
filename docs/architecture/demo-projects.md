@@ -67,7 +67,7 @@ Tables come from `multicad_model::schedules`. After a parameter edit they are st
 
 ### Reuse in other demos
 
-The whole file is the reusable unit. Symbol packaging (ADR-0024) does not yet support the `weldment.*` and `cabinetry.*` providers, so the workbench cannot yet be placed into another project as a pinned symbol. CAD-185 needs that capability, or a cross-file project reference, to show this bench in the apartment workshop.
+The whole file is the reusable unit. Another project places it as a pinned [project reference](project-references.md): its 20 Parts become one static symbol definition, with the relative path, document identity and source hash of `welded-workbench.tcd`. The apartment demo (CAD-185) uses this in its workshop.
 
 ### Preview
 

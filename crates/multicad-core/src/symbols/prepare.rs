@@ -8,7 +8,7 @@ use crate::{
     document::{Document, DocumentError, EntityData, EntityId, Mutation, Placement},
 };
 use std::collections::{BTreeMap, BTreeSet};
-fn stale(session: &Session, revision: u64) -> Result<(), CommandError> {
+pub(super) fn stale(session: &Session, revision: u64) -> Result<(), CommandError> {
     if session.revision() != revision {
         Err(CommandError {
             code: ErrorCode::StaleRevision,
@@ -20,7 +20,7 @@ fn stale(session: &Session, revision: u64) -> Result<(), CommandError> {
         Ok(())
     }
 }
-fn finish(
+pub(super) fn finish(
     session: &Session,
     revision: u64,
     actor: Actor,
@@ -309,7 +309,23 @@ pub fn prepare_update(
     request: &SymbolUpdateRequest,
 ) -> Result<SymbolPrepared, CommandError> {
     stale(session, revision)?;
-    let doc = session.document();
+    let (edits, values) = update_edits(session.document(), request)?;
+    finish(
+        session,
+        revision,
+        actor,
+        "Update pinned symbol definition",
+        edits,
+        request.definition,
+        &values,
+    )
+}
+/// The checked source edits of an explicit definition update and the
+/// resulting instance records, before they are prepared as one transaction.
+pub(super) fn update_edits(
+    doc: &Document,
+    request: &SymbolUpdateRequest,
+) -> Result<(Vec<Mutation>, Vec<SymbolInstance>), CommandError> {
     super::validate(doc)?;
     compare_update(doc, request.definition, &request.replacement)?;
     for (id, other) in definitions(doc)? {
@@ -385,13 +401,5 @@ pub fn prepare_update(
         edits.push(Mutation::Replace(record_entity(record, &value)?));
         values.push(value);
     }
-    finish(
-        session,
-        revision,
-        actor,
-        "Update pinned symbol definition",
-        edits,
-        request.definition,
-        &values,
-    )
+    Ok((edits, values))
 }

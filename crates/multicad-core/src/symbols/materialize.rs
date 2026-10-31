@@ -199,6 +199,7 @@ pub fn validate(doc: &Document) -> Result<(), DocumentError> {
             }
         }
     }
+    super::project::validate_sources(doc)?;
     // A malformed/dangling ownership record cannot disappear from a per-definition list.
     for e in doc.entities() {
         if matches!(&e.data,EntityData::Extension{definition,..}if definition.type_id==INSTANCE_TYPE)

@@ -519,7 +519,7 @@ fn derived_private_parameter_bindings_normalize_atomically_without_weakening_own
 }
 
 #[test]
-fn unrelated_extensions_are_ignored_but_assigned_unsupported_metadata_is_never_silently_lost() {
+fn unrelated_extensions_are_ignored_and_assigned_part_properties_travel_with_the_symbol() {
     let (mut library, def, width, _) = author_fixture(SymbolKind::Dynamic);
     let extra = Entity::new(
         "Unrelated module",
@@ -560,14 +560,18 @@ fn unrelated_extensions_are_ignored_but_assigned_unsupported_metadata_is_never_s
     )
     .entity(EntityId::new(), "Assigned properties")
     .unwrap();
+    let properties = metadata.id;
     apply(&mut library, vec![Mutation::Insert(metadata)]);
-    let before = library.document().clone();
-    let error = match prepare_author(&library, library.revision(), actor(), &request) {
-        Err(e) => e,
-        Ok(_) => panic!("Unsupported owned metadata must not be discarded"),
-    };
-    assert!(error.message.contains("materials.part_properties"));
-    assert_eq!(library.document(), &before);
+    // Part properties are audited library records since CAD-185: they are
+    // carried with the Part instead of being refused or dropped.
+    let mut request = request;
+    request.revision = "2".into();
+    let preview = prepare_author(&library, library.revision(), actor(), &request).unwrap();
+    let template = read_definition(preview.prepared.document(), request.definition)
+        .unwrap()
+        .template;
+    assert!(template.get(properties).is_some());
+    assert!(template.get(unused).is_none());
 }
 
 #[test]

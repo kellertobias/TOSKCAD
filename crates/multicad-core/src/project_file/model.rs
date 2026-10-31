@@ -405,6 +405,9 @@ impl ProjectFile {
         if self.document.entities().any(|entity| matches!(&entity.data,EntityData::Extension{definition,..} if matches!(definition.type_id.as_str(),crate::symbols::DEFINITION_TYPE|crate::symbols::INSTANCE_TYPE))) {
             required.insert(crate::symbols::CAPABILITY.into());
         }
+        if crate::symbols::required_capability(&self.document) {
+            required.insert(crate::symbols::PROJECT_CAPABILITY.into());
+        }
         required
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -457,6 +460,7 @@ impl ProjectFile {
 pub fn supported_capabilities() -> BTreeSet<String> {
     BTreeSet::from([
         crate::symbols::CAPABILITY.into(),
+        crate::symbols::PROJECT_CAPABILITY.into(),
         "core.document.1".into(),
         crate::drawings::CAPABILITY.into(),
         crate::drawings::VIEW_CAPABILITY.into(),

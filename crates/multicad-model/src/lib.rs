@@ -20,6 +20,7 @@ pub mod imports;
 pub mod inspection;
 mod levels;
 mod occurrences;
+pub mod project_references;
 mod runtime;
 mod scale;
 pub mod schedules;

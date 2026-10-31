@@ -44,6 +44,29 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
                 serde_json::from_value(d.data.clone()).map_err(|e| invalid(e.to_string()))?;
             v.definition()?;
         }
+        // Weldment and cabinetry geometry (CAD-185). Their payloads name
+        // canonical entities only by complete UUID strings or slash paths;
+        // the typed decoders reject unknown fields, so nothing opaque is
+        // walked. Document-level rules (weld marks, sequences, connections)
+        // live in extensions a Part closure never reaches.
+        model::MEMBER_TYPE => {
+            model::MemberDefinition::from_definition(d)?;
+        }
+        model::PANEL_TYPE => {
+            model::PanelDefinition::from_definition(d)?;
+        }
+        model::MACHINING_KIND => typed::<model::MachiningDefinition>(d)?.validate()?,
+        model::MACHINING_CUT_TYPE => {
+            typed::<model::MachiningCutDefinition>(d)?.definition()?;
+        }
+        model::HARDWARE_PATTERN_KIND => typed::<model::HardwarePatternDefinition>(d)?.validate()?,
+        model::PANEL_JOINT_KIND => typed::<model::PanelJointDefinition>(d)?.validate()?,
+        model::PANEL_JOINT_CUT_TYPE => {
+            typed::<model::PanelJointCutDefinition>(d)?.definition()?;
+        }
+        model::LOOSE_TENON_TYPE => {
+            typed::<model::LooseTenonDefinition>(d)?.definition()?;
+        }
         other => {
             return Err(invalid(format!(
                 "Symbol packaging does not yet support provider {other}; no opaque IDs were rewritten"
@@ -52,7 +75,21 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
     }
     Ok(())
 }
+fn typed<T: serde::de::DeserializeOwned>(d: &Definition) -> Result<T, DocumentError> {
+    if d.schema_version != 1 {
+        return Err(invalid(format!(
+            "Unsupported {} schema {} in symbol",
+            d.type_id, d.schema_version
+        )));
+    }
+    serde_json::from_value(d.data.clone()).map_err(|e| invalid(format!("{}: {e}", d.type_id)))
+}
 pub(super) fn validate_entity(e: &Entity) -> Result<(), DocumentError> {
+    // Library stock, material styles and Part properties: the typed reader
+    // checks the schema and that the canonical links match the payload.
+    if crate::materials::read(e)?.is_some() {
+        return Ok(());
+    }
     match &e.data {
         EntityData::Parameter { .. }
         | EntityData::Plane { .. }
