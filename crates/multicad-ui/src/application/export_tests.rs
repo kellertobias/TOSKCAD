@@ -183,7 +183,7 @@ fn accepted_write_guards_quit_until_hidden_tab_reply_and_file_dialog_blocks_new_
     assert!(
         app.invoke(
             Command::Export(ExportTool::Run),
-            &["/private/tmp"],
+            &[temp_dir().as_str()],
             Channel::Mcp
         )
         .is_err()
@@ -191,7 +191,7 @@ fn accepted_write_guards_quit_until_hidden_tab_reply_and_file_dialog_blocks_new_
     app.file_action = None;
     app.invoke(
         Command::Export(ExportTool::Run),
-        &["/private/tmp"],
+        &[temp_dir().as_str()],
         Channel::Mcp,
     )
     .unwrap();
@@ -264,7 +264,7 @@ fn export_receipts_stay_with_their_document_when_tabs_change() {
     let source_revision = app.current().session.revision();
     app.invoke(
         Command::Export(ExportTool::Run),
-        &["/private/tmp"],
+        &[temp_dir().as_str()],
         Channel::Mcp,
     )
     .unwrap();
@@ -300,7 +300,7 @@ fn export_receipts_stay_with_their_document_when_tabs_change() {
     ready(&mut app);
     app.invoke(
         Command::Export(ExportTool::Run),
-        &["/private/tmp"],
+        &[temp_dir().as_str()],
         Channel::Mcp,
     )
     .unwrap();
@@ -314,4 +314,8 @@ fn export_receipts_stay_with_their_document_when_tabs_change() {
         "{}",
         app.message
     );
+}
+/// An existing folder on every CI platform (`/private/tmp` exists only on macOS).
+fn temp_dir() -> String {
+    std::env::temp_dir().display().to_string()
 }

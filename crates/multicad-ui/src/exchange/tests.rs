@@ -131,7 +131,8 @@ fn fixture() -> (Session, ExportWorkspace, Rc<RefCell<State>>, EntityId) {
     let mut w = ExportWorkspace::default();
     w.set_backend(Box::new(Backend(state.clone()))).unwrap();
     w.load(&s, set).unwrap();
-    w.directory = "/private/tmp".into();
+    // An existing folder on every CI platform (`/private/tmp` is macOS-only).
+    w.directory = std::env::temp_dir().display().to_string();
     (s, w, state, part)
 }
 fn preview(state: &Rc<RefCell<State>>, index: usize) -> ExportReply {
