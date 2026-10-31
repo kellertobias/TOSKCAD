@@ -862,3 +862,38 @@ fn fit_modes_keep_or_choose_a_standard_scale_and_discard_restores_the_saved_page
     assert_eq!(session.revision(), revision);
     assert_eq!(editor.draft.as_ref().unwrap(), &saved);
 }
+#[test]
+fn native_sheet_paints_the_professional_title_block_and_decodes_the_logo() {
+    let mut page = drawings::Page::new("D-7");
+    page.info.title = "Cabinet front".into();
+    page.info.project = "Workshop".into();
+    let canvas = painted_text(|ui| {
+        canvas::show(ui, &page, 2, 4, None, None, None, None);
+    });
+    for expected in [
+        "Title",
+        "Cabinet front",
+        "Project",
+        "Workshop",
+        "Drawn by",
+        "Drawing no.",
+        "D-7",
+        "Units",
+        "Sheet",
+        "2 / 4",
+        "First angle",
+    ] {
+        assert!(
+            canvas.lines().any(|l| l == expected),
+            "{expected}: {canvas}"
+        );
+    }
+    let context = egui::Context::default();
+    let mut size = None;
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        size = canvas::logo_texture(ui.ctx()).map(|t| t.size());
+    });
+    output.drop_without_applying_deltas();
+    let [w, h] = drawings::logo_size();
+    assert_eq!(size, Some([w as usize, h as usize]), "bundled logo decodes");
+}

@@ -1,7 +1,7 @@
 use crate::egui;
 use multicad_core::{
     document::EntityId,
-    drawings::{self, DrawingEvaluation, Page, TextCell, VectorRole, ViewEvaluation},
+    drawings::{self, DrawingEvaluation, Page, VectorRole, ViewEvaluation},
 };
 /// What a click on the paper did.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -50,27 +50,62 @@ pub(super) fn show(
         egui::Stroke::new(0.8, egui::Color32::from_gray(170)),
         egui::StrokeKind::Inside,
     );
-    let text = |cell: &TextCell, title: bool| {
+    for cell in &layout.title_cells {
         let r = rect(cell.rect_mm);
-        if title {
-            painter.rect_stroke(
-                r,
-                0,
-                egui::Stroke::new(0.7, egui::Color32::BLACK),
-                egui::StrokeKind::Inside,
-            );
-        }
-        let mut y = r.top() + scale;
-        if !cell.label.is_empty() {
+        painter.rect_stroke(
+            r,
+            0,
+            egui::Stroke::new(
+                (drawings::CELL_MM as f32 * scale).max(0.6),
+                egui::Color32::BLACK,
+            ),
+            egui::StrokeKind::Inside,
+        );
+        let left = r.left() + 1.2 * scale;
+        painter.text(
+            egui::pos2(left, r.top() + 1.2 * scale),
+            egui::Align2::LEFT_TOP,
+            &cell.label,
+            egui::FontId::monospace(drawings::LABEL_MM as f32 * scale),
+            egui::Color32::from_gray(90),
+        );
+        let h = cell.height_mm as f32;
+        let mut y = r.top() + (1.2 + drawings::LABEL_MM as f32 + 1.0) * scale;
+        for line in &cell.lines {
             painter.text(
-                egui::pos2(r.left() + scale, y),
+                egui::pos2(left, y),
                 egui::Align2::LEFT_TOP,
-                &cell.label,
-                egui::FontId::monospace(1.7 * scale),
-                egui::Color32::from_gray(90),
+                line,
+                egui::FontId::monospace(h * scale),
+                egui::Color32::BLACK,
             );
-            y += 3. * scale;
+            y += h * drawings::PITCH as f32 * scale;
         }
+    }
+    if let Some(frame) = drawings::title_block_rect(&layout) {
+        painter.rect_stroke(
+            rect(frame),
+            0,
+            egui::Stroke::new(
+                (drawings::FRAME_MM as f32 * scale).max(1.),
+                egui::Color32::BLACK,
+            ),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if let Some(logo) = layout.logo_mm
+        && let Some(texture) = logo_texture(ui.ctx())
+    {
+        painter.image(
+            texture.id(),
+            rect(logo),
+            egui::Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(1., 1.)),
+            egui::Color32::WHITE,
+        );
+    }
+    for cell in &layout.notes {
+        let r = rect(cell.rect_mm);
+        let mut y = r.top() + scale;
         for line in &cell.lines {
             painter.text(
                 egui::pos2(r.left() + scale, y),
@@ -81,12 +116,6 @@ pub(super) fn show(
             );
             y += drawings::LINE_MM as f32 * scale;
         }
-    };
-    for cell in &layout.title_cells {
-        text(cell, true);
-    }
-    for cell in &layout.notes {
-        text(cell, false);
     }
     let mut clicked = None;
     let view_painter = painter.with_clip_rect(paper);
@@ -421,4 +450,25 @@ fn annotations(
         }
     }
     clicked
+}
+
+/// The bundled title-block logo as a texture, decoded once per context.
+pub(super) fn logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new("drawing-title-logo");
+    if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(texture);
+    }
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(drawings::LOGO_PNG));
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().ok()?;
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut pixels).ok()?;
+    let rgb = &pixels[..info.buffer_size()];
+    if info.color_type != png::ColorType::Rgb || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    let image = egui::ColorImage::from_rgb([info.width as usize, info.height as usize], rgb);
+    let texture = ctx.load_texture("drawing-title-logo", image, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+    Some(texture)
 }

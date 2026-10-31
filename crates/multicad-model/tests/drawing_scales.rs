@@ -105,7 +105,10 @@ fn parse_pdf(bytes: &[u8]) -> Vec<PdfPage> {
         }
         let body = &text[i + 7..];
         let body = &body[..body.find("endstream").unwrap()];
-        let height_mm = heights.next().unwrap();
+        // Content streams precede the shared logo image object.
+        let Some(height_mm) = heights.next() else {
+            break;
+        };
         let mut page = PdfPage {
             strokes: vec![],
             texts: vec![],
@@ -303,6 +306,7 @@ fn fitted_view_captions_and_title_block_agree_with_pdf_geometry() {
         std::fs::write(std::path::Path::new(&dir).join("scales.pdf"), &bytes).unwrap();
     }
     let parsed = parse_pdf(&bytes);
+    logo_checks(&bytes, pages.len(), true);
     assert_eq!(parsed.len(), pages.len());
     for ((pdf, page), case) in parsed.iter().zip(&pages).zip(&expected) {
         let caption = pdf
@@ -359,6 +363,32 @@ fn fitted_view_captions_and_title_block_agree_with_pdf_geometry() {
         }
     }
 
+    // The same sheets with the app logo switched off: no image, no hole.
+    let mut plain = vec![];
+    for page in &pages {
+        let mut p = page.clone();
+        p.settings.app_logo = false;
+        s.commit(prepare(&s, s.revision(), actor(), book, PageAction::Replace(p)).unwrap())
+            .unwrap();
+    }
+    let evaluation = compile(&s)
+        .drawings(s.document(), s.revision(), &Default::default())
+        .unwrap();
+    for page in &pages {
+        plain.push(
+            render::render_page(s.document(), s.revision(), book, page.id, &evaluation).unwrap(),
+        );
+    }
+    let without = pdf::render_pdf(&plain, "Scale labels");
+    logo_checks(&without, pages.len(), false);
+    if let Some(dir) = std::env::var_os("MULTICAD_DRAWING_REVIEW") {
+        std::fs::write(
+            std::path::Path::new(&dir).join("scales-no-logo.pdf"),
+            &without,
+        )
+        .unwrap();
+    }
+
     // Mixed scales on one sheet: each view keeps its own caption and the
     // title block no longer claims a single scale.
     let mut mixed = pages[1].clone();
@@ -413,5 +443,86 @@ fn fitted_view_captions_and_title_block_agree_with_pdf_geometry() {
             "{words}"
         );
         assert!(words.contains(MIXED_SCALE), "{words}");
+    }
+}
+
+/// The logo is one shared RGB image drawn once per page when enabled, and
+/// independent consumers decode it; disabled pages carry no image at all.
+fn logo_checks(bytes: &[u8], pages: usize, shown: bool) {
+    let text = String::from_utf8_lossy(bytes);
+    let draws = text.matches("/Logo Do").count();
+    let images = text.matches("/Subtype /Image").count();
+    if !shown {
+        assert_eq!((draws, images), (0, 0));
+        assert!(!text.contains("/XObject"));
+        return;
+    }
+    assert_eq!(draws, pages);
+    assert_eq!(images, 1, "one shared image object");
+    let [w, h] = logo_size();
+    assert!(text.contains(&format!("/Width {w} /Height {h} /ColorSpace /DeviceRGB")));
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("logo.pdf");
+    std::fs::write(&file, bytes).unwrap();
+    if let Ok(out) = Command::new("pdfimages").arg("-list").arg(&file).output()
+        && out.status.success()
+    {
+        let list = String::from_utf8_lossy(&out.stdout);
+        let rows: Vec<_> = list.lines().skip(2).collect();
+        assert_eq!(rows.len(), pages, "{list}");
+        for row in rows {
+            let cols: Vec<_> = row.split_whitespace().collect();
+            assert_eq!(
+                (cols[3], cols[4], cols[5]),
+                (&*w.to_string(), &*h.to_string(), "rgb"),
+                "{row}"
+            );
+            // Printed at more than 300 dpi in both directions.
+            assert!(cols[12].parse::<f64>().unwrap() >= 300., "{row}");
+            assert!(cols[13].parse::<f64>().unwrap() >= 300., "{row}");
+        }
+    }
+    // Rasterized, the logo area is the blueprint blue, not paper white.
+    let png = dir.path().join("page");
+    if Command::new("pdftoppm")
+        .args(["-r", "50", "-f", "1", "-l", "1"])
+        .arg(&file)
+        .arg(&png)
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        let path = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|e| e == "ppm"))
+            .unwrap();
+        // Binary PPM: "P6\n<w> <h>\n255\n" then RGB bytes.
+        let ppm = std::fs::read(path).unwrap();
+        let mut fields = vec![];
+        let mut start = 0;
+        for (i, b) in ppm.iter().enumerate() {
+            if b.is_ascii_whitespace() {
+                if i > start {
+                    fields.push(String::from_utf8_lossy(&ppm[start..i]).into_owned());
+                }
+                start = i + 1;
+                if fields.len() == 4 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(fields[0], "P6");
+        let width: usize = fields[1].parse().unwrap();
+        let buf = &ppm[start..];
+        let page = Page::new("x");
+        let layout = layout_page(&page, 1, 1).unwrap();
+        let logo = layout.logo_mm.unwrap();
+        let px = 50. / 25.4;
+        let at = |x: f64, y: f64| {
+            let i = ((y * px) as usize * width + (x * px) as usize) * 3;
+            [buf[i], buf[i + 1], buf[i + 2]]
+        };
+        let [r, g, b] = at(logo[0] + 1., (logo[1] + logo[3]) * 0.5);
+        assert!(b > r + 40 && b > 150, "logo pixel {r},{g},{b}");
     }
 }

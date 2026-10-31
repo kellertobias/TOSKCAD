@@ -87,6 +87,9 @@ pub struct PageRender {
     pub arcs: Vec<Arc>,
     pub fills: Vec<Fill>,
     pub texts: Vec<Text>,
+    /// Paper rectangles showing the bundled application logo
+    /// (`drawings::LOGO_PNG`), on the title layer.
+    pub logos: Vec<[f64; 4]>,
 }
 impl PageRender {
     fn text(&mut self, layer: Layer, at: [f64; 2], height: f64, angle: f64, value: &str) {
@@ -218,33 +221,15 @@ pub fn render_page(
         width_mm: 0.5,
         dashed: false,
     });
-    for cell in layout.title_cells.iter().chain(&layout.notes) {
-        let [cx0, cy0, cx1, cy1] = cell.rect_mm;
-        if cell.label.is_empty() {
-            out.text(
-                Layer::Note,
-                [cx0, cy0 + FONT_MM],
-                FONT_MM,
-                0.,
-                &cell.lines.join("\n"),
-            );
-            continue;
-        }
-        out.polylines.push(Polyline {
-            layer: Layer::Title,
-            points: vec![[cx0, cy0], [cx1, cy0], [cx1, cy1], [cx0, cy1]],
-            closed: true,
-            width_mm: 0.35,
-            dashed: false,
-        });
-        let mut lines = vec![cell.label.clone()];
-        lines.extend(cell.lines.iter().cloned());
+    title_block(&mut out, &layout);
+    for cell in &layout.notes {
+        let [cx0, cy0, _, _] = cell.rect_mm;
         out.text(
-            Layer::Title,
-            [cx0 + 1., cy0 + FONT_MM + 0.5],
+            Layer::Note,
+            [cx0, cy0 + FONT_MM],
             FONT_MM,
             0.,
-            &lines.join("\n"),
+            &cell.lines.join("\n"),
         );
     }
     for (result, view) in &checked {
@@ -309,4 +294,43 @@ pub fn render_page(
         out.graphic(layer, &g, width);
     }
     Ok(out)
+}
+
+/// The title block: a heavier outer frame, thin cell rules, small labels and
+/// values at their cell's text height, and the optional logo.
+fn title_block(out: &mut PageRender, layout: &super::PageLayout) {
+    use super::{CELL_MM, FRAME_MM, LABEL_MM, PITCH};
+    let rect = |r: [f64; 4], width: f64| Polyline {
+        layer: Layer::Title,
+        points: vec![[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]],
+        closed: true,
+        width_mm: width,
+        dashed: false,
+    };
+    for cell in &layout.title_cells {
+        out.polylines.push(rect(cell.rect_mm, CELL_MM));
+        let [x, y, _, _] = cell.rect_mm;
+        let left = x + 1.2;
+        out.texts.push(Text {
+            layer: Layer::Title,
+            at: [left, y + 1.2 + LABEL_MM],
+            height_mm: LABEL_MM,
+            angle_deg: 0.,
+            text: cell.label.clone(),
+        });
+        let h = cell.height_mm;
+        for (i, line) in cell.lines.iter().enumerate() {
+            out.texts.push(Text {
+                layer: Layer::Title,
+                at: [left, y + 1.2 + LABEL_MM + 1.0 + h + i as f64 * h * PITCH],
+                height_mm: h,
+                angle_deg: 0.,
+                text: line.clone(),
+            });
+        }
+    }
+    if let Some(frame) = super::title_block_rect(layout) {
+        out.polylines.push(rect(frame, FRAME_MM));
+    }
+    out.logos.extend(layout.logo_mm);
 }

@@ -1,4 +1,4 @@
-use super::{Page, Projection, source::invalid};
+use super::{Page, source::invalid};
 use crate::document::DocumentError;
 
 /// Deterministic paper-space typography contract. Renderers use monospaced text
@@ -11,6 +11,8 @@ pub struct TextCell {
     pub rect_mm: [f64; 4],
     pub label: String,
     pub lines: Vec<String>,
+    /// Text height of `lines`; labels use `LABEL_MM`.
+    pub height_mm: f64,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageLayout {
@@ -41,82 +43,10 @@ pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout
     };
     let mut block_top = h - m;
     if page.settings.title_block {
-        let width = (w - 2. * m).min(180.);
-        let half = width / 2.;
-        let chars = ((half - 4.) / CHAR_MM).floor() as usize;
-        if chars < 8 {
-            return Err(invalid(
-                "The printable area is too narrow for a title block",
-            ));
-        }
-        let projection = match page.settings.projection {
-            Projection::FirstAngle => "First angle",
-            Projection::ThirdAngle => "Third angle",
-        };
-        let scale = super::sheet_scale_label(page);
-        let fields = [
-            ("Title", page.info.title.as_str()),
-            ("Project", page.info.project.as_str()),
-            ("Author", page.info.author.as_str()),
-            ("Checker", page.info.checker.as_str()),
-            ("Revision", page.info.revision.as_str()),
-            ("Number", page.number.as_str()),
-        ];
-        let mut rows = vec![];
-        for pair in fields.chunks(2) {
-            let values = pair
-                .iter()
-                .map(|(label, value)| {
-                    (
-                        (*label).to_owned(),
-                        wrap(
-                            if value.trim().is_empty() {
-                                "—"
-                            } else {
-                                value
-                            },
-                            chars,
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let height = 6.
-                + LINE_MM
-                    * values
-                        .iter()
-                        .map(|(_, lines)| lines.len())
-                        .max()
-                        .unwrap_or(1) as f64;
-            rows.push((height, values));
-        }
-        let footer = format!("Page {index}/{total}   Scale {scale}   {projection}");
-        let lines = wrap(&footer, ((width - 4.) / CHAR_MM).floor() as usize);
-        let footer_height = 4. + LINE_MM * lines.len() as f64;
-        let height = rows.iter().map(|(height, _)| height).sum::<f64>() + footer_height;
-        if height > h - 2. * m - 10. {
-            return Err(invalid(
-                "Title block text does not fit this paper. Shorten the fields or select larger paper; required text will not be clipped",
-            ));
-        }
-        let x = w - m - width;
-        let mut y = h - m - height;
-        block_top = y;
-        for (height, values) in rows {
-            for (column, (label, lines)) in values.into_iter().enumerate() {
-                let left = x + column as f64 * half;
-                result.title_cells.push(TextCell {
-                    rect_mm: [left, y, left + half, y + height],
-                    label,
-                    lines,
-                });
-            }
-            y += height;
-        }
-        result.title_cells.push(TextCell {
-            rect_mm: [x, y, x + width, y + footer_height],
-            label: String::new(),
-            lines,
-        });
+        let block = super::title_block::title_block(page, index, total, result.printable_mm)?;
+        block_top = block.top_mm;
+        result.title_cells = block.cells;
+        result.logo_mm = block.logo;
     }
     for note in &page.notes {
         let [x, y] = note.position_mm;
@@ -124,7 +54,7 @@ pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout
         if chars < 2 {
             return Err(invalid("Text note has no printable width"));
         }
-        let lines = wrap(&note.text, chars);
+        let lines = wrap_text(&note.text, chars);
         let bottom = y + LINE_MM * lines.len() as f64 + 2.;
         let note_rect = [x, y, w - m, bottom];
         if bottom > h - m
@@ -141,6 +71,7 @@ pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout
             rect_mm: note_rect,
             label: String::new(),
             lines,
+            height_mm: FONT_MM,
         });
     }
     Ok(result)
@@ -148,7 +79,7 @@ pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout
 fn overlaps(a: [f64; 4], b: [f64; 4]) -> bool {
     a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]
 }
-fn wrap(value: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_text(value: &str, width: usize) -> Vec<String> {
     let mut lines = vec![];
     for line in value.split('\n') {
         if line.is_empty() {
