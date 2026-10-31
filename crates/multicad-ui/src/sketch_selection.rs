@@ -450,4 +450,69 @@ mod tests {
         selection.reconcile(EntityId::new(), &profiles);
         assert!(selection.selected().is_empty());
     }
+
+    #[test]
+    fn diagonal_cells_pick_and_toggle_independently_across_the_shared_stroke() {
+        use multicad_core::sketch_regions::{Edge, ExactCurve, extract_line_cells};
+        let mut edges: Vec<_> = [
+            ([0., 0.], [20., 0.]),
+            ([20., 0.], [20., 20.]),
+            ([20., 20.], [0., 20.]),
+            ([0., 20.], [0., 0.]),
+            ([0., 0.], [20., 20.]),
+        ]
+        .into_iter()
+        .map(|(a, b)| Edge {
+            authored: EntityId::new(),
+            reversed: false,
+            fragment: None,
+            curve: ExactCurve::Line { a, b },
+        })
+        .collect();
+        let profiles = extract_line_cells(&edges, 1e-7, None).unwrap();
+        let camera = Camera {
+            yaw: 0.,
+            pitch: std::f32::consts::FRAC_PI_2,
+            target: [10., 10., 0.],
+            scale: 15.,
+            ..Default::default()
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800., 600.));
+        let frame = multicad_core::sketch::Datum::Xy.frame();
+        let hit = |point| {
+            let p = camera.project(frame.point(point).map(|v| v as f32), rect);
+            let Some(Hit::Region(intent)) = pick(
+                Pos2::new(p[0], p[1]),
+                camera,
+                rect,
+                frame,
+                &[],
+                &[],
+                &profiles,
+            )
+            .unwrap() else {
+                panic!("Expected triangular area");
+            };
+            intent
+        };
+        let lower = hit([15., 5.]);
+        let upper = hit([5., 15.]);
+        assert_ne!(lower, upper);
+        let owner = EntityId::new();
+        let mut selected = ProfileSelection::default();
+        selected.reconcile(owner, &profiles);
+        selected.choose(lower.clone(), false);
+        selected.choose(upper.clone(), true);
+        assert_eq!(selected.selected(), &[lower.clone(), upper.clone()]);
+        selected.choose(lower.clone(), true);
+        assert_eq!(selected.selected(), std::slice::from_ref(&upper));
+        assert!(selected.boundary_selected(edges[4].authored));
+        selected.choose(lower, true);
+        edges.pop();
+        assert_eq!(
+            selected.reconcile(owner, &extract_line_cells(&edges, 1e-7, None).unwrap()),
+            2
+        );
+        assert!(selected.selected().is_empty());
+    }
 }
