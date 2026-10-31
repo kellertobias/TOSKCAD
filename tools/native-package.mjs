@@ -30,6 +30,78 @@ function macOSDocumentTypes(){
   const exported=PROJECT_TYPES.map(type=>`<dict><key>UTTypeIdentifier</key><string>${type.uti}</string><key>UTTypeDescription</key><string>${escapeXML(type.name)}</string><key>UTTypeConformsTo</key>${strings(['public.data','public.content'])}<key>UTTypeIconFile</key><string>AppIcon.icns</string><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key>${strings([type.extension])}<key>public.mime-type</key>${strings([type.mime])}</dict></dict>`).join('');
   return `<key>CFBundleDocumentTypes</key><array>${documents}</array><key>UTExportedTypeDeclarations</key><array>${exported}</array>`;
 }
+// Bundled example projects (CAD-186): examples/examples.json lists every
+// top-level .tcd demo and the further files each requires. Packaging copies
+// exactly that closure into Resources/examples (macOS) or resources/examples
+// (Windows/Linux) after checking each native container's envelope.
+export const EXAMPLES_FORMAT='toskcad.examples';
+const DEVELOPER_PATH=/(?:\/(?:Users|home)\/[^"\/\\]+\/|[A-Za-z]:\\\\Users\\\\|\/private\/var\/folders\/)/;
+const relativeExamplePath=value=>typeof value==='string'&&value.length>0&&!value.includes('\\')&&!value.startsWith('/')&&value.split('/').every(part=>part&&part!=='.'&&part!=='..');
+const hashOf=bytes=>createHash('sha256').update(bytes).digest();
+const sameHash=(digest,value)=>Array.isArray(value)&&value.length===32&&Buffer.from(value).equals(digest);
+export function checkProjectContainer(path){
+  const name=path.split(/[\\/]/).at(-1);
+  const fail=reason=>{throw new Error(`Example ${name}: ${reason}. Regenerate it with its generator (docs/architecture/demo-projects.md).`);};
+  const bytes=readFileSync(path);
+  if(bytes.length<52||!bytes.subarray(0,8).equals(Buffer.from('MCADPRJ\0','latin1')))fail('not a native ToskCAD project');
+  const version=bytes.readUInt32LE(8);if(version!==1&&version!==2)fail(`unsupported format version ${version}`);
+  const length=Number(bytes.readBigUInt64LE(12));if(length>4*1024*1024||52+length>bytes.length)fail('manifest length exceeds the file');
+  const manifestBytes=bytes.subarray(52,52+length);
+  if(!hashOf(manifestBytes).equals(bytes.subarray(20,52)))fail('manifest checksum mismatch (damaged file)');
+  let manifest;try{manifest=JSON.parse(manifestBytes.toString('utf8'));}catch{fail('manifest is not JSON');}
+  if(typeof manifest.identity?.name!=='string'||!manifest.identity.name)fail('missing project identity');
+  if(manifest.recovery)fail('is a recovery snapshot, not a project');
+  let offset=52+length,source;
+  if(version===2){
+    const chunk=manifest.source;if(!chunk||!Number.isSafeInteger(chunk.length))fail('missing canonical source record');
+    source=bytes.subarray(offset,offset+chunk.length);if(source.length!==chunk.length)fail('canonical source is truncated');
+    if(!sameHash(hashOf(source),chunk.sha256))fail('canonical source checksum mismatch (damaged file)');
+    offset+=chunk.length;
+    for(const record of [...(manifest.payloads??[]),...(manifest.caches??[])]){
+      const part=bytes.subarray(offset,offset+record.chunk.length);
+      if(part.length!==record.chunk.length||!sameHash(hashOf(part),record.chunk.sha256))fail('embedded payload is damaged or truncated');
+      offset+=record.chunk.length;
+    }
+    if(offset!==bytes.length)fail('unexpected trailing data');
+  }else source=Buffer.from(JSON.stringify(manifest.document??null));
+  const text=source.toString('utf8');
+  try{JSON.parse(text);}catch{fail('canonical source is not JSON');}
+  const developer=DEVELOPER_PATH.exec(text)||DEVELOPER_PATH.exec(manifestBytes.toString('utf8'));
+  if(developer)fail(`contains the absolute developer path "${developer[0]}"`);
+  return {name:manifest.identity.name,version};
+}
+export function validateExamples(directory=join(root,'examples')){
+  const manifestPath=join(directory,'examples.json');
+  if(!existsSync(manifestPath))throw new Error(`Missing ${manifestPath}: list every bundled example there (docs/architecture/demo-projects.md)`);
+  let manifest;try{manifest=JSON.parse(readFileSync(manifestPath,'utf8'));}catch(error){throw new Error(`examples/examples.json is not JSON: ${error.message}`);}
+  if(manifest?.format!==EXAMPLES_FORMAT||manifest.version!==1||!Array.isArray(manifest.examples))throw new Error(`examples/examples.json must have format "${EXAMPLES_FORMAT}", version 1 and an examples array`);
+  for(const key of Object.keys(manifest))if(!['format','version','examples'].includes(key))throw new Error(`examples/examples.json: unknown field "${key}"`);
+  const listed=[],files=new Set(['examples.json']);
+  for(const entry of manifest.examples){
+    for(const key of Object.keys(entry??{}))if(!['file','requires'].includes(key))throw new Error(`examples/examples.json: unknown example field "${key}"`);
+    const file=entry?.file;
+    if(!relativeExamplePath(file)||file.includes('/')||!/\.tcd$/i.test(file))throw new Error(`examples/examples.json: "${file}" must be a .tcd file at the top of examples/`);
+    if(listed.includes(file))throw new Error(`examples/examples.json lists ${file} twice`);
+    if(!existsSync(join(directory,file)))throw new Error(`Bundled example ${file} is listed in examples/examples.json but missing`);
+    listed.push(file);files.add(file);
+    for(const required of entry.requires??[]){
+      if(!relativeExamplePath(required))throw new Error(`examples/examples.json: ${file} requires "${required}", which is not a relative path inside examples/`);
+      if(!existsSync(join(directory,required)))throw new Error(`Bundled example ${file} requires ${required}, which is missing from examples/`);
+      files.add(required);
+    }
+  }
+  const unlisted=readdirSync(directory).filter(name=>/\.tcd$/i.test(name)&&!listed.includes(name));
+  if(unlisted.length)throw new Error(`Add ${unlisted.join(', ')} to examples/examples.json; every bundled .tcd must be listed`);
+  if(!listed.length)throw new Error('examples/examples.json lists no example projects');
+  const projects=[...files].filter(file=>/\.tcd$/i.test(file)).map(file=>({file,...checkProjectContainer(join(directory,file))}));
+  return {examples:listed,files:[...files].sort(),projects};
+}
+export function bundleExamples(resources,directory=join(root,'examples')){
+  const checked=validateExamples(directory);
+  const target=join(resources,'examples');mkdirSync(target,{recursive:true});
+  for(const file of checked.files){const destination=join(target,...file.split('/'));mkdirSync(dirname(destination),{recursive:true});copyFileSync(join(directory,...file.split('/')),destination);}
+  return checked;
+}
 export function runtimeExecutable(stage,platform=process.platform){return platform==='darwin'?join(stage,'MultiCAD.app/Contents/MacOS/multicad'):join(stage,platform==='win32'?'multicad.exe':'multicad');}
 // The current development/archive policy is ad-hoc signing. Seal the outer
 // bundle after its resources; a copied executable signature does not seal a
@@ -62,7 +134,8 @@ export function assembleRuntime(stage,binary,version){
   // Fonts vendored in the source tree for sketch text ship their licence texts.
   const fonts=join(root,'crates/multicad-core/fonts'),fontNotices=join(resources,'third-party/bundled-fonts');mkdirSync(fontNotices,{recursive:true});
   for(const name of readdirSync(fonts))if(isNoticeFile(join(fonts,name)))copyFileSync(join(fonts,name),join(fontNotices,name));
-  writeFileSync(join(stage,'README.txt'),`ToskCAD ${version} native development build.\nIncludes parameter editing, constrained sketches and initial native solid extrusion.\nNative .tcd projects support save/open, embedded resources and explicit recovery; existing .multicad projects still open and save in place.\nSpecialized workspaces and drawing and 3D export workflows remain under development.\nRun with no arguments to open the native window, or pass one PROJECT.tcd to open it; --diagnostics is headless.\nmulticad --mcp serves a local MCP client over stdin/stdout; it opens no network port.\nmacOS: open MultiCAD.app. Windows: run multicad.exe. Linux: run ./multicad on an Ubuntu 24.04+ desktop with graphics drivers.\nNo Python, Node.js, FreeCAD or source checkout is required at runtime.\n${process.platform==='darwin'?'This macOS bundle is ad-hoc signed, without publisher signing or notarization.':'This development build is not publisher-signed.'}\nSource and third-party notices accompany release archives.\n`);
+  const examples=bundleExamples(resources);
+  writeFileSync(join(stage,'README.txt'),`ToskCAD ${version} native development build.\nIncludes parameter editing, constrained sketches and initial native solid extrusion.\nNative .tcd projects support save/open, embedded resources and explicit recovery; existing .multicad projects still open and save in place.\nSpecialized workspaces and drawing and 3D export workflows remain under development.\nBundled examples (Examples, or the welcome screen with no recent projects): ${examples.projects.map(p=>p.name).join(', ')}. Opening one saves an editable copy in Documents/ToskCAD Examples; the bundled originals are never changed.\nRun with no arguments to open the native window, or pass one PROJECT.tcd to open it; --diagnostics is headless.\nmulticad --mcp serves a local MCP client over stdin/stdout; it opens no network port.\nmacOS: open MultiCAD.app. Windows: run multicad.exe. Linux: run ./multicad on an Ubuntu 24.04+ desktop with graphics drivers.\nNo Python, Node.js, FreeCAD or source checkout is required at runtime.\n${process.platform==='darwin'?'This macOS bundle is ad-hoc signed, without publisher signing or notarization.':'This development build is not publisher-signed.'}\nSource and third-party notices accompany release archives.\n`);
   sealMacOSBundle(resources);
   return {executable,resources};
 }

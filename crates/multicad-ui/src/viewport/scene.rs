@@ -6,6 +6,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+mod fdm_review;
+pub use fdm_review::{AidReview, ExactContact, SurfacePoint};
 type Point = [f64; 3];
 fn dot(a: Point, b: Point) -> f64 {
     a.into_iter().zip(b).map(|(a, b)| a * b).sum()
@@ -525,6 +527,7 @@ pub struct Scene {
     native_bounds: Option<Arc<NativeBounds>>,
     envelope_boxes: Arc<BTreeMap<EntityId, [Point; 8]>>,
     guide_outlines: Arc<BTreeMap<EntityId, Vec<[Point; 4]>>>,
+    fdm_reviews: Option<Arc<fdm_review::AidReviews>>,
 }
 struct NativeBounds {
     source: multicad_core::project_file::ContentHash,
@@ -602,6 +605,7 @@ impl Scene {
             native_bounds: None,
             envelope_boxes: Arc::new(BTreeMap::new()),
             guide_outlines: Arc::new(BTreeMap::new()),
+            fdm_reviews: None,
         })
     }
     /// Attach immutable results from this exact source evaluation. Structural

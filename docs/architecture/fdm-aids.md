@@ -10,6 +10,7 @@ The window and the MCP server use the same core API.
 | `crates/multicad-model/src/fdm.rs` | Native aid solids, derived support height and the aid inspection |
 | `crates/multicad-model/src/export/mod.rs` | Removable-aid exclusion in STEP, planar DXF and mesh recipes |
 | `crates/multicad-ui/src/modeling/fdm_aid.rs` | The window's Tab / bridge / support form |
+| `crates/multicad-ui/src/modeling/fdm_aid/placement.rs` | Viewer picking, contact marker, direction handle and review overlay |
 | `crates/multicad-mcp/src/tools/fdm.rs` | MCP tools |
 
 ## Aids are their own Parts
@@ -105,6 +106,38 @@ The findings are:
 - a neighbouring finished Part inside the fit clearance. Aids are not
   checked against each other.
 
+The **placement findings** are the contact findings: a tab or bridge that
+misses what it serves, a buried bridge, a support that overlaps or comes
+closer than its gap, a missing target solid and a crowded neighbour. They
+are listed apart as `contact_issues` (and also in the findings). The
+window refuses to Apply an aid with any placement finding. Allowance
+findings, such as a thickness that is not a whole number of layers, stay
+advisory.
+
+For a tab, the record also holds the **exact contact** near its own: the
+outline point at the target's lowest height found along the tab's
+direction, described next.
+
+A full model evaluation of a document with aids records these inspections
+with the evaluation, so a preview carries the inspection of its own
+candidate.
+
+## Exact tab contact
+
+`Model::fdm_tab_contact` finds where a tab meets a finished Part from the
+Part's exact solid. It takes a point on or near the Part's side and an
+optional outward direction in the build plane. The point is moved to just
+above the Part's lowest height, and 1 mm along the direction to clear a
+display surface. The exact minimum distance from that probe to the solid
+gives:
+
+- the outline point, placed at the Part's lowest height;
+- the outward direction, normal to the Part at that point, and its angle
+  about +Z.
+
+Both hold to within the 0.1 µm probe. A point inside the outline, or a
+point no side faces, is refused.
+
 A target that is only a reusable Assembly component, such as a printed
 drawer on its slide, has no world body. It is measured as its component
 definition, the same solid and frame its aids are built from.
@@ -139,11 +172,46 @@ aids at the copy placement.
   selected it takes the document's only finished Part. Several selected
   Parts, a selected print aid or a non-Part leave the choice open, and the
   form and status line say why; the tool never falls back to an unrelated
-  first Part.
-- **MCP.** `set_fdm_process`, `set_fdm_aid`, `remove_fdm_aid` and
-  `fdm_aid_report`.
+  first Part. Placing in the viewer is described below.
+- **MCP.** `set_fdm_process`, `set_fdm_aid`, `remove_fdm_aid`,
+  `fdm_aid_report` and `fdm_tab_contact`.
 - **Undo.** Creating, editing and removing aids and processes are single
   transactions with Undo and Redo.
+
+## Placing in the viewer
+
+A new aid opens ready to pick. The Inspector numbers stay editable, and
+picks only fill them in. Contacts go on the chosen finished Part, and a
+click on another Part is refused; with no Part chosen yet, the clicked
+finished Part becomes the target.
+
+- **Tab: Pick contact.** Click a side face of a finished Part. The
+  contact is the clicked point at the Part's exact lowest height, and the
+  direction is the face's outward normal in the build plane. A top or
+  bottom face is refused.
+- **Bridge: Pick start, Pick end.** The start sets the target. An end on
+  a different Part makes it the second Part.
+- **Support: Pick footprint.** The footprint is centred under the click.
+- **Aim direction** (tab and support). Click in the build plane; the
+  direction is rounded to whole degrees.
+
+On a planar face the clicked point and normal are exact: they are
+projected onto the face's analytic plane. On a curved face they come from
+the display triangle under the pointer, so the point may lie up to the
+display tolerance inside the true surface.
+
+The viewer draws the contact marker, the direction handle and the aid's
+outline from the current Inspector values in every frame, and the
+hovered pick with its normal before a click.
+
+After Preview, the form shows the native inspection of the candidate:
+whether the aid touches its target and how far it is, each crowded Part
+with its distance, and the allowance findings. The viewer outlines each
+crowded Part's bounds in red with its distance. For a tab, **Snap to
+exact contact** uses the exact contact of the inspection; preview again
+before Apply. With any placement finding, Apply is refused and the
+reason is shown, while the preview stays visible. Cancel leaves the
+document unchanged.
 
 ## Limits
 
@@ -152,9 +220,14 @@ aids at the copy placement.
 - **Shapes.** Aids are boxes. Supports are flat-topped, so under a sloped
   or curved underside the gap is the authored gap only at the lowest
   point. Supports are solid blocks, not lattices or trees.
-- **Placement.** Aids are placed by world coordinates. They are not picked
-  from faces or edges in the viewport, and they do not follow a target that
-  moves; only a support's height follows the target.
+- **Placement.** Aids are stored in world coordinates. Picks fill in
+  those coordinates once; aids do not follow a target that moves, and
+  only a support's height follows the target. Curved-face picks are
+  display-accurate until snapped. A tab is placed at the target's lowest
+  height, so a Part with a raised or chamfered base may need a manual
+  contact. Picking works on Parts, not component occurrences.
+- **Direction handle.** The direction is aimed by clicking in the build
+  plane; there is no drag handle.
 - **Wall inspection.** The inspection measures aids, not the finished
   part's own wall thickness.
 - **Process records in the window.** The form chooses an existing process

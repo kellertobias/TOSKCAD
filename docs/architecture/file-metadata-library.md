@@ -11,7 +11,7 @@ A project file has one authored identity: **name**, **description** and an optio
   - Capture on save defaults to on and is written only when it is off.
 - Edits go through `project_file::info::edits`, which returns typed mutations for the shared transaction API. The UI and any other client therefore get the same validation, Undo/Redo, dirty state and save path. Default information (empty description, no preview, capture on) removes the record.
 - **Versioning:** the record is optional, so it requires no core capability. Older readers open the file normally and keep the extension entity unchanged. A record with a newer schema is kept as opaque source; this build shows it read-only and refuses to edit it.
-- `project_file::card` reads the manifest and the checked canonical source, but no payloads or caches. It returns the name, description, preview and symbol-definition count. The home screen and the library both read files through it, so they show the same values as the file itself. No separate home-screen metadata exists.
+- `project_file::card` reads the manifest and the checked canonical source, but no payloads or caches. It returns the name, description, preview and symbol-definition count. The home screen, the Examples gallery ([demo projects](demo-projects.md#bundling-and-the-examples-gallery-cad-186)) and the library all read files through it, so they show the same values as the file itself. No separate home-screen metadata exists.
 
 ## Preview capture on save
 

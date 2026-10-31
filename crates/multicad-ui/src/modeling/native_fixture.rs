@@ -7,6 +7,30 @@ use multicad_core::{
 };
 use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use std::sync::Arc;
+/// Native aid inspections as scene review data.
+fn aid_reviews(
+    inspections: &Result<Vec<multicad_model::AidInspection>, String>,
+) -> Result<Vec<viewport::AidReview>, String> {
+    let list = inspections.as_ref().map_err(Clone::clone)?;
+    Ok(list
+        .iter()
+        .map(|a| viewport::AidReview {
+            feature: a.feature,
+            part: a.part,
+            target: a.target.part,
+            touches_target: a.target.relation != multicad_kernel::SolidPairRelation::Separated,
+            target_distance_mm: a.target.distance_mm,
+            crowded: a.crowded.clone(),
+            issues: a.issues.clone(),
+            contact_issues: a.contact_issues.clone(),
+            bounds_mm: a.bounds_mm,
+            exact_contact: a.exact_contact.map(|c| viewport::ExactContact {
+                point_mm: c.point_mm,
+                angle_deg: c.angle_deg,
+            }),
+        })
+        .collect())
+}
 pub(crate) fn scene(
     _document: &Document,
     model: &ModelSnapshot,
@@ -125,10 +149,12 @@ pub(crate) fn scene(
                     .collect(),
             },
         ))?;
-        scene.with_transfer_evaluation(Arc::new(multicad_core::model::TransferEvaluationInfo {
-            source_hash: model.stamp.source_hash,
-            counts: model.transfer_counts.clone(),
-        }))
+        scene
+            .with_transfer_evaluation(Arc::new(multicad_core::model::TransferEvaluationInfo {
+                source_hash: model.stamp.source_hash,
+                counts: model.transfer_counts.clone(),
+            }))?
+            .with_fdm_reviews(model.stamp.source_hash, aid_reviews(&model.fdm_aids))
     };
     make().map(Arc::new).map_err(|message| ModelError {
         entity: None,

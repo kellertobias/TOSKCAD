@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod app_control;
 mod assembly_inspection;
+mod bundled_examples;
 mod drawings;
 mod exchange;
 mod external_queries;
@@ -122,6 +123,7 @@ fn run_application(project: Option<PathBuf>) -> Result<(), String> {
     app.request_open_documents(project);
     app.set_recent_store(Box::new(recent_projects::RecentFileStore::default()));
     app.set_library_store(Box::new(library::LibraryFileStore::default()));
+    app.set_example_library(bundled_examples::library());
     app.set_preference_store(Box::new(preferences::PreferenceFileStore::default()));
     app.set_sketch_queries(std::sync::Arc::new(|| {
         Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
