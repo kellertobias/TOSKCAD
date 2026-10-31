@@ -57,6 +57,21 @@ pub struct PageSettings {
     pub scale: Scale,
     pub margin_mm: f64,
     pub title_block: bool,
+    /// Show the application logo in the title block. Omitted while true, so
+    /// pages that keep the default stay readable by older versions.
+    #[serde(default = "shown", skip_serializing_if = "is_shown")]
+    pub app_logo: bool,
+}
+fn shown() -> bool {
+    true
+}
+fn is_shown(value: &bool) -> bool {
+    *value
+}
+/// Pages that hide the application logo store `app_logo: false`.
+pub const TITLE_LOGO_CAPABILITY: &str = "drawings.title_logo.1";
+pub fn hides_app_logo(book: &DrawingBook) -> bool {
+    book.pages.iter().any(|p| !p.settings.app_logo)
 }
 impl Default for PageSettings {
     fn default() -> Self {
@@ -70,6 +85,7 @@ impl Default for PageSettings {
             },
             margin_mm: 10.,
             title_block: true,
+            app_logo: true,
         }
     }
 }

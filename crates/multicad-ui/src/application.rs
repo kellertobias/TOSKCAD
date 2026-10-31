@@ -2059,6 +2059,8 @@ impl Application {
                 ShortcutAction::Cancel => {
                     if self.current().sketch.measurement.active() {
                         self.close_measurement();
+                    } else if self.mode == Mode::Drawings && self.current().drawings.placing() {
+                        self.current_mut().drawings.cancel_placement();
                     } else if self.mode == Mode::Export {
                         let p = self.current_mut();
                         p.exchange.discard(&p.session);
@@ -2411,6 +2413,11 @@ mod tests {
         assert_eq!(app.mode, Mode::Drawings);
         app.invoke(Command::Drawing(DrawingTool::Text), &[], Channel::Ui)
             .unwrap();
+        // A pending note is not a page edit until it is added.
+        assert!(!app.current().drawings.dirty());
+        let drawings = &mut app.current_mut().drawings;
+        *drawings.pending_note_text().unwrap() = "Check hinge clearance".into();
+        drawings.finish_placement().unwrap();
         assert!(app.current().drawings.dirty());
         assert!(app.current().dirty());
         assert!(app.should_defer_close());

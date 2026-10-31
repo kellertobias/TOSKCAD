@@ -109,6 +109,71 @@ clipping. Curve, point, source and hatch budgets produce explicit errors.
 These bounds constrain output size; they do not establish a low-power timing
 budget or cancellation inside a running OCCT operation.
 
+## Title block
+
+[`drawings/title_block.rs`](../../crates/multicad-core/src/drawings/title_block.rs)
+lays out the default title block at the lower right of the printable area,
+at most 180 mm wide, on a four-column grid:
+
+| Row | Cells |
+| --- | --- |
+| Identity | Project (3 columns), app logo (1 column) |
+| Title | Drawing title across the full width, 3.5 mm text |
+| People | Drawn by, Checked by, Revision, Drawing no. |
+| Format | Scale, Units (mm), Projection, Sheet (`n / total`) |
+
+Labels are 1.8 mm and values 2.5 mm monospaced text. The block has a 0.5 mm
+outer frame and 0.25 mm cell rules. Values wrap inside their cell and rows
+grow; missing values print an em dash, and a block that no longer fits the
+paper is rejected rather than clipped. The layout is independent of view and
+room-plan rendering.
+
+The ToskCAD logo (`assets/branding/toskcad-logo-titleblock.png`, a 640 px
+copy of the approved blueprint logo) is shown by default with its
+proportions preserved. **Show app logo in title block** in Page settings
+turns it off for that page; the project cell then spans the full width, so
+no empty cell remains. The setting is saved with the page. It is omitted
+from the wire form while on; a page that hides the logo requires
+`drawings.title_logo.1`. An application-wide default for new pages belongs to
+the Settings work (CAD-187).
+
+## Scales and fitting
+
+Every view prints a caption with its name and stored paper:model scale, such
+as `Plan — Scale 1:23`. The caption is centered below the view's evaluated
+paper extent, or above it when it would leave the printable area or cross the
+title block. It is derived from the page at render time, so the native sheet,
+PDF, SVG and drawing DXF (layer `VIEW_LABELS`) always show the scale of the
+revision being drawn or exported. The contract lives in
+[`drawings/scale.rs`](../../crates/multicad-core/src/drawings/scale.rs).
+
+The title block's Scale field shows the page default only when the page has
+no views. With views it shows their common scale when every view uses the
+same ratio, and `Mixed, see views` otherwise, so a 1:1 page default can never
+contradict a 1:23 view.
+
+**Fit view to page** centers the view in the larger free printable region,
+above or to the left of the title block, with clearance and room for the
+caption. The Inspector's fit mode chooses the scale:
+
+| Mode | Scale |
+| --- | --- |
+| Standard scale (default) | Largest standard scale that fits: 100:1, 50:1, 20:1, 10:1, 5:1, 2:1, 1:1, then 1:2, 1:5, 1:10, 1:20, 1:25, 1:50 … 1:100000 (ISO 5455 1-2-5 series plus 1:25 multiples). Small parts are enlarged. |
+| Exact ratio | Tightest whole-number ratio, n:1 or 1:n (the earlier behavior, e.g. 1:23 for the 4 m × 3 m room on A4) |
+| Keep current scale | Only centers the view, e.g. to retain 1:1 |
+
+A standard-scale picker and the numerator/denominator fields set the scale
+directly. Fitting edits the page draft only; Apply commits it as one undoable
+edit and Discard restores the saved page. Geometry is never resampled for
+scale: the exact vectors are placed with the stored ratio.
+
+`multicad-core/tests/drawing_scales.rs` covers labels, the series and region
+choice. `multicad-model/tests/drawing_scales.rs` fits native views of a
+16 mm knob (5:1), a 200 mm sheet (1:2 on A4), a 720 mm cabinet (1:5), the room
+(exact 1:23) and the knob kept at 1:1, exports PDF and parses its content
+stream: each caption's printed ratio equals the paper extent of the view's
+strokes divided by the model size, within chord and point rounding.
+
 ## Annotations
 
 Dimensions, notes, leaders, weld symbols, tables and sheet drafting are

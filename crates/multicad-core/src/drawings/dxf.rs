@@ -20,9 +20,10 @@ pub fn layer(layer: Layer) -> (&'static str, &'static str, u8) {
         Layer::Weld => ("WELD_SYMBOLS", "CONTINUOUS", 4),
         Layer::Table => ("TABLES", "CONTINUOUS", 5),
         Layer::Draft => ("SHEET_DRAFTING", "CONTINUOUS", 6),
+        Layer::ViewLabel => ("VIEW_LABELS", "CONTINUOUS", 7),
     }
 }
-const ALL: [Layer; 12] = [
+const ALL: [Layer; 13] = [
     Layer::Border,
     Layer::Title,
     Layer::Visible,
@@ -35,6 +36,7 @@ const ALL: [Layer; 12] = [
     Layer::Weld,
     Layer::Table,
     Layer::Draft,
+    Layer::ViewLabel,
 ];
 
 /// DXF text with control codes for degree, diameter and plus-minus; other
