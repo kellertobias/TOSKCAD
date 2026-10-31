@@ -180,7 +180,7 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
 #[test]
 fn parameterized_part_edit_cut_undo_export_save_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let project = directory.path().join("plate.multicad");
+    let project = directory.path().join("plate.tcd");
     let exports = directory.path().join("exports");
     std::fs::create_dir(&exports).unwrap();
     let mut client = Client::start(&[
@@ -199,7 +199,7 @@ fn parameterized_part_edit_cut_undo_export_save_and_reopen() {
         info["scope"]["project"]
             .as_str()
             .unwrap()
-            .ends_with("plate.multicad")
+            .ends_with("plate.tcd")
     );
 
     // Parameters drive the sketch.
@@ -348,7 +348,7 @@ fn parameterized_part_edit_cut_undo_export_save_and_reopen() {
     );
 
     let saved = client.ok("save_project", json!({ "expected_revision": 13 }));
-    assert!(saved["path"].as_str().unwrap().ends_with("plate.multicad"));
+    assert!(saved["path"].as_str().unwrap().ends_with("plate.tcd"));
     let info = client.ok("document_info", json!({}));
     assert_eq!(info["dirty"], false);
     let document = info["document"].clone();

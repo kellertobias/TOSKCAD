@@ -41,7 +41,10 @@ impl FilePicker for NativePicker {
             Kind::PreviewImage => dialog.add_filter("PNG image", &["png"]),
             Kind::SavePrintPackage => dialog.add_filter("3MF print package", &["3mf"]),
             Kind::SaveCsv => dialog.add_filter("CSV schedule", &["csv"]),
-            _ => dialog.add_filter("ToskCAD project", &["multicad"]),
+            _ => dialog.add_filter(
+                "ToskCAD project",
+                &multicad_core::project_path::OPEN_EXTENSIONS,
+            ),
         };
         if let Some(path) = &request.directory {
             dialog = dialog.set_directory(path);
@@ -67,16 +70,11 @@ impl FilePicker for NativePicker {
             .spawn(move || {
                 let picked = pollster::block_on(future).map(|file| {
                     let mut path = file.path().to_path_buf();
-                    if path.extension().is_none() {
-                        match request.kind {
-                            Kind::SaveProject => {
-                                path.set_extension("multicad");
-                            }
-                            Kind::SavePrintPackage => {
-                                path.set_extension("3mf");
-                            }
-                            _ => {}
-                        }
+                    if request.kind == Kind::SaveProject {
+                        path = multicad_core::project_path::complete_save_path(path);
+                    }
+                    if request.kind == Kind::SavePrintPackage && path.extension().is_none() {
+                        path.set_extension("3mf");
                     }
                     if request.kind == Kind::SaveCsv && path.extension().is_none() {
                         path.set_extension("csv");

@@ -240,9 +240,9 @@ impl DocumentStorage for ProjectStore {
         project: &ProjectFile,
         mode: SaveMode,
     ) -> Result<SavedProject, StorageError> {
-        if path.extension().is_none_or(|e| e != "multicad") {
+        if !multicad_core::project_path::is_project_path(path) {
             return Err(StorageError::Message(
-                "Native projects use the .multicad extension. Choose Save As for a source import."
+                "Native projects use the .tcd extension (existing .multicad projects are also saved in place). Choose Save As for a source import."
                     .into(),
             ));
         }

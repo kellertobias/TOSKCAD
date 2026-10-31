@@ -870,8 +870,15 @@ impl Application {
                         .current()
                         .path
                         .as_ref()
-                        .map(|p| p.with_extension("multicad").to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "Untitled.multicad".into());
+                        .and_then(|p| p.file_name().map(|n| (p, n)))
+                        .map(|(p, n)| {
+                            p.with_file_name(multicad_core::project_path::project_file_name(
+                                &n.to_string_lossy(),
+                            ))
+                            .to_string_lossy()
+                            .into_owned()
+                        })
+                        .unwrap_or_else(|| "Untitled.tcd".into());
                     self.file_document = Some(self.current().local_id);
                     self.file_action = Some(FileAction::Save);
                     self.picker_started = false;
