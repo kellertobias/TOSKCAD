@@ -713,6 +713,7 @@ mod tests {
                         "Drill / pocket",
                         "System 32 shelf pins",
                         "Panel joint",
+                        "Domino joint",
                     ],
                     (Mode::Model, "Sheet metal") => &["Sheet part / flanges"],
                     (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],

@@ -491,6 +491,7 @@ impl Default for Registry {
                                         | ModelingTool::Joint
                                         | ModelingTool::Machining
                                         | ModelingTool::ShelfPins
+                                        | ModelingTool::LooseTenon
                                         | ModelingTool::FdmAid
                                         | ModelingTool::Member
                                         | ModelingTool::Connection
@@ -508,7 +509,10 @@ impl Default for Registry {
                         "Architecture",
                         &["wall", "door", "window-tool", "vertical-cutout", "level"],
                     ),
-                    tab("Wood", &["panel", "drill", "system32", "joint", "cut-list"]),
+                    tab(
+                        "Wood",
+                        &["panel", "drill", "system32", "joint", "domino", "cut-list"],
+                    ),
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     RibbonTab {
@@ -879,6 +883,7 @@ mod tests {
                         | ModelingTool::Joint
                         | ModelingTool::Machining
                         | ModelingTool::ShelfPins
+                        | ModelingTool::LooseTenon
                         | ModelingTool::FdmAid
                         | ModelingTool::Member
                         | ModelingTool::Connection
@@ -936,6 +941,7 @@ mod tests {
                     | ModelingTool::Joint
                     | ModelingTool::Machining
                     | ModelingTool::ShelfPins
+                    | ModelingTool::LooseTenon
             ) {
                 let wood = registry
                     .workspace(Mode::Model)

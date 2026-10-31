@@ -1109,6 +1109,41 @@ impl SketchEditor {
                 .into();
         Ok(())
     }
+    pub fn begin_loose_tenon(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before joining panels"
+                    .into(),
+            );
+        }
+        let document = session.document();
+        let (panels, mut refused) =
+            crate::modeling::selected_panels(document, self.tree_selection.iter().copied());
+        if panels.len() > 2 {
+            refused.push(format!(
+                "{} panels are selected; the first pair uses two",
+                panels.len()
+            ));
+        }
+        let pair = [panels.first().copied(), panels.get(1).copied()];
+        let targets: Vec<_> = pair.iter().flatten().copied().collect();
+        self.finish()?;
+        self.model
+            .begin_loose_tenon(session, resources, pair, channel)?;
+        self.message = crate::modeling::seeded_message(
+            "Domino joint",
+            document,
+            &targets,
+            &refused,
+            "click the panel whose face receives the joint, then the panel whose edge meets it",
+        );
+        Ok(())
+    }
     pub fn begin_shelf_pins(
         &mut self,
         session: &Session,
@@ -3480,6 +3515,26 @@ impl SketchEditor {
         {
             self.message =
                 "Panel face placed · check the axes and offsets in the viewport and Inspector, then Preview"
+                    .into();
+        }
+        if !self.measurement.active()
+            && self.model.joint_picking()
+            && self.model.joint_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.solid.section.plane(),
+                },
+            )
+        {
+            self.message =
+                "Joint panel picked · check the pair, mortises and tenons in the viewport and Inspector, then Preview"
                     .into();
         }
         if !self.measurement.active() && self.external.active() {

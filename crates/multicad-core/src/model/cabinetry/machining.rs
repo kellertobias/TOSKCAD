@@ -642,8 +642,18 @@ impl Face {
             v: if flip { self.a } else { self.b },
             polygon,
             circle: circle.map(|(c, r)| (swap(c), r)),
+            slot: None,
             sweep: self.inward.map(|c| c * (depth + MARGIN_MM)),
         }
+    }
+    /// A rounded slot from just outside the face to `depth` inside it: the
+    /// end-circle centers `a` and `b` and their radius, in face coordinates.
+    pub(super) fn slot_prism(&self, a: [f64; 2], b: [f64; 2], radius: f64, depth: f64) -> CutPrism {
+        let mut prism = self.prism(vec![], None, depth);
+        let flip = dot3(cross(self.a, self.b), self.inward) < 0.;
+        let swap = |[p, q]: [f64; 2]| if flip { [q, p] } else { [p, q] };
+        prism.slot = Some((swap(a), swap(b), radius));
+        prism
     }
     /// The world point at face coordinates `p`.
     pub fn point(&self, p: [f64; 2]) -> [f64; 3] {

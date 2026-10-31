@@ -324,6 +324,9 @@ impl SketchEditor {
         if tool == ModelingTool::ShelfPins {
             return self.begin_shelf_pins(session, resources, channel);
         }
+        if tool == ModelingTool::LooseTenon {
+            return self.begin_loose_tenon(session, resources, channel);
+        }
         if tool == ModelingTool::FdmAid {
             return self.begin_fdm_aid(session, resources, channel);
         }

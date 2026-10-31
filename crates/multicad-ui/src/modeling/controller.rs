@@ -158,7 +158,7 @@ impl ModelToolController {
         {
             return true;
         }
-        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE|multicad_core::model::MACHINING_CUT_TYPE|multicad_core::model::AID_TYPE|multicad_core::model::MEMBER_TYPE|multicad_core::model::SHEET_TYPE))
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE|multicad_core::model::MACHINING_CUT_TYPE|multicad_core::model::LOOSE_TENON_TYPE|multicad_core::model::AID_TYPE|multicad_core::model::MEMBER_TYPE|multicad_core::model::SHEET_TYPE))
     }
     pub fn begin_existing(
         &mut self,
@@ -266,7 +266,9 @@ impl ModelToolController {
                 ModelForm::Machining(Box::new(form)),
             );
         }
-        if model::read_panel_joint_cut(document, feature).is_ok() {
+        if model::read_panel_joint_cut(document, feature).is_ok()
+            || model::read_loose_tenon(document, feature).is_ok()
+        {
             // A joint edit rebuilds every pair's cuts, so it runs as a
             // source change like a carcass edit.
             let form = super::joint::JointPanel::existing(document, feature)?;
@@ -501,6 +503,26 @@ impl ModelToolController {
     pub fn wall_of(document: &multicad_core::document::Document, id: EntityId) -> Option<EntityId> {
         super::opening::wall_of_part(document, id)
     }
+    /// A joint form picks its panel pairs in the viewport.
+    pub fn joint_picking(&self) -> bool {
+        matches!(&self.form, Some(ModelForm::Joint(panel)) if panel.picking())
+    }
+    pub fn joint_viewport(
+        &mut self,
+        session: &Session,
+        view: super::TerminationViewport<'_>,
+    ) -> bool {
+        let changed = match self.form.as_mut() {
+            Some(ModelForm::Joint(panel)) => {
+                panel.viewport(session.document(), session.revision(), view)
+            }
+            _ => false,
+        };
+        if changed {
+            self.invalidate();
+        }
+        changed
+    }
     /// A machining form places features on panel faces in the viewport.
     pub fn machining_picking(&self) -> bool {
         matches!(&self.form, Some(ModelForm::Machining(panel)) if panel.picking())
@@ -602,6 +624,25 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Joint(Box::new(super::joint::JointPanel::new(name))),
+        )
+    }
+    /// The loose-tenon (Domino) tool: the joint form preset to loose tenons,
+    /// with its first pair seeded from up to two selected panels.
+    pub fn begin_loose_tenon(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        pair: [Option<EntityId>; 2],
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Domino joint", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Joint(Box::new(
+                super::joint::JointPanel::loose_tenon(name).with_pair(pair[0], pair[1]),
+            )),
         )
     }
     pub fn begin_cabinet(

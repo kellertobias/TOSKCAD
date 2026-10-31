@@ -336,3 +336,77 @@ fn mcp_drills_system32_rows_on_both_carcass_sides() {
         assert_eq!(op["holes"][0]["face_mm"], json!([37.0, 100.0]));
     }
 }
+
+#[test]
+fn mcp_joins_a_cabinet_top_to_a_side_with_domino_tenons() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Domino").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let ply = run(
+        "create_panel_stock",
+        json!({ "expected_revision": 0, "name": "Ply 18", "material_name": "Birch",
+        "thickness_mm": 18, "sheet_length_mm": 2800, "sheet_width_mm": 2070 }),
+    )
+    .unwrap()["stock"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    run(
+        "set_carcass",
+        json!({ "expected_revision": 1, "name": "Cabinet", "width": mm(600.),
+        "height": mm(720.), "depth": mm(400.), "stock": ply, "back": "none" }),
+    )
+    .unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    let side = panel(&list, "Cabinet right side")["part"].clone();
+    let left = panel(&list, "Cabinet left side")["part"].clone();
+    let top = panel(&list, "Cabinet top")["part"].clone();
+    // Two sides never meet face to edge: refused, nothing changes.
+    let before = host.document();
+    let refused = run(
+        "set_panel_joint",
+        json!({ "expected_revision": 2, "name": "Bad", "kind": "loose_tenon",
+        "pairs": [[side, left]] }),
+    )
+    .unwrap_err();
+    assert!(
+        refused.message.contains("face to edge"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(host.document(), before);
+    let joint = run(
+        "set_panel_joint",
+        json!({ "expected_revision": 2, "name": "Top joint", "kind": "loose_tenon",
+        "pairs": [[side, top]], "tenon": { "count": 3 } }),
+    )
+    .unwrap();
+    assert_eq!(joint["cuts"].as_array().unwrap().len(), 2);
+    let tenon = joint["tenons"][0]["part"].clone();
+    assert!(tenon.is_string());
+    let list = run("cut_list", json!({})).unwrap();
+    let mortises: Vec<_> = list["machining"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["kind"] == "loose-tenon mortise")
+        .collect();
+    assert_eq!(mortises.len(), 2);
+    for m in &mortises {
+        assert_eq!(m["tenon"], tenon);
+        assert_eq!(m["recesses"].as_array().unwrap().len(), 3);
+    }
+    let end = mortises.iter().find(|m| m["part"] == top).unwrap();
+    assert_eq!(end["recesses"][0]["depth_mm"], 28.0);
+    assert_eq!(end["recesses"][0]["size_mm"], json!([22.0, 8.0]));
+    run(
+        "delete_panel_joint",
+        json!({ "expected_revision": 3, "joint": joint["joint"] }),
+    )
+    .unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    assert!(list["machining"].as_array().unwrap().is_empty());
+}

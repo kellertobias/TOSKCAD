@@ -510,6 +510,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::PANEL_JOINT_CUT_CAPABILITY.into(),
         crate::model::MACHINING_CAPABILITY.into(),
         crate::model::MACHINING_CUT_CAPABILITY.into(),
+        crate::model::LOOSE_TENON_CAPABILITY.into(),
         crate::model::HARDWARE_PATTERN_CAPABILITY.into(),
         crate::model::imports::STEP_SOURCE_CAPABILITY.into(),
         crate::model::imports::STEP_BODY_CAPABILITY.into(),

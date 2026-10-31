@@ -176,7 +176,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `set_carcass` | yes | Create or edit a parametric carcass; every panel is evaluated natively before commit |
 | `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |
 | `create_panel_stack` | yes | Face-to-face panel layers kept as their own Parts, optionally grouped |
-| `set_panel_joint`, `delete_panel_joint` | yes | Butt (A or B through), miter or finger joints on panel pairs overlapping at a corner; each panel gets its own cut |
+| `set_panel_joint`, `delete_panel_joint` | yes | Butt (A or B through), miter or finger joints on panel pairs overlapping at a corner; each panel gets its own cut (also face-to-edge Domino-style loose tenons with a tenon Part) |
 | `set_hardware_pattern` | yes | Reusable hardware hole pattern with per-material diameter and depth allowances |
 | `set_machining`, `delete_machining` | yes | Groove, rabbet, pocket, drilling, System 32 shelf-pin rows or placed hardware pattern on one or more panels, on the top, bottom, inside or an edge face; suppression |
 | `import_step` | yes | Import or update a STEP file's solids from the exchange folder (see [imports](imports.md)) |

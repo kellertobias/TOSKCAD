@@ -1,6 +1,10 @@
 //! Panel joint inspector: join panel pairs that overlap at a corner with a
-//! butt (either panel through), miter or finger joint. Every pair's cuts
-//! preview and apply together; an applied joint reopens to change its kind.
+//! butt (either panel through), miter or finger joint, or panels that meet
+//! face to edge with loose tenons (Domino style). Every pair's cuts preview
+//! and apply together; an applied joint reopens to change its settings.
+#[cfg(test)]
+mod placement_tests;
+mod viewport;
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -10,7 +14,10 @@ use crate::{controls, egui};
 use multicad_core::{
     commands::{Actor, Session},
     document::{Document, EntityId},
-    model::{self, ModelPrepared, PanelJointDefinition, PanelJointKind, PanelJointPair, length},
+    model::{
+        self, LooseTenonSpec, ModelPrepared, PanelJointDefinition, PanelJointKind, PanelJointPair,
+        length,
+    },
 };
 
 /// The typed intent sent to native preview and Apply.
@@ -40,6 +47,140 @@ enum Kind {
     ButtB,
     Miter,
     Finger,
+    LooseTenon,
+}
+/// Loose-tenon settings in the Inspector.
+#[derive(Clone, Debug)]
+struct TenonFields {
+    thickness: DimensionField,
+    width: DimensionField,
+    length: DimensionField,
+    count: u32,
+    inset: DimensionField,
+    offset: DimensionField,
+    face_depth: DimensionField,
+    edge_depth: DimensionField,
+    face_play: DimensionField,
+    edge_play: DimensionField,
+    fit: DimensionField,
+}
+fn mm(v: f64) -> DimensionField {
+    DimensionField::from_dimension(&length(v), "mm").expect("literal")
+}
+/// The example loose tenon: a Festool DOMINO 8 × 22 × 40 mm tenon cut with
+/// the 8 mm DF 500 cutter, 15 mm into an 18 mm face (3 mm left behind) and
+/// 28 mm into the mating end, tight in the end mortise and with 6 mm play
+/// along the face mortise, two per joint 60 mm in from each end. These are
+/// editable example values, not a tested machine compatibility claim.
+impl Default for TenonFields {
+    fn default() -> Self {
+        Self {
+            thickness: mm(8.),
+            width: mm(22.),
+            length: mm(40.),
+            count: 2,
+            inset: mm(60.),
+            offset: mm(0.),
+            face_depth: mm(15.),
+            edge_depth: mm(28.),
+            face_play: mm(6.),
+            edge_play: mm(0.),
+            fit: mm(0.),
+        }
+    }
+}
+impl TenonFields {
+    fn of(spec: &LooseTenonSpec) -> Result<Self, String> {
+        let f = |d| DimensionField::from_dimension(d, "mm");
+        Ok(Self {
+            thickness: f(&spec.thickness)?,
+            width: f(&spec.width)?,
+            length: f(&spec.length)?,
+            count: spec.count,
+            inset: f(&spec.inset)?,
+            offset: match &spec.offset {
+                Some(o) => f(o)?,
+                None => mm(0.),
+            },
+            face_depth: f(&spec.face_depth)?,
+            edge_depth: f(&spec.edge_depth)?,
+            face_play: f(&spec.face_play)?,
+            edge_play: f(&spec.edge_play)?,
+            fit: f(&spec.fit)?,
+        })
+    }
+    fn spec(&self, document: &Document) -> Result<LooseTenonSpec, String> {
+        let r = |f: &DimensionField| f.resolve(document);
+        let offset = r(&self.offset)?;
+        Ok(LooseTenonSpec {
+            thickness: r(&self.thickness)?,
+            width: r(&self.width)?,
+            length: r(&self.length)?,
+            count: self.count,
+            inset: r(&self.inset)?,
+            offset: (self.offset.text.trim() != "0").then_some(offset),
+            face_depth: r(&self.face_depth)?,
+            edge_depth: r(&self.edge_depth)?,
+            face_play: r(&self.face_play)?,
+            edge_play: r(&self.edge_play)?,
+            fit: r(&self.fit)?,
+        })
+    }
+    fn show(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.small("Tenon: a rounded slot shape, thickness = cutter diameter, width including the rounded ends.");
+        changed |= self
+            .thickness
+            .show(ui, "Tenon thickness", "Cutter diameter");
+        changed |= self.width.show(
+            ui,
+            "Tenon width",
+            "Along the joint, including the rounded ends",
+        );
+        changed |= self.length.show(ui, "Tenon length", "Mortise to mortise");
+        ui.horizontal(|ui| {
+            ui.label("Tenons per pair");
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.count).range(1..=model::MAX_TENONS))
+                .changed();
+        });
+        changed |= self.inset.show(
+            ui,
+            "End inset",
+            "From each end of the contact to the first and last tenon center",
+        );
+        changed |= self.offset.show(
+            ui,
+            "Offset",
+            "Tenon center across the edge panel's thickness, from its middle",
+        );
+        changed |= self.face_depth.show(
+            ui,
+            "Face mortise depth",
+            "Into the panel whose face receives the joint",
+        );
+        changed |= self.edge_depth.show(
+            ui,
+            "End mortise depth",
+            "Into the end of the panel whose edge meets the face",
+        );
+        changed |= self.face_play.show(
+            ui,
+            "Face mortise play",
+            "Extra length beyond the tenon width (0 = tight)",
+        );
+        changed |= self.edge_play.show(
+            ui,
+            "End mortise play",
+            "Extra length beyond the tenon width (0 = tight)",
+        );
+        changed |= self.fit.show(
+            ui,
+            "Thickness fit",
+            "Extra mortise thickness beyond the tenon thickness",
+        );
+        changed
+    }
 }
 
 pub(super) struct JointPanel {
@@ -49,7 +190,11 @@ pub(super) struct JointPanel {
     kind: Kind,
     count: u32,
     fit: DimensionField,
+    tenon: TenonFields,
     pairs: Vec<[Option<EntityId>; 2]>,
+    /// Pick pair panels by clicking their faces in the viewport.
+    place: bool,
+    pick_note: Option<String>,
     error: Option<String>,
 }
 /// Rectangular panel Parts: (Part, name).
@@ -74,21 +219,42 @@ impl JointPanel {
             kind: Kind::ButtA,
             count: 5,
             fit: DimensionField::from_dimension(&length(0.2), "mm").expect("literal"),
+            tenon: TenonFields::default(),
             pairs: vec![[None, None]],
+            place: true,
+            pick_note: None,
             error: None,
         }
     }
-    /// Open the joint that owns an applied joint cut.
-    pub fn existing(document: &Document, cut: EntityId) -> Result<Self, String> {
-        let cut = model::read_panel_joint_cut(document, cut).map_err(|e| e.to_string())?;
-        let joint = model::read_panel_joint(document, cut.joint).map_err(|e| e.to_string())?;
+    /// A new loose-tenon joint with the example Domino settings.
+    pub fn loose_tenon(name: String) -> Self {
+        let mut form = Self::new(name);
+        form.kind = Kind::LooseTenon;
+        form
+    }
+    /// Seed the first pair, for example from two selected panels.
+    pub fn with_pair(mut self, a: Option<EntityId>, b: Option<EntityId>) -> Self {
+        if self.existing.is_none() {
+            self.pairs = vec![[a, b]];
+        }
+        self
+    }
+    /// Open the joint that owns an applied joint cut or loose tenon.
+    pub fn existing(document: &Document, feature: EntityId) -> Result<Self, String> {
+        let joint_id = match model::read_panel_joint_cut(document, feature) {
+            Ok(cut) => cut.joint,
+            Err(error) => model::read_loose_tenon(document, feature)
+                .map(|t| t.joint)
+                .map_err(|_| error.to_string())?,
+        };
+        let joint = model::read_panel_joint(document, joint_id).map_err(|e| e.to_string())?;
         let mut form = Self::new(
             document
-                .get(cut.joint)
+                .get(joint_id)
                 .map(|e| e.name.clone())
                 .unwrap_or_default(),
         );
-        form.existing = Some(cut.joint);
+        form.existing = Some(joint_id);
         form.pairs = joint.pairs.iter().map(|p| [Some(p.a), Some(p.b)]).collect();
         form.kind = match &joint.kind {
             PanelJointKind::ButtAThrough => Kind::ButtA,
@@ -99,6 +265,10 @@ impl JointPanel {
                 form.fit = DimensionField::from_dimension(fit, "mm")?;
                 Kind::Finger
             }
+            PanelJointKind::LooseTenon(spec) => {
+                form.tenon = TenonFields::of(spec)?;
+                Kind::LooseTenon
+            }
         };
         Ok(form)
     }
@@ -106,7 +276,11 @@ impl JointPanel {
         self.stamp
     }
     pub fn label(&self) -> &'static str {
-        "Panel joint"
+        if self.kind == Kind::LooseTenon {
+            "Loose tenon (Domino)"
+        } else {
+            "Panel joint"
+        }
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<JointCommand, String> {
         if !enabled {
@@ -132,6 +306,7 @@ impl JointPanel {
                 count: self.count,
                 fit: self.fit.resolve(document)?,
             },
+            Kind::LooseTenon => PanelJointKind::LooseTenon(Box::new(self.tenon.spec(document)?)),
         };
         Ok(JointCommand {
             existing: self.existing,
@@ -147,10 +322,17 @@ impl JointPanel {
         preview: PreviewState<'_>,
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
-        ui.strong("Panel joint");
-        ui.small(
-            "Panels must overlap at a right-angle corner: extend both to the outside corner. Each panel keeps its share of the corner block.",
-        );
+        ui.strong(self.label());
+        ui.small(if self.kind == Kind::LooseTenon {
+            "One panel's edge must lie flat on the other panel's face. Each tenon gets a rounded mortise in both panels and the tenons become their own Part."
+        } else {
+            "Panels must overlap at a right-angle corner: extend both to the outside corner. Each panel keeps its share of the corner block."
+        });
+        ui.checkbox(&mut self.place, "Pick pairs in the viewport")
+            .on_hover_text("Click panel A, then panel B, on their visible faces; the next click starts the next pair");
+        if let Some(note) = &self.pick_note {
+            ui.colored_label(egui::Color32::LIGHT_RED, note);
+        }
         ui.label("Joint name");
         let mut changed = ui
             .add_enabled(
@@ -159,13 +341,31 @@ impl JointPanel {
             )
             .changed();
         ui.label("Kind");
+        let loose = self.existing.is_some() && self.kind == Kind::LooseTenon;
+        let corner = self.existing.is_some() && self.kind != Kind::LooseTenon;
         for (kind, label) in [
             (Kind::ButtA, "Butt · A runs through"),
             (Kind::ButtB, "Butt · B runs through"),
             (Kind::Miter, "Miter"),
             (Kind::Finger, "Fingers"),
+            (Kind::LooseTenon, "Loose tenon (Domino)"),
         ] {
-            changed |= ui.radio_value(&mut self.kind, kind, label).changed();
+            let allowed = if kind == Kind::LooseTenon {
+                !corner
+            } else {
+                !loose
+            };
+            if ui
+                .add_enabled(allowed, egui::RadioButton::new(self.kind == kind, label))
+                .clicked()
+                && self.kind != kind
+            {
+                self.kind = kind;
+                changed = true;
+            }
+        }
+        if self.kind == Kind::LooseTenon {
+            changed |= self.tenon.show(ui);
         }
         if self.kind == Kind::Finger {
             ui.horizontal(|ui| {

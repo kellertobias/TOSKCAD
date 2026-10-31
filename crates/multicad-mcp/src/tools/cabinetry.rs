@@ -451,6 +451,42 @@ pub enum JointKindArg {
     ButtBThrough,
     Miter,
     Finger,
+    /// Domino-style loose tenons between panels that meet face to edge.
+    LooseTenon,
+}
+/// Loose-tenon settings; omitted values use the example Festool DOMINO
+/// 8 × 22 × 40 mm tenon, 15 mm face and 28 mm end mortises, 6 mm face play,
+/// two tenons 60 mm from the ends.
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TenonArgs {
+    #[serde(default)]
+    pub thickness: Option<Quantity>,
+    #[serde(default)]
+    pub width: Option<Quantity>,
+    #[serde(default)]
+    pub length: Option<Quantity>,
+    /// Tenons per pair (1–32).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// From each end of the contact to the first and last tenon center.
+    #[serde(default)]
+    pub inset: Option<Quantity>,
+    /// Tenon center across the edge panel's thickness, from its middle.
+    #[serde(default)]
+    pub offset: Option<Quantity>,
+    #[serde(default)]
+    pub face_depth: Option<Quantity>,
+    #[serde(default)]
+    pub edge_depth: Option<Quantity>,
+    /// Extra mortise length beyond the tenon width (0 = tight).
+    #[serde(default)]
+    pub face_play: Option<Quantity>,
+    #[serde(default)]
+    pub edge_play: Option<Quantity>,
+    /// Extra mortise thickness beyond the tenon thickness.
+    #[serde(default)]
+    pub fit: Option<Quantity>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -469,9 +505,13 @@ pub struct PanelJointArgs {
     /// Finger joints: total gap at each finger face (default 0).
     #[serde(default)]
     pub fit: Option<Quantity>,
-    /// New joints: [panel A Part, panel B Part] pairs that overlap at a corner.
+    /// New joints: [panel A Part, panel B Part] pairs that overlap at a
+    /// corner, or (loose tenons) meet face to edge.
     #[serde(default)]
     pub pairs: Vec<[String; 2]>,
+    /// Loose tenons: the tenon, spacing, mortise depths and fits.
+    #[serde(default)]
+    pub tenon: Option<TenonArgs>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -502,6 +542,26 @@ pub(super) fn set_panel_joint(host: &dyn Host, call: &Request, args: PanelJointA
                 .ok_or_else(|| ToolError::invalid("A finger joint needs finger_count"))?,
             fit: opt(&args.fit, &document, &evaluated)?.unwrap_or_else(|| length(0.)),
         },
+        JointKindArg::LooseTenon => {
+            let t = args.tenon.unwrap_or_default();
+            let (d, e) = (&document, &evaluated);
+            let or = |v: &Option<Quantity>, default: f64| {
+                opt(v, d, e).map(|v| v.unwrap_or_else(|| length(default)))
+            };
+            PanelJointKind::LooseTenon(Box::new(model::LooseTenonSpec {
+                thickness: or(&t.thickness, 8.)?,
+                width: or(&t.width, 22.)?,
+                length: or(&t.length, 40.)?,
+                count: t.count.unwrap_or(2),
+                inset: or(&t.inset, 60.)?,
+                offset: opt(&t.offset, d, e)?,
+                face_depth: or(&t.face_depth, 15.)?,
+                edge_depth: or(&t.edge_depth, 28.)?,
+                face_play: or(&t.face_play, 6.)?,
+                edge_play: or(&t.edge_play, 0.)?,
+                fit: or(&t.fit, 0.)?,
+            }))
+        }
     };
     let existing = args.joint.as_deref().map(id).transpose()?;
     let pairs = args
@@ -532,9 +592,17 @@ pub(super) fn set_panel_joint(host: &dyn Host, call: &Request, args: PanelJointA
             )?,
         })
     })??;
+    let staged = prepared.model.prepared.document();
+    let tenons: Vec<_> = model::joint_tenons(staged, prepared.joint)
+        .into_iter()
+        .map(|(pair, feature, part)| json!({ "pair": pair, "part": part, "feature": feature }))
+        .collect();
     let out = json!({
         "joint": prepared.joint,
-        "cuts": prepared.model.outputs.iter().map(|o| json!({ "part": o.body, "feature": o.feature })).collect::<Vec<_>>(),
+        "cuts": prepared.model.outputs.iter()
+            .filter(|o| !tenons.iter().any(|t| t["feature"] == json!(o.feature)))
+            .map(|o| json!({ "part": o.body, "feature": o.feature })).collect::<Vec<_>>(),
+        "tenons": tenons,
     });
     finish(host, call, prepared.model.prepared, revision, out)
 }
@@ -988,7 +1056,7 @@ pub(super) fn cut_list(host: &dyn Host, call: &Request, _: super::NoArgs) -> Too
         })).collect::<Vec<_>>(),
         "machining": machining.iter().map(|m| json!({
             "part": m.part, "operation": m.operation, "name": m.name, "kind": m.kind,
-            "face": m.face,
+            "face": m.face, "tenon": m.tenon,
             "material": m.material, "stock": m.stock, "removed_mm3": m.removed_mm3,
             "holes": m.holes.iter().map(|h| json!({
                 "face_mm": h.at,
