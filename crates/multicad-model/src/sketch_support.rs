@@ -9,6 +9,42 @@ use multicad_core::{
 use multicad_kernel::PlaneFrame;
 use std::collections::BTreeSet;
 
+impl crate::Compiler {
+    /// Evaluate a sketch's upstream plane and native support without requiring
+    /// downstream profile consumers to compile successfully. This lets UI/MCP
+    /// inspect and repair a sketch whose previous region is now missing.
+    pub fn sketch_reference_report(
+        &self,
+        document: &multicad_core::document::Document,
+        revision: u64,
+        sketch: EntityId,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<ReferenceReport, ModelError> {
+        let Some(multicad_core::document::EntityData::Sketch { plane, .. }) =
+            document.get(sketch).map(|e| &e.data)
+        else {
+            return Err(error(Some(sketch), "Sketch is missing"));
+        };
+        let native =
+            self.compile_sources_interruptible(document, revision, &[*plane], interrupt)?;
+        let context = multicad_solver::SketchEvaluationContext::new(document, revision)
+            .map_err(|e| error(Some(sketch), e))?;
+        let topologies = crate::external::topologies(&native);
+        let mut report = native.snapshot().references.clone();
+        Sources {
+            document,
+            revision,
+            parameters: context.parameters(),
+            body_heads: &native.snapshot().body_sources,
+            solids: &native.solids,
+            topologies: &topologies,
+            policy: self.policy,
+        }
+        .populate(&mut report, Some(sketch), interrupt)?;
+        Ok(report)
+    }
+}
+
 impl Sources<'_> {
     fn support(
         &self,

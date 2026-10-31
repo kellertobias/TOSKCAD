@@ -1318,9 +1318,14 @@ fn inspect_sketch(host: &dyn Host, call: &Request, args: SketchArgs) -> ToolResu
         Some(_) => return Err(ToolError::invalid(format!("{sketch} is not a sketch"))),
         None => return Err(ToolError::not_found(sketch, "Sketch")),
     }
-    let source = Source::read_for_evaluation(&document, sketch, revision, None)?.0;
+    let report = sketch_support_report(&document, revision, sketch, call)?;
+    let source = Source::read_for_evaluation(&document, sketch, revision, report.as_ref())?.0;
     let result = multicad_solver::evaluate_document_sketch_with_parameters(
-        &document, revision, sketch, None, &evaluated,
+        &document,
+        revision,
+        sketch,
+        report.as_ref(),
+        &evaluated,
     )?;
     let interrupt = || call.cancelled();
     let regions = match result.solved() {
@@ -1406,6 +1411,25 @@ fn compile(
     call.finish(Compiler::default().compile_interruptible(document, revision, Some(&interrupt)))
 }
 
+fn sketch_support_report(
+    document: &multicad_core::document::Document,
+    revision: u64,
+    sketch: EntityId,
+    call: &Call,
+) -> Result<Option<multicad_core::references::ReferenceReport>, ToolError> {
+    if multicad_core::sketch_regions::supporting_face(document, sketch).is_none() {
+        return Ok(None);
+    }
+    let interrupt = || call.cancelled();
+    call.finish(Compiler::default().sketch_reference_report(
+        document,
+        revision,
+        sketch,
+        Some(&interrupt),
+    ))
+    .map(Some)
+}
+
 fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
     let target_part = args.target_part.as_deref().map(id).transpose()?;
     if !args.faces.is_empty() && (args.sketch.is_some() || !args.regions.is_empty()) {
@@ -1438,8 +1462,13 @@ fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
     }
     let mut intents = vec![];
     if let Some(sketch) = sketch {
+        let report = sketch_support_report(&document, revision, sketch, call)?;
         let evaluated_sketch = multicad_solver::evaluate_document_sketch_with_parameters(
-            &document, revision, sketch, None, &evaluated,
+            &document,
+            revision,
+            sketch,
+            report.as_ref(),
+            &evaluated,
         )?;
         let interrupt = || call.cancelled();
         let extraction = call.finish(evaluated_sketch.regions_with_queries_and_interrupt(

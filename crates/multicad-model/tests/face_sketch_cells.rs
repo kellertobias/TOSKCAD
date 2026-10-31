@@ -487,6 +487,26 @@ fn changed_or_missing_diagonal_recomputes_and_never_retargets_a_missing_region()
             .compile(prepared.prepared.document(), f.session.revision() + 1)
             .is_err()
     );
+    let report = Compiler::default()
+        .sketch_reference_report(
+            prepared.prepared.document(),
+            f.session.revision() + 1,
+            f.sketch,
+            None,
+        )
+        .unwrap();
+    let repair = multicad_solver::evaluate_document_sketch(
+        prepared.prepared.document(),
+        f.session.revision() + 1,
+        f.sketch,
+        Some(&report),
+    )
+    .unwrap();
+    let remaining = repair
+        .regions_with_queries(&NativeRegionQueries::default())
+        .unwrap();
+    assert_eq!(remaining.regions.len(), 1);
+    near(remaining.regions[0].area_mm2, 400.);
     drop(prepared);
     assert_eq!(f.session.document(), &source);
 }

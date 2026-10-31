@@ -1,7 +1,10 @@
 //! Sheet-metal tools over the shared sheet API. Each mutation builds the
 //! sheet natively before it commits one transaction; records and flat
 //! patterns are measured from the evaluated solids.
-use super::{Quantity, Request, ToolResult, commit, compile, id, revision_guard, snapshot};
+use super::{
+    Quantity, Request, ToolResult, commit, compile, id, revision_guard, sketch_support_report,
+    snapshot,
+};
 use crate::{
     error::ToolError,
     host::{Host, with},
@@ -198,8 +201,13 @@ fn base(
     match (&args.sketch, args.region, args.plane) {
         (Some(sketch), Some(index), None) => {
             let sketch = id(sketch)?;
+            let report = sketch_support_report(document, revision, sketch, call)?;
             let evaluated_sketch = multicad_solver::evaluate_document_sketch_with_parameters(
-                document, revision, sketch, None, evaluated,
+                document,
+                revision,
+                sketch,
+                report.as_ref(),
+                evaluated,
             )?;
             let interrupt = || call.cancelled();
             let extraction = call.finish(evaluated_sketch.regions_with_queries_and_interrupt(

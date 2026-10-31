@@ -40,6 +40,118 @@ fn top_cap(faces: &[Value]) -> Value {
 }
 
 #[test]
+fn mcp_inspects_and_extrudes_cells_of_a_single_line_on_a_native_box_face() {
+    use multicad_core::{
+        commands::{Request, Session},
+        constraint_sketch::source::Source,
+        document::EntityData,
+        model::{self, PrimitiveParameters, PrimitiveRequest, length},
+        references::TopologyKind,
+        sketch::{self, CreationPlane, PlaneOptions},
+    };
+    let mut session = Session::new(Document::new("Face sketch MCP").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Stock",
+        PrimitiveParameters::Box {
+            size: [length(20.), length(20.), length(10.)],
+            frame: Default::default(),
+        },
+    );
+    let prepared = model::prepare_primitive(&session, 0, call().actor, &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let native = multicad_model::Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let top = native
+        .solid(stock.feature)
+        .unwrap()
+        .faces()
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            f.plane
+                .is_some_and(|(p, n)| (p[2] - 10.).abs() < 1e-7 && n[2] > 0.9)
+        })
+        .unwrap();
+    let snapshot = &native.snapshot().shapes[&stock.feature].topology;
+    let element = snapshot
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face && e.key.ordinal == top.index)
+        .unwrap();
+    let created = sketch::prepare_new(
+        &session,
+        session.revision(),
+        call().actor,
+        "Diagonal",
+        CreationPlane::Face {
+            snapshot,
+            key: element.key,
+            anchor: Some(&element.frames[0].origin),
+        },
+        PlaneOptions::default(),
+    )
+    .unwrap();
+    let sketch = created.sketch;
+    let frame = created.frame;
+    session.commit(created.prepared).unwrap();
+    let EntityData::Sketch { definition, .. } = &session.document().get(sketch).unwrap().data
+    else {
+        panic!()
+    };
+    let mut source = Source::from_definition(definition).unwrap();
+    let a = source.add_point(frame.coordinates([0., 0., 10.]));
+    let b = source.add_point(frame.coordinates([20., 20., 10.]));
+    source.add_line(a, b);
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: call().actor,
+            label: "Draw diagonal".into(),
+            edits: source.replace(session.document(), sketch).unwrap(),
+        })
+        .unwrap();
+    for (operation, distance, expected) in [
+        ("new_body", 5., 1000.),
+        ("join", 5., 5000.),
+        ("cut", -5., 3000.),
+    ] {
+        let host = Headless::new(
+            Workspace::new(session.document().clone()).unwrap(),
+            None,
+            false,
+        );
+        let inspected =
+            dispatch(&host, &call(), "inspect_sketch", json!({"sketch":sketch})).unwrap();
+        let regions = inspected["regions"].as_array().unwrap();
+        assert_eq!(regions.len(), 2);
+        near(&regions[0]["area_mm2"], 200.);
+        near(&regions[1]["area_mm2"], 200.);
+        let mut args = json!({"expected_revision":0,"sketch":sketch,"regions":[0],"distance":mm(distance),"operation":operation});
+        if operation != "new_body" {
+            args["target_part"] = json!(stock.body);
+        }
+        let result = dispatch(&host, &call(), "extrude", args).unwrap();
+        near(&result["bodies"][0]["volume_mm3"], expected);
+        let cancelled = Call {
+            cancel: Arc::new(AtomicBool::new(true)),
+            ..call()
+        };
+        let before = host.document();
+        assert!(
+            dispatch(
+                &host,
+                &cancelled,
+                "inspect_sketch",
+                json!({"sketch":sketch})
+            )
+            .is_err()
+        );
+        assert_eq!(host.document(), before);
+    }
+}
+
+#[test]
 fn mcp_extrude_uses_planar_faces_and_refuses_curved_or_mixed_inputs() {
     let host = Headless::new(
         Workspace::new(Document::new("Face extrude").unwrap()).unwrap(),
