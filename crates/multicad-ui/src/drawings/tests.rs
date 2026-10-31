@@ -819,3 +819,46 @@ fn sheet_annotations_add_edit_move_copy_and_apply_as_one_page_edit() {
     let stored = drawings::read(session.document(), editor.book.unwrap()).unwrap();
     assert!(stored.pages[0].annotations.is_empty());
 }
+#[test]
+fn fit_modes_keep_or_choose_a_standard_scale_and_discard_restores_the_saved_page() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    let id = editor.selected_view.unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    let saved = editor.draft.clone().unwrap();
+    let before = saved.views[0].scale;
+    publish_editor(&mut editor, &session);
+
+    editor.fit_mode = drawings::FitMode::KeepScale;
+    editor.fit_view(id, &session).unwrap();
+    let kept = &editor.draft.as_ref().unwrap().views[0];
+    assert_eq!(kept.scale, before, "Keep current scale retains the ratio");
+
+    publish_editor(&mut editor, &session);
+    editor.fit_mode = drawings::FitMode::Standard;
+    editor.fit_view(id, &session).unwrap();
+    let fitted = editor.draft.as_ref().unwrap().views[0].scale;
+    assert!(drawings::standard_scales().contains(&fitted), "{fitted:?}");
+    let inspector = painted_text(|ui| editor.inspector(ui, &mut session));
+    assert!(
+        inspector.contains(&format!("Scale {}", drawings::scale_text(fitted))),
+        "{inspector}"
+    );
+    assert!(inspector.contains("Standard scale"), "{inspector}");
+
+    // Discard is source-neutral: the saved page and revision are untouched.
+    let revision = session.revision();
+    editor
+        .invoke(&mut session, DrawingTool::Discard, Channel::Ui)
+        .unwrap();
+    assert_eq!(session.revision(), revision);
+    assert_eq!(editor.draft.as_ref().unwrap(), &saved);
+}
