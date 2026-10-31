@@ -15,6 +15,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let [input, number, output] = args.as_slice() else {
         return Err("Usage: website_plan PROJECT.tcd PAGE OUTPUT.svg".into());
     };
+    let input_path = fs::canonicalize(input)?;
+    if fs::canonicalize(output).ok().as_ref() == Some(&input_path) {
+        return Err("The SVG output must differ from the project input".into());
+    }
     let p = project_file::read(
         &mut File::open(input)?,
         FileLimits::default(),
