@@ -1,3 +1,4 @@
+use super::loading::{self, PreviewState};
 use crate::egui;
 use multicad_core::{
     document::EntityId,
@@ -24,6 +25,7 @@ pub(super) fn show(
     selected: Option<EntityId>,
     picking: Option<Option<[f64; 2]>>,
     selected_annotation: Option<EntityId>,
+    state: PreviewState<'_>,
 ) -> CanvasEvent {
     let layout = match drawings::layout_page(page, index, total) {
         Ok(layout) => layout,
@@ -33,13 +35,20 @@ pub(super) fn show(
         }
     };
     let available = ui.available_rect_before_wrap();
-    let scale = ((available.width() - 32.) / layout.paper_mm[0] as f32)
-        .min((available.height() - 32.) / layout.paper_mm[1] as f32)
+    let scale = ((available.width() - 48.) / layout.paper_mm[0] as f32)
+        .min((available.height() - 56.) / layout.paper_mm[1] as f32)
         .max(0.05);
     let size = egui::vec2(layout.paper_mm[0] as f32, layout.paper_mm[1] as f32) * scale;
     let paper = egui::Rect::from_center_size(available.center(), size);
     let painter = ui.painter().with_clip_rect(available);
     painter.rect_filled(paper, 0, egui::Color32::from_gray(250));
+    painter.text(
+        egui::pos2(paper.center().x, paper.top() - 12.),
+        egui::Align2::CENTER_CENTER,
+        loading::paper_label(page),
+        egui::FontId::proportional(12.),
+        ui.visuals().text_color(),
+    );
     let rect = |a: [f64; 4]| {
         egui::Rect::from_min_max(
             paper.min + egui::vec2(a[0] as f32, a[1] as f32) * scale,
@@ -121,6 +130,11 @@ pub(super) fn show(
     }
     let mut clicked = None;
     let view_painter = painter.with_clip_rect(paper);
+    let mut view_area = rect(layout.printable_mm);
+    if let Some(block) = drawings::title_block_rect(&layout) {
+        view_area.set_bottom(rect(block).top() - 8.);
+    }
+    let view_area = loading::status(ui, &view_painter, view_area, page, state);
     for view in &page.views {
         let to_screen = |point| {
             let p = view.paper_point(point);
@@ -188,17 +202,20 @@ pub(super) fn show(
                 );
             }
             None => {
-                view_painter.text(
-                    anchor,
-                    egui::Align2::CENTER_CENTER,
-                    format!("{}\nNative preview pending", view.name),
-                    egui::FontId::proportional(11.),
-                    egui::Color32::from_gray(100),
-                );
+                if loading::placeholder(ui, &view_painter, view_area, anchor, view, state) {
+                    clicked = Some(view.id);
+                }
             }
         }
     }
     for caption in drawings::view_captions(page, &layout, evaluation) {
+        // Pending views already show their name and scale inside the slot.
+        if evaluation
+            .and_then(|e| e.views.get(&caption.view))
+            .is_none()
+        {
+            continue;
+        }
         let at = paper.min + egui::vec2(caption.at[0] as f32, caption.at[1] as f32) * scale;
         view_painter.text(
             at,

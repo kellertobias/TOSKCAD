@@ -613,7 +613,17 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let page = editor.draft.clone().unwrap();
     let result = editor.feed.result.clone();
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &page, 0, 1, result.as_deref(), None, None, None);
+        canvas::show(
+            ui,
+            &page,
+            0,
+            1,
+            result.as_deref(),
+            None,
+            None,
+            None,
+            loading::PreviewState::Idle,
+        );
     });
     assert!(
         canvas.lines().any(|l| l == "Section A-A"),
@@ -627,7 +637,17 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let mut facing = page.clone();
     facing.views[0].frame = facing.views[1].frame;
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &facing, 0, 1, result.as_deref(), None, None, None);
+        canvas::show(
+            ui,
+            &facing,
+            0,
+            1,
+            result.as_deref(),
+            None,
+            None,
+            None,
+            loading::PreviewState::Idle,
+        );
     });
     assert!(!canvas.lines().any(|l| l == "Section A-A"), "{canvas}");
     editor
@@ -814,7 +834,17 @@ fn sheet_annotations_add_edit_move_copy_and_apply_as_one_page_edit() {
     // The canvas paints sheet annotations and a pending marker for none.
     let page = editor.draft.clone().unwrap();
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &page, 0, 1, None, None, None, None);
+        canvas::show(
+            ui,
+            &page,
+            0,
+            1,
+            None,
+            None,
+            None,
+            None,
+            loading::PreviewState::Idle,
+        );
     });
     assert!(
         canvas.contains("Note") && canvas.contains("a3") && canvas.contains("Schedule"),
@@ -888,7 +918,17 @@ fn native_sheet_paints_the_professional_title_block_and_decodes_the_logo() {
     page.info.title = "Cabinet front".into();
     page.info.project = "Workshop".into();
     let canvas = painted_text(|ui| {
-        canvas::show(ui, &page, 2, 4, None, None, None, None);
+        canvas::show(
+            ui,
+            &page,
+            2,
+            4,
+            None,
+            None,
+            None,
+            None,
+            loading::PreviewState::Idle,
+        );
     });
     for expected in [
         "Title",

@@ -146,6 +146,8 @@ impl DrawingFeed {
             let message = "Native drawing provider is unavailable";
             changed = self.error.as_deref() != Some(message);
             self.error = Some(message.into());
+            self.queued = None;
+            self.pending = false;
             return changed;
         };
         if let Some(reply) = backend.poll()

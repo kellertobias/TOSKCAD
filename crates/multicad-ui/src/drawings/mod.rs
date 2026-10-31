@@ -3,12 +3,15 @@ mod annotations;
 mod canvas;
 mod evaluation;
 mod inspector;
+mod loading;
 mod placement;
 mod schedules;
 mod views;
 pub use evaluation::{DrawingBackend, DrawingBackendFactory, DrawingReply};
 pub use placement::Placement;
 pub use schedules::ScheduleStatus;
+#[cfg(test)]
+mod loading_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]
@@ -543,6 +546,13 @@ impl DrawingEditor {
                     self.selected_view,
                     self.section_pick.map(|(_, first)| first),
                     self.selected_annotation,
+                    if let Some(error) = self.feed.error.as_deref() {
+                        loading::PreviewState::Failed(error)
+                    } else if self.feed.pending() {
+                        loading::PreviewState::Generating
+                    } else {
+                        loading::PreviewState::Idle
+                    },
                 );
                 self.last_paper = event.paper;
                 if let Some((paper, scale)) = event.paper {
