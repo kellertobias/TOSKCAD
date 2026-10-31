@@ -398,8 +398,6 @@ impl Default for Registry {
             ("weld-list", "Weld sequence", Icon::Page),
             ("materials", "Materials", Icon::Library),
             ("text", "Text / leader", Icon::Sketch),
-            ("export-3d", "STEP / OBJ", Icon::Export),
-            ("export-2d", "DXF / PDF", Icon::Page),
             ("appearance", "Capture render view", Icon::Box),
             ("render-view", "Show render view", Icon::Box),
             ("blender", "Blender handoff", Icon::Export),
@@ -654,9 +652,12 @@ impl Registry {
                 || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
         })
     }
+    /// Tools matching `query` by id, label or alias, followed by the
+    /// workflows that write an output format it names (CAD-157).
     pub fn search(&self, query: &str) -> Vec<&Tool> {
         let query = query.trim().to_lowercase();
-        self.tools
+        let mut found: Vec<&Tool> = self
+            .tools
             .iter()
             .filter(|tool| {
                 query.is_empty()
@@ -667,7 +668,50 @@ impl Registry {
                         .iter()
                         .any(|alias| alias.to_lowercase().contains(&query))
             })
-            .collect()
+            .collect();
+        for route in crate::tool_search::routes(&query) {
+            for (id, _) in route.tools {
+                if let Some(tool) = self.tool(id)
+                    && !found.iter().any(|known| known.id == *id)
+                {
+                    found.push(tool);
+                }
+            }
+        }
+        found
+    }
+    /// Workspace and ribbon tab that offer `command`, for finder context.
+    pub fn location(&self, command: Command) -> Option<(Mode, &'static str)> {
+        self.workspaces.iter().find_map(|workspace| {
+            workspace
+                .tabs
+                .iter()
+                .find(|tab| {
+                    tab.tools
+                        .iter()
+                        .any(|id| self.tool(id).is_some_and(|tool| tool.action == command))
+                })
+                .map(|tab| (workspace.mode, tab.title))
+        })
+    }
+    /// Ribbon tab of `mode` that offers `command`: `current` when it does
+    /// (a tool listed on several tabs stays where it was started), else the
+    /// first tab listing it (CAD-162).
+    pub fn workbench_tab(
+        &self,
+        mode: Mode,
+        command: Command,
+        current: Option<usize>,
+    ) -> Option<usize> {
+        let tabs = &self.workspace(mode).tabs;
+        let offers = |tab: &RibbonTab| {
+            tab.tools
+                .iter()
+                .any(|id| self.tool(id).is_some_and(|tool| tool.action == command))
+        };
+        current
+            .filter(|index| tabs.get(*index).is_some_and(offers))
+            .or_else(|| tabs.iter().position(offers))
     }
     pub fn workspace(&self, mode: Mode) -> &Workspace {
         self.workspaces

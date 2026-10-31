@@ -172,24 +172,44 @@ fn implemented(command: Command) -> bool {
 /// Session actions pinned at the right end of the ribbon while a sketch is
 /// open, on every Sketch tab and outside the horizontal scroll.
 pub const SKETCH_SESSION: [&str; 2] = ["finish-sketch", "abort-sketch"];
-const BUTTON: f32 = 76.;
+const BUTTON: f32 = icons::TOOL_TILE.x;
 const SEPARATOR: f32 = 19.;
+/// Fixed row under the tiles that carries the group caption.
+const SECTION_LABEL: f32 = 16.;
+/// Space kept below the tiles for the horizontal overflow scroll bar, so the
+/// bar never covers a label and the height does not change on resize.
+const SCROLL_BAR: f32 = 10.;
+/// Height of the tool strip: tiles with their two-line labels, the group
+/// captions and the overflow scroll bar. Every row is top-aligned so the
+/// labels, hit targets and pinned session actions share one baseline.
+pub const TOOLS_HEIGHT: f32 = icons::TOOL_TILE.y + SECTION_LABEL + SCROLL_BAR;
+fn top_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), add)
+}
 fn separator(ui: &mut egui::Ui) {
     ui.add_space(9.);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(1., 90.), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(1., icons::TOOL_TILE.y + SECTION_LABEL),
+        egui::Sense::hover(),
+    );
     ui.painter().vline(
         rect.center().x,
-        rect.y_range(),
+        rect.shrink2(egui::vec2(0., 4.)).y_range(),
         egui::Stroke::new(1., egui::Color32::from_gray(65)),
     );
     ui.add_space(9.);
 }
 fn section_label(ui: &mut egui::Ui, label: &str) {
+    let width = ui.available_width().max(1.);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, SECTION_LABEL), egui::Sense::hover());
     if !label.is_empty() {
-        ui.add_space(2.);
-        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-            ui.small(egui::RichText::new(label).color(egui::Color32::from_gray(160)));
-        });
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::TextStyle::Small.resolve(ui.style()),
+            egui::Color32::from_gray(160),
+        );
     }
 }
 pub fn show(
@@ -371,10 +391,10 @@ pub fn show_selectable(
     } else {
         pinned.len() as f32 * BUTTON + SEPARATOR
     };
-    ui.horizontal(|ui| {
+    top_row(ui, |ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let width = (ui.available_width() - pinned_width).max(0.);
-        ui.allocate_ui(egui::vec2(width, 108.), |ui| {
+        ui.allocate_ui(egui::vec2(width, TOOLS_HEIGHT), |ui| {
             ui.set_width(width);
             if sections.is_empty() {
                 let message = if mode == Mode::Sketch && !editing && tab.requires_active_sketch {
@@ -385,7 +405,7 @@ pub fn show_selectable(
                     "No tools available in this workspace yet."
                 };
                 let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(width, 108.), egui::Sense::hover());
+                    ui.allocate_exact_size(egui::vec2(width, TOOLS_HEIGHT), egui::Sense::hover());
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -398,13 +418,17 @@ pub fn show_selectable(
                 });
                 return;
             }
+            // A solid bar reserves its own strip below the captions instead
+            // of floating over the labels when the ribbon overflows.
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.spacing_mut().scroll.bar_inner_margin = SCROLL_BAR - ui.spacing().scroll.bar_width;
             egui::ScrollArea::horizontal()
                 .id_salt(("workspace-ribbon", mode.title(), tab.title))
-                .max_height(108.)
-                .min_scrolled_height(108.)
+                .max_height(TOOLS_HEIGHT)
+                .min_scrolled_height(TOOLS_HEIGHT)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    top_row(ui, |ui| {
                         for (index, section) in sections.iter().enumerate() {
                             if index > 0 {
                                 separator(ui);
@@ -412,7 +436,7 @@ pub fn show_selectable(
                             ui.vertical(|ui| {
                                 ui.set_width(section.entries.len() as f32 * BUTTON);
                                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                                ui.horizontal(|ui| {
+                                top_row(ui, |ui| {
                                     ui.spacing_mut().item_spacing.x = 0.;
                                     for entry in &section.entries {
                                         let chosen = match entry {
@@ -439,7 +463,7 @@ pub fn show_selectable(
             separator(ui);
             ui.vertical(|ui| {
                 ui.set_width(pinned.len() as f32 * BUTTON);
-                ui.horizontal(|ui| {
+                top_row(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 0.;
                     for id in &pinned {
                         if let Some(command) =
@@ -727,6 +751,42 @@ mod tests {
             }
         }
     }
+    /// CAD-154: every catalog label fits a tile in two lines without
+    /// elision, so labels and their padding stay inside `TOOLS_HEIGHT`.
+    #[test]
+    fn every_catalog_label_fits_two_lines_inside_its_tile() {
+        let registry = Registry::default();
+        let ctx = egui::Context::default();
+        frame(&ctx, vec![], |ui| {
+            for workspace in &registry.workspaces {
+                for tab in &workspace.tabs {
+                    let tiles = groups(workspace.mode, tab).into_iter().flat_map(|group| {
+                        group.entries.into_iter().map(|entry| match entry {
+                            Entry::Tool(id) => registry.tool(id).unwrap().label,
+                            Entry::Menu { label, .. } => label,
+                        })
+                    });
+                    for label in tiles {
+                        let galley = ui.painter().layout(
+                            label.into(),
+                            egui::FontId::proportional(10.),
+                            egui::Color32::WHITE,
+                            icons::TOOL_TILE.x - 6.,
+                        );
+                        assert!(galley.rows.len() <= 2, "{label} needs elision");
+                        let shown = icons::tile_label(ui, label, egui::Color32::WHITE);
+                        assert!(shown.rows.len() <= 2, "{label}");
+                        assert!(
+                            icons::TOOL_LABEL_TOP + shown.size().y + 4. <= icons::TOOL_TILE.y,
+                            "{label} leaves no bottom padding"
+                        );
+                    }
+                }
+            }
+        })
+        .drop_without_applying_deltas();
+        const { assert!(icons::TOOL_TILE.y + SECTION_LABEL <= TOOLS_HEIGHT) };
+    }
     #[test]
     fn sketch_drawing_modes_fold_into_rectangle_and_circle_menus_in_place() {
         let registry = Registry::default();
@@ -772,15 +832,22 @@ mod tests {
                 .any(|entry| matches!(entry, Entry::Tool("new-module-tool")))
         }));
     }
+    /// Labels whose centre is visible (not scrolled out of the ribbon).
     fn positioned_labels(output: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
         output
             .shapes
             .iter()
             .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) => Some((
-                    text.galley.text().replace('\n', " "),
-                    text.pos + text.galley.size() * 0.5,
-                )),
+                egui::Shape::Text(text)
+                    if shape
+                        .clip_rect
+                        .contains(text.pos + text.galley.size() * 0.5) =>
+                {
+                    Some((
+                        text.galley.text().replace('\n', " "),
+                        text.pos + text.galley.size() * 0.5,
+                    ))
+                }
                 _ => None,
             })
             .collect()
