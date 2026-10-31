@@ -4,7 +4,7 @@
 
 # ToskCAD
 
-Native parametric CAD built in Rust, with exact Open CASCADE geometry and a shared transactional document API for the desktop UI and local MCP control.
+Open-source CAD for people who build. Design wooden, metal and printed parts together, with editable dimensions and drawings for the workshop. The native application is built in Rust with exact Open CASCADE geometry and a shared transactional document API for the desktop UI and local MCP control.
 
 [Project website](https://kellertobias.github.io/TOSKCAD/) · [Build guide](docs/BUILDING.md) · [Contributing](CONTRIBUTING.md) · [Verification notes](docs/verification)
 
@@ -12,13 +12,15 @@ ToskCAD is under active development. Expect unfinished workflows and changing pr
 
 ## Application screenshots
 
-These are native macOS screenshots from a local build on October 31, 2026. The cabinet, welded workbench, front panel and apartment are included in the application's Examples browser. Each opens as an editable copy. The captures use closer cameras; the cabinet shows its open pose and the panel shows its assigned materials in the assembly preview.
+These are native macOS screenshots from a local build on October 31, 2026. The cabinet, workbench with a welded frame, front panel, adjustable drill guide and apartment are included in the application's Examples browser. Each opens as an editable copy. The captures use closer cameras; the cabinet shows its open pose and the panel shows its assigned materials in the assembly preview.
 
 ![Built-in plywood cabinet in the Wood workbench](website/assets/cabinet.jpg)
 
-![Built-in steel workbench and perforated beech top in the Weld workbench](website/assets/workbench.jpg)
+![Built-in workbench with a welded frame, beech top and under-bench vise in the Weld workbench](website/assets/workbench.jpg)
 
 ![Built-in aluminium front panel in the Sheet metal workbench](website/assets/front-panel.jpg)
+
+![Adjustable drill guide with printed body and metal bushings in the Common workbench](website/assets/drill-guide.jpg)
 
 ![Built-in apartment with workshop in the Architecture workbench](website/assets/apartment.jpg)
 
