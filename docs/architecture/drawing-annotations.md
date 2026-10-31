@@ -111,3 +111,45 @@ table) and a Drafting tab (sheet line, circle, arc, hatch, dimension).
   point), Copy (a new identity, offset) and Remove.
 - **Dimension values.** A model dimension shows its current value, or why it
   is detached.
+
+### Placing notes and drafting on the paper
+
+[`drawings/placement.rs`](../../crates/multicad-ui/src/drawings/placement.rs)
+handles placement from the UI. A placement is pending: it is shown on the
+sheet but is not part of the page draft until it is completed.
+
+- **Text note.** The pending note editor opens at the top of the Inspector
+  with keyboard focus, even when a drawing view was selected. A dashed marker
+  shows the note on the sheet. Clicking the paper moves it. **Add note** is
+  enabled only once the note has text; it adds the note to the page draft.
+  Cancel or Escape discards it. An empty note is never added.
+- **Sheet drafting.** The tools collect clicks while the sheet previews the
+  pending geometry, dashed under the pointer. The Inspector and the sheet
+  show the next step.
+
+  | Tool | Clicks |
+  | --- | --- |
+  | Sheet line | start, end |
+  | Sheet circle | center, point on the circle |
+  | Sheet arc | center, start (sets the radius), end |
+  | Hatch | three or more corners; click the first corner, press Enter or use Finish hatch |
+  | Sheet dimension | first point, second point, dimension-line position (sets the offset) |
+
+- **Snapping.** A point snaps to an existing drafting point within 2 mm of
+  paper. Otherwise it snaps to a 0.5 mm grid, and Shift keeps it horizontal
+  or vertical from the previous point. Points stay inside the printable area.
+- **Handles.** A completed annotation is selected. Selected drafting shows
+  square handles at its defining points: line ends, circle center and radius,
+  arc center/start/end, hatch corners, and the two dimension points plus
+  offset. Dragging a handle edits the same draft data as the Inspector's
+  numeric fields.
+- **Cancel and undo.** Escape (routed through the application's Cancel
+  shortcut), Cancel or Discard drops a pending placement without touching the
+  draft. Apply commits completed drafting as one undoable page edit, and Undo
+  restores the page without it.
+
+Non-UI channels keep the earlier immediate insertion at default positions.
+Headless egui tests in
+[`placement_tests.rs`](../../crates/multicad-ui/src/drawings/placement_tests.rs)
+drive real pointer clicks, drags, typing and Escape through the editor
+frame.
