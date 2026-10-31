@@ -1048,7 +1048,13 @@ pub fn page_conflicts(
             }
         }
     }
-    let mut placed: Vec<(String, [f64; 4], Option<[f64; 4]>, bool)> = vec![];
+    struct PlacedAnnotation {
+        name: String,
+        full: [f64; 4],
+        collision: Option<[f64; 4]>,
+        dimension: bool,
+    }
+    let mut placed = vec![];
     for annotation in &page.annotations {
         let (graphic, dimension) = match &annotation.kind {
             AnnotationKind::Dimension { .. } => match evaluation.annotations.get(&annotation.id) {
@@ -1082,12 +1088,12 @@ pub fn page_conflicts(
                 }
                 _ => Some(b),
             };
-            placed.push((
-                format!("annotation {}", annotation.id),
-                b,
+            placed.push(PlacedAnnotation {
+                name: format!("annotation {}", annotation.id),
+                full: b,
                 collision,
                 dimension,
-            ));
+            });
         }
     }
     let inside = |b: [f64; 4]| {
@@ -1101,7 +1107,16 @@ pub fn page_conflicts(
             problems.push(format!("View {name} overlaps the title block"));
         }
     }
-    for (i, (name, full, collision, dimension)) in placed.iter().enumerate() {
+    for (
+        i,
+        PlacedAnnotation {
+            name,
+            full,
+            collision,
+            dimension,
+        },
+    ) in placed.iter().enumerate()
+    {
         if !inside(*full) {
             problems.push(format!("The {name} extends outside the printable area"));
         }
@@ -1114,7 +1129,13 @@ pub fn page_conflicts(
                     problems.push(format!("The {name} overlaps view {view}"));
                 }
             }
-            for (other, _, o, other_dimension) in &placed[i + 1..] {
+            for PlacedAnnotation {
+                name: other,
+                collision: o,
+                dimension: other_dimension,
+                ..
+            } in &placed[i + 1..]
+            {
                 if !other_dimension && o.is_some_and(|o| overlap(*b, o)) {
                     problems.push(format!("The {name} overlaps the {other}"));
                 }
