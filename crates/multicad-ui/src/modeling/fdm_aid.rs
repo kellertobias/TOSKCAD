@@ -749,6 +749,36 @@ mod tests {
     }
 
     #[test]
+    fn typed_inspector_values_drive_the_marker_and_direction_handle() {
+        let (s, block) = session();
+        let doc = s.document();
+        let mut tab = FdmAidPanel::new(doc, "Tab".into());
+        tab.pick_surface(
+            doc,
+            block,
+            surface([12.5, 0., 20.], [0., -1., 0.], true),
+            Some(15.),
+        )
+        .unwrap();
+        // Typed coordinates replace the picked ones as the marker position
+        // the viewer draws from, with no pick involved.
+        tab.origin[0] = field(30., "mm");
+        tab.origin[1] = field(20., "mm");
+        assert_eq!(tab.origin_mm(doc).unwrap(), [30., 20., 15.]);
+        // The direction handle starts from the typed contact: aiming at a
+        // point straight +X of it gives 0 degrees, not the picked -90.
+        tab.picking = Some(PickRole::Direction);
+        tab.aim(doc, [40., 20., 15.]).unwrap();
+        assert_eq!(tab.angle_text(), "0");
+        // An incomplete typed value hides the marker instead of drawing a
+        // stale position, and the handle cannot be aimed from it.
+        tab.origin[0].text = "not a number".into();
+        assert_eq!(tab.origin_mm(doc), None);
+        tab.picking = Some(PickRole::Direction);
+        assert!(tab.aim(doc, [40., 20., 15.]).is_err());
+    }
+
+    #[test]
     fn a_blocked_review_keeps_preview_but_never_lets_apply_through() {
         let (s, block) = session();
         let mut form = FdmAidPanel::new(s.document(), "Tab".into());
