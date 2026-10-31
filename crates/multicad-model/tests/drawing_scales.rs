@@ -482,7 +482,7 @@ fn logo_checks(bytes: &[u8], pages: usize, shown: bool) {
             assert!(cols[13].parse::<f64>().unwrap() >= 300., "{row}");
         }
     }
-    // Rasterized, the logo area is the blueprint blue, not paper white.
+    // Rasterized, the print logo has white paper and neutral black/grey ink.
     let png = dir.path().join("page");
     if Command::new("pdftoppm")
         .args(["-r", "50", "-f", "1", "-l", "1"])
@@ -523,6 +523,21 @@ fn logo_checks(bytes: &[u8], pages: usize, shown: bool) {
             [buf[i], buf[i + 1], buf[i + 2]]
         };
         let [r, g, b] = at(logo[0] + 1., (logo[1] + logo[3]) * 0.5);
-        assert!(b > r + 40 && b > 150, "logo pixel {r},{g},{b}");
+        assert!(r >= 245 && g >= 245 && b >= 245, "paper pixel {r},{g},{b}");
+        let mut ink = 0;
+        for y in 1..((logo[3] - logo[1]) * px) as usize {
+            for x in 1..((logo[2] - logo[0]) * px) as usize {
+                let [r, g, b] = at(logo[0] + x as f64 / px, logo[1] + y as f64 / px);
+                assert!(
+                    r.abs_diff(g) <= 3 && g.abs_diff(b) <= 3,
+                    "coloured logo pixel {r},{g},{b}"
+                );
+                ink += usize::from(r.max(g).max(b) < 180);
+            }
+        }
+        assert!(
+            ink > 4,
+            "print logo is blank or too faint: {ink} ink pixels"
+        );
     }
 }
