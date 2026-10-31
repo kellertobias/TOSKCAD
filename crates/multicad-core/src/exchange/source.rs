@@ -229,6 +229,10 @@ impl Recipe {
         }
     }
 }
+/// The default filename template: readable project and Part names. Outputs
+/// that would share a name get a short identity suffix (see
+/// [`filenames`](super::filenames)); full identities stay in the manifest.
+pub const DEFAULT_NAMING_TEMPLATE: &str = "{project}_{part}";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -249,7 +253,7 @@ pub struct NamingRule {
 impl Default for NamingRule {
     fn default() -> Self {
         Self {
-            template: "{part}_{id}_{occurrence}_{recipe}_{revision}".into(),
+            template: DEFAULT_NAMING_TEMPLATE.into(),
             revision: RevisionRule::ContentHash,
         }
     }

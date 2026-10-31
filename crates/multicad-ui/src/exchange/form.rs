@@ -357,6 +357,17 @@ impl Draft {
                     .desired_width(ui.available_width()),
             );
             ui.small("{project}, {set}, {part}, {id}, {occurrence}, {recipe}, {revision}, {page}");
+            ui.small(naming_help(&self.source.naming.template));
+            if ui
+                .add_enabled(
+                    self.source.naming.template != DEFAULT_NAMING_TEMPLATE,
+                    egui::Button::new("Use readable names"),
+                )
+                .on_hover_text(format!("Set the template to {DEFAULT_NAMING_TEMPLATE}"))
+                .clicked()
+            {
+                self.source.naming.template = DEFAULT_NAMING_TEMPLATE.into();
+            }
             let mut custom = matches!(self.source.naming.revision, RevisionRule::Label(_));
             if ui
                 .checkbox(&mut custom, "Use an authored revision label")
@@ -375,7 +386,7 @@ impl Draft {
                     "Content-hash revision stays stable when the identical source is reopened.",
                 );
             }
-            ui.small("Preview shows the exact portable filenames. Collisions block the whole run.");
+            ui.small("Preview lists the exact resolved filenames before Run.");
         });
         self.sync_query();
         request_planar
@@ -712,4 +723,17 @@ pub(super) fn rename_generated(name: &mut String, previous: &RecipeOutput, outpu
     if previous.is_generated_name(name) {
         *name = output.format_label().into();
     }
+}
+/// How a filename template reads, for the naming section.
+pub(super) fn naming_help(template: &str) -> String {
+    let base = if template == DEFAULT_NAMING_TEMPLATE {
+        "Readable names: project and Part, e.g. Cabinet_Side_panel.step; the extension names the format."
+    } else {
+        "Custom template."
+    };
+    format!(
+        "{base} Outputs that would share a name each get a short 6-character suffix from their \
+         identity, e.g. _3fa9c2, so nothing is overwritten. The bundle folder and its manifest \
+         keep the full Part, occurrence, source and provider identities."
+    )
 }

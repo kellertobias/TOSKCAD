@@ -361,7 +361,7 @@ fn snapshot_guard_rejects_modified_same_id_revision_and_capability_survives_file
 }
 
 #[test]
-fn filenames_are_stable_platform_safe_and_collisions_fail_before_any_writer_runs() {
+fn filenames_are_stable_platform_safe_and_collisions_get_short_identity_suffixes() {
     let (mut s, ids) = parts();
     let mut d = SetDefinition {
         scope: Scope {
@@ -381,6 +381,8 @@ fn filenames_are_stable_platform_safe_and_collisions_fail_before_any_writer_runs
     let files = filenames(&plan, s.document().name()).unwrap();
     assert_eq!(files[0].filename, "_CON.step");
     assert_eq!(files, filenames(&plan, s.document().name()).unwrap());
+    // Names that differ only in case would overwrite each other on macOS
+    // and Windows: both get a short identity suffix instead.
     let mut entity = s.document().get(ids[1]).unwrap().clone();
     entity.name = "con".into();
     apply(&mut s, vec![Mutation::Replace(entity)]);
@@ -389,22 +391,95 @@ fn filenames_are_stable_platform_safe_and_collisions_fail_before_any_writer_runs
     };
     let set = save(&mut s, &d);
     let plan = resolve(s.document(), s.revision(), set).unwrap();
+    let files = filenames(&plan, s.document().name()).unwrap();
+    let mut names: Vec<_> = files.iter().map(|f| f.filename.as_str()).collect();
+    names.sort();
     assert!(
-        filenames(&plan, s.document().name())
-            .unwrap_err()
-            .message
-            .contains("collision")
+        names[0].starts_with("_CON_") && names[1].starts_with("_con_"),
+        "{names:?}"
     );
+    for name in &names {
+        let suffix = name.trim_end_matches(".step").rsplit('_').next().unwrap();
+        assert_eq!(suffix.len(), 6, "{name}");
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    }
+    assert_ne!(names[0].to_ascii_lowercase(), names[1].to_ascii_lowercase());
+    // The suffix depends on identity, not order.
+    let mut reversed = plan.clone();
+    reversed.parts.reverse();
+    let again = filenames(&reversed, s.document().name()).unwrap();
+    for file in &files {
+        assert!(again.contains(file), "{file:?} moved: {again:?}");
+    }
+    // The readable default names the project and the Part only.
     d.naming = Default::default();
     let set = save(&mut s, &d);
+    let files = filenames(
+        &resolve(s.document(), s.revision(), set).unwrap(),
+        "Project",
+    )
+    .unwrap();
+    let mut names: Vec<_> = files.iter().map(|f| f.filename.as_str()).collect();
+    names.sort();
+    assert!(
+        names[0].starts_with("Project_CON_") && names[1].starts_with("Project_con_"),
+        "{names:?}"
+    );
+}
+#[test]
+fn readable_default_names_suffix_only_duplicates_of_parts_and_recipes() {
+    let (mut s, ids) = parts();
+    // Two Parts with the same display name and two STEP recipes.
+    let mut twin = s.document().get(ids[1]).unwrap().clone();
+    twin.name = "Panel".into();
+    apply(&mut s, vec![Mutation::Replace(twin)]);
+    let d = SetDefinition {
+        scope: Scope {
+            root: ScopeRoot::Explicit {
+                entities: ids.clone(),
+            },
+            tags: None,
+        },
+        recipes: vec![Recipe::step("STEP"), Recipe::step("STEP")],
+        ..Default::default()
+    };
+    let set = save(&mut s, &d);
+    let plan = resolve(s.document(), s.revision(), set).unwrap();
+    let files = filenames(&plan, "Named outputs").unwrap();
+    assert_eq!(files.len(), 6);
+    let names: BTreeSet<_> = files
+        .iter()
+        .map(|f| f.filename.to_ascii_lowercase())
+        .collect();
+    assert_eq!(names.len(), 6, "no two outputs share a name: {files:?}");
+    for f in &files {
+        assert!(f.filename.starts_with("Named_outputs_"), "{}", f.filename);
+        assert!(f.filename.ends_with(".step"));
+        // Readable stem plus at most one short suffix: no raw UUIDs.
+        assert!(
+            f.filename.len() <= "Named_outputs_Spare_123456.step".len(),
+            "{}",
+            f.filename
+        );
+    }
+    // A single recipe over uniquely named Parts needs no suffix at all.
+    let mut single = d.clone();
+    single.recipes.truncate(1);
+    single.scope.root = ScopeRoot::Explicit {
+        entities: vec![ids[0], ids[2]],
+    };
+    let set = save(&mut s, &single);
+    let files = filenames(
+        &resolve(s.document(), s.revision(), set).unwrap(),
+        "Named outputs",
+    )
+    .unwrap();
     assert_eq!(
-        filenames(
-            &resolve(s.document(), s.revision(), set).unwrap(),
-            "Project"
-        )
-        .unwrap()
-        .len(),
-        2
+        files
+            .iter()
+            .map(|f| f.filename.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["Named_outputs_Panel.step", "Named_outputs_Spare.step"])
     );
 }
 #[test]

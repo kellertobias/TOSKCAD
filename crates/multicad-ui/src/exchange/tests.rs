@@ -490,3 +490,12 @@ fn recipe_format_is_shown_beside_its_name_and_generated_names_follow_format_chan
     );
     assert_eq!(receipt_formats(&formats, &[]), "");
 }
+#[test]
+fn new_sets_use_readable_names_and_the_naming_section_explains_suffixes() {
+    let s = Session::new(Document::new("Cabinet").unwrap()).unwrap();
+    let draft = form::Draft::new(&s);
+    assert_eq!(draft.source.naming.template, DEFAULT_NAMING_TEMPLATE);
+    let help = form::naming_help(&draft.source.naming.template);
+    assert!(help.starts_with("Readable names") && help.contains("6-character suffix"));
+    assert!(form::naming_help("{part}_{id}").starts_with("Custom template"));
+}

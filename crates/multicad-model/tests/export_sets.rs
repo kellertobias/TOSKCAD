@@ -427,3 +427,78 @@ fn native_worker_preserves_repeated_run_intents_and_current_scope_provenance() {
     assert!(matches!(second.result,ExportResult::Run(Ok(ref r)) if r.reused));
     assert!(!worker.pending());
 }
+#[test]
+fn duplicate_part_names_get_short_suffixes_on_disk_with_identities_in_the_manifest() {
+    let mut f = Fixture::new();
+    // A second, larger Part with the same display name and tag.
+    let twin = PrimitiveRequest::new(
+        "Panel",
+        PrimitiveParameters::Box {
+            size: [length(10.), length(20.), length(60.)],
+            frame: Default::default(),
+        },
+    );
+    let p = model::prepare_primitive(&f.session, f.session.revision(), actor(), &twin).unwrap();
+    f.session.commit(p.prepared).unwrap();
+    let p = materials::prepare_tags(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        &[twin.body],
+        &TagEdit::Add(["cnc".into()].into()),
+    )
+    .unwrap();
+    f.session.commit(p).unwrap();
+    let preview = f.preview();
+    assert!(preview.can_run());
+    let names: Vec<_> = preview
+        .artifacts
+        .iter()
+        .map(|a| a.output.filename.clone())
+        .collect();
+    assert_eq!(names.len(), 2);
+    assert_ne!(names[0].to_ascii_lowercase(), names[1].to_ascii_lowercase());
+    for name in &names {
+        let stem = name
+            .strip_prefix("Native_export_recipes_Panel_")
+            .and_then(|s| s.strip_suffix(".step"))
+            .unwrap_or_else(|| panic!("readable default name: {name}"));
+        assert_eq!(stem.len(), 6, "{name}");
+        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    }
+    // The real run writes both files under those names.
+    let root = tempfile::tempdir().unwrap();
+    let receipt = f.run(&preview.key, root.path()).unwrap();
+    let mut on_disk: Vec<_> = std::fs::read_dir(&receipt.directory)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".step"))
+        .collect();
+    on_disk.sort();
+    let mut expected = names.clone();
+    expected.sort();
+    assert_eq!(on_disk, expected);
+    let mut volumes = vec![];
+    for file in &receipt.files {
+        let shape = Solid::read_step(
+            &Path::new(&receipt.directory).join(&file.artifact.output.filename),
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+        volumes.push(shape.volume_mm3().unwrap().round() as i64);
+    }
+    volumes.sort();
+    assert_eq!(volumes, [6000, 12000], "each name holds its own Part");
+    // The manifest binds each file name to its Part identity.
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(Path::new(&receipt.directory).join("multicad-export.json")).unwrap(),
+    )
+    .unwrap();
+    let text = manifest.to_string();
+    for id in [f.part.body, twin.body] {
+        assert!(text.contains(&id.to_string()), "{id} missing from manifest");
+    }
+    for name in &names {
+        assert!(text.contains(name.as_str()));
+    }
+}
