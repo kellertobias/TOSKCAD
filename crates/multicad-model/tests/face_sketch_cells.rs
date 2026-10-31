@@ -551,3 +551,28 @@ fn missing_or_foreign_native_support_receipts_never_become_selectable_profiles()
             .is_err()
     );
 }
+
+#[test]
+fn an_existing_authored_face_perimeter_keeps_its_closed_profile_identity() {
+    let mut f = Fixture::new();
+    let mut intent = None;
+    f.edit_strokes(|source, frame| {
+        source.sketch.curves.clear();
+        source.sketch.points.clear();
+        source
+            .add_rectangle(
+                frame.coordinates([0., 0., 10.]),
+                frame.coordinates([20., 20., 10.]),
+            )
+            .unwrap();
+        intent = Some(multicad_core::sketch_regions::extract(source).regions[0].intent());
+    });
+    let intent = intent.unwrap();
+    let regions = f.regions();
+    assert_eq!(regions.regions.len(), 1);
+    near(regions.resolve(&intent).unwrap().area_mm2, 400.);
+    let ids = f.extrude(vec![intent], Operation::NewBody, 5.);
+    let native = compile(&f.session);
+    near(native.snapshot().shapes[&ids[0]].volume_mm3, 2000.);
+    near(native.snapshot().shapes[&f.stock.feature].volume_mm3, 4000.);
+}

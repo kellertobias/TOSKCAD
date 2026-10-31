@@ -66,6 +66,7 @@ impl SketchSupport {
             .iter()
             .flat_map(|(_, edges)| edges.iter().cloned())
             .collect();
+        let mut authored = vec![];
         for g in geometry.iter().filter(|g| !construction.contains(&g.id())) {
             let curve = match g {
                 Geometry::Line { a, b, .. } => ExactCurve::Line { a: *a, b: *b },
@@ -97,13 +98,23 @@ impl SketchSupport {
                     });
                 }
             };
-            edges.push(Edge {
+            authored.push(Edge {
                 authored: g.id(),
                 reversed: false,
                 fragment: None,
                 curve,
             });
         }
+        // Existing face sketches may already contain a copied/projected whole
+        // perimeter edge. Keep its authored identity instead of adding the
+        // same finite edge twice. Partial overlaps and authored duplicates
+        // still require repair; no stroke is trimmed or silently discarded.
+        edges.retain(|support| {
+            !authored
+                .iter()
+                .any(|edge| same_curve(&support.curve, &edge.curve, tolerance))
+        });
+        edges.extend(authored);
         let mut result = extract_cells(&edges, tolerance, queries, interrupt)?;
         let mut retained = vec![];
         for region in result.regions {
@@ -135,4 +146,40 @@ impl SketchSupport {
         }
         Ok(result)
     }
+}
+
+fn same_curve(a: &ExactCurve, b: &ExactCurve, tolerance: f64) -> bool {
+    let same = |a: &ExactCurve, b: &ExactCurve| match (a, b) {
+        (ExactCurve::Line { a, b }, ExactCurve::Line { a: c, b: d }) => {
+            distance(*a, *c) <= tolerance && distance(*b, *d) <= tolerance
+        }
+        (
+            ExactCurve::Circle { center, radius_mm },
+            ExactCurve::Circle {
+                center: c,
+                radius_mm: r,
+            },
+        ) => distance(*center, *c) <= tolerance && (radius_mm - r).abs() <= tolerance,
+        (
+            ExactCurve::Arc {
+                center,
+                a,
+                b,
+                clockwise,
+            },
+            ExactCurve::Arc {
+                center: c,
+                a: d,
+                b: e,
+                clockwise: w,
+            },
+        ) => {
+            clockwise == w
+                && distance(*center, *c) <= tolerance
+                && distance(*a, *d) <= tolerance
+                && distance(*b, *e) <= tolerance
+        }
+        _ => false,
+    };
+    same(a, b) || same(a, &b.reversed())
 }
