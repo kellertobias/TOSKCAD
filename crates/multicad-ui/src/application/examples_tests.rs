@@ -8,6 +8,7 @@ use crate::{
 };
 use multicad_core::project_file::{self, ContentHash, FileLimits};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -159,7 +160,7 @@ fn drain(app: &mut Application) {
 }
 struct Frame {
     texts: Vec<(String, egui::Pos2)>,
-    textured_meshes: usize,
+    textures: HashSet<egui::TextureId>,
 }
 fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -> Frame {
     let output = ctx.run_ui(
@@ -174,12 +175,12 @@ fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -
         |ui| app.show(ui),
     );
     let mut texts = Vec::new();
-    let mut textured_meshes = 0;
+    let mut textures = HashSet::new();
     for clipped in &output.shapes {
         match &clipped.shape {
             egui::Shape::Text(text) => texts.push((text.galley.text().to_string(), text.pos)),
             egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
-                textured_meshes += 1
+                textures.insert(mesh.texture_id);
             }
             egui::Shape::Rect(rect)
                 if rect
@@ -187,16 +188,13 @@ fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -
                     .as_ref()
                     .is_some_and(|b| b.fill_texture_id != egui::TextureId::default()) =>
             {
-                textured_meshes += 1
+                textures.insert(rect.brush.as_ref().unwrap().fill_texture_id);
             }
             _ => {}
         }
     }
     output.drop_without_applying_deltas();
-    Frame {
-        texts,
-        textured_meshes,
-    }
+    Frame { texts, textures }
 }
 fn settle(ctx: &egui::Context, app: &mut Application) -> Frame {
     for _ in 0..3 {
@@ -249,28 +247,66 @@ fn cards(app: &Application) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Use the same wheel input as a person browsing the fixed-size gallery.
+/// A growing catalog must remain reachable without enlarging the viewport.
+fn scroll_to_card(
+    ctx: &egui::Context,
+    app: &mut Application,
+    mut shown: Frame,
+    name: &str,
+    at: egui::Pos2,
+    attempts: usize,
+) -> Frame {
+    for _ in 0..attempts {
+        if has(&shown, name) {
+            return shown;
+        }
+        frame(
+            ctx,
+            app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0., -160.),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..12 {
+            shown = frame(ctx, app, vec![]);
+        }
+    }
+    panic!("{name} is not reachable by scrolling: {:?}", shown.texts);
+}
+
 #[test]
 fn first_launch_without_recents_shows_every_example_card_with_its_preview() {
     let f = fixture("welcome");
     let mut app = app_with(&f, vec![]);
     let ctx = egui::Context::default();
-    let shown = settle(&ctx, &mut app);
+    let mut shown = settle(&ctx, &mut app);
     assert!(app.welcome);
     assert!(has(&shown, "Start from an example"), "{:?}", shown.texts);
     assert!(has(&shown, COPIES_FOLDER), "the copies folder is named");
     let cards = cards(&app);
     assert!(cards.len() >= 2);
+    let at = position(&shown, &cards[0].0) + egui::vec2(10., 10.);
+    let mut textures = shown.textures.clone();
     for (name, description) in &cards {
+        shown = scroll_to_card(&ctx, &mut app, shown, name, at, cards.len() * 2 + 4);
+        textures.extend(shown.textures.iter().copied());
         assert!(has(&shown, name), "{name}: {:?}", shown.texts);
         let first_words: String = description.chars().take(24).collect();
         assert!(has(&shown, &first_words), "{description}");
     }
     assert!(has(&shown, "Example · opens an editable copy"));
-    // The logo plus one decoded preview texture per card.
+    // Across the scrolled frames: the logo and every decoded card preview.
     assert!(
-        shown.textured_meshes > cards.len(),
+        textures.len() > cards.len(),
         "previews drawn: {}",
-        shown.textured_meshes
+        textures.len()
     );
     assert!(!has(&shown, "Recent projects"));
 }
@@ -293,9 +329,11 @@ fn recents_keep_their_list_and_examples_stay_reachable_from_welcome_and_the_file
     assert!(!has(&shown, &names[0].0), "cards stay behind Examples…");
     click(&ctx, &mut app, position(&shown, "Examples…"));
     assert!(app.examples.open, "{}", app.message);
-    let gallery = settle(&ctx, &mut app);
+    let mut gallery = settle(&ctx, &mut app);
     assert!(has(&gallery, "Examples"));
+    let at = position(&gallery, &names[0].0) + egui::vec2(10., 10.);
     for (name, _) in &names {
+        gallery = scroll_to_card(&ctx, &mut app, gallery, name, at, names.len() * 2 + 4);
         assert!(has(&gallery, name), "{name} in the gallery");
     }
     // The same command is a persistent File menu item and a finder tool.
