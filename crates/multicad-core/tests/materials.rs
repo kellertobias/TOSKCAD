@@ -680,3 +680,51 @@ fn inline_and_unknown_legacy_hatches_are_versioned_or_diagnosed_without_erasing_
     );
     assert!(resolve(&doc, f.parts[0]).is_err());
 }
+
+#[test]
+fn stock_without_material_names_the_prerequisite_instead_of_a_self_cycle() {
+    let mut s = Session::new(Document::new("Empty library").unwrap()).unwrap();
+    let before = s.document().clone();
+    let id = EntityId::new();
+    let panel = StockKind::Panel {
+        thickness_mm: 18.,
+        length_mm: 2440.,
+        width_mm: 1220.,
+        grain: Grain::AlongLength,
+    };
+    let stock = |material| {
+        LibraryDefinition::Stock(Stock {
+            material,
+            specification: panel.clone(),
+        })
+        .entity(id, "Birch 18")
+        .unwrap()
+    };
+    let error = prepare_library(&s, 0, actor(), &[stock(id)]).unwrap_err();
+    assert!(
+        error.message.contains("Stock 'Birch 18'")
+            && error.message.contains("manufacturing material")
+            && !error.message.contains("cycle"),
+        "{}",
+        error.message
+    );
+    let missing = EntityId::new();
+    let error = prepare_library(&s, 0, actor(), &[stock(missing)]).unwrap_err();
+    assert!(error.message.contains("requires a manufacturing material"));
+    assert_eq!(s.document(), &before);
+    assert_eq!(s.revision(), 0);
+    // Material and stock in one batch is the safe continuation.
+    let mut material = Entity::new(
+        "Birch",
+        EntityData::Material {
+            density_kg_m3: Some(680.),
+            color_rgba: [200, 180, 150, 255],
+            section_hatch: None,
+        },
+    );
+    material.id = EntityId::new();
+    library(&mut s, &[material.clone(), stock(material.id)]);
+    assert!(s.document().get(id).is_some() && s.document().get(material.id).is_some());
+    s.undo(1, actor()).unwrap();
+    assert_eq!(s.document(), &before);
+}
