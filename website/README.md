@@ -1,6 +1,6 @@
 # ToskCAD project website
 
-`index.html`, `style.css` and `site.js` form a static project page for GitHub Pages. There is no package installation or build step. Relative asset paths support the `/TOSKCAD/` project prefix.
+`index.html`, `style.css` and `site.js` form a static project page for GitHub Pages. `releases.html` and `releases.mjs` list native downloads from GitHub Releases. There is no package installation or build step. Relative asset paths support the `/TOSKCAD/` project prefix.
 
 The four examples appear in alternating image-and-description sections. On smaller screens, the main image sits above its description. Clicking a project image opens an in-page preview with zoom, previous/next controls and arrow-key navigation. Escape closes the preview and returns focus to the image link. Without JavaScript, the links open the original files. Reduced motion disables entrance animations.
 
@@ -24,3 +24,9 @@ All imagery belongs to this project. No stock images, synthetic application scre
 ## Deployment
 
 The [Pages workflow](../.github/workflows/pages.yml) uploads only `website/`, then deploys using the GitHub Pages environment. The repository Pages build type must be GitHub Actions. Website deployment is independent of application releases and their Forgejo reconciliation gates. CSS and script URLs carry a revision query to refresh cached gallery behaviour.
+
+## Release downloads
+
+The download page fetches the public releases API for `kellertobias/TOSKCAD`, showing up to six published semantic releases with their platform binaries, sources and SHA-256 links. It only accepts asset URLs belonging to that exact repository and release. A platform download appears when its runtime ZIP, source ZIP and checksum are all present. Missing releases, API failures and request timeouts leave the direct GitHub Releases link available; failures also offer Retry. No token is needed or included.
+
+Run `node --test tools/website-releases.test.mjs` from the repository root to check release filtering and asset selection. The same checks run with `npm test`.

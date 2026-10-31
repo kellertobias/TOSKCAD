@@ -57,7 +57,9 @@ The [symbol checkpoint](docs/verification/native-symbols-2026-10-29.md) records 
 
 [Associative feature transfer](docs/architecture/0021-associative-feature-transfer.md) derives holes and supported outer-face cutouts through explicit occurrence paths. Each receiving Part stores its diameter, clearance and cut depth; missing source references require explicit repair. The [native transfer checkpoint](docs/verification/native-feature-transfer-2026-10-28.md) records multi-material rail examples, source edits, native GUI repair and validation limits.
 
-[CI and releases](.github/workflows/release.yml) keep Forgejo authoritative for future branch mirroring and GitHub responsible for builds and tag-only hosted releases. The public publication repository is [TOSKCAD](https://github.com/kellertobias/TOSKCAD). Application releases remain disabled until deployed mirror tag reconciliation is verified. See [RELEASING.md](docs/RELEASING.md).
+[Download ToskCAD](https://kellertobias.github.io/TOSKCAD/releases.html) for macOS (Apple silicon), Windows (x64) or Linux (x64). The page lists binaries from [GitHub Releases](https://github.com/kellertobias/TOSKCAD/releases), with matching source archives and SHA-256 checksums.
+
+[CI and releases](.github/workflows/release.yml) test and package all three platforms before publishing a tag-only release on the tested `main` commit. GitHub is the primary repository. See [RELEASING.md](docs/RELEASING.md) for the release contract and activation gate.
 
 ## Project website
 
