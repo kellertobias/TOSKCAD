@@ -428,7 +428,10 @@ impl Application {
         self.active_tool == Some((self.active, command))
             && match command {
                 Command::Modeling(_) => self.current().sketch.model_active(),
-                Command::Drawing(_) => self.current().drawings.dirty(),
+                Command::Drawing(_) => {
+                    let drawings = &self.current().drawings;
+                    drawings.dirty() || drawings.placing()
+                }
                 _ => false,
             }
     }
