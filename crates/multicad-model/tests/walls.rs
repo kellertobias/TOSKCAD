@@ -398,6 +398,13 @@ fn closed_room_and_plan_section_show_door_swings_and_window_panes() {
     };
     assert!(vectors.iter().any(|v| v.role == VectorRole::Section));
     assert!(vectors.iter().any(|v| v.role == VectorRole::Hatch));
+    // The material's hatch style replaces the default wall hatch.
+    assert!(
+        vectors
+            .iter()
+            .filter(|v| v.role == VectorRole::Hatch)
+            .all(|v| v.line_width_mm == 0.18)
+    );
     // The door swing: a 900 mm quarter arc hinged at the start jamb on the
     // left (inner) face of segment 0, at (1000, 100).
     let arc = vectors
@@ -523,4 +530,245 @@ fn room_tools_place_openings_and_vertical_cutouts_natively_and_survive_reopen() 
     let mut older = project_file::supported_capabilities();
     older.remove(model::WALL_CUTOUT_CAPABILITY);
     assert!(project_file::read(&mut bytes.as_slice(), Default::default(), &older).is_err());
+}
+
+/// A line vector whose ends both lie on `y` and which spans `x0..x1`.
+fn spans_x(v: &DrawingVector, y: f64, x0: f64, x1: f64) -> bool {
+    matches!(v.curve, VectorCurve::Line { a, b }
+        if (a[1] - y).abs() < 1e-6 && (b[1] - y).abs() < 1e-6
+            && a[0].min(b[0]) <= x0 && a[0].max(b[0]) >= x1)
+}
+/// A line vector from `y0` to `y1` at `x`.
+fn jamb(v: &DrawingVector, x: f64, y0: f64, y1: f64) -> bool {
+    matches!(v.curve, VectorCurve::Line { a, b }
+        if (a[0] - x).abs() < 1e-6 && (b[0] - x).abs() < 1e-6
+            && (a[1].min(b[1]) - y0).abs() < 1e-6 && (a[1].max(b[1]) - y1).abs() < 1e-6)
+}
+fn plan_view(body: EntityId, kind: ViewKind) -> DrawingView {
+    DrawingView {
+        id: EntityId::new(),
+        name: "Plan".into(),
+        source: ViewSource::Model {
+            entities: vec![body],
+        },
+        frame: ReferenceFrame {
+            origin_mm: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+        },
+        kind,
+        position_mm: [200., 150.],
+        scale: Scale {
+            numerator: 1,
+            denominator: 50,
+        },
+        hidden_lines: false,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+        guide: None,
+    }
+}
+
+/// The review room: 4 x 3 m, a 900 x 2100 door and a 1200 x 1200 window at
+/// a 900 mm sill, with a wall type that has no material (the UI default).
+#[test]
+fn default_room_plan_hatches_cut_walls_with_real_door_and_window_voids() {
+    let mut f = fixture();
+    let (plain, p) = model::prepare_wall_type(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "Plain 200",
+        &WallTypeDefinition {
+            thickness: length(200.),
+            height: length(2500.),
+            justification: Justification::Center,
+            material: None,
+        },
+    )
+    .unwrap();
+    f.s.commit(p).unwrap();
+    let room = WallDefinition {
+        wall_type: plain,
+        path: vec![
+            point(0., 0.),
+            point(4000., 0.),
+            point(4000., 3000.),
+            point(0., 3000.),
+        ],
+        closed: true,
+        // Door 500..1400 on the south wall; window 2600..1400 on the north.
+        openings: vec![opening(f.door, 0, 500.), opening(f.window, 2, 1400.)],
+        cutouts: vec![],
+        ..l_wall(&f)
+    };
+    let (wall, body) = create(&mut f, "Room", room);
+    let manufacturing = (4200. * 3200. - 3800. * 2800.) * 2500. - DOOR - WINDOW;
+
+    // The default view a user places: a top projection. Sections at 800 mm
+    // (below the window sill) and 2300 mm (above both heads) check the
+    // response to the cut height.
+    let mut page = Page::new("A-101");
+    page.settings.paper = PaperSize::A3;
+    let default_view = plan_view(body, ViewKind::Projection);
+    let low = plan_view(
+        body,
+        ViewKind::Section {
+            offset_mm: 800.,
+            range: SectionRange::Depth { depth_mm: 900. },
+            window: SectionWindow::default(),
+        },
+    );
+    let high = plan_view(
+        body,
+        ViewKind::Section {
+            offset_mm: 2300.,
+            range: SectionRange::Depth { depth_mm: 2400. },
+            window: SectionWindow::default(),
+        },
+    );
+    // Side by side on the sheet: default, low cut, high cut.
+    let (mut default_view, mut low, mut high) = (default_view, low, high);
+    default_view.position_mm = [80., 190.];
+    low.position_mm = [200., 190.];
+    high.position_mm = [320., 190.];
+    let ids = [default_view.id, low.id, high.id];
+    page.views.extend([default_view, low, high]);
+    let page_id = page.id;
+    let (book, p) = prepare_create(&f.s, f.s.revision(), actor(), "Plans", Some(page)).unwrap();
+    f.s.commit(p).unwrap();
+    let m = compile(&f.s);
+    near(volume(&m, wall), manufacturing, 1e-3);
+    let evaluation = m
+        .drawings(f.s.document(), f.s.revision(), &DrawingProviders::default())
+        .unwrap();
+    let vectors = |id: EntityId| match &evaluation.views[&id] {
+        ViewEvaluation::Ready { vectors, .. } => vectors.clone(),
+        other => panic!("{other:?}"),
+    };
+
+    // Default plan: cut walls hatched with the default pattern and weights.
+    let plan = vectors(ids[0]);
+    let role = |r: VectorRole| plan.iter().filter(move |v| v.role == r);
+    assert!(role(VectorRole::Hatch).count() > 20);
+    assert!(role(VectorRole::Hatch).all(|v| v.line_width_mm == 0.13));
+    assert!(role(VectorRole::Section).all(|v| v.line_width_mm == 0.5));
+    // The doorway is a gap: no cut line or hatch crosses it, jambs close it.
+    for y in [-100., 100.] {
+        assert!(
+            !plan
+                .iter()
+                .any(|v| v.role != VectorRole::Hidden && spans_x(v, y, 600., 1300.)),
+            "a line continues across the doorway at y = {y}"
+        );
+    }
+    assert!(!role(VectorRole::Hatch).any(|v| {
+        v.preview_mm
+            .iter()
+            .any(|p| p[0] > 510. && p[0] < 1390. && p[1].abs() < 95.)
+    }));
+    for x in [500., 1400.] {
+        assert!(role(VectorRole::Section).any(|v| jamb(v, x, -100., 100.)));
+    }
+    // The door leaf and its 900 mm swing remain.
+    let swing = |vs: &[DrawingVector]| {
+        vs.iter().any(|v| {
+            matches!(v.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - 900.).abs() < 1e-9)
+        })
+    };
+    assert!(swing(&plan));
+    // The window is cut (sill 900 <= 1000 < head 2100): jambs, two panes,
+    // and its sill seen below the cut as thinner projected lines.
+    for x in [1400., 2600.] {
+        assert!(role(VectorRole::Section).any(|v| jamb(v, x, 2900., 3100.)));
+    }
+    for y in [2900., 3100.] {
+        assert!(!role(VectorRole::Section).any(|v| spans_x(v, y, 1500., 2500.)));
+        assert!(
+            role(VectorRole::Visible)
+                .any(|v| spans_x(v, y, 1400., 2600.) && v.line_width_mm == 0.18),
+            "sill edge at y = {y}"
+        );
+    }
+    let panes = role(VectorRole::Visible)
+        .filter(|v| {
+            matches!(v.curve, VectorCurve::Line { a, b }
+                if (a[1] - b[1]).abs() < 1e-9 && (a[1] - 3000.).abs() < 40.
+                    && ((a[0] - b[0]).abs() - 1200.).abs() < 1e-9)
+        })
+        .count();
+    assert_eq!(panes, 2);
+    assert!(role(VectorRole::Hidden).next().is_none());
+
+    // Cut below the window sill: the wall is cut through under the window
+    // and the window is a dashed outline; the door is still cut.
+    let low = vectors(ids[1]);
+    assert!(
+        low.iter()
+            .any(|v| v.role == VectorRole::Section && spans_x(v, 3100., 1500., 2500.))
+    );
+    assert_eq!(
+        low.iter().filter(|v| v.role == VectorRole::Hidden).count(),
+        4
+    );
+    assert!(swing(&low));
+    // Cut above both heads: the wall is continuous; both openings dashed.
+    let high = vectors(ids[2]);
+    assert!(
+        high.iter()
+            .any(|v| v.role == VectorRole::Section && spans_x(v, -100., 600., 1300.))
+    );
+    assert!(!swing(&high));
+    assert_eq!(
+        high.iter().filter(|v| v.role == VectorRole::Hidden).count(),
+        8
+    );
+
+    // The native sheet and PDF carry the same hierarchy.
+    let render =
+        render::render_page(f.s.document(), f.s.revision(), book, page_id, &evaluation).unwrap();
+    assert!(
+        render
+            .polylines
+            .iter()
+            .any(|p| p.layer == render::Layer::Hatch && p.width_mm == 0.13)
+    );
+    assert!(
+        render
+            .polylines
+            .iter()
+            .any(|p| p.layer == render::Layer::Hidden && p.dashed)
+    );
+    if let Ok(path) = std::env::var("MULTICAD_PLAN_SVG") {
+        std::fs::write(path, svg::render_svg(&render)).unwrap();
+    }
+    let pdf = pdf::book_pdf(
+        f.s.document(),
+        f.s.revision(),
+        &[(book, page_id)],
+        &evaluation,
+    )
+    .unwrap();
+    let text = String::from_utf8_lossy(&pdf);
+    assert!(text.contains("0.369 w"), "default hatch weight in the PDF");
+    assert!(text.contains("1.417 w"), "cut wall weight in the PDF");
+
+    // A thicker wall regenerates the cut: jambs now span ±150.
+    let mut edited = model::read_wall(f.s.document(), wall).unwrap();
+    edited.thickness = Some(length(300.));
+    let p = model::prepare_wall_edit(&f.s, f.s.revision(), actor(), wall, &edited).unwrap();
+    f.s.commit(p.prepared).unwrap();
+    let m = compile(&f.s);
+    let evaluation = m
+        .drawings(f.s.document(), f.s.revision(), &DrawingProviders::default())
+        .unwrap();
+    let ViewEvaluation::Ready { vectors, .. } = &evaluation.views[&ids[0]] else {
+        panic!("{:?}", evaluation.views[&ids[0]]);
+    };
+    assert!(
+        vectors
+            .iter()
+            .any(|v| v.role == VectorRole::Section && jamb(v, 500., -150., 150.))
+    );
+    assert!(vectors.iter().any(|v| v.role == VectorRole::Hatch));
 }
