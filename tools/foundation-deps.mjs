@@ -20,6 +20,7 @@ if(!existsSync(archive)) {
 }
 if(createHash('sha256').update(readFileSync(archive)).digest('hex')!==pin.sha256)throw new Error('Cached OCCT archive checksum mismatch');
 const source=join(directory,pin.directory);
-if(!existsSync(source))execFileSync('tar',['-xzf',archive,'-C',directory],{stdio:'inherit'});
+// Relative names: GNU tar (Git Bash on Windows) reads `D:\...` as a remote host.
+if(!existsSync(source))execFileSync('tar',['-xzf','occt-7.9.3.tar.gz'],{cwd:directory,stdio:'inherit'});
 if(!existsSync(join(source,'CMakeLists.txt')))throw new Error('Incomplete OCCT source extraction');
 console.log(`OCCT ${pin.version} source ready; ${pin.sha256}`);
