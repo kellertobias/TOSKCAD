@@ -109,6 +109,8 @@ fn subtract(
     policy: GeometryPolicy,
     what: &str,
 ) -> Result<Solid, ModelError> {
+    let batch_circles = prisms.len() > 1 && prisms.iter().all(|p| p.circle.is_some());
+    let mut tools = Vec::with_capacity(prisms.len());
     let mut current: Option<Solid> = None;
     for (k, prism) in prisms.iter().enumerate() {
         let outer: Vec<_> = match (prism.circle, prism.slot) {
@@ -142,9 +144,23 @@ fn subtract(
         let tool =
             Solid::extrude_curved_profile_vector_named(&profile, prism.sweep, id, &origins, policy)
                 .map_err(|e| error(Some(id), e))?;
+        tools.push(tool);
+    }
+    // Circular drilling is bounded by the shared hole budget. Combine at
+    // most 128 exact tool solids per native Boolean, preserving each tool's
+    // named faces. The profile and removed-volume contracts are unchanged.
+    for chunk in tools.chunks(if batch_circles { 128 } else { 1 }) {
+        let compound;
+        let tool = if chunk.len() == 1 {
+            &chunk[0]
+        } else {
+            compound = Solid::compound_named(&chunk.iter().collect::<Vec<_>>(), id, policy)
+                .map_err(|e| error(Some(id), e))?;
+            &compound
+        };
         let source = current.as_ref().unwrap_or(base);
         current = source
-            .boolean(&tool, BooleanOperation::Subtract, policy)
+            .boolean(tool, BooleanOperation::Subtract, policy)
             .map_err(|e| error(Some(id), e))?
             .map(Some)
             .ok_or_else(|| error(Some(id), format!("The {what} removed the whole panel")))?;
