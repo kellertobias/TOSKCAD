@@ -134,17 +134,39 @@ appear in one wall (as the record above) and in any number of slabs.
 
 ## Plan representation
 
-A drawing view whose frame looks straight down or up gets extra vectors for
-each wall in the view, alongside the projected or sectioned solid:
+A drawing view whose frame looks straight down draws walls as an
+architectural plan: a horizontal cut through the wall solid.
 
-- **Doors:** the leaf drawn open at 90° from the hinge on the swing-side face,
-  plus a quarter-circle swing arc.
-- **Windows:** two pane lines along the wall, plus a jamb line at each end.
+- **Cut height.** A section view, including a generated floor plan guide
+  view, cuts at its own plane (the guide's cut height above its level). A
+  plain top projection, which is what a newly placed view is, cuts each wall
+  1000 mm above its base (the floor-plan guide default) and looks down to
+  the base; other Parts in the view keep the ordinary projection. The cut
+  is the native section of the actual wall solid, so door and window voids,
+  jambs and vertical cutouts appear exactly where the solid has them.
+- **Hatching.** Cut wall faces are hatched. The material's section hatch
+  style is used when it has one (an explicit "none" style turns hatching
+  off). Without one, walls get a default of 45° lines, 1.5 mm apart on paper
+  at any scale, 0.13 mm wide. Hatching is drawing output only; it never
+  changes the wall solid.
+- **Line weights.** Cut wall outlines 0.5 mm; geometry seen below the cut
+  (for example a window sill), door leaves and window panes 0.18 mm; door
+  swings and dashed outlines 0.13 mm.
+- **Openings and the cut height.** For an opening the cut passes through
+  (sill <= cut < head):
+  - **Doors:** the leaf drawn open at 90° from the hinge on the swing-side
+    face, plus a quarter-circle swing arc, inside the real gap in the cut.
+  - **Windows:** two pane lines inside the cut void; the jambs come from the
+    cut and the sill below is drawn as projected lines.
 
-The vectors carry the wall Part's identity. The Part's material supplies the
-section hatch, so a horizontal section view gives a hatched floor plan with
-door swings and window symbols. These symbols reach PDF and DXF through the
-shared page render.
+  An opening wholly above or below the cut is not visible in the cut wall.
+  It is outlined with dashed (hidden) lines on both wall faces and at its
+  jambs, with no swing or panes.
+- **Views looking up** keep every door and window symbol, drawn as if cut.
+
+The vectors carry the wall Part's identity and regenerate with every wall,
+opening, type, level or guide change. These symbols reach PDF and DXF
+through the shared page render.
 
 ## Access
 
@@ -249,5 +271,13 @@ shared page render.
   a literal. Arc segments are not supported. The overlay is drawn on the
   base plane in any camera orientation; from a steep side view the plane is
   edge-on and clicks do not hit it.
+- **Plan drawing.** The 1000 mm cut of a plain top projection is fixed; use
+  a floor plan guide (or a section view) for another cut height. The view
+  depth of a plain projection reaches the wall base, so things below the
+  base are not drawn for walls. Door and window frames, reveals with
+  splayed jambs and sill boards are not modeled, so the plan shows the
+  rectangular void only. Cut and projected lines follow the line weights
+  above; there is no per-view line-weight setting. This presentation
+  follows the user's stated convention, not a named drafting standard.
 - **Not certified.** These are geometric tools only; they carry no building
   code, accessibility or structural certification.
