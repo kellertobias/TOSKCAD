@@ -613,8 +613,12 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
         canvas::show(ui, &page, 0, 1, result.as_deref(), None, None, None);
     });
     assert!(
-        canvas.contains("Section A-A"),
+        canvas.lines().any(|l| l == "Section A-A"),
         "the plan view shows the section guide label: {canvas}"
+    );
+    assert!(
+        canvas.contains("Section A-A — Scale 1:1") && canvas.contains("Plan — Scale 1:1"),
+        "every view prints its actual scale: {canvas}"
     );
     // A plan looking along the section normal cannot see the cut edge-on.
     let mut facing = page.clone();
@@ -622,7 +626,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let canvas = painted_text(|ui| {
         canvas::show(ui, &facing, 0, 1, result.as_deref(), None, None, None);
     });
-    assert!(!canvas.contains("Section A-A"), "{canvas}");
+    assert!(!canvas.lines().any(|l| l == "Section A-A"), "{canvas}");
     editor
         .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
         .unwrap();

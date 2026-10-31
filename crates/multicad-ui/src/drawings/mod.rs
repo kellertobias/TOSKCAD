@@ -199,6 +199,8 @@ pub struct DrawingEditor {
     section_pick: Option<(EntityId, Option<[f64; 2]>)>,
     selected_annotation: Option<EntityId>,
     schedules: schedules::ScheduleState,
+    /// How Fit view to page chooses the view scale.
+    fit_mode: drawings::FitMode,
 }
 impl DrawingEditor {
     pub fn dirty(&self) -> bool {

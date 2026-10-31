@@ -1,9 +1,7 @@
 use super::*;
 use multicad_core::{
     document::{Document, EntityData},
-    drawings::{
-        DrawingView, Scale, SectionRange, SectionWindow, ViewEvaluation, ViewKind, ViewSource,
-    },
+    drawings::{DrawingView, SectionRange, SectionWindow, ViewEvaluation, ViewKind, ViewSource},
     references::ReferenceFrame,
 };
 impl DrawingEditor {
@@ -208,39 +206,14 @@ impl DrawingEditor {
             }
         }
         let page = self.draft.as_mut().ok_or("Select a page")?;
-        let [w, h] = page.settings.dimensions();
-        let margin = page.settings.margin_mm + 8.;
-        let bottom = if page.settings.title_block {
-            h - page.settings.margin_mm - 40.
-        } else {
-            h - margin
-        };
-        let available = [w - 2. * margin, bottom - margin];
-        if available.iter().any(|v| *v <= 0.) {
-            return Err("Paper has no space for a view".into());
-        }
+        let layout = drawings::layout_page(page, 1, 1).map_err(|e| e.to_string())?;
         let view = page
             .views
             .iter_mut()
             .find(|v| v.id == id)
             .ok_or("View is missing")?;
-        if let ViewKind::Detail {
-            center_mm,
-            radius_mm,
-        } = view.kind
-        {
-            min = [center_mm[0] - radius_mm, center_mm[1] - radius_mm];
-            max = [center_mm[0] + radius_mm, center_mm[1] + radius_mm];
-        }
-        let needed = ((max[0] - min[0]) / available[0])
-            .max((max[1] - min[1]) / available[1])
-            .ceil()
-            .max(1.);
-        if needed > 100000. {
-            return Err("View needs a larger sheet or a manually configured scale".into());
-        }
-        let denominator = needed as u32;
-        let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+        let fit = drawings::fit_view(view, &layout, min, max, self.fit_mode)?;
+        let center = fit.center_mm;
         for i in 0..3 {
             view.frame.origin_mm[i] += view.frame.u[i] * center[0] + view.frame.v[i] * center[1];
         }
@@ -248,11 +221,8 @@ impl DrawingEditor {
             center_mm[0] -= center[0];
             center_mm[1] -= center[1];
         }
-        view.scale = Scale {
-            numerator: 1,
-            denominator,
-        };
-        view.position_mm = [w * 0.5, (margin + bottom) * 0.5];
+        view.scale = fit.scale;
+        view.position_mm = fit.position_mm;
         Ok(())
     }
     pub(super) fn views_inspector(&mut self, ui: &mut egui::Ui, session: &mut Session) {
@@ -340,6 +310,20 @@ impl DrawingEditor {
             }
         });
         ui.label("View scale (paper : model)");
+        crate::controls::inspector_combo(ui, "view-standard-scale")
+            .selected_text(format!("Scale {}", drawings::scale_text(view.scale)))
+            .show_ui(ui, |ui| {
+                for scale in drawings::standard_scales() {
+                    if ui
+                        .selectable_label(view.scale == scale, drawings::scale_text(scale))
+                        .on_hover_text("Use this standard drawing scale; geometry stays exact")
+                        .clicked()
+                    {
+                        view.scale = scale;
+                        ui.close();
+                    }
+                }
+            });
         ui.horizontal_wrapped(|ui| {
             ui.add(egui::DragValue::new(&mut view.scale.numerator).range(1..=100000))
                 .on_hover_text("Independent view scale numerator");
@@ -388,7 +372,26 @@ impl DrawingEditor {
             }
         };
         let remove = crate::icons::compact_button(ui, Icon::Trash, "Remove view").clicked();
-        let fit=ui.button("Fit view to page").on_hover_text("Use current native vector bounds to center this view and choose a fitting independent scale").clicked();
+        let mut fit = false;
+        ui.horizontal_wrapped(|ui| {
+            fit = ui
+                .button("Fit view to page")
+                .on_hover_text("Center this view in the free paper beside the title block and choose its scale")
+                .clicked();
+            crate::controls::inspector_combo(ui, "view-fit-mode")
+                .selected_text(self.fit_mode.label())
+                .show_ui(ui, |ui| {
+                    for mode in drawings::FitMode::ALL {
+                        ui.selectable_value(&mut self.fit_mode, mode, mode.label())
+                            .on_hover_text(match mode {
+                                drawings::FitMode::Standard => "Largest standard scale that fits; small parts are enlarged (2:1 … 100:1)",
+                                drawings::FitMode::Exact => "Tightest whole-number ratio that fits",
+                                drawings::FitMode::KeepScale => "Retain the current scale, e.g. 1:1, and only center the view",
+                            });
+                    }
+                });
+        });
+        ui.small(format!("Printed as \"{}\"", drawings::caption_text(view)));
         if remove {
             page.views.retain(|v| v.id != id);
             self.selected_view = page.views.first().map(|v| v.id);

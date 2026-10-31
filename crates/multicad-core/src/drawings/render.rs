@@ -22,6 +22,8 @@ pub enum Layer {
     Weld,
     Table,
     Draft,
+    /// View names and their actual paper:model scales.
+    ViewLabel,
 }
 impl Layer {
     pub fn name(self) -> &'static str {
@@ -38,6 +40,7 @@ impl Layer {
             Self::Weld => "weld",
             Self::Table => "table",
             Self::Draft => "draft",
+            Self::ViewLabel => "view_label",
         }
     }
 }
@@ -266,6 +269,15 @@ pub fn render_page(
                 dashed: vector.role == VectorRole::Hidden,
             });
         }
+    }
+    for caption in super::view_captions(page, &layout, Some(evaluation)) {
+        out.text(
+            Layer::ViewLabel,
+            caption.at,
+            caption.height_mm,
+            0.,
+            &caption.text,
+        );
     }
     for annotation in &page.annotations {
         let layer = match &annotation.kind {

@@ -18,6 +18,8 @@ pub struct PageLayout {
     pub printable_mm: [f64; 4],
     pub title_cells: Vec<TextCell>,
     pub notes: Vec<TextCell>,
+    /// Paper rectangle of the application logo inside the title block.
+    pub logo_mm: Option<[f64; 4]>,
 }
 pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout, DocumentError> {
     let [w, h] = page.settings.dimensions();
@@ -35,6 +37,7 @@ pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout
         printable_mm: [m, m, w - m, h - m],
         title_cells: vec![],
         notes: vec![],
+        logo_mm: None,
     };
     let mut block_top = h - m;
     if page.settings.title_block {
@@ -50,10 +53,7 @@ pub fn layout_page(page: &Page, index: usize, total: usize) -> Result<PageLayout
             Projection::FirstAngle => "First angle",
             Projection::ThirdAngle => "Third angle",
         };
-        let scale = format!(
-            "{}:{}",
-            page.settings.scale.numerator, page.settings.scale.denominator
-        );
+        let scale = super::sheet_scale_label(page);
         let fields = [
             ("Title", page.info.title.as_str()),
             ("Project", page.info.project.as_str()),

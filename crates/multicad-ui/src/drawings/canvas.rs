@@ -167,6 +167,16 @@ pub(super) fn show(
             }
         }
     }
+    for caption in drawings::view_captions(page, &layout, evaluation) {
+        let at = paper.min + egui::vec2(caption.at[0] as f32, caption.at[1] as f32) * scale;
+        view_painter.text(
+            at,
+            egui::Align2::LEFT_BOTTOM,
+            &caption.text,
+            egui::FontId::monospace(caption.height_mm as f32 * scale),
+            egui::Color32::BLACK,
+        );
+    }
     section_guides(&view_painter, page, evaluation, paper.min, scale);
     let annotation = annotations(
         ui,
