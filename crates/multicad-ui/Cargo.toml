@@ -18,6 +18,11 @@ png = "=0.18.1"
 cxx = "=1.0.205"
 raw-window-handle = "=0.6.2"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "=0.6.2"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+winit = { version = "=0.30.13", default-features = false }
+
 [build-dependencies]
 cxx-build = "=1.0.205"
 

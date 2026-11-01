@@ -22,6 +22,7 @@ pub mod navigation;
 pub mod parameter_editor;
 pub mod preferences;
 pub mod preview_capture;
+mod quit_shortcut;
 pub mod recent_projects;
 pub mod reference_repair;
 pub mod reference_repair_set;
@@ -53,7 +54,8 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         "../../../assets/branding/app/AppIcon.png"
     ))
     .map_err(|error| format!("Could not decode application icon: {error}"))?;
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         depth_buffer: 32,
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon)
@@ -67,6 +69,8 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
+    #[cfg(target_os = "windows")]
+    quit_shortcut::windows::configure(&mut options);
     // Finder "open document" requests can arrive before the first frame.
     #[cfg(target_os = "macos")]
     native_window::observe_open_documents();

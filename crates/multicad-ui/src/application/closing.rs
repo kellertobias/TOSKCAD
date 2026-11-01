@@ -7,6 +7,17 @@ impl Application {
             .is_some_and(|worker| worker.writing())
     }
     pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
+        let shortcut = crate::quit_shortcut::take(ctx) > 0;
+        let was_confirming = self.close_confirm;
+        if shortcut && was_confirming {
+            if self.projects.iter().any(Project::pending_edits) {
+                self.message = "Apply or cancel pending tool edits before quitting".into();
+                self.message_error = true;
+            } else if let Err(error) = self.confirm_close_without_saving(ctx) {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
         if self.close_after_recents && !self.recents_writing() {
             self.close_after_recents = false;
             if !self.should_defer_close() {
@@ -14,7 +25,7 @@ impl Application {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        if ctx.input(|i| i.viewport().close_requested()) && !self.close_allowed {
+        if (shortcut || ctx.input(|i| i.viewport().close_requested())) && !self.close_allowed {
             if self.should_defer_close() {
                 // This guarded attempt supersedes an earlier clean Quit that
                 // was waiting for history. Cancel must revoke both attempts.
@@ -24,6 +35,9 @@ impl Application {
             } else if self.recents_writing() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.close_after_recents = true;
+            } else if shortcut {
+                self.close_allowed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
     }
@@ -32,6 +46,7 @@ impl Application {
         ctx: &egui::Context,
     ) -> Result<(), String> {
         if self.recents_writing()
+            || self.capture_pending()
             || self.picker_scope.is_some()
             || !self.pending_files.is_empty()
             || self
@@ -319,6 +334,68 @@ mod tests {
             },
             |_| app.show_close_dialog(ctx),
         )
+    }
+    fn native_press(ctx: &egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("native-quit-presses"), 1usize));
+    }
+    #[test]
+    fn only_a_distinct_native_shortcut_after_confirmation_can_discard() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        let original = app.current().session.document().clone();
+        let ctx = egui::Context::default();
+        native_press(&ctx);
+        close_frame(&mut app, &ctx, false);
+        assert!(app.close_confirm && !app.close_allowed);
+        // Delayed/duplicate AppKit or winit Close notifications carry no
+        // second physical key press and can never authorize discard.
+        for _ in 0..3 {
+            close_frame(&mut app, &ctx, true);
+            assert!(app.close_confirm && !app.close_allowed);
+        }
+        native_press(&ctx);
+        let commands = close_frame(&mut app, &ctx, true);
+        assert!(app.close_allowed && !app.close_confirm);
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Close))
+        );
+        assert_eq!(app.current().session.document(), &original);
+        assert!(app.current().dirty());
+    }
+    #[test]
+    fn cancelling_confirmation_requires_a_new_first_press_and_preserves_source() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        let original = app.current().session.document().clone();
+        let ctx = egui::Context::default();
+        native_press(&ctx);
+        close_frame(&mut app, &ctx, false);
+        click_dialog(&mut app, &ctx, "Cancel");
+        assert!(!app.close_confirm && !app.close_allowed);
+        native_press(&ctx);
+        close_frame(&mut app, &ctx, false);
+        assert!(app.close_confirm && !app.close_allowed);
+        assert_eq!(app.current().session.document(), &original);
+    }
+    #[test]
+    fn repeat_shortcut_keeps_file_jobs_and_unapplied_drafts_guarded() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        app.close_confirm = true;
+        let ctx = egui::Context::default();
+        app.pending_files.insert(42, PendingFile::Discover);
+        native_press(&ctx);
+        close_frame(&mut app, &ctx, true);
+        assert!(app.close_confirm && !app.close_allowed);
+        assert_eq!(app.pending_files.len(), 1);
+        app.pending_files.clear();
+        app.current_mut().editor.rows[0].name = "Unapplied edit".into();
+        native_press(&ctx);
+        close_frame(&mut app, &ctx, true);
+        assert!(app.close_confirm && !app.close_allowed);
+        assert!(app.message.contains("pending tool edits"));
     }
     fn click_dialog(app: &mut Application, ctx: &egui::Context, label: &str) {
         dialog_frame(app, ctx, vec![]).drop_without_applying_deltas();

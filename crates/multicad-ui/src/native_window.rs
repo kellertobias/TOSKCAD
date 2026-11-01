@@ -18,6 +18,7 @@ mod ffi {
         include!("native_window.hpp");
         fn position_buttons(view: usize, header_height: f64) -> bool;
         fn install_quit_guard(view: usize) -> u8;
+        fn window_identity(view: usize) -> usize;
         fn quit_guard_contract_test() -> bool;
         fn poll_trackpad(view: usize) -> NativeTouchFrame;
         fn trackpad_contract_test() -> bool;
@@ -27,7 +28,19 @@ mod ffi {
     }
     extern "Rust" {
         fn wake_for_opened_documents();
+        fn observed_quit_shortcut(window: usize, stamp: u64, repeated: bool);
     }
+}
+fn observed_quit_shortcut(window: usize, stamp: u64, repeated: bool) {
+    crate::quit_shortcut::observe(window, stamp, repeated);
+}
+pub(crate) fn window_identity(frame: &eframe::Frame) -> Option<usize> {
+    let handle = frame.window_handle().ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    let id = ffi::window_identity(appkit.ns_view.as_ptr() as usize);
+    (id != 0).then_some(id)
 }
 /// Context to repaint when the operating system asks to open a document while
 /// the window is idle. Set from the live frame; never holds native handles.

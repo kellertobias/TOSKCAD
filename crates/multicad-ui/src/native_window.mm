@@ -145,6 +145,16 @@ bool install_touch_callbacks(Class cls) {
     MultiCADQuitGuardState* state = objc_getAssociatedObject(self, &quit_guard_state_key);
     NSWindow* window = state.window;
     if (window) {
+        NSEvent* event = application.currentEvent;
+        if (event.type == NSEventTypeKeyDown &&
+            (event.modifierFlags & NSEventModifierFlagCommand) != 0 &&
+            [event.charactersIgnoringModifiers.lowercaseString isEqualToString:@"q"] &&
+            std::isfinite(event.timestamp) && event.timestamp >= 0) {
+            multicad::window::observed_quit_shortcut(
+                reinterpret_cast<std::size_t>((__bridge void*)window),
+                static_cast<std::uint64_t>(event.timestamp * 1000000.0),
+                event.isARepeat);
+        }
         // Return from AppKit's termination query before sending the ordinary
         // window-close event to winit and the Rust unsaved/pending-work guard.
         [window performSelector:@selector(performClose:) withObject:application afterDelay:0.0];
@@ -284,6 +294,11 @@ std::uint8_t install_quit_guard(std::size_t address) noexcept {
     NSWindow* window = view.window;
     if (!window) return 2;
     return install_on_delegate(NSApp.delegate, window);
+}
+std::size_t window_identity(std::size_t address) noexcept {
+    if (![NSThread isMainThread] || !address) return 0;
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(address);
+    return reinterpret_cast<std::size_t>((__bridge void*)view.window);
 }
 bool quit_guard_contract_test() noexcept {
     @autoreleasepool {
