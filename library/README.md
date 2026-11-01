@@ -1,7 +1,11 @@
-<!-- Kind: reference; Audience: catalog maintainers and reviewers; Purpose: record source, geometry and coverage of bundled hardware; Non-goals: certify manufactured parts or reproduce vendor CAD. -->
-# Curated mechanical hardware
+<!-- Kind: reference; Audience: catalog maintainers and reviewers; Purpose: record source, geometry and coverage of the bundled Library; Non-goals: certify manufactured parts or reproduce vendor CAD. -->
+# Included Library definitions
 
-These native projects contain dynamic, pinned bearing-envelope definitions. Bore, outside diameter and width are exposed instance inputs. Each definition retains its own literal dimensional reference; changing an input creates custom dimensions without changing that reference. Updating a library file does not update placed instances automatically.
+The Library includes generic trees and shrubs alongside four curated bearing mounting envelopes. All use dynamic, pinned native symbol definitions.
+
+## Mechanical envelopes
+
+The bearing projects contain dynamic, pinned bearing-envelope definitions. Bore, outside diameter and width are exposed instance inputs. Each definition retains its own literal dimensional reference; changing an input creates custom dimensions without changing that reference. Updating a library file does not update placed instances automatically.
 
 The solids describe external mounting envelopes. They omit races, rolling elements, shields, seals and fillets. In particular, an annular envelope's volume is not a real bearing's material volume or mass. They carry no load, life, tolerance or fit certification.
 
@@ -32,7 +36,13 @@ cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-
 
 Copy the source notices and this README alongside regenerated files before packaging. Document, feature, Part, parameter and symbol identities derive from the bearing designation, so adding another entry does not renumber existing definitions. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from the retained native source, never from a lookup in a newer dimension table.
 
-## Coverage still open
+## Generic planting presets
+
+`plant-generic-tree.tcd` and `plant-generic-shrub.tcd` are owned generic context definitions, with editable height and outer canopy/spread plus a linked authored plan. They use the same pins as the Architecture Planting tool. The simple tree has a trunk and cylindrical crown; the shrub has one cylindrical envelope. Plan circles use double and single rings respectively. These are illustrative planned-size defaults, with no species, growth or supplier claims and no copied artwork. [Planting source and drawing policy](../docs/architecture/plants.md) records dimensions, visibility and output behavior.
+
+`plant_library` regenerates just those two projects into an empty folder. `mechanical_library` generates all six projects and the complete manifest; source notices and this README must still accompany the result. Plant identities are fixed by preset kind and source role. Changing a definition requires an explicit revision and pin update.
+
+## Hardware coverage still open
 
 This increment supplies four open bearing mounting envelopes. It does not supply sealed/shielded variants, detailed bearing internals, stocked screws, hex nuts or washers. The generic native washer/nut/envelope generators are separate from verified catalog entries.
 

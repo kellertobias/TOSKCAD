@@ -23,7 +23,7 @@ test('hardware packaging refuses damaged data, missing notices, duplicate IDs an
     cpSync(new URL('../library/',import.meta.url),directory,{recursive:true});
     const path=join(directory,'library.json'),original=readFileSync(path,'utf8');
     const change=fn=>{const value=JSON.parse(original);fn(value);writeFileSync(path,JSON.stringify(value));};
-    assert.equal(validateBundledLibrary(directory).projects.length,4);
+    assert.equal(validateBundledLibrary(directory).projects.length,6);
     change(m=>{m.entries[0].file='../bearing.tcd';});
     assert.throws(()=>validateBundledLibrary(directory),/Invalid.*Library/);
     change(m=>{m.entries[1].document=m.entries[0].document;});
@@ -99,7 +99,7 @@ test('native development layout includes a copied executable, identity pin and n
     assert.deepEqual(readdirSync(examples).sort(),[...new Set(shipped.map(f=>f.split('/')[0]))].sort());
     for(const name of shipped)assert.deepEqual(readFileSync(join(examples,...name.split('/'))),readFileSync(new URL(`../examples/${name}`,import.meta.url)),name);
     const hardware=validateBundledLibrary();
-    assert.equal(hardware.projects.length,4);
+    assert.equal(hardware.projects.length,6);
     for(const name of hardware.files)assert.deepEqual(readFileSync(join(layout.resources,'library',...name.split('/'))),readFileSync(new URL(`../library/${name}`,import.meta.url)),name);
     if(process.platform==='darwin')assert.equal(layout.resources,join(stage,'MultiCAD.app/Contents/Resources'));
     else assert.equal(layout.resources,join(stage,'resources'));

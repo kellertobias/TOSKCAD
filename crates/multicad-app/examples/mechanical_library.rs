@@ -3,8 +3,8 @@
 //! Existing files are refused. Every identity and preview is reproducible;
 //! dimension changes require an explicit new symbol/catalog revision.
 #[allow(dead_code)]
-#[path = "cabinet_demo.rs"]
-mod cabinet_demo;
+#[path = "plant_library.rs"]
+mod plant_library;
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     constraint_sketch::Dimension,
@@ -163,7 +163,7 @@ pub fn build(curation: &Curation, index: usize) -> Result<ProjectFile, Error> {
     session.commit(prepared.prepared)?;
     let model = Compiler::default().compile(session.document(), session.revision())?;
     let preview =
-        cabinet_demo::render_preview_with_color(session.document(), &model, false, |_| {
+        plant_library::render_preview_with_color(session.document(), &model, false, |_| {
             [0.62, 0.64, 0.68]
         })?;
     let info = FileInfo {
@@ -215,7 +215,27 @@ fn main() -> Result<(), Error> {
         entries.push(serde_json::json!({"file":entry.file,"document":project.document.id(),"sha256":project_file::ContentHash::of(&bytes).to_string()}));
         println!("{} · {} bytes", entry.file, bytes.len());
     }
-    let manifest = serde_json::json!({"format":"toskcad.bundled-library","version":1,"revision":curation.revision,"entries":entries,"requires":["curation.json","sources/bolts/bearings.blt","sources/bolts/COPYING.LESSER","README.md"]});
+    for (kind, name) in [
+        (
+            multicad_core::plants::PlantKind::Tree,
+            "plant-generic-tree.tcd",
+        ),
+        (
+            multicad_core::plants::PlantKind::Shrub,
+            "plant-generic-shrub.tcd",
+        ),
+    ] {
+        let project = plant_library::build(kind)?;
+        let mut bytes = Vec::new();
+        project_file::write(&project, &mut bytes, Default::default())?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join(name))?;
+        file.write_all(&bytes)?;
+        entries.push(serde_json::json!({"file":name,"document":project.document.id(),"sha256":project_file::ContentHash::of(&bytes).to_string()}));
+    }
+    let manifest = serde_json::json!({"format":"toskcad.bundled-library","version":1,"revision":"2","entries":entries,"requires":["curation.json","sources/bolts/bearings.blt","sources/bolts/COPYING.LESSER","README.md"]});
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

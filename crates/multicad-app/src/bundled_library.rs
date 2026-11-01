@@ -214,12 +214,20 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 6);
+        let mut bearings = 0;
+        let mut plants = 0;
         for entry in entries {
             assert_eq!(entry.origin, LibraryOrigin::Bundled);
             assert!(entry.problem.is_none());
             assert!(entry.preview.is_some());
             assert_eq!(entry.symbol_definitions, 1);
+            if entry.mechanical_parts.is_empty() {
+                assert!(entry.name.starts_with("Generic "));
+                plants += 1;
+                continue;
+            }
+            bearings += 1;
             assert_eq!(entry.mechanical_parts.len(), 1);
             assert!(entry.mechanical_parts[0].matches_reference_dimensions);
             assert_eq!(
@@ -227,6 +235,7 @@ mod tests {
                 "Bearing mounting envelope"
             );
         }
+        assert_eq!((bearings, plants), (4, 2));
     }
     #[test]
     fn damaged_projects_remain_visible_and_manifest_escapes_or_duplicates_are_refused() {

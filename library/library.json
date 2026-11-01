@@ -19,6 +19,16 @@
       "document": "cad20000-0000-4000-8000-000000099cf0",
       "file": "bearing-open-6300.tcd",
       "sha256": "a0a85864e183857d3ff0be71b97d84ab90362af9c65f833dd8795a054a1fff97"
+    },
+    {
+      "file": "plant-generic-tree.tcd",
+      "document": "cad20200-0000-4000-8000-000000001001",
+      "sha256": "5c7eacc6c2cd7390f0113f7a1d325af6c09718004334fd12190b0071aaed4ed4"
+    },
+    {
+      "file": "plant-generic-shrub.tcd",
+      "document": "cad20200-0000-4000-8000-000000002001",
+      "sha256": "e04f5b2db355a5c2fac79f2df2b5bddcedcce739f5bc7b537ac64c3c85233849"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -28,6 +38,6 @@
     "sources/bolts/COPYING.LESSER",
     "README.md"
   ],
-  "revision": "1",
+  "revision": "2",
   "version": 1
 }
