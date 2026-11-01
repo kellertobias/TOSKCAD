@@ -343,6 +343,12 @@ impl Attachment {
                         "Wall attachment offset must lie on its segment and standoff must be nonnegative",
                     ));
                 }
+                let (usable_start, usable_end) = resolved.usable_segment_range(*segment)?;
+                if along < usable_start - 1e-6 || along > usable_end + 1e-6 {
+                    return Err(invalid(
+                        "Equipment anchor was removed by a wall junction; reattach it to an intact segment",
+                    ));
+                }
                 let world_z = floor.elevation_mm + above;
                 if world_z < resolved.base_z_mm - 1e-6
                     || world_z > resolved.base_z_mm + resolved.height_mm + 1e-6
@@ -357,12 +363,14 @@ impl Attachment {
                         along >= offset - 1e-6 && along <= offset + width + 1e-6
                     };
                     let opening = resolved.openings.iter().any(|opening| {
-                        in_span(opening.offset_mm, opening.width_mm)
+                        opening.segment == *segment
+                            && in_span(opening.offset_mm, opening.width_mm)
                             && z >= opening.sill_mm - 1e-6
                             && z <= opening.sill_mm + opening.height_mm + 1e-6
                     });
                     let cutout = resolved.cutouts.iter().any(|cutout| {
-                        in_span(cutout.offset_mm, cutout.width_mm)
+                        cutout.segment == *segment
+                            && in_span(cutout.offset_mm, cutout.width_mm)
                             && (cutout.through
                                 || matches!(
                                     (*side, cutout.face),

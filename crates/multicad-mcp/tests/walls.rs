@@ -595,3 +595,93 @@ fn layered_tools_retain_source_bindings_native_materials_and_atomic_reference_re
     );
     assert_eq!(read_only.document(), final_document);
 }
+
+#[test]
+fn mcp_t_join_alignment_retains_host_identity_and_explicit_detach_changes_the_end() {
+    use multicad_core::document::{Entity, EntityData, Mutation};
+    let material = Entity::new(
+        "Brick",
+        EntityData::Material {
+            density_kg_m3: None,
+            color_rgba: [160, 80, 60, 255],
+            section_hatch: None,
+        },
+    );
+    let doc = Document::new("Joined walls")
+        .unwrap()
+        .edited(&[Mutation::Insert(material.clone())])
+        .unwrap();
+    let host = Headless::new(Workspace::new(doc).unwrap(), None, false);
+    let run = |name: &str, args: Value| dispatch(&host, &call(), name, args);
+    let ty=run("create_layered_wall_type",json!({"expected_revision":0,"name":"Construction","construction":{"layers":[
+        {"name":"Brick","construction":{"kind":"solid","material":material.id,"thickness":mm(100.)}},
+        {"name":"Air","construction":{"kind":"cavity","thickness":mm(30.)}},
+        {"name":"Lining","construction":{"kind":"solid","material":material.id,"thickness":mm(20.)}}
+    ],"height":mm(2700.)}})).unwrap()["wall_type"].as_str().unwrap().to_owned();
+    let main = run(
+        "create_wall",
+        json!({"expected_revision":1,"name":"Main","wall_type":ty,"path_mm":[[0,0],[4000,0]]}),
+    )
+    .unwrap()["wall"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let join = json!({"end":"end","host_wall":main,"host_segment":0});
+    let before = host.document();
+    let mut args = json!({"expected_revision":2,"name":"Branch","wall_type":ty,"path_mm":[[2000,3000],[2050,80]],"layer_placement":{"junctions":[join]}});
+    assert!(run("create_wall", args.clone()).is_err());
+    assert_eq!(host.document(), before);
+    args["align_junctions"] = json!(true);
+    let branch = run("create_wall", args).unwrap();
+    near(branch["volume_mm3"].as_f64().unwrap(), 120. * 2925. * 2700.);
+    assert_eq!(branch["solid_count"], 2);
+    let wall = branch["wall"].as_str().unwrap().to_owned();
+    let inspect = run("inspect_wall", json!({"wall":wall})).unwrap();
+    assert_eq!(
+        inspect["layer_placement"]["junctions"][0]["host_point_count"],
+        2
+    );
+    near(
+        inspect["junctions"][0]["end_extension_mm"]
+            .as_f64()
+            .unwrap(),
+        -75.,
+    );
+    near(
+        inspect["junctions"][0]["origin_mm"][0].as_f64().unwrap(),
+        2000.,
+    );
+    near(
+        inspect["junctions"][0]["origin_mm"][1].as_f64().unwrap(),
+        75.,
+    );
+    let edited=run("edit_wall",json!({"expected_revision":3,"wall":wall,"wall_type":ty,"path_mm":[[2000,3000],[2000,0]],"layer_placement":{"flipped":true}})).unwrap();
+    near(edited["volume_mm3"].as_f64().unwrap(), 120. * 2925. * 2700.);
+    assert_eq!(
+        run("inspect_wall", json!({"wall":wall})).unwrap()["layer_placement"]["junctions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let before = host.document();
+    let mut stale = join.clone();
+    stale["host_point_count"] = json!(3);
+    assert!(run("edit_wall",json!({"expected_revision":4,"wall":wall,"wall_type":ty,"path_mm":[[2000,3000],[2000,0]],"layer_placement":{"junctions":[stale]}})).is_err());
+    assert_eq!(host.document(), before);
+    let mut wrapping = join;
+    wrapping["style"] = json!("wrap");
+    assert!(run("edit_wall",json!({"expected_revision":4,"wall":wall,"wall_type":ty,"path_mm":[[2000,3000],[2000,0]],"layer_placement":{"junctions":[wrapping]}})).is_err());
+    assert_eq!(host.document(), before);
+    let detached=run("edit_wall",json!({"expected_revision":4,"wall":wall,"wall_type":ty,"path_mm":[[2000,3000],[2000,0]],"layer_placement":{"flipped":true,"junctions":[]}})).unwrap();
+    near(
+        detached["volume_mm3"].as_f64().unwrap(),
+        120. * 3000. * 2700.,
+    );
+    assert!(
+        run("inspect_wall", json!({"wall":wall})).unwrap()["junctions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

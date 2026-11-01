@@ -115,6 +115,7 @@ pub(super) struct WallPanel {
     layers: Option<super::wall_layers::LayerEditor>,
     shared_edit: bool,
     layer_placement: model::WallLayerPlacement,
+    junction_editor: super::wall_junctions::JunctionEditor,
     types: Vec<(EntityId, String)>,
     source: Option<PreparationSnapshot>,
     impacted: Option<(EntityId, Result<Vec<String>, String>)>,
@@ -154,6 +155,7 @@ impl WallPanel {
             layers: None,
             shared_edit: false,
             layer_placement: Default::default(),
+            junction_editor: Default::default(),
             types: model::wall_types(document)
                 .map(|e| (e.id, e.name.clone()))
                 .collect(),
@@ -209,6 +211,7 @@ impl WallPanel {
         Ok(())
     }
     pub fn sync_source(&mut self, session: &Session) {
+        self.junction_editor.sync_source(session, self.feature);
         if self
             .source
             .as_ref()
@@ -369,6 +372,9 @@ impl WallPanel {
             }
         };
         let layered = self.layers.is_some();
+        if !layered && !self.layer_placement.junctions.is_empty() {
+            return Err("Remove joined ends explicitly before using a uniform construction".into());
+        }
         let overrides = self.override_size && (self.wall_type.is_some() || layered);
         let construction = if self.shared_edit {
             let editor = self
@@ -648,6 +654,39 @@ impl WallPanel {
         }
         changed
     }
+    fn junction_controls(&mut self, ui: &mut egui::Ui, document: &Document) -> bool {
+        let (changed, align) = self.junction_editor.show(
+            ui,
+            &mut self.layer_placement.junctions,
+            self.layers.is_some(),
+            self.outline.closed(),
+        );
+        if let Some(index) = align {
+            let result = (|| -> Result<(), String> {
+                let path = self.outline.dimensions(document)?;
+                let rebuilt;
+                let parameters = if let Some(source) = &self.source {
+                    source.session().parameters()
+                } else {
+                    rebuilt =
+                        multicad_core::parameters::evaluate(document).map_err(|e| e.to_string())?;
+                    &rebuilt
+                };
+                let junction = &self.layer_placement.junctions[index];
+                let point = junction
+                    .aligned_endpoint(document, parameters, &path, self.outline.closed())
+                    .map_err(|e| e.to_string())?;
+                let corner = match junction.end {
+                    model::WallEnd::Start => 0,
+                    model::WallEnd::End => path.len() - 1,
+                };
+                self.outline.set_corner(corner, point);
+                Ok(())
+            })();
+            self.junction_editor.notice = result.err();
+        }
+        changed
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -709,6 +748,7 @@ impl WallPanel {
             self.plane_z(document, None)
         );
         changed |= self.outline.show(ui, document, &plane);
+        changed |= self.junction_controls(ui, document);
         ui.separator();
         ui.strong("Doors and windows");
         let opening_types: Vec<_> = model::opening_types(document)
@@ -870,6 +910,173 @@ mod tests {
     use super::*;
     use multicad_core::commands::{Actor, Channel, Session};
     use multicad_model::Compiler;
+
+    #[test]
+    fn painted_join_controls_align_only_the_endpoint_and_preview_real_t_contact() {
+        use multicad_core::{
+            document::{Entity, EntityData, Mutation},
+            model::{
+                LayeredWallTypeDefinition, WallLayer, WallLayerKind, WallLayerReference,
+                WallLayerStack,
+            },
+        };
+        let material = Entity::new(
+            "Brick",
+            EntityData::Material {
+                density_kg_m3: None,
+                color_rgba: [160, 80, 60, 255],
+                section_hatch: None,
+            },
+        );
+        let mut session = Session::new(
+            Document::new("Join form")
+                .unwrap()
+                .edited(&[Mutation::Insert(material.clone())])
+                .unwrap(),
+        )
+        .unwrap();
+        let actor = || Actor::local(Channel::Ui);
+        let (ty, p) = model::prepare_layered_wall_type(
+            &session,
+            0,
+            actor(),
+            "Construction",
+            &LayeredWallTypeDefinition {
+                layers: WallLayerStack {
+                    layers: vec![WallLayer {
+                        id: EntityId::new(),
+                        name: "Brick".into(),
+                        role: None,
+                        construction: WallLayerKind::Solid {
+                            material: material.id,
+                            thickness: length(150.),
+                        },
+                    }],
+                },
+                height: length(2700.),
+                reference: WallLayerReference::Center,
+            },
+        )
+        .unwrap();
+        session.commit(p).unwrap();
+        let host = model::WallRequest::new(
+            "Main",
+            WallDefinition {
+                output: BodyOutput {
+                    body: EntityId::new(),
+                },
+                wall_type: ty,
+                layer_placement: Some(Default::default()),
+                path: vec![[length(0.), length(0.)], [length(4000.), length(0.)]],
+                closed: false,
+                level: None,
+                base_z: length(0.),
+                thickness: None,
+                height: None,
+                justification: None,
+                openings: vec![],
+                cutouts: vec![],
+            },
+        );
+        let p = model::prepare_wall(&session, session.revision(), actor(), &host).unwrap();
+        session.commit(p.prepared).unwrap();
+        let mut panel = WallPanel::new(session.document(), "Branch".into()).unwrap();
+        panel
+            .outline
+            .set_points(&[[2000., 3000.], [2050., 80.]], false);
+        panel.sync_source(&session);
+        let before = session.document().clone();
+        let original_start = panel.outline.dimensions(session.document()).unwrap()[0].clone();
+        let ctx = egui::Context::default();
+        let frame = |panel: &mut WallPanel, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(340., 3000.),
+                    )),
+                    focused: true,
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    panel.show(ui, session.document(), true, PreviewState::Idle);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        let click = |panel: &mut WallPanel, label: &str| {
+            let output = frame(panel, vec![]);
+            let rect = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        (text.galley.text().replace('\n', " ") == label)
+                            .then(|| egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| panic!("painted control missing: {label}"));
+            for pressed in [true, false] {
+                frame(
+                    panel,
+                    vec![
+                        egui::Event::PointerMoved(rect.center()),
+                        egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+        };
+        click(&mut panel, "Add T at end");
+        assert_eq!(panel.layer_placement.junctions.len(), 1);
+        assert!(
+            panel
+                .request(session.document(), true)
+                .unwrap()
+                .prepare(&session, actor())
+                .is_err()
+        );
+        click(&mut panel, "Align endpoint perpendicular to host");
+        let points = panel.outline.dimensions(session.document()).unwrap();
+        assert_eq!(points[0], original_start);
+        assert!(
+            (points[1][0]
+                .value_in(Unit::Millimeter, Some(session.parameters()))
+                .unwrap()
+                - 2000.)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            points[1][1]
+                .value_in(Unit::Millimeter, Some(session.parameters()))
+                .unwrap()
+                .abs()
+                < 1e-6
+        );
+        let request = panel.request(session.document(), true).unwrap();
+        let p = request.prepare(&session, actor()).unwrap();
+        let native = Compiler::default()
+            .compile(p.prepared.document(), session.revision())
+            .unwrap();
+        assert!(
+            (native.snapshot().shapes[&panel.feature].volume_mm3 - 150. * 2925. * 2700.).abs()
+                < 0.01
+        );
+        assert_eq!(
+            session.document(),
+            &before,
+            "clicks and native preview cannot commit the draft"
+        );
+    }
 
     #[test]
     fn layered_form_previews_shared_edits_and_duplicates_without_flattening_saved_walls() {

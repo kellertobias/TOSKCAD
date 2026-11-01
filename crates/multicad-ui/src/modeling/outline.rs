@@ -400,7 +400,7 @@ impl OutlineEditor {
             closed: self.closed,
         }
     }
-    fn set_corner(&mut self, index: usize, point: [f64; 2]) {
+    pub(super) fn set_corner(&mut self, index: usize, point: [f64; 2]) {
         self.corners[index][0].set_literal(point[0], "mm");
         self.corners[index][1].set_literal(point[1], "mm");
     }

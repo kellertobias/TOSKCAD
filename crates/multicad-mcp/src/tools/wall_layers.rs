@@ -73,6 +73,64 @@ impl LayerReferenceArg {
         })
     }
 }
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WallEndArg {
+    Start,
+    End,
+}
+#[derive(Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JunctionStyleArg {
+    #[default]
+    FlushButt,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WallJunctionArg {
+    pub end: WallEndArg,
+    /// Active direct architectural wall feature, not its Part ID.
+    pub host_wall: String,
+    pub host_segment: usize,
+    /// Omit for a new join; retained joins keep their recorded host topology.
+    #[serde(default)]
+    pub host_point_count: Option<usize>,
+    #[serde(default)]
+    pub host_closed: Option<bool>,
+    #[serde(default)]
+    pub style: JunctionStyleArg,
+}
+impl WallJunctionArg {
+    fn value(
+        &self,
+        document: &Document,
+        previous: Option<&model::WallJunction>,
+    ) -> Result<model::WallJunction, ToolError> {
+        let host_wall = id(&self.host_wall)?;
+        let host = model::read_wall(document, host_wall)?;
+        let previous =
+            previous.filter(|j| j.host_wall == host_wall && j.host_segment == self.host_segment);
+        Ok(model::WallJunction {
+            end: match self.end {
+                WallEndArg::Start => model::WallEnd::Start,
+                WallEndArg::End => model::WallEnd::End,
+            },
+            host_wall,
+            host_segment: self.host_segment,
+            host_point_count: self
+                .host_point_count
+                .or_else(|| previous.map(|j| j.host_point_count))
+                .unwrap_or(host.path.len()),
+            host_closed: self
+                .host_closed
+                .or_else(|| previous.map(|j| j.host_closed))
+                .unwrap_or(host.closed),
+            style: match self.style {
+                JunctionStyleArg::FlushButt => model::WallJunctionStyle::FlushButt,
+            },
+        })
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LayerPlacementArg {
@@ -81,9 +139,20 @@ pub struct LayerPlacementArg {
     pub reference: Option<LayerReferenceArg>,
     #[serde(default)]
     pub flipped: bool,
+    /// Omit to retain existing joins; an explicit empty list removes them.
+    /// Only perpendicular flush-butt T joins are supported, with no wrapping.
+    #[serde(default)]
+    pub junctions: Option<Vec<WallJunctionArg>>,
 }
 impl LayerPlacementArg {
-    pub(super) fn value(&self) -> Result<model::WallLayerPlacement, ToolError> {
+    pub(super) fn value(
+        &self,
+        previous: Option<&model::WallLayerPlacement>,
+        document: &Document,
+    ) -> Result<model::WallLayerPlacement, ToolError> {
+        if self.junctions.as_ref().is_some_and(|j| j.len() > 2) {
+            return Err(ToolError::invalid("A wall has at most two joined ends"));
+        }
         Ok(model::WallLayerPlacement {
             reference: self
                 .reference
@@ -91,6 +160,29 @@ impl LayerPlacementArg {
                 .map(LayerReferenceArg::value)
                 .transpose()?,
             flipped: self.flipped,
+            junctions: self
+                .junctions
+                .as_ref()
+                .map(|j| {
+                    j.iter()
+                        .map(|junction| {
+                            junction.value(
+                                document,
+                                previous.and_then(|p| {
+                                    p.junctions.iter().find(|j| {
+                                        matches!(
+                                            (junction.end, j.end),
+                                            (WallEndArg::Start, model::WallEnd::Start)
+                                                | (WallEndArg::End, model::WallEnd::End)
+                                        )
+                                    })
+                                }),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_else(|| previous.map(|p| p.junctions.clone()).unwrap_or_default()),
         })
     }
 }

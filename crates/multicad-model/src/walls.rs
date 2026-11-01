@@ -379,6 +379,7 @@ pub(crate) fn build(
     parameters: &EvaluatedParameters,
     id: EntityId,
     policy: GeometryPolicy,
+    host_solids: &std::collections::BTreeMap<EntityId, Solid>,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Solid, ModelError> {
     let e = |e: multicad_core::document::DocumentError| error(Some(id), e);
@@ -467,13 +468,38 @@ pub(crate) fn build(
     if members.is_empty() {
         return Err(error(Some(id), "Openings removed all wall material"));
     }
-    if members.len() == 1 {
-        return Ok(members.pop().expect("one retained material member"));
+    let solid = if members.len() == 1 {
+        members.pop().expect("one retained material member")
+    } else {
+        ensure_disjoint_members(&members, id, policy, interrupt)?;
+        let members = members.iter().collect::<Vec<_>>();
+        Solid::compound_named_interruptible(&members, id, policy, interrupt)
+            .map_err(|e| error(Some(id), e))?
+    };
+    for junction in &wall.junctions {
+        if interrupt.is_some_and(|f| f()) {
+            return Err(error(Some(id), "Wall evaluation superseded"));
+        }
+        let host = host_solids.get(&junction.host_wall).ok_or_else(|| {
+            error(
+                Some(id),
+                "Joined host has no active native solid; repair its producer",
+            )
+        })?;
+        let pair = solid
+            .inspect_pair(host, policy.linear_tolerance_mm, policy)
+            .map_err(|e| error(Some(id), e))?;
+        if interrupt.is_some_and(|f| f()) {
+            return Err(error(Some(id), "Wall evaluation superseded"));
+        }
+        if pair.relation != multicad_kernel::SolidPairRelation::ContactWithinTolerance {
+            return Err(error(
+                Some(id),
+                "Flush-butt T junction must contact its host without material overlap; simplify the path or repair the join",
+            ));
+        }
     }
-    ensure_disjoint_members(&members, id, policy, interrupt)?;
-    let members = members.iter().collect::<Vec<_>>();
-    Solid::compound_named_interruptible(&members, id, policy, interrupt)
-        .map_err(|e| error(Some(id), e))
+    Ok(solid)
 }
 
 /// The wall feature producing a Part, if it is one.

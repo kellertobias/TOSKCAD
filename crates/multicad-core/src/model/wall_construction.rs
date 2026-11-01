@@ -29,6 +29,8 @@ pub struct WallLayerPlacement {
     pub reference: Option<WallLayerReference>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub flipped: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub junctions: Vec<super::WallJunction>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedWallLayerConstruction {
@@ -238,22 +240,49 @@ impl WallConstructionEdit {
     }
 }
 
-/// Read-only impact list for explicit shared edits. Instance height/reference
-/// overrides remain on each wall; no cross-project definition is changed here.
+/// Read-only impact list of direct type users and dependent joined branches.
+/// Instance height/reference overrides remain on each wall; no cross-project
+/// definition is changed here.
 pub fn wall_construction_users(
     document: &Document,
     construction: EntityId,
 ) -> Result<Vec<super::CreatedBody>, DocumentError> {
-    super::walls(document)
-        .filter_map(|entity| match super::read_wall(document, entity.id) {
-            Ok(wall) if wall.wall_type == construction => Some(Ok(super::CreatedBody {
-                feature: entity.id,
-                body: wall.output.body,
-            })),
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    let mut walls = BTreeMap::new();
+    let mut dependents: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
+    let mut affected = BTreeSet::new();
+    for entity in super::walls(document) {
+        let wall = super::read_wall(document, entity.id)?;
+        if wall.wall_type == construction {
+            affected.insert(entity.id);
+        }
+        if let Some(placement) = &wall.layer_placement {
+            for junction in &placement.junctions {
+                dependents
+                    .entry(junction.host_wall)
+                    .or_default()
+                    .push(entity.id);
+            }
+        }
+        walls.insert(entity.id, wall);
+    }
+    let mut pending: VecDeque<_> = affected.iter().copied().collect();
+    while let Some(host) = pending.pop_front() {
+        if let Some(users) = dependents.get(&host) {
+            for user in users {
+                if affected.insert(*user) {
+                    pending.push_back(*user);
+                }
+            }
+        }
+    }
+    Ok(affected
+        .into_iter()
+        .map(|feature| super::CreatedBody {
+            feature,
+            body: walls[&feature].output.body,
         })
-        .collect()
+        .collect())
 }
 
 pub fn prepare_wall_construction_edit(

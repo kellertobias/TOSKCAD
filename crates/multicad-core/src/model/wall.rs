@@ -186,6 +186,12 @@ impl OpeningTypeDefinition {
 }
 impl WallDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
+        if let Some(placement) = &self.layer_placement {
+            super::WallJunction::validate_all(&placement.junctions)?;
+            if self.closed && !placement.junctions.is_empty() {
+                return Err(invalid("Joined ends require an open layered branch wall"));
+            }
+        }
         if self.layer_placement.is_some()
             && (self.thickness.is_some() || self.justification.is_some())
         {
@@ -281,6 +287,14 @@ impl WallDefinition {
         let mut links = parameter_links(self.dimensions());
         links.push(Link::new(self.wall_type, "wall_type"));
         links.extend(self.level.map(|l| Link::new(l, "level")));
+        if let Some(placement) = &self.layer_placement {
+            links.extend(
+                placement
+                    .junctions
+                    .iter()
+                    .map(|j| Link::new(j.host_wall, format!("junction/{}/host", j.end.label()))),
+            );
+        }
         let types: BTreeSet<_> = self.openings.iter().map(|o| o.opening_type).collect();
         links.extend(
             types
@@ -347,6 +361,16 @@ pub fn read_wall(document: &Document, feature: EntityId) -> Result<WallDefinitio
         return Err(invalid("Choose a wall feature"));
     };
     let wall = WallDefinition::from_definition(definition)?;
+    if let Some(placement) = &wall.layer_placement {
+        for junction in &placement.junctions {
+            if !matches!(document.get(junction.host_wall).map(|e|&e.data),Some(EntityData::Feature {definition,..}) if definition.type_id==WALL_TYPE)
+            {
+                return Err(invalid(
+                    "Joined end host is missing or is not a wall feature",
+                ));
+            }
+        }
+    }
     let expected = wall.inputs();
     if inputs.len() != expected.len() || expected.iter().any(|l| !inputs.contains(l)) {
         return Err(invalid("Wall source and canonical input links disagree"));
@@ -433,6 +457,7 @@ pub struct ResolvedWallCutout {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedWall {
+    pub junctions: Vec<super::ResolvedWallJunction>,
     pub layers: Option<super::ResolvedWallLayerConstruction>,
     pub points: Vec<[f64; 2]>,
     pub closed: bool,
@@ -448,6 +473,22 @@ pub fn resolve_wall(
     parameters: &EvaluatedParameters,
     wall: &WallDefinition,
 ) -> Result<ResolvedWall, DocumentError> {
+    wall.validate()?;
+    resolve_wall_at_depth(document, parameters, wall, 0, &mut 256)
+}
+pub(super) fn resolve_wall_at_depth(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    wall: &WallDefinition,
+    depth: usize,
+    remaining: &mut usize,
+) -> Result<ResolvedWall, DocumentError> {
+    if *remaining == 0 {
+        return Err(invalid(
+            "Wall junction graph exceeds 256 resolution steps; simplify the host relationships",
+        ));
+    }
+    *remaining -= 1;
     let mm = |d: &Dimension| number(d, Unit::Millimeter, parameters);
     let points = wall
         .path
@@ -528,7 +569,8 @@ pub fn resolve_wall(
         Some(level) => super::resolve_level(document, parameters, level)?.elevation_mm,
         None => 0.,
     };
-    Ok(ResolvedWall {
+    let mut resolved = ResolvedWall {
+        junctions: Vec::new(),
         layers,
         points,
         closed: wall.closed,
@@ -538,7 +580,11 @@ pub fn resolve_wall(
         justification,
         openings,
         cutouts,
-    })
+    };
+    resolved.junctions = super::wall_junctions::resolve_junctions(
+        document, parameters, wall, &resolved, depth, remaining,
+    )?;
+    Ok(resolved)
 }
 
 fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
@@ -807,13 +853,54 @@ impl ResolvedWall {
             }
             (Loop { points, roles }, vec![])
         };
-        Ok(WallPlan {
+        let mut plan = WallPlan {
             segments,
             left_mm: left,
             right_mm: right,
             outer,
             holes,
-        })
+        };
+        for junction in &self.junctions {
+            junction.terminate(&mut plan)?;
+        }
+        Ok(plan)
+    }
+    pub fn usable_segment_range(&self, segment: usize) -> Result<(f64, f64), DocumentError> {
+        let count = if self.closed {
+            self.points.len()
+        } else {
+            self.points.len().saturating_sub(1)
+        };
+        if segment >= count {
+            return Err(invalid("Wall segment was removed"));
+        }
+        let length = length(sub(
+            self.points[(segment + 1) % self.points.len()],
+            self.points[segment],
+        ));
+        let (mut start, mut end) = (0., length);
+        for junction in &self.junctions {
+            match junction.end {
+                super::WallEnd::Start if segment == 0 => {
+                    start = (-junction.end_extension_mm).max(0.)
+                }
+                super::WallEnd::End if segment + 1 == count => {
+                    end = (length + junction.end_extension_mm).min(length)
+                }
+                _ => {}
+            }
+        }
+        if end <= start + 1e-6 {
+            return Err(invalid("Junctions remove the usable wall segment"));
+        }
+        Ok((start, end))
+    }
+    fn joined_segment_end(&self, segment: usize, end: super::WallEnd) -> bool {
+        let selected = match end {
+            super::WallEnd::Start => segment == 0,
+            super::WallEnd::End => segment + 1 == self.points.len() - 1,
+        };
+        selected && self.junctions.iter().any(|j| j.end == end)
     }
     /// Check every opening against its segment and wall; joints keep one
     /// thickness of solid wall on each side.
@@ -828,18 +915,25 @@ impl ResolvedWall {
                     "{label} needs a positive width and height and a non-negative sill"
                 )));
             }
-            let start_margin = if self.closed || o.segment > 0 {
+            let (usable_start, usable_end) = self.usable_segment_range(o.segment)?;
+            let start_margin = if self.closed
+                || o.segment > 0
+                || self.joined_segment_end(o.segment, super::WallEnd::Start)
+            {
                 self.thickness_mm
             } else {
                 0.
             };
-            let end_margin = if self.closed || o.segment + 1 < n {
+            let end_margin = if self.closed
+                || o.segment + 1 < n
+                || self.joined_segment_end(o.segment, super::WallEnd::End)
+            {
                 self.thickness_mm
             } else {
                 0.
             };
-            if o.offset_mm < start_margin - 1e-9
-                || o.offset_mm + o.width_mm > seg.length_mm - end_margin + 1e-9
+            if o.offset_mm < usable_start + start_margin - 1e-9
+                || o.offset_mm + o.width_mm > usable_end - end_margin + 1e-9
             {
                 return Err(invalid(format!(
                     "{label} does not fit segment {} ({:.1} mm long, keeping {:.1} mm of wall at joints)",
@@ -888,10 +982,20 @@ impl ResolvedWall {
             }
             let at_start = !self.closed && c.segment == 0;
             let at_end = !self.closed && c.segment + 1 == n;
-            let start_margin = if at_start { 0. } else { self.thickness_mm };
-            let end_margin = if at_end { 0. } else { self.thickness_mm };
+            let (usable_start, usable_end) = self.usable_segment_range(c.segment)?;
+            let start_margin =
+                if at_start && !self.joined_segment_end(c.segment, super::WallEnd::Start) {
+                    0.
+                } else {
+                    self.thickness_mm
+                };
+            let end_margin = if at_end && !self.joined_segment_end(c.segment, super::WallEnd::End) {
+                0.
+            } else {
+                self.thickness_mm
+            };
             let (a, b) = (c.offset_mm, c.offset_mm + c.width_mm);
-            if a < start_margin - 1e-9 || b > seg.length_mm - end_margin + 1e-9 {
+            if a < usable_start + start_margin - 1e-9 || b > usable_end - end_margin + 1e-9 {
                 return Err(invalid(format!(
                     "{label} does not fit segment {} ({:.1} mm long, keeping {:.1} mm of wall at joints)",
                     c.segment + 1,
@@ -1419,6 +1523,16 @@ fn prepare_wall_construction_change_inner(
         }
         WallChange::Edit { feature, .. } => {
             let previous = read_wall(session.document(), *feature)?;
+            if previous
+                .layer_placement
+                .as_ref()
+                .is_some_and(|p| !p.junctions.is_empty())
+                && wall.layer_placement.is_none()
+            {
+                return Err(error(
+                    "Remove joined ends explicitly before changing to a uniform construction",
+                ));
+            }
             if previous.output != wall.output {
                 return Err(error("A wall edit keeps its output Part"));
             }
@@ -1513,7 +1627,14 @@ fn prepare_wall_construction_change_inner(
                                 || (link.target == wall.output.body && link.geometry.is_some())
                         })
                     });
-                if !previous.openings.is_empty() || !previous.cutouts.is_empty() || referenced {
+                if !previous.openings.is_empty()
+                    || !previous.cutouts.is_empty()
+                    || previous
+                        .layer_placement
+                        .as_ref()
+                        .is_some_and(|p| !p.junctions.is_empty())
+                    || referenced
+                {
                     return Err(error(
                         "Reverse-direction edits require explicit repair of existing openings and hosted or geometric references",
                     ));
@@ -1538,6 +1659,7 @@ mod tests {
     use super::*;
     fn wall(points: &[[f64; 2]], closed: bool, j: Justification) -> ResolvedWall {
         ResolvedWall {
+            junctions: vec![],
             layers: None,
             points: points.to_vec(),
             closed,

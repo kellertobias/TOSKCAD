@@ -851,7 +851,14 @@ impl Compiler {
                     crate::sheet_hardware::build(document, id, &sheet_layouts, self.policy)?
                 }
                 (model::WALL_TYPE, model::WALL_SCHEMA | model::LAYERED_WALL_SCHEMA) => {
-                    crate::walls::build(document, context.parameters(), id, self.policy, interrupt)?
+                    crate::walls::build(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        &solids,
+                        interrupt,
+                    )?
                 }
                 (model::REVOLVE_TYPE, model::REVOLVE_SCHEMA) => {
                     let source =

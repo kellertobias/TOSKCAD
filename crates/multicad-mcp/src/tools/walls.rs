@@ -118,6 +118,9 @@ pub struct WallArgs {
     /// Explicit shared-type scope; commits the type plus this wall atomically.
     #[serde(default)]
     pub edit_shared_construction: Option<super::wall_layers::SharedConstructionArg>,
+    /// Explicitly replace joined endpoint coordinates with perpendicular host-path projections.
+    #[serde(default)]
+    pub align_junctions: bool,
     /// Path vertices in world X/Y millimeters.
     pub path_mm: Vec<[f64; 2]>,
     /// Close the path into a loop (a room).
@@ -201,7 +204,7 @@ fn wall_value(
             sill: opt(&o.sill)?,
         });
     }
-    Ok(WallDefinition {
+    let mut wall = WallDefinition {
         layer_placement: if matches!(
             model::read_wall_construction(document, id(&args.wall_type)?)?,
             model::WallTypeConstruction::Layered(_)
@@ -209,7 +212,9 @@ fn wall_value(
             Some(
                 args.layer_placement
                     .as_ref()
-                    .map(super::wall_layers::LayerPlacementArg::value)
+                    .map(|placement| {
+                        placement.value(previous.and_then(|p| p.layer_placement.as_ref()), document)
+                    })
                     .transpose()?
                     .or_else(|| previous.and_then(|p| p.layer_placement.clone()))
                     .unwrap_or_default(),
@@ -237,7 +242,30 @@ fn wall_value(
         openings,
         // This tool does not author cutouts; an edit keeps the existing ones.
         cutouts: previous.map(|p| p.cutouts.clone()).unwrap_or_default(),
-    })
+    };
+    if args.align_junctions {
+        let junctions = wall
+            .layer_placement
+            .as_mut()
+            .ok_or_else(|| ToolError::invalid("Align requires a layered wall"))?;
+        if junctions.junctions.is_empty() {
+            return Err(ToolError::invalid(
+                "Align requires at least one explicit wall junction",
+            ));
+        }
+        for junction in &mut junctions.junctions {
+            let host = model::read_wall(document, junction.host_wall)?;
+            junction.host_point_count = host.path.len();
+            junction.host_closed = host.closed;
+            let point = junction.aligned_endpoint(document, evaluated, &wall.path, wall.closed)?;
+            let index = match junction.end {
+                model::WallEnd::Start => 0,
+                model::WallEnd::End => wall.path.len() - 1,
+            };
+            wall.path[index] = point.map(length);
+        }
+    }
+    Ok(wall)
 }
 fn q_ref<'a>(
     document: &'a multicad_core::document::Document,
@@ -1020,6 +1048,7 @@ pub(super) fn inspect_wall(host: &dyn Host, _: &Request, args: InspectWallArgs) 
         "wall_type":source.wall_type,
         "layer_placement":source.layer_placement,
         "layers":layers,
+        "junctions":wall.junctions,
         "closed": wall.closed,
         "thickness_mm": wall.thickness_mm,
         "height_mm": wall.height_mm,

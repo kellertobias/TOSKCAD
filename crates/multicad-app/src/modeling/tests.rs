@@ -673,3 +673,120 @@ fn native_source_inspection_is_explicitly_partial_and_does_not_relabel_a_full_re
     assert_eq!(full.reference_instances().len(), 2);
     assert!(full.world_bounds().unwrap()[1][0] > 104.);
 }
+
+#[test]
+fn layered_wall_scene_publishes_each_live_source_material_without_flattening_the_part() {
+    use model::{
+        BodyOutput, LayeredWallTypeDefinition, NewType, NewTypeKind, WallChange, WallDefinition,
+        WallLayer, WallLayerKind, WallLayerReference, WallLayerStack, WallRequest,
+    };
+    use multicad_core::document::{Entity, EntityData, EntityId, Mutation};
+    let material = |name, color| {
+        Entity::new(
+            name,
+            EntityData::Material {
+                density_kg_m3: None,
+                color_rgba: color,
+                section_hatch: None,
+            },
+        )
+    };
+    let brick = material("Brick", [160, 80, 60, 255]);
+    let lining = material("Lining", [230, 235, 240, 255]);
+    let doc = Document::new("Layer colors")
+        .unwrap()
+        .edited(&[
+            Mutation::Insert(brick.clone()),
+            Mutation::Insert(lining.clone()),
+        ])
+        .unwrap();
+    let mut session = Session::new(doc).unwrap();
+    let actor = || Actor::local(Channel::CommandLine);
+    let ty = NewType::new(
+        "Construction",
+        NewTypeKind::LayeredWall(LayeredWallTypeDefinition {
+            layers: WallLayerStack {
+                layers: [(brick.id, 100.), (lining.id, 50.)]
+                    .into_iter()
+                    .map(|(material, width)| WallLayer {
+                        id: EntityId::new(),
+                        name: "Layer".into(),
+                        role: None,
+                        construction: WallLayerKind::Solid {
+                            material,
+                            thickness: length(width),
+                        },
+                    })
+                    .collect(),
+            },
+            height: length(2500.),
+            reference: WallLayerReference::Center,
+        }),
+    );
+    let wall = WallRequest::new(
+        "Layered wall",
+        WallDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            wall_type: ty.id,
+            layer_placement: Some(Default::default()),
+            path: vec![[length(0.), length(0.)], [length(1000.), length(0.)]],
+            closed: false,
+            level: None,
+            base_z: length(0.),
+            thickness: None,
+            height: None,
+            justification: None,
+            openings: vec![],
+            cutouts: vec![],
+        },
+    );
+    let p = model::prepare_wall_change(&session, 0, actor(), &[ty], &WallChange::Create(&wall))
+        .unwrap();
+    session.commit(p.prepared).unwrap();
+    let mut cache = multicad_model::EvaluationCache::default();
+    for (generation, color) in [(1, [160, 80, 60, 255]), (2, [40, 100, 180, 255])] {
+        if generation == 2 {
+            let mut changed = brick.clone();
+            if let EntityData::Material { color_rgba, .. } = &mut changed.data {
+                *color_rgba = color;
+            }
+            session
+                .apply(multicad_core::commands::Request {
+                    expected_revision: session.revision(),
+                    actor: actor(),
+                    label: "Material appearance".into(),
+                    edits: vec![Mutation::Replace(changed)],
+                })
+                .unwrap();
+        }
+        let model = Compiler::default()
+            .compile_cached(&mut cache, session.document(), session.revision(), None)
+            .unwrap();
+        let scene = scene(session.document(), model.snapshot(), generation).unwrap();
+        let geometry = &scene.geometries()[&wall.feature];
+        let materials = model::wall_face_materials(
+            session.document(),
+            &model.snapshot().shapes[&wall.feature].topology,
+        )
+        .unwrap();
+        assert_eq!(scene.reference_instances().len(), 1);
+        for (face, assignment) in materials {
+            assert_eq!(
+                geometry.face_color(face),
+                Some(if assignment.material == brick.id {
+                    color
+                } else {
+                    [230, 235, 240, 255]
+                })
+            );
+        }
+        let colors: std::collections::BTreeSet<_> = geometry
+            .triangle_faces()
+            .iter()
+            .filter_map(|face| geometry.face_color(*face))
+            .collect();
+        assert_eq!(colors.len(), 2);
+    }
+}

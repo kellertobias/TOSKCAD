@@ -995,6 +995,16 @@ fn layered_equipment_anchors_in_voids_require_repair_but_lintels_and_the_opposit
             .resolve(session.document(), session.parameters())
             .is_ok()
     );
+    let mut other_segment = anchor(1000., 300., WallSide::Left);
+    if let HostPlacement::Wall { segment, .. } = &mut other_segment.placement {
+        *segment = 1;
+    }
+    assert!(
+        other_segment
+            .resolve(session.document(), session.parameters())
+            .is_ok(),
+        "an opening on a different wall segment must not remove this anchor"
+    );
 }
 
 #[test]

@@ -62,8 +62,8 @@ an intact opposite face remains usable. This is anchor validation, not a claim
 of complete equipment footprint/clearance certification.
 
 The existing native wall form now authors uniform and layered constructions.
-Separate-wall T joins and project-authored dynamic-symbol integration under
-CAD-206 remain in progress. Actual macOS editor interaction and human acceptance
+Explicit perpendicular T joins are supported below. Project-authored dynamic-symbol
+integration under CAD-206 remains in progress. Actual macOS editor interaction and human acceptance
 are separate from source, native geometry and painted-widget checks.
 
 Finite layer faces publish their source-owned material through the exact
@@ -113,6 +113,52 @@ the current wall's boundary repair to accompany a shared layer removal. The
 editor shares immutable evaluated session state and caches material choices,
 resolved bands and impact lists by process-local source stamp. Idle painting
 neither hashes the document nor reconstructs the parameter table.
+
+### Explicit joined ends
+
+An open layered branch can declare a perpendicular **flush-butt T** at either
+end. The host may be an open or closed architectural wall; its construction stays
+continuous. Every finite branch layer stops at the host's nearest physical face.
+There is no automatic layer wrapping, return or cross-layer material matching.
+An exterior host air cavity can require a small extension beyond the reference
+path; no cavity or coating becomes a fictitious solid.
+
+The wall form's **Joined ends** section chooses the end, host and host segment.
+**Align endpoint perpendicular to host** explicitly replaces only that endpoint
+in the local path draft. Other authored point dimensions remain untouched. The
+physical termination can trim or extend from this reference endpoint. Removing a
+join is explicit; omitted placement data in MCP edits retains existing joins.
+Changing to a uniform type while still joined is refused.
+
+`WallLayerPlacement.junctions` stores the end, host wall feature, segment and host
+path topology. The canonical input links name those hosts. The additive
+`architecture.wall_junctions.1` file capability prevents older readers from
+silently losing them. A changed host point count or closed/open state requires
+explicit reattachment; Align refreshes that context. Reversing an already joined
+path also requires repair. Shared-type impact lists include dependent joined
+branches, even when they use another construction type.
+
+The supported contact must lie inside one host side face, away from its corners
+and ends, with host material through the branch's full height. A host door/window
+void or selected-face chase at the contact refuses the join. Branch openings and
+cutouts keep material at joined ends. Equipment anchors removed by a trim require
+reattachment. Generic downstream geometry on a host/branch, skew junctions,
+closed branches, corner joins and wrapping are outside this contract and fail
+explicitly. Junction resolution is bounded to 64 host levels and 256 resolution
+steps.
+
+Native evaluation uses the planned exact end planes and checks the complete
+branch against each declared host with occupied-space COMMON and minimum
+distance. It requires contact within native precision with zero positive common
+volume, including elsewhere along the branch. The host is not cut or fused into
+the branch. Display meshes do not establish this result. Unjoined walls remain
+independent; there is no automatic cleanup of arbitrary intersecting walls.
+
+MCP `create_wall`/`edit_wall` accept `layer_placement.junctions` and explicit
+`align_junctions`. Omit the junction list to retain it, or pass an empty list to
+detach. `inspect_wall` reports the saved relationship and resolved physical
+contact plane/extension. The same planner, native checks and one source
+transaction serve UI and MCP.
 
 ### Vertical cutouts
 
@@ -343,8 +389,9 @@ through the shared page render.
 
 - **Joints and shapes.**
   - Walls are straight-segment polylines; there are no arc walls.
-  - Separate walls do not join or clean each other up at T or L junctions.
-    Draw connected runs as one path or room.
+  - Separate walls only join through the explicit perpendicular flush-butt T
+    contract above. There is no automatic T/L cleanup or wrapping. Draw connected
+    L runs as one path or room.
 - **Openings.**
   - Openings are rectangular.
   - Door and window types carry no frame, leaf or glazing solids. The plan

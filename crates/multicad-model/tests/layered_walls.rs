@@ -791,3 +791,580 @@ fn layer_plan_hatches_and_export_boundaries_follow_real_materials_at_three_scale
         }
     }
 }
+
+#[test]
+fn flush_butt_t_ends_contact_without_overlap_preserve_layers_and_survive_step_readback() {
+    use model::{WallEnd, WallJunction, WallJunctionStyle};
+    for end in [WallEnd::Start, WallEnd::End] {
+        let (mut session, value) = fixture(WallLayerReference::Center);
+        let host_type = NewType::new("Main construction", NewTypeKind::LayeredWall(value.clone()));
+        let branch_type = NewType::new(
+            "Branch construction",
+            NewTypeKind::LayeredWall(value.clone()),
+        );
+        let host = request(host_type.id, &[[0., 0.], [4000., 0.]], false);
+        let p = model::prepare_wall_change(
+            &session,
+            0,
+            actor(),
+            &[host_type, branch_type.clone()],
+            &WallChange::Create(&host),
+        )
+        .unwrap();
+        session.commit(p.prepared).unwrap();
+        let baseline = native(&session);
+        let host_volume = baseline.solid(host.body).unwrap().volume_mm3().unwrap();
+        let points = if end == WallEnd::End {
+            [[2000., 3000.], [2000., 0.]]
+        } else {
+            [[2000., 0.], [2000., 3000.]]
+        };
+        let mut branch = request(branch_type.id, &points, false);
+        let placement = branch.wall.layer_placement.as_mut().unwrap();
+        placement.flipped = end == WallEnd::Start;
+        placement.junctions.push(WallJunction {
+            end,
+            host_wall: host.feature,
+            host_segment: 0,
+            host_point_count: host.wall.path.len(),
+            host_closed: host.wall.closed,
+            style: WallJunctionStyle::FlushButt,
+        });
+        let before = session.document().clone();
+        let p = model::prepare_wall_change(
+            &session,
+            session.revision(),
+            actor(),
+            &[],
+            &WallChange::Create(&branch),
+        )
+        .unwrap();
+        let compiled = Compiler::default()
+            .compile(p.prepared.document(), session.revision())
+            .unwrap();
+        let host_solid = compiled.solid(host.body).unwrap();
+        let branch_solid = compiled.solid(branch.body).unwrap();
+        near(host_solid.volume_mm3().unwrap(), host_volume, 0.01);
+        assert_eq!(branch_solid.solid_count().unwrap(), 5);
+        near(
+            branch_solid.volume_mm3().unwrap(),
+            352.5 * (3000. - 191.25) * 2700.,
+            0.1,
+        );
+        for (id, member) in members(branch_solid, branch.feature) {
+            let layer = value.layers.layers.iter().find(|l| l.id == id).unwrap();
+            let width = layer
+                .construction
+                .thickness()
+                .unwrap()
+                .value_in(
+                    multicad_core::parameters::Unit::Millimeter,
+                    Some(session.parameters()),
+                )
+                .unwrap();
+            let bounds = member.bounds().unwrap();
+            near(bounds.min[1], 191.25, 1e-6);
+            near(bounds.max[1], 3000., 1e-6);
+            near(bounds.max[0] - bounds.min[0], width, 1e-6);
+            near(
+                member.volume_mm3().unwrap(),
+                width * (3000. - 191.25) * 2700.,
+                0.1,
+            );
+            let assignments = model::wall_face_materials(
+                p.prepared.document(),
+                &member
+                    .topology_snapshot(branch.feature, session.revision())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                assignments
+                    .values()
+                    .all(|a| a.layer == id && Some(a.material) == layer.construction.material())
+            );
+        }
+        let pair = branch_solid
+            .inspect_pair(host_solid, 1e-7, GeometryPolicy::default())
+            .unwrap();
+        assert_eq!(pair.relation, SolidPairRelation::ContactWithinTolerance);
+        near(pair.common_volume_mm3, 0., 1e-6);
+        let directory = tempfile::tempdir().unwrap();
+        let host_path = directory.path().join("host.step");
+        let branch_path = directory.path().join("branch.step");
+        host_solid.write_step(&host_path).unwrap();
+        branch_solid.write_step(&branch_path).unwrap();
+        let read_host = Solid::read_step(&host_path, GeometryPolicy::default()).unwrap();
+        let read_branch = Solid::read_step(&branch_path, GeometryPolicy::default()).unwrap();
+        let pair = read_branch
+            .inspect_pair(&read_host, 1e-7, GeometryPolicy::default())
+            .unwrap();
+        assert_eq!(pair.relation, SolidPairRelation::ContactWithinTolerance);
+        near(pair.common_volume_mm3, 0., 1e-6);
+        near(
+            read_branch.volume_mm3().unwrap(),
+            branch_solid.volume_mm3().unwrap(),
+            0.1,
+        );
+        assert_eq!(read_branch.solid_count().unwrap(), 5);
+        assert_eq!(
+            session.document(),
+            &before,
+            "native checking cannot commit a draft"
+        );
+        session.commit(p.prepared).unwrap();
+    }
+}
+
+#[test]
+fn t_join_uses_a_closed_room_segment_and_extends_through_exterior_air_to_a_real_face() {
+    use model::{WallEnd, WallJunction, WallJunctionStyle};
+    for closed in [false, true] {
+        let (mut session, value) = fixture(WallLayerReference::Center);
+        let mut host_value = value.clone();
+        if !closed {
+            host_value.reference = WallLayerReference::Outside;
+            host_value.layers.layers.insert(
+                0,
+                WallLayer {
+                    id: EntityId::new(),
+                    name: "Exterior air".into(),
+                    role: None,
+                    construction: WallLayerKind::Cavity {
+                        thickness: length(30.),
+                    },
+                },
+            );
+        }
+        let host_type = NewType::new("Host", NewTypeKind::LayeredWall(host_value));
+        let branch_type = NewType::new("Branch", NewTypeKind::LayeredWall(value));
+        let points = if closed {
+            vec![[0., 0.], [4000., 0.], [4000., 3000.], [0., 3000.]]
+        } else {
+            vec![[0., 0.], [4000., 0.]]
+        };
+        let host = request(host_type.id, &points, closed);
+        let p = model::prepare_wall_change(
+            &session,
+            0,
+            actor(),
+            &[host_type, branch_type.clone()],
+            &WallChange::Create(&host),
+        )
+        .unwrap();
+        session.commit(p.prepared).unwrap();
+        let baseline = native(&session);
+        let host_volume = baseline.solid(host.body).unwrap().volume_mm3().unwrap();
+        let mut branch = request(branch_type.id, &[[2000., 1500.], [2000., 0.]], false);
+        branch
+            .wall
+            .layer_placement
+            .as_mut()
+            .unwrap()
+            .junctions
+            .push(WallJunction {
+                end: WallEnd::End,
+                host_wall: host.feature,
+                host_segment: 0,
+                host_point_count: host.wall.path.len(),
+                host_closed: host.wall.closed,
+                style: WallJunctionStyle::FlushButt,
+            });
+        let p = model::prepare_wall_change(
+            &session,
+            session.revision(),
+            actor(),
+            &[],
+            &WallChange::Create(&branch),
+        )
+        .unwrap();
+        let compiled = Compiler::default()
+            .compile(p.prepared.document(), session.revision())
+            .unwrap();
+        let solid = compiled.solid(branch.body).unwrap();
+        let end = if closed { 191.25 } else { -30. };
+        near(solid.bounds().unwrap().min[1], end, 1e-6);
+        near(
+            solid.volume_mm3().unwrap(),
+            352.5 * (1500. - end) * 2700.,
+            0.1,
+        );
+        near(
+            compiled.solid(host.body).unwrap().volume_mm3().unwrap(),
+            host_volume,
+            0.1,
+        );
+        let pair = solid
+            .inspect_pair(
+                compiled.solid(host.body).unwrap(),
+                1e-7,
+                GeometryPolicy::default(),
+            )
+            .unwrap();
+        assert_eq!(pair.relation, SolidPairRelation::ContactWithinTolerance);
+        near(pair.common_volume_mm3, 0., 1e-6);
+    }
+}
+
+#[test]
+fn a_declared_join_cannot_hide_material_overlap_elsewhere_on_the_branch_path() {
+    use model::{WallEnd, WallJunction, WallJunctionStyle};
+    let (mut session, value) = fixture(WallLayerReference::Center);
+    let ty = NewType::new("Construction", NewTypeKind::LayeredWall(value));
+    let host = request(ty.id, &[[0., 0.], [4000., 0.], [4000., 3000.]], false);
+    let p = model::prepare_wall_change(&session, 0, actor(), &[ty], &WallChange::Create(&host))
+        .unwrap();
+    session.commit(p.prepared).unwrap();
+    let mut branch = request(
+        host.wall.wall_type,
+        &[[4500., 1500.], [2000., 1500.], [2000., 0.]],
+        false,
+    );
+    branch
+        .wall
+        .layer_placement
+        .as_mut()
+        .unwrap()
+        .junctions
+        .push(WallJunction {
+            end: WallEnd::End,
+            host_wall: host.feature,
+            host_segment: 0,
+            host_point_count: host.wall.path.len(),
+            host_closed: host.wall.closed,
+            style: WallJunctionStyle::FlushButt,
+        });
+    let before = session.document().clone();
+    let p = model::prepare_wall_change(
+        &session,
+        session.revision(),
+        actor(),
+        &[],
+        &WallChange::Create(&branch),
+    )
+    .unwrap();
+    let error = Compiler::default()
+        .compile(p.prepared.document(), session.revision())
+        .err()
+        .unwrap();
+    assert!(
+        error.message.contains("without material overlap"),
+        "{}",
+        error.message
+    );
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn t_junction_with_door_and_window_exports_a_true_contact_boundary_at_three_scales() {
+    use model::{WallEnd, WallJunction, WallJunctionStyle};
+    use multicad_core::{drawings::*, references::ReferenceFrame};
+    let (mut session, value) = fixture(WallLayerReference::Center);
+    let ty = NewType::new("Layered T construction", NewTypeKind::LayeredWall(value));
+    let door = NewType::new(
+        "Door",
+        NewTypeKind::Opening(OpeningTypeDefinition {
+            kind: OpeningKind::Door {
+                hinge: model::Hinge::Start,
+                swing: model::Swing::Left,
+            },
+            width: length(900.),
+            height: length(2100.),
+            sill: length(0.),
+        }),
+    );
+    let window = NewType::new(
+        "Window",
+        NewTypeKind::Opening(OpeningTypeDefinition {
+            kind: OpeningKind::Window,
+            width: length(500.),
+            height: length(1000.),
+            sill: length(900.),
+        }),
+    );
+    let mut host = request(ty.id, &[[0., 0.], [4000., 0.]], false);
+    host.wall.openings.push(Opening {
+        id: EntityId::new(),
+        opening_type: door.id,
+        segment: 0,
+        offset: length(500.),
+        width: None,
+        height: None,
+        sill: None,
+    });
+    let p = model::prepare_wall_change(
+        &session,
+        0,
+        actor(),
+        &[ty, door, window.clone()],
+        &WallChange::Create(&host),
+    )
+    .unwrap();
+    session.commit(p.prepared).unwrap();
+    let mut branch = request(host.wall.wall_type, &[[2000., 3000.], [2000., 0.]], false);
+    branch
+        .wall
+        .layer_placement
+        .as_mut()
+        .unwrap()
+        .junctions
+        .push(WallJunction {
+            end: WallEnd::End,
+            host_wall: host.feature,
+            host_segment: 0,
+            host_point_count: 2,
+            host_closed: false,
+            style: WallJunctionStyle::FlushButt,
+        });
+    branch.wall.openings.push(Opening {
+        id: EntityId::new(),
+        opening_type: window.id,
+        segment: 0,
+        offset: length(1000.),
+        width: None,
+        height: None,
+        sill: None,
+    });
+    let p = model::prepare_wall_change(
+        &session,
+        session.revision(),
+        actor(),
+        &[],
+        &WallChange::Create(&branch),
+    )
+    .unwrap();
+    session.commit(p.prepared).unwrap();
+    let mut books = Vec::new();
+    for denominator in [100, 50, 10] {
+        let mut page = Page::new(format!("T 1:{denominator}"));
+        page.settings.paper = if denominator == 10 {
+            PaperSize::A2
+        } else {
+            PaperSize::A3
+        };
+        page.info.title = "Layered flush-butt T, door and window".into();
+        page.views.push(DrawingView {
+            id: EntityId::new(),
+            name: "Flush-butt T".into(),
+            source: ViewSource::Model {
+                entities: vec![host.body, branch.body],
+            },
+            frame: ReferenceFrame {
+                origin_mm: [0.; 3],
+                u: [1., 0., 0.],
+                v: [0., 1., 0.],
+            },
+            kind: ViewKind::Section {
+                offset_mm: 1000.,
+                range: SectionRange::SectionOnly,
+                window: SectionWindow::default(),
+            },
+            position_mm: if denominator == 10 {
+                [40., 320.]
+            } else {
+                [60., 150.]
+            },
+            scale: Scale {
+                numerator: 1,
+                denominator,
+            },
+            hidden_lines: false,
+            tangent_edges: false,
+            paper_chord_tolerance_mm: 0.01,
+            guide: None,
+            equipment_categories: None,
+        });
+        let (book, p) = prepare_create(
+            &session,
+            session.revision(),
+            actor(),
+            "Junction plans",
+            Some(page),
+        )
+        .unwrap();
+        session.commit(p).unwrap();
+        books.push((book, denominator as f64));
+    }
+    let compiled = native(&session);
+    near(
+        compiled.solid(branch.body).unwrap().volume_mm3().unwrap(),
+        352.5 * ((3000. - 191.25) * 2700. - 500. * 1000.),
+        0.1,
+    );
+    near(
+        compiled.solid(host.body).unwrap().volume_mm3().unwrap(),
+        352.5 * (4000. * 2700. - 900. * 2100.),
+        0.1,
+    );
+    let pair = compiled
+        .solid(host.body)
+        .unwrap()
+        .inspect_pair(
+            compiled.solid(branch.body).unwrap(),
+            1e-7,
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+    assert_eq!(pair.relation, SolidPairRelation::ContactWithinTolerance);
+    near(pair.common_volume_mm3, 0., 1e-6);
+    let evaluation = compiled
+        .drawings(session.document(), session.revision(), &Default::default())
+        .unwrap();
+    for (book, denominator) in books {
+        let book_value = multicad_core::drawings::read(session.document(), book).unwrap();
+        let page = &book_value.pages[0];
+        let view = &page.views[0];
+        let ViewEvaluation::Ready { vectors, .. } = &evaluation.views[&view.id] else {
+            panic!("{:?}", evaluation.views[&view.id])
+        };
+        assert_eq!(vectors.iter().filter(|v|matches!(v.curve,VectorCurve::Ellipse {major_mm,..} if (major_mm-900.).abs()<1e-6)).count(),1,"one door swing, not one per material component");
+        assert!(
+            vectors
+                .iter()
+                .any(|v| v.source == branch.body && v.role == VectorRole::Hatch)
+        );
+        let expected_a = [
+            view.position_mm[0] + 2111.25 / denominator,
+            page.settings.dimensions()[1] - view.position_mm[1] + 191.25 / denominator,
+        ];
+        let expected_b = [view.position_mm[0] + 2191.25 / denominator, expected_a[1]];
+        let matches = |a: [f64; 2], b: [f64; 2], tolerance: f64| {
+            let same = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < tolerance;
+            (same(a, expected_a) && same(b, expected_b))
+                || (same(b, expected_a) && same(a, expected_b))
+        };
+        let render = render::render_page(
+            session.document(),
+            session.revision(),
+            book,
+            page.id,
+            &evaluation,
+        )
+        .unwrap();
+        let pdf = pdf::book_pdf(
+            session.document(),
+            session.revision(),
+            &[(book, page.id)],
+            &evaluation,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&pdf);
+        let begin = text.find("stream\n").unwrap() + 7;
+        let stream = &text[begin..];
+        let stream = &stream[..stream.find("endstream").unwrap()];
+        let pdf_has_contact = stream.lines().filter(|l| l.ends_with(" S")).any(|line| {
+            let tokens: Vec<_> = line.split_whitespace().collect();
+            let points: Vec<[f64; 2]> = tokens
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| {
+                    if *t == "m" || *t == "l" {
+                        Some([
+                            tokens[i - 2].parse::<f64>().unwrap() / pdf::PT_PER_MM,
+                            tokens[i - 1].parse::<f64>().unwrap() / pdf::PT_PER_MM,
+                        ])
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            points.windows(2).any(|p| matches(p[0], p[1], 0.002))
+        });
+        assert!(
+            pdf_has_contact,
+            "physical T layer contact missing from PDF at1:{denominator}"
+        );
+        let dxf = dxf::render_dxf(&render, 1., 4);
+        let drawing = ::dxf::Drawing::load(&mut std::io::Cursor::new(dxf.as_bytes())).unwrap();
+        assert!(drawing.entities().any(|e|e.common.layer=="VIEW_SECTION" && matches!(&e.specific,::dxf::entities::EntityType::Line(l) if matches([l.p1.x,l.p1.y],[l.p2.x,l.p2.y],1e-5))),"physical T layer contact missing from DXF at1:{denominator}");
+        if let Ok(directory) = std::env::var("MULTICAD_JUNCTION_REVIEW") {
+            let directory = std::path::Path::new(&directory);
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(
+                directory.join(format!("t-junction-1-{denominator}.pdf")),
+                &pdf,
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join(format!("t-junction-1-{denominator}.dxf")),
+                &dxf,
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join(format!("t-junction-1-{denominator}.svg")),
+                svg::render_svg(&render),
+            )
+            .unwrap();
+            project_file_for_join_fixture(session.document(), directory);
+        }
+    }
+}
+fn project_file_for_join_fixture(document: &Document, directory: &std::path::Path) {
+    let file = multicad_core::project_file::ProjectFile::new(document.clone()).unwrap();
+    multicad_core::project_file::write(
+        &file,
+        &mut std::fs::File::create(directory.join("layered-t-junction.tcd")).unwrap(),
+        Default::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn perpendicular_t_contact_is_rigidly_invariant_under_rotation_and_translation() {
+    use model::{WallEnd, WallJunction, WallJunctionStyle};
+    let (mut session, value) = fixture(WallLayerReference::Center);
+    let ty = NewType::new("Rotated construction", NewTypeKind::LayeredWall(value));
+    let angle = std::f64::consts::PI / 6.;
+    let (s, c) = angle.sin_cos();
+    let transform = |p: [f64; 2]| [10000. + c * p[0] - s * p[1], 20000. + s * p[0] + c * p[1]];
+    let host = request(ty.id, &[[0., 0.], [4000., 0.]].map(transform), false);
+    let p = model::prepare_wall_change(&session, 0, actor(), &[ty], &WallChange::Create(&host))
+        .unwrap();
+    session.commit(p.prepared).unwrap();
+    let mut branch = request(
+        host.wall.wall_type,
+        &[[2000., 3000.], [2000., 0.]].map(transform),
+        false,
+    );
+    branch
+        .wall
+        .layer_placement
+        .as_mut()
+        .unwrap()
+        .junctions
+        .push(WallJunction {
+            end: WallEnd::End,
+            host_wall: host.feature,
+            host_segment: 0,
+            host_point_count: 2,
+            host_closed: false,
+            style: WallJunctionStyle::FlushButt,
+        });
+    let p = model::prepare_wall_change(
+        &session,
+        session.revision(),
+        actor(),
+        &[],
+        &WallChange::Create(&branch),
+    )
+    .unwrap();
+    let compiled = Compiler::default()
+        .compile(p.prepared.document(), session.revision())
+        .unwrap();
+    near(
+        compiled.solid(branch.body).unwrap().volume_mm3().unwrap(),
+        352.5 * (3000. - 191.25) * 2700.,
+        0.1,
+    );
+    let pair = compiled
+        .solid(host.body)
+        .unwrap()
+        .inspect_pair(
+            compiled.solid(branch.body).unwrap(),
+            1e-7,
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+    assert_eq!(pair.relation, SolidPairRelation::ContactWithinTolerance);
+    near(pair.common_volume_mm3, 0., 1e-6);
+}

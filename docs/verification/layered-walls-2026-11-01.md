@@ -2,8 +2,7 @@
 
 CAD-204 is in progress. This checkpoint covers canonical source, exact native
 geometry and reference guards on macOS. It does not establish actual macOS editor interaction,
-separate-wall T joins, shared Library
-integration under CAD-206, or human acceptance. Native UI-control tooling is
+shared Library integration under CAD-206, or human acceptance. Native UI-control tooling is
 unavailable; CLI tests are not a substitute for those graphical checks.
 
 ## Source and compatibility
@@ -127,3 +126,43 @@ strict whole-workspace/all-target Clippy pass (7m27s). Logs are retained in
 `artifacts/layered-wall-review-20261101/`; full final feature workspace tests
 remain pending. Separate-wall T joins, termination policy, CAD-206 integration,
 actual graphical checks and human acceptance remain outstanding.
+
+## T junctions and termination
+
+Explicit joined starts and ends now use the same canonical layer/source model.
+The supported rule is perpendicular flush-butt contact: the host remains
+continuous and the finite branch layers end at its physical face, without
+wrapping. Exact native tests cover both ends, a closed-room host, an exterior
+air cavity requiring a 30 mm extension, and rotation/translation of the whole T.
+They measure each material member's thickness, length and volume, preserve layer
+UUID ownership and verify contact with zero common volume. Independent STEP
+write/read retains the component count, volume and contact. An otherwise valid
+T whose branch crosses another part of the host is refused for material overlap.
+
+A five-layer T fixture also has a host door and branch window. Native volumes
+match the cut areas. PDF drawing commands and independently parsed DXF lines
+preserve the physical material contact at 1:100, 1:50 and 1:10; the door swing is
+emitted once across the material components. Poppler-rendered 1:50 and 1:10
+sheets were inspected. Native TCD/PDF/DXF/SVG files are retained in
+`artifacts/layered-wall-review-20261101/t-junction/`. This exported review does
+not replace native-window interaction.
+
+Core source tests cover explicit alignment without source mutation, capability
+refusal by older readers, canonical host links, topology-change repair, affected
+joined branches, unsupported angle/datum/corner/height/duplicate-end cases,
+host voids, branch end-opening limits and trimmed equipment anchors. Equipment
+void checks also distinguish different segments of the same wall. The complete
+core suite passes: 461 tests, zero failures, 62 result groups.
+
+Seven UI tests pass, including pointer clicks on the actual joined-end controls
+and native preview of their aligned result. Five MCP tests pass, including
+alignment, retained joins during flip, stale topology and wrapping refusal, and
+explicit detachment. Native model regressions pass: 12 layered-wall tests plus
+four existing wall and three cutout tests. The production application's scene
+publisher also passes a live per-layer material-color/source-update check. These
+headless/native checks create no desktop windows.
+
+Formatting and strict whole-workspace/all-target Clippy pass for this increment
+(Clippy: 6m16s). The final full workspace test run is active on the frozen source;
+no pass is claimed yet. Actual macOS editor interaction, CAD-206 cross-project
+path/context/Library integration and human acceptance remain outstanding.

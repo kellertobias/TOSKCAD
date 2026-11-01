@@ -830,6 +830,9 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    if document.entities().any(|entity|matches!(&entity.data,EntityData::Feature {definition,..} if definition.type_id==super::WALL_TYPE && definition.data.pointer("/layer_placement/junctions").and_then(serde_json::Value::as_array).is_some_and(|j|!j.is_empty()))) {
+        capabilities.insert(super::WALL_JUNCTION_CAPABILITY.into());
+    }
     if document
         .entities()
         .any(|entity| crate::sketch_regions::supporting_face(document, entity.id).is_some())
