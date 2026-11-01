@@ -121,7 +121,7 @@ impl Renderer {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("CAD instanced geometry"),layout:Some(&pipeline_layout),
             vertex:wgpu::VertexState {module:&shader,entry_point:Some("vertex"),compilation_options:Default::default(),buffers:&[
-                Some(wgpu::VertexBufferLayout {array_stride:16,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32]}),
+                Some(wgpu::VertexBufferLayout {array_stride:32,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32,7=>Float32x4]}),
                 Some(wgpu::VertexBufferLayout {array_stride:80,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![2=>Float32x4,3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Uint32x4]})]},
             primitive:wgpu::PrimitiveState {topology,..Default::default()},depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(write),depth_compare:Some(compare),stencil:Default::default(),bias}),
             multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(entry),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:None,
@@ -187,7 +187,7 @@ impl Renderer {
                 {
                     continue;
                 }
-                let mut bytes = Vec::with_capacity(geometry.indices().len() * 16);
+                let mut bytes = Vec::with_capacity(geometry.indices().len() * 32);
                 for (triangle, face) in geometry
                     .indices()
                     .as_chunks::<3>()
@@ -201,6 +201,12 @@ impl Renderer {
                             geometry.vertices()[*index as usize].map(|v| v as f32),
                         );
                         words(&mut bytes, [*face]);
+                        floats(
+                            &mut bytes,
+                            geometry
+                                .face_color(*face)
+                                .map_or([0., 0., 0., -1.], |c| c.map(|v| v as f32 / 255.)),
+                        );
                     }
                 }
                 let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -214,10 +220,11 @@ impl Renderer {
                         for p in segment {
                             floats(&mut edge_bytes, p.map(|v| v as f32));
                             words(&mut edge_bytes, [0x1000_0000 + edge.index]);
+                            floats(&mut edge_bytes, [0., 0., 0., -1.]);
                         }
                     }
                 }
-                let edge_count = (edge_bytes.len() / 16) as u32;
+                let edge_count = (edge_bytes.len() / 32) as u32;
                 let edges = (!edge_bytes.is_empty()).then(|| {
                     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("Cached B-rep edges"),

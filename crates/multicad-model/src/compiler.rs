@@ -541,6 +541,8 @@ impl Compiler {
                 let topology = solid
                     .topology_snapshot(id, revision)
                     .map_err(|e| error(Some(id), e))?;
+                multicad_core::model::wall_face_materials(document, &topology)
+                    .map_err(|e| error(Some(id), e))?;
                 let snapshot = ShapeSnapshot {
                     producer: id,
                     bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
@@ -641,6 +643,8 @@ impl Compiler {
                         "Model display exceeds the triangle budget; use coarser detail",
                     ));
                 }
+                multicad_core::model::wall_face_materials(document, &shape.topology)
+                    .map_err(|e| error(Some(id), e))?;
                 topologies.insert(id, shape.topology.clone());
                 shapes.insert(id, shape);
                 solids.insert(id, solid);

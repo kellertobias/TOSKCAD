@@ -259,10 +259,35 @@ impl<'a> Resolver<'a> {
         let EntityData::Part { material, .. } = &e.data else {
             return Err(DocumentError::Invalid(format!("{part} is not a Part")));
         };
-        let props = self.parts.get(&part).cloned();
+        self.resolve_assignment(Some(part), *material, self.parts.get(&part).cloned())
+    }
+    /// Resolve a material carried by an exact component, without inventing a
+    /// temporary Part or inheriting unrelated Part stock/appearance overrides.
+    pub fn resolve_material(
+        &self,
+        material: EntityId,
+    ) -> Result<EffectiveProperties, DocumentError> {
+        let source = self
+            .document
+            .get(material)
+            .ok_or(DocumentError::Missing(material))?;
+        if !matches!(source.data, EntityData::Material { .. }) {
+            return Err(DocumentError::Invalid(format!(
+                "{material} is not a Material"
+            )));
+        }
+        self.resolve_assignment(None, Some(material), None)
+    }
+    fn resolve_assignment(
+        &self,
+        part: Option<EntityId>,
+        material: Option<EntityId>,
+        props: Option<(EntityId, PartProperties)>,
+    ) -> Result<EffectiveProperties, DocumentError> {
+        let document = self.document;
         let style = material.and_then(|m| self.styles.get(&m)).cloned();
         let owners = [
-            Some(part),
+            part,
             props.as_ref().map(|s| s.0),
             style.as_ref().map(|s| s.0),
         ];
@@ -291,7 +316,7 @@ impl<'a> Resolver<'a> {
         let mut appearance = Appearance::default();
         let mut hatch = None;
         if let Some(id) = material {
-            let source = document.get(*id).ok_or(DocumentError::Missing(*id))?;
+            let source = document.get(id).ok_or(DocumentError::Missing(id))?;
             if let EntityData::Material {
                 color_rgba,
                 section_hatch,
@@ -350,7 +375,7 @@ impl<'a> Resolver<'a> {
             })
             .transpose()?;
         Ok(EffectiveProperties {
-            material: *material,
+            material,
             stock,
             appearance,
             hatch,

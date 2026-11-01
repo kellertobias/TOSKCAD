@@ -62,10 +62,25 @@ an intact opposite face remains usable. This is anchor validation, not a claim
 of complete equipment footprint/clearance certification.
 
 This increment establishes source and native geometry contracts. The graphical
-construction editor, per-layer appearance/hatch publication, separate-wall T
+construction editor, separate-wall T
 joins and project-authored dynamic-symbol integration under CAD-206 remain
 in progress. The existing graphical wall form still authors uniform types.
 Source/native tests do not establish graphical workflow or human acceptance.
+
+Finite layer faces publish their source-owned material through the exact
+`component/<layer UUID>` provenance. Unknown, missing or ambiguous ownership
+requires repair, including on cached native results. The viewport resolves each
+material's shared appearance into an immutable face palette; Part stock or
+appearance overrides do not replace layered-wall materials. Coatings remain
+zero-volume metadata and are not a second rendered solid.
+
+Drawing projection extracts owned exact solid components and resolves each
+component's material hatch without changing the wall Part identity. Material
+boundaries stay at their physical coordinates in PDF and DXF. Layered cut lines
+use 0.18 mm on paper, reduced to one third of a thin layer's paper width with a
+0.05 mm minimum. Layers narrower than 0.5 mm on paper omit hatching and report a
+larger-detail warning. This scale rule changes ink only; it never widens a layer.
+Uniform walls retain their existing 0.5 mm cut outlines.
 
 ### Vertical cutouts
 
@@ -192,7 +207,8 @@ architectural plan: a horizontal cut through the wall solid.
   off). Without one, walls get a default of 45° lines, 1.5 mm apart on paper
   at any scale, 0.13 mm wide. Hatching is drawing output only; it never
   changes the wall solid.
-- **Line weights.** Cut wall outlines 0.5 mm; geometry seen below the cut
+- **Line weights.** Uniform cut wall outlines 0.5 mm; layered walls use the
+  scale rule above. Geometry seen below the cut
   (for example a window sill), door leaves and window panes 0.18 mm; door
   swings and dashed outlines 0.13 mm.
 - **Openings and the cut height.** For an opening the cut passes through

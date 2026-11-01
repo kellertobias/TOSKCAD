@@ -334,16 +334,116 @@ impl Model {
             .into_iter()
             .filter(|body| !planting.contains_key(&body.identity))
             .collect();
+        // Exact components retain source-owned material identities through
+        // native cuts. Split only for projection metadata, never union/mesh them.
+        let mut expanded = Vec::new();
+        let mut material_overrides = Vec::new();
+        let mut layer_widths = Vec::new();
+        let scale = view.scale.numerator as f64 / view.scale.denominator as f64;
+        let has_layered_walls = document.entities().any(|entity| matches!(&entity.data,
+            EntityData::Feature { definition, .. } if definition.type_id == multicad_core::model::WALL_TYPE
+                && definition.schema_version == multicad_core::model::LAYERED_WALL_SCHEMA));
+        let parameters = has_layered_walls
+            .then(|| multicad_core::parameters::evaluate(document))
+            .transpose()
+            .map_err(|e| error(Some(view.id), e))?;
+        for body in bodies {
+            // Ordinary Parts keep the existing drawing path. Consult immutable
+            // evaluated topology before asking the kernel for owned layer copies.
+            let snapshot = self.snapshot();
+            let producer = snapshot
+                .occurrences
+                .get(&body.identity)
+                .map(|o| o.producer)
+                .or_else(|| snapshot.body_sources.get(&body.material_part).copied());
+            let layered = if !has_layered_walls {
+                Some(false)
+            } else if let Some(shape) = producer.and_then(|id| snapshot.shapes.get(&id)) {
+                Some(
+                    !multicad_core::model::wall_face_materials(document, &shape.topology)
+                        .map_err(|e| error(Some(body.identity), e))?
+                        .is_empty(),
+                )
+            } else {
+                None
+            };
+            if layered == Some(false) {
+                material_overrides.push(None);
+                layer_widths.push(None);
+                expanded.push(body);
+                continue;
+            }
+            let topology = body
+                .shape
+                .solid()
+                .topology_snapshot(body.identity, revision)
+                .map_err(|e| error(Some(body.identity), e))?;
+            let assignments = multicad_core::model::wall_face_materials(document, &topology)
+                .map_err(|e| error(Some(body.identity), e))?;
+            if assignments.is_empty() {
+                if layered == Some(true) {
+                    return Err(error(
+                        Some(body.identity),
+                        "Layered drawing source lost its exact material provenance",
+                    ));
+                }
+                material_overrides.push(None);
+                layer_widths.push(None);
+                expanded.push(body);
+                continue;
+            }
+            for component in body
+                .shape
+                .solid()
+                .solid_components(self.policy)
+                .map_err(|e| error(Some(body.identity), e))?
+            {
+                let topology = component
+                    .topology_snapshot(body.identity, revision)
+                    .map_err(|e| error(Some(body.identity), e))?;
+                let assignments = multicad_core::model::wall_face_materials(document, &topology)
+                    .map_err(|e| error(Some(body.identity), e))?;
+                let materials: BTreeSet<_> = assignments.values().map(|a| a.material).collect();
+                if materials.len() != 1 {
+                    return Err(error(
+                        Some(body.identity),
+                        "Exact wall component needs one unambiguous source material",
+                    ));
+                }
+                let width = assignments
+                    .values()
+                    .map(|a| {
+                        a.thickness.value_in(
+                            multicad_core::parameters::Unit::Millimeter,
+                            parameters.as_ref(),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| error(Some(body.identity), e))?
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min);
+                layer_widths.push(Some(width * scale));
+                material_overrides.push(materials.first().copied());
+                expanded.push(DrawingBody {
+                    identity: body.identity,
+                    material_part: body.material_part,
+                    shape: DrawingShape::Owned(component),
+                });
+            }
+        }
+        let bodies = expanded;
         let resolver = materials::Resolver::new(document).map_err(|e| error(Some(view.id), e))?;
         let properties: Vec<_> = bodies
             .iter()
-            .map(|body| {
-                resolver
-                    .resolve(body.material_part)
-                    .map_err(|e| error(Some(body.material_part), e))
+            .zip(&material_overrides)
+            .map(|(body, material)| {
+                match material {
+                    Some(material) => resolver.resolve_material(*material),
+                    None => resolver.resolve(body.material_part),
+                }
+                .map_err(|e| error(Some(body.material_part), e))
             })
             .collect::<Result<_, _>>()?;
-        let scale = view.scale.numerator as f64 / view.scale.denominator as f64;
         // Walls in a downward view are drawn as an architectural plan cut.
         let wall_cuts = crate::walls::wall_cuts(document, view, &bodies)?;
         let plan_wall = |i: usize| wall_cuts.iter().any(|c| c.index == i);
@@ -353,17 +453,23 @@ impl Model {
             .enumerate()
             .map(|(i, (body, props))| DrawingSolid {
                 solid: body.shape.solid(),
-                hatch: match props.hatch.as_ref() {
-                    Some(h) => (h.pattern != HatchPattern::None).then(|| DrawingHatch {
-                        angle_rad: h.angle_deg.to_radians(),
-                        spacing_mm: h.spacing_mm / scale,
-                        cross: h.pattern == HatchPattern::Cross,
-                    }),
-                    None => plan_wall(i).then(|| DrawingHatch {
-                        angle_rad: crate::walls::WALL_HATCH_ANGLE_DEG.to_radians(),
-                        spacing_mm: crate::walls::WALL_HATCH_SPACING_MM / scale,
-                        cross: false,
-                    }),
+                // A layer narrower than 0.5 mm on paper keeps true boundaries
+                // but omits hatching that would obscure them. Use a larger detail.
+                hatch: if layer_widths[i].is_some_and(|width| width < 0.5) {
+                    None
+                } else {
+                    match props.hatch.as_ref() {
+                        Some(h) => (h.pattern != HatchPattern::None).then(|| DrawingHatch {
+                            angle_rad: h.angle_deg.to_radians(),
+                            spacing_mm: h.spacing_mm / scale,
+                            cross: h.pattern == HatchPattern::Cross,
+                        }),
+                        None => plan_wall(i).then(|| DrawingHatch {
+                            angle_rad: crate::walls::WALL_HATCH_ANGLE_DEG.to_radians(),
+                            spacing_mm: crate::walls::WALL_HATCH_SPACING_MM / scale,
+                            cross: false,
+                        }),
+                    }
                 },
             })
             .collect();
@@ -440,7 +546,8 @@ impl Model {
                                 0.18
                             })
                     } else if v.role == VectorRole::Section {
-                        0.5
+                        layer_widths[v.source_index]
+                            .map_or(0.5, |width| (width / 3.).clamp(0.05, 0.18))
                     } else if plan_wall(v.source_index) {
                         crate::walls::PLAN_PROJECTED_MM
                     } else {
@@ -474,10 +581,13 @@ impl Model {
                 "View has no projected edges in its section/detail region",
             ));
         }
-        let warnings = properties
+        let mut warnings: Vec<_> = properties
             .iter()
             .flat_map(|p| p.diagnostics.iter().map(|d| d.message.clone()))
             .collect();
+        if layer_widths.iter().flatten().any(|width| *width < 0.5) {
+            warnings.push("Wall layers under 0.5 mm on paper retain true boundaries with fine lines and no hatch; use a larger-scale construction detail to inspect their material.".into());
+        }
         Ok(ViewEvaluation::Ready {
             vectors,
             labels,

@@ -191,6 +191,7 @@ pub struct Geometry {
     vertices: Vec<Point>,
     indices: Vec<u32>,
     triangle_faces: Vec<u32>,
+    face_colors: BTreeMap<u32, [u8; 4]>,
     topology: Vec<TopologyElement>,
     nodes: Vec<Node>,
     order: Vec<usize>,
@@ -254,6 +255,7 @@ impl Geometry {
             vertices,
             indices,
             triangle_faces,
+            face_colors: BTreeMap::new(),
             topology,
             nodes: vec![],
             edges: vec![],
@@ -274,6 +276,24 @@ impl Geometry {
     }
     pub fn triangle_faces(&self) -> &[u32] {
         &self.triangle_faces
+    }
+    /// Per-face material appearance on immutable native geometry. Missing entries
+    /// inherit the instance appearance; unknown topology is rejected.
+    pub fn with_face_colors(mut self, colors: BTreeMap<u32, [u8; 4]>) -> Result<Self, String> {
+        let faces: BTreeSet<_> = self
+            .topology
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+            .map(|e| e.key.ordinal)
+            .collect();
+        if colors.keys().any(|face| !faces.contains(face)) {
+            return Err("Material appearance refers to an unknown native face".into());
+        }
+        self.face_colors = colors;
+        Ok(self)
+    }
+    pub fn face_color(&self, face: u32) -> Option<[u8; 4]> {
+        self.face_colors.get(&face).copied()
     }
     pub fn with_topology_display(
         mut self,
@@ -481,6 +501,7 @@ impl Geometry {
     pub fn storage_bytes(&self) -> usize {
         self.vertices.len() * std::mem::size_of::<Point>()
             + self.indices.len() * 4
+            + self.face_colors.len() * std::mem::size_of::<(u32, [u8; 4])>()
             + self.triangle_faces.len() * 4
             + self.order.len() * std::mem::size_of::<usize>()
             + self.nodes.len() * std::mem::size_of::<Node>()

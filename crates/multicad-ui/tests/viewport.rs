@@ -1018,3 +1018,42 @@ fn scene_rejects_malformed_or_contradictory_evaluation_metadata() {
     }];
     assert!(build(nil).is_err());
 }
+
+#[test]
+fn per_face_material_palette_preserves_native_picking_and_rejects_unknown_faces() {
+    let id = EntityId::new();
+    let solid = Solid::box_named([100., 60., 18.], id, GeometryPolicy::default()).unwrap();
+    let mesh = solid.mesh(MeshOptions::default()).unwrap();
+    let topology = solid.topology_snapshot(id, 0).unwrap();
+    let face = topology
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face)
+        .unwrap()
+        .key
+        .ordinal;
+    let make = || {
+        Geometry::new(
+            id,
+            mesh.vertices.as_chunks::<3>().0.to_vec(),
+            mesh.indices.clone(),
+            mesh.face_indices.clone(),
+            topology.elements.clone(),
+        )
+        .unwrap()
+    };
+    let colored = make()
+        .with_face_colors(std::collections::BTreeMap::from([(
+            face,
+            [180, 90, 40, 255],
+        )]))
+        .unwrap();
+    assert_eq!(colored.face_color(face), Some([180, 90, 40, 255]));
+    assert_eq!(colored.triangle_faces(), mesh.face_indices);
+    assert_eq!(colored.face_color(u32::MAX), None);
+    assert!(
+        make()
+            .with_face_colors(std::collections::BTreeMap::from([(u32::MAX, [0; 4])]))
+            .is_err()
+    );
+}

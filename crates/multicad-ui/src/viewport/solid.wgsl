@@ -6,6 +6,7 @@ struct Camera {
 struct Vertex {
     @location(0) position: vec3<f32>, @location(1) face: u32,
     @location(2) row0: vec4<f32>, @location(3) row1: vec4<f32>, @location(4) row2: vec4<f32>,
+    @location(7) material: vec4<f32>,
     @location(5) color: vec4<f32>, @location(6) selection: vec4<u32>,
 }
 struct Fragment {
@@ -30,7 +31,7 @@ struct Fragment {
     out.position = vec4(x, y, depth, w);
     if v.face >= 0x10000000u {out.position.z -= 0.000002 * w;}
     out.world = world;
-    out.color = v.color;
+    out.color = select(v.color, v.material, v.material.a >= 0.0);
     out.emphasis = 0u;
     if v.selection.y == 1u || v.selection.x == v.face {out.color = vec4(0.95,0.65,0.18,1.0);out.emphasis=1u;}
     if v.selection.z == v.face {out.color=vec4(0.2,0.6,0.95,1.0);out.emphasis=2u;}

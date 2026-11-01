@@ -43,6 +43,14 @@ fn solid_shader_validates_without_a_gpu() {
 #[test]
 #[ignore = "Requires an available GPU; run explicitly on physical hardware"]
 fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes() {
+    render_native_gpu(false);
+}
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on physical hardware"]
+fn gpu_renders_source_face_materials_with_selection_and_edges() {
+    render_native_gpu(true);
+}
+fn render_native_gpu(material_palette: bool) {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         wait(instance.request_adapter(&Default::default())).expect("GPU adapter required");
@@ -52,6 +60,18 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
     let id = EntityId::new();
     let solid = Solid::box_named([100., 60., 18.], id, Default::default()).unwrap();
     let mesh = solid.mesh(MeshOptions::default()).unwrap();
+    let cap = solid
+        .topology_snapshot(id, 0)
+        .unwrap()
+        .elements
+        .into_iter()
+        .find(|e| {
+            e.key.kind == multicad_core::references::TopologyKind::Face
+                && e.origins.iter().any(|o| o.role == "cap.end")
+        })
+        .unwrap()
+        .key
+        .ordinal;
     let geometry = Arc::new(
         Geometry::new(
             id,
@@ -60,6 +80,12 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             mesh.face_indices,
             solid.topology_snapshot(id, 0).unwrap().elements,
         )
+        .unwrap()
+        .with_face_colors(if material_palette {
+            BTreeMap::from([(cap, [20, 240, 20, 255])])
+        } else {
+            BTreeMap::new()
+        })
         .unwrap()
         .with_topology_display(
             solid
@@ -137,18 +163,6 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
         mapped_at_creation: false,
     });
     let mut first_buffer = None;
-    let cap = solid
-        .topology_snapshot(id, 0)
-        .unwrap()
-        .elements
-        .into_iter()
-        .find(|e| {
-            e.key.kind == multicad_core::references::TopologyKind::Face
-                && e.origins.iter().any(|o| o.role == "cap.end")
-        })
-        .unwrap()
-        .key
-        .ordinal;
     // CAD-152: a second face of the same instance comes from a highlight-only
     // overlay record; listing a side face first proves the overlay path.
     let side = solid
@@ -366,7 +380,11 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
                 );
             } else {
                 assert!(
-                    u16::from(center[2]) > u16::from(center[0]) * 2,
+                    if material_palette {
+                        u16::from(center[1]) > u16::from(center[0]) * 2
+                    } else {
+                        u16::from(center[2]) > u16::from(center[0]) * 2
+                    },
                     "Section did not reveal the blue solid behind the red one: {center:?}"
                 );
             }
@@ -377,7 +395,11 @@ fn gpu_renders_native_solids_with_depth_projection_highlight_and_cached_meshes()
             );
         } else {
             assert!(
-                u16::from(center[0]) > u16::from(center[2]) * 2,
+                if material_palette && selection.is_none() {
+                    u16::from(center[1]) > u16::from(center[0]) * 2
+                } else {
+                    u16::from(center[0]) > u16::from(center[2]) * 2
+                },
                 "Front red solid disappeared: {center:?}"
             );
             if selection.is_some() {

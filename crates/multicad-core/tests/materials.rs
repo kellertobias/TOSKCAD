@@ -728,3 +728,17 @@ fn stock_without_material_names_the_prerequisite_instead_of_a_self_cycle() {
     s.undo(1, actor()).unwrap();
     assert_eq!(s.document(), &before);
 }
+
+#[test]
+fn exact_component_material_resolves_shared_style_without_part_overrides() {
+    let mut f = Fixture::new();
+    f.assign();
+    let resolver = Resolver::new(f.s.document()).unwrap();
+    let direct = resolver.resolve_material(f.material.id).unwrap();
+    assert_eq!(direct.material, Some(f.material.id));
+    assert_eq!(direct.stock, None);
+    assert_eq!(direct.appearance.color_rgba, [200, 165, 110, 255]);
+    assert_eq!(direct.hatch, Some(HatchStyle::default()));
+    assert!(resolver.resolve_material(f.parts[0]).is_err());
+    assert!(resolver.resolve_material(EntityId::new()).is_err());
+}

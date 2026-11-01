@@ -2,7 +2,7 @@
 
 CAD-204 is in progress. This checkpoint covers canonical source, exact native
 geometry and reference guards on macOS. It does not establish graphical authoring,
-per-layer appearance/hatch publication, separate-wall T joins, shared Library
+separate-wall T joins, shared Library
 integration under CAD-206, or human acceptance. Native UI-control tooling is
 unavailable; CLI tests are not a substitute for those graphical checks.
 
@@ -56,7 +56,35 @@ logs and must not be added as a unique total.
 
 Formatting and strict all-target workspace Clippy pass for this geometry increment
 (Clippy: 7m36s). Required final feature-wide workspace tests remain pending. Native geometry
-checks above do not demonstrate the graphical type editor, PDF/DXF material
-hatches at 1:50/1:100, the complete T-junction contract, or cross-project pinned
+checks above do not demonstrate the graphical type editor, the complete
+T-junction contract, or cross-project pinned
 wall-type updates. Windows/Linux CI and actual macOS interaction remain separate
 evidence. No push, installation or publication is part of this checkpoint.
+
+## Material publication increment
+
+Exact face provenance now supplies finite-layer material and source width.
+Unknown, incomplete or ambiguous ownership fails explicitly. Cached evaluation
+runs the same ownership check. Shared material styles resolve directly without
+creating temporary Parts or inheriting unrelated Part stock/appearance overrides.
+The viewport has a validated immutable face palette and preserves native picking.
+
+Native export tests pass for the five-layer fixture at 1:100, 1:50 and 1:10.
+Every finite-layer boundary is independently measured from both PDF drawing
+commands and parsed DXF lines. Hatches use the layer material's configured weight
+and stay outside the air cavity. Layers under 0.5 mm on paper omit hatching,
+keep true boundaries with fine cut lines and produce a larger-detail warning.
+The initial 0.5 mm cut weight obscured thin finishes; inspection of a Poppler
+render led to the scale-aware correction. The retained 300 dpi crop shows the
+corrected 1:100 output. This is exported-sheet review, not native GUI acceptance.
+
+Focused checks: seven native layered-wall tests, four existing wall tests and
+three vertical-cutout tests and two drawing-export tests pass; 13 core material
+and 17 core layer tests pass; the face-palette
+validation test passes. Both offscreen hardware GPU tests and the shader validator
+pass (three tests), covering material colors, instance fallback, selection,
+section clipping, edges and cached meshes. Native fixtures and PDF/DXF/SVG files
+are in `artifacts/layered-wall-review-20261101/material-plans/`. Formatting and strict all-target workspace Clippy pass for this increment;
+final feature-wide workspace tests remain
+pending. The graphical construction editor, separate-wall T joins, Library
+integration under CAD-206 and actual macOS interaction are still outstanding.

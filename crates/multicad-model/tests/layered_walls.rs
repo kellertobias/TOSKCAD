@@ -206,6 +206,50 @@ fn real_material_layers_and_openings_have_true_thickness_and_independent_step_re
     session.commit(preview.prepared).unwrap();
     let model = native(&session);
     let solid = model.solid(wall.body).unwrap();
+    let topology = solid
+        .topology_snapshot(wall.feature, session.revision())
+        .unwrap();
+    let assignments = model::wall_face_materials(session.document(), &topology).unwrap();
+    assert_eq!(
+        assignments.len(),
+        topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == multicad_core::references::TopologyKind::Face)
+            .count()
+    );
+    let mut untagged = topology.clone();
+    let face = untagged
+        .elements
+        .iter_mut()
+        .find(|e| e.key.kind == multicad_core::references::TopologyKind::Face)
+        .unwrap();
+    face.origins.retain(|o| !o.role.starts_with("component/"));
+    assert!(model::wall_face_materials(session.document(), &untagged).is_err());
+    let mut unknown = topology.clone();
+    let face = unknown
+        .elements
+        .iter_mut()
+        .find(|e| e.key.kind == multicad_core::references::TopologyKind::Face)
+        .unwrap();
+    face.origins.insert(multicad_core::references::Origin {
+        source: wall.feature,
+        role: format!("component/{}", EntityId::new()),
+    });
+    assert!(model::wall_face_materials(session.document(), &unknown).is_err());
+    let mut conflicting = topology.clone();
+    let face = conflicting
+        .elements
+        .iter_mut()
+        .find(|e| e.key.kind == multicad_core::references::TopologyKind::Face)
+        .unwrap();
+    let current = assignments[&face.key.ordinal].material;
+    let other = value.layers.layers.iter().find(|l| matches!(l.construction, WallLayerKind::Solid { material, .. } if material != current)).unwrap();
+    face.origins.insert(multicad_core::references::Origin {
+        source: wall.feature,
+        role: format!("component/{}", other.id),
+    });
+    assert!(model::wall_face_materials(session.document(), &conflicting).is_err());
     let parts = members(solid, wall.feature);
     assert_eq!(parts.len(), 5);
     assert_eq!(solid.solid_count().unwrap(), 5);
@@ -224,6 +268,17 @@ fn real_material_layers_and_openings_have_true_thickness_and_independent_step_re
                     )
                     .unwrap();
                 let member = parts.get(&layer.id).unwrap();
+                let member_topology = member
+                    .topology_snapshot(wall.feature, session.revision())
+                    .unwrap();
+                let mapped =
+                    model::wall_face_materials(session.document(), &member_topology).unwrap();
+                let expected_material = layer.construction.material().unwrap();
+                assert!(
+                    mapped
+                        .values()
+                        .all(|assignment| assignment.material == expected_material)
+                );
                 let bounds = member.bounds().unwrap();
                 near(bounds.max[1] - bounds.min[1], thickness_mm, 1e-6);
                 near(
@@ -462,4 +517,277 @@ fn exterior_cavity_partial_cut_limit_is_diagnosed_without_flattening_the_constru
     };
     assert!(error.message.contains("exterior cavity"), "{error:?}");
     assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn layer_plan_hatches_and_export_boundaries_follow_real_materials_at_three_scales() {
+    use multicad_core::{drawings::*, materials::*, references::ReferenceFrame};
+    let (session, value) = fixture(WallLayerReference::Outside);
+    let mut edits = Vec::new();
+    for (index, material) in session
+        .document()
+        .entities()
+        .filter(|e| matches!(e.data, EntityData::Material { .. }))
+        .enumerate()
+    {
+        let mut material = material.clone();
+        let EntityData::Material { section_hatch, .. } = &mut material.data else {
+            unreachable!()
+        };
+        *section_hatch = Some(multicad_core::document::Definition {
+            type_id: "materials.hatch.inline".into(),
+            schema_version: 1,
+            data: serde_json::to_value(HatchStyle {
+                pattern: HatchPattern::Lines,
+                angle_deg: (30 + index * 30) as f64,
+                spacing_mm: 0.8,
+                line_width_mm: [0.11, 0.17, 0.23][index],
+            })
+            .unwrap(),
+        });
+        edits.push(Mutation::Replace(material));
+    }
+    let mut session = Session::new(session.document().edited(&edits).unwrap()).unwrap();
+    let ty = NewType::new(
+        "Layered construction",
+        NewTypeKind::LayeredWall(value.clone()),
+    );
+    let wall = request(ty.id, &[[0., 0.], [4000., 0.]], false);
+    let prepared =
+        model::prepare_wall_change(&session, 0, actor(), &[ty], &WallChange::Create(&wall))
+            .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let mut pages = Vec::new();
+    for denominator in [100, 50, 10] {
+        let mut page = Page::new(format!("Layers 1:{denominator}"));
+        page.settings.paper = PaperSize::Custom {
+            width_mm: 600.,
+            height_mm: 300.,
+        };
+        page.views.push(DrawingView {
+            id: EntityId::new(),
+            name: "Layer cut".into(),
+            source: ViewSource::Model {
+                entities: vec![wall.body],
+            },
+            frame: ReferenceFrame {
+                origin_mm: [0.; 3],
+                u: [1., 0., 0.],
+                v: [0., 1., 0.],
+            },
+            kind: ViewKind::Section {
+                offset_mm: 1000.,
+                range: SectionRange::SectionOnly,
+                window: SectionWindow::default(),
+            },
+            position_mm: [30., 150.],
+            scale: Scale {
+                numerator: 1,
+                denominator,
+            },
+            hidden_lines: false,
+            tangent_edges: false,
+            paper_chord_tolerance_mm: 0.01,
+            guide: None,
+            equipment_categories: None,
+        });
+        pages.push(page);
+    }
+    let (book, prepared) = prepare_create(
+        &session,
+        session.revision(),
+        actor(),
+        "Material plans",
+        Some(pages.remove(0)),
+    )
+    .unwrap();
+    session.commit(prepared).unwrap();
+    // Additional scales use separate books to exercise the persisted page contract.
+    let mut books = vec![book];
+    for page in pages {
+        let (book, prepared) = prepare_create(
+            &session,
+            session.revision(),
+            actor(),
+            "Material detail",
+            Some(page),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        books.push(book);
+    }
+    let model = native(&session);
+    let evaluation = model
+        .drawings(session.document(), session.revision(), &Default::default())
+        .unwrap();
+    for (book, denominator) in books.into_iter().zip([100., 50., 10.]) {
+        let book_value = multicad_core::drawings::read(session.document(), book).unwrap();
+        let page = &book_value.pages[0];
+        let view = &page.views[0];
+        let ViewEvaluation::Ready { vectors, .. } = &evaluation.views[&view.id] else {
+            panic!("{:?}", evaluation.views[&view.id])
+        };
+        let hatches: Vec<_> = vectors
+            .iter()
+            .filter(|v| v.role == VectorRole::Hatch)
+            .collect();
+        assert!(!hatches.is_empty());
+        let resolved = value
+            .resolve_layers(
+                session.document(),
+                session.parameters(),
+                &WallLayerPlacement::default(),
+            )
+            .unwrap();
+        for band in &resolved.bands {
+            let layer = value
+                .layers
+                .layers
+                .iter()
+                .find(|l| l.id == band.layer)
+                .unwrap();
+            let y_min = band.outside_mm.min(band.inside_mm);
+            let y_max = band.outside_mm.max(band.inside_mm);
+            if let WallLayerKind::Solid { material, .. } = layer.construction {
+                let props = Resolver::new(session.document())
+                    .unwrap()
+                    .resolve_material(material)
+                    .unwrap();
+                let expected = props.hatch.unwrap().line_width_mm;
+                let in_band: Vec<_> = hatches
+                    .iter()
+                    .filter(|v| {
+                        v.preview_mm
+                            .iter()
+                            .all(|p| p[1] >= y_min - 1e-6 && p[1] <= y_max + 1e-6)
+                    })
+                    .collect();
+                if (y_max - y_min) / denominator < 0.5 {
+                    assert!(
+                        in_band.is_empty(),
+                        "thin layer hatch must not obscure true boundaries"
+                    );
+                    continue;
+                }
+                assert!(
+                    !in_band.is_empty(),
+                    "layer {} at 1:{denominator}",
+                    layer.name
+                );
+                assert!(
+                    in_band
+                        .iter()
+                        .all(|v| (v.line_width_mm - expected).abs() < 1e-9)
+                );
+            } else if y_max - y_min > 1e-6 {
+                assert!(
+                    !hatches.iter().any(|v| v
+                        .preview_mm
+                        .iter()
+                        .any(|p| p[1] > y_min + 1e-6 && p[1] < y_max - 1e-6)),
+                    "air has no material hatch"
+                );
+            }
+        }
+        let render = render::render_page(
+            session.document(),
+            session.revision(),
+            book,
+            page.id,
+            &evaluation,
+        )
+        .unwrap();
+        let pdf = pdf::book_pdf(
+            session.document(),
+            session.revision(),
+            &[(book, page.id)],
+            &evaluation,
+        )
+        .unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        let pdf_text = String::from_utf8_lossy(&pdf);
+        let begin = pdf_text.find("stream\n").unwrap() + 7;
+        let stream = &pdf_text[begin..];
+        let stream = &stream[..stream.find("endstream").unwrap()];
+        let pdf_paths: Vec<Vec<[f64; 2]>> = stream
+            .lines()
+            .filter(|l| l.ends_with(" S"))
+            .map(|line| {
+                let tokens: Vec<_> = line.split_whitespace().collect();
+                tokens
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, t)| {
+                        if *t == "m" || *t == "l" {
+                            Some([
+                                tokens[i - 2].parse::<f64>().unwrap() / pdf::PT_PER_MM,
+                                tokens[i - 1].parse::<f64>().unwrap() / pdf::PT_PER_MM,
+                            ])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let dxf = dxf::render_dxf(&render, 1., 4);
+        if let Ok(directory) = std::env::var("MULTICAD_LAYERED_REVIEW") {
+            let directory = std::path::Path::new(&directory);
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(directory.join(format!("layers-1-{denominator}.pdf")), &pdf).unwrap();
+            std::fs::write(directory.join(format!("layers-1-{denominator}.dxf")), &dxf).unwrap();
+            std::fs::write(
+                directory.join(format!("layers-1-{denominator}.svg")),
+                svg::render_svg(&render),
+            )
+            .unwrap();
+            let file =
+                multicad_core::project_file::ProjectFile::new(session.document().clone()).unwrap();
+            multicad_core::project_file::write(
+                &file,
+                &mut std::fs::File::create(directory.join("layered-wall.tcd")).unwrap(),
+                Default::default(),
+            )
+            .unwrap();
+        }
+        let drawing = ::dxf::Drawing::load(&mut std::io::Cursor::new(dxf.as_bytes())).unwrap();
+        let lines: Vec<_> = drawing
+            .entities()
+            .filter_map(|e| {
+                if e.common.layer != "VIEW_SECTION" {
+                    return None;
+                }
+                if let ::dxf::entities::EntityType::Line(l) = &e.specific {
+                    Some(([l.p1.x, l.p1.y], [l.p2.x, l.p2.y]))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for band in
+            resolved.bands.iter().filter(|b| {
+                value.layers.layers.iter().any(|l| {
+                    l.id == b.layer && matches!(l.construction, WallLayerKind::Solid { .. })
+                })
+            })
+        {
+            for offset in [band.outside_mm, band.inside_mm] {
+                let y = 150. + offset / denominator;
+                assert!(
+                    pdf_paths.iter().any(|path| path
+                        .windows(2)
+                        .any(|p| (p[0][1] - y).abs() < 0.002
+                            && (p[1][1] - y).abs() < 0.002
+                            && ((p[0][0] - p[1][0]).abs() - 4000. / denominator).abs() < 0.002)),
+                    "native material boundary missing from PDF at {offset},1:{denominator}"
+                );
+                assert!(
+                    lines.iter().any(|(a, b)| (a[1] - y).abs() < 1e-5
+                        && (b[1] - y).abs() < 1e-5
+                        && ((a[0] - b[0]).abs() - 4000. / denominator).abs() < 1e-5),
+                    "native material boundary missing from DXF at {offset},1:{denominator}"
+                );
+            }
+        }
+    }
 }

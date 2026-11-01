@@ -121,10 +121,30 @@ fn scene(
         entity: None,
         message,
     };
+    let materials =
+        multicad_core::materials::Resolver::new(document).map_err(|e| invalid(e.to_string()))?;
     let geometries = model
         .shapes
         .iter()
         .map(|(id, shape)| {
+            let face_materials =
+                multicad_core::model::wall_face_materials(document, &shape.topology)
+                    .map_err(|e| e.to_string())?;
+            let mut palette = std::collections::BTreeMap::new();
+            let mut face_colors = std::collections::BTreeMap::new();
+            for (face, assignment) in face_materials {
+                let material = assignment.material;
+                if let std::collections::btree_map::Entry::Vacant(entry) = palette.entry(material) {
+                    entry.insert(
+                        materials
+                            .resolve_material(material)
+                            .map_err(|e| e.to_string())?
+                            .appearance
+                            .color_rgba,
+                    );
+                }
+                face_colors.insert(face, palette[&material]);
+            }
             let mesh = &shape.mesh;
             let geometry = viewport::Geometry::new(
                 *id,
@@ -133,6 +153,7 @@ fn scene(
                 mesh.face_indices.clone(),
                 shape.topology.elements.clone(),
             )?
+            .with_face_colors(face_colors)?
             .with_topology_display(
                 shape
                     .edges
@@ -156,8 +177,6 @@ fn scene(
         })
         .collect::<Result<Vec<_>, String>>()
         .map_err(invalid)?;
-    let materials =
-        multicad_core::materials::Resolver::new(document).map_err(|e| invalid(e.to_string()))?;
     let mut instances: Vec<_> = model
         .bodies
         .iter()
