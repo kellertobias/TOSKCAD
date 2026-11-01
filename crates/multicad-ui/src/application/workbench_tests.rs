@@ -60,9 +60,10 @@ fn mechanical_assembly_tools_keep_their_workbench_and_cancel_without_edits() {
     }
 }
 /// Window/Door additionally need an applied wall; they share this path.
-const SPECIALIZED: [(&str, &str); 9] = [
+const SPECIALIZED: [(&str, &str); 10] = [
     ("Architecture", "wall"),
     ("Architecture", "level"),
+    ("Architecture", "plant"),
     ("Wood", "panel"),
     ("Wood", "drill"),
     ("Sheet metal", "sheet"),

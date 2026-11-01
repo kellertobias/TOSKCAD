@@ -45,6 +45,8 @@ mod guides;
 mod imports;
 mod levels;
 mod mechanical_parts;
+mod plants;
+use plants::{PlantArgs, PlantInspectArgs, inspect_plant, set_plant};
 mod reference_repair;
 mod render;
 mod schedules;
@@ -266,6 +268,12 @@ tools! {
     "set_thread" => ThreadArgs, "Create or edit thread", false,
         "Create a new threaded shaft or cut an external/internal thread on target_part; edit an existing thread by feature ID while preserving omitted fields, Part and original target predecessor. All dimensions carry units; custom profile angles and radius taper accept typed values/formulas. Nominal-basic fits and fabrication clearance are separate. Native Preview checks complete receiving geometry before one attributable transaction or the owner's review queue. Unsupported families, invalid walls and failed geometry change nothing. Cosmetic envelopes are display-only and cannot be exported as STEP/mesh/print manufacturing geometry.",
         set_thread;
+    "set_plant" => PlantArgs, "Place or edit a plant", false,
+        "Place a generic editable tree or shrub, or edit a retained plant by canonical ownership record. Lengths require explicit units. Spread is the true outer canopy footprint. UI and MCP share one native-preflighted transaction, pinned source, linked plan sketch and occurrence placement. Optional plan visibility does not remove physical sections/elevations. Generic envelopes do not predict species or growth.",
+        set_plant;
+    "inspect_plant" => PlantInspectArgs, "Inspect linked plant source", true,
+        "Inspect resolved plant height/spread, planned-mature versus current size meaning, optional label, plan visibility, current pose, retained pin and linked plan sketch.",
+        inspect_plant;
     "mechanical_part_profiles" => NoArgs, "Mechanical part geometry coverage", true,
         "Read supported generic hardware geometry and declared catalog/representation limits. This is not a stocked standard-parts catalog.",
         mechanical_part_profiles;

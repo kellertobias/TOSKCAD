@@ -291,6 +291,23 @@ Direct `export_step` also refuses a selected producer whose dependency history
 contains a cosmetic thread. An unrelated cosmetic Part does not block export
 of a physical Part.
 
+## Planting control
+
+`set_plant` and `inspect_plant` share the Architecture planting transactions.
+Generated `tools/list` owns their argument schemas; [plant tools](../../crates/multicad-mcp/src/tools/plants.rs)
+own wire conversion. A create call chooses a generic tree or shrub, optional
+unit-bearing height/spread and position, rotation in degrees, name, size basis,
+plan visibility and optional label. It returns the canonical symbol ownership
+`record` and outer `instance`. An edit supplies that record and the current
+`expected_revision`; omitted controls retain their current values. An empty
+label removes the label, while an omitted or null label retains it.
+
+Every mutation native-preflights the prepared candidate before one commit.
+Inspection returns the retained pin, linked plan sketch, resolved dimensions,
+size meaning and current occurrence pose. Generic dimensions carry no botanical
+or growth claim. Plan visibility is separate from physical section/elevation
+geometry. [Planting source and drawing policy](plants.md) defines that behavior.
+
 ## Mechanical part control
 
 `mechanical_part_profiles` reports generic geometry coverage and its limits.

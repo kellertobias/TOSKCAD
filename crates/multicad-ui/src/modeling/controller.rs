@@ -997,6 +997,21 @@ impl ModelToolController {
     ) -> (Option<EntityId>, Option<String>) {
         super::fdm_aid::seed_target(document, selection)
     }
+    pub fn begin_planting(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(super::architecture::ArchitecturePanel::planting(
+                session.document(),
+            )?)),
+        )
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,

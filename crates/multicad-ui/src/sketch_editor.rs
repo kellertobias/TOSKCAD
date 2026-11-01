@@ -1411,6 +1411,35 @@ impl SketchEditor {
         };
         Ok(())
     }
+    pub fn begin_planting(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Apply or cancel pending edits before placing plants".into());
+        }
+        self.finish()?;
+        self.model.begin_planting(session, resources, channel)?;
+        if !session.document().entities().any(|e| {
+            matches!(
+                e.data,
+                EntityData::Part { .. } | EntityData::Instance { .. }
+            )
+        }) {
+            self.camera = Camera {
+                yaw: 0.,
+                pitch: std::f32::consts::FRAC_PI_2,
+                scale: 0.05,
+                target: [0.; 3],
+                perspective: false,
+            };
+        }
+        self.message =
+            "Planting · choose a tree or shrub and click in the garden view, then Preview".into();
+        Ok(())
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,
@@ -1844,12 +1873,41 @@ impl SketchEditor {
         {
             return;
         }
+        // Private planting plans live in their local definition coordinates.
+        // Drawings apply the occurrence pose; painting them here at the origin
+        // would duplicate footprints in the ordinary 3D viewer.
+        let plans = multicad_core::symbols::definitions(document)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, definition)| {
+                multicad_core::plants::template_for(&definition.template, definition.root)
+                    .ok()
+                    .flatten()
+                    .map(|plant| (id, plant.plan))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let private_plans = document
+            .entities()
+            .filter_map(|entity| {
+                if let EntityData::Extension { definition, .. } = &entity.data
+                    && definition.type_id == multicad_core::symbols::INSTANCE_TYPE
+                {
+                    let instance =
+                        multicad_core::symbols::read_instance(document, entity.id).ok()?;
+                    let plan = plans.get(&instance.definition)?;
+                    instance.ids.get(plan).copied()
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         let visible = multicad_core::hierarchy::Index::new(document)
             .map(|index| {
                 document
                     .entities()
                     .filter(|entity| {
                         matches!(entity.data, EntityData::Sketch { .. })
+                            && !private_plans.contains(&entity.id)
                             && crate::viewport::source_visible(document, &index, entity.id)
                                 .unwrap_or(false)
                     })
@@ -7575,3 +7633,53 @@ mod open_fit_tests;
 
 #[cfg(test)]
 mod inspector_tests;
+
+#[cfg(test)]
+mod planting_overlay_tests {
+    use super::*;
+    #[test]
+    fn private_plant_plan_is_not_painted_at_the_origin_but_user_sketches_remain_visible() {
+        let actor = multicad_core::commands::Actor::local(Channel::Ui);
+        let mut session = Session::new(Document::new("Plant overlays").unwrap()).unwrap();
+        let request = multicad_core::plants::PlantPlaceRequest::new(
+            &session,
+            multicad_core::plants::generic_definition(multicad_core::plants::PlantKind::Tree)
+                .unwrap(),
+            "Tree".into(),
+            6000.,
+            4000.,
+            Default::default(),
+        )
+        .unwrap();
+        session
+            .commit(
+                multicad_core::plants::prepare_place(&session, 0, actor.clone(), &request).unwrap(),
+            )
+            .unwrap();
+        let plan = multicad_core::plants::resolve(
+            session.document(),
+            session.parameters(),
+            request.placement.record,
+        )
+        .unwrap()
+        .unwrap()
+        .plan;
+        let (sketch, edits) = multicad_core::constraint_sketch::source::Source::create(
+            multicad_core::sketch::Datum::Xy,
+            "User sketch",
+        )
+        .unwrap();
+        session
+            .apply(multicad_core::commands::Request {
+                expected_revision: session.revision(),
+                actor,
+                label: "User sketch".into(),
+                edits,
+            })
+            .unwrap();
+        let mut editor = SketchEditor::default();
+        editor.refresh_overlay_visibility(session.document(), session.revision());
+        assert!(!editor.overlay_visible(plan));
+        assert!(editor.overlay_visible(sketch));
+    }
+}

@@ -510,6 +510,7 @@ impl Default for Registry {
                                         | ModelingTool::Window
                                         | ModelingTool::Cutout
                                         | ModelingTool::Level
+                                        | ModelingTool::Plant
                                         | ModelingTool::Panel
                                         | ModelingTool::Cabinet
                                         | ModelingTool::Joint
@@ -531,7 +532,14 @@ impl Default for Registry {
                     },
                     tab(
                         "Architecture",
-                        &["wall", "door", "window-tool", "vertical-cutout", "level"],
+                        &[
+                            "wall",
+                            "door",
+                            "window-tool",
+                            "vertical-cutout",
+                            "level",
+                            "plant",
+                        ],
                     ),
                     tab(
                         "Wood",
@@ -1017,6 +1025,7 @@ mod tests {
                         | ModelingTool::Window
                         | ModelingTool::Cutout
                         | ModelingTool::Level
+                        | ModelingTool::Plant
                         | ModelingTool::Panel
                         | ModelingTool::Cabinet
                         | ModelingTool::Joint
@@ -1049,6 +1058,7 @@ mod tests {
                     | ModelingTool::Window
                     | ModelingTool::Cutout
                     | ModelingTool::Level
+                    | ModelingTool::Plant
             ) {
                 let architecture = registry
                     .workspace(Mode::Model)
