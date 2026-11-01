@@ -24,6 +24,7 @@ pub mod imports;
 pub mod inspection;
 mod levels;
 mod occurrences;
+mod plant_plans;
 pub mod project_references;
 mod runtime;
 mod scale;

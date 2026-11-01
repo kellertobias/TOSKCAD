@@ -143,7 +143,20 @@ pub(super) fn show(
         let anchor =
             paper.min + egui::vec2(view.position_mm[0] as f32, view.position_mm[1] as f32) * scale;
         match evaluation.and_then(|e| e.views.get(&view.id)) {
-            Some(ViewEvaluation::Ready { vectors, .. }) => {
+            Some(ViewEvaluation::Ready {
+                vectors, labels, ..
+            }) => {
+                for label in labels {
+                    view_painter.text(
+                        to_screen(label.at_mm),
+                        egui::Align2::LEFT_BOTTOM,
+                        &label.text,
+                        egui::FontId::proportional(
+                            (multicad_core::drawings::SOURCE_LABEL_MM as f32 * scale).max(1.),
+                        ),
+                        egui::Color32::BLACK,
+                    );
+                }
                 let mut bounds = egui::Rect::NOTHING;
                 for vector in vectors {
                     let points: Vec<_> = vector.preview_mm.iter().map(|p| to_screen(*p)).collect();

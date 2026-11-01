@@ -233,9 +233,21 @@ pub fn render_page(
         );
     }
     for (result, view) in &checked {
-        let ViewEvaluation::Ready { vectors, .. } = result else {
+        let ViewEvaluation::Ready {
+            vectors, labels, ..
+        } = result
+        else {
             continue;
         };
+        for label in labels {
+            out.text(
+                Layer::Note,
+                view.paper_point(label.at_mm),
+                super::SOURCE_LABEL_MM,
+                0.,
+                &label.text,
+            );
+        }
         for vector in vectors {
             out.polylines.push(Polyline {
                 layer: match vector.role {

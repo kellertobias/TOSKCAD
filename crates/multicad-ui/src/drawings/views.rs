@@ -420,7 +420,9 @@ impl DrawingEditor {
             && let Some(evaluation) = result.views.get(&id)
         {
             match evaluation {
-                ViewEvaluation::Ready { vectors, warnings } => {
+                ViewEvaluation::Ready {
+                    vectors, warnings, ..
+                } => {
                     ui.small(format!("{} native vectors", vectors.len()));
                     for warning in warnings {
                         ui.colored_label(egui::Color32::YELLOW, warning);

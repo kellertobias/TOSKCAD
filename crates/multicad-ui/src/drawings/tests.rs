@@ -293,6 +293,7 @@ impl DrawingBackend for TestPublisher {
                     }
                 } else {
                     drawings::ViewEvaluation::Ready {
+                        labels: vec![],
                         vectors: vec![drawings::DrawingVector {
                             source,
                             material_part: source,

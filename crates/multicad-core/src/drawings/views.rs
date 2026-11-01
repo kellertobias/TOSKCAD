@@ -310,11 +310,23 @@ impl DrawingStamp {
         }
     }
 }
+/// Font height for model-derived labels, in paper millimeters.
+pub const SOURCE_LABEL_MM: f64 = 3.5;
+/// Model-derived label at a model-space view coordinate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceLabel {
+    pub source: EntityId,
+    pub at_mm: [f64; 2],
+    pub text: String,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ViewEvaluation {
     Ready {
         vectors: Vec<DrawingVector>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        labels: Vec<SourceLabel>,
         warnings: Vec<String>,
     },
     Unresolved {

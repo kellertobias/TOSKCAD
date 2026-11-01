@@ -326,6 +326,11 @@ impl Model {
             ));
         }
         let bodies = providers.resolve(document, self, &view.source)?;
+        let planting = crate::plant_plans::plans(document, self, revision, view, &bodies)?;
+        let bodies: Vec<_> = bodies
+            .into_iter()
+            .filter(|body| !planting.contains_key(&body.identity))
+            .collect();
         let resolver = materials::Resolver::new(document).map_err(|e| error(Some(view.id), e))?;
         let properties: Vec<_> = bodies
             .iter()
@@ -405,18 +410,14 @@ impl Model {
         };
         // The kernel validates its own approximation interval. A scale demanding
         // more precision than the native contract supports fails explicitly.
-        let output = if view.kind == ViewKind::Projection && !wall_cuts.is_empty() {
+        let output = if inputs.is_empty() {
+            Ok(vec![])
+        } else if view.kind == ViewKind::Projection && !wall_cuts.is_empty() {
             crate::walls::project_plan(&inputs, options, view.frame.origin_mm[2], &wall_cuts)
         } else {
             multicad_kernel::project_drawing(&inputs, options)
         }
         .map_err(|e| error(Some(view.id), e))?;
-        if output.is_empty() {
-            return Err(error(
-                Some(view.id),
-                "View has no projected edges in its section/detail region",
-            ));
-        }
         let mut vectors: Vec<_> = output
             .into_iter()
             .map(|v| {
@@ -449,11 +450,26 @@ impl Model {
             .collect();
         crate::walls::plan_vectors(document, view, &bodies, &mut vectors)?;
         crate::levels::plan_vectors(document, self, view, &bodies, &mut vectors)?;
+        let mut labels = vec![];
+        for plan in planting.into_values() {
+            vectors.extend(plan.vectors);
+            labels.extend(plan.labels);
+        }
+        if vectors.is_empty() {
+            return Err(error(
+                Some(view.id),
+                "View has no projected edges in its section/detail region",
+            ));
+        }
         let warnings = properties
             .iter()
             .flat_map(|p| p.diagnostics.iter().map(|d| d.message.clone()))
             .collect();
-        Ok(ViewEvaluation::Ready { vectors, warnings })
+        Ok(ViewEvaluation::Ready {
+            vectors,
+            labels,
+            warnings,
+        })
     }
     pub fn drawings(
         &self,
