@@ -230,7 +230,7 @@ mod tests {
         }
         assert!(!worker.writing());
         let entry = RecentProject {
-            path: PathBuf::from("/private/tmp/confirmed.multicad"),
+            path: std::env::temp_dir().join("confirmed.multicad"),
             title: "Confirmed".into(),
             last_opened_unix_ms: 1,
             view: None,
@@ -299,7 +299,7 @@ mod backpressure_tests {
             std::thread::yield_now();
         }
         let mut entry = RecentProject {
-            path: PathBuf::from("/private/tmp/rapid-view.multicad"),
+            path: std::env::temp_dir().join("rapid-view.multicad"),
             title: "Rapid".into(),
             last_opened_unix_ms: 1,
             view: Some(RecentView::default()),

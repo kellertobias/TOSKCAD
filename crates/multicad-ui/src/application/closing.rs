@@ -156,7 +156,7 @@ mod tests {
         let mut app = Application::new(Box::new(Storage)).unwrap();
         app.pending_files.clear();
         app.current_mut().session.mark_saved(0).unwrap();
-        app.current_mut().path = Some(PathBuf::from("/private/tmp/saved-close-project.multicad"));
+        app.current_mut().path = Some(std::env::temp_dir().join("saved-close-project.multicad"));
         let (entered, signal) = mpsc::channel();
         let (finish, gate) = mpsc::channel();
         app.set_recent_store(Box::new(DelayedRecents {
@@ -164,7 +164,7 @@ mod tests {
             finish: gate,
         }));
         app.remember_recent(
-            PathBuf::from("/private/tmp/saved-close-project.multicad"),
+            std::env::temp_dir().join("saved-close-project.multicad"),
             None,
         );
         signal.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -358,7 +358,7 @@ mod tests {
         let unsaved = app.projects[0].local_id;
         let mut clean = Project::new(Document::new("Saved active project").unwrap()).unwrap();
         clean.session.mark_saved(0).unwrap();
-        clean.path = Some(PathBuf::from("/private/tmp/close-selection-clean.multicad"));
+        clean.path = Some(std::env::temp_dir().join("close-selection-clean.multicad"));
         app.projects.push(clean);
         app.active = 1;
         app.close_confirm = true;
