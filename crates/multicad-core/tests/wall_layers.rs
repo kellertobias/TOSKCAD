@@ -277,3 +277,201 @@ fn finite_finishes_are_not_inflated_and_coatings_do_not_accept_a_solid_thickness
     encoded["layers"][0]["construction"]["thickness"] = serde_json::to_value(length(10.)).unwrap();
     assert!(serde_json::from_value::<WallLayerStack>(encoded).is_err());
 }
+
+#[test]
+fn layered_types_use_the_existing_catalog_and_explicit_file_capability() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition, WallTypeConstruction},
+        project_file,
+    };
+    let (document, stack) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let original = session.document().clone();
+    let value = LayeredWallTypeDefinition {
+        reference: WallLayerReference::Boundary {
+            layer: stack.layers[2].id,
+            side: WallLayerSide::Outside,
+        },
+        layers: stack,
+        height: length(2700.),
+    };
+    let actor = || Actor::local(Channel::Ui);
+    let (id, preview) =
+        model::prepare_layered_wall_type(&session, 0, actor(), "Exterior construction", &value)
+            .unwrap();
+    assert_eq!(
+        session.document(),
+        &original,
+        "Preparing a type is source-neutral"
+    );
+    session.commit(preview).unwrap();
+    assert_eq!(
+        model::wall_types(session.document())
+            .map(|e| e.id)
+            .collect::<Vec<_>>(),
+        vec![id]
+    );
+    assert_eq!(
+        model::read_wall_construction(session.document(), id).unwrap(),
+        WallTypeConstruction::Layered(value.clone())
+    );
+    assert!(
+        model::read_wall_type(session.document(), id).is_err(),
+        "A uniform-only reader must never flatten a layered construction"
+    );
+    let project = project_file::ProjectFile::new(session.document().clone()).unwrap();
+    assert!(
+        project
+            .capabilities()
+            .contains(model::LAYERED_WALL_TYPE_CAPABILITY)
+    );
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let supported = project_file::supported_capabilities();
+    let opened = project_file::read(&mut bytes.as_slice(), Default::default(), &supported).unwrap();
+    assert_eq!(
+        model::read_wall_construction(&opened.project.document, id).unwrap(),
+        WallTypeConstruction::Layered(value)
+    );
+    let mut old = supported;
+    old.remove(model::LAYERED_WALL_TYPE_CAPABILITY);
+    assert!(project_file::read(&mut bytes.as_slice(), Default::default(), &old).is_err());
+    session.undo(session.revision(), actor()).unwrap();
+    assert!(model::wall_types(session.document()).next().is_none());
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(model::wall_types(session.document()).count(), 1);
+}
+
+#[test]
+fn uniform_type_wire_format_remains_schema_one_without_layer_capabilities() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, Justification, WallTypeConstruction, WallTypeDefinition},
+    };
+    let mut session = Session::new(Document::new("Legacy uniform wall").unwrap()).unwrap();
+    let value = WallTypeDefinition {
+        thickness: length(200.),
+        height: length(2500.),
+        justification: Justification::Left,
+        material: None,
+    };
+    let (id, preview) = model::prepare_wall_type(
+        &session,
+        0,
+        Actor::local(Channel::Ui),
+        "Existing wall type",
+        &value,
+    )
+    .unwrap();
+    session.commit(preview).unwrap();
+    let EntityData::Extension { definition, .. } = &session.document().get(id).unwrap().data else {
+        panic!("Expected type extension")
+    };
+    assert_eq!(definition.schema_version, 1);
+    assert_eq!(definition.data, serde_json::to_value(&value).unwrap());
+    assert_eq!(
+        model::read_wall_construction(session.document(), id).unwrap(),
+        WallTypeConstruction::Uniform(value)
+    );
+    assert!(
+        !model::required_capabilities(session.document())
+            .contains(model::LAYERED_WALL_TYPE_CAPABILITY)
+    );
+}
+
+#[test]
+fn type_edits_keep_layer_identity_and_cancel_history_and_invalid_changes_are_atomic() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition, WallTypeConstruction},
+    };
+    let (document, stack) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let actor = || Actor::local(Channel::Ui);
+    let mut value = LayeredWallTypeDefinition {
+        reference: WallLayerReference::Center,
+        layers: stack,
+        height: length(2700.),
+    };
+    let (id, preview) =
+        model::prepare_layered_wall_type(&session, 0, actor(), "Editable wall type", &value)
+            .unwrap();
+    session.commit(preview).unwrap();
+    let original = session.document().clone();
+    let reference_ids = value.layers.layers.iter().map(|l| l.id).collect::<Vec<_>>();
+    value.layers.layers.swap(1, 2);
+    drop(model::prepare_layered_wall_type_edit(&session, 1, actor(), id, &value).unwrap());
+    assert_eq!(session.document(), &original);
+    let preview = model::prepare_layered_wall_type_edit(&session, 1, actor(), id, &value).unwrap();
+    session.commit(preview).unwrap();
+    assert_eq!(
+        model::read_wall_construction(session.document(), id).unwrap(),
+        WallTypeConstruction::Layered(value.clone())
+    );
+    let mut sorted = value.layers.layers.iter().map(|l| l.id).collect::<Vec<_>>();
+    sorted.sort();
+    let mut expected = reference_ids;
+    expected.sort();
+    assert_eq!(sorted, expected);
+    session.undo(2, actor()).unwrap();
+    assert_eq!(session.document(), &original);
+    session.redo(3, actor()).unwrap();
+    let before = session.document().clone();
+    value.reference = WallLayerReference::Boundary {
+        layer: EntityId::new(),
+        side: WallLayerSide::Inside,
+    };
+    assert!(model::prepare_layered_wall_type_edit(&session, 4, actor(), id, &value).is_err());
+    assert_eq!(session.document(), &before);
+    value.reference = WallLayerReference::Center;
+    value.height = length(-20.);
+    assert!(model::prepare_layered_wall_type_edit(&session, 4, actor(), id, &value).is_err());
+    assert!(model::prepare_layered_wall_type_edit(&session, 0, actor(), id, &value).is_err());
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn forged_layer_source_links_and_conflicting_totals_are_refused_at_document_entry() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition},
+    };
+    let (document, stack) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let value = LayeredWallTypeDefinition {
+        reference: WallLayerReference::Center,
+        layers: stack,
+        height: length(2700.),
+    };
+    let (id, preview) = model::prepare_layered_wall_type(
+        &session,
+        0,
+        Actor::local(Channel::Ui),
+        "Checked construction",
+        &value,
+    )
+    .unwrap();
+    session.commit(preview).unwrap();
+    let source = session.document().get(id).unwrap().clone();
+    let mut forged = source.clone();
+    if let EntityData::Extension { inputs, .. } = &mut forged.data {
+        inputs.pop();
+    }
+    assert!(
+        session
+            .document()
+            .edited(&[Mutation::Replace(forged)])
+            .is_err()
+    );
+    let mut forged = source;
+    if let EntityData::Extension { definition, .. } = &mut forged.data {
+        definition.data["total_thickness"] = serde_json::json!(500.);
+    }
+    assert!(
+        session
+            .document()
+            .edited(&[Mutation::Replace(forged)])
+            .is_err()
+    );
+}

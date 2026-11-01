@@ -133,6 +133,12 @@ impl WallLayerStack {
             }
             if let Some(dimension) = layer.construction.thickness() {
                 check_dimension(dimension, Unit::Millimeter)?;
+                if matches!(dimension, Dimension::Literal {value,..} if *value <= 0.) {
+                    return Err(invalid(format!(
+                        "Thickness of wall layer {} must be positive",
+                        layer.name
+                    )));
+                }
             }
             solid |= matches!(layer.construction, WallLayerKind::Solid { .. });
         }

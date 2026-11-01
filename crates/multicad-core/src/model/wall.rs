@@ -347,7 +347,7 @@ pub fn read_wall(document: &Document, feature: EntityId) -> Result<WallDefinitio
 }
 pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError> {
     for e in wall_types(document) {
-        read_wall_type(document, e.id)?;
+        super::read_wall_construction(document, e.id)?;
     }
     for e in opening_types(document) {
         read_opening_type(document, e.id)?;
@@ -903,7 +903,7 @@ pub struct PlanSymbols {
 
 // ---- Transactions ----------------------------------------------------------
 
-fn insert_extension(
+pub(super) fn insert_extension(
     session: &Session,
     expected_revision: u64,
     actor: Actor,
