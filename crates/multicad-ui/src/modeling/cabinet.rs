@@ -7,7 +7,9 @@ use super::{
     dimension::DimensionField,
     form::{self, FormAction, ModelEvent, ModelRequest},
 };
+mod fields;
 use crate::{controls, egui};
+use fields::CabinetFields;
 use multicad_core::{
     commands::{Actor, Session},
     constraint_sketch::Dimension,
@@ -25,13 +27,13 @@ use multicad_core::{
 pub enum CabinetCommand {
     Carcass {
         existing: Option<EntityId>,
-        request: CarcassRequest,
+        request: Box<CarcassRequest>,
     },
     Panel {
         editing: bool,
         feature: EntityId,
         name: String,
-        panel: PanelDefinition,
+        panel: Box<PanelDefinition>,
     },
 }
 impl CabinetCommand {
@@ -66,7 +68,7 @@ impl CabinetCommand {
                     feature: *feature,
                     body: panel.output.body,
                     name: name.clone(),
-                    panel: panel.clone(),
+                    panel: (**panel).clone(),
                 },
             ),
         }
@@ -170,6 +172,7 @@ pub(super) struct CabinetPanel {
     shelf_offsets: String,
     setback: DimensionField,
     clearance: DimensionField,
+    options: Option<CabinetFields>,
     group: bool,
     // Both: front band on carcasses, chosen edges on panels.
     banded: bool,
@@ -223,6 +226,7 @@ impl CabinetPanel {
             shelf_offsets: "250, 450".into(),
             setback: field(20., "mm"),
             clearance: field(1., "mm"),
+            options: None,
             group: true,
             banded: true,
             band: field(2., "mm"),
@@ -236,6 +240,20 @@ impl CabinetPanel {
             error: None,
             guide: None,
         }
+    }
+    pub fn cabinet(document: &Document, name: String) -> Self {
+        let mut form = Self::new(document, name);
+        let thickness = panel_stocks(document)
+            .iter()
+            .find(|(id, ..)| Some(*id) == form.stock)
+            .map_or(18., |(_, _, t)| *t);
+        form.options = Some(CabinetFields::new(form.stock, thickness));
+        form
+    }
+    pub fn panel(document: &Document, name: String) -> Self {
+        let mut form = Self::new(document, name);
+        form.kind = Kind::Panel;
+        form
     }
     /// Viewport dimensions of the carcass being drafted, planned exactly as
     /// Apply would plan it; `None` for panels or an invalid draft.
@@ -267,6 +285,7 @@ impl CabinetPanel {
                 form.existing = Some(*carcass);
                 form.name = name(*carcass);
                 form.stock = Some(c.stock);
+                form.options = c.cabinet.as_ref().map(CabinetFields::of).transpose()?;
                 form.origin = [
                     of(&c.origin[0], "mm")?,
                     of(&c.origin[1], "mm")?,
@@ -355,6 +374,7 @@ impl CabinetPanel {
     }
     pub fn label(&self) -> &'static str {
         match self.kind {
+            Kind::Carcass if self.options.is_some() => "Cabinet",
             Kind::Carcass => "Carcass",
             Kind::Panel => "Panel",
         }
@@ -383,7 +403,9 @@ impl CabinetPanel {
         match self.kind {
             Kind::Carcass => {
                 let back_stock = || self.back_stock.ok_or("Choose the back panel stock");
-                let layout = if self.offsets {
+                let layout = if self.options.is_some() {
+                    ShelfLayout::Even { count: 0 }
+                } else if self.offsets {
                     ShelfLayout::Offsets {
                         offsets: self
                             .shelf_offsets
@@ -402,7 +424,11 @@ impl CabinetPanel {
                     }
                 };
                 let definition = CarcassDefinition {
-                    cabinet: None,
+                    cabinet: self
+                        .options
+                        .as_ref()
+                        .map(|o| o.spec(document))
+                        .transpose()?,
                     origin,
                     rotation: self.rotation.resolve(document)?,
                     width: self.width.resolve(document)?,
@@ -430,12 +456,12 @@ impl CabinetPanel {
                 };
                 Ok(CabinetCommand::Carcass {
                     existing: self.existing,
-                    request: CarcassRequest {
+                    request: Box::new(CarcassRequest {
                         carcass: self.feature,
                         name: self.name.clone(),
                         definition,
                         group: self.group,
-                    },
+                    }),
                 })
             }
             Kind::Panel => {
@@ -447,7 +473,7 @@ impl CabinetPanel {
                     editing: self.existing.is_some(),
                     feature: self.feature,
                     name: self.name.clone(),
-                    panel: PanelDefinition {
+                    panel: Box::new(PanelDefinition {
                         output: BodyOutput { body: self.body },
                         source: PanelSource::Rectangle {
                             stock,
@@ -464,7 +490,7 @@ impl CabinetPanel {
                             v_end: pick(3),
                         },
                         oversize: (!zero).then_some(oversize),
-                    },
+                    }),
                 })
             }
         }
@@ -481,7 +507,15 @@ impl CabinetPanel {
         if self.existing.is_none() {
             ui.horizontal(|ui| {
                 changed |= ui
-                    .radio_value(&mut self.kind, Kind::Carcass, "Carcass")
+                    .radio_value(
+                        &mut self.kind,
+                        Kind::Carcass,
+                        if self.options.is_some() {
+                            "Cabinet"
+                        } else {
+                            "Carcass (legacy)"
+                        },
+                    )
                     .changed();
                 changed |= ui
                     .radio_value(&mut self.kind, Kind::Panel, "Panel")
@@ -509,13 +543,14 @@ impl CabinetPanel {
             );
         }
         ui.label(match self.kind {
+            Kind::Carcass if self.options.is_some() => "Main body material / stock",
             Kind::Carcass => "Carcass stock",
             Kind::Panel => "Panel stock",
         });
         changed |= stock_combo(ui, "cabinet-stock", &stocks, &mut self.stock);
         ui.separator();
         match self.kind {
-            Kind::Carcass => changed |= self.show_carcass(ui, &stocks),
+            Kind::Carcass => changed |= self.show_carcass(ui, document, &stocks),
             Kind::Panel => changed |= self.show_panel(ui),
         }
         ui.separator();
@@ -568,10 +603,7 @@ impl CabinetPanel {
             return;
         };
         let changes = cabinet_edit::role_changes(document, carcass, &request.definition);
-        ui.small(format!(
-            "Keeps {} panel(s) with their Parts, drilling and joints.",
-            changes.kept
-        ));
+        ui.small(if self.options.is_some(){format!("Keeps {} panel Parts and their user-authored features. Generated connections follow these settings.",changes.kept)}else{format!("Keeps {} panel(s) with their Parts, drilling and joints.",changes.kept)});
         if !changes.added.is_empty() {
             ui.small(format!("Adds: {}", changes.added.join(", ")));
         }
@@ -610,17 +642,44 @@ impl CabinetPanel {
         );
         changed
     }
-    fn show_carcass(&mut self, ui: &mut egui::Ui, stocks: &[(EntityId, String, f64)]) -> bool {
+    fn show_carcass(
+        &mut self,
+        ui: &mut egui::Ui,
+        document: &Document,
+        stocks: &[(EntityId, String, f64)],
+    ) -> bool {
         let mut changed = false;
         changed |= self.width.show(ui, "Width", "Outside width");
-        changed |= self.height.show(ui, "Height", "Outside height");
-        changed |= self.depth.show(ui, "Depth", "Outside depth, back included");
-        changed |= self.show_origin(ui, "World position of the front-left-bottom corner");
-        changed |= self.rotation.show(
+        changed |= self.height.show(
             ui,
-            "Rotation",
-            "About +Z through the origin; unrotated, the front faces −Y",
+            if self.options.is_some() {
+                "Floor-to-top height"
+            } else {
+                "Height"
+            },
+            "Outside height measured from the local floor datum",
         );
+        changed |= self.depth.show(ui, "Depth", "Outside depth, back included");
+        if let Some(options) = &mut self.options {
+            changed |= options.toe.show(
+                ui,
+                "Toe-kick clearance",
+                "Local floor to the bottom panel underside; no front recess is implied",
+            );
+            egui::CollapsingHeader::new("Placement").show(ui, |ui| {
+                changed |= self.show_origin(ui, "World position of the local floor datum");
+                changed |=
+                    self.rotation
+                        .show(ui, "Rotation", "About +Z through the local floor datum");
+            });
+        } else {
+            changed |= self.show_origin(ui, "World position of the front-left-bottom corner");
+            changed |= self.rotation.show(
+                ui,
+                "Rotation",
+                "About +Z through the origin; unrotated, the front faces −Y",
+            );
+        }
         ui.label("Construction");
         changed |= ui
             .radio_value(
@@ -650,6 +709,7 @@ impl CabinetPanel {
                 .changed();
         });
         if self.back != BackKind::None {
+            ui.label("Back material / stock");
             changed |= stock_combo(ui, "cabinet-back-stock", stocks, &mut self.back_stock);
         }
         if self.back == BackKind::Inset {
@@ -658,38 +718,69 @@ impl CabinetPanel {
                 .show(ui, "Back recess", "Distance in from the rear edges");
         }
         ui.separator();
-        ui.label("Shelves");
-        ui.horizontal(|ui| {
-            changed |= ui.radio_value(&mut self.offsets, false, "Even").changed();
-            changed |= ui.radio_value(&mut self.offsets, true, "Offsets").changed();
-        });
-        if self.offsets {
-            ui.label("Offsets from the interior bottom (mm, comma-separated)");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.shelf_offsets)
-                        .desired_width(ui.available_width()),
-                )
-                .changed();
-        } else {
+        if self.options.is_none() {
+            ui.label("Legacy shelf layout");
             ui.horizontal(|ui| {
-                ui.label("Count");
+                changed |= ui.radio_value(&mut self.offsets, false, "Even").changed();
+                changed |= ui.radio_value(&mut self.offsets, true, "Offsets").changed();
+            });
+            if self.offsets {
+                ui.label("Offsets from the interior bottom (mm, comma-separated)");
                 changed |= ui
                     .add(
-                        egui::DragValue::new(&mut self.shelf_count)
-                            .range(0..=model::MAX_SHELVES as u32),
+                        egui::TextEdit::singleline(&mut self.shelf_offsets)
+                            .desired_width(ui.available_width()),
                     )
                     .changed();
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Count");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.shelf_count)
+                                .range(0..=model::MAX_SHELVES as u32),
+                        )
+                        .changed();
+                });
+            }
         }
         changed |= self.setback.show(
             ui,
             "Shelf setback",
             "From the cabinet front to the shelf front",
         );
-        changed |= self
-            .clearance
-            .show(ui, "Shelf clearance", "Gap at each shelf end");
+        changed |= self.clearance.show(
+            ui,
+            "Adjustable shelf clearance",
+            "Gap at each adjustable shelf end; fixed shelves meet their receiving sides",
+        );
+        let parameters = multicad_core::parameters::evaluate(document).ok();
+        let numeric = |f: &DimensionField| {
+            parameters
+                .as_ref()
+                .and_then(|p| fields::value(f, document, p).ok())
+        };
+        let body_t = stocks
+            .iter()
+            .find(|(id, ..)| Some(*id) == self.stock)
+            .map(|(_, _, t)| *t);
+        let back_t = stocks
+            .iter()
+            .find(|(id, ..)| Some(*id) == self.back_stock)
+            .map(|(_, _, t)| *t);
+        let available_depth = numeric(&self.depth).and_then(|d| {
+            Some(
+                match self.back {
+                    BackKind::None => d,
+                    BackKind::Inset => d - back_t? - numeric(&self.recess)?,
+                    BackKind::Overlay => d - back_t?,
+                } - numeric(&self.setback)?,
+            )
+        });
+        let height = numeric(&self.height);
+        if let Some(options) = &mut self.options {
+            changed |= options.show(ui, document, stocks, body_t, height, available_depth);
+        }
         ui.separator();
         changed |= ui
             .checkbox(&mut self.banded, "Band the front edges")
@@ -1089,5 +1180,203 @@ mod tests {
         form.width = field(20., "mm");
         form.stamp.changed();
         assert!(form.guide(s.document(), s.revision()).is_none());
+    }
+
+    fn inspector_frame(
+        ctx: &egui::Context,
+        form: &mut CabinetPanel,
+        s: &Session,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320., 2600.),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let _ = form.show(ui, s.document(), true, PreviewState::Idle);
+            },
+        )
+    }
+    fn inspector_click(ctx: &egui::Context, form: &mut CabinetPanel, s: &Session, label: &str) {
+        let output = inspector_frame(ctx, form, s, vec![]);
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing inspector control {label}"));
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            inspector_frame(
+                ctx,
+                form,
+                s,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+        for _ in 0..3 {
+            inspector_frame(ctx, form, s, vec![]).drop_without_applying_deltas();
+        }
+    }
+    #[test]
+    fn explicit_cabinet_inspector_add_remove_and_support_controls_keep_the_retained_row() {
+        let s = session();
+        let original = s.document().clone();
+        let mut form = CabinetPanel::cabinet(s.document(), "Interactive controls".into());
+        let ctx = egui::Context::default();
+        inspector_click(&ctx, &mut form, &s, "Add shelf");
+        let cfg = form.options.as_ref().unwrap().spec(s.document()).unwrap();
+        assert_eq!(
+            cfg.shelves.iter().map(|s| s.key).collect::<Vec<_>>(),
+            [0, 1]
+        );
+        let retained = cfg.shelves[1].clone();
+        inspector_click(&ctx, &mut form, &s, "Remove shelf");
+        let cfg = form.options.as_ref().unwrap().spec(s.document()).unwrap();
+        assert_eq!(cfg.shelves, [retained]);
+        inspector_click(&ctx, &mut form, &s, "System 32 adjustable");
+        let cfg = form.options.as_ref().unwrap().spec(s.document()).unwrap();
+        assert_eq!(cfg.shelves[0].key, 1);
+        assert!(matches!(
+            cfg.shelves[0].support,
+            model::ShelfSupport::System32 { .. }
+        ));
+        assert!(cfg.shelves[0].stock.is_none());
+        let prepared = form
+            .request(s.document(), true)
+            .unwrap()
+            .prepare(&s, ui())
+            .unwrap();
+        Compiler::default()
+            .compile(prepared.prepared.document(), s.revision() + 1)
+            .unwrap();
+        assert_eq!(
+            s.document(),
+            &original,
+            "inspector changes and preview are source neutral"
+        );
+    }
+    #[test]
+    fn explicit_cabinet_inspector_reopens_owned_connections_and_guides_actual_datums() {
+        let mut s = session();
+        let mut form = CabinetPanel::cabinet(s.document(), "Cabinet controls".into());
+        let mut cfg = form.options.as_ref().unwrap().spec(s.document()).unwrap();
+        let thin = panel_stocks(s.document())
+            .into_iter()
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .unwrap()
+            .0;
+        cfg.shelves.push(model::CabinetShelf {
+            key: 3,
+            underside: length(0.),
+            depth: length(350.),
+            stock: Some(thin),
+            support: model::ShelfSupport::System32 { level: 3 },
+        });
+        form.options = Some(CabinetFields::of(&cfg).unwrap());
+        let guide = form.guide(s.document(), s.revision()).unwrap();
+        assert!(
+            guide
+                .dimensions
+                .iter()
+                .any(|d| d.label.contains("Toe clearance 100 mm"))
+        );
+        assert!(
+            guide
+                .dimensions
+                .iter()
+                .any(|d| d.label == "Floor-to-top 720 mm")
+        );
+        assert!(
+            guide
+                .notes
+                .iter()
+                .any(|(_, label)| label.contains("Local floor datum"))
+        );
+        assert!(
+            guide
+                .shelves
+                .iter()
+                .any(|s| s.adjustable == Some(false) && s.label.contains("underside 360 mm"))
+        );
+        assert!(
+            guide
+                .shelves
+                .iter()
+                .any(|s| s.adjustable == Some(true) && s.label.contains("System 32 L3"))
+        );
+        let CabinetCommand::Carcass { request, .. } = form.request(s.document(), true).unwrap()
+        else {
+            unreachable!()
+        };
+        let created = model::prepare_carcass(&s, s.revision(), ui(), &request).unwrap();
+        let id = created.carcass;
+        Compiler::default()
+            .compile(created.model.prepared.document(), s.revision() + 1)
+            .unwrap();
+        s.commit(created.model.prepared).unwrap();
+        let mut reopened =
+            CabinetPanel::existing(s.document(), created.panels[0].1.feature).unwrap();
+        assert_eq!(
+            reopened
+                .options
+                .as_ref()
+                .unwrap()
+                .spec(s.document())
+                .unwrap(),
+            cfg
+        );
+        let mut remove = cfg.clone();
+        remove.shelves.remove(0);
+        reopened.options = Some(CabinetFields::of(&remove).unwrap());
+        let CabinetCommand::Carcass { request, .. } = reopened.request(s.document(), true).unwrap()
+        else {
+            unreachable!()
+        };
+        let changes = cabinet_edit::role_changes(s.document(), id, &request.definition);
+        assert!(!changes.blocked());
+        assert_eq!(changes.removed.len(), 1);
+        assert!(changes.removed[0].1.is_none());
+        let original = s.document().clone();
+        let owned_cut = model::panel_joint_cuts(s.document())
+            .find(|e| {
+                model::read_panel_joint(
+                    s.document(),
+                    model::read_panel_joint_cut(s.document(), e.id)
+                        .unwrap()
+                        .joint,
+                )
+                .unwrap()
+                .generated_by
+                    == Some(id)
+            })
+            .unwrap()
+            .id;
+        let mut controller = super::super::ModelToolController::default();
+        controller.set_backend(Box::new(super::super::native_fixture::NativeBackend::new()));
+        controller
+            .begin_existing(&s, &Default::default(), owned_cut, Channel::Ui)
+            .unwrap();
+        assert_eq!(controller.label(), "Cabinet");
+        assert_eq!(s.document(), &original);
     }
 }

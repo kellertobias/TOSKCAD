@@ -733,7 +733,8 @@ mod tests {
                 );
                 let expected: &[&str] = match (workspace.mode, tab.title) {
                     (Mode::Model, "Wood") => &[
-                        "Panel / carcass",
+                        "Add Cabinet",
+                        "Panel",
                         "Drill / pocket",
                         "System 32 shelf pins",
                         "Panel joint",

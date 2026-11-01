@@ -20,6 +20,7 @@ mod group_edit;
 #[cfg(test)]
 mod group_fixture;
 mod guide_fields;
+mod joinery_fields;
 mod joint;
 mod machining;
 mod names;
@@ -81,6 +82,7 @@ pub enum ModelingTool {
     Window,
     Cutout,
     Level,
+    Cabinet,
     Panel,
     Joint,
     Machining,
@@ -94,7 +96,7 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Box,
         Self::Cylinder,
         Self::Wall,
@@ -102,6 +104,7 @@ impl ModelingTool {
         Self::Window,
         Self::Cutout,
         Self::Level,
+        Self::Cabinet,
         Self::Panel,
         Self::Joint,
         Self::Machining,
@@ -153,6 +156,7 @@ impl ModelingTool {
             Self::Window => "window-tool",
             Self::Cutout => "vertical-cutout",
             Self::Level => "level",
+            Self::Cabinet => "cabinet",
             Self::Panel => "panel",
             Self::Joint => "joint",
             Self::Machining => "drill",
@@ -192,7 +196,8 @@ impl ModelingTool {
             Self::Window => "Window",
             Self::Cutout => "Vertical cutout",
             Self::Level => "Levels & stairs",
-            Self::Panel => "Panel / carcass",
+            Self::Cabinet => "Add Cabinet",
+            Self::Panel => "Panel",
             Self::Joint => "Panel joint",
             Self::Machining => "Drill / pocket",
             Self::ShelfPins => "System 32 shelf pins",
@@ -230,7 +235,7 @@ impl ModelingTool {
             Self::Door | Self::Window => crate::icons::Icon::Box,
             Self::Cutout => crate::icons::Icon::Cut,
             Self::Level => crate::icons::Icon::Edge,
-            Self::Panel => crate::icons::Icon::Box,
+            Self::Panel | Self::Cabinet => crate::icons::Icon::Box,
             Self::Joint | Self::LooseTenon => crate::icons::Icon::Link,
             Self::Machining | Self::ShelfPins => crate::icons::Icon::Cut,
             Self::FdmAid => crate::icons::Icon::Edge,
@@ -267,7 +272,8 @@ impl ModelingTool {
             Self::Window => &["place-window", "wall-window"],
             Self::Cutout => &["wall-cutout", "chase", "wall-chase"],
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
-            Self::Panel => &["carcass", "cabinet", "shelf", "board", "edge-banding"],
+            Self::Cabinet => &["carcass", "shelf", "add cabinet", "cabinet generator"],
+            Self::Panel => &["board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
             Self::Machining => &["groove", "dado", "rabbet", "pocket", "hardware-holes"],
             Self::ShelfPins => &["shelf-pins", "shelf-pin-holes", "system-32", "line-boring"],
@@ -336,6 +342,9 @@ impl ModelingTool {
             }
             Self::Panel => {
                 "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
+            }
+            Self::Cabinet => {
+                "Usage: cabinet (set outside width, floor-to-top height, depth and toe clearance, then add individual shelves and choose fixed joinery or System 32 support; Preview and Apply)"
             }
             Self::Sheet => {
                 "Usage: sheet (choose sheet stock, base size and edge flanges, hems or jogs, optionally override the inside radius and K-factor in the Inspector, then Preview and Apply)"
@@ -414,7 +423,7 @@ impl ModelingTool {
             Self::Member => {
                 "Requires native modeling, profile stock defined in Model → Materials and no pending edits. Members follow straight sketch lines or point pairs."
             }
-            Self::Panel => {
+            Self::Panel | Self::Cabinet => {
                 "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."
             }
             Self::Sheet => {

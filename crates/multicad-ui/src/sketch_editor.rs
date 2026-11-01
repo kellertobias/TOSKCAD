@@ -1248,8 +1248,25 @@ impl SketchEditor {
         }
         self.finish()?;
         self.model.begin_cabinet(session, resources, channel)?;
+        self.message = "Cabinet · set the floor datum, panels, individual shelves and connections in the Inspector, then Preview".into();
+        Ok(())
+    }
+    pub fn begin_panel(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err(
+                "Install native modeling and apply or cancel pending edits before adding panels"
+                    .into(),
+            );
+        }
+        self.finish()?;
+        self.model.begin_panel(session, resources, channel)?;
         self.message =
-            "Panel / carcass · choose stock and sizes in the Inspector, then Preview".into();
+            "Panel · choose stock, size and placement in the Inspector, then Preview".into();
         Ok(())
     }
     pub fn begin_sheet(

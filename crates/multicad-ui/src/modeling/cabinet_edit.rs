@@ -84,9 +84,20 @@ pub fn role_changes(
             continue;
         }
         let blocker = model::panel_joints_of(document, *body)
-            .first()
-            .or(model::machinings_of(document, *body).first())
-            .map(|id| name(*id));
+            .into_iter()
+            .find(|id| {
+                !model::read_panel_joint(document, *id)
+                    .is_ok_and(|j| j.generated_by == Some(carcass))
+            })
+            .or_else(|| {
+                model::machinings_of(document, *body)
+                    .into_iter()
+                    .find(|id| {
+                        !model::read_machining(document, *id)
+                            .is_ok_and(|m| m.generated_by == Some(carcass))
+                    })
+            })
+            .map(name);
         changes.removed.push((name(*body), blocker));
     }
     for role in roles {
@@ -110,7 +121,14 @@ pub struct GuideDimension {
 pub struct CabinetGuide {
     pub edges: Vec<[[f64; 3]; 2]>,
     pub dimensions: Vec<GuideDimension>,
-    pub shelves: Vec<([[f64; 3]; 4], String)>,
+    pub shelves: Vec<GuideShelf>,
+    pub notes: Vec<([f64; 3], String)>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuideShelf {
+    pub corners: [[f64; 3]; 4],
+    pub label: String,
+    pub adjustable: Option<bool>,
 }
 
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -151,7 +169,7 @@ pub fn carcass_guide(
         edges.push([at(0., d, e), at(0., 0., e)]);
     }
     let gap = w.max(h).max(d) * 0.08;
-    let dimensions = vec![
+    let mut dimensions = vec![
         GuideDimension {
             a: at(0., 0., 0.),
             b: at(w, 0., 0.),
@@ -162,7 +180,15 @@ pub fn carcass_guide(
             a: at(0., 0., 0.),
             b: at(0., 0., h),
             offset: mul(x, -gap),
-            label: format!("Height {}", format_mm(h)),
+            label: format!(
+                "{} {}",
+                if definition.cabinet.is_some() {
+                    "Floor-to-top"
+                } else {
+                    "Height"
+                },
+                format_mm(h)
+            ),
         },
         GuideDimension {
             a: at(w, 0., 0.),
@@ -171,6 +197,45 @@ pub fn carcass_guide(
             label: format!("Depth {}", format_mm(d)),
         },
     ];
+    let mut notes = vec![];
+    if let Some(c) = &definition.cabinet {
+        if let Some(bottom) = r
+            .panels
+            .iter()
+            .find(|panel| panel.role == PanelRole::Bottom)
+        {
+            let b = bottom.panel;
+            let corners = [
+                b.origin,
+                add(b.origin, mul(b.u, b.length_mm)),
+                add(add(b.origin, mul(b.u, b.length_mm)), mul(b.v, b.width_mm)),
+                add(b.origin, mul(b.v, b.width_mm)),
+            ];
+            for i in 0..4 {
+                edges.push([corners[i], corners[(i + 1) % 4]]);
+            }
+        }
+        let toe = c
+            .toe_clearance
+            .value_in(multicad_core::parameters::Unit::Millimeter, Some(&p))?;
+        dimensions.push(GuideDimension {
+            a: at(0., 0., 0.),
+            b: at(0., 0., toe),
+            offset: mul(x, -gap * 0.45),
+            label: format!("Toe clearance {} · bottom underside", format_mm(toe)),
+        });
+        notes.push((at(0., 0., 0.), "Local floor datum · 0 mm".into()));
+        notes.push((
+            at(w / 2., 0., h),
+            format!(
+                "Fixed carcass · {}",
+                match c.joinery {
+                    model::CabinetJoinery::Dowels(_) => "Dowels",
+                    model::CabinetJoinery::Domino(_) => "Domino",
+                }
+            ),
+        ));
+    }
     let shelves = r
         .panels
         .iter()
@@ -179,20 +244,53 @@ pub fn carcass_guide(
                 return None;
             };
             let b = panel.panel;
-            let top = add(b.origin, mul(b.normal(), b.thickness_mm));
+            let top = if definition.cabinet.is_some() {
+                b.origin
+            } else {
+                add(b.origin, mul(b.normal(), b.thickness_mm))
+            };
             let lu = mul(b.u, b.length_mm);
             let wv = mul(b.v, b.width_mm);
             let height = top[2] - r.origin[2];
-            Some((
-                [top, add(top, lu), add(add(top, lu), wv), add(top, wv)],
-                format!("Shelf {} · {}", index + 1, format_mm(height)),
-            ))
+            let explicit = definition
+                .cabinet
+                .as_ref()
+                .and_then(|c| c.shelf(index).map(|s| (c, s)));
+            let (label, adjustable) = if let Some((c, s)) = explicit {
+                let support = match s.support {
+                    model::ShelfSupport::Fixed => format!(
+                        "Fixed / {}",
+                        match c.joinery {
+                            model::CabinetJoinery::Dowels(_) => "Dowels",
+                            model::CabinetJoinery::Domino(_) => "Domino",
+                        }
+                    ),
+                    model::ShelfSupport::System32 { level } => format!("System 32 L{level}"),
+                };
+                (
+                    format!(
+                        "Shelf {} · {support} · underside {} · depth {}",
+                        index + 1,
+                        format_mm(height),
+                        format_mm(b.width_mm)
+                    ),
+                    Some(matches!(s.support, model::ShelfSupport::System32 { .. })),
+                )
+            } else {
+                (format!("Shelf {} · {}", index + 1, format_mm(height)), None)
+            };
+            Some(GuideShelf {
+                corners: [top, add(top, lu), add(add(top, lu), wv), add(top, wv)],
+                label,
+                adjustable,
+            })
         })
         .collect();
     Ok(CabinetGuide {
         edges,
         dimensions,
         shelves,
+        notes,
     })
 }
 
@@ -231,11 +329,24 @@ impl CabinetGuide {
             line(a, b, measure);
             label(mul(add(a, b), 0.5), &d.label, measure.color);
         }
-        for (corners, text) in &self.shelves {
+        for guide in &self.shelves {
+            let corners = &guide.corners;
+            let stroke = match guide.adjustable {
+                Some(false) => measure,
+                Some(true) => egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 215, 255)),
+                None => shelf,
+            };
             for i in 0..4 {
-                line(corners[i], corners[(i + 1) % 4], shelf);
+                line(corners[i], corners[(i + 1) % 4], stroke);
             }
-            label(mul(add(corners[0], corners[2]), 0.5), text, shelf.color);
+            label(
+                mul(add(corners[0], corners[2]), 0.5),
+                &guide.label,
+                stroke.color,
+            );
+        }
+        for (at, text) in &self.notes {
+            label(*at, text, measure.color);
         }
         labels
     }

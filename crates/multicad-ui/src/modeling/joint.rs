@@ -48,10 +48,11 @@ enum Kind {
     Miter,
     Finger,
     LooseTenon,
+    Dowels,
 }
 /// Loose-tenon settings in the Inspector.
 #[derive(Clone, Debug)]
-struct TenonFields {
+pub(super) struct TenonFields {
     thickness: DimensionField,
     width: DimensionField,
     length: DimensionField,
@@ -90,7 +91,7 @@ impl Default for TenonFields {
     }
 }
 impl TenonFields {
-    fn of(spec: &LooseTenonSpec) -> Result<Self, String> {
+    pub(super) fn of(spec: &LooseTenonSpec) -> Result<Self, String> {
         let f = |d| DimensionField::from_dimension(d, "mm");
         Ok(Self {
             thickness: f(&spec.thickness)?,
@@ -109,7 +110,7 @@ impl TenonFields {
             fit: f(&spec.fit)?,
         })
     }
-    fn spec(&self, document: &Document) -> Result<LooseTenonSpec, String> {
+    pub(super) fn spec(&self, document: &Document) -> Result<LooseTenonSpec, String> {
         let r = |f: &DimensionField| f.resolve(document);
         let offset = r(&self.offset)?;
         Ok(LooseTenonSpec {
@@ -126,7 +127,7 @@ impl TenonFields {
             fit: r(&self.fit)?,
         })
     }
-    fn show(&mut self, ui: &mut egui::Ui) -> bool {
+    pub(super) fn show(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.small("Tenon: a rounded slot shape, thickness = cutter diameter, width including the rounded ends.");
         changed |= self
@@ -191,6 +192,7 @@ pub(super) struct JointPanel {
     count: u32,
     fit: DimensionField,
     tenon: TenonFields,
+    dowels: super::joinery_fields::DowelFields,
     pairs: Vec<[Option<EntityId>; 2]>,
     /// Pick pair panels by clicking their faces in the viewport.
     place: bool,
@@ -220,6 +222,7 @@ impl JointPanel {
             count: 5,
             fit: DimensionField::from_dimension(&length(0.2), "mm").expect("literal"),
             tenon: TenonFields::default(),
+            dowels: Default::default(),
             pairs: vec![[None, None]],
             place: true,
             pick_note: None,
@@ -252,6 +255,9 @@ impl JointPanel {
                 .map_err(|_| error.to_string())?,
         };
         let joint = model::read_panel_joint(document, joint_id).map_err(|e| e.to_string())?;
+        if joint.generated_by.is_some() {
+            return Err("Edit this generated connection through the Cabinet inspector".into());
+        }
         let mut form = Self::new(
             document
                 .get(joint_id)
@@ -273,8 +279,9 @@ impl JointPanel {
                 form.tenon = TenonFields::of(spec)?;
                 Kind::LooseTenon
             }
-            PanelJointKind::Dowels(_) => {
-                return Err("Edit dowel connections through the Cabinet inspector".into());
+            PanelJointKind::Dowels(spec) => {
+                form.dowels = super::joinery_fields::DowelFields::of(spec)?;
+                Kind::Dowels
             }
         };
         Ok(form)
@@ -283,6 +290,9 @@ impl JointPanel {
         self.stamp
     }
     pub fn label(&self) -> &'static str {
+        if self.kind == Kind::Dowels {
+            return "Paired dowels";
+        }
         if self.kind == Kind::LooseTenon {
             "Loose tenon (Domino)"
         } else {
@@ -314,6 +324,7 @@ impl JointPanel {
                 fit: self.fit.resolve(document)?,
             },
             Kind::LooseTenon => PanelJointKind::LooseTenon(Box::new(self.tenon.spec(document)?)),
+            Kind::Dowels => PanelJointKind::Dowels(Box::new(self.dowels.spec(document)?)),
         };
         Ok(JointCommand {
             existing: self.existing,
@@ -334,7 +345,9 @@ impl JointPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.label());
-        ui.small(if self.kind == Kind::LooseTenon {
+        ui.small(if self.kind == Kind::Dowels {
+            "One panel edge meets the other panel face. Paired circular blind holes follow the actual mating panels."
+        } else if self.kind == Kind::LooseTenon {
             "One panel's edge must lie flat on the other panel's face. Each tenon gets a rounded mortise in both panels and the tenons become their own Part."
         } else {
             "Panels must overlap at a right-angle corner: extend both to the outside corner. Each panel keeps its share of the corner block."
@@ -360,6 +373,7 @@ impl JointPanel {
             (Kind::Miter, "Miter"),
             (Kind::Finger, "Fingers"),
             (Kind::LooseTenon, "Loose tenon (Domino)"),
+            (Kind::Dowels, "Paired dowels"),
         ] {
             let allowed = if kind == Kind::LooseTenon {
                 !corner
@@ -377,6 +391,9 @@ impl JointPanel {
         }
         if self.kind == Kind::LooseTenon {
             changed |= self.tenon.show(ui);
+        }
+        if self.kind == Kind::Dowels {
+            changed |= self.dowels.show(ui);
         }
         if self.kind == Kind::Finger {
             ui.horizontal(|ui| {

@@ -178,6 +178,30 @@ impl ModelToolController {
                 "Choose a supported, unsuppressed applied feature or owned placement driver".into(),
             );
         }
+        let cabinet_owner = model::read_panel_joint_cut(document, feature)
+            .ok()
+            .and_then(|c| model::read_panel_joint(document, c.joint).ok())
+            .and_then(|j| j.generated_by)
+            .or_else(|| {
+                model::read_loose_tenon(document, feature)
+                    .ok()
+                    .and_then(|t| model::read_panel_joint(document, t.joint).ok())
+                    .and_then(|j| j.generated_by)
+            })
+            .or_else(|| {
+                model::read_machining_cut(document, feature)
+                    .ok()
+                    .and_then(|c| model::read_machining(document, c.operation).ok())
+                    .and_then(|m| m.generated_by)
+            });
+        let feature = match cabinet_owner {
+            Some(owner) => model::carcass_panels(document, owner)
+                .map_err(|e| e.to_string())?
+                .first()
+                .map(|(_, feature, _)| *feature)
+                .ok_or("Cabinet has no editable panel")?,
+            None => feature,
+        };
         if multicad_core::model::read_alignment(document, feature).is_ok()
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
         {
@@ -703,7 +727,24 @@ impl ModelToolController {
             session,
             resources,
             channel,
-            ModelForm::Cabinet(Box::new(super::cabinet::CabinetPanel::new(
+            ModelForm::Cabinet(Box::new(super::cabinet::CabinetPanel::cabinet(
+                session.document(),
+                name,
+            ))),
+        )
+    }
+    pub fn begin_panel(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Panel", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Cabinet(Box::new(super::cabinet::CabinetPanel::panel(
                 session.document(),
                 name,
             ))),

@@ -508,6 +508,7 @@ impl Default for Registry {
                                         | ModelingTool::Cutout
                                         | ModelingTool::Level
                                         | ModelingTool::Panel
+                                        | ModelingTool::Cabinet
                                         | ModelingTool::Joint
                                         | ModelingTool::Machining
                                         | ModelingTool::ShelfPins
@@ -531,7 +532,9 @@ impl Default for Registry {
                     ),
                     tab(
                         "Wood",
-                        &["panel", "drill", "system32", "joint", "domino", "cut-list"],
+                        &[
+                            "cabinet", "panel", "drill", "system32", "joint", "domino", "cut-list",
+                        ],
                     ),
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
@@ -946,6 +949,7 @@ mod tests {
                         | ModelingTool::Cutout
                         | ModelingTool::Level
                         | ModelingTool::Panel
+                        | ModelingTool::Cabinet
                         | ModelingTool::Joint
                         | ModelingTool::Machining
                         | ModelingTool::ShelfPins
@@ -1004,6 +1008,7 @@ mod tests {
             if matches!(
                 tool,
                 ModelingTool::Panel
+                    | ModelingTool::Cabinet
                     | ModelingTool::Joint
                     | ModelingTool::Machining
                     | ModelingTool::ShelfPins

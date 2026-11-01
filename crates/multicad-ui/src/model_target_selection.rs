@@ -312,8 +312,11 @@ impl SketchEditor {
         if tool == ModelingTool::Member {
             return self.begin_weldment(session, resources, channel);
         }
-        if tool == ModelingTool::Panel {
+        if tool == ModelingTool::Cabinet {
             return self.begin_cabinet(session, resources, channel);
+        }
+        if tool == ModelingTool::Panel {
+            return self.begin_panel(session, resources, channel);
         }
         if tool == ModelingTool::Joint {
             return self.begin_joint(session, resources, channel);
