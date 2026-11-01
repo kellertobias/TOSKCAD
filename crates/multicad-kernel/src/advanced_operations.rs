@@ -14,6 +14,66 @@ fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError
     }
 }
 impl Solid {
+    /// Copy exact constituent solids without merging touching or overlapping
+    /// members. Semantic identity comes from source provenance, never ordering.
+    pub fn solid_components(&self, policy: GeometryPolicy) -> Result<Vec<Solid>, GeometryError> {
+        self.solid_components_interruptible(policy, None)
+    }
+    pub fn solid_components_interruptible(
+        &self,
+        policy: GeometryPolicy,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Vec<Solid>, GeometryError> {
+        policy.validate()?;
+        let checkpoint = || {
+            if interrupt.is_some_and(|f| f()) {
+                Err(failure(
+                    GeometryErrorKind::Cancelled,
+                    "Solid component extraction superseded",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        checkpoint()?;
+        let count = self.solid_count()?;
+        if count == 0 || count > 1024 {
+            return Err(failure(
+                GeometryErrorKind::Limit,
+                "Solid component extraction needs between 1 and 1024 solids",
+            ));
+        }
+        let mut components = Vec::with_capacity(count as usize);
+        let mut sum = 0.;
+        for index in 0..count {
+            checkpoint()?;
+            let handle = ffi::solid_component_at(&self.native.0, index)
+                .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
+            let mut component = Self::adopt(handle, policy, "solid component")?;
+            if component.solid_count()? != 1 {
+                return Err(failure(
+                    GeometryErrorKind::InvalidResult,
+                    "Solid component copy did not retain exactly one solid",
+                ));
+            }
+            component.inherit_provenance(&[self], None)?;
+            sum += component.volume_mm3()?;
+            components.push(component);
+        }
+        checkpoint()?;
+        let bounds = self.bounds()?;
+        let [x, y, z] = std::array::from_fn::<_, 3, _>(|i| bounds.max[i] - bounds.min[i]);
+        let original = self.volume_mm3()?;
+        let tolerance =
+            (original * 1e-8).max(policy.linear_tolerance_mm * 2. * (x * y + y * z + z * x));
+        if !sum.is_finite() || (sum - original).abs() > tolerance {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Solid component copies do not conserve the source volume within tolerance",
+            ));
+        }
+        Ok(components)
+    }
     fn selected_faces(
         &self,
         faces: &[TreatmentFace],

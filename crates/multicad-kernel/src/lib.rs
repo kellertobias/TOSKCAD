@@ -272,6 +272,7 @@ mod ffi {
         fn compound_job() -> Result<UniquePtr<CompoundJob>>;
         fn compound_add(job: Pin<&mut CompoundJob>, shape: &Shape) -> Result<()>;
         fn compound_finish(job: Pin<&mut CompoundJob>) -> Result<UniquePtr<Shape>>;
+        fn solid_component_at(shape: &Shape, index: u32) -> Result<UniquePtr<Shape>>;
         fn shell_solid(
             shape: &Shape,
             faces: &[u32],

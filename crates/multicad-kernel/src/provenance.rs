@@ -303,6 +303,38 @@ impl Solid {
             role: format!("assembly/member/{member}"),
         })
     }
+    /// Stable source-owned identity for a composite's exact material/component
+    /// member. It remains distinct from evaluation-local solid ordinals.
+    pub fn with_component_origin(
+        self,
+        owner: EntityId,
+        member: EntityId,
+    ) -> Result<Self, GeometryError> {
+        if owner.is_nil() || member.is_nil() {
+            return Err(failure(
+                "Component provenance needs non-nil owner/member identities",
+            ));
+        }
+        if self
+            .topology_snapshot(owner, 0)?
+            .elements
+            .iter()
+            .any(|element| {
+                element
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == owner && origin.role.starts_with("component/"))
+            })
+        {
+            return Err(failure(
+                "This component already has an identity for the same owner",
+            ));
+        }
+        self.with_identity_origin(Origin {
+            source: owner,
+            role: format!("component/{member}"),
+        })
+    }
     fn with_identity_origin(mut self, origin: Origin) -> Result<Self, GeometryError> {
         let snapshot = self.topology_snapshot(origin.source, 0)?;
         if snapshot

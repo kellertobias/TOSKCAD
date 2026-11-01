@@ -113,6 +113,31 @@ std::unique_ptr<Shape> compound_finish(CompoundJob &job) {
     return result;
   });
 }
+std::unique_ptr<Shape> solid_component_at(const Shape &source,uint32_t index) {
+  return guarded([&] {
+    if(index>=1024)throw std::runtime_error("Solid component index exceeds the component budget");
+    TopoDS_Shape selected;uint32_t ordinal=0;
+    // Match solid_count's traversal; these ordinals are evaluation-local only.
+    for(TopExp_Explorer e(source.value,TopAbs_SOLID);e.More();e.Next(),++ordinal) {
+      if(ordinal==index) {selected=e.Current();break;}
+    }
+    if(selected.IsNull())throw std::runtime_error("Solid component index is unavailable");
+    BRepBuilderAPI_Copy copy(selected,true,false);
+    if(!copy.IsDone())throw std::runtime_error("Solid component copy failed");
+    auto result=checked(copy.Shape());
+    for(uint8_t kind=0;kind<3;++kind) {
+      const auto parent=map(source.value,kind),input=map(selected,kind),output=map(result->value,kind);
+      for(int i=1;i<=input.Extent();++i) {
+        const auto copied=copy.ModifiedShape(input(i));
+        const int ancestor=parent.FindIndex(input(i)),descendant=output.FindIndex(copied);
+        if(copied.IsNull()||ancestor<=0||descendant<=0)throw std::runtime_error("Solid component lacks exact copy ancestry");
+        if(result->ancestry.size()>=1000000)throw std::runtime_error("Solid component history budget exceeded");
+        result->ancestry.push_back(NativeAncestry{kind,0,static_cast<uint32_t>(descendant-1),static_cast<uint32_t>(ancestor-1)});
+      }
+    }
+    return result;
+  });
+}
 std::unique_ptr<Shape> shell_solid(const Shape &source,rust::Slice<const uint32_t> indices,double thickness,double tolerance) {
   return guarded([&] {
     if(!std::isfinite(thickness)||thickness==0.||std::abs(thickness)>1e7||!std::isfinite(tolerance)||tolerance<1e-7||tolerance>1e-3)throw std::runtime_error("Invalid shell thickness or tolerance");
