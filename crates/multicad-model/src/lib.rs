@@ -16,6 +16,7 @@ mod external_repair;
 mod extrude;
 mod face_profile;
 mod fdm;
+mod gears;
 pub mod imports;
 pub mod inspection;
 mod levels;

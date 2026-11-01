@@ -81,6 +81,7 @@ pub fn cacheable_type(type_id: &str) -> bool {
         model::EXTRUDE_TYPE,
         model::PRIMITIVE_TYPE,
         model::THREAD_TYPE,
+        model::GEAR_TYPE,
         model::REVOLVE_TYPE,
         model::BOOLEAN_TYPE,
         model::SPLIT_TYPE,
