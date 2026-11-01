@@ -203,3 +203,70 @@ pub fn prepare_layered_wall_type_edit(
         edits: vec![Mutation::Replace(entity)],
     })
 }
+
+/// Explicit shared-type scope, distinct from creating a duplicated type. Native
+/// preview must evaluate all affected walls before this transaction can Apply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WallConstructionEdit {
+    pub id: EntityId,
+    pub name: String,
+    pub value: LayeredWallTypeDefinition,
+}
+impl WallConstructionEdit {
+    pub(super) fn mutation(&self, session: &Session) -> Result<Mutation, CommandError> {
+        if !matches!(
+            read_wall_construction(session.document(), self.id)?,
+            WallTypeConstruction::Layered(_)
+        ) {
+            return Err(invalid("Shared layer editing requires an existing layered construction; create a separate type to convert a uniform wall").into());
+        }
+        if self.name.trim().is_empty() || self.name.len() > 256 {
+            return Err(invalid("Construction name must contain 1–256 bytes").into());
+        }
+        self.value.validate_values(session)?;
+        let mut entity = session
+            .document()
+            .get(self.id)
+            .ok_or(DocumentError::Missing(self.id))?
+            .clone();
+        entity.name = self.name.clone();
+        entity.data = EntityData::Extension {
+            definition: self.value.definition()?,
+            inputs: self.value.inputs(),
+        };
+        Ok(Mutation::Replace(entity))
+    }
+}
+
+/// Read-only impact list for explicit shared edits. Instance height/reference
+/// overrides remain on each wall; no cross-project definition is changed here.
+pub fn wall_construction_users(
+    document: &Document,
+    construction: EntityId,
+) -> Result<Vec<super::CreatedBody>, DocumentError> {
+    super::walls(document)
+        .filter_map(|entity| match super::read_wall(document, entity.id) {
+            Ok(wall) if wall.wall_type == construction => Some(Ok(super::CreatedBody {
+                feature: entity.id,
+                body: wall.output.body,
+            })),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+
+pub fn prepare_wall_construction_edit(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    edit: &WallConstructionEdit,
+) -> Result<Prepared, CommandError> {
+    revision(session, expected_revision)?;
+    session.prepare(Request {
+        expected_revision,
+        actor,
+        label: "Edit shared wall construction".into(),
+        edits: vec![edit.mutation(session)?],
+    })
+}

@@ -1300,14 +1300,167 @@ pub(super) fn prepare_wall_change_labeled(
     change: &WallChange<'_>,
     history_label: Option<&str>,
 ) -> Result<ModelPrepared, CommandError> {
+    prepare_wall_construction_change_inner(
+        session,
+        expected_revision,
+        actor,
+        new_types,
+        change,
+        history_label,
+        None,
+    )
+}
+
+/// Preview a wall and an explicitly scoped shared layered-construction edit as
+/// one atomic source transaction. A duplicate belongs in `new_types` instead.
+pub fn prepare_wall_construction_change(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    new_types: &[NewType],
+    change: &WallChange<'_>,
+    construction: Option<&super::WallConstructionEdit>,
+) -> Result<ModelPrepared, CommandError> {
+    prepare_wall_construction_change_inner(
+        session,
+        expected_revision,
+        actor,
+        new_types,
+        change,
+        construction.map(|_| "Edit shared construction and wall"),
+        construction,
+    )
+}
+fn prepare_wall_construction_change_inner(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    new_types: &[NewType],
+    change: &WallChange<'_>,
+    history_label: Option<&str>,
+    construction: Option<&super::WallConstructionEdit>,
+) -> Result<ModelPrepared, CommandError> {
     revision(session, expected_revision)?;
     let mut edits = vec![];
-    for t in new_types {
-        if session.document().get(t.id).is_some() {
+    if let Some(edit) = construction {
+        edits.push(edit.mutation(session)?);
+    }
+    for ty in new_types {
+        if session.document().get(ty.id).is_some() {
             return Err(error("New type identities must be new"));
         }
-        edits.push(Mutation::Insert(t.entity()?));
+        edits.push(Mutation::Insert(ty.entity()?));
     }
+    let wall = match change {
+        WallChange::Create(request) => &request.wall,
+        WallChange::Edit { wall, .. } => *wall,
+    };
+    wall.validate()?;
+    let target = if let Some(ty) = new_types.iter().find(|ty| ty.id == wall.wall_type) {
+        match &ty.kind {
+            NewTypeKind::Wall(value) => super::WallTypeConstruction::Uniform(value.clone()),
+            NewTypeKind::LayeredWall(value) => super::WallTypeConstruction::Layered(value.clone()),
+            NewTypeKind::Opening(_) => return Err(error("Choose a wall construction type")),
+        }
+    } else if let Some(edit) = construction.filter(|edit| edit.id == wall.wall_type) {
+        super::WallTypeConstruction::Layered(edit.value.clone())
+    } else {
+        super::read_wall_construction(session.document(), wall.wall_type)?
+    };
+    let material = match &target {
+        super::WallTypeConstruction::Uniform(value) => value.material,
+        super::WallTypeConstruction::Layered(_) => None,
+    };
+    // Stage all linked source changes before document validation. In particular,
+    // a shared boundary removal and its wall-reference repair are indivisible.
+    let (output, label) = match change {
+        WallChange::Create(request) => {
+            if request.wall.output.body != request.body {
+                return Err(error("Wall output must name the requested Part"));
+            }
+            if request.feature.is_nil()
+                || request.body.is_nil()
+                || request.feature == request.body
+                || [request.feature, request.body]
+                    .iter()
+                    .any(|id| session.document().get(*id).is_some())
+            {
+                return Err(error("Wall identities must be new, distinct and non-nil"));
+            }
+            if request.name.trim().is_empty() || request.name.len() > 1000 {
+                return Err(error("Wall name must contain 1–1000 bytes"));
+            }
+            let mut feature = Entity::new(
+                format!("{} feature", request.name),
+                EntityData::Feature {
+                    definition: wall.definition()?,
+                    inputs: wall.inputs(),
+                    suppressed: false,
+                },
+            );
+            feature.id = request.feature;
+            let mut body = Entity::new(
+                request.name.clone(),
+                EntityData::Part {
+                    features: vec![request.feature],
+                    material,
+                    tags: BTreeSet::new(),
+                },
+            );
+            body.id = request.body;
+            edits.extend([Mutation::Insert(feature), Mutation::Insert(body)]);
+            (
+                CreatedBody {
+                    feature: request.feature,
+                    body: request.body,
+                },
+                "Create wall",
+            )
+        }
+        WallChange::Edit { feature, .. } => {
+            let previous = read_wall(session.document(), *feature)?;
+            if previous.output != wall.output {
+                return Err(error("A wall edit keeps its output Part"));
+            }
+            let mut entity = session
+                .document()
+                .get(*feature)
+                .ok_or_else(|| error("Wall is missing"))?
+                .clone();
+            entity.data = EntityData::Feature {
+                definition: wall.definition()?,
+                inputs: wall.inputs(),
+                suppressed: false,
+            };
+            edits.push(Mutation::Replace(entity));
+            if previous.wall_type != wall.wall_type {
+                let previous_type =
+                    super::read_wall_construction(session.document(), previous.wall_type)?;
+                let mut part = session
+                    .document()
+                    .get(wall.output.body)
+                    .ok_or_else(|| error("Wall Part is missing"))?
+                    .clone();
+                if let EntityData::Part {
+                    material: assignment,
+                    ..
+                } = &mut part.data
+                    && (matches!(target, super::WallTypeConstruction::Layered(_))
+                        || matches!(previous_type, super::WallTypeConstruction::Layered(_)))
+                {
+                    *assignment = material;
+                }
+                edits.push(Mutation::Replace(part));
+            }
+            (
+                CreatedBody {
+                    feature: *feature,
+                    body: wall.output.body,
+                },
+                "Edit wall",
+            )
+        }
+    };
     let candidate = session.document().edited(&edits)?;
     let parameters = crate::parameters::evaluate(&candidate)?;
     for ty in new_types {
@@ -1318,45 +1471,15 @@ pub(super) fn prepare_wall_change_labeled(
             }
         }
     }
-    let (wall, output, label) = match change {
-        WallChange::Create(request) => {
-            if request.wall.output.body != request.body {
-                return Err(error("Wall output must name the requested Part"));
-            }
-            (
-                &request.wall,
-                CreatedBody {
-                    feature: request.feature,
-                    body: request.body,
-                },
-                "Create wall",
-            )
-        }
-        WallChange::Edit { feature, wall } => {
-            if read_wall(&candidate, *feature)?.output != wall.output {
-                return Err(error("A wall edit keeps its output Part"));
-            }
-            (
-                *wall,
-                CreatedBody {
-                    feature: *feature,
-                    body: wall.output.body,
-                },
-                "Edit wall",
-            )
-        }
-    };
-    // Validate first: planning indexes segments by the openings' numbers.
-    wall.validate()?;
     let resolved = resolve_wall(&candidate, &parameters, wall)?;
     resolved.check_openings(&resolved.plan()?)?;
     if let WallChange::Edit { feature, .. } = change {
-        let previous = read_wall(&candidate, *feature)?;
+        let previous = read_wall(session.document(), *feature)?;
         if previous.layer_placement.is_some()
             && wall.layer_placement.is_some()
             && previous.closed == wall.closed
         {
-            let old = resolve_wall(&candidate, &parameters, &previous)?;
+            let old = resolve_wall(session.document(), session.parameters(), &previous)?;
             let same =
                 |a: [f64; 2], b: [f64; 2]| a.into_iter().zip(b).all(|(a, b)| (a - b).abs() <= 1e-8);
             let n = old.points.len();
@@ -1396,52 +1519,6 @@ pub(super) fn prepare_wall_change_labeled(
                     ));
                 }
             }
-        }
-    }
-    match change {
-        WallChange::Create(request) => {
-            for id in [request.feature, request.body] {
-                if id.is_nil() || candidate.get(id).is_some() || request.feature == request.body {
-                    return Err(error("Wall identities must be new, distinct and non-nil"));
-                }
-            }
-            if request.name.trim().is_empty() || request.name.len() > 1000 {
-                return Err(error("Wall name must contain 1–1000 bytes"));
-            }
-            let mut feature = Entity::new(
-                format!("{} feature", request.name),
-                EntityData::Feature {
-                    definition: wall.definition()?,
-                    inputs: wall.inputs(),
-                    suppressed: false,
-                },
-            );
-            feature.id = request.feature;
-            let mut body = Entity::new(
-                request.name.clone(),
-                EntityData::Part {
-                    features: vec![request.feature],
-                    material: match super::read_wall_construction(&candidate, wall.wall_type)? {
-                        super::WallTypeConstruction::Uniform(ty) => ty.material,
-                        super::WallTypeConstruction::Layered(_) => None,
-                    },
-                    tags: BTreeSet::new(),
-                },
-            );
-            body.id = request.body;
-            edits.extend([Mutation::Insert(feature), Mutation::Insert(body)]);
-        }
-        WallChange::Edit { feature, .. } => {
-            let mut entity = candidate
-                .get(*feature)
-                .ok_or_else(|| error("Wall is missing"))?
-                .clone();
-            entity.data = EntityData::Feature {
-                definition: wall.definition()?,
-                inputs: wall.inputs(),
-                suppressed: false,
-            };
-            edits.push(Mutation::Replace(entity));
         }
     }
     let prepared = session.prepare_scoped(Request {

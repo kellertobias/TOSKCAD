@@ -996,3 +996,176 @@ fn layered_equipment_anchors_in_voids_require_repair_but_lintels_and_the_opposit
             .is_ok()
     );
 }
+
+#[test]
+fn shared_construction_edit_is_atomic_lists_users_and_retains_instance_overrides() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition, WallChange, WallConstructionEdit},
+    };
+    let (document, layers) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let actor = || Actor::local(Channel::Ui);
+    let value = LayeredWallTypeDefinition {
+        layers,
+        height: length(2700.),
+        reference: WallLayerReference::Center,
+    };
+    let (ty, p) = model::prepare_layered_wall_type(&session, 0, actor(), "Shared", &value).unwrap();
+    session.commit(p).unwrap();
+    let first = wall_request(ty);
+    let mut second = wall_request(ty);
+    second.wall.height = Some(length(2800.));
+    for request in [&first, &second] {
+        let p = model::prepare_wall_change(
+            &session,
+            session.revision(),
+            actor(),
+            &[],
+            &WallChange::Create(request),
+        )
+        .unwrap();
+        session.commit(p.prepared).unwrap();
+    }
+    let users = model::wall_construction_users(session.document(), ty).unwrap();
+    assert_eq!(users.len(), 2);
+    assert!(users.iter().any(|u| u.body == first.body));
+    assert!(users.iter().any(|u| u.body == second.body));
+    let before = session.document().clone();
+    let mut edited = value.clone();
+    if let WallLayerKind::Solid { thickness, .. } = &mut edited.layers.layers[1].construction {
+        *thickness = length(100.);
+    }
+    edited.height = length(3000.);
+    let change = WallConstructionEdit {
+        id: ty,
+        name: "Shared revised".into(),
+        value: edited,
+    };
+    let prepare = |session: &Session| {
+        model::prepare_wall_construction_change(
+            session,
+            session.revision(),
+            actor(),
+            &[],
+            &WallChange::Edit {
+                feature: first.feature,
+                wall: &first.wall,
+            },
+            Some(&change),
+        )
+        .unwrap()
+    };
+    let preview = prepare(&session);
+    assert_eq!(session.document(), &before);
+    for (wall, expected_height) in [(&first.wall, 3000.), (&second.wall, 2800.)] {
+        let resolved = model::resolve_wall(
+            preview.prepared.document(),
+            preview.prepared.parameters(),
+            wall,
+        )
+        .unwrap();
+        assert_eq!(resolved.thickness_mm, 372.5);
+        assert_eq!(resolved.height_mm, expected_height);
+    }
+    drop(preview);
+    assert_eq!(
+        session.document(),
+        &before,
+        "Cancel must not alter the shared type"
+    );
+    session.commit(prepare(&session).prepared).unwrap();
+    let after = session.document().clone();
+    assert_eq!(session.document().get(ty).unwrap().name, "Shared revised");
+    assert_eq!(
+        model::wall_construction_users(session.document(), ty).unwrap(),
+        users
+    );
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &before);
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &after);
+}
+
+#[test]
+fn removed_shared_boundary_can_be_repaired_atomically_but_other_walls_must_remain_valid() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition, WallChange, WallConstructionEdit},
+    };
+    let (document, layers) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let actor = || Actor::local(Channel::Mcp);
+    let removed = layers.layers[1].id;
+    let value = LayeredWallTypeDefinition {
+        layers,
+        height: length(2700.),
+        reference: WallLayerReference::Center,
+    };
+    let (ty, p) =
+        model::prepare_layered_wall_type(&session, 0, actor(), "Referenced", &value).unwrap();
+    session.commit(p).unwrap();
+    let mut first = wall_request(ty);
+    first.wall.layer_placement.as_mut().unwrap().reference = Some(WallLayerReference::Boundary {
+        layer: removed,
+        side: WallLayerSide::Outside,
+    });
+    let mut second = wall_request(ty);
+    second.wall.layer_placement = first.wall.layer_placement.clone();
+    for request in [&first, &second] {
+        let p = model::prepare_wall_change(
+            &session,
+            session.revision(),
+            actor(),
+            &[],
+            &WallChange::Create(request),
+        )
+        .unwrap();
+        session.commit(p.prepared).unwrap();
+    }
+    let before = session.document().clone();
+    let mut revised = value;
+    revised.layers.layers.remove(1);
+    let edit = WallConstructionEdit {
+        id: ty,
+        name: "Repaired".into(),
+        value: revised,
+    };
+    let mut repaired = first.wall.clone();
+    repaired.layer_placement.as_mut().unwrap().reference = None;
+    let attempt = |session: &Session| {
+        model::prepare_wall_construction_change(
+            session,
+            session.revision(),
+            actor(),
+            &[],
+            &WallChange::Edit {
+                feature: first.feature,
+                wall: &repaired,
+            },
+            Some(&edit),
+        )
+    };
+    assert!(
+        attempt(&session).is_err(),
+        "the other wall still refers to the removed boundary"
+    );
+    assert_eq!(session.document(), &before);
+    let mut second_repaired = second.wall.clone();
+    second_repaired.layer_placement.as_mut().unwrap().reference = None;
+    let p = model::prepare_wall_edit(
+        &session,
+        session.revision(),
+        actor(),
+        second.feature,
+        &second_repaired,
+    )
+    .unwrap();
+    session.commit(p.prepared).unwrap();
+    let p = attempt(&session).unwrap();
+    assert_eq!(p.prepared.actor().channel, Channel::Mcp);
+    session.commit(p.prepared).unwrap();
+    let saved = model::read_wall(session.document(), first.feature).unwrap();
+    assert_eq!(saved.layer_placement.unwrap().reference, None);
+    assert!(model::read_wall_construction(session.document(), ty).is_ok());
+}
