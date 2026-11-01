@@ -308,8 +308,7 @@ fn explicit_cabinet_bad_sizes_collisions_keys_and_support_levels_are_source_neut
             actor(),
             &CarcassRequest::new("Invalid", d),
         )
-        .err()
-        .expect("invalid cabinet refused");
+        .expect_err("invalid cabinet refused");
         assert!(error.to_string().contains(message), "{error}");
         assert_eq!(f.s.document(), &original);
     }
@@ -550,8 +549,7 @@ fn cabinet_connections_follow_parameters_levels_joinery_and_user_owned_dependenc
     remove.cabinet.as_mut().unwrap().shelves.remove(1);
     let snapshot = f.s.document().clone();
     let error = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &remove)
-        .err()
-        .expect("user machining blocks panel removal");
+        .expect_err("user machining blocks panel removal");
     assert!(error.to_string().contains("User cable hole"), "{error}");
     assert_eq!(f.s.document(), &snapshot);
     let deleted = model::prepare_machining_delete(&f.s, f.s.revision(), actor(), user_id).unwrap();
@@ -608,15 +606,13 @@ fn cabinet_receiving_cut_collisions_are_refused_before_apply_and_after_parameter
     };
     spec.inset = length(37.);
     let error = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &invalid)
-        .err()
-        .expect("dowel and pin collision refused");
+        .expect_err("dowel and pin collision refused");
     assert!(error.to_string().contains("receiving cuts"), "{error}");
     assert_eq!(f.s.document(), &original);
     invalid.width = length(70.);
     invalid.cabinet.as_mut().unwrap().shelves.clear();
     let error = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &invalid)
-        .err()
-        .expect("opposed blind depths refused");
+        .expect_err("opposed blind depths refused");
     assert!(error.to_string().contains("overlap"), "{error}");
     let mut parameter = f.s.document().get(f.width).unwrap().clone();
     let EntityData::Parameter { expression, .. } = &mut parameter.data else {

@@ -232,26 +232,33 @@ fn paired_dowels_are_exact_circular_holes_with_matching_records_and_persistence(
 fn paired_dowels_refuse_edge_breakout_bad_depths_and_overlapping_holes_without_mutation() {
     let f = fixture();
     let source = f.s.document().clone();
-    let mut invalid = vec![];
-    let mut s = DowelSpec::default();
-    s.diameter = length(17.);
-    invalid.push(s);
-    let mut s = DowelSpec::default();
-    s.face_depth = length(17.);
-    invalid.push(s);
-    let mut s = DowelSpec::default();
-    s.edge_depth = length(1000.);
-    invalid.push(s);
-    let mut s = DowelSpec::default();
-    s.offset = length(10.);
-    invalid.push(s);
-    let mut s = DowelSpec::default();
-    s.count = 32;
-    s.inset = length(190.);
-    invalid.push(s);
-    let mut s = DowelSpec::default();
-    s.fit = length(-0.1);
-    invalid.push(s);
+    let invalid = [
+        DowelSpec {
+            diameter: length(17.),
+            ..Default::default()
+        },
+        DowelSpec {
+            face_depth: length(17.),
+            ..Default::default()
+        },
+        DowelSpec {
+            edge_depth: length(1000.),
+            ..Default::default()
+        },
+        DowelSpec {
+            offset: length(10.),
+            ..Default::default()
+        },
+        DowelSpec {
+            count: 32,
+            inset: length(190.),
+            ..Default::default()
+        },
+        DowelSpec {
+            fit: length(-0.1),
+            ..Default::default()
+        },
+    ];
     for spec in invalid {
         let mut definition = joint(&f, domino());
         definition.kind = PanelJointKind::Dowels(Box::new(spec));
