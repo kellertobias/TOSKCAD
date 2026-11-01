@@ -452,3 +452,23 @@ fn integral_pitch_roundoff_does_not_create_a_microscopic_extra_bay() {
     assert_eq!(layout.posts[1].position_mm[0], 6000.000000000001);
     near(layout.bays[2].center_spacing_mm, 2000.);
 }
+
+#[test]
+fn post_queries_support_explicit_span_repair_without_claiming_a_complete_infill_layout() {
+    let (document, mut construction, path) = fixture(&[[0., 0.], [4500., 0.]], false);
+    construction.infills[0].construction = FenceInfillKind::Panel {
+        thickness: length(18.),
+        width: FencePanelWidth::Purchased {
+            width: length(1910.),
+            short_bay: FenceShortPanelPolicy::Reject,
+        },
+    };
+    let parameters = multicad_core::parameters::evaluate(&document).unwrap();
+    let posts = plan_fence_posts(&document, &parameters, &construction, &path, &[]).unwrap();
+    assert_eq!(posts.posts.len(), 4);
+    assert_eq!(posts.bays[2].clear_width_mm, 410.);
+    assert!(plan_fence(&document, &parameters, &construction, &path, &[]).is_err());
+    let mut duplicate = path;
+    duplicate.vertices[1].id = duplicate.vertices[0].id;
+    assert!(plan_fence_posts(&document, &parameters, &construction, &duplicate, &[]).is_err());
+}

@@ -9,6 +9,7 @@
 use super::{TerminationViewport, dimension::DimensionField, value_entry::format_number};
 use crate::egui;
 use multicad_core::{
+    commands::{PreparationSnapshot, Session},
     constraint_sketch::Dimension,
     document::{Document, EntityId},
     model::{self, length},
@@ -21,7 +22,15 @@ use multicad_core::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OutlineKind {
     WallPath,
+    FencePath,
     SlabOutline,
+}
+fn corner_limit(kind: OutlineKind) -> usize {
+    match kind {
+        OutlineKind::WallPath => model::MAX_WALL_POINTS,
+        OutlineKind::FencePath => model::MAX_FENCE_PATH_POINTS,
+        OutlineKind::SlabOutline => model::MAX_SLAB_POINTS,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +84,7 @@ pub(super) struct OutlineIssue {
 #[derive(Clone)]
 struct Snapshot {
     corners: Vec<[DimensionField; 2]>,
+    ids: Vec<EntityId>,
     closed: bool,
 }
 
@@ -142,10 +152,17 @@ fn segment_count(n: usize, closed: bool) -> usize {
 pub(super) fn diagnose(points: &[[f64; 2]], closed: bool, kind: OutlineKind) -> Vec<OutlineIssue> {
     let mut issues = vec![];
     let n = points.len();
+    if n > corner_limit(kind) {
+        return vec![OutlineIssue {
+            message: format!("This path supports at most {} corners", corner_limit(kind)),
+            at: None,
+            segments: Vec::new(),
+        }];
+    }
     let needed = match kind {
         OutlineKind::SlabOutline => 3,
-        OutlineKind::WallPath if closed => 3,
-        OutlineKind::WallPath => 2,
+        OutlineKind::WallPath | OutlineKind::FencePath if closed => 3,
+        OutlineKind::WallPath | OutlineKind::FencePath => 2,
     };
     if n < needed {
         issues.push(OutlineIssue {
@@ -155,6 +172,7 @@ pub(super) fn diagnose(points: &[[f64; 2]], closed: bool, kind: OutlineKind) -> 
                     OutlineKind::SlabOutline => "A slab outline",
                     OutlineKind::WallPath if closed => "A closed room",
                     OutlineKind::WallPath => "A wall path",
+                    OutlineKind::FencePath => "A fence run",
                 },
                 needed - n
             ),
@@ -274,6 +292,8 @@ pub(super) fn plan_targets(document: &Document, exclude: Option<EntityId>) -> Ve
 pub(super) struct OutlineEditor {
     kind: OutlineKind,
     corners: Vec<[DimensionField; 2]>,
+    ids: Vec<EntityId>,
+    source: Option<PreparationSnapshot>,
     closed: bool,
     mode: Mode,
     /// The corners before the current draw or move, restored by Cancel.
@@ -294,6 +314,12 @@ pub(super) struct OutlineEditor {
 
 impl OutlineEditor {
     pub fn new(kind: OutlineKind, points: &[[Dimension; 2]], closed: bool) -> Result<Self, String> {
+        if points.len() > corner_limit(kind) {
+            return Err(format!(
+                "This path supports at most {} corners",
+                corner_limit(kind)
+            ));
+        }
         let corners = points
             .iter()
             .map(|[x, y]| {
@@ -306,6 +332,8 @@ impl OutlineEditor {
         Ok(Self {
             kind,
             corners,
+            ids: (0..points.len()).map(|_| EntityId::new()).collect(),
+            source: None,
             closed: closed || kind == OutlineKind::SlabOutline,
             mode: Mode::Idle,
             before: None,
@@ -332,6 +360,33 @@ impl OutlineEditor {
     }
     pub fn closed(&self) -> bool {
         self.closed
+    }
+    pub fn vertex_ids(&self) -> &[EntityId] {
+        &self.ids
+    }
+    pub fn set_vertex_ids(&mut self, ids: &[EntityId]) -> Result<(), String> {
+        if ids.len() != self.corners.len()
+            || ids.iter().any(EntityId::is_nil)
+            || ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != ids.len()
+        {
+            return Err("Path vertices need distinct identities matching their corners".into());
+        }
+        self.ids = ids.to_vec();
+        Ok(())
+    }
+    pub fn sync_source(&mut self, session: &Session) {
+        if self
+            .source
+            .as_ref()
+            .is_none_or(|s| s.session().stamp() != session.stamp())
+        {
+            self.source = Some(session.preparation_snapshot());
+        }
     }
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -365,6 +420,13 @@ impl OutlineEditor {
     }
     /// Corner positions in millimeters, with expressions evaluated.
     pub fn positions(&self, document: &Document) -> Result<Vec<[f64; 2]>, String> {
+        if let Some(source) = self
+            .source
+            .as_ref()
+            .filter(|s| std::ptr::eq(s.session().document(), document))
+        {
+            return self.positions_with(document, source.session().parameters());
+        }
         let parameters =
             multicad_core::parameters::evaluate(document).map_err(|e| e.to_string())?;
         self.positions_with(document, &parameters)
@@ -397,6 +459,7 @@ impl OutlineEditor {
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             corners: self.corners.clone(),
+            ids: self.ids.clone(),
             closed: self.closed,
         }
     }
@@ -406,7 +469,15 @@ impl OutlineEditor {
     }
     /// Replace every corner with literal millimeters.
     pub fn set_points(&mut self, points: &[[f64; 2]], closed: bool) {
+        if points.len() > corner_limit(self.kind) {
+            self.message = Some(format!(
+                "This path supports at most {} corners",
+                corner_limit(self.kind)
+            ));
+            return;
+        }
         self.corners = points.iter().map(|p| [mm(p[0]), mm(p[1])]).collect();
+        self.ids = (0..points.len()).map(|_| EntityId::new()).collect();
         self.closed = closed || self.kind == OutlineKind::SlabOutline;
         self.selected = None;
     }
@@ -419,6 +490,7 @@ impl OutlineEditor {
     ) -> Result<(), String> {
         let replaced = Self::new(self.kind, points, closed)?;
         self.corners = replaced.corners;
+        self.ids = replaced.ids;
         self.closed = replaced.closed;
         self.selected = None;
         Ok(())
@@ -432,6 +504,7 @@ impl OutlineEditor {
     pub fn start_drawing(&mut self) {
         self.before = Some(self.snapshot());
         self.corners.clear();
+        self.ids.clear();
         self.closed = false;
         self.selected = None;
         self.mode = Mode::Drawing;
@@ -454,6 +527,7 @@ impl OutlineEditor {
         match self.before.take() {
             Some(snapshot) => {
                 self.corners = snapshot.corners;
+                self.ids = snapshot.ids;
                 self.closed = snapshot.closed;
                 true
             }
@@ -570,7 +644,15 @@ impl OutlineEditor {
                 {
                     return false;
                 }
+                if self.corners.len() >= corner_limit(self.kind) {
+                    self.message = Some(format!(
+                        "This path supports at most {} corners",
+                        corner_limit(self.kind)
+                    ));
+                    return false;
+                }
                 self.corners.push([mm(0.), mm(0.)]);
+                self.ids.push(EntityId::new());
                 let last = self.corners.len() - 1;
                 self.set_corner(last, snapped.point);
                 true
@@ -682,24 +764,40 @@ impl OutlineEditor {
             return Err("Segment length must be positive".into());
         }
         let (s, c) = angle_deg.to_radians().sin_cos();
+        if self.corners.len() >= corner_limit(self.kind) {
+            return Err(format!(
+                "This path supports at most {} corners",
+                corner_limit(self.kind)
+            ));
+        }
         self.corners.push([mm(0.), mm(0.)]);
+        self.ids.push(EntityId::new());
         let i = self.corners.len() - 1;
         self.set_corner(i, [last[0] + c * distance, last[1] + s * distance]);
         Ok(())
     }
     pub fn insert_midpoint(&mut self, segment: usize, points: &[[f64; 2]]) {
+        if self.corners.len() >= corner_limit(self.kind) {
+            self.message = Some(format!(
+                "This path supports at most {} corners",
+                corner_limit(self.kind)
+            ));
+            return;
+        }
         let n = points.len();
         if segment >= segment_count(n, self.closed) {
             return;
         }
         let (a, b) = (points[segment], points[(segment + 1) % n]);
         self.corners.insert(segment + 1, [mm(0.), mm(0.)]);
+        self.ids.insert(segment + 1, EntityId::new());
         self.set_corner(segment + 1, [(a[0] + b[0]) / 2., (a[1] + b[1]) / 2.]);
         self.selected = Some(Selection::Corner(segment + 1));
     }
     pub fn remove_corner(&mut self, index: usize) {
         if index < self.corners.len() {
             self.corners.remove(index);
+            self.ids.remove(index);
             self.selected = None;
         }
     }
@@ -708,6 +806,7 @@ impl OutlineEditor {
         let points = text
             .lines()
             .filter(|l| !l.trim().is_empty())
+            .take(corner_limit(self.kind) + 1)
             .enumerate()
             .map(|(i, line)| {
                 let values: Vec<f64> = line
@@ -721,6 +820,12 @@ impl OutlineEditor {
                 }
             })
             .collect::<Result<Vec<_>, String>>()?;
+        if points.len() > corner_limit(self.kind) {
+            return Err(format!(
+                "This path supports at most {} corners",
+                corner_limit(self.kind)
+            ));
+        }
         self.set_points(&points, self.closed);
         Ok(())
     }
@@ -731,6 +836,7 @@ impl OutlineEditor {
         let points = self.positions(document).unwrap_or_default();
         ui.label(match self.kind {
             OutlineKind::WallPath => "Wall path",
+            OutlineKind::FencePath => "Fence path",
             OutlineKind::SlabOutline => "Slab outline",
         });
         ui.horizontal_wrapped(|ui| match self.mode {
@@ -947,8 +1053,17 @@ impl OutlineEditor {
                 }
             });
         }
-        if self.kind == OutlineKind::WallPath {
-            changed |= ui.checkbox(&mut self.closed, "Close into a room").changed();
+        if self.kind != OutlineKind::SlabOutline {
+            changed |= ui
+                .checkbox(
+                    &mut self.closed,
+                    if self.kind == OutlineKind::FencePath {
+                        "Closed fence run"
+                    } else {
+                        "Close into a room"
+                    },
+                )
+                .changed();
         }
         for issue in self.issues(document) {
             ui.colored_label(egui::Color32::LIGHT_RED, format!("⚠ {}", issue.message));
@@ -1429,5 +1544,104 @@ mod tests {
         .drop_without_applying_deltas();
         assert!(!editor.capturing() && editor.closed());
         assert_eq!(editor.positions(&document).unwrap(), ROOM.to_vec());
+    }
+
+    #[test]
+    fn fence_corner_identity_survives_moves_insertions_and_redraw_cancellation() {
+        let document = Document::new("Fence corners").unwrap();
+        let mut editor = OutlineEditor::from_mm(
+            OutlineKind::FencePath,
+            &[[0., 0.], [4000., 0.], [4000., 3000.]],
+            false,
+        );
+        let ids = editor.vertex_ids().to_vec();
+        editor.set_corner(1, [4500., 0.]);
+        assert_eq!(editor.vertex_ids(), ids);
+        let points = editor.positions(&document).unwrap();
+        editor.insert_midpoint(0, &points);
+        assert_eq!(editor.vertex_ids()[0], ids[0]);
+        assert_eq!(editor.vertex_ids()[2], ids[1]);
+        assert_eq!(editor.vertex_ids()[3], ids[2]);
+        assert!(!ids.contains(&editor.vertex_ids()[1]));
+        let inserted = editor.vertex_ids()[1];
+        editor.remove_corner(1);
+        assert_eq!(editor.vertex_ids(), ids);
+        assert!(!editor.vertex_ids().contains(&inserted));
+        let before = editor.dimensions(&document).unwrap();
+        editor.start_drawing();
+        editor.click([100., 100.], &[], &[], 25.);
+        assert!(editor.cancel());
+        assert_eq!(editor.vertex_ids(), ids);
+        assert_eq!(editor.dimensions(&document).unwrap(), before);
+        editor.set_points(&[[0., 0.], [5000., 0.]], false);
+        assert!(editor.vertex_ids().iter().all(|id| !ids.contains(id)));
+    }
+
+    #[test]
+    fn oversize_paste_is_bounded_and_preserves_the_previous_fence_path() {
+        let document = Document::new("Bounded fence path").unwrap();
+        let mut editor =
+            OutlineEditor::from_mm(OutlineKind::FencePath, &[[0., 0.], [4000., 0.]], false);
+        let before = editor.dimensions(&document).unwrap();
+        let ids = editor.vertex_ids().to_vec();
+        let text = (0..model::MAX_FENCE_PATH_POINTS + 100)
+            .map(|i| format!("{}, 0", i * 100))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(editor.paste_points(&text).is_err());
+        assert_eq!(editor.dimensions(&document).unwrap(), before);
+        assert_eq!(editor.vertex_ids(), ids);
+        let points = vec![[0., 0.]; model::MAX_FENCE_PATH_POINTS + 1];
+        assert_eq!(diagnose(&points, false, OutlineKind::FencePath).len(), 1);
+    }
+
+    #[test]
+    fn captured_parameters_never_apply_to_a_foreign_document_with_the_same_identity() {
+        use multicad_core::{
+            commands::Session,
+            document::{Entity, EntityData, Mutation},
+            parameters::BoundExpression,
+        };
+        let parameter = Entity::new(
+            "span",
+            EntityData::Parameter {
+                expression: "4000".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        let document = Document::new("Source epochs")
+            .unwrap()
+            .edited(&[Mutation::Insert(parameter.clone())])
+            .unwrap();
+        let first = Session::new(document).unwrap();
+        let dimension = Dimension::Expression {
+            expression: BoundExpression::bind(first.document(), "=$span", "mm", None).unwrap(),
+        };
+        let mut editor = OutlineEditor::new(
+            OutlineKind::FencePath,
+            &[[length(0.), length(0.)], [dimension, length(0.)]],
+            false,
+        )
+        .unwrap();
+        editor.sync_source(&first);
+        assert_eq!(editor.positions(first.document()).unwrap()[1][0], 4000.);
+        let mut changed = parameter;
+        if let EntityData::Parameter { expression, .. } = &mut changed.data {
+            *expression = "5000".into();
+        }
+        let second = Session::new(
+            first
+                .document()
+                .edited(&[Mutation::Replace(changed)])
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first.document().id(), second.document().id());
+        assert_eq!(first.revision(), second.revision());
+        assert_eq!(editor.positions(second.document()).unwrap()[1][0], 5000.);
+        editor.sync_source(&second);
+        assert_eq!(editor.positions(second.document()).unwrap()[1][0], 5000.);
     }
 }

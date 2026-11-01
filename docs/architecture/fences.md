@@ -1,9 +1,9 @@
 # Fence constructions and runs
 
 Fences use one canonical construction, a placed path and named independent
-member Parts. The core source API and native evaluator implement these records.
-Graphical authoring, fence MCP tools and cross-project Library integration are
-still pending. The source lives in
+member Parts. The native editor, core source API and native evaluator share
+these records. Fence MCP tools and cross-project Library integration are still
+pending. The source lives in
 [core/model/fence](../../crates/multicad-core/src/model/fence/mod.rs); the exact
 provider is [model/fences.rs](../../crates/multicad-model/src/fences.rs).
 
@@ -121,8 +121,25 @@ history, TCD compatibility and transaction bounds.
 [Native tests](../../crates/multicad-model/tests/fences.rs) measure real Parts,
 gaps, materials, rotated/closed layouts, STEP readback and cache failure cases.
 
-The graphical construction editor, viewport placement/edit controls and fence
-MCP adapters remain to be implemented. Representative linked plan/elevation and
+The Architecture Fence command opens a representative-bay construction editor
+and run form. Selecting a post or infill band synchronizes the dimension/material
+fields. Saved constructions are read-only until an explicit shared edit; the form
+lists affected runs and can duplicate the draft as a separate construction.
+Subsequent drawn runs reuse the selected saved construction.
+
+Viewport placement shares the bounded wall/slab outline interaction and snapping.
+Retained corners keep local IDs through moves; redraw cancellation restores the
+previous identities. The form shows actual bay widths, level/base placement,
+post-height/spacing overrides and explicit interior-post positions. A distinct
+post-plan query keeps automatic positioning choices available when infill cannot
+fit; it does not establish a complete layout or native geometry. Apply requires
+the current candidate's successful exact native preview.
+
+Component tests exercise painted recipe selection, shared/duplicate controls,
+viewport path clicks, native Preview/Cancel/Apply, history and TCD reopen. These
+checks do not establish actual macOS window interaction.
+
+Fence MCP adapters remain to be implemented. Representative linked plan/elevation and
 PDF/DXF verification remain pending. The existing ordinary Part drawing/material
 path is the intended publication path, without separate manually authored
 geometry. Project-authored path/context symbol materialization and pinned Library

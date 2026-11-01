@@ -506,6 +506,7 @@ impl Default for Registry {
                                         | ModelingTool::MechanicalPart
                                         | ModelingTool::Boolean
                                         | ModelingTool::Wall
+                                        | ModelingTool::Fence
                                         | ModelingTool::Door
                                         | ModelingTool::Window
                                         | ModelingTool::Cutout
@@ -535,6 +536,7 @@ impl Default for Registry {
                         "Architecture",
                         &[
                             "wall",
+                            "fence",
                             "door",
                             "window-tool",
                             "vertical-cutout",
@@ -1023,6 +1025,7 @@ mod tests {
                         | ModelingTool::MechanicalPart
                         | ModelingTool::Boolean
                         | ModelingTool::Wall
+                        | ModelingTool::Fence
                         | ModelingTool::Door
                         | ModelingTool::Window
                         | ModelingTool::Cutout
@@ -1057,6 +1060,7 @@ mod tests {
             if matches!(
                 tool,
                 ModelingTool::Wall
+                    | ModelingTool::Fence
                     | ModelingTool::Door
                     | ModelingTool::Window
                     | ModelingTool::Cutout

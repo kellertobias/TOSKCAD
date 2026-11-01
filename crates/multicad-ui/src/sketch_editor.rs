@@ -671,6 +671,9 @@ impl SketchEditor {
             return None;
         }
         let id = *self.tree_selection.first()?;
+        if let Some(run) = crate::modeling::fence_target(document, id) {
+            return Some((run, true));
+        }
         match &document.get(id)?.data {
             EntityData::Feature { .. } => Some((id, false)),
             EntityData::Instance {
@@ -732,7 +735,7 @@ impl SketchEditor {
     ) -> bool {
         self.primitive_ready()
             && !self.editing
-            && multicad_core::symbols::owned_entities(session.document())
+            && multicad_core::symbols::owned_entities_in_session(session)
                 .is_ok_and(|ids| !ids.contains(&feature))
             && (crate::modeling::ModelToolController::editable(session.document(), feature)
                 || crate::transfer::TransferController::editable(session.document(), feature))
@@ -1126,6 +1129,21 @@ impl SketchEditor {
             .begin_thread(session, resources, scene.as_deref(), &selected, channel)?;
         self.message =
             "Thread · configure its profile, representation and axis, then Preview".into();
+        Ok(())
+    }
+    pub fn begin_fence(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Apply or cancel pending edits before drawing a fence".into());
+        }
+        self.finish()?;
+        self.model.begin_fence(session, resources, channel)?;
+        self.message =
+            "Fence · choose a construction, draw its run in the viewport, then Preview".into();
         Ok(())
     }
     pub fn begin_wall(

@@ -211,6 +211,7 @@ impl WallPanel {
         Ok(())
     }
     pub fn sync_source(&mut self, session: &Session) {
+        self.outline.sync_source(session);
         self.junction_editor.sync_source(session, self.feature);
         if self
             .source

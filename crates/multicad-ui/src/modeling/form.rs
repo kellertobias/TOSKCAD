@@ -8,6 +8,7 @@ use super::{
     cabinet::{CabinetCommand, CabinetPanel},
     edge_treatment::EdgeTreatmentPanel,
     fdm_aid::{FdmAidCommand, FdmAidPanel},
+    fence::FencePanel,
     gear::{GearPairCommand, GearPanel},
     group_edit::GroupEditPanel,
     joint::{JointCommand, JointPanel},
@@ -57,6 +58,7 @@ pub enum ModelRequest {
     Advanced(Box<super::AdvancedCommand>),
     Alignment(Box<super::AlignmentCommand>),
     Wall(Box<WallCommand>),
+    Fence(Box<model::FenceChange>),
     Opening(Box<OpeningCommand>),
     Architecture(Box<ArchitectureCommand>),
     Cabinet(Box<CabinetCommand>),
@@ -78,6 +80,9 @@ impl ModelRequest {
         feature: multicad_core::document::EntityId,
     ) -> Result<ModelPrepared, String> {
         match self {
+            Self::Fence(_) => {
+                return Err("Reopen the complete fence run to edit generated members".into());
+            }
             Self::GearPair(_) => {
                 return Err(
                     "Reopen the complete gear pair editor to edit its source transaction".into(),
@@ -254,6 +259,11 @@ impl ModelRequest {
                 }
                 return command.prepare(session, actor);
             }
+            Self::Fence(change) => {
+                return model::prepare_fence_change(session, session.revision(), actor, change)
+                    .map(|p| p.model)
+                    .map_err(|e| e.to_string());
+            }
             Self::Opening(command) => return command.prepare(session, actor),
             Self::Architecture(command) => {
                 if command.edit_id().is_some() {
@@ -406,6 +416,7 @@ pub(super) enum ModelForm {
     Advanced(Box<AdvancedPanel>),
     Alignment(Box<AlignmentPanel>),
     Wall(Box<WallPanel>),
+    Fence(Box<FencePanel>),
     Opening(Box<OpeningPanel>),
     Architecture(Box<ArchitecturePanel>),
     Cabinet(Box<CabinetPanel>),
@@ -436,6 +447,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.stamp(),
             Self::Alignment(panel) => panel.stamp(),
             Self::Wall(panel) => panel.stamp(),
+            Self::Fence(panel) => panel.stamp(),
             Self::Opening(panel) => panel.stamp(),
             Self::Architecture(panel) => panel.stamp(),
             Self::Cabinet(panel) => panel.stamp(),
@@ -466,6 +478,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.label(),
             Self::Alignment(_) => "Referenced alignment",
             Self::Wall(panel) => panel.label(),
+            Self::Fence(panel) => panel.label(),
             Self::Opening(panel) => panel.label(),
             Self::Architecture(panel) => panel.label(),
             Self::Cabinet(panel) => panel.label(),
@@ -493,6 +506,9 @@ impl ModelForm {
             Self::Alignment(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Alignment(Box::new(command))),
+            Self::Fence(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Fence(Box::new(command))),
             Self::Wall(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Wall(Box::new(command))),
@@ -606,6 +622,7 @@ impl ModelForm {
             Self::Advanced(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Alignment(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Wall(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Fence(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Opening(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),

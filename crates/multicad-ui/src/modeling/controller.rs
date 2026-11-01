@@ -106,6 +106,7 @@ pub struct ModelToolController {
     scale_host_basis: Option<super::GizmoBasis>,
     operation: operation_interaction::OperationState,
     boolean_preset: Option<multicad_core::model::Operation>,
+    fence_type: Option<EntityId>,
 }
 pub enum ModelToolOutcome {
     Applied(Vec<CreatedBody>),
@@ -173,6 +174,16 @@ impl ModelToolController {
     }
     pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
         if !matches!(
+            document.get(feature).map(|e| &e.data),
+            Some(EntityData::Feature {
+                suppressed: true,
+                ..
+            })
+        ) && super::fence::FencePanel::target(document, feature).is_some()
+        {
+            return true;
+        }
+        if !matches!(
             document.get(feature).map(|entity| &entity.data),
             Some(
                 EntityData::Feature {
@@ -211,6 +222,16 @@ impl ModelToolController {
         if !Self::editable(document, feature) {
             return Err(
                 "Choose a supported, unsuppressed applied feature or owned placement driver".into(),
+            );
+        }
+        if let Some(run) = super::fence::FencePanel::target(document, feature) {
+            let panel = super::fence::FencePanel::existing(session, run)?;
+            self.fence_type = Some(panel.preferred_type());
+            return self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::Fence(Box::new(panel)),
             );
         }
         let cabinet_owner = model::read_panel_joint_cut(document, feature)
@@ -644,6 +665,22 @@ impl ModelToolController {
             )?)),
         )
     }
+    pub fn begin_fence(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Fence", "");
+        let panel = super::fence::FencePanel::new(session, name, self.fence_type)?;
+        self.fence_type = Some(panel.preferred_type());
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Fence(Box::new(panel)),
+        )
+    }
     pub fn begin_wall(
         &mut self,
         session: &Session,
@@ -761,7 +798,7 @@ impl ModelToolController {
     /// A wall or slab outline is shown and edited on the plan.
     pub fn outline_active(&self) -> bool {
         match &self.form {
-            Some(ModelForm::Wall(_)) => true,
+            Some(ModelForm::Wall(_) | ModelForm::Fence(_)) => true,
             Some(ModelForm::Architecture(panel)) => panel.outlines(),
             _ => false,
         }
@@ -773,7 +810,11 @@ impl ModelToolController {
     ) -> bool {
         let (document, revision) = (session.document(), session.revision());
         let changed = match self.form.as_mut() {
-            Some(ModelForm::Wall(panel)) => panel.viewport(document, revision, view),
+            Some(ModelForm::Wall(panel)) => {
+                panel.sync_source(session);
+                panel.viewport(document, revision, view)
+            }
+            Some(ModelForm::Fence(panel)) => panel.viewport(session, view),
             Some(ModelForm::Architecture(panel)) => panel.viewport(document, revision, view),
             _ => false,
         };
@@ -1783,6 +1824,10 @@ impl ModelToolController {
         if let Some(ModelForm::Wall(panel)) = self.form.as_mut() {
             panel.sync_source(session);
         }
+        if let Some(ModelForm::Fence(panel)) = self.form.as_mut() {
+            panel.sync_source(session);
+            self.fence_type = Some(panel.preferred_type());
+        }
         let event = self
             .form
             .as_mut()
@@ -1862,6 +1907,8 @@ mod chamfer_tests;
 #[cfg(test)]
 mod advanced_tests;
 
+#[cfg(test)]
+mod fence_tests;
 #[cfg(test)]
 mod gear_tests;
 #[cfg(test)]

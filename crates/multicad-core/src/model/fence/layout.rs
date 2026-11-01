@@ -146,6 +146,15 @@ pub struct FenceLayout {
     pub infills: Vec<FenceLayoutInfill>,
 }
 
+/// Source query for positioning posts and repairing bays before an infill can
+/// fit. This is deliberately distinct from a complete fence member layout.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FencePostPlan {
+    pub construction: ResolvedFenceConstruction,
+    pub posts: Vec<FenceLayoutPost>,
+    pub bays: Vec<FenceLayoutBay>,
+}
+
 #[derive(Clone, Copy)]
 struct Edge {
     start: [f64; 2],
@@ -203,13 +212,13 @@ fn edges_touch(a: Edge, b: Edge) -> bool {
 
 /// Produce a complete candidate layout or an error. This never edits source
 /// and does not certify native member solids or manufacturing joints.
-pub fn plan_fence(
+pub fn plan_fence_posts(
     document: &Document,
     parameters: &EvaluatedParameters,
     construction: &FenceConstruction,
     path: &FencePath,
     overrides: &[FencePostPosition],
-) -> Result<FenceLayout, DocumentError> {
+) -> Result<FencePostPlan, DocumentError> {
     path.validate()?;
     let construction = construction.resolve(document, parameters)?;
     let z = number(&path.base_z, Unit::Millimeter, parameters)?;
@@ -390,6 +399,26 @@ pub fn plan_fence(
             "An overridden fence post no longer exists on this directed path edge; explicitly repair or remove its override",
         ));
     }
+    Ok(FencePostPlan {
+        construction,
+        posts,
+        bays,
+    })
+}
+
+pub fn plan_fence(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    construction: &FenceConstruction,
+    path: &FencePath,
+    overrides: &[FencePostPosition],
+) -> Result<FenceLayout, DocumentError> {
+    let FencePostPlan {
+        construction,
+        posts,
+        bays,
+    } = plan_fence_posts(document, parameters, construction, path, overrides)?;
+    let z = posts[0].position_mm[2];
     let mut infills = Vec::new();
     for bay in &bays {
         for recipe in &construction.infills {

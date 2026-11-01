@@ -25,6 +25,7 @@ pub const SLAB_CAPABILITY: &str = "architecture.slab.1";
 /// that does not know holes refuses the file instead of building solid slabs.
 pub const SLAB_HOLE_CAPABILITY: &str = "architecture.slab_hole.1";
 pub const MAX_SLAB_HOLES: usize = 256;
+pub const MAX_SLAB_POINTS: usize = 256;
 pub const STAIR_TYPE: &str = "architecture.stair";
 pub const STAIR_CAPABILITY: &str = "architecture.stair.1";
 pub const ENVELOPE_KIND: &str = "architecture.envelope";
@@ -161,8 +162,10 @@ impl LevelDefinition {
 }
 impl SlabDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
-        if self.outline.len() < 3 || self.outline.len() > 256 {
-            return Err(invalid("A slab outline needs 3–256 points"));
+        if self.outline.len() < 3 || self.outline.len() > MAX_SLAB_POINTS {
+            return Err(invalid(format!(
+                "A slab outline needs 3–{MAX_SLAB_POINTS} points"
+            )));
         }
         if self.holes.len() > MAX_SLAB_HOLES {
             return Err(invalid(format!(

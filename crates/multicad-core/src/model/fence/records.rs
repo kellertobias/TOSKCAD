@@ -314,8 +314,17 @@ pub fn resolve_fence_run(
     parameters: &EvaluatedParameters,
     value: &FenceRunDefinition,
 ) -> Result<FenceLayout, DocumentError> {
+    let construction = read_fence_type(document, value.fence_type)?;
+    plan_fence_instance(document, parameters, &construction, value)
+}
+fn instance_source(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    construction: &FenceConstruction,
+    value: &FenceRunDefinition,
+) -> Result<(FenceConstruction, FencePath), DocumentError> {
     value.validate()?;
-    let mut construction = read_fence_type(document, value.fence_type)?;
+    let mut construction = construction.clone();
     if let Some(height) = &value.overrides.post_height {
         construction.height = height.clone();
     }
@@ -328,7 +337,35 @@ pub fn resolve_fence_run(
             + number(&path.base_z, Unit::Millimeter, parameters)?;
         path.base_z = length(base);
     }
+    Ok((construction, path))
+}
+
+/// The graphical draft and native saved run apply the same instance/context
+/// rules. A draft construction need not already be inserted in the document.
+pub fn plan_fence_instance(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    construction: &FenceConstruction,
+    value: &FenceRunDefinition,
+) -> Result<FenceLayout, DocumentError> {
+    let (construction, path) = instance_source(document, parameters, construction, value)?;
     plan_fence(
+        document,
+        parameters,
+        &construction,
+        &path,
+        &value.post_positions,
+    )
+}
+
+pub fn plan_fence_instance_posts(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    construction: &FenceConstruction,
+    value: &FenceRunDefinition,
+) -> Result<FencePostPlan, DocumentError> {
+    let (construction, path) = instance_source(document, parameters, construction, value)?;
+    plan_fence_posts(
         document,
         parameters,
         &construction,

@@ -15,6 +15,8 @@ mod equipment;
 mod extrude;
 mod extrude_operation;
 mod fdm_aid;
+mod fence;
+pub(crate) use fence::fence_target;
 mod form;
 mod gear;
 mod gizmo;
@@ -89,6 +91,7 @@ pub enum ModelingTool {
     Scale,
     EdgeTreatment,
     Wall,
+    Fence,
     Door,
     Window,
     Cutout,
@@ -109,13 +112,14 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 40] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
         Self::Gear,
         Self::MechanicalPart,
         Self::Wall,
+        Self::Fence,
         Self::Door,
         Self::Window,
         Self::Cutout,
@@ -173,6 +177,7 @@ impl ModelingTool {
             Self::Scale => "scale",
             Self::EdgeTreatment => "edge-treatment",
             Self::Wall => "wall",
+            Self::Fence => "fence",
             Self::Door => "door",
             Self::Window => "window-tool",
             Self::Cutout => "vertical-cutout",
@@ -218,6 +223,7 @@ impl ModelingTool {
             Self::Scale => "Scale",
             Self::EdgeTreatment => "Fillet / Chamfer",
             Self::Wall => "Wall",
+            Self::Fence => "Fence",
             Self::Door => "Door",
             Self::Window => "Window",
             Self::Cutout => "Vertical cutout",
@@ -263,6 +269,7 @@ impl ModelingTool {
             Self::Scale => crate::icons::Icon::Scale,
             Self::EdgeTreatment => crate::icons::Icon::Edge,
             Self::Wall => crate::icons::Icon::Box,
+            Self::Fence => crate::icons::Icon::Grid,
             Self::Door | Self::Window => crate::icons::Icon::Box,
             Self::Cutout => crate::icons::Icon::Cut,
             Self::Level => crate::icons::Icon::Edge,
@@ -304,6 +311,7 @@ impl ModelingTool {
             Self::Scale => &["scale-body", "resize-solid"],
             Self::EdgeTreatment => &["fillet", "chamfer", "edge"],
             Self::Wall => &["walls", "architectural-wall", "doors-windows"],
+            Self::Fence => &["draw-fence", "fence-posts", "pickets", "railing"],
             Self::Door => &["place-door", "wall-door"],
             Self::Window => &["place-window", "wall-window"],
             Self::Cutout => &["wall-cutout", "chase", "wall-chase"],
@@ -412,6 +420,9 @@ impl ModelingTool {
             Self::Sheet => {
                 "Usage: sheet (choose sheet stock, base size and edge flanges, hems or jogs, optionally override the inside radius and K-factor in the Inspector, then Preview and Apply)"
             }
+            Self::Fence => {
+                "Usage: fence (choose or define a post and infill construction, draw the run in the viewport, then Preview and Apply)"
+            }
             Self::Wall => {
                 "Usage: wall (choose or define a wall type, draw the path in the viewport or enter its corners, add doors/windows in the Inspector, then Preview and Apply)"
             }
@@ -506,6 +517,9 @@ impl ModelingTool {
             }
             Self::Sheet => {
                 "Requires native modeling, sheet stock defined in Model → Materials and no pending edits. Sketch-region bases and solid conversion are available through MCP."
+            }
+            Self::Fence => {
+                "Requires native modeling, project materials and no pending edits. Draw a flat open or closed run; Preview checks each post and infill member."
             }
             Self::Wall => {
                 "Requires native modeling and no pending edits. Wall and opening types are created with the wall or reused from the project."

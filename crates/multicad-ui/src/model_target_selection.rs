@@ -311,6 +311,9 @@ impl SketchEditor {
             self.message = "Gear · configure its profile and axis, then Preview".into();
             return Ok(());
         }
+        if tool == ModelingTool::Fence {
+            return self.begin_fence(session, resources, channel);
+        }
         if tool == ModelingTool::Wall {
             return self.begin_wall(session, resources, channel);
         }
