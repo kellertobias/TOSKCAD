@@ -102,5 +102,12 @@ test('native regression suites are read-only and gate publication on every platf
   assert.match(release,/uses: \.\/\.github\/workflows\/native-regression\.yml\n {4}with:\n {6}packaging_runs_full_workspace: true/);
   assert.match(regression,/packaging_runs_full_workspace:[\s\S]*?type: boolean\n {8}default: false/);
   assert.match(regression,/name: Complete workspace tests\n {8}if: \$\{\{ !inputs\.packaging_runs_full_workspace \}\}/);
-  assert.match(packaging,/run\('cargo',\['test','--workspace','--locked'\]/);
+  assert.match(packaging,/run\('cargo',\['test','--workspace','--profile','ci','--locked'\]/);
+  const cargo=readFileSync(new URL('../Cargo.toml',import.meta.url),'utf8');
+  const profile=cargo.split('[profile.ci]')[1]?.split(/\n\[/)[0];
+  assert(profile,'An optimized CI test profile must exist');
+  assert.match(profile,/inherits = "dev"/);
+  assert.match(profile,/opt-level = 2/);
+  assert.match(profile,/debug-assertions = true/);
+  assert.match(profile,/overflow-checks = true/);
 });

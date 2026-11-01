@@ -50,7 +50,7 @@ export async function buildPackage(version){
   const env={...process.env,MULTICAD_RELEASE_VERSION:version,MULTICAD_BUILD_COMMIT:commit};
   run(process.execPath,[join(root,'tools/foundation-deps.mjs')],{stdio:'inherit'});
   run('cargo',['fetch','--locked'],{stdio:'inherit'});
-  run('cargo',['test','--workspace','--locked'],{env,stdio:'inherit'});
+  run('cargo',['test','--workspace','--profile','ci','--locked'],{env,stdio:'inherit'});
   // Clean shipped workspace products; immutable target/compiler-aware native
   // cache and package-manager dependency caches remain reusable.
   run('cargo',['clean','--release','-p','multicad-app','-p','multicad-ui','-p','multicad-core','-p','multicad-kernel','-p','multicad-solver'],{stdio:'inherit'});
