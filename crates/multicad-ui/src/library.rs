@@ -245,6 +245,16 @@ impl PreviewTextures {
         size: egui::Vec2,
         alt: &str,
     ) {
+        let fitted = image.map_or(size, |image| {
+            let dimensions = egui::vec2(image.width() as f32, image.height() as f32);
+            dimensions * (size.x / dimensions.x).min(size.y / dimensions.y)
+        });
+        let (rect, response) = ui.allocate_exact_size(fitted, egui::Sense::hover());
+        // Scroll layout still needs the image's extent, but offscreen entries
+        // need neither a content hash, PNG decode nor GPU texture allocation.
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
         let texture = image.map(|image| {
             let ctx = ui.ctx().clone();
             self.textures
@@ -262,19 +272,13 @@ impl PreviewTextures {
         });
         match texture {
             Some(Ok(texture)) => {
-                let [w, h] = texture.size().map(|v| v as f32);
-                let scale = (size.x / w).min(size.y / h);
-                ui.add(
-                    egui::Image::new((texture.id(), egui::vec2(w * scale, h * scale)))
-                        .alt_text(alt),
-                );
+                ui.put(rect, egui::Image::new((texture.id(), fitted)).alt_text(alt));
             }
             other => {
                 let text = match other {
                     Some(Err(_)) => "Preview unavailable",
                     _ => "No preview image",
                 };
-                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
                 ui.painter()
                     .rect_filled(rect, 4, egui::Color32::from_rgb(36, 46, 60));
                 ui.painter().text(
@@ -296,6 +300,30 @@ impl PreviewTextures {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+    #[test]
+    fn offscreen_previews_keep_layout_without_decoding_and_load_when_visible() {
+        let image = PreviewImage::from_png(
+            include_bytes!("../../../assets/branding/app/AppIcon.png").as_slice(),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        let mut textures = PreviewTextures::default();
+        let mut cursors = vec![];
+        for visible in [false, true, true] {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                if !visible {
+                    ui.set_clip_rect(egui::Rect::NOTHING);
+                }
+                textures.show(ui, Some(&image), egui::vec2(64., 48.), "Preview");
+                cursors.push(ui.cursor());
+            });
+            output.drop_without_applying_deltas();
+            assert_eq!(textures.textures.len(), usize::from(visible));
+        }
+        assert_eq!(cursors[0], cursors[1]);
+        assert_eq!(cursors[1], cursors[2]);
+        assert!(textures.textures.values().all(Result::is_ok));
+    }
     struct Fake;
     impl LibraryStore for Fake {
         fn load(&mut self) -> Result<Vec<LibraryEntry>, String> {
