@@ -113,7 +113,7 @@ pub(crate) fn error(entity: Option<EntityId>, message: impl fmt::Display) -> Mod
 pub fn is_superseded(error: &ModelError) -> bool {
     error.message.ends_with("superseded")
 }
-fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ModelError> {
+pub(crate) fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ModelError> {
     if interrupt.is_some_and(|f| f()) {
         Err(error(None, "Model evaluation superseded"))
     } else {
@@ -233,8 +233,12 @@ pub struct Model {
     pub(crate) solids: BTreeMap<EntityId, Solid>,
     snapshot: ModelSnapshot,
     leaves: crate::assemblies::LeafStore,
+    gear_pair_checks: BTreeMap<EntityId, crate::GearPairCheck>,
 }
 impl Model {
+    pub fn gear_pair_checks(&self) -> &BTreeMap<EntityId, crate::GearPairCheck> {
+        &self.gear_pair_checks
+    }
     pub fn leaf_solid(&self, path: &model::OccurrencePath) -> Option<&Solid> {
         self.leaves.solids.get(path).or_else(|| {
             path.members
@@ -372,7 +376,7 @@ impl Compiler {
         revision: u64,
         roots: Option<Vec<EntityId>>,
         interrupt: Option<&dyn Fn() -> bool>,
-        cache: Option<&mut crate::EvaluationCache>,
+        mut cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
         checkpoint(interrupt)?;
         document.validate().map_err(|e| error(None, e))?;
@@ -383,6 +387,7 @@ impl Compiler {
         let context =
             SketchEvaluationContext::new(document, revision).map_err(|e| error(e.source, e))?;
         if roots.is_none() {
+            crate::gear_pairs::validate_parameters(document, context.parameters())?;
             for entity in model::carcasses(document) {
                 checkpoint(interrupt)?;
                 model::check_cabinet_connections(
@@ -474,7 +479,7 @@ impl Compiler {
                 }
             }
         }
-        let mut cached = cache.map(|cache| {
+        let mut cached = cache.as_deref_mut().map(|cache| {
             crate::eval_cache::Session::new(cache, self, document, context.parameters())
         });
         let mut profiles = Profiles {
@@ -1091,6 +1096,18 @@ impl Compiler {
             solids.insert(id, solid);
         }
         drop(cached);
+        let gear_pair_checks = if roots.is_none() {
+            crate::gear_pairs::validate(
+                document,
+                context.parameters(),
+                &solids,
+                self.policy,
+                interrupt,
+                cache.map(|c| &mut c.gear_pairs),
+            )?
+        } else {
+            BTreeMap::new()
+        };
         checkpoint(interrupt)?;
         let mut references = references::inspect(document, revision, &topologies);
         crate::external::complete_report(
@@ -1197,6 +1214,7 @@ impl Compiler {
             policy: self.policy,
             solids,
             leaves,
+            gear_pair_checks,
             snapshot: ModelSnapshot {
                 scope: roots.map_or(EvaluationScope::Full, EvaluationScope::Sources),
                 stamp,

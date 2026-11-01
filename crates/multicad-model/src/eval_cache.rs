@@ -146,6 +146,7 @@ pub struct EvaluationCache {
     retained_bytes: usize,
     max_entries: usize,
     last: CompileStats,
+    pub(crate) gear_pairs: crate::gear_pairs::PairValidationCache,
 }
 impl Default for EvaluationCache {
     fn default() -> Self {
@@ -160,6 +161,7 @@ impl EvaluationCache {
             retained_bytes,
             max_entries,
             last: CompileStats::default(),
+            gear_pairs: Default::default(),
         }
     }
     /// Statistics of the most recent cached compile (also when it failed or
@@ -178,6 +180,7 @@ impl EvaluationCache {
     }
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.gear_pairs.clear();
     }
     fn evict(&mut self) -> usize {
         let current = self.clock;
