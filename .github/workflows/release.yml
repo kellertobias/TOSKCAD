@@ -23,6 +23,8 @@ jobs:
   regression:
     name: Native regression suites
     uses: ./.github/workflows/native-regression.yml
+    with:
+      packaging_runs_full_workspace: true
 
   metadata:
     name: Select build/release version
@@ -85,7 +87,7 @@ jobs:
             timeout_minutes: 120
           - os: windows-2025
             target: windows-x64
-            timeout_minutes: 180
+            timeout_minutes: 240
     env:
       MULTICAD_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:

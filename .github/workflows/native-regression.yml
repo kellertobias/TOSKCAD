@@ -1,11 +1,16 @@
 name: Native regression suites
 
 # Read-only build/test evidence on three operating systems. No publication,
-# credentials, tags or tracked-file changes. Each suite is a named step so a
-# failure identifies the area (file recovery, cancellation, exporters, ...)
-# before the full workspace run; logs and headless budget reports are kept.
+# credentials, tags or tracked-file changes. Named suites identify failures in
+# file recovery, cancellation, exporters and other areas. Packaging separately
+# gates the complete workspace; logs and headless budget reports are kept.
 on:
   workflow_call:
+    inputs:
+      packaging_runs_full_workspace:
+        description: The caller separately gates every platform on the complete workspace suite
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -84,6 +89,7 @@ jobs:
           cargo test -p multicad-app --locked --no-fail-fast
           --test mcp --test cli --test shared_workflow
       - name: Complete workspace tests
+        if: ${{ !inputs.packaging_runs_full_workspace }}
         run: cargo test --workspace --locked --no-fail-fast
       - name: Headless budget smoke (dev profile, one run; not a performance result)
         if: success() || failure()

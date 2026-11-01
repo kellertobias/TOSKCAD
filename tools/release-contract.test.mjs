@@ -92,10 +92,15 @@ test('version and repository inputs cannot escape their intended scope',()=>{
 test('native regression suites are read-only and gate publication on every platform',()=>{
   const regression=readFileSync(new URL('../.github/workflows/native-regression.yml',import.meta.url),'utf8');
   const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  const packaging=readFileSync(new URL('./package-release.mjs',import.meta.url),'utf8');
   assert.match(regression,/^permissions:\n {2}contents: read$/m);
   assert.doesNotMatch(regression,/secrets\.|: *write|npm publish|semantic-release|git push|git tag/);
   for(const os of ['ubuntu-24\\.04','macos-15','windows-2025'])assert.match(regression,new RegExp(`- os: ${os}\\n`));
   for(const suite of ['--bin multicad files::','--test release_hardening','--test project_file','--test drawing_exports','--test control_desk','cargo test --workspace --locked --no-fail-fast'])assert(regression.includes(suite),suite);
   assert.match(release,/regression:\n {4}name: Native regression suites\n {4}uses: \.\/\.github\/workflows\/native-regression\.yml/);
   assert.match(release,/needs: \[metadata, quality, build, foundation, regression\]/);
+  assert.match(release,/uses: \.\/\.github\/workflows\/native-regression\.yml\n {4}with:\n {6}packaging_runs_full_workspace: true/);
+  assert.match(regression,/packaging_runs_full_workspace:[\s\S]*?type: boolean\n {8}default: false/);
+  assert.match(regression,/name: Complete workspace tests\n {8}if: \$\{\{ !inputs\.packaging_runs_full_workspace \}\}/);
+  assert.match(packaging,/run\('cargo',\['test','--workspace','--locked'\]/);
 });
