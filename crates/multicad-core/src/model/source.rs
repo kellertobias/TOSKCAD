@@ -697,6 +697,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::PRIMITIVE_TYPE => {
                     super::read_primitive(document, entity.id)?;
                 }
+                super::THREAD_TYPE => {
+                    super::read_thread(document, entity.id)?;
+                }
                 super::BOOLEAN_TYPE => {
                     super::read_boolean(document, entity.id)?;
                 }
@@ -738,6 +741,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                 if [
                     EXTRUDE_TYPE,
                     super::PRIMITIVE_TYPE,
+                    super::THREAD_TYPE,
                     super::REVOLVE_TYPE,
                     super::BOOLEAN_TYPE,
                     super::SPLIT_TYPE,
