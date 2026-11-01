@@ -335,3 +335,45 @@ pub fn read_thread(
     }
     Ok(source)
 }
+
+/// A cosmetic thread anywhere in a producer's input history remains display
+/// geometry. Manufacturing callers must refuse it until it is set to Modeled.
+pub fn cosmetic_thread_in_history(
+    document: &Document,
+    producer: EntityId,
+) -> Result<Option<EntityId>, DocumentError> {
+    let mut pending = vec![producer];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let entity = document
+            .get(id)
+            .ok_or_else(|| invalid("Thread export history has a missing dependency"))?;
+        if let EntityData::Feature { definition, .. } = &entity.data
+            && definition.type_id == THREAD_TYPE
+            && read_thread(document, id)?.parameters.representation
+                == ThreadRepresentation::CosmeticEnvelope
+        {
+            return Ok(Some(id));
+        }
+        pending.extend(document.evaluation_dependencies(id)?);
+    }
+    Ok(None)
+}
+
+pub fn has_cosmetic_threads(document: &Document) -> Result<bool, DocumentError> {
+    for entity in document.entities() {
+        if let EntityData::Feature { definition, .. } = &entity.data
+            && definition.type_id == THREAD_TYPE
+            && ThreadDefinition::from_definition(definition)?
+                .parameters
+                .representation
+                == ThreadRepresentation::CosmeticEnvelope
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}

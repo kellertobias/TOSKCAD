@@ -741,6 +741,11 @@ impl Compiler {
                 (model::SLAB_TYPE, 1) => {
                     crate::levels::build_slab(document, context.parameters(), id, self.policy)?
                 }
+                (model::THREAD_TYPE, model::THREAD_SCHEMA) => {
+                    let source =
+                        model::read_thread(document, id).map_err(|e| error(Some(id), e))?;
+                    crate::threads::build(id, &source, context.parameters(), &solids, self.policy)?
+                }
                 (model::STAIR_TYPE, 1) => {
                     crate::levels::build_stair(document, context.parameters(), id, self.policy)?
                 }

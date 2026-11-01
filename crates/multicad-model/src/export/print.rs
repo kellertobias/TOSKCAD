@@ -254,6 +254,8 @@ impl Exporter {
         }
         checkpoint(interrupt)?;
         let mut selection = resolve_print(document, revision, request)?;
+        let cosmetic_threads = model::has_cosmetic_threads(document)
+            .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
         let parameters = multicad_core::parameters::evaluate(document)
             .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
         let mut processes = vec![];
@@ -346,6 +348,21 @@ impl Exporter {
                     }));
                     continue;
                 };
+                if cosmetic_threads
+                    && let Some(thread) = model::cosmetic_thread_in_history(document, producer)
+                        .map_err(|e| invalid(e.to_string()))?
+                {
+                    let name = document
+                        .get(thread)
+                        .map_or_else(|| thread.to_string(), |e| e.name.clone());
+                    return Err(failure(
+                        ErrorKind::Unsupported,
+                        Some(thread),
+                        format!(
+                            "{name} is a cosmetic thread envelope. Switch it to Modeled before creating a print package."
+                        ),
+                    ));
+                }
                 let world = match (&transformed, part.occurrence_path.split_first()) {
                     (Some(world), _) => world,
                     (None, None) => local,

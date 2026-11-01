@@ -656,6 +656,8 @@ impl Exporter {
         }
         let names = filenames(&effective, document.name())?;
         let aid_parts = multicad_core::model::aid_parts(document);
+        let cosmetic_threads = multicad_core::model::has_cosmetic_threads(document)
+            .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
         let mut recipes = Vec::new();
         let mut artifacts = Vec::new();
         let mut generated = BTreeMap::new();
@@ -677,6 +679,42 @@ impl Exporter {
             } else {
                 RecipeStatus::Ready
             };
+            if cosmetic_threads
+                && status == RecipeStatus::Ready
+                && matches!(
+                    recipe.output,
+                    RecipeOutput::Step { .. }
+                        | RecipeOutput::Mesh { .. }
+                        | RecipeOutput::PlanarDxf { .. }
+                )
+            {
+                for output in &requested {
+                    let parts: Vec<&PartRef> = match &output.subject {
+                        OutputSubject::Part(part) => vec![part],
+                        OutputSubject::Parts(parts) => parts.iter().collect(),
+                        _ => vec![],
+                    };
+                    for part in parts {
+                        if let Some((_, producer, ..)) = selected.get(part)
+                            && let Some(thread) = multicad_core::model::cosmetic_thread_in_history(
+                                document, *producer,
+                            )
+                            .map_err(|e| failure(ErrorKind::Invalid, Some(*producer), e))?
+                        {
+                            let name = document
+                                .get(thread)
+                                .map_or_else(|| thread.to_string(), |e| e.name.clone());
+                            status = RecipeStatus::Unsupported(format!(
+                                "{name} is a cosmetic thread envelope. Switch it to Modeled before STEP, mesh or manufacturing-outline export."
+                            ));
+                            break;
+                        }
+                    }
+                    if status != RecipeStatus::Ready {
+                        break;
+                    }
+                }
+            }
             let mut recipe_artifacts = vec![];
             let mut recipe_bytes = BTreeMap::new();
             if status == RecipeStatus::Ready
