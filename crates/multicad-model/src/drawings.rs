@@ -326,7 +326,10 @@ impl Model {
             ));
         }
         let bodies = providers.resolve(document, self, &view.source)?;
-        let planting = crate::plant_plans::plans(document, self, revision, view, &bodies)?;
+        let mut planting = crate::plant_plans::plans(document, self, revision, view, &bodies)?;
+        planting.extend(crate::equipment_plans::plans(
+            document, self, revision, view, &bodies,
+        )?);
         let bodies: Vec<_> = bodies
             .into_iter()
             .filter(|body| !planting.contains_key(&body.identity))
@@ -449,7 +452,17 @@ impl Model {
             })
             .collect();
         crate::walls::plan_vectors(document, view, &bodies, &mut vectors)?;
-        crate::levels::plan_vectors(document, self, view, &bodies, &mut vectors)?;
+        let identities = bodies
+            .iter()
+            .map(|body| body.identity)
+            .chain(
+                planting
+                    .iter()
+                    .filter(|(_, plan)| !plan.vectors.is_empty())
+                    .map(|(id, _)| *id),
+            )
+            .collect();
+        crate::levels::plan_vectors(document, self, view, &identities, &mut vectors)?;
         let mut labels = vec![];
         for plan in planting.into_values() {
             vectors.extend(plan.vectors);

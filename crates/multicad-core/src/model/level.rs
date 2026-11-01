@@ -227,6 +227,18 @@ impl StairDefinition {
     }
 }
 impl EnvelopeDefinition {
+    pub fn entity(&self, id: EntityId, name: &str) -> Result<Entity, DocumentError> {
+        self.validate()?;
+        let mut entity = Entity::new(
+            name,
+            EntityData::Extension {
+                definition: definition(ENVELOPE_KIND, self)?,
+                inputs: self.inputs(),
+            },
+        );
+        entity.id = id;
+        Ok(entity)
+    }
     pub fn validate(&self) -> Result<(), DocumentError> {
         if self.label.len() > 256 {
             return Err(invalid("Envelope label is too long"));

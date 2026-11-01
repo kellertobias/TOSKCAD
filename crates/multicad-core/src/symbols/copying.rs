@@ -66,6 +66,26 @@ pub(crate) fn copy_owned_variant(
     edits.push(Mutation::Insert(record_entity(request.record, &value)?));
     for entity in doc.entities() {
         if let crate::document::EntityData::Extension { definition, .. } = &entity.data
+            && definition.type_id == crate::equipment::INSTANCE_TYPE
+        {
+            let mut settings = crate::equipment::InstanceSettings::from_definition(definition)?;
+            if settings.symbol_instance == old_record {
+                settings.symbol_instance = request.record;
+                for envelope in [&mut settings.service_envelope, &mut settings.door_envelope] {
+                    if let Some(old_id) = *envelope {
+                        let mut value = crate::model::read_envelope(doc, old_id)?;
+                        value.target = outer;
+                        let id = EntityId::new();
+                        edits.push(Mutation::Insert(
+                            value.entity(id, &doc.get(old_id).expect("checked envelope").name)?,
+                        ));
+                        *envelope = Some(id);
+                    }
+                }
+                edits.push(Mutation::Insert(settings.entity(EntityId::new())?));
+            }
+        }
+        if let crate::document::EntityData::Extension { definition, .. } = &entity.data
             && definition.type_id == crate::plants::INSTANCE_TYPE
         {
             let mut settings = crate::plants::PlantInstance::from_definition(definition)?;
@@ -86,7 +106,9 @@ pub(crate) fn rekey_copied_driver(
         return Err(invalid("Copied symbol pose contains a non-driver entity"));
     };
     match definition.type_id.as_str() {
-        crate::model::INSTANCE_PLACEMENT_TYPE | crate::model::INSTANCE_ALIGNMENT_TYPE => {
+        crate::model::INSTANCE_PLACEMENT_TYPE
+        | crate::model::INSTANCE_ALIGNMENT_TYPE
+        | crate::equipment::ATTACHMENT_TYPE => {
             let mut rekey = map.clone();
             // Driver identity was allocated by the existing placement copier.
             rekey.insert(entity.id, entity.id);

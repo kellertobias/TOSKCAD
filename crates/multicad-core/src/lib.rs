@@ -9,6 +9,7 @@ pub mod constraint_sketch;
 pub mod control;
 pub mod document;
 pub mod drawings;
+pub mod equipment;
 pub mod exchange;
 pub mod hierarchy;
 pub mod inspection;

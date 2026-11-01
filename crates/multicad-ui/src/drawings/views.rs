@@ -120,6 +120,7 @@ impl DrawingEditor {
             tangent_edges: false,
             paper_chord_tolerance_mm: 0.01,
             guide: None,
+            equipment_categories: None,
         });
         self.selected_view = Some(id);
         Ok(())
@@ -339,6 +340,28 @@ impl DrawingEditor {
             .on_hover_text("Generate native occluded edges and display them dashed");
         ui.checkbox(&mut view.tangent_edges, "Show tangent edges")
             .on_hover_text("Include smooth edges between adjacent surfaces");
+        if view.kind == ViewKind::Projection && view.frame.normal()[2] > 1. - 1e-8 {
+            ui.collapsing("Equipment plan categories", |ui| {
+                use multicad_core::equipment::Category;
+                for category in Category::ALL {
+                    let mut visible = view
+                        .equipment_categories
+                        .as_ref()
+                        .is_none_or(|set| set.contains(&category));
+                    if ui.checkbox(&mut visible, category.label()).changed() {
+                        let set = view
+                            .equipment_categories
+                            .get_or_insert_with(|| Category::ALL.into_iter().collect());
+                        if visible {
+                            set.insert(category);
+                        } else {
+                            set.remove(&category);
+                        }
+                    }
+                }
+                ui.small("ToskCAD generic v1 symbols; equipment footprints retain model scale.");
+            });
+        }
         match &mut view.kind {
             ViewKind::Projection => {
                 ui.label("Orthographic projection");

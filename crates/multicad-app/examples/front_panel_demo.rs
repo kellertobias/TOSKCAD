@@ -999,6 +999,7 @@ fn view(
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.02,
         guide: None,
+        equipment_categories: None,
     }
 }
 /// Looking at the panel front (from −Y).

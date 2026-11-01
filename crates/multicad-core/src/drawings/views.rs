@@ -108,6 +108,9 @@ pub struct DrawingView {
     /// sources then follow the guide and its levels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide: Option<super::GuideLink>,
+    /// None includes all equipment; an explicit empty set hides equipment only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equipment_categories: Option<BTreeSet<crate::equipment::Category>>,
 }
 impl DrawingView {
     pub fn validate(&self) -> Result<(), DocumentError> {

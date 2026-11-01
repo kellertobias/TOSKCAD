@@ -296,6 +296,7 @@ fn welded_corner() -> Corner {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     };
     let mut page = Page::new("1");
     let (view_id, page_id) = (view.id, page.id);

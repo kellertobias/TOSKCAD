@@ -1050,6 +1050,7 @@ pub fn build() -> Result<Scenario, Error> {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     };
     let left_view = view(
         "Left side, inside",

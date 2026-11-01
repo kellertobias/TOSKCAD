@@ -384,6 +384,7 @@ fn closed_room_and_plan_section_show_door_swings_and_window_panes() {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     };
     let view_id = plan.id;
     page.views.push(plan);
@@ -566,6 +567,7 @@ fn plan_view(body: EntityId, kind: ViewKind) -> DrawingView {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     }
 }
 

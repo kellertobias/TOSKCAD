@@ -55,6 +55,7 @@ fn view(name: &str, part: EntityId, u: [f64; 3], v: [f64; 3]) -> DrawingView {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     }
 }
 /// Fit one view of a page with the same steps as the native Fit command.

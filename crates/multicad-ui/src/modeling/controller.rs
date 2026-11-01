@@ -1012,6 +1012,21 @@ impl ModelToolController {
             )?)),
         )
     }
+    pub fn begin_equipment(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(super::architecture::ArchitecturePanel::equipment(
+                session.document(),
+            )?)),
+        )
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,
@@ -1640,10 +1655,22 @@ impl ModelToolController {
                 .map_err(|error| error.to_string())?;
             let candidate = self.candidate.take().expect("checked preview");
             let scene = candidate.scene.expect("checked preview");
+            let channel = candidate.prepared.actor().channel;
             session
                 .commit(candidate.prepared)
                 .map_err(|error| error.to_string())?;
+            let mut repeat = self.form.take();
+            let keep = match &mut repeat {
+                Some(ModelForm::Architecture(panel)) => panel.repeat_equipment(session.document()),
+                _ => false,
+            };
+            if !keep {
+                repeat = None;
+            }
             self.cancel();
+            if let Some(form) = repeat {
+                self.begin_form(session, resources, channel, form)?;
+            }
             // Keep the same checked geometry visible while the canonical lane
             // rebuilds the new revision. It remains noninteractive/display-only.
             self.handoff = Some(Handoff {

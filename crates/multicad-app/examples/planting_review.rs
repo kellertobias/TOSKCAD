@@ -107,6 +107,7 @@ pub fn build() -> Result<Garden, Error> {
             tangent_edges: false,
             paper_chord_tolerance_mm: 0.01,
             guide: None,
+            equipment_categories: None,
         });
         pages.push(page.id);
         if let Some(id) = book {

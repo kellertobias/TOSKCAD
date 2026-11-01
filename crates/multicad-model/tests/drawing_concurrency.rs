@@ -101,6 +101,7 @@ fn simultaneous_first_use() {
                     tangent_edges: false,
                     paper_chord_tolerance_mm: 0.01,
                     guide: None,
+                    equipment_categories: None,
                 };
                 barrier.wait();
                 for _ in 0..4 {

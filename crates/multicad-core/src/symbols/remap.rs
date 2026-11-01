@@ -10,6 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 // value walk below therefore sees only these audited ID-bearing schemas.
 fn provider(d: &Definition) -> Result<(), DocumentError> {
     match d.type_id.as_str() {
+        crate::equipment::ATTACHMENT_TYPE => {
+            crate::equipment::Attachment::from_definition(d)?;
+        }
+        crate::equipment::TEMPLATE_TYPE => {
+            crate::equipment::Template::from_definition(d)?;
+        }
         crate::plants::TEMPLATE_TYPE => {
             crate::plants::PlantTemplate::from_definition(d)?;
         }

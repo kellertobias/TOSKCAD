@@ -385,6 +385,7 @@ pub fn generation_edits(
             tangent_edges: false,
             paper_chord_tolerance_mm: 0.05,
             guide: Some(link),
+            equipment_categories: None,
         };
         report.created.push(view.id);
         page.views.push(view);

@@ -1661,6 +1661,7 @@ fn view(
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.05,
         guide: None,
+        equipment_categories: None,
     }
 }
 fn section(depth: Option<f64>) -> ViewKind {

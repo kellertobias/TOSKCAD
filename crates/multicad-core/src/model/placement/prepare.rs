@@ -255,24 +255,50 @@ pub fn prepare_instance_copies(
                 )
             }
         };
-        let source = InstancePlacementDefinition {
-            owner: request.instance,
-            base,
-            parameters: request.parameters.clone(),
+        let hosted = if let InstanceCopySource::Instance { instance } = request.source {
+            match document.get(instance).map(|e| &e.data) {
+                Some(EntityData::Instance {
+                    placement_source: Some(id),
+                    ..
+                }) => crate::equipment::read_attachment(document, *id).ok(),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let driver = if let Some(hosted) = hosted {
+            let PlacementBase::Previous { driver } = base else {
+                return Err(error("Hosted copy lost its attachment"));
+            };
+            let mut moved =
+                hosted.transformed(document, session.parameters(), &request.parameters)?;
+            moved.owner = request.instance;
+            let entity = moved.entity(driver)?;
+            let edit = edits
+                .iter_mut()
+                .find(|e| matches!(e, Mutation::Insert(old) if old.id == driver))
+                .ok_or_else(|| error("Hosted copy lost its source edit"))?;
+            *edit = Mutation::Insert(entity);
+            driver
+        } else {
+            let source = InstancePlacementDefinition {
+                owner: request.instance,
+                base,
+                parameters: request.parameters.clone(),
+            };
+            edits.push(Mutation::Insert(driver_entity(request.driver, &source)?));
+            request.driver
         };
         let mut instance = Entity::new(
             &request.name,
             EntityData::Instance {
                 component,
                 placement,
-                placement_source: Some(request.driver),
+                placement_source: Some(driver),
             },
         );
         instance.id = request.instance;
-        edits.extend([
-            Mutation::Insert(driver_entity(request.driver, &source)?),
-            Mutation::Insert(instance),
-        ]);
+        edits.push(Mutation::Insert(instance));
         if let Some(parent) = parent {
             hierarchy
                 .members
@@ -334,6 +360,14 @@ pub fn prepare_instance_moves(
             return Err(error(
                 "Edit this Instance's joint values instead of adding a free placement after its relationship",
             ));
+        }
+        if let Some(driver) = *placement_source
+            && let Ok(hosted) = crate::equipment::read_attachment(document, driver)
+        {
+            let moved = hosted.transformed(document, session.parameters(), &request.parameters)?;
+            edits.push(Mutation::Replace(moved.entity(driver)?));
+            instances.push(request.instance);
+            continue;
         }
         let base = match *placement_source {
             Some(driver) => {

@@ -353,6 +353,9 @@ impl SketchEditor {
         if tool == ModelingTool::Sheet {
             return self.begin_sheet(session, resources, channel);
         }
+        if tool == ModelingTool::Equipment {
+            return self.begin_equipment(session, resources, channel);
+        }
         if tool == ModelingTool::Plant {
             return self.begin_planting(session, resources, channel);
         }

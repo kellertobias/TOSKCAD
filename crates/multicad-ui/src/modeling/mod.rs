@@ -11,6 +11,7 @@ pub mod cabinet_edit;
 mod controller;
 pub(crate) mod dimension;
 mod edge_treatment;
+mod equipment;
 mod extrude;
 mod extrude_operation;
 mod fdm_aid;
@@ -91,6 +92,7 @@ pub enum ModelingTool {
     Cutout,
     Level,
     Plant,
+    Equipment,
     Cabinet,
     Panel,
     Joint,
@@ -105,7 +107,7 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
@@ -117,6 +119,7 @@ impl ModelingTool {
         Self::Cutout,
         Self::Level,
         Self::Plant,
+        Self::Equipment,
         Self::Cabinet,
         Self::Panel,
         Self::Joint,
@@ -173,6 +176,7 @@ impl ModelingTool {
             Self::Cutout => "vertical-cutout",
             Self::Level => "level",
             Self::Plant => "plant",
+            Self::Equipment => "equipment",
             Self::Cabinet => "cabinet",
             Self::Panel => "panel",
             Self::Joint => "joint",
@@ -217,6 +221,7 @@ impl ModelingTool {
             Self::Cutout => "Vertical cutout",
             Self::Level => "Levels & stairs",
             Self::Plant => "Planting",
+            Self::Equipment => "Equipment",
             Self::Cabinet => "Add Cabinet",
             Self::Panel => "Panel",
             Self::Joint => "Panel joint",
@@ -260,6 +265,7 @@ impl ModelingTool {
             Self::Cutout => crate::icons::Icon::Cut,
             Self::Level => crate::icons::Icon::Edge,
             Self::Plant => crate::icons::Icon::Cylinder,
+            Self::Equipment => crate::icons::Icon::Box,
             Self::Panel | Self::Cabinet => crate::icons::Icon::Box,
             Self::Joint | Self::LooseTenon => crate::icons::Icon::Link,
             Self::Machining | Self::ShelfPins => crate::icons::Icon::Cut,
@@ -301,6 +307,17 @@ impl ModelingTool {
             Self::Cutout => &["wall-cutout", "chase", "wall-chase"],
             Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
             Self::Plant => &["tree", "shrub", "landscape", "garden"],
+            Self::Equipment => &[
+                "outlet",
+                "switch",
+                "radiator",
+                "sanitary",
+                "appliance",
+                "sink",
+                "toilet",
+                "fridge",
+                "light",
+            ],
             Self::Cabinet => &["carcass", "shelf", "add cabinet", "cabinet generator"],
             Self::Panel => &["board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
@@ -350,6 +367,9 @@ impl ModelingTool {
             }
             Self::Advanced(_) => {
                 "Usage: choose explicit source geometry and controls in the Inspector, then Preview and Apply"
+            }
+            Self::Equipment => {
+                "Usage: equipment (choose a family and floor/wall host, place in the apartment view, Preview and Apply)"
             }
             Self::Plant => {
                 "Usage: plant (choose tree or shrub, click the garden plane, configure height/spread, Preview and Apply)"
@@ -445,6 +465,9 @@ impl ModelingTool {
             }
             Self::Advanced(_) => {
                 "Choose one current Part definition. Linked Instances follow its editable source; face-based tools capture native geometry explicitly. Patterns create a compound Part."
+            }
+            Self::Equipment => {
+                "Requires native modeling and no pending edits. Generic apartment equipment uses explicit floor, wall and ceiling references."
             }
             Self::Plant => {
                 "Requires native modeling and no pending edits. Place a generic tree or shrub graphically, using one retained source for 3D context and authored plan footprints."

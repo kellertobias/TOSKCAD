@@ -1264,6 +1264,7 @@ fn welds_follow_their_connections_in_authored_order_with_cut_groups_and_a_plan()
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     };
     let m = compile(&f.s);
     let schedule = m.weld_schedule(f.s.document()).unwrap();

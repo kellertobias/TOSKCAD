@@ -98,6 +98,13 @@ impl SymbolDefinition {
                 "Plant definition and its linked plan do not share one source",
             ));
         }
+        if let Some(equipment) = crate::equipment::template_for(&self.template, self.root)?
+            && self.plan.as_ref().map(|p| p.sketch) != Some(equipment.footprint)
+        {
+            return Err(invalid(
+                "Equipment definition must retain its true-size footprint as its linked plan",
+            ));
+        }
         for e in self.template.entities() {
             super::remap::validate_entity(e)?;
         }
@@ -211,6 +218,27 @@ pub(super) fn author(
     if let Some(plan) = &request.plan {
         queue.push_back(plan.sketch);
     }
+    let mut component_metadata: std::collections::BTreeMap<EntityId, Vec<EntityId>> =
+        std::collections::BTreeMap::new();
+    for metadata in bound.entities() {
+        if let EntityData::Extension { definition, .. } = &metadata.data {
+            let component = match definition.type_id.as_str() {
+                crate::plants::TEMPLATE_TYPE => {
+                    Some(crate::plants::PlantTemplate::from_definition(definition)?.component)
+                }
+                crate::equipment::TEMPLATE_TYPE => {
+                    Some(crate::equipment::Template::from_definition(definition)?.component)
+                }
+                _ => None,
+            };
+            if let Some(component) = component {
+                component_metadata
+                    .entry(component)
+                    .or_default()
+                    .push(metadata.id);
+            }
+        }
+    }
     let mut keep = BTreeSet::new();
     while let Some(id) = queue.pop_front() {
         if !keep.insert(id) {
@@ -227,15 +255,9 @@ pub(super) fn author(
         if matches!(
             e.data,
             EntityData::Part { .. } | EntityData::Assembly { .. }
-        ) {
-            for metadata in bound.entities() {
-                if let EntityData::Extension { definition, .. } = &metadata.data
-                    && definition.type_id == crate::plants::TEMPLATE_TYPE
-                    && crate::plants::PlantTemplate::from_definition(definition)?.component == id
-                {
-                    queue.push_back(metadata.id);
-                }
-            }
+        ) && let Some(metadata) = component_metadata.get(&id)
+        {
+            queue.extend(metadata);
         }
         if matches!(e.data, EntityData::Assembly { .. }) {
             for m in bound.entities() {

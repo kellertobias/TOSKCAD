@@ -1440,6 +1440,36 @@ impl SketchEditor {
             "Planting · choose a tree or shrub and click in the garden view, then Preview".into();
         Ok(())
     }
+    pub fn begin_equipment(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Apply or cancel pending edits before placing equipment".into());
+        }
+        self.finish()?;
+        self.model.begin_equipment(session, resources, channel)?;
+        if !session.document().entities().any(|e| {
+            matches!(
+                e.data,
+                EntityData::Part { .. } | EntityData::Instance { .. }
+            )
+        }) {
+            self.camera = Camera {
+                yaw: 0.,
+                pitch: std::f32::consts::FRAC_PI_2,
+                scale: 0.05,
+                target: [0.; 3],
+                perspective: false,
+            };
+        }
+        self.message =
+            "Equipment · choose a family and host, click in the apartment view, then Preview"
+                .into();
+        Ok(())
+    }
     pub fn begin_architecture(
         &mut self,
         session: &Session,
@@ -1879,25 +1909,41 @@ impl SketchEditor {
         let plans = multicad_core::symbols::definitions(document)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|(id, definition)| {
-                multicad_core::plants::template_for(&definition.template, definition.root)
-                    .ok()
-                    .flatten()
-                    .map(|plant| (id, plant.plan))
+            .map(|(id, definition)| {
+                let mut plans =
+                    multicad_core::plants::template_for(&definition.template, definition.root)
+                        .ok()
+                        .flatten()
+                        .map(|plant| plant.plan)
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                if let Ok(Some(equipment)) =
+                    multicad_core::equipment::template_for(&definition.template, definition.root)
+                {
+                    plans.push(equipment.footprint);
+                    plans.extend(equipment.mark);
+                }
+                (id, plans)
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         let private_plans = document
             .entities()
-            .filter_map(|entity| {
+            .flat_map(|entity| {
                 if let EntityData::Extension { definition, .. } = &entity.data
                     && definition.type_id == multicad_core::symbols::INSTANCE_TYPE
                 {
-                    let instance =
-                        multicad_core::symbols::read_instance(document, entity.id).ok()?;
-                    let plan = plans.get(&instance.definition)?;
-                    instance.ids.get(plan).copied()
+                    if let Ok(instance) = multicad_core::symbols::read_instance(document, entity.id)
+                    {
+                        return plans
+                            .get(&instance.definition)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|plan| instance.ids.get(plan).copied())
+                            .collect::<Vec<_>>();
+                    }
+                    vec![]
                 } else {
-                    None
+                    vec![]
                 }
             })
             .collect::<std::collections::BTreeSet<_>>();

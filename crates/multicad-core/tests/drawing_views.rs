@@ -49,6 +49,7 @@ fn view(source: EntityId) -> DrawingView {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     }
 }
 #[test]
@@ -191,6 +192,7 @@ fn section_guides_appear_edge_on_in_parent_views_trimmed_to_the_window() {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     };
     // Top view (looking down Z) and a front section looking along +Y, cut at
     // y = 5 with a 20 mm depth and a window x in [10, 30].
@@ -297,6 +299,7 @@ fn a_picked_parent_line_defines_a_finite_section_and_paper_points_invert() {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     };
     let paper = top.paper_point([12., -7.]);
     let back = top.model_point(paper);

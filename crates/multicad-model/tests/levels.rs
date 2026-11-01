@@ -458,6 +458,7 @@ fn service_envelopes_report_model_clearance_and_show_in_plan() {
         tangent_edges: false,
         paper_chord_tolerance_mm: 0.01,
         guide: None,
+        equipment_categories: None,
     };
     let vid = view.id;
     page.views.push(view);

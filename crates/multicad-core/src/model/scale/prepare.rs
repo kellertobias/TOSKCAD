@@ -96,6 +96,11 @@ fn clone_drivers(
     }
     for (id, mut driver) in chain {
         match &mut driver {
+            Driver::Equipment(_) => {
+                return Err(error(
+                    "Edit hosted equipment type dimensions instead of baking a scaled placement",
+                ));
+            }
             Driver::Joint(_, _) => {
                 return Err(error(
                     "Scaling a joint-controlled Instance is unsupported; scale its component before authoring the relationship",

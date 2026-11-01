@@ -30,9 +30,10 @@ pub enum ArchitectureKind {
     Envelope,
     Guide,
     Plant,
+    Equipment,
 }
 impl ArchitectureKind {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Level,
         Self::Slab,
         Self::Pedestal,
@@ -40,6 +41,7 @@ impl ArchitectureKind {
         Self::Envelope,
         Self::Guide,
         Self::Plant,
+        Self::Equipment,
     ];
     fn label(self) -> &'static str {
         match self {
@@ -50,6 +52,7 @@ impl ArchitectureKind {
             Self::Envelope => "Service envelope",
             Self::Guide => "Drawing guide",
             Self::Plant => "Planting",
+            Self::Equipment => "Equipment",
         }
     }
 }
@@ -119,6 +122,7 @@ pub(super) fn room_boundary(
 #[derive(Clone, Debug)]
 pub enum ArchitectureCommand {
     Plant(super::plant::PlantCommand),
+    Equipment(super::equipment::EquipmentCommand),
     Level {
         existing: Option<EntityId>,
         name: String,
@@ -155,6 +159,7 @@ impl ArchitectureCommand {
         };
         match self {
             Self::Plant(command) => return command.prepare(session, actor),
+            Self::Equipment(command) => return command.prepare(session, actor),
             Self::Level {
                 existing: Some(id),
                 value,
@@ -215,9 +220,11 @@ impl ArchitectureCommand {
     pub fn edit_id(&self) -> Option<EntityId> {
         match self {
             Self::Slab { edit, .. } | Self::Stair { edit, .. } => *edit,
-            Self::Level { .. } | Self::Envelope { .. } | Self::Guide { .. } | Self::Plant(_) => {
-                None
-            }
+            Self::Level { .. }
+            | Self::Envelope { .. }
+            | Self::Guide { .. }
+            | Self::Plant(_)
+            | Self::Equipment(_) => None,
         }
     }
 }
@@ -226,6 +233,7 @@ pub(super) struct ArchitecturePanel {
     stamp: FormStamp,
     kind: ArchitectureKind,
     plant: super::plant::PlantPanel,
+    equipment: super::equipment::EquipmentPanel,
     /// The slab or stair feature being edited; its kind is then fixed.
     feature: Option<EntityId>,
     body: EntityId,
@@ -287,6 +295,7 @@ impl ArchitecturePanel {
         Ok(Self {
             stamp: FormStamp::new(),
             plant: super::plant::PlantPanel::new(document)?,
+            equipment: super::equipment::EquipmentPanel::new(document),
             kind: if level.is_some() {
                 ArchitectureKind::Slab
             } else {
@@ -362,8 +371,22 @@ impl ArchitecturePanel {
         panel.kind = ArchitectureKind::Plant;
         Ok(panel)
     }
+    pub fn equipment(document: &Document) -> Result<Self, String> {
+        let mut panel = Self::new(document, "Equipment".into())?;
+        panel.kind = ArchitectureKind::Equipment;
+        Ok(panel)
+    }
     pub fn stamp(&self) -> FormStamp {
         self.stamp
+    }
+    pub fn repeat_equipment(&mut self, document: &Document) -> bool {
+        if self.kind != ArchitectureKind::Equipment || !self.equipment.repeat_after_apply(document)
+        {
+            return false;
+        }
+        self.stamp.changed();
+        self.error = None;
+        true
     }
     pub fn label(&self) -> &'static str {
         self.kind.label()
@@ -419,7 +442,10 @@ impl ArchitecturePanel {
     pub fn outlines(&self) -> bool {
         matches!(
             self.kind,
-            ArchitectureKind::Slab | ArchitectureKind::Pedestal | ArchitectureKind::Plant
+            ArchitectureKind::Slab
+                | ArchitectureKind::Pedestal
+                | ArchitectureKind::Plant
+                | ArchitectureKind::Equipment
         )
     }
     /// Draw and edit the outline on the plan; returns whether inputs changed.
@@ -429,6 +455,14 @@ impl ArchitecturePanel {
         revision: u64,
         view: TerminationViewport<'_>,
     ) -> bool {
+        if self.kind == ArchitectureKind::Equipment {
+            let changed = self.equipment.viewport(document, view);
+            if changed {
+                self.stamp.changed();
+                self.error = None;
+            }
+            return changed;
+        }
         if self.kind == ArchitectureKind::Plant {
             let changed = self.plant.viewport(view);
             if changed {
@@ -517,6 +551,12 @@ impl ArchitecturePanel {
         if self.kind == ArchitectureKind::Plant {
             return self.plant.request(document).map(ArchitectureCommand::Plant);
         }
+        if self.kind == ArchitectureKind::Equipment {
+            return self
+                .equipment
+                .request(document)
+                .map(ArchitectureCommand::Equipment);
+        }
         let creates = match self.kind {
             ArchitectureKind::Level | ArchitectureKind::Envelope | ArchitectureKind::Guide => {
                 self.existing.is_none()
@@ -528,7 +568,7 @@ impl ArchitecturePanel {
         }
         let name = self.name.clone();
         Ok(match self.kind {
-            ArchitectureKind::Plant => unreachable!("handled above"),
+            ArchitectureKind::Plant | ArchitectureKind::Equipment => unreachable!("handled above"),
             ArchitectureKind::Level => ArchitectureCommand::Level {
                 existing: self.existing,
                 name,
@@ -681,7 +721,7 @@ impl ArchitecturePanel {
             _ => {}
         }
         let naming = match self.kind {
-            ArchitectureKind::Plant => false,
+            ArchitectureKind::Plant | ArchitectureKind::Equipment => false,
             ArchitectureKind::Level | ArchitectureKind::Envelope | ArchitectureKind::Guide => {
                 self.existing.is_none()
             }
@@ -859,6 +899,9 @@ impl ArchitecturePanel {
             }
             ArchitectureKind::Plant => {
                 changed |= self.plant.show(ui, document);
+            }
+            ArchitectureKind::Equipment => {
+                changed |= self.equipment.show(ui, document);
             }
             ArchitectureKind::Guide => {
                 changed |= self.guide.show(ui, document);

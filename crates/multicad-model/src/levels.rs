@@ -1,6 +1,6 @@
 //! Native slabs, pedestals and stairs, service envelopes around placed
 //! equipment with model clearance checks, and their plan graphics.
-use crate::{DrawingBody, Model, ModelError, error};
+use crate::{Model, ModelError, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     drawings::{DrawingVector, VectorCurve, VectorRole, ViewKind},
@@ -264,7 +264,9 @@ impl Model {
         let Ok(parameters) = multicad_core::parameters::evaluate(document) else {
             return Default::default();
         };
+        let hidden = multicad_core::equipment::hidden_envelopes(document).unwrap_or_default();
         model::envelopes(document)
+            .filter(|e| !hidden.contains(&e.id))
             .filter_map(|e| {
                 self.envelope_box(document, &parameters, e.id)
                     .ok()
@@ -333,7 +335,7 @@ pub(crate) fn plan_vectors(
     document: &Document,
     model: &Model,
     view: &multicad_core::drawings::DrawingView,
-    bodies: &[DrawingBody<'_>],
+    identities: &std::collections::BTreeSet<EntityId>,
     vectors: &mut Vec<DrawingVector>,
 ) -> Result<(), ModelError> {
     let f = &view.frame;
@@ -367,9 +369,8 @@ pub(crate) fn plan_vectors(
             line_width_mm: 0.18,
         });
     };
-    let identities: std::collections::BTreeSet<_> = bodies.iter().map(|b| b.identity).collect();
     let parameters = multicad_core::parameters::evaluate(document).map_err(|e| error(None, e))?;
-    for part in &identities {
+    for part in identities {
         let Some(feature) = feature_of(document, *part, model::STAIR_TYPE) else {
             continue;
         };
@@ -398,14 +399,18 @@ pub(crate) fn plan_vectors(
             }
         }
     }
-    let envelopes: Vec<_> = model
-        .envelopes(document)?
-        .into_iter()
-        .filter(|e| identities.contains(&e.target))
-        .collect();
-    for env in envelopes {
+    let hidden =
+        multicad_core::equipment::hidden_envelopes(document).map_err(|e| error(None, e))?;
+    for entity in model::envelopes(document).filter(|e| !hidden.contains(&e.id)) {
+        let source =
+            model::read_envelope(document, entity.id).map_err(|e| error(Some(entity.id), e))?;
+        if !identities.contains(&source.target) {
+            continue;
+        }
+        // Rendering needs the box, not every clearance boolean intersection.
+        let (env, _, corners) = model.envelope_box(document, &parameters, entity.id)?;
         for k in 0..4 {
-            let (a, b) = (env.corners[k], env.corners[(k + 1) % 4]);
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
             line(env.target, [a[0], a[1]], [b[0], b[1]], VectorRole::Hidden);
         }
     }

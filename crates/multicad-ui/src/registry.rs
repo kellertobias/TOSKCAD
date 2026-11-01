@@ -511,6 +511,7 @@ impl Default for Registry {
                                         | ModelingTool::Cutout
                                         | ModelingTool::Level
                                         | ModelingTool::Plant
+                                        | ModelingTool::Equipment
                                         | ModelingTool::Panel
                                         | ModelingTool::Cabinet
                                         | ModelingTool::Joint
@@ -539,6 +540,7 @@ impl Default for Registry {
                             "vertical-cutout",
                             "level",
                             "plant",
+                            "equipment",
                         ],
                     ),
                     tab(
@@ -1026,6 +1028,7 @@ mod tests {
                         | ModelingTool::Cutout
                         | ModelingTool::Level
                         | ModelingTool::Plant
+                        | ModelingTool::Equipment
                         | ModelingTool::Panel
                         | ModelingTool::Cabinet
                         | ModelingTool::Joint
@@ -1059,6 +1062,7 @@ mod tests {
                     | ModelingTool::Cutout
                     | ModelingTool::Level
                     | ModelingTool::Plant
+                    | ModelingTool::Equipment
             ) {
                 let architecture = registry
                     .workspace(Mode::Model)

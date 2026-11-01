@@ -47,6 +47,10 @@ mod levels;
 mod mechanical_parts;
 mod plants;
 use plants::{PlantArgs, PlantInspectArgs, inspect_plant, set_plant};
+mod equipment;
+use equipment::{
+    EquipmentArgs, EquipmentInspectArgs, equipment_profiles, inspect_equipment, set_equipment,
+};
 mod reference_repair;
 mod render;
 mod schedules;
@@ -268,6 +272,15 @@ tools! {
     "set_thread" => ThreadArgs, "Create or edit thread", false,
         "Create a new threaded shaft or cut an external/internal thread on target_part; edit an existing thread by feature ID while preserving omitted fields, Part and original target predecessor. All dimensions carry units; custom profile angles and radius taper accept typed values/formulas. Nominal-basic fits and fabrication clearance are separate. Native Preview checks complete receiving geometry before one attributable transaction or the owner's review queue. Unsupported families, invalid walls and failed geometry change nothing. Cosmetic envelopes are display-only and cannot be exported as STEP/mesh/print manufacturing geometry.",
         set_thread;
+    "equipment_profiles" => NoArgs, "Apartment equipment families", true,
+        "List owned generic equipment families, dimensions, categories, connector convention and floor/wall/ceiling mount classes. No manufacturer or installation certification.",
+        equipment_profiles;
+    "inspect_equipment" => EquipmentInspectArgs, "Inspect hosted equipment", true,
+        "Read the canonical equipment ownership record, pinned family, dimensions, floor/wall/ceiling attachment, optional labels and clearance visibility. Unresolved hosts are reported while source remains available for repair.",
+        inspect_equipment;
+    "set_equipment" => EquipmentArgs, "Place, edit or repair equipment", false,
+        "Create a generic apartment equipment family or edit its retained ownership record. Explicit length units and floor/host references share the UI source validation and native preflight. Replacing host intent repairs lost hosts; omitted edits retain fields. Service and door access boxes are separate from physical geometry. Existing instances retain their pinned family.",
+        set_equipment;
     "set_plant" => PlantArgs, "Place or edit a plant", false,
         "Place a generic editable tree or shrub, or edit a retained plant by canonical ownership record. Lengths require explicit units. Spread is the true outer canopy footprint. UI and MCP share one native-preflighted transaction, pinned source, linked plan sketch and occurrence placement. Optional plan visibility does not remove physical sections/elevations. Generic envelopes do not predict species or growth.",
         set_plant;

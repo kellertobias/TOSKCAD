@@ -20,6 +20,7 @@ mod gear_pairs;
 mod gears;
 mod mechanical_parts;
 pub use gear_pairs::GearPairCheck;
+mod equipment_plans;
 pub mod imports;
 pub mod inspection;
 mod levels;

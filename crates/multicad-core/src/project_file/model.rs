@@ -408,6 +408,20 @@ impl ProjectFile {
         if crate::symbols::required_capability(&self.document) {
             required.insert(crate::symbols::PROJECT_CAPABILITY.into());
         }
+        if self.document.entities().any(|e| matches!(&e.data, crate::document::EntityData::Extension { definition, .. } if definition.type_id == crate::equipment::ATTACHMENT_TYPE)) { required.insert(crate::equipment::ATTACHMENT_CAPABILITY.into()); }
+        if crate::equipment::required_capability(&self.document)
+            || crate::drawings::books(&self.document).any(|id| {
+                crate::drawings::read(&self.document, id).is_ok_and(|book| {
+                    book.pages.iter().any(|page| {
+                        page.views
+                            .iter()
+                            .any(|view| view.equipment_categories.is_some())
+                    })
+                })
+            })
+        {
+            required.insert(crate::equipment::CAPABILITY.into());
+        }
         if crate::plants::required_capability(&self.document) {
             required.insert(crate::plants::CAPABILITY.into());
         }
@@ -464,6 +478,8 @@ pub fn supported_capabilities() -> BTreeSet<String> {
     BTreeSet::from([
         crate::symbols::CAPABILITY.into(),
         crate::plants::CAPABILITY.into(),
+        crate::equipment::CAPABILITY.into(),
+        crate::equipment::ATTACHMENT_CAPABILITY.into(),
         crate::symbols::PROJECT_CAPABILITY.into(),
         "core.document.1".into(),
         crate::drawings::CAPABILITY.into(),
