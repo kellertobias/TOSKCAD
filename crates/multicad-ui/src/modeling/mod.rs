@@ -56,6 +56,7 @@ pub use controller::{OperationViewport, PlacementViewportResult};
 pub use edge_treatment::EdgeTreatmentCommand;
 pub use extrude::{ExtrudeCapabilities, ExtrudeEvent, ExtrudePanel};
 pub use form::ModelRequest;
+pub use gear::GearPairCommand;
 pub use gizmo::{GizmoBasis, PlacementViewport};
 use multicad_core::document::EntityId;
 pub use object_basis::{ObjectGizmoBasis, object_gizmo_basis};

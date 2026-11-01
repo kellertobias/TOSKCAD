@@ -142,6 +142,33 @@ impl ModelToolController {
             )
         })
     }
+    /// Find the generator owning a selected assembly, member, recipe or occurrence.
+    pub fn gear_pair_for(
+        document: &multicad_core::document::Document,
+        id: EntityId,
+    ) -> Option<EntityId> {
+        let component = match document.get(id).map(|e| &e.data) {
+            Some(EntityData::Instance { component, .. }) => Some(*component),
+            _ => None,
+        };
+        let mut matches = document.entities().filter_map(|entity| {
+            let pair = multicad_core::model::read_gear_pair(document, entity.id).ok()?;
+            let owned = entity.id == id
+                || pair.outputs.assembly == id
+                || component == Some(pair.outputs.assembly)
+                || pair.outputs.instances.contains(&id)
+                || pair.outputs.joints.contains(&id)
+                || pair.parameters.gears.contains(&id)
+                || pair.parameters.gears.iter().any(|feature| {
+                    multicad_core::model::read_gear(document, *feature).is_ok_and(|gear| {
+                        gear.output.body == id || Some(gear.output.body) == component
+                    })
+                });
+            owned.then_some(entity.id)
+        });
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
     pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
         if !matches!(
             document.get(feature).map(|entity| &entity.data),
@@ -163,6 +190,7 @@ impl ModelToolController {
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
             || multicad_core::model::read_thread(document, feature).is_ok()
             || multicad_core::model::read_gear(document, feature).is_ok()
+            || multicad_core::model::read_gear_pair(document, feature).is_ok()
         {
             return true;
         }
@@ -266,6 +294,10 @@ impl ModelToolController {
         }
         if !Self::editable(document, feature) {
             return Err("Choose a supported, unsuppressed applied model feature".into());
+        }
+        if model::read_gear_pair(document, feature).is_ok() {
+            let form = GearPanel::existing_pair(document, feature, session.parameters().clone())?;
+            return self.begin_form(session, resources, channel, ModelForm::Gear(Box::new(form)));
         }
         if model::read_sheet(document, feature).is_ok() {
             let form = super::sheet::SheetPanel::existing(document, feature)?;
@@ -1269,7 +1301,13 @@ impl ModelToolController {
         let (prepared, proof) = match execution {
             Execution::Create => (
                 request.prepare(session, Actor::local(channel))?,
-                SceneProof::Create,
+                match request {
+                    ModelRequest::GearPair(command) => SceneProof::GearPair {
+                        pair: command.pair(),
+                        occurrence: command.occurrence(),
+                    },
+                    _ => SceneProof::Create,
+                },
             ),
             Execution::Edit { feature } => {
                 let prepared = request.prepare_edit(session, Actor::local(channel), feature)?;
@@ -1318,21 +1356,26 @@ impl ModelToolController {
                 stamp,
                 &Default::default(),
             )?;
+        let instances = match request {
+            ModelRequest::Placement(command) => command.instances(),
+            ModelRequest::Scale(command) => command.instances(),
+            ModelRequest::Alignment(command) => command.instances(),
+            ModelRequest::GearPair(command) => command.instances(prepared.prepared.document())?,
+            _ => vec![],
+        };
         self.candidate = Some(Candidate {
             prepared: prepared.prepared,
             content,
             form,
             stamp,
             outputs: prepared.outputs,
-            instances: match request {
-                ModelRequest::Placement(command) => command.instances(),
-                ModelRequest::Scale(command) => command.instances(),
-                ModelRequest::Alignment(command) => command.instances(),
-                _ => vec![],
-            },
+            instances,
             placement: matches!(
                 request,
-                ModelRequest::Placement(_) | ModelRequest::Scale(_) | ModelRequest::Alignment(_)
+                ModelRequest::Placement(_)
+                    | ModelRequest::Scale(_)
+                    | ModelRequest::Alignment(_)
+                    | ModelRequest::GearPair(_)
             ),
             tools,
             proof,
@@ -1347,6 +1390,7 @@ impl ModelToolController {
                     | ModelRequest::EdgeTreatment(_)
                     | ModelRequest::Advanced(_)
                     | ModelRequest::Alignment(_)
+                    | ModelRequest::GearPair(_)
             ) || !matches!(execution, Execution::Create),
             aid: match request {
                 ModelRequest::FdmAid(command) => Some(command.request.feature),

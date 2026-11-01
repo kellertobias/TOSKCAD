@@ -8,7 +8,7 @@ use super::{
     cabinet::{CabinetCommand, CabinetPanel},
     edge_treatment::EdgeTreatmentPanel,
     fdm_aid::{FdmAidCommand, FdmAidPanel},
-    gear::GearPanel,
+    gear::{GearPairCommand, GearPanel},
     group_edit::GroupEditPanel,
     joint::{JointCommand, JointPanel},
     machining::{MachiningCommand, MachiningPanel},
@@ -42,6 +42,7 @@ pub enum ModelRequest {
     Primitive(Box<PrimitiveRequest>),
     Thread(Box<model::ThreadRequest>),
     Gear(Box<model::GearRequest>),
+    GearPair(Box<GearPairCommand>),
     Revolve(Box<RevolveRequest>),
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
@@ -75,6 +76,11 @@ impl ModelRequest {
         feature: multicad_core::document::EntityId,
     ) -> Result<ModelPrepared, String> {
         match self {
+            Self::GearPair(_) => {
+                return Err(
+                    "Reopen the complete gear pair editor to edit its source transaction".into(),
+                );
+            }
             Self::Advanced(command) => {
                 if command.edit_id() != Some(feature) {
                     return Err("Advanced edit changed its producer identity".into());
@@ -282,6 +288,7 @@ impl ModelRequest {
                 model::prepare_thread(session, session.revision(), actor, request)
             }
             Self::Gear(request) => model::prepare_gear(session, session.revision(), actor, request),
+            Self::GearPair(command) => return command.prepare(session, actor),
             Self::Revolve(request) => {
                 model::prepare_revolve(session, session.revision(), actor, request)
             }
@@ -519,9 +526,7 @@ impl ModelForm {
             Self::Thread(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Thread(Box::new(request))),
-            Self::Gear(panel) => panel
-                .request(document, capabilities.new_body)
-                .map(|request| ModelRequest::Gear(Box::new(request))),
+            Self::Gear(panel) => panel.model_request(document, capabilities.new_body),
             Self::Revolve(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Revolve(Box::new(request))),

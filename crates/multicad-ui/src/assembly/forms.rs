@@ -89,6 +89,11 @@ impl Form {
         })
     }
     pub fn existing(document: &Document, id: EntityId) -> Result<Self, String> {
+        if crate::modeling::ModelToolController::gear_pair_for(document, id).is_some() {
+            return Err(
+                "Use Edit gear pair to change this generated assembly or relationship".into(),
+            );
+        }
         let (tool, operation) = if let Ok(request) = JointRequest::existing(document, id) {
             (
                 AssemblyTool::Relationship,

@@ -5,6 +5,10 @@ use multicad_core::document::Document;
 use std::collections::BTreeSet;
 pub(super) enum SceneProof {
     Create,
+    GearPair {
+        pair: EntityId,
+        occurrence: Option<EntityId>,
+    },
     Edit {
         producers: Vec<CreatedBody>,
         bodies: BTreeSet<EntityId>,
@@ -41,6 +45,67 @@ impl SceneProof {
         outputs: &[CreatedBody],
     ) -> Result<(), String> {
         match self {
+            Self::GearPair { pair, occurrence } => {
+                let source = multicad_core::model::read_gear_pair(document, *pair)
+                    .map_err(|e| e.to_string())?;
+                let expected = source
+                    .parameters
+                    .gears
+                    .iter()
+                    .map(|feature| {
+                        multicad_core::model::read_gear(document, *feature)
+                            .map(|gear| (*feature, gear.output.body))
+                            .map_err(|e| e.to_string())
+                    })
+                    .collect::<Result<BTreeSet<_>, _>>()?;
+                let actual = outputs
+                    .iter()
+                    .map(|o| (o.feature, o.body))
+                    .collect::<BTreeSet<_>>();
+                if outputs.len() != 2 || actual != expected {
+                    return Err("Native pair preview changed its member identities".into());
+                }
+                Self::edited(outputs.to_vec(), &[], vec![]).validate(document, scene, outputs)?;
+                if outputs
+                    .iter()
+                    .any(|o| scene.reference_instances().iter().any(|i| i.id == o.body))
+                {
+                    return Err(
+                        "Pair definition Parts must not appear as duplicate physical outputs"
+                            .into(),
+                    );
+                }
+                let leaves = scene.assembly_evaluation().ok_or(
+                    "Gear pair preview requires source-bound physical occurrence evidence",
+                )?;
+                if let Some(root) = occurrence {
+                    let members = leaves
+                        .leaves
+                        .iter()
+                        .filter(|l| l.path.root == *root)
+                        .collect::<Vec<_>>();
+                    if members.len() != 2
+                        || source
+                            .parameters
+                            .gears
+                            .iter()
+                            .enumerate()
+                            .any(|(i, feature)| {
+                                !members.iter().any(|l| {
+                                    l.path.members == [source.outputs.instances[i]]
+                                        && l.producer == *feature
+                                        && outputs
+                                            .iter()
+                                            .any(|o| o.feature == *feature && o.body == l.component)
+                                })
+                            })
+                    {
+                        return Err(
+                            "Native pair preview did not produce both placed gear leaves".into(),
+                        );
+                    }
+                }
+            }
             Self::Create => {
                 for output in outputs {
                     producer(document, scene, output, false)?;

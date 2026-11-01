@@ -1,4 +1,5 @@
 //! Gear controls share canonical intent and native candidate receipts with MCP.
+mod pair;
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -11,7 +12,9 @@ use multicad_core::{
     parameters::EvaluatedParameters,
     sketch::Datum,
 };
+pub use pair::GearPairCommand;
 
+#[derive(Clone)]
 pub(super) struct GearPanel {
     request: GearRequest,
     parameters: EvaluatedParameters,
@@ -23,6 +26,7 @@ pub(super) struct GearPanel {
     plane: Option<Datum>,
     stamp: FormStamp,
     editing: bool,
+    pair: Option<Box<pair::GearPairPanel>>,
 }
 impl GearPanel {
     pub fn new(
@@ -60,14 +64,48 @@ impl GearPanel {
             parameters,
             stamp: FormStamp::new(),
             editing,
+            pair: None,
             request,
         })
     }
+    pub(super) fn enable_pair(&mut self) {
+        if !self.editing && self.pair.is_none() {
+            self.pair = Some(Box::new(pair::GearPairPanel::from_single(self.clone())));
+        }
+    }
     pub fn stamp(&self) -> FormStamp {
-        self.stamp
+        self.pair.as_ref().map_or(self.stamp, |p| p.stamp())
     }
     pub fn label(&self) -> &'static str {
-        "Gear"
+        if self.pair.is_some() {
+            "Gear pair"
+        } else {
+            "Gear"
+        }
+    }
+    pub fn existing_pair(
+        document: &Document,
+        pair: multicad_core::document::EntityId,
+        parameters: EvaluatedParameters,
+    ) -> Result<Self, String> {
+        let panel = pair::GearPairPanel::existing(document, pair, parameters)?;
+        let mut outer = panel.primary_clone();
+        outer.pair = Some(Box::new(panel));
+        Ok(outer)
+    }
+    pub fn model_request(
+        &self,
+        document: &Document,
+        enabled: bool,
+    ) -> Result<ModelRequest, String> {
+        if let Some(panel) = &self.pair {
+            panel
+                .request(document, enabled)
+                .map(|r| ModelRequest::GearPair(Box::new(r)))
+        } else {
+            self.request(document, enabled)
+                .map(|r| ModelRequest::Gear(Box::new(r)))
+        }
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<GearRequest, String> {
         if !enabled {
@@ -105,25 +143,8 @@ impl GearPanel {
         p.resolve(&self.parameters).map_err(|e| e.to_string())?;
         Ok(request)
     }
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        document: &Document,
-        enabled: bool,
-        preview: PreviewState,
-    ) -> Option<ModelEvent> {
-        ui.label(if self.editing {
-            "Feature name"
-        } else {
-            "Part name"
-        });
-        let mut changed = ui
-            .add_enabled(
-                !self.editing,
-                egui::TextEdit::singleline(&mut self.request.name)
-                    .desired_width(ui.available_width()),
-            )
-            .changed();
+    fn geometry_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
         ui.label("Gear family");
         controls::inspector_combo(ui, "gear-family")
             .selected_text(self.family.label())
@@ -258,6 +279,40 @@ impl GearPanel {
         ] {
             changed |= self.fields[i].show(ui, label, help);
         }
+        changed
+    }
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        document: &Document,
+        enabled: bool,
+        preview: PreviewState,
+    ) -> Option<ModelEvent> {
+        if let Some(panel) = &mut self.pair {
+            let event = panel.show(ui, document, enabled, preview);
+            if panel.single_requested() {
+                *self = panel.as_single();
+                return Some(ModelEvent::Changed);
+            }
+            return event;
+        }
+        if !self.editing && ui.button("Create mating pair").clicked() {
+            self.enable_pair();
+            return Some(ModelEvent::Changed);
+        }
+        ui.label(if self.editing {
+            "Feature name"
+        } else {
+            "Part name"
+        });
+        let mut changed = ui
+            .add_enabled(
+                !self.editing,
+                egui::TextEdit::singleline(&mut self.request.name)
+                    .desired_width(ui.available_width()),
+            )
+            .changed();
+        changed |= self.geometry_controls(ui);
         ui.label("Axis plane");
         controls::inspector_combo(ui, "gear-plane")
             .selected_text(self.plane.map_or("Stored orientation", Datum::label))

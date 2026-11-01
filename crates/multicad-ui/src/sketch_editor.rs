@@ -651,6 +651,16 @@ impl SketchEditor {
         }
         crate::modeling::cabinet_edit::carcass_target(document, *self.tree_selection.first()?)
     }
+    fn selected_gear_pair(&self, document: &Document) -> Option<EntityId> {
+        let pairs: std::collections::BTreeSet<_> = self
+            .tree_selection
+            .iter()
+            .copied()
+            .chain(self.solid.selected_ids())
+            .filter_map(|id| crate::modeling::ModelToolController::gear_pair_for(document, id))
+            .collect();
+        (pairs.len() == 1).then(|| *pairs.first().expect("one pair"))
+    }
     fn selected_applied_feature(&self, document: &Document) -> Option<(EntityId, bool)> {
         if self.tree_selection.len() != 1 {
             return None;
@@ -2839,6 +2849,12 @@ impl SketchEditor {
                             self.handle_tree_events(session,scene.as_deref(),events);
                         }
                         if hierarchy_tool {return;}
+                        if let Some(pair)=self.selected_gear_pair(session.document()) {
+                            let ready=self.feature_edit_ready(session,feed,pair);
+                            if ui.add_enabled(ready,egui::Button::new("Edit gear pair")).on_hover_text("Edit both mating recipes together, or change their shared drive and layout").clicked()
+                                && let Err(error)=self.begin_feature_edit(session,resources,feed,pair,Channel::Ui) {self.message=error;}
+                            if self.model_active() {return;}
+                        }
                         self.assembly_edit_controls(ui,session,resources,feed);
                         if self.assembly.active(){return;}
                         self.symbol_edit_controls(ui,session,resources,feed);
