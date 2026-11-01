@@ -734,14 +734,20 @@ fn generated_deliverables_read_back_independently() {
     // 3MF: only the printed guide frame, in millimeters.
     let three = with("3mf");
     assert_eq!(three.len(), 1);
-    if let Some(ok) = std::process::Command::new("unzip")
+    if let Ok(output) = std::process::Command::new("unzip")
+        // Legacy unzip builds do not accept Windows verbatim path prefixes.
+        // Let the native process API set the folder and pass only the filename.
+        .current_dir(three[0].parent().unwrap())
         .arg("-tq")
-        .arg(three[0])
+        .arg(three[0].file_name().unwrap())
         .output()
-        .ok()
-        .map(|o| o.status.success())
     {
-        assert!(ok, "system unzip rejects the 3MF");
+        assert!(
+            output.status.success(),
+            "system unzip rejects the 3MF: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let xml =
         String::from_utf8(unzip(&std::fs::read(three[0]).unwrap(), "3D/3dmodel.model")).unwrap();
