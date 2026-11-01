@@ -1,7 +1,7 @@
 <!-- Kind: ADR; Audience: native model, drawing and UI maintainers; Purpose: define ownership of planting geometry and plan symbols; Non-goals: botanical simulation, terrain or human visual acceptance. -->
 # 27. Keep planting semantics on pinned symbols and render their authored plans
 
-Status: Proposed
+Status: Accepted (2026-11-01)
 
 ## Context
 
@@ -24,3 +24,7 @@ The cost is additional audited metadata, source capability/version handling, dra
 ## Alternatives
 
 Projecting the simplified 3D crown would reuse the existing drawing path and avoid authored plan evaluation. It would also expose canopy construction edges and make plan visibility depend on projection/cut behavior. Independently placing a drawing icon would be easy to render, but would duplicate position and dimensions. A dedicated landscape asset store would duplicate the installation Library and its pin/update lifecycle. None meets the requested shared-source behavior as directly.
+
+## Implementation evidence
+
+The [native checkpoint](../verification/planting-2026-11-01.md) records canonical/native tests, independent PDF/DXF measurements, interactive macOS placement/edit/export, retained pins and the final workspace checks. This decision records the implemented architecture; PLAINER Review/test and human acceptance remain separate.

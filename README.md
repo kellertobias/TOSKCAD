@@ -55,6 +55,8 @@ The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow
 
 Mechanical catalog work follows the [retained hardware dimensions decision](docs/architecture/0026-retained-hardware-dimensions.md). The shared Library includes [four curated bearing mounting envelopes](library/README.md) with editable dimensions and pinned definitions. Complete fastener catalog coverage and connection integration remain under development.
 
+[Planting](docs/architecture/plants.md) adds generic editable trees and shrubs under Architecture, with linked canopy footprints for scaled drawings and presets in the shared included Library.
+
 The [spline editing checkpoint](docs/verification/native-spline-editing-2026-10-28.md) records exact trims, bounded tangent continuation, explicit contact choice, guarded background previews and native save/reopen checks.
 
 The [occurrence-reference checkpoint](docs/verification/native-occurrence-references-2026-10-29.md) records exact finite projections and sections, independently placed assembly copies, explicit repair and source-bound native preview guards.
