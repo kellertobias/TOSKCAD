@@ -200,6 +200,7 @@ pub fn show(
             for entry in cx.library {
                 ui.group(|ui| {
                     ui.set_width(ui.available_width());
+                    if entry.origin == crate::library::LibraryOrigin::Bundled { ui.small("Included with ToskCAD"); }
                     ui.horizontal(|ui| {
                         textures.show(
                             ui,
@@ -230,7 +231,7 @@ pub fn show(
                     .on_hover_text(entry.path.display().to_string());
                     if let Some(problem) = &entry.problem {
                         ui.colored_label(Color32::LIGHT_RED, problem);
-                        if ui
+                        if entry.origin == crate::library::LibraryOrigin::ListedOriginal && ui
                             .small_button("Remove from library")
                             .on_hover_text("Remove this listing; no file is deleted")
                             .clicked()

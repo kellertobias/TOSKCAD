@@ -28,6 +28,7 @@ fn installed_library_load_is_explicit_filtered_and_source_neutral() {
     let before = session.document().clone();
     let revision = session.revision();
     let entry = LibraryEntry {
+        origin: crate::library::LibraryOrigin::ListedOriginal,
         id: EntityId::new(),
         document: EntityId::new(),
         path: "/offline/library/custom-washer.tcd".into(),

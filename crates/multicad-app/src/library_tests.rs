@@ -51,6 +51,96 @@ fn canonical(path: &Path) -> PathBuf {
 }
 
 #[test]
+fn included_definitions_share_browsing_but_never_enter_or_change_the_original_file_index() {
+    use multicad_ui::library::LibraryOrigin;
+    let root = tempfile::tempdir().unwrap();
+    let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");
+    let library_root = root.path().join("library");
+    let mut library =
+        LibraryFileStore::new(library_root.clone()).with_bundled(Some(bundled.clone()));
+    let included = library.load().unwrap();
+    assert_eq!(included.len(), 4);
+    assert!(included.iter().all(|e| e.origin == LibraryOrigin::Bundled));
+    assert!(
+        !library_root.join(INDEX).exists(),
+        "included entries are not silently registered"
+    );
+    let mut projects = ProjectStore::new(root.path().join("recovery"));
+    let path = root.path().join("own.tcd");
+    let own = project("Own part", "Original location remains authoritative");
+    let stamp = save(&mut projects, &path, &own, SaveMode::Create);
+    let original = fs::read(&path).unwrap();
+    let (receipt, entries) = library.register(&request(&path, stamp, &own)).unwrap();
+    assert_eq!(entries.len(), 5);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.origin == LibraryOrigin::ListedOriginal)
+            .count(),
+        1
+    );
+    assert_eq!(
+        decode(&fs::read(library_root.join(INDEX)).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+    let index = fs::read(library_root.join(INDEX)).unwrap();
+    assert!(library.remove(included[0].id).is_err());
+    assert_eq!(fs::read(library_root.join(INDEX)).unwrap(), index);
+    let source = projects.open_project(&included[0].path).unwrap();
+    assert!(
+        library
+            .register(&request(
+                &included[0].path,
+                source.stamp.unwrap(),
+                &source.file
+            ))
+            .unwrap_err()
+            .contains("already in Library")
+    );
+    assert_eq!(fs::read(library_root.join(INDEX)).unwrap(), index);
+    assert_eq!(library.remove(receipt.entry.id).unwrap().len(), 4);
+    assert_eq!(fs::read(path).unwrap(), original);
+    assert!(
+        decode(&fs::read(library_root.join(INDEX)).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        fs::read_dir(library_root).unwrap().all(|entry| entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|e| e != "tcd"))
+    );
+}
+
+#[test]
+fn a_broken_included_catalog_does_not_hide_registered_originals() {
+    let root = tempfile::tempdir().unwrap();
+    let bad = root.path().join("bad-catalog");
+    fs::create_dir_all(&bad).unwrap();
+    fs::write(bad.join("library.json"), b"not JSON").unwrap();
+    let mut library = LibraryFileStore::new(root.path().join("library")).with_bundled(Some(bad));
+    let mut projects = ProjectStore::new(root.path().join("recovery"));
+    let own = project("Own part", "Still available");
+    let path = root.path().join("own.tcd");
+    let stamp = save(&mut projects, &path, &own, SaveMode::Create);
+    let (_, entries) = library.register(&request(&path, stamp, &own)).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].name, "Own part");
+    assert!(entries[0].problem.is_none());
+    assert!(
+        entries[1]
+            .problem
+            .as_ref()
+            .unwrap()
+            .contains("Invalid bundled Library manifest")
+    );
+}
+
+#[test]
 fn listing_records_the_original_location_and_reads_metadata_live() {
     let root = tempfile::tempdir().unwrap();
     let mut projects = ProjectStore::new(root.path().join("recovery"));

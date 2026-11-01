@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync,chmodSync,statSync,copyFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync,chmodSync,statSync,copyFileSync,cpSync} from 'node:fs';
 import {execFileSync,spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
-import {assembleRuntime,checkProjectContainer,collectNotices,isNoticeFile,nativeSourceHash,peImports,runtimeExecutable,validateExamples} from './native-package.mjs';
+import {assembleRuntime,checkProjectContainer,collectNotices,isNoticeFile,nativeSourceHash,peImports,runtimeExecutable,validateExamples,validateBundledLibrary} from './native-package.mjs';
 import {readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 
@@ -16,6 +16,29 @@ function executableFixture(directory){
   else{writeFileSync(binary,'layout fixture only');chmodSync(binary,0o755);}
   return binary;
 }
+
+test('hardware packaging refuses damaged data, missing notices, duplicate IDs and escaping paths',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'multicad-hardware-package-'));
+  try{
+    cpSync(new URL('../library/',import.meta.url),directory,{recursive:true});
+    const path=join(directory,'library.json'),original=readFileSync(path,'utf8');
+    const change=fn=>{const value=JSON.parse(original);fn(value);writeFileSync(path,JSON.stringify(value));};
+    assert.equal(validateBundledLibrary(directory).projects.length,4);
+    change(m=>{m.entries[0].file='../bearing.tcd';});
+    assert.throws(()=>validateBundledLibrary(directory),/Invalid.*Library/);
+    change(m=>{m.entries[1].document=m.entries[0].document;});
+    assert.throws(()=>validateBundledLibrary(directory),/duplicate.*Library/);
+    change(m=>{m.entries[0].sha256='0'.repeat(64);});
+    assert.throws(()=>validateBundledLibrary(directory),/checksum mismatch/);
+    change(m=>{m.requires=m.requires.filter(x=>!x.endsWith('COPYING.LESSER'));});
+    assert.throws(()=>validateBundledLibrary(directory),/notice\/source closure/);
+    change(m=>{m.requires.push('../outside.txt');});
+    assert.throws(()=>validateBundledLibrary(directory),/Invalid bundled Library path/);
+    writeFileSync(path,original);
+    writeFileSync(join(directory,'unlisted.tcd'),'not a native project');
+    assert.throws(()=>validateBundledLibrary(directory),/Unlisted bundled Library/);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
 
 test('native build entry loads without a pre-existing node_modules directory',()=>{
   const directory=mkdtempSync(join(tmpdir(),'multicad-clean-build-entry-'));
@@ -75,6 +98,9 @@ test('native development layout includes a copied executable, identity pin and n
     const shipped=['examples.json',...new Set(manifest.examples.flatMap(e=>[e.file,...(e.requires??[])]))];
     assert.deepEqual(readdirSync(examples).sort(),[...new Set(shipped.map(f=>f.split('/')[0]))].sort());
     for(const name of shipped)assert.deepEqual(readFileSync(join(examples,...name.split('/'))),readFileSync(new URL(`../examples/${name}`,import.meta.url)),name);
+    const hardware=validateBundledLibrary();
+    assert.equal(hardware.projects.length,4);
+    for(const name of hardware.files)assert.deepEqual(readFileSync(join(layout.resources,'library',...name.split('/'))),readFileSync(new URL(`../library/${name}`,import.meta.url)),name);
     if(process.platform==='darwin')assert.equal(layout.resources,join(stage,'MultiCAD.app/Contents/Resources'));
     else assert.equal(layout.resources,join(stage,'resources'));
     assert.match(readme,/Bundled examples \(Examples, or the welcome screen with no recent projects\): 2 m cabinet with doors, drawers and System 32 shelves, Welded steel workbench, C-channel front panel, Apartment with workshop\./);

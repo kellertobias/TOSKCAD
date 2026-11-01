@@ -1,4 +1,4 @@
-//! Browse the same original-location Library used by Parameters.
+//! Browse the same included/original-file Library used by Parameters.
 use super::SymbolAction;
 use crate::{
     egui,
@@ -15,7 +15,7 @@ pub(super) struct Installed {
 impl Installed {
     pub fn show(&mut self, ui: &mut egui::Ui, filter: &str) -> Option<SymbolAction> {
         ui.strong("Installation Library");
-        ui.small("Original files listed with Add to Library. Load a file, then explicitly import and place its pinned definitions.");
+        ui.small("Included definitions and files listed with Add to Library. Load a file, then explicitly import and place its pinned definitions.");
         let families = self
             .entries
             .iter()
@@ -44,8 +44,9 @@ impl Installed {
             shown += 1;
             ui.push_id(entry.id, |ui| ui.group(|ui| {
                 ui.strong(&entry.name);
+                if entry.origin == crate::library::LibraryOrigin::Bundled { ui.small("Included with ToskCAD"); }
                 self.previews.show(ui, entry.preview.as_ref(), egui::vec2(140., 80.), &entry.name);
-                if !entry.description.is_empty() { ui.small(&entry.description); }
+                if !entry.description.is_empty() { ui.add(egui::Label::new(egui::RichText::new(&entry.description).small()).truncate()).on_hover_text(&entry.description); }
                 ui.small(entry.path.display().to_string());
                 for part in entry.mechanical_parts.iter().filter(|p| self.family.is_empty() || p.family == self.family) {
                     ui.strong(format!("{} · {}", part.name, part.family));
@@ -154,6 +155,7 @@ mod tests {
         bearing.designation = Some("Fixture B".into());
         bearing.dimensions_mm = [("Bore".into(), 10.), ("Width".into(), 9.)].into();
         let entry = LibraryEntry {
+            origin: crate::library::LibraryOrigin::ListedOriginal,
             id: EntityId::new(),
             document: EntityId::new(),
             path: "/library/rings.tcd".into(),

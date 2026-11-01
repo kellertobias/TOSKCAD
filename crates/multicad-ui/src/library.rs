@@ -1,6 +1,7 @@
 //! The single installation library and project cards. Add to Library is an
 //! explicit user action that lists a saved project file at its original
-//! location; the library never copies the file, never edits it, never runs on
+//! location. Included definitions share this browser without entering the
+//! writable index. The library never copies or edits an original, never runs on
 //! Save and never changes definitions already embedded (pinned) in consuming
 //! projects. File-system access belongs to the application's `LibraryStore`;
 //! this module owns the nonblocking worker and preview textures.
@@ -18,11 +19,13 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LibraryEntry {
+    pub origin: LibraryOrigin,
     /// Stable entry identity within this installation's library.
     pub id: EntityId,
     /// Document identity of the listed project; one entry per document.
     pub document: EntityId,
-    /// The original file's absolute location (the last known one when missing).
+    /// Included project or listed original's absolute location; last known
+    /// location when unavailable.
     pub path: PathBuf,
     /// Read live from the file; the last known values when it is missing.
     pub name: String,
@@ -33,6 +36,11 @@ pub struct LibraryEntry {
     pub mechanical_parts: Vec<multicad_core::model::MechanicalPartCard>,
     /// Set when the file is missing, unreadable or now holds another project.
     pub problem: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LibraryOrigin {
+    ListedOriginal,
+    Bundled,
 }
 #[derive(Clone, Debug)]
 pub struct RegisterRequest {

@@ -1,6 +1,6 @@
 // Native runtime layout, source/notice closure and packaged smoke checks.
 import {execFileSync} from 'node:child_process';
-import {cpSync,copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
+import {cpSync,copyFileSync,existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,realpathSync,writeFileSync} from 'node:fs';
 import {dirname,join,resolve,relative,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
@@ -68,7 +68,7 @@ export function checkProjectContainer(path){
   try{JSON.parse(text);}catch{fail('canonical source is not JSON');}
   const developer=DEVELOPER_PATH.exec(text)||DEVELOPER_PATH.exec(manifestBytes.toString('utf8'));
   if(developer)fail(`contains the absolute developer path "${developer[0]}"`);
-  return {name:manifest.identity.name,version};
+  return {name:manifest.identity.name,version,document:manifest.identity.id};
 }
 export function validateExamples(directory=join(root,'examples')){
   const manifestPath=join(directory,'examples.json');
@@ -99,6 +99,38 @@ export function validateExamples(directory=join(root,'examples')){
 export function bundleExamples(resources,directory=join(root,'examples')){
   const checked=validateExamples(directory);
   const target=join(resources,'examples');mkdirSync(target,{recursive:true});
+  for(const file of checked.files){const destination=join(target,...file.split('/'));mkdirSync(dirname(destination),{recursive:true});copyFileSync(join(directory,...file.split('/')),destination);}
+  return checked;
+}
+export function validateBundledLibrary(directory=join(root,'library')){
+  const base=realpathSync(directory),manifest=JSON.parse(readFileSync(join(directory,'library.json'),'utf8'));
+  const only=(value,keys)=>Object.keys(value??{}).every(key=>keys.includes(key));
+  if(!only(manifest,['format','version','revision','entries','requires'])||manifest.format!=='toskcad.bundled-library'||manifest.version!==1||typeof manifest.revision!=='string'||!manifest.revision||manifest.revision.length>100||!Array.isArray(manifest.entries)||!manifest.entries.length||manifest.entries.length>256||!Array.isArray(manifest.requires)||manifest.requires.length>256)throw new Error('Invalid bundled Library manifest');
+  const inside=file=>{
+    if(!relativeExamplePath(file)||file.includes(':'))throw new Error(`Invalid bundled Library path: ${file}`);
+    const path=join(directory,...file.split('/'));
+    if(!lstatSync(path).isFile()||!realpathSync(path).startsWith(base+sep))throw new Error(`Bundled Library path is not a regular in-folder file: ${file}`);
+    return path;
+  };
+  const files=new Set(['library.json']),identities=new Set(),projects=[];
+  for(const entry of manifest.entries){
+    if(!only(entry,['file','document','sha256'])||typeof entry.file!=='string'||entry.file.includes('/')||!entry.file.endsWith('.tcd')||files.has(entry.file)||typeof entry.document!=='string'||identities.has(entry.document)||! /^[0-9a-f]{64}$/.test(entry.sha256??''))throw new Error('Invalid or duplicate bundled Library entry');
+    const path=inside(entry.file),bytes=readFileSync(path);
+    if(bytes.length>32*1024*1024||createHash('sha256').update(bytes).digest('hex')!==entry.sha256)throw new Error(`Bundled Library checksum mismatch: ${entry.file}`);
+    const project=checkProjectContainer(path);
+    if(project.document!==entry.document)throw new Error(`Bundled Library document identity mismatch: ${entry.file}`);
+    projects.push({file:entry.file,...project});files.add(entry.file);identities.add(entry.document);
+  }
+  for(const required of manifest.requires){inside(required);files.add(required);}
+  for(const required of ['curation.json','README.md','sources/bolts/bearings.blt','sources/bolts/COPYING.LESSER'])if(!files.has(required))throw new Error(`Bundled Library notice/source closure is missing ${required}`);
+  const curation=JSON.parse(readFileSync(inside('curation.json'),'utf8'));
+  if(curation.data_license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside('sources/bolts/bearings.blt'))).digest('hex')!==curation.data_sha256)throw new Error('Bundled Library reference license/hash differs from curation');
+  const unlisted=readdirSync(directory).filter(name=>name.endsWith('.tcd')&&!files.has(name));
+  if(unlisted.length)throw new Error(`Unlisted bundled Library projects: ${unlisted.join(', ')}`);
+  return {files:[...files].sort(),projects};
+}
+export function bundleLibrary(resources,directory=join(root,'library')){
+  const checked=validateBundledLibrary(directory),target=join(resources,'library');mkdirSync(target,{recursive:true});
   for(const file of checked.files){const destination=join(target,...file.split('/'));mkdirSync(dirname(destination),{recursive:true});copyFileSync(join(directory,...file.split('/')),destination);}
   return checked;
 }
@@ -134,6 +166,7 @@ export function assembleRuntime(stage,binary,version){
   // Fonts vendored in the source tree for sketch text ship their licence texts.
   const fonts=join(root,'crates/multicad-core/fonts'),fontNotices=join(resources,'third-party/bundled-fonts');mkdirSync(fontNotices,{recursive:true});
   for(const name of readdirSync(fonts))if(isNoticeFile(join(fonts,name)))copyFileSync(join(fonts,name),join(fontNotices,name));
+  bundleLibrary(resources);
   const examples=bundleExamples(resources);
   writeFileSync(join(stage,'README.txt'),`ToskCAD ${version} native development build.\nIncludes parameter editing, constrained sketches and initial native solid extrusion.\nNative .tcd projects support save/open, embedded resources and explicit recovery; existing .multicad projects still open and save in place.\nSpecialized workspaces and drawing and 3D export workflows remain under development.\nBundled examples (Examples, or the welcome screen with no recent projects): ${examples.projects.filter(p=>examples.examples.includes(p.file)).map(p=>p.name).join(', ')}. Opening one saves an editable copy in Documents/ToskCAD Examples; the bundled originals are never changed.\nRun with no arguments to open the native window, or pass one PROJECT.tcd to open it; --diagnostics is headless.\nmulticad --mcp serves a local MCP client over stdin/stdout; it opens no network port.\nmacOS: open MultiCAD.app. Windows: run multicad.exe. Linux: run ./multicad on an Ubuntu 24.04+ desktop with graphics drivers.\nNo Python, Node.js, FreeCAD or source checkout is required at runtime.\n${process.platform==='darwin'?'This macOS bundle is ad-hoc signed, without publisher signing or notarization.':'This development build is not publisher-signed.'}\nSource and third-party notices accompany release archives.\n`);
   sealMacOSBundle(resources);

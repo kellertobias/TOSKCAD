@@ -70,6 +70,7 @@ impl LibraryStore for Library {
             Registration::Added
         };
         let entry = LibraryEntry {
+            origin: crate::library::LibraryOrigin::ListedOriginal,
             id: EntityId::new(),
             document: request.document,
             name: info.name,
@@ -300,6 +301,7 @@ fn add_to_library_is_explicit_requires_a_clean_saved_file_and_reports_results() 
 fn library_entries_are_shared_by_every_project_in_the_installation() {
     let (mut app, shared) = app();
     shared.lock().unwrap().entries.push(LibraryEntry {
+        origin: crate::library::LibraryOrigin::ListedOriginal,
         id: EntityId::new(),
         document: EntityId::new(),
         name: "Registered elsewhere".into(),

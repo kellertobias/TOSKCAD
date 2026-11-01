@@ -1,5 +1,6 @@
 //! The installation library on disk: one per-user writable index next to
-//! recovery data (never the application bundle). Add to Library lists the
+//! recovery data (never the application bundle). Read-only included projects
+//! merge into the same browser without entering that index. Add to Library lists the
 //! saved project at its original absolute location; nothing is copied and
 //! the project file is never written. Browsing reads name, description and
 //! preview live from each listed file. The index is replaced atomically under
@@ -27,11 +28,13 @@ const MAX_ENTRIES: usize = 4096;
 
 pub struct LibraryFileStore {
     root: PathBuf,
+    bundled: Option<PathBuf>,
 }
 impl Default for LibraryFileStore {
     fn default() -> Self {
         let recovery = crate::files::ProjectStore::default().recovery_directory;
         Self::new(recovery.parent().unwrap_or(&recovery).join("library"))
+            .with_bundled(crate::bundled_library::locate())
     }
 }
 fn storage(context: &str, error: impl std::fmt::Display) -> String {
@@ -139,7 +142,24 @@ fn card_of(reader: &mut impl Read) -> Result<ProjectCard, String> {
 }
 impl LibraryFileStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            bundled: None,
+        }
+    }
+    pub fn with_bundled(mut self, root: Option<PathBuf>) -> Self {
+        self.bundled = root;
+        self
+    }
+    fn merged(&self, records: &[Record]) -> Vec<LibraryEntry> {
+        let mut entries = Self::entries(records);
+        if let Some(root) = &self.bundled {
+            match crate::bundled_library::load(root) {
+                Ok(bundled) => entries.extend(bundled),
+                Err(error) => entries.push(crate::bundled_library::problem(root, error)),
+            }
+        }
+        entries
     }
     fn lock(&self) -> Result<File, String> {
         fs::create_dir_all(&self.root)
@@ -194,6 +214,7 @@ impl LibraryFileStore {
     fn entry(record: &Record) -> LibraryEntry {
         let path = PathBuf::from(&record.path);
         let mut entry = LibraryEntry {
+            origin: multicad_ui::library::LibraryOrigin::ListedOriginal,
             id: record.id,
             document: record.document,
             path: path.clone(),
@@ -290,12 +311,22 @@ impl LibraryStore for LibraryFileStore {
     fn load(&mut self) -> Result<Vec<LibraryEntry>, String> {
         let _lock = self.lock()?;
         let records = self.read_index()?;
-        Ok(Self::entries(&records))
+        Ok(self.merged(&records))
     }
     fn register(
         &mut self,
         request: &RegisterRequest,
     ) -> Result<(RegisterReceipt, Vec<LibraryEntry>), String> {
+        if self.bundled.as_ref().is_some_and(|root| {
+            request
+                .path
+                .canonicalize()
+                .ok()
+                .zip(root.canonicalize().ok())
+                .is_some_and(|(path, root)| path.starts_with(root))
+        }) {
+            return Err("Included hardware is already in Library. Save your own copy before adding a separate listing.".into());
+        }
         let card = Self::saved_card(request)?;
         let path = request
             .path
@@ -339,7 +370,7 @@ impl LibraryStore for LibraryFileStore {
         // already-listed file.
         self.write_index(&records)?;
         let entry = Self::entry(records.iter().find(|r| r.id == id).expect("listed record"));
-        Ok((RegisterReceipt { outcome, entry }, Self::entries(&records)))
+        Ok((RegisterReceipt { outcome, entry }, self.merged(&records)))
     }
     fn remove(&mut self, entry: EntityId) -> Result<Vec<LibraryEntry>, String> {
         let _lock = self.lock()?;
@@ -350,7 +381,7 @@ impl LibraryStore for LibraryFileStore {
             return Err("That library entry no longer exists".into());
         }
         self.write_index(&records)?;
-        Ok(Self::entries(&records))
+        Ok(self.merged(&records))
     }
     fn card(&mut self, path: &Path) -> Result<ProjectCard, String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;

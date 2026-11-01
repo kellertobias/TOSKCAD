@@ -2,6 +2,7 @@
 mod app_control;
 mod assembly_inspection;
 mod bundled_examples;
+mod bundled_library;
 mod drawings;
 mod exchange;
 mod external_queries;
