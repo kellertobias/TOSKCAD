@@ -68,8 +68,9 @@ test('tag-only configuration has no npm or release-commit plugin',()=>{
   assert.deepEqual(config.branches,['main']);assert.equal(config.tagFormat,'v${version}');
   const plugins=config.plugins.map(p=>Array.isArray(p)?p[0]:p);
   assert(!plugins.some(p=>/semantic-release[/\\](?:git|npm)[/\\]/u.test(p)));
-  assert(plugins.some(p=>p.includes('github')));
-  const provider=config.plugins.find(p=>Array.isArray(p)&&p[0].includes('github'))[1];
+  const githubPlugin=require.resolve('@semantic-release/github');
+  assert(plugins.includes(githubPlugin));
+  const provider=config.plugins.find(p=>Array.isArray(p)&&p[0]===githubPlugin)[1];
   assert.equal(provider.successComment,false);assert.equal(provider.failComment,false);
 });
 
