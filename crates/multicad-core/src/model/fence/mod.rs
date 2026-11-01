@@ -13,6 +13,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+mod layout;
+pub use layout::*;
+
 pub const MAX_FENCE_INFILL_RECIPES: usize = 32;
 
 /// Rectangular width runs along the post's local tangent, depth across it.
@@ -133,9 +136,9 @@ impl ResolvedFencePanelWidth {
                 if clear_width_mm < width_mm && short_bay == FenceShortPanelPolicy::Cut {
                     return Ok(clear_width_mm);
                 }
-                Err(invalid(
-                    "Purchased panel does not fit this bay; change post positions or explicitly permit a shorter cut panel",
-                ))
+                Err(invalid(format!(
+                    "Purchased panel width {width_mm:.3} mm does not fit a {clear_width_mm:.3} mm clear bay; change post positions or explicitly permit a shorter cut panel"
+                )))
             }
         }
     }
