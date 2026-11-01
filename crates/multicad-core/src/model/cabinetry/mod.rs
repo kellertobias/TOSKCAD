@@ -10,6 +10,7 @@
 //! oversize, and are reported along and across the grain.
 mod cabinet;
 mod chain;
+mod collision;
 mod connections;
 mod dowel;
 mod joint;
@@ -18,6 +19,7 @@ mod prepare;
 mod resolve;
 mod tenon;
 pub use cabinet::*;
+pub use collision::check_cabinet_connections;
 pub use dowel::*;
 pub use joint::*;
 pub use machining::*;

@@ -32,7 +32,7 @@ pub const MAX_HOLES: usize = 256;
 pub const MAX_PIN_ROWS: usize = 8;
 /// The System 32 hole pitch.
 pub const SYSTEM32_PITCH_MM: f64 = 32.;
-const MARGIN_MM: f64 = 1.;
+pub(super) const MARGIN_MM: f64 = 1.;
 const TOL: f64 = 1e-6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

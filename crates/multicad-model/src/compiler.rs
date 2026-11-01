@@ -382,6 +382,18 @@ impl Compiler {
         }
         let context =
             SketchEvaluationContext::new(document, revision).map_err(|e| error(e.source, e))?;
+        if roots.is_none() {
+            for entity in model::carcasses(document) {
+                checkpoint(interrupt)?;
+                model::check_cabinet_connections(
+                    document,
+                    context.parameters(),
+                    entity.id,
+                    interrupt,
+                )
+                .map_err(|e| error(Some(entity.id), e))?;
+            }
+        }
         let stamp = ModelStamp {
             document: document.id(),
             revision,

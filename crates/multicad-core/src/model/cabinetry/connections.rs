@@ -356,6 +356,8 @@ pub(super) fn finish(
             }
         }
     }
+    let parameters = crate::parameters::evaluate(&candidate)?;
+    check_cabinet_connections(&candidate, &parameters, id, None)?;
     let mut outputs = vec![];
     for (_, _, body) in carcass_panels(&candidate, id)? {
         outputs.push(CreatedBody {

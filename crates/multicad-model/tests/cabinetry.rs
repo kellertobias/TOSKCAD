@@ -565,6 +565,101 @@ fn cabinet_connections_follow_parameters_levels_joinery_and_user_owned_dependenc
 }
 
 #[test]
+fn cabinet_receiving_cut_collisions_are_refused_before_apply_and_after_parameter_edits() {
+    let mut f = fixture();
+    let mut definition = explicit_cabinet(&f);
+    definition.width = length(300.);
+    definition.height = length(400.);
+    definition.depth = length(220.);
+    definition.back = Back::None;
+    let c = definition.cabinet.as_mut().unwrap();
+    c.toe_clearance = length(20.);
+    c.pins.start = length(43.);
+    c.shelves[0].underside = length(200.);
+    c.shelves[0].depth = length(150.);
+    c.shelves[1].depth = length(150.);
+    c.shelves[1].support = model::ShelfSupport::System32 { level: 3 };
+    let model::CabinetJoinery::Dowels(spec) = &mut c.joinery else {
+        unreachable!()
+    };
+    spec.inset = Dimension::Expression {
+        expression: BoundExpression::bind(f.s.document(), "=$cab_width / 10", "mm", None).unwrap(),
+    };
+    let created = model::prepare_carcass(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        &CarcassRequest::new("Collision cabinet", definition.clone()),
+    )
+    .unwrap();
+    let id = created.carcass;
+    let upstream = created
+        .panels
+        .iter()
+        .find(|(r, _)| *r == PanelRole::LeftSide)
+        .unwrap()
+        .1
+        .feature;
+    checked(&mut f.s, created.model.prepared);
+    let original = f.s.document().clone();
+    let mut invalid = definition.clone();
+    let model::CabinetJoinery::Dowels(spec) = &mut invalid.cabinet.as_mut().unwrap().joinery else {
+        unreachable!()
+    };
+    spec.inset = length(37.);
+    let error = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &invalid)
+        .err()
+        .expect("dowel and pin collision refused");
+    assert!(error.to_string().contains("receiving cuts"), "{error}");
+    assert_eq!(f.s.document(), &original);
+    invalid.width = length(70.);
+    invalid.cabinet.as_mut().unwrap().shelves.clear();
+    let error = model::prepare_carcass_edit(&f.s, f.s.revision(), actor(), id, &invalid)
+        .err()
+        .expect("opposed blind depths refused");
+    assert!(error.to_string().contains("overlap"), "{error}");
+    let mut parameter = f.s.document().get(f.width).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+        unreachable!()
+    };
+    *expression = "370".into();
+    let candidate =
+        f.s.prepare(Request {
+            expected_revision: f.s.revision(),
+            actor: actor(),
+            label: "Colliding parameter edit".into(),
+            edits: vec![Mutation::Replace(parameter)],
+        })
+        .unwrap();
+    let error = Compiler::default()
+        .compile(candidate.document(), f.s.revision() + 1)
+        .err()
+        .expect("parameter-only collision refused");
+    assert!(error.to_string().contains("receiving cuts"), "{error}");
+    assert_eq!(f.s.document(), &original);
+    // A downstream failure still allows upstream face/sketch repair queries.
+    Compiler::default()
+        .compile_sources(candidate.document(), f.s.revision() + 1, &[upstream])
+        .unwrap();
+    let mut suppressed = vec![];
+    for entity in model::machining_cuts(candidate.document()) {
+        let mut entity = entity.clone();
+        if let EntityData::Feature { suppressed, .. } = &mut entity.data {
+            *suppressed = true;
+        }
+        suppressed.push(Mutation::Replace(entity));
+    }
+    let muted = candidate.document().edited(&suppressed).unwrap();
+    Compiler::default()
+        .compile(&muted, f.s.revision() + 1)
+        .unwrap();
+    assert!(
+        model::check_cabinet_connections(f.s.document(), f.s.parameters(), id, Some(&|| true))
+            .is_err()
+    );
+}
+
+#[test]
 fn carcass_generates_named_panels_with_finished_and_core_sizes() {
     let mut f = fixture();
     let created = model::prepare_carcass(
