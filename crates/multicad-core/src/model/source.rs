@@ -701,6 +701,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::THREAD_TYPE => {
                     super::read_thread(document, entity.id)?;
                 }
+                super::MECHANICAL_PART_TYPE => {
+                    super::read_mechanical_part(document, entity.id)?;
+                }
                 super::GEAR_TYPE => {
                     super::read_gear(document, entity.id)?;
                 }
@@ -747,6 +750,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::PRIMITIVE_TYPE,
                     super::THREAD_TYPE,
                     super::GEAR_TYPE,
+                    super::MECHANICAL_PART_TYPE,
                     super::REVOLVE_TYPE,
                     super::BOOLEAN_TYPE,
                     super::SPLIT_TYPE,

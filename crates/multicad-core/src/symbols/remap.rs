@@ -19,6 +19,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::THREAD_TYPE => {
             model::ThreadDefinition::from_definition(d)?;
         }
+        model::MECHANICAL_PART_TYPE => {
+            model::MechanicalPartDefinition::from_definition(d)?;
+        }
         model::GEAR_TYPE => {
             model::GearDefinition::from_definition(d)?;
         }
@@ -157,6 +160,17 @@ fn collect(v: &Value, out: &mut BTreeSet<EntityId>) {
         _ => {}
     }
 }
+// Catalog references are descriptive, including UUID-looking catalog IDs,
+// revisions and URLs. Their literal snapshot contains no source identities.
+fn identity_data(entity: &Entity) -> Result<Value, DocumentError> {
+    let mut data = serde_json::to_value(&entity.data).map_err(|e| invalid(e.to_string()))?;
+    if matches!(&entity.data, EntityData::Feature { definition, .. } if definition.type_id == model::MECHANICAL_PART_TYPE)
+        && let Some(source) = data["definition"]["data"].as_object_mut()
+    {
+        source.remove("provenance");
+    }
+    Ok(data)
+}
 pub(super) fn identities(def: &SymbolDefinition) -> Result<BTreeSet<EntityId>, DocumentError> {
     let mut out = BTreeSet::new();
     for entity in def.template.entities() {
@@ -171,10 +185,7 @@ pub(super) fn identities(def: &SymbolDefinition) -> Result<BTreeSet<EntityId>, D
                 out.extend(material);
             }
             EntityData::Material { .. } => {}
-            _ => collect(
-                &serde_json::to_value(&entity.data).map_err(|e| invalid(e.to_string()))?,
-                &mut out,
-            ),
+            _ => collect(&identity_data(entity)?, &mut out),
         }
     }
     if out.len() > MAX_SYMBOL_ENTITIES * 8 || out.iter().any(EntityId::is_nil) {
@@ -251,8 +262,19 @@ pub(super) fn remap(
         },
         EntityData::Material { .. } => e.data.clone(),
         _ => {
-            let mut data = serde_json::to_value(&e.data).map_err(|e| invalid(e.to_string()))?;
+            let provenance = match &e.data {
+                EntityData::Feature { definition, .. }
+                    if definition.type_id == model::MECHANICAL_PART_TYPE =>
+                {
+                    definition.data.get("provenance").cloned()
+                }
+                _ => None,
+            };
+            let mut data = identity_data(e)?;
             rewrite(&mut data, map);
+            if let Some(provenance) = provenance {
+                data["definition"]["data"]["provenance"] = provenance;
+            }
             serde_json::from_value(data).map_err(|e| invalid(e.to_string()))?
         }
     };

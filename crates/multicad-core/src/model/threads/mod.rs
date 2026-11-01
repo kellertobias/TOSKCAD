@@ -116,7 +116,7 @@ pub struct ResolvedThread {
     pub frame: Frame,
 }
 impl ThreadParameters {
-    fn dimensions(&self) -> Vec<&Dimension> {
+    pub(super) fn dimensions(&self) -> Vec<&Dimension> {
         let mut dimensions = vec![
             &self.major_diameter,
             &self.pitch,
