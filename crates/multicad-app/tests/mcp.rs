@@ -159,17 +159,28 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         "save_project",
         "export_step",
         "import_sketch_artwork",
+        "set_fence_type",
+        "inspect_fence_type",
+        "preview_fence",
+        "set_fence",
+        "inspect_fence",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
     for tool in tools {
         assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
         let read_only = tool["annotations"]["readOnlyHint"].as_bool().unwrap();
-        let mutating = tool["inputSchema"]["required"]
+        let requires_revision = tool["inputSchema"]["required"]
             .as_array()
             .is_some_and(|r| r.contains(&json!("expected_revision")));
-        // Every mutating tool requires the revision it was based on.
-        assert_eq!(read_only, !mutating, "{}", tool["name"]);
+        // Every mutation needs its base revision. A read-only native preview
+        // also guards its source revision without committing a transaction.
+        if tool["name"] == "preview_fence" {
+            assert!(read_only);
+            assert!(requires_revision);
+        } else {
+            assert_eq!(read_only, !requires_revision, "{}", tool["name"]);
+        }
     }
     let unknown = client.fail("no_such_tool", json!({}));
     assert_eq!(unknown["code"], "unknown_tool");
