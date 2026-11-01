@@ -50,6 +50,10 @@ fn pair_is_one_source_neutral_transaction_with_existing_assembly_relationships_a
     let r = request();
     let before = s.document().clone();
     let p = prepare_gear_pair(&s, 0, actor(), &r).unwrap();
+    assert_eq!(p.occurrence, Some(r.placement.instance));
+    assert!(
+        matches!(p.prepared.document().get(r.placement.instance).map(|e|&e.data),Some(EntityData::Instance{component,..}) if *component==r.outputs.assembly)
+    );
     assert_eq!(s.document(), &before);
     let source = read_gear_pair(p.prepared.document(), r.pair).unwrap();
     assert_eq!(source.outputs, r.outputs);
@@ -273,4 +277,46 @@ fn all_supported_parallel_families_keep_opposite_hand_and_gap_semantics() {
             assert!(resolved.gears[1].twist_rad_per_mm > 0.);
         }
     }
+}
+
+#[test]
+fn outer_pair_occurrence_uses_normal_move_and_copy_without_rewriting_its_definition() {
+    let mut s = session();
+    let r = request();
+    let p = prepare_gear_pair(&s, 0, actor(), &r).unwrap();
+    s.commit(p.prepared).unwrap();
+    let source = read_gear_pair(s.document(), r.pair).unwrap();
+    let moving = InstanceMoveRequest::new(
+        r.placement.instance,
+        NumericTransform {
+            translation: [length(100.), length(0.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let p = prepare_instance_moves(&s, 1, actor(), &[moving]).unwrap();
+    s.commit(p.prepared).unwrap();
+    near(
+        resolve_instance_pose(s.document(), r.placement.instance, s.parameters())
+            .unwrap()
+            .translation_mm[0],
+        100.,
+    );
+    let copy = InstanceCopyRequest::new(
+        InstanceCopySource::Instance {
+            instance: r.placement.instance,
+        },
+        NumericTransform {
+            translation: [length(0.), length(100.), length(0.)],
+            ..Default::default()
+        },
+    );
+    let p = prepare_instance_copies(&s, 2, actor(), std::slice::from_ref(&copy)).unwrap();
+    s.commit(p.prepared).unwrap();
+    assert_eq!(read_gear_pair(s.document(), r.pair).unwrap(), source);
+    assert!(
+        matches!(s.document().get(copy.instance).map(|e|&e.data),Some(EntityData::Instance{component,..}) if *component==r.outputs.assembly)
+    );
+    let pose = resolve_instance_pose(s.document(), copy.instance, s.parameters()).unwrap();
+    near(pose.translation_mm[0], 100.);
+    near(pose.translation_mm[1], 100.);
 }

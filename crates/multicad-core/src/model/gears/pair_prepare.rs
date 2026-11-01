@@ -3,8 +3,8 @@ use crate::{
     commands::{Actor, CommandError, Prepared, Request, Session},
     document::{Entity, Mutation, Placement},
     model::{
-        AssemblyDefinition, CreatedBody, JointAnchor, JointDefinition, JointParameters,
-        PlacementBase,
+        AssemblyDefinition, ComponentPlacementRequest, CreatedBody, InstancePlacementDefinition,
+        JointAnchor, JointDefinition, JointParameters, PlacementBase,
         common::{error, revision},
     },
 };
@@ -16,24 +16,31 @@ pub struct GearPairRequest {
     pub gears: [GearRequest; 2],
     pub parameters: GearPairParameters,
     pub outputs: GearPairOutputs,
+    /// Ordinary outer occurrence; the reusable pair definition does not own it.
+    pub placement: ComponentPlacementRequest,
 }
 impl GearPairRequest {
     pub fn new(name: impl Into<String>, gears: [GearRequest; 2]) -> Self {
+        let name = name.into();
+        let outputs = GearPairOutputs {
+            assembly: EntityId::new(),
+            metadata: EntityId::new(),
+            instances: [EntityId::new(), EntityId::new()],
+            joints: [EntityId::new(), EntityId::new()],
+        };
+        let mut placement = ComponentPlacementRequest::new(outputs.assembly, Default::default());
+        placement.name = name.clone();
         Self {
             pair: EntityId::new(),
-            name: name.into(),
+            name,
             parameters: GearPairParameters {
                 gears: gears.each_ref().map(|g| g.feature),
                 frame: Default::default(),
                 drive_angle: angle(0.),
             },
             gears,
-            outputs: GearPairOutputs {
-                assembly: EntityId::new(),
-                metadata: EntityId::new(),
-                instances: [EntityId::new(), EntityId::new()],
-                joints: [EntityId::new(), EntityId::new()],
-            },
+            outputs,
+            placement,
         }
     }
 }
@@ -43,6 +50,7 @@ pub struct GearPairPrepared {
     pub pair: EntityId,
     pub assembly: EntityId,
     pub instances: [EntityId; 2],
+    pub occurrence: Option<EntityId>,
 }
 fn extension(id: EntityId, name: &str, definition: Definition, inputs: Vec<Link>) -> Entity {
     let mut e = Entity::new(name, EntityData::Extension { definition, inputs });
@@ -66,6 +74,12 @@ pub fn prepare_gear_pair(
     if request.name.trim().is_empty() || request.name.len() > 1000 {
         return Err(error("A gear pair needs a name with 1–1000 bytes"));
     }
+    if request.placement.component != request.outputs.assembly {
+        return Err(error(
+            "The initial gear-pair occurrence must place its own reusable Assembly",
+        ));
+    }
+    request.placement.parameters.resolve(session.parameters())?;
     let bodies =
         super::prepare::prepare_gears(session, expected_revision, actor.clone(), &request.gears)?;
     let body_candidate = bodies.prepared.document();
@@ -137,6 +151,29 @@ pub fn prepare_gear_pair(
         metadata.definition()?,
         metadata.inputs()?,
     )));
+    let placement = InstancePlacementDefinition {
+        owner: request.placement.instance,
+        base: PlacementBase::Literal {
+            pose: Default::default(),
+        },
+        parameters: request.placement.parameters.clone(),
+    };
+    edits.push(Mutation::Insert(extension(
+        request.placement.driver,
+        "Gear pair placement",
+        placement.definition()?,
+        placement.inputs()?,
+    )));
+    let mut occurrence = Entity::new(
+        &request.placement.name,
+        EntityData::Instance {
+            component: source.outputs.assembly,
+            placement: Placement::default(),
+            placement_source: Some(request.placement.driver),
+        },
+    );
+    occurrence.id = request.placement.instance;
+    edits.push(Mutation::Insert(occurrence));
     let mut hierarchy = body_candidate.hierarchy().clone();
     hierarchy
         .members
@@ -146,6 +183,11 @@ pub fn prepare_gear_pair(
         .entry(body_candidate.id())
         .or_default()
         .push(source.outputs.assembly);
+    hierarchy
+        .members
+        .entry(body_candidate.id())
+        .or_default()
+        .push(request.placement.instance);
     edits.push(Mutation::SetHierarchy(hierarchy));
     let candidate = body_candidate.edited(&edits)?;
     let prepared = session.prepare(Request {
@@ -163,6 +205,7 @@ pub fn prepare_gear_pair(
         pair: request.pair,
         assembly: source.outputs.assembly,
         instances: source.outputs.instances,
+        occurrence: Some(request.placement.instance),
     })
 }
 pub fn prepare_gear_pair_edit(
@@ -213,5 +256,6 @@ pub fn prepare_gear_pair_edit(
         pair,
         assembly: source.outputs.assembly,
         instances: source.outputs.instances,
+        occurrence: None,
     })
 }
