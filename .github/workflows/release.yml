@@ -72,17 +72,20 @@ jobs:
     name: Build and test / ${{ matrix.target }}
     needs: metadata
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             target: linux-x64
+            timeout_minutes: 120
           - os: macos-15
             target: macos-arm64
+            timeout_minutes: 120
           - os: windows-2025
             target: windows-x64
+            timeout_minutes: 180
     env:
       MULTICAD_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:
