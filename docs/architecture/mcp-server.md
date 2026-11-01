@@ -291,6 +291,43 @@ Direct `export_step` also refuses a selected producer whose dependency history
 contains a cosmetic thread. An unrelated cosmetic Part does not block export
 of a physical Part.
 
+## Mechanical part control
+
+`mechanical_part_profiles` reports generic geometry coverage and its limits.
+`set_mechanical_part` creates or edits a washer, hex nut or bearing mounting
+envelope through the canonical native-checked transaction. These tools do not
+yet provide a verified standard-parts catalog. Generated `tools/list` owns the
+argument schema; [mechanical part tools](../../crates/multicad-mcp/src/tools/mechanical_parts.rs)
+implement the contract.
+
+Creation requires a name and an explicit `recipe.kind`: `washer`, `hex_nut`
+or `bearing_envelope`. Edits identify the generator `feature`, retain the
+name/output Part and require the same recipe kind. Omitted optional recipe
+values preserve the saved source; explicit `null` has the same effect.
+Washer defaults are 3.2 mm bore, 7 mm outside and 0.5 mm thickness. Bearing
+envelope defaults are 10 mm bore, 30 mm outside and 9 mm width. These numerical
+defaults carry no catalog provenance or stock claim. Their frame accepts an
+origin and either a principal plane or both explicit basis vectors.
+
+Nut defaults are 10 mm across flats with a cosmetic M6/1 mm-pitch thread of
+5.2 mm length. The nested `thread` accepts the shared thread recipe, including
+Custom profiles, allowances and frame. `thread.length` is nut height and its
+frame locates the whole body; there is no independent second height or axis.
+It accepts no thread transaction controls such as `mode` or `target_part`.
+The existing `set_thread` tool keeps its original flat arguments.
+
+Cosmetic nut threads are refused for STEP, mesh and Print manufacturing output
+until their representation is `modeled`. A bearing envelope contains only its
+external annular mounting geometry; exported geometry does not include races,
+rolling elements or seals. No fit, load or standards compliance is implied.
+
+`inspect_mechanical_part` reads retained source, resolved dimensions and whether
+they match an optional literal source reference. Placement and display-detail
+choice do not alter dimensional attribution. A match establishes neither
+trusted catalog membership nor stock availability; changed dimensions retain
+the reference while becoming a derived/custom variant. Source inspection does
+not evaluate native geometry; use `evaluate_model` for that.
+
 ## Gear control
 
 `gear_profiles` reports supported families and primary geometry sources.

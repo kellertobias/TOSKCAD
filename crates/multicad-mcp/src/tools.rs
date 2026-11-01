@@ -44,6 +44,7 @@ mod gears;
 mod guides;
 mod imports;
 mod levels;
+mod mechanical_parts;
 mod reference_repair;
 mod render;
 mod schedules;
@@ -67,6 +68,8 @@ pub use gear_pairs::{GearPairArgs, InspectGearPairArgs};
 use gear_pairs::{inspect_gear_pair, set_gear_pair};
 pub use gears::{GearArgs, InspectGearArgs};
 use gears::{gear_profiles, inspect_gear, set_gear};
+pub use mechanical_parts::{InspectMechanicalPartArgs, MechanicalPartArgs};
+use mechanical_parts::{inspect_mechanical_part, mechanical_part_profiles, set_mechanical_part};
 pub use text::{
     AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextAnchorArg, TextFontArg,
     TextStyleArgs,
@@ -263,6 +266,15 @@ tools! {
     "set_thread" => ThreadArgs, "Create or edit thread", false,
         "Create a new threaded shaft or cut an external/internal thread on target_part; edit an existing thread by feature ID while preserving omitted fields, Part and original target predecessor. All dimensions carry units; custom profile angles and radius taper accept typed values/formulas. Nominal-basic fits and fabrication clearance are separate. Native Preview checks complete receiving geometry before one attributable transaction or the owner's review queue. Unsupported families, invalid walls and failed geometry change nothing. Cosmetic envelopes are display-only and cannot be exported as STEP/mesh/print manufacturing geometry.",
         set_thread;
+    "mechanical_part_profiles" => NoArgs, "Mechanical part geometry coverage", true,
+        "Read supported generic hardware geometry and declared catalog/representation limits. This is not a stocked standard-parts catalog.",
+        mechanical_part_profiles;
+    "inspect_mechanical_part" => InspectMechanicalPartArgs, "Inspect mechanical part source", true,
+        "Read retained mechanical Part dimensions, optional reference attribution and representation without native evaluation. A reference match does not certify stock, fit or standards compliance.",
+        inspect_mechanical_part;
+    "set_mechanical_part" => MechanicalPartArgs, "Create or edit mechanical part", false,
+        "Create a parametric washer, hex nut or bearing mounting envelope, or edit by generator feature ID while retaining Part identity and omitted recipe values. Recipe kind is explicit. Nut thread.length is its height and the thread frame locates the whole nut; the full shared thread recipe is supported. Cosmetic nut threads are refused for manufacturing export until Modeled. Bearings are external mounting envelopes only. Native evaluation precedes one transaction or owner review; stale, invalid, cancelled and failed requests change nothing. No sourced catalog membership or stock availability is implied.",
+        set_mechanical_part;
     "gear_profiles" => NoArgs, "Gear profile coverage", true,
         "Read supported gear families, primary dimension/profile sources and limits. Unsupported families and pair placement are explicit.",
         gear_profiles;

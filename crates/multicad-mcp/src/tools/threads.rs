@@ -148,6 +148,12 @@ pub struct ThreadArgs {
     /// Required by new receiving cuts; omitted for a new shaft. Cannot retarget an edit.
     #[serde(default)]
     pub target_part: Option<String>,
+    #[serde(flatten)]
+    pub recipe: ThreadRecipeArgs,
+}
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadRecipeArgs {
     #[serde(default)]
     pub family: Option<ThreadFamilyArg>,
     /// Full explicit replacement of a Custom profile, including its angle/taper units.
@@ -181,14 +187,15 @@ pub struct ThreadArgs {
     #[serde(default)]
     pub axis_v: Option<[f64; 3]>,
 }
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InspectThreadArgs {
     pub thread: String,
 }
 
-fn parameters(
-    args: &ThreadArgs,
+pub(super) fn parameters(
+    args: &ThreadRecipeArgs,
     previous: Option<&ThreadParameters>,
     document: &Document,
     evaluated: &EvaluatedParameters,
@@ -314,7 +321,7 @@ pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> T
         .map(|feature| model::read_thread(&document, feature))
         .transpose()?;
     let parameters = parameters(
-        &args,
+        &args.recipe,
         previous.as_ref().map(|source| &source.parameters),
         &document,
         &evaluated,
@@ -384,4 +391,24 @@ pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> T
     let owned = call.clone();
     let committed = with(host, move |target| commit(target, &owned, prepared))??;
     Ok(json!({"revision":committed,"thread":feature,"part":body}))
+}
+
+#[cfg(test)]
+mod recipe_wire_tests {
+    use super::*;
+    #[test]
+    fn shared_recipe_preserves_the_flat_thread_contract_and_rejects_controls_inside_recipes() {
+        let args:ThreadArgs=serde_json::from_value(json!({"expected_revision":0,"name":"Thread","mode":"new_external","major_diameter":{"value":6.,"unit":"mm"},"pitch":{"value":1.,"unit":"mm"},"length":{"value":5.2,"unit":"mm"}})).unwrap();
+        assert!(args.recipe.major_diameter.is_some());
+        assert!(matches!(args.mode, Some(ThreadModeArg::NewExternal)));
+        assert!(
+            serde_json::from_value::<ThreadRecipeArgs>(json!({"mode":"cut_internal"})).is_err()
+        );
+        assert!(
+            serde_json::from_value::<ThreadArgs>(json!({"expected_revision":0,"bogus":1})).is_err()
+        );
+        let schema = serde_json::to_value(schemars::schema_for!(ThreadArgs)).unwrap();
+        assert!(schema["properties"]["major_diameter"].is_object());
+        assert!(schema["properties"].get("recipe").is_none());
+    }
 }
