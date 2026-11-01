@@ -113,7 +113,12 @@ struct SourceSnapshot {
     constrained: BTreeSet<EntityId>,
 }
 impl SourceSnapshot {
-    fn new(document: &Document, revision: u64) -> Result<Self, String> {
+    fn new(
+        document: &Document,
+        revision: u64,
+        known_hash: Option<Result<ContentHash, String>>,
+    ) -> Result<Self, String> {
+        let hash = known_hash.unwrap_or_else(|| ContentHash::document(document))?;
         let mut sketches = BTreeSet::new();
         let mut constrained = BTreeSet::new();
         for entity in document.entities() {
@@ -127,7 +132,7 @@ impl SourceSnapshot {
         Ok(Self {
             document: Arc::new(document.clone()),
             revision,
-            hash: ContentHash::document(document)?,
+            hash,
             sketches,
             constrained,
         })
@@ -456,6 +461,21 @@ impl SketchEvaluationFeed {
             document,
             revision,
             references.map(|(s, r)| (ReferenceStamp::Scene(s), r)),
+            None,
+        );
+    }
+    /// The live session supplies the exact same hash as document serialization,
+    /// cached once per immutable revision rather than once per UI consumer.
+    pub fn sync_session(
+        &mut self,
+        session: &multicad_core::commands::Session,
+        references: Option<(SceneStamp, ReferenceReport)>,
+    ) {
+        self.sync_context(
+            session.document(),
+            session.revision(),
+            references.map(|(stamp, report)| (ReferenceStamp::Scene(stamp), report)),
+            Some(session.source_hash()),
         );
     }
     /// Use only a report explicitly revalidated for the committed source by a
@@ -477,6 +497,25 @@ impl SketchEvaluationFeed {
                 },
                 report,
             )),
+            None,
+        );
+    }
+    pub fn sync_creation_session(
+        &mut self,
+        session: &multicad_core::commands::Session,
+        report: ReferenceReport,
+    ) {
+        self.sync_context(
+            session.document(),
+            session.revision(),
+            Some((
+                ReferenceStamp::Source {
+                    document: session.document().id(),
+                    revision: session.revision(),
+                },
+                report,
+            )),
+            Some(session.source_hash()),
         );
     }
     fn sync_context(
@@ -484,11 +523,19 @@ impl SketchEvaluationFeed {
         document: &Document,
         revision: u64,
         references: Option<(ReferenceStamp, ReferenceReport)>,
+        known_hash: Option<Result<ContentHash, String>>,
     ) {
         let source_changed = self
             .source
             .as_ref()
-            .is_none_or(|s| s.document.id() != document.id() || s.revision != revision);
+            .is_none_or(|s| s.document.id() != document.id() || s.revision != revision)
+            || known_hash.as_ref().is_some_and(|value| match value {
+                Ok(hash) => self
+                    .source
+                    .as_ref()
+                    .is_none_or(|source| source.hash != *hash),
+                Err(_) => true,
+            });
         let context_changed =
             self.report.as_ref().map(|(s, _)| *s) != references.as_ref().map(|(s, _)| *s);
         let changed_report = !context_changed
@@ -518,7 +565,7 @@ impl SketchEvaluationFeed {
                 self.last_valid.clear();
             }
             self.retained_document = Some(document.id());
-            match SourceSnapshot::new(document, revision) {
+            match SourceSnapshot::new(document, revision, known_hash) {
                 Ok(source) => {
                     self.last_valid.retain(|id, _| source.sketches.contains(id));
                     self.source = Some(source);
@@ -854,6 +901,28 @@ impl SketchEvaluationFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_sync_reuses_stable_hash_and_rekeys_same_identity_revision_different_source() {
+        let document=Document::new("First source").unwrap();
+        let first=multicad_core::commands::Session::new(document.clone()).unwrap();
+        let second=multicad_core::commands::Session::new(document.edited(&[multicad_core::document::Mutation::RenameDocument("Other source".into())]).unwrap()).unwrap();
+        assert_eq!(first.document().id(),second.document().id());
+        assert_eq!(first.revision(),second.revision());
+        let mut feed=SketchEvaluationFeed::default();
+        feed.sync_session(&first,None);
+        let original=feed.current_stamp().unwrap();
+        feed.sync_session(&first,None);
+        assert_eq!(feed.current_stamp(),Some(original));
+        feed.sync_session(&second,None);
+        let changed=feed.current_stamp().unwrap();
+        assert_ne!(changed.source_hash,original.source_hash);
+        assert!(changed.generation>original.generation);
+        assert_eq!(changed.source_hash,ContentHash::document(second.document()).unwrap());
+        feed.sync_session(&first,None);
+        let restored=feed.current_stamp().unwrap();
+        assert_eq!(restored.source_hash,original.source_hash);
+        assert!(restored.generation>changed.generation);
+    }
     use multicad_core::{
         commands::{Actor, Channel, Request, Session},
         constraint_sketch::{

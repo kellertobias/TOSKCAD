@@ -68,6 +68,63 @@ fn read_only_stamps_reject_foreign_sessions_and_every_source_history_change() {
     owner.validate_stamp(&owner.stamp()).unwrap();
 }
 #[test]
+fn cached_source_hash_matches_canonical_bytes_after_edits_history_and_file_capture() {
+    use multicad_core::project_file::{ContentHash, info::PreviewImage};
+    let mut session = Session::new(Document::new("Hash source").unwrap()).unwrap();
+    let check = |session: &Session| {
+        let exact = ContentHash::document(session.document()).unwrap();
+        assert_eq!(session.source_hash().unwrap(), exact);
+        assert_eq!(session.source_hash().unwrap(), exact);
+        exact
+    };
+    let original = check(&session);
+    let snapshot = session.preparation_snapshot();
+    let pending = session
+        .prepare(request(
+            0,
+            Channel::Ui,
+            vec![Mutation::Insert(parameter("width", "80"))],
+        ))
+        .unwrap();
+    assert_eq!(check(&session), original);
+    session.commit(pending).unwrap();
+    let edited = check(&session);
+    assert_ne!(edited, original);
+    assert_eq!(snapshot.session().source_hash().unwrap(), original);
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(check(&session), original);
+    session
+        .redo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(check(&session), edited);
+    let image = PreviewImage::from_png(
+        include_bytes!("../../../assets/branding/app/AppIcon.png").as_slice(),
+    )
+    .unwrap();
+    session
+        .replace_file_preview(Some(image), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_ne!(check(&session), edited);
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    check(&session);
+    session
+        .redo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    check(&session);
+    let other = Session::new(
+        session
+            .document()
+            .edited(&[Mutation::RenameDocument("Other".into())])
+            .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(other.source_hash().unwrap(), session.source_hash().unwrap());
+}
+#[test]
 fn one_payload_has_identical_results_across_ui_and_external_callers() {
     let document = Document::new("Shared").unwrap();
     let entity = parameter("width", "600");

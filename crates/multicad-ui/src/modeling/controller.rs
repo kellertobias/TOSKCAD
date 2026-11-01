@@ -1086,7 +1086,7 @@ impl ModelToolController {
             return Err("Apply or cancel the active modeling tool first".into());
         }
         let scope = session.stamp();
-        let source = ContentHash::document(session.document())?;
+        let source = session.source_hash()?;
         self.form = Some(form);
         if let Some(panel) = self.form.as_mut().and_then(ModelForm::extrusion_mut) {
             panel.set_picking_available(false);
@@ -1287,7 +1287,7 @@ impl ModelToolController {
                 "Project resources changed; cancel the modeling tool and start again".into(),
             );
         }
-        if full && ContentHash::document(session.document())? != scope.source {
+        if full && session.source_hash()? != scope.source {
             return Err(
                 "The source content changed; cancel the modeling tool and start again".into(),
             );

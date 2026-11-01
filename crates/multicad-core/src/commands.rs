@@ -4,7 +4,10 @@ use crate::{
     parameters::{self, EvaluatedParameters, ParameterError},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::OnceLock,
+};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
@@ -152,6 +155,7 @@ pub struct Session {
     id: EntityId,
     current: EvaluatedParameters,
     revision: u64,
+    source_hash: OnceLock<Result<crate::project_file::ContentHash, String>>,
     saved: Option<Document>,
     undo: VecDeque<History>,
     redo: VecDeque<History>,
@@ -206,6 +210,7 @@ impl Session {
             id: EntityId::new(),
             current: parameters::evaluate(&document)?,
             revision: 0,
+            source_hash: OnceLock::new(),
             saved: None,
             undo: VecDeque::new(),
             redo: VecDeque::new(),
@@ -214,6 +219,18 @@ impl Session {
     }
     pub fn document(&self) -> &Document {
         &self.current.document
+    }
+    /// Exact canonical source hash, shared by read-only consumers of this
+    /// immutable revision. Every source/history replacement invalidates it.
+    pub fn source_hash(&self) -> Result<crate::project_file::ContentHash, String> {
+        self.source_hash
+            .get_or_init(|| crate::project_file::ContentHash::document(self.document()))
+            .clone()
+    }
+    fn replace_current(&mut self, current: EvaluatedParameters, revision: u64) {
+        self.current = current;
+        self.revision = revision;
+        self.source_hash = OnceLock::new();
     }
     pub fn stamp(&self) -> SessionStamp {
         SessionStamp {
@@ -242,6 +259,7 @@ impl Session {
                 id: self.id,
                 current: self.current.clone(),
                 revision: self.revision,
+                source_hash: self.source_hash.clone(),
                 saved: None,
                 undo: VecDeque::new(),
                 redo: VecDeque::new(),
@@ -379,8 +397,7 @@ impl Session {
             self.undo.pop_front();
         }
         self.redo.clear();
-        self.current = preview.evaluated;
-        self.revision = revision;
+        self.replace_current(preview.evaluated, revision);
         self.record(Activity {
             actor: preview.actor,
             label: preview.label,
@@ -420,8 +437,7 @@ impl Session {
                 }
             }
         }
-        self.current = evaluated;
-        self.revision = revision;
+        self.replace_current(evaluated, revision);
         self.record(Activity {
             actor,
             label: "Capture file preview".into(),
@@ -447,8 +463,7 @@ impl Session {
         let history = self.undo.pop_back().unwrap();
         let label = format!("Undo: {}", history.label);
         self.redo.push_back(history);
-        self.current = evaluated;
-        self.revision = revision;
+        self.replace_current(evaluated, revision);
         self.record(Activity {
             actor,
             label,
@@ -470,8 +485,7 @@ impl Session {
         let history = self.redo.pop_back().unwrap();
         let label = format!("Redo: {}", history.label);
         self.undo.push_back(history);
-        self.current = evaluated;
-        self.revision = revision;
+        self.replace_current(evaluated, revision);
         self.record(Activity {
             actor,
             label,

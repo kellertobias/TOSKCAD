@@ -2734,14 +2734,11 @@ impl SketchEditor {
         if reference_context.is_none()
             && let Some((_, report)) = &self.creation_evaluation
         {
-            self.sketch_evaluation.sync_creation_report(
-                session.document(),
-                session.revision(),
-                report.clone(),
-            );
+            self.sketch_evaluation
+                .sync_creation_session(session, report.clone());
         } else {
             self.sketch_evaluation
-                .sync(session.document(), session.revision(), reference_context);
+                .sync_session(session, reference_context);
         }
         self.sketch_evaluation.poll();
         self.poll_exact_operation(session);

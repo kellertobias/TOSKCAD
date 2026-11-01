@@ -6,7 +6,7 @@ use crate::{
 };
 use multicad_core::{
     model::{ProfileSource, SketchPathSource},
-    project_file::{ContentHash, ProjectResources},
+    project_file::ProjectResources,
     references::{self, GeometryIntent, Resolution, TopologyKind},
 };
 use std::sync::Arc;
@@ -24,7 +24,7 @@ impl SketchEditor {
             return Ok(());
         }
         let document = session.document();
-        let hash = ContentHash::document(document)?;
+        let hash = session.source_hash()?;
         let mut profiles = Vec::new();
         let mut paths = Vec::new();
         for presentation in self.sketch_evaluation.current_presentations() {
@@ -150,9 +150,9 @@ impl SketchEditor {
             .filter(|_| feed.is_current(session.document().id(), session.revision()))
             .ok_or("Wait for current native geometry before selecting faces")?;
         if !scene.is_full_model()
-            || scene.model_evaluation().is_none_or(|info| {
-                ContentHash::document(session.document()).ok() != Some(info.source_hash)
-            })
+            || scene
+                .model_evaluation()
+                .is_none_or(|info| session.source_hash().ok() != Some(info.source_hash))
         {
             return Err("Face selection requires the complete source-bound native model".into());
         }
