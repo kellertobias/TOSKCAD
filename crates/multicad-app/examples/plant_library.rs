@@ -9,8 +9,7 @@ use multicad_core::{
     project_file::{self, ProjectFile, info::FileInfo},
     symbols::{self, SymbolAuthorRequest, SymbolKind},
 };
-use multicad_model::Compiler;
-pub use native_preview::render_preview_with_color;
+pub use native_preview::render_symbol_preview;
 use std::{io::Write, path::Path};
 pub type Error = Box<dyn std::error::Error>;
 pub fn build(kind: PlantKind) -> Result<ProjectFile, Error> {
@@ -40,8 +39,7 @@ pub fn build(kind: PlantKind) -> Result<ProjectFile, Error> {
     if retained.pin()? != definition.pin()? {
         return Err("Plant Library and creation tool do not share the same preset pin".into());
     }
-    let model = Compiler::default().compile(session.document(), session.revision())?;
-    let preview = render_preview_with_color(session.document(), &model, false, |name| {
+    let preview = render_symbol_preview(session.document(), author.definition, |name| {
         if name.to_ascii_lowercase().contains("trunk") {
             [0.35, 0.23, 0.14]
         } else {

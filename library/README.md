@@ -40,7 +40,13 @@ Copy the source notices and this README alongside regenerated files before packa
 
 `plant-generic-tree.tcd` and `plant-generic-shrub.tcd` are owned generic context definitions, with editable height and outer canopy/spread plus a linked authored plan. They use the same pins as the Architecture Planting tool. The simple tree has a trunk and cylindrical crown; the shrub has one cylindrical envelope. Plan circles use double and single rings respectively. These are illustrative planned-size defaults, with no species, growth or supplier claims and no copied artwork. [Planting source and drawing policy](../docs/architecture/plants.md) records dimensions, visibility and output behavior.
 
-`plant_library` regenerates just those two projects into an empty folder. `mechanical_library` generates all six projects and the complete manifest; source notices and this README must still accompany the result. Plant identities are fixed by preset kind and source role. Changing a definition requires an explicit revision and pin update.
+`plant_library` regenerates just those two projects into an empty folder. `mechanical_library` generates all 27 included projects and the complete manifest; source notices and this README must still accompany the result. Plant identities are fixed by preset kind and source role. Changing a definition requires an explicit revision and pin update.
+
+## Generic apartment equipment
+
+The 21 `equipment-*.tcd` projects supply owned generic electrical/lighting, heating, sanitary and appliance families. Dimensions remain editable instance inputs. Power outlets identify Type F; an E27 lamp holder is separate from luminaires, and a cooktop is separate from a full cooker with oven. Descriptions carry family-specific search terms. Native 3D forms, true-size monochrome footprints and optional readable plan marks retain the same definition pins as the Equipment tool. [Equipment source and drawing policy](../docs/architecture/equipment.md) explains host datums and boundaries.
+
+`equipment_library` regenerates these 21 projects alone. Every Library preview renders a deterministic temporary native occurrence without adding it to the saved definition or changing its pin. The renderer rejects empty or blank output. These are planning envelopes and original generic symbols; no manufacturer geometry or standards artwork is included.
 
 ## Hardware coverage still open
 

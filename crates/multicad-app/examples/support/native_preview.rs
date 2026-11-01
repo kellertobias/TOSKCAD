@@ -5,6 +5,43 @@ use multicad_core::{
 };
 use multicad_model::Model;
 type Error = Box<dyn std::error::Error>;
+/// Definitions have no placed physical leaves. Render a deterministic temporary
+/// occurrence; the saved Library source and its pin remain untouched.
+#[allow(dead_code)] // Other standalone examples include only the mesh renderer below.
+pub fn render_symbol_preview(
+    document: &Document,
+    definition: EntityId,
+    color_for: impl Fn(&str) -> [f32; 3],
+) -> Result<project_file::info::PreviewImage, Error> {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        document::Placement,
+        symbols::{self, SymbolPlaceRequest},
+    };
+    let mut session = Session::new(document.clone())?;
+    let mut request = SymbolPlaceRequest::new(
+        document,
+        definition,
+        "Library preview occurrence",
+        Default::default(),
+        Placement::default(),
+    )?;
+    let id = |role| EntityId::parse(&format!("cadfffff-0000-4000-8000-{role:012x}"));
+    request.record = id(1)?;
+    request.instance = id(2)?;
+    request.wrapper = id(3)?;
+    request.wrapper_metadata = id(4)?;
+    request.member = id(5)?;
+    for (index, value) in request.ids.values_mut().enumerate() {
+        *value = id(100 + index)?;
+    }
+    session.commit(
+        symbols::prepare_place(&session, 0, Actor::local(Channel::Mcp), &request)?.prepared,
+    )?;
+    let model =
+        multicad_model::Compiler::default().compile(session.document(), session.revision())?;
+    render_preview_with_color(session.document(), &model, false, color_for)
+}
 /// Reuse the native-mesh renderer with an explicit display palette.
 pub fn render_preview_with_color(
     document: &Document,
@@ -61,6 +98,12 @@ pub fn render_preview_with_color(
         }
     }
     let project = |p: [f64; 3]| (dot(p, right), dot(p, up), dot(p, fwd));
+    if tris.is_empty() {
+        return Err(
+            "Native preview has no physical triangles; place the definition before rendering"
+                .into(),
+        );
+    }
     let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
     for (p, _) in &tris {
         for q in p {
@@ -143,5 +186,12 @@ pub fn render_preview_with_color(
         }
     }
     let image = ColorImage::new([w, h], pixels);
+    if image
+        .pixels
+        .iter()
+        .all(|p| *p == Color32::from_rgb(244, 244, 242))
+    {
+        return Err("Native preview rendered no visible geometry".into());
+    }
     Ok(multicad_ui::preview_capture::preview_from(&image)?)
 }

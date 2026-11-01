@@ -21,14 +21,119 @@
       "sha256": "a0a85864e183857d3ff0be71b97d84ab90362af9c65f833dd8795a054a1fff97"
     },
     {
-      "file": "plant-generic-tree.tcd",
       "document": "cad20200-0000-4000-8000-000000001001",
-      "sha256": "5c7eacc6c2cd7390f0113f7a1d325af6c09718004334fd12190b0071aaed4ed4"
+      "file": "plant-generic-tree.tcd",
+      "sha256": "9b8601eb459a8181068a0e12f8b5242bda581c77458bc97ef767ce310fd8d323"
     },
     {
-      "file": "plant-generic-shrub.tcd",
       "document": "cad20200-0000-4000-8000-000000002001",
-      "sha256": "e04f5b2db355a5c2fac79f2df2b5bddcedcce739f5bc7b537ac64c3c85233849"
+      "file": "plant-generic-shrub.tcd",
+      "sha256": "0eb2464b9bd7e63464d69a8d2ecdd428c3cb2e825a1a4328b4dd4239f03dd2fa"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000002711",
+      "file": "equipment-power-outlet-type-f.tcd",
+      "sha256": "9ab1d71bbe94ba347b7d9889107ecc8b8b403d363f73bb6b182f3282befc0eb0"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000004e21",
+      "file": "equipment-double-power-outlet-type-f.tcd",
+      "sha256": "7aa12d6a086bb80ab8ec9ca716b8fa735fd5e0e7c87eea85420e90203957230b"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000007531",
+      "file": "equipment-triple-power-outlet-type-f.tcd",
+      "sha256": "44bd0249e00c039afce86e7f45ee710fefd9bbd86bb710c8a8c4c40b054c3bbb"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000009c41",
+      "file": "equipment-data-outlet-rj45.tcd",
+      "sha256": "be49a23df30285ec816537cc38a43ca1993a186f3583199631522c4a69f22742"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-00000000c351",
+      "file": "equipment-tv-antenna-outlet.tcd",
+      "sha256": "494409345feeab9d1d20e4a590b450b9d98ec241a9d64be063f06e129defb437"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-00000000ea61",
+      "file": "equipment-switch.tcd",
+      "sha256": "198bbecb3dcd609693a92e021489017a1d9001eb3e147b8f24a4ac0de17b9565"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000011171",
+      "file": "equipment-ceiling-luminaire.tcd",
+      "sha256": "e1940ef32f4e9202bfee6d9c5cb51e95ec2cc6a04a5e31528b6d851bef4d0213"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000013881",
+      "file": "equipment-wall-luminaire.tcd",
+      "sha256": "6c37d1553db94ead303025bcc000d08e5dfd6854aad666a88214a0af7809cbbe"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000015f91",
+      "file": "equipment-lamp-holder-e27.tcd",
+      "sha256": "d57f84b699da3e9753bfa25cde4a44f0e3df72d3daebc2843e3b0667b635daa4"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-0000000186a1",
+      "file": "equipment-radiator.tcd",
+      "sha256": "5d24c6c5555aa7f912c0840c923127a9efac12119375b337bc23f86f60dcb90d"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-00000001adb1",
+      "file": "equipment-kitchen-sink.tcd",
+      "sha256": "4617a7bfac2bfb30cb45a23b263633f2fac861bbcdef029ce135dc07372912d9"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-00000001d4c1",
+      "file": "equipment-washbasin.tcd",
+      "sha256": "b83649fa285562b0eec8e632bacc85c6007f5e99bedfd35964097d8789b54042"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-00000001fbd1",
+      "file": "equipment-toilet.tcd",
+      "sha256": "42b8c7348cfe4c5af1ea158f734aea4a67c693b3102fd849d8979aa02075f5e0"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-0000000222e1",
+      "file": "equipment-bathtub.tcd",
+      "sha256": "c1e7c33e05d0008196a6b50dc686848ab5e2e82dc7dbadde0f85e96532350b6f"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-0000000249f1",
+      "file": "equipment-shower.tcd",
+      "sha256": "21a16b610ba35262f7728a1e11b243dd2869315ecec5c991f35e6c0aa04d37d1"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000027101",
+      "file": "equipment-cooker-oven.tcd",
+      "sha256": "02085f1a8cdc93c4ea8ee33ff1d1f8517493d205bb46e90dc5335d53646e4f08"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000029811",
+      "file": "equipment-cooktop.tcd",
+      "sha256": "ce2822390069ec765178a854d701542588932ddf1414ffca299eb4c491c429fe"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-00000002bf21",
+      "file": "equipment-washing-machine.tcd",
+      "sha256": "0ecd46dff95a67660cf7a0c88ee5d92947f47086f485346c6c104167070e7129"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-00000002e631",
+      "file": "equipment-dryer.tcd",
+      "sha256": "10421a27d9678003c146586ccc3c1865e5868cd2f080f7c1e9b842b6fa089bb6"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000030d41",
+      "file": "equipment-refrigerator.tcd",
+      "sha256": "29b056772e166627c45e13a925476bf1b2733a6fd2feb7bf5cb9de1d41d7969a"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000033451",
+      "file": "equipment-dishwasher.tcd",
+      "sha256": "f59f65068acf956d4389ae93177d112dd838418b0c5402625ab7e6622e2ce448"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -38,6 +143,6 @@
     "sources/bolts/COPYING.LESSER",
     "README.md"
   ],
-  "revision": "2",
+  "revision": "3",
   "version": 1
 }

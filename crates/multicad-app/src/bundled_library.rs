@@ -214,17 +214,21 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 6);
+        assert_eq!(entries.len(), 27);
         let mut bearings = 0;
         let mut plants = 0;
+        let mut equipment = std::collections::BTreeSet::new();
         for entry in entries {
             assert_eq!(entry.origin, LibraryOrigin::Bundled);
             assert!(entry.problem.is_none());
             assert!(entry.preview.is_some());
             assert_eq!(entry.symbol_definitions, 1);
             if entry.mechanical_parts.is_empty() {
-                assert!(entry.name.starts_with("Generic "));
-                plants += 1;
+                if entry.name.starts_with("Generic ") {
+                    plants += 1;
+                } else {
+                    equipment.insert(entry.name);
+                }
                 continue;
             }
             bearings += 1;
@@ -236,6 +240,13 @@ mod tests {
             );
         }
         assert_eq!((bearings, plants), (4, 2));
+        assert_eq!(
+            equipment,
+            multicad_core::equipment::Kind::ALL
+                .into_iter()
+                .map(|kind| kind.preset().name.to_string())
+                .collect()
+        );
     }
     #[test]
     fn damaged_projects_remain_visible_and_manifest_escapes_or_duplicates_are_refused() {

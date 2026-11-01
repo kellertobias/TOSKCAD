@@ -59,7 +59,7 @@ fn included_definitions_share_browsing_but_never_enter_or_change_the_original_fi
     let mut library =
         LibraryFileStore::new(library_root.clone()).with_bundled(Some(bundled.clone()));
     let included = library.load().unwrap();
-    assert_eq!(included.len(), 6);
+    assert_eq!(included.len(), 27);
     assert!(included.iter().all(|e| e.origin == LibraryOrigin::Bundled));
     assert!(
         !library_root.join(INDEX).exists(),
@@ -71,7 +71,7 @@ fn included_definitions_share_browsing_but_never_enter_or_change_the_original_fi
     let stamp = save(&mut projects, &path, &own, SaveMode::Create);
     let original = fs::read(&path).unwrap();
     let (receipt, entries) = library.register(&request(&path, stamp, &own)).unwrap();
-    assert_eq!(entries.len(), 7);
+    assert_eq!(entries.len(), 28);
     assert_eq!(
         entries
             .iter()
@@ -100,7 +100,7 @@ fn included_definitions_share_browsing_but_never_enter_or_change_the_original_fi
             .contains("already in Library")
     );
     assert_eq!(fs::read(library_root.join(INDEX)).unwrap(), index);
-    assert_eq!(library.remove(receipt.entry.id).unwrap().len(), 6);
+    assert_eq!(library.remove(receipt.entry.id).unwrap().len(), 27);
     assert_eq!(fs::read(path).unwrap(), original);
     assert!(
         decode(&fs::read(library_root.join(INDEX)).unwrap())
