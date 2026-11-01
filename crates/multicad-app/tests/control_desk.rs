@@ -692,7 +692,10 @@ fn generated_deliverables_read_back_independently() {
     if let Some(info) = tool("pdfinfo", &[pdf[0].to_str().unwrap()]) {
         assert!(info.contains("Pages:           4"), "{info}");
     }
-    if let Some(text) = tool("pdftotext", &["-layout", pdf[0].to_str().unwrap(), "-"]) {
+    if let Some(text) = tool(
+        "pdftotext",
+        &["-enc", "UTF-8", "-layout", pdf[0].to_str().unwrap(), "-"],
+    ) {
         let pages: Vec<_> = text.split('\u{c}').collect();
         assert!(pages[0].contains("240") && pages[0].contains("CD-101"));
         assert!(pages[0].contains("no press-brake"));
