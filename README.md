@@ -49,6 +49,8 @@ The [native modeling checkpoint](docs/verification/native-modeling-2026-10-28.md
 
 The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow-2026-10-28.md) records table editing, expression diagnostics, stable renamed bindings, native solid rebuilding and save/reopen behavior.
 
+[Parametric threads](docs/architecture/threads.md) documents the Mechanical thread feature, sourced basic metric presets, explicit Custom profiles and unavailable families. Cosmetic envelopes require a switch to Modeled before manufacturing export.
+
 The [spline editing checkpoint](docs/verification/native-spline-editing-2026-10-28.md) records exact trims, bounded tangent continuation, explicit contact choice, guarded background previews and native save/reopen checks.
 
 The [occurrence-reference checkpoint](docs/verification/native-occurrence-references-2026-10-29.md) records exact finite projections and sections, independently placed assembly copies, explicit repair and source-bound native preview guards.

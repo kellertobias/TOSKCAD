@@ -47,6 +47,7 @@ mod render;
 mod schedules;
 mod sheet_metal;
 mod text;
+mod threads;
 mod walls;
 pub use cabinetry::{
     CarcassArgs, DeleteJointArgs, DeleteMachiningArgs, HardwareArgs, MachiningArgs, PanelArgs,
@@ -65,6 +66,8 @@ pub use text::{
     TextStyleArgs,
 };
 use text::{sketch_add_text, sketch_edit_text, sketch_remove_text};
+pub use threads::{InspectThreadArgs, ThreadArgs};
+use threads::{inspect_thread, set_thread, thread_profiles};
 mod weldment;
 use guides::set_drawing_guide;
 pub use guides::{GuideArgs, GuideKindArg};
@@ -245,6 +248,15 @@ tools! {
     "evaluate_model" => NoArgs, "Evaluate model", true,
         "Evaluate the complete model with the native kernel and report every final part (producing feature, solid count, volume in mm³, bounds in mm) and every placed instance (component, solid count, volume, bounds), plus reference diagnostics. Evaluation failures are returned as structured errors.",
         evaluate_model;
+    "thread_profiles" => NoArgs, "Thread profile coverage", true,
+        "Offline supported thread-family matrix, sourced metric diameter/pitch presets, nominal-fit limits, runout and export-representation semantics. Unavailable roadmap families are explicit.",
+        thread_profiles;
+    "inspect_thread" => InspectThreadArgs, "Inspect thread source", true,
+        "Read the canonical thread definition and resolved nominal/effective dimensions, separate pitch/lead and persisted representation at the current revision. This source-only inspection does not certify native geometry; use evaluate_model for that.",
+        inspect_thread;
+    "set_thread" => ThreadArgs, "Create or edit thread", false,
+        "Create a new threaded shaft or cut an external/internal thread on target_part; edit an existing thread by feature ID while preserving omitted fields, Part and original target predecessor. All dimensions carry units; custom profile angles and radius taper accept typed values/formulas. Nominal-basic fits and fabrication clearance are separate. Native Preview checks complete receiving geometry before one attributable transaction or the owner's review queue. Unsupported families, invalid walls and failed geometry change nothing. Cosmetic envelopes are display-only and cannot be exported as STEP/mesh/print manufacturing geometry.",
+        set_thread;
     "undo" => RevisionArgs, "Undo", false,
         "Undo the most recent committed transaction, from any channel, if expected_revision is current.",
         undo;
@@ -1818,6 +1830,13 @@ fn export_step(host: &dyn Host, call: &Request, args: ExportStep) -> ToolResult 
     let feature = *model.snapshot().bodies.get(&part).ok_or_else(|| {
         ToolError::new("model_failed", "The part has no final solid").involving(part)
     })?;
+    if multicad_core::model::cosmetic_thread_in_history(&document, feature)?.is_some() {
+        return Err(ToolError::new(
+            "unsupported",
+            "Cosmetic thread envelopes contain no helical manufacturing geometry; switch the thread to Modeled before exporting STEP",
+        )
+        .involving(part));
+    }
     let solid = model.solid(feature).ok_or_else(|| {
         ToolError::new("model_failed", "The part has no final solid").involving(part)
     })?;

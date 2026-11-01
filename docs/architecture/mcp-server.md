@@ -152,6 +152,9 @@ schema is generated from the Rust argument types with schemars and returned by
 | `inspect_sketch` | no | Solve state, degrees of freedom, conflicts, geometry, constraints, text elements with their contour curve IDs and block corners, measurements, and regions with index and area |
 | `extrude` | yes | Extrude sketch regions, or planar model faces (`faces`: source feature and face ordinal from `reference_candidates`; exact boundary with holes, persistent face reference), by a signed distance as `new_body`, or `join`, `cut` or `intersect` a `target_part`; curved, missing, ambiguous or mixed inputs are refused unchanged |
 | `evaluate_model` | no | Native evaluation of every final part and placed instance, plus reference diagnostics |
+| `thread_profiles` | no | Offline family coverage, metric presets, source and manufacturing limits; see [threads](threads.md) |
+| `inspect_thread` | no | Canonical thread source and resolved dimensions, including separate pitch and lead |
+| `set_thread` | yes | Create or edit a native thread through the shared canonical transaction API; see [thread control](#thread-control) |
 | `undo`, `redo` | yes | The most recent transaction on any channel |
 | `history` | no | Recent activity with actor, channel, label, kind and changed IDs |
 | `review_status` | no | State of a queued change |
@@ -250,6 +253,43 @@ bounds.
 | `save_failed`, `export_failed`, `import_failed` | File operations |
 | `cancelled` | Cancelled before commit; nothing changed |
 | `unknown_tool` | The tool name is not in the catalog |
+
+## Thread control
+
+`thread_profiles` reports offline support and sourced presets. The
+[thread reference](threads.md) owns family coverage, geometry and fit limits.
+`inspect_thread` reads canonical source and resolved dimensions without
+evaluating a solid. Use `evaluate_model` for native geometry and diagnostics.
+The generated `tools/list` schema owns argument names, types and enum values;
+the [tool implementation](../../crates/multicad-mcp/src/tools/threads.rs) defines
+the operations below.
+
+`set_thread` creates a new shaft or a receiving cut, or edits an existing
+thread by feature ID. Creation requires a name; receiving cuts also require
+the target Part. A new shaft refuses a target Part.
+Edits retain the name, mode, Part and original predecessor.
+They refuse renaming, retargeting or changing mode.
+
+Omitted optional edit fields retain their canonical values. Creation uses
+`ThreadParameters::default()` for omitted settings. Explicit `null` on an
+optional field has the same effect as omission; it does not clear saved data.
+All linear dimensions accept unit-bearing literals or formulas.
+Custom flank angles require angle units, and radius taper requires ratio units.
+A supplied Custom profile replaces the complete profile; omission retains it
+on an edit, while creating a Custom thread requires the explicit profile.
+
+Frame edits accept a principal plane or both explicit basis vectors.
+Combining these choices, supplying only one vector, or supplying a
+non-orthonormal basis fails. Omission retains the saved basis and origin.
+Pitch, lead, handedness and starts retain their separate source meanings.
+
+The tool prepares a canonical transaction, evaluates its candidate natively,
+then commits or queues it under the owner's review policy.
+Unsupported families, invalid dimensions, inadequate receiving walls,
+native failures, cancellation and stale revisions leave the document unchanged.
+Direct `export_step` also refuses a selected producer whose dependency history
+contains a cosmetic thread. An unrelated cosmetic Part does not block export
+of a physical Part.
 
 ## Architecture
 

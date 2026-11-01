@@ -198,6 +198,37 @@ impl ReviewHost {
 }
 
 #[test]
+fn reviewed_thread_checks_native_geometry_before_queueing_and_accepts_one_transaction() {
+    let host = ReviewHost(std::sync::Mutex::new(Reviewed {
+        session: multicad_core::commands::Session::new(Document::new("Reviewed thread").unwrap())
+            .unwrap(),
+        ledger: Default::default(),
+        resources: Default::default(),
+    }));
+    let before = host.0.lock().unwrap().session.document().clone();
+    let queued = dispatch(
+        &host,
+        &call(false),
+        "set_thread",
+        json!({"expected_revision":0,
+        "name":"Reviewed shaft","length":{"value":2.5,"unit":"mm"}}),
+    )
+    .unwrap();
+    assert_eq!(queued["status"], "pending_review");
+    assert_eq!(queued["revision"], 0);
+    assert_eq!(host.0.lock().unwrap().session.document(), &before);
+    let review = queued["review"].as_u64().unwrap();
+    assert_eq!(host.accept(review).unwrap(), 1);
+    let owner = host.0.lock().unwrap();
+    let id = serde_json::from_value(queued["thread"].clone()).unwrap();
+    let source = multicad_core::model::read_thread(owner.session.document(), id).unwrap();
+    assert_eq!(source.mode, multicad_core::model::ThreadMode::NewExternal);
+    let activity = owner.session.activity().collect::<Vec<_>>();
+    assert_eq!(activity.len(), 1);
+    assert_eq!(activity[0].actor.id, "mcp:test");
+}
+
+#[test]
 fn reviewed_owners_queue_changes_until_accepted_and_audit_every_outcome() {
     let host = ReviewHost(std::sync::Mutex::new(Reviewed {
         session: multicad_core::commands::Session::new(Document::new("Reviewed").unwrap()).unwrap(),
