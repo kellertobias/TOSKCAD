@@ -39,6 +39,7 @@ use std::{
 mod cabinetry;
 mod engraving;
 mod fdm;
+mod gears;
 mod guides;
 mod imports;
 mod levels;
@@ -61,6 +62,8 @@ pub use engraving::EngravingArgs;
 use engraving::create_engraving_sketch;
 pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs, TabContactArgs};
 use fdm::{fdm_aid_report, fdm_tab_contact, remove_fdm_aid, set_fdm_aid, set_fdm_process};
+pub use gears::{GearArgs, InspectGearArgs};
+use gears::{gear_profiles, inspect_gear, set_gear};
 pub use text::{
     AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextAnchorArg, TextFontArg,
     TextStyleArgs,
@@ -257,6 +260,15 @@ tools! {
     "set_thread" => ThreadArgs, "Create or edit thread", false,
         "Create a new threaded shaft or cut an external/internal thread on target_part; edit an existing thread by feature ID while preserving omitted fields, Part and original target predecessor. All dimensions carry units; custom profile angles and radius taper accept typed values/formulas. Nominal-basic fits and fabrication clearance are separate. Native Preview checks complete receiving geometry before one attributable transaction or the owner's review queue. Unsupported families, invalid walls and failed geometry change nothing. Cosmetic envelopes are display-only and cannot be exported as STEP/mesh/print manufacturing geometry.",
         set_thread;
+    "gear_profiles" => NoArgs, "Gear profile coverage", true,
+        "Read supported gear families, primary dimension/profile sources and limits. Unsupported families and pair placement are explicit.",
+        gear_profiles;
+    "inspect_gear" => InspectGearArgs, "Inspect gear source", true,
+        "Read canonical gear source and resolved normal/transverse dimensions, nominal and thinned tooth thickness. Use evaluate_model to validate native geometry.",
+        inspect_gear;
+    "set_gear" => GearArgs, "Create or edit gear", false,
+        "Create an unshifted external involute gear or edit by feature ID, preserving omitted fields and Part identity. Module and pressure angle use the explicit normal/transverse system; helix magnitude and hand are separate. Backlash is per-gear reference-circle tooth thinning; fabrication_allowance is additional thinning. Supports spur, helical, continuous herringbone and gapped double-helical. Native evaluation precedes one attributable transaction or owner review. Unsupported families/profile shifts, undercut policy, insufficient walls and failed geometry change nothing. Pair placement is not provided by this tool.",
+        set_gear;
     "undo" => RevisionArgs, "Undo", false,
         "Undo the most recent committed transaction, from any channel, if expected_revision is current.",
         undo;

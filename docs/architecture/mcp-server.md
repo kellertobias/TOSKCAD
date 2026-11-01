@@ -291,6 +291,47 @@ Direct `export_step` also refuses a selected producer whose dependency history
 contains a cosmetic thread. An unrelated cosmetic Part does not block export
 of a physical Part.
 
+## Gear control
+
+`gear_profiles` reports supported families and primary geometry sources.
+`inspect_gear` reads canonical source and resolved dimensions; it does not
+evaluate the solid. Use `evaluate_model` for native geometry. The generated
+`tools/list` schema owns argument names, types and enum values. The
+[gear tools](../../crates/multicad-mcp/src/tools/gears.rs) implement these operations.
+
+`set_gear` creates a gear with a required name or edits an existing feature
+while retaining its Part identity. Edits refuse a name argument. Omitted
+optional fields retain the saved recipe; creation uses
+`GearParameters::default()`. Explicit `null` has the same effect as omission.
+Linear dimensions, tooth count, angles and ratios accept unit-bearing literals
+or formulas. A frame accepts a principal plane or both explicit basis vectors;
+mixed or incomplete frame choices fail.
+
+The module system selects the convention for both module and pressure angle.
+Helix angle is a positive magnitude with separate handedness. Design backlash
+is tangential tooth-thickness reduction **per gear** at its reference circle.
+Fabrication allowance adds further tangential thinning; neither changes the
+reference, base or tip circles. A pair's total backlash is not represented by
+a single gear's setting.
+
+Current geometry covers unshifted external spur, helical, continuous-center
+herringbone and gapped double-helical gears with a through bore. Root fillets
+are custom circular arcs, not a generated cutter trochoid. Internal rings,
+racks, bevel gears, worms, nonzero profile shift and paired placement are
+unavailable. The conservative tooth-count policy uses the normal pressure angle
+without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
+or cutter-generation certification follows from a successful preview.
+
+The native profile uses a C1 cubic Hermite approximation to the analytic
+involute, bounded by the active geometry policy's linear tolerance. Tip and
+root arcs and circular fillets remain native circular curves. Helical flanks
+follow a continuous twist, rather than a linear loft between two end profiles.
+
+The tool prepares the canonical transaction, evaluates its candidate with the
+native kernel, then commits or queues it under the owner's review policy.
+Unsupported families, invalid units or dimensions, inadequate bore walls,
+native failures, cancellation and stale revisions leave the document unchanged.
+
 ## Architecture
 
 1. **Owner boundary.** [`control.rs`](../../crates/multicad-core/src/control.rs)
