@@ -33,6 +33,7 @@ impl Application {
         self.close_confirm = false;
         self.close_after_recents = false;
         self.close_allowed = false;
+        self.close_backdrop = Default::default();
     }
     fn fail_close_save(&mut self, save: CloseSave, message: String) {
         if self.picker_scope.is_none()
@@ -143,6 +144,16 @@ impl Application {
             .is_some_and(|worker| worker.writing())
     }
     pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
+        // Escape owns this frame before a queued Save and Quit can submit its
+        // next write or turn a completed receipt into an application close.
+        if self.close_confirm
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.cancel_close();
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            let _ = crate::quit_shortcut::take(ctx);
+            return;
+        }
         self.drive_close_save(ctx);
         let shortcut = crate::quit_shortcut::take(ctx) > 0;
         let was_confirming = self.close_confirm;
@@ -202,52 +213,82 @@ impl Application {
         let dirty: Vec<_> = self
             .projects
             .iter()
-            .enumerate()
-            .filter(|(_, p)| Some(p.local_id) != self.welcome_placeholder && p.dirty())
-            .map(|(index, p)| (index, p.title(), p.pending_edits()))
+            .filter(|p| Some(p.local_id) != self.welcome_placeholder && p.dirty())
+            .map(|p| (p.title(), p.pending_edits()))
             .collect();
         let busy = self.close_save.is_some() || self.close_busy();
-        let response = crate::controls::modal(
-            ctx,
-            "unsaved-documents",
-            "Unsaved documents",
-            |ui| {
-                if busy {
-                    ui.label("A file or export operation is still running. Keep this window open until it completes.");
-                } else if dirty.is_empty() {
-                    ui.label("All documents are saved. You can close this window.");
-                } else {
-                    ui.label("Save and Quit saves every unsaved document listed below.");
-                }
-                for (_, name, draft) in &dirty {
-                    ui.label(format!(
-                        "{}{}",
-                        name,
-                        if *draft { " · unapplied edits" } else { "" }
-                    ));
-                }
-                if self.projects.iter().any(Project::pending_edits) {
-                    ui.label("Apply or cancel pending tool edits in every document before saving.");
-                }
-                if self.message_error {
-                    ui.colored_label(Color32::LIGHT_RED, &self.message);
-                }
-                ui.horizontal(|ui| {
-                if ui.button("Cancel").on_hover_text("Keep all documents open").clicked() {self.cancel_close();}
-                if ui.add_enabled(!busy && !self.projects.iter().any(Project::pending_edits),egui::Button::new("Save and Quit")).on_hover_text("Save every unsaved document, then quit only after all writes succeed").on_disabled_hover_text("Finish file operations and apply or cancel pending tool edits in every document").clicked()
-                    && let Err(error) = self.begin_close_save() {
-                    self.message = error;
-                    self.message_error = true;
-                }
-                let label=if dirty.is_empty() {"Close window"} else {"Close without saving"};
-                if ui.add_enabled(!busy,egui::Button::new(label)).on_hover_text("Close this window and its documents; unapplied and unsaved changes are discarded. Existing project files and recovery snapshots remain intact.").clicked()
-                    && let Err(error)=self.confirm_close_without_saving(ctx) {self.message=error;self.message_error=true;}
-            });
-            },
-        );
-        if response.should_close() {
-            self.cancel_close();
+        let drafts = self.projects.iter().any(Project::pending_edits);
+        if !self.close_backdrop.prepare(ctx) {
+            return;
         }
+        let enter = ctx.input_mut(|input| {
+            let pressed = input.events.iter().any(|event| matches!(event,
+                egui::Event::Key {key:egui::Key::Enter, pressed:true,repeat:false,modifiers,..} if *modifiers == egui::Modifiers::NONE));
+            input.consume_key(egui::Modifiers::NONE,egui::Key::Enter);
+            pressed
+        });
+        let id = egui::Id::new("unsaved-documents");
+        let modal = egui::Modal::new(id)
+            .area(egui::Modal::default_area(id).fade_in(false))
+            .frame(
+                egui::Frame::popup(&ctx.global_style())
+                    .inner_margin(egui::Margin::same(22))
+                    .corner_radius(10)
+                    .stroke(egui::Stroke::new(1., Color32::from_rgb(150, 65, 70))),
+            )
+            .backdrop_color(Color32::from_rgba_unmultiplied(115, 12, 25, 115));
+        self.close_backdrop.paint(ctx, modal.area.layer());
+        let response=modal.show(ctx,|ui| {
+            ui.set_width((ctx.content_rect().width()-60.).clamp(240.,520.));
+            let heading=if dirty.is_empty() {"Finish the active operation before quitting."} else {"File is not saved. Do you really want to quit?"};
+            ui.label(egui::RichText::new(heading).size(20.).strong());
+            ui.add_space(12.);
+            ui.add_enabled_ui(!busy && !drafts,|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(repeat_instruction());
+                    ui.label("to quit without saving.");
+                });
+            });
+            if !dirty.is_empty() {
+                ui.add_space(12.);
+                ui.weak(format!("{} unsaved document{}",dirty.len(),if dirty.len()==1 {""} else {"s"}));
+                egui::ScrollArea::vertical().id_salt("quit-document-list").max_height(140.).show(ui,|ui| {
+                    for (name,draft) in &dirty { ui.label(format!("{name}{}",if *draft {" · unapplied edits"} else {""})); }
+                });
+            }
+            if busy {
+                ui.add_space(10.);
+                ui.horizontal(|ui| {ui.spinner();ui.label(if self.close_save.is_some() {"Saving all unsaved documents…"} else {"Wait for the active file or export operation to finish."});});
+            }
+            if drafts {ui.add_space(10.);ui.label("Apply or cancel pending tool edits in every document before saving or quitting.");}
+            if self.message_error {ui.add_space(10.);ui.colored_label(Color32::LIGHT_RED,&self.message);}
+            ui.add_space(20.);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                let save=ui.add_enabled(!busy && !drafts,egui::Button::new("Save and Quit").shortcut_text("Enter").min_size(egui::vec2(170.,36.)).fill(ui.visuals().selection.bg_fill))
+                    .on_hover_text("Save every unsaved document, then quit after all writes succeed").clicked();
+                let cancel=ui.add(egui::Button::new("Cancel").shortcut_text("Escape").min_size(egui::vec2(130.,36.))).clicked();
+                (save,cancel)
+            }).inner
+        });
+        if response.inner.1 || response.should_close() {
+            self.cancel_close();
+        } else if (response.inner.0 || enter)
+            && !busy
+            && !drafts
+            && let Err(error) = self.begin_close_save()
+        {
+            self.message = error;
+            self.message_error = true;
+        }
+    }
+}
+fn repeat_instruction() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Command Q again"
+    } else if cfg!(target_os = "windows") {
+        "Alt F4 again"
+    } else {
+        "Ctrl Q again"
     }
 }
 #[cfg(test)]
@@ -437,7 +478,7 @@ mod tests {
         ctx: &egui::Context,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
-        ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -447,10 +488,85 @@ mod tests {
                 ..Default::default()
             },
             |_| app.show_close_dialog(ctx),
-        )
+        );
+        output.textures_delta.clear();
+        output
     }
     fn native_press(ctx: &egui::Context) {
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("native-quit-presses"), 1usize));
+    }
+    #[test]
+    fn confirmation_shows_requested_copy_and_hints_and_owns_escape_and_enter() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        app.close_confirm = true;
+        let original = app.current().session.document().clone();
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        }
+        let output = dialog_frame(&mut app, &ctx, vec![]);
+        let shown: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for label in [
+            "File is not saved. Do you really want to quit?",
+            repeat_instruction(),
+            "Cancel",
+            "Save and Quit",
+            "Escape",
+            "Enter",
+        ] {
+            assert!(
+                shown.iter().any(|s| s == label),
+                "Missing {label}: {shown:?}"
+            );
+        }
+        assert!(!shown.iter().any(|s| s == "Close without saving"));
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.rect.width()>=1200. && r.rect.height()>=800. && r.fill==Color32::from_rgba_unmultiplied(115,12,25,115))));
+        output.drop_without_applying_deltas();
+        let key = |key, pressed, repeat| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        };
+        ctx.run_ui(
+            egui::RawInput {
+                events: vec![key(egui::Key::Escape, true, false)],
+                ..Default::default()
+            },
+            |ui| app.show(ui),
+        )
+        .drop_without_applying_deltas();
+        assert!(!app.close_confirm && app.close_save.is_none() && !app.close_allowed);
+        assert_eq!(app.current().session.document(), &original);
+        // Egui derives repeat from held-key history rather than trusting the
+        // injected repeat bit. Hold Enter before reopening the confirmation.
+        dialog_frame(&mut app, &ctx, vec![key(egui::Key::Enter, true, false)])
+            .drop_without_applying_deltas();
+        app.close_confirm = true;
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        }
+        dialog_frame(&mut app, &ctx, vec![key(egui::Key::Enter, true, true)])
+            .drop_without_applying_deltas();
+        assert!(
+            app.close_save.is_none(),
+            "Held Enter is not a fresh save action"
+        );
+        dialog_frame(&mut app, &ctx, vec![key(egui::Key::Enter, false, false)])
+            .drop_without_applying_deltas();
+        dialog_frame(&mut app, &ctx, vec![key(egui::Key::Enter, true, false)])
+            .drop_without_applying_deltas();
+        assert!(app.close_save.is_some() && !app.close_allowed);
+        assert_eq!(app.current().session.document(), &original);
     }
     #[test]
     fn only_a_distinct_native_shortcut_after_confirmation_can_discard() {
@@ -512,7 +628,9 @@ mod tests {
         assert!(app.message.contains("pending tool edits"));
     }
     fn click_dialog(app: &mut Application, ctx: &egui::Context, label: &str) {
-        dialog_frame(app, ctx, vec![]).drop_without_applying_deltas();
+        for _ in 0..3 {
+            dialog_frame(app, ctx, vec![]).drop_without_applying_deltas();
+        }
         let output = dialog_frame(app, ctx, vec![]);
         let pos = output
             .shapes

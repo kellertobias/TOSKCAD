@@ -128,6 +128,36 @@ fn an_unapplied_draft_in_an_inactive_tab_blocks_save_and_quit() {
     assert_eq!(app.active, 1);
 }
 #[test]
+fn escape_cancels_a_queued_save_before_the_next_write_is_submitted() {
+    let (mut app, writes) = app(2);
+    let original: Vec<_> = app
+        .projects
+        .iter()
+        .map(|p| p.session.document().clone())
+        .collect();
+    app.begin_close_save().unwrap();
+    let ctx = egui::Context::default();
+    ctx.run_ui(
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: Some(egui::Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+        |ui| app.show(ui),
+    )
+    .drop_without_applying_deltas();
+    assert!(app.close_save.is_none() && !app.close_confirm && !app.close_allowed);
+    assert!(writes.lock().unwrap().ids.is_empty());
+    for (p, source) in app.projects.iter().zip(original) {
+        assert_eq!(p.session.document(), &source);
+    }
+}
+#[test]
 fn a_failed_second_save_stops_quit_preserves_unsaved_tabs_and_restores_the_original_tab() {
     let (mut app, writes) = app(3);
     let original: Vec<_> = app

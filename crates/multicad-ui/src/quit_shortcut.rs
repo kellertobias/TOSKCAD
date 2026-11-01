@@ -58,8 +58,34 @@ pub(crate) fn feed(frame: &eframe::Frame, ctx: &crate::egui::Context) {
     ctx.data_mut(|data| data.insert_temp(crate::egui::Id::new("native-quit-presses"), count));
 }
 pub(crate) fn take(ctx: &crate::egui::Context) -> usize {
-    ctx.data_mut(|data| data.remove_temp::<usize>(crate::egui::Id::new("native-quit-presses")))
-        .unwrap_or(0)
+    let native = ctx
+        .data_mut(|data| data.remove_temp::<usize>(crate::egui::Id::new("native-quit-presses")))
+        .unwrap_or(0);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let native = native
+        + ctx.input_mut(|input| {
+            let mut presses = 0;
+            input.events.retain(|event| {
+                if let crate::egui::Event::Key {
+                    key: crate::egui::Key::Q,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                    ..
+                } = event
+                    && modifiers.ctrl
+                    && !modifiers.alt
+                    && !modifiers.shift
+                {
+                    presses += usize::from(!repeat);
+                    false
+                } else {
+                    true
+                }
+            });
+            presses
+        });
+    native
 }
 
 #[cfg(target_os = "windows")]

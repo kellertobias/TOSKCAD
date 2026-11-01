@@ -1,6 +1,7 @@
 //! Native application composition over canonical sessions and declarative tools.
 pub use crate::storage::DocumentStorage;
 mod closing;
+mod closing_backdrop;
 mod document_open;
 mod examples_gallery;
 mod export_folder;
@@ -177,6 +178,7 @@ pub struct Application {
     close_allowed: bool,
     close_after_recents: bool,
     close_save: Option<closing::CloseSave>,
+    close_backdrop: closing_backdrop::Backdrop,
     pub shortcuts: ShortcutMap,
     shortcut_runtime: shortcuts::Runtime,
     shortcut_help: bool,
@@ -250,6 +252,7 @@ impl Application {
             close_allowed: false,
             close_after_recents: false,
             close_save: None,
+            close_backdrop: Default::default(),
             shortcuts: ShortcutMap::standard(),
             shortcut_runtime: shortcuts::Runtime::default(),
             shortcut_help: false,
