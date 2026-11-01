@@ -168,6 +168,11 @@ schema is generated from the Rust argument types with schemars and returned by
 | `create_envelope` | yes | Service envelope around a placed Part or Instance |
 | `check_clearances` | no | Overlap of every service envelope with final model solids |
 | `set_drawing_guide` | yes | Floor plan, section or elevation guide, optionally generating or updating its linked drawing views (see [drawing guides](drawing-guides.md)) |
+| `set_fence_type` | yes | Create a canonical construction or explicitly edit all its consuming runs; native preflight applies to used types |
+| `inspect_fence_type` | no | Unit-bearing construction/formulas, stable recipe IDs and affected run IDs |
+| `preview_fence` | no | Exact native create/edit preview with temporary member IDs, post positions and actual bay widths; no commit |
+| `set_fence` | yes | Atomic run create/edit and optional explicit shared construction update, checked natively before commit or review |
+| `inspect_fence` | no | Canonical run/context, source-resolved layout and named physical member IDs; see [fences](fences.md) |
 | `create_wall_type`, `edit_wall_type` | yes | Reusable wall types; a type edit rebuilds every wall that does not override the value (see [walls](walls.md)) |
 | `create_opening_type` | yes | Reusable door (hinge, swing) or window type with width, height and sill |
 | `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit; an edit keeps vertical cutouts |

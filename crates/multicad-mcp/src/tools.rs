@@ -48,8 +48,13 @@ mod mechanical_parts;
 mod plants;
 use plants::{PlantArgs, PlantInspectArgs, inspect_plant, set_plant};
 mod equipment;
+mod fences;
 use equipment::{
     EquipmentArgs, EquipmentInspectArgs, equipment_profiles, inspect_equipment, set_equipment,
+};
+use fences::{
+    FenceArgs, FenceInspectArgs, FenceTypeArgs, FenceTypeInspectArgs, inspect_fence,
+    inspect_fence_type, preview_fence, set_fence, set_fence_type,
 };
 mod reference_repair;
 mod render;
@@ -355,6 +360,21 @@ tools! {
     "set_drawing_guide" => GuideArgs, "Create or edit drawing guide", false,
         "Create or edit a floor plan (cut height and view depth above each listed level), section (plan line, optional depth, limited to the levels' extent) or elevation (plan direction) guide, and optionally generate or update its linked drawing views in the same transaction. Rerunning updates the views it made before; views whose level left the guide are reported as stale. Generated views are evaluated natively before commit.",
         set_drawing_guide;
+    "set_fence_type" => FenceTypeArgs, "Create or edit fence construction", false,
+        "Create a canonical named fence construction, or explicitly edit every run of fence_type. Retain recipe IDs on edits. Unused definitions are source-only; affected runs receive exact native preflight before one attributable commit. No cross-project Library update is implied.",
+        set_fence_type;
+    "inspect_fence_type" => FenceTypeInspectArgs, "Inspect fence construction", true,
+        "Read the canonical construction as unit-bearing values/formulas, retained recipe IDs and affected run IDs. The construction field can be supplied to set_fence_type; unchanged formulas retain their original parameter bindings.",
+        inspect_fence_type;
+    "preview_fence" => FenceArgs, "Preview fence run", true,
+        "Prepare a complete fence create/edit and optional explicit shared construction edit, then check exact native geometry without committing. Returns candidate member IDs, post positions and actual bay widths at expected_revision. New candidate IDs are temporary. Flat runs only; slopes and gates are unsupported.",
+        preview_fence;
+    "set_fence" => FenceArgs, "Create or edit fence run", false,
+        "Create a run of a saved construction or edit its canonical fence ID. Supply a complete path/context and retain vertex IDs for retained corners. Omitted post_positions retain explicit offsets; [] restores automatic positions. Optional edit_shared_construction repairs this run atomically with every shared user. Native preflight precedes one commit or owner review; invalid spans/collisions/cancellation change nothing.",
+        set_fence;
+    "inspect_fence" => FenceInspectArgs, "Inspect fence run", true,
+        "Read the canonical run/context, stable vertex and member identities, source-resolved post positions and actual bay widths. Source inspection does not certify native geometry; use preview_fence or evaluate_model for that.",
+        inspect_fence;
     "create_layered_wall_type" => CreateLayeredWallTypeArgs, "Create layered construction", false,
         "Create a named reusable Outside-to-Inside wall layer stack. Finite solids carry materials, air cavities carry real width, and coatings carry zero-volume material metadata. Returns stable layer IDs; no solid is made until create_wall uses the type. Keep layer IDs when editing.",
         create_layered_wall_type;
@@ -913,6 +933,7 @@ fn finish(host: &dyn Host, request: &Request, read_only: bool, result: ToolResul
         return result;
     }
     let outcome = match (&result, request.tool) {
+        (Ok(_), "preview_fence") => AuditOutcome::Previewed,
         (Ok(_), _) if read_only => AuditOutcome::Inspected,
         (Ok(_), "undo") => AuditOutcome::Undone,
         (Ok(_), "redo") => AuditOutcome::Redone,

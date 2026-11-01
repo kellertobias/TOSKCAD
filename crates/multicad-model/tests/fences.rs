@@ -505,3 +505,292 @@ fn cached_geometry_tracks_bound_parameters_and_floor_relative_level_context() {
         length(100.)
     );
 }
+#[test]
+fn linked_plan_elevation_pdf_and_dxf_measure_actual_members_at_three_scales() {
+    use multicad_core::{drawings::*, references::ReferenceFrame};
+    let (mut s, ty, run, _) = fixture(&[[0., 0.], [4500., 0.]], false);
+    apply(&mut s, &ty, &run);
+    let parts = fence_members(s.document(), run.id)
+        .unwrap()
+        .into_iter()
+        .map(|(_, _, part)| part)
+        .collect::<Vec<_>>();
+    let native = compile(&s);
+    let face = |vertex, normal: [f64; 3]| {
+        use multicad_core::{
+            inspection::GeometryReference,
+            references::{AnalyticGeometry, GeometryIntent, TopologyKind},
+        };
+        let part=fence_members(s.document(),run.id).unwrap().into_iter().find(|(key,_,_)|matches!(key,FenceMemberKey::Post{post:FencePostKey::Vertex{vertex:id}} if *id==vertex)).unwrap().2;
+        let feature = native.snapshot().bodies[&part];
+        let mut topology = native.snapshot().shapes[&feature].topology.clone();
+        topology.owner = part;
+        let element=topology.elements.iter().find(|e|e.key.kind==TopologyKind::Face && matches!(e.geometry,Some(AnalyticGeometry::Plane{frame}) if frame.normal().iter().zip(normal).all(|(a,b)|(a-b).abs()<1e-9))).unwrap();
+        GeometryReference {
+            source: part,
+            intent: GeometryIntent::capture(&topology, element.key).unwrap(),
+        }
+    };
+    let left = face(run.definition.path.vertices[0].id, [-1., 0., 0.]);
+    let right = face(run.definition.path.vertices[1].id, [1., 0., 0.]);
+    let mut dimensions = Vec::new();
+    let mut books = Vec::new();
+    for denominator in [100, 50, 10] {
+        let mut page = Page::new(format!("Fence 1:{denominator}"));
+        page.settings.paper = PaperSize::Custom {
+            width_mm: 600.,
+            height_mm: 500.,
+        };
+        for (name, v, kind, position) in [
+            (
+                "Plan at 1000 mm",
+                [0., 1., 0.],
+                ViewKind::Section {
+                    offset_mm: 1000.,
+                    range: SectionRange::SectionOnly,
+                    window: SectionWindow::default(),
+                },
+                [60., 100.],
+            ),
+            ("Elevation", [0., 0., 1.], ViewKind::Projection, [60., 400.]),
+        ] {
+            page.views.push(DrawingView {
+                id: EntityId::new(),
+                name: name.into(),
+                source: ViewSource::Model {
+                    entities: parts.clone(),
+                },
+                frame: ReferenceFrame {
+                    origin_mm: [0.; 3],
+                    u: [1., 0., 0.],
+                    v,
+                },
+                kind,
+                position_mm: position,
+                scale: Scale {
+                    numerator: 1,
+                    denominator,
+                },
+                hidden_lines: false,
+                tangent_edges: false,
+                paper_chord_tolerance_mm: 0.01,
+                guide: None,
+                equipment_categories: None,
+            });
+        }
+        let dimension = Annotation {
+            id: EntityId::new(),
+            kind: AnnotationKind::Dimension {
+                view: page.views[1].id,
+                measure: Box::new(DimensionMeasure::Linear {
+                    a: left.clone(),
+                    b: right.clone(),
+                    direction: LinearDirection::Horizontal,
+                }),
+                offset_mm: -15.,
+                precision: 0,
+                reference: false,
+            },
+        };
+        dimensions.push(dimension.id);
+        page.annotations.push(dimension);
+        let (book, prepared) =
+            prepare_create(&s, s.revision(), actor(), "Fence drawings", Some(page)).unwrap();
+        s.commit(prepared).unwrap();
+        books.push((book, denominator as f64));
+    }
+    let model = compile(&s);
+    let bom = model
+        .bom(
+            s.document(),
+            &multicad_model::schedules::BomOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(bom.rows.len(), 7);
+    assert!(
+        bom.rows
+            .iter()
+            .all(|r| r.quantity == 1 && r.material.is_some())
+    );
+    assert_eq!(
+        bom.rows
+            .iter()
+            .filter(|r| r
+                .material
+                .as_ref()
+                .is_some_and(|(_, name)| name == "Timber"))
+            .count(),
+        4
+    );
+    assert_eq!(
+        bom.rows
+            .iter()
+            .filter(|r| r.material.as_ref().is_some_and(|(_, name)| name == "Metal"))
+            .count(),
+        3
+    );
+    let evaluation = model
+        .drawings(s.document(), s.revision(), &Default::default())
+        .unwrap();
+    for dimension in &dimensions {
+        let AnnotationEvaluation::Ready { graphic } = &evaluation.annotations[dimension] else {
+            panic!("{:?}", evaluation.annotations[dimension])
+        };
+        near(graphic.value, 4590., 1e-6);
+        assert_eq!(graphic.text, "4590");
+    }
+    for (book, denominator) in books {
+        let value = multicad_core::drawings::read(s.document(), book).unwrap();
+        let page = &value.pages[0];
+        for view in &page.views {
+            assert!(
+                matches!(&evaluation.views[&view.id], ViewEvaluation::Ready { .. }),
+                "{:?}",
+                evaluation.views[&view.id]
+            );
+        }
+        let render =
+            render::render_page(s.document(), s.revision(), book, page.id, &evaluation).unwrap();
+        let pdf =
+            pdf::book_pdf(s.document(), s.revision(), &[(book, page.id)], &evaluation).unwrap();
+        let dxf = dxf::render_dxf(&render, 1., 4);
+        let drawing = ::dxf::Drawing::load(&mut std::io::Cursor::new(dxf.as_bytes())).unwrap();
+        let lines = drawing
+            .entities()
+            .filter_map(|e| {
+                if matches!(e.common.layer.as_str(), "VIEW_VISIBLE" | "VIEW_SECTION")
+                    && let ::dxf::entities::EntityType::Line(line) = &e.specific
+                {
+                    Some(([line.p1.x, line.p1.y], [line.p2.x, line.p2.y]))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let text = String::from_utf8_lossy(&pdf);
+        let begin = text.find("stream\n").unwrap() + 7;
+        let stream = &text[begin..];
+        let stream = &stream[..stream.find("endstream").unwrap()];
+        let paths = stream
+            .lines()
+            .filter(|l| l.ends_with(" S"))
+            .map(|line| {
+                let tokens = line.split_whitespace().collect::<Vec<_>>();
+                tokens
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, t)| {
+                        if *t == "m" || *t == "l" {
+                            Some([
+                                tokens[i - 2].parse::<f64>().unwrap() / pdf::PT_PER_MM,
+                                tokens[i - 1].parse::<f64>().unwrap() / pdf::PT_PER_MM,
+                            ])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let has_line = |a: [f64; 2], b: [f64; 2]| {
+            let same = |p: [f64; 2], q: [f64; 2]| {
+                (p[0] - q[0]).abs() < 0.002 && (p[1] - q[1]).abs() < 0.002
+            };
+            assert!(
+                lines
+                    .iter()
+                    .any(|(p, q)| (same(*p, a) && same(*q, b)) || (same(*p, b) && same(*q, a))),
+                "DXF missing {a:?} to {b:?} at 1:{denominator}"
+            );
+            assert!(
+                paths.iter().any(|path| path
+                    .windows(2)
+                    .any(|p| (same(p[0], a) && same(p[1], b)) || (same(p[0], b) && same(p[1], a)))),
+                "PDF missing {a:?} to {b:?} at 1:{denominator}"
+            );
+        };
+        // Four real 90 mm posts, not one opaque wall, in plan and elevation.
+        for center in [0., 2000., 4000., 4500.] {
+            has_line(
+                [60. + (center - 45.) / denominator, 400. - 45. / denominator],
+                [60. + (center + 45.) / denominator, 400. - 45. / denominator],
+            );
+            has_line(
+                [60. + (center - 45.) / denominator, 100.],
+                [
+                    60. + (center - 45.) / denominator,
+                    100. + 1800. / denominator,
+                ],
+            );
+        }
+        // Actual full and short-last clear panel widths, and physical elevation.
+        for (left, right) in [(45., 1955.), (2045., 3955.), (4045., 4455.)] {
+            has_line(
+                [60. + left / denominator, 400. - 9. / denominator],
+                [60. + right / denominator, 400. - 9. / denominator],
+            );
+            has_line(
+                [60. + left / denominator, 100. + 1700. / denominator],
+                [60. + right / denominator, 100. + 1700. / denominator],
+            );
+        }
+        if let Ok(directory) = std::env::var("MULTICAD_FENCE_REVIEW") {
+            let directory = std::path::Path::new(&directory);
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(directory.join(format!("fence-1-{denominator}.pdf")), &pdf).unwrap();
+            std::fs::write(directory.join(format!("fence-1-{denominator}.dxf")), dxf).unwrap();
+            std::fs::write(
+                directory.join(format!("fence-1-{denominator}.svg")),
+                svg::render_svg(&render),
+            )
+            .unwrap();
+            let file = project_file::ProjectFile::new(s.document().clone()).unwrap();
+            project_file::write(
+                &file,
+                &mut std::fs::File::create(directory.join("fence.tcd")).unwrap(),
+                Default::default(),
+            )
+            .unwrap();
+        }
+    }
+    // A retained path edit updates these linked views through the same Part IDs.
+    let before = parts;
+    let mut changed = run.clone();
+    changed.definition.path.vertices[1].point[0] = length(4800.);
+    let prepared = prepare_fence_change(
+        &s,
+        s.revision(),
+        actor(),
+        &FenceChange {
+            run: Some(FenceRunChange::Edit(changed)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    s.commit(prepared.model.prepared).unwrap();
+    assert_eq!(
+        fence_members(s.document(), run.id)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, part)| part)
+            .collect::<Vec<_>>(),
+        before
+    );
+    let model = compile(&s);
+    let evaluation = model
+        .drawings(s.document(), s.revision(), &Default::default())
+        .unwrap();
+    for dimension in dimensions {
+        let AnnotationEvaluation::Ready { graphic } = &evaluation.annotations[&dimension] else {
+            panic!("{:?}", evaluation.annotations[&dimension])
+        };
+        near(graphic.value, 4890., 1e-6);
+        assert_eq!(graphic.text, "4890");
+    }
+    assert!(
+        evaluation
+            .views
+            .values()
+            .all(|v| matches!(v, ViewEvaluation::Ready { .. }))
+    );
+}

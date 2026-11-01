@@ -2,8 +2,8 @@
 
 Fences use one canonical construction, a placed path and named independent
 member Parts. The native editor, core source API and native evaluator share
-these records. Fence MCP tools and cross-project Library integration are still
-pending. The source lives in
+these records. MCP uses the same source transaction and exact native preflight.
+Cross-project Library integration is still pending. The source lives in
 [core/model/fence](../../crates/multicad-core/src/model/fence/mod.rs); the exact
 provider is [model/fences.rs](../../crates/multicad-model/src/fences.rs).
 
@@ -139,10 +139,52 @@ Component tests exercise painted recipe selection, shared/duplicate controls,
 viewport path clicks, native Preview/Cancel/Apply, history and TCD reopen. These
 checks do not establish actual macOS window interaction.
 
-Fence MCP adapters remain to be implemented. Representative linked plan/elevation and
-PDF/DXF verification remain pending. The existing ordinary Part drawing/material
-path is the intended publication path, without separate manually authored
-geometry. Project-authored path/context symbol materialization and pinned Library
+### External control
+
+`set_fence_type` creates a named construction when `fence_type` is omitted.
+Supplying an existing ID explicitly edits every consuming run. An unused type
+is source-only; used types require native preflight. `inspect_fence_type` returns
+the construction in the unit-bearing request shape. Retain recipe IDs on edits;
+unchanged expressions keep their original parameter bindings through renames.
+
+`preview_fence` and `set_fence` accept the same complete run request. Omit `fence`
+to create, or supply its canonical run ID to edit. Supply all path vertices,
+context and height/spacing overrides. Retain a vertex ID when moving that corner;
+an omitted ID creates a new corner. Null level selects the world plane, and null
+height/spacing inherits the construction. Omitted or null `post_positions`
+retains existing explicit offsets; an empty array restores automatic positions.
+Each explicit offset names its directed start/end vertices and interior ordinal.
+`edit_shared_construction` opts into an atomic construction change and current-run
+repair. Other affected runs must remain valid.
+
+Preview checks exact solids without committing or queuing a review. Newly
+allocated preview IDs are temporary. Apply repeats preparation and native
+preflight at the requested revision, then uses the owner's commit/review policy.
+Cancellation and stale revisions refuse mutation. `inspect_fence` returns
+canonical context, source-resolved post positions/bays and named member IDs;
+inspection explicitly does not establish native geometry validity. The generated
+MCP tools catalog owns exact field schemas.
+
+### Drawing evidence
+
+The ordinary Part drawing/material path publishes the actual independent solids,
+without separate manually authored fence geometry. Native drawing tests measure
+90 mm post profiles, 1,910 mm full clear panel spans and a 410 mm short final span
+in independently parsed PDF and DXF at 1:100, 1:50 and 1:10. Linked plan and
+elevation views include a native face-associated overall dimension: moving the
+last path vertex updates 4,590 mm to 4,890 mm while retaining member Part IDs.
+The same evaluated model's BOM contains four Timber posts and three Metal panels,
+each with quantity one and its canonical material. These fixtures cover a flat
+panel run; native solid tests separately cover open pickets/rails and round posts.
+
+[MCP tests](../../crates/multicad-mcp/tests/fences.rs) exercise source-neutral
+native preview, attributable edits/history, TCD reopen, shared updates, retained
+formula bindings and round-post picket-to-rail conversion. Invalid source,
+overlap, stale revisions, cancellation and read-only writes refuse mutation.
+These focused checks do not substitute for the final workspace gates or actual
+macOS interaction.
+
+Project-authored path/context symbol materialization and pinned Library
 updates belong to [CAD-206](https://plans.tokenet.de/CAD/206).
 
 Terrain following, raked/stepped slopes, gates and engineered foundations are
