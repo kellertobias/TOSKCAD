@@ -1248,6 +1248,7 @@ impl SketchEditor {
         }
         self.finish()?;
         self.model.begin_cabinet(session, resources, channel)?;
+        self.fit_requested = true;
         self.message = "Cabinet · set the floor datum, panels, individual shelves and connections in the Inspector, then Preview".into();
         Ok(())
     }
@@ -3613,9 +3614,7 @@ impl SketchEditor {
             self.message =
                 "Outline changed · check the dimensions in the Inspector, then Preview".into();
         }
-        if let Some(guide) = self.model.cabinet_guide(session) {
-            guide.paint(&painter, self.camera, rect);
-        }
+        let cabinet_guide = self.model.cabinet_guide(session);
         if !self.measurement.active()
             && self.model.machining_picking()
             && self.model.machining_viewport(
@@ -3732,6 +3731,9 @@ impl SketchEditor {
             if self.guides {
                 self.paint_guides(&painter, scene, rect);
             }
+        }
+        if let Some(guide) = &cabinet_guide {
+            guide.paint(&painter, self.camera, rect);
         }
         if !self.measurement.active()
             && self.model.sheet_edge_picking()
@@ -3919,7 +3921,9 @@ impl SketchEditor {
             .map(|p| p.document())
             .or_else(|| self.constraints.preview_document())
             .unwrap_or(session.document());
-        let mut points = vec![];
+        let mut points = cabinet_guide
+            .as_ref()
+            .map_or_else(Vec::new, |g| g.fit_points());
         let model_view = scene
             .as_ref()
             .is_some_and(|scene| self.model.owns_display_scene(scene));

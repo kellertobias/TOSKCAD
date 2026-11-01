@@ -295,6 +295,21 @@ pub fn carcass_guide(
 }
 
 impl CabinetGuide {
+    /// View framing follows the draft envelope and dimension extension lines,
+    /// including an empty document before its first native Preview.
+    pub fn fit_points(&self) -> Vec<[f32; 3]> {
+        self.edges
+            .iter()
+            .flatten()
+            .copied()
+            .chain(
+                self.dimensions
+                    .iter()
+                    .flat_map(|d| [add(d.a, d.offset), add(d.b, d.offset)]),
+            )
+            .map(|p| p.map(|v| v as f32))
+            .collect()
+    }
     /// Paint the guide over the viewport; returns the number of drawn labels.
     pub fn paint(&self, painter: &egui::Painter, camera: Camera, rect: egui::Rect) -> usize {
         let envelope = egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 190, 255));
