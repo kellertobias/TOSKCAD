@@ -315,3 +315,65 @@ fn pinned_variants_remap_real_parameters_but_never_uuid_looking_catalog_prose() 
         washer().resolve(library.parameters()).unwrap()
     );
 }
+
+#[test]
+fn source_dimension_matching_ignores_placement_but_detects_customized_dimensions() {
+    let s = session();
+    let reference = washer();
+    let mut p = reference.clone();
+    let MechanicalPartParameters::Washer {
+        outside_diameter,
+        frame,
+        ..
+    } = &mut p
+    else {
+        panic!()
+    };
+    *outside_diameter = Dimension::Literal {
+        value: 0.7,
+        unit: "cm".into(),
+    };
+    frame.origin = [length(40.), length(20.), length(30.)];
+    frame.u = [0., 1., 0.];
+    frame.v = [0., 0., 1.];
+    let mut source = MechanicalPartDefinition {
+        output: BodyOutput {
+            body: EntityId::new(),
+        },
+        parameters: p,
+        provenance: Some(MechanicalPartProvenance {
+            catalog_id: "test/reference".into(),
+            revision: "1".into(),
+            designation: "Dimensional fixture".into(),
+            source_url: "https://example.invalid/reference".into(),
+            reference_geometry: reference,
+        }),
+    };
+    assert!(source.matches_reference_dimensions(s.parameters()).unwrap());
+    let MechanicalPartParameters::Washer { thickness, .. } = &mut source.parameters else {
+        panic!()
+    };
+    *thickness = length(0.8);
+    assert!(!source.matches_reference_dimensions(s.parameters()).unwrap());
+    let nut = MechanicalPartParameters::HexNut {
+        across_flats: length(5.5),
+        thread: Box::new(ThreadParameters {
+            major_diameter: length(3.),
+            pitch: length(0.5),
+            length: length(2.4),
+            ..Default::default()
+        }),
+    };
+    source.parameters = nut.clone();
+    source.provenance.as_mut().unwrap().reference_geometry = nut;
+    let MechanicalPartParameters::HexNut { thread, .. } = &mut source.parameters else {
+        panic!()
+    };
+    thread.representation = ThreadRepresentation::CosmeticEnvelope;
+    assert!(source.matches_reference_dimensions(s.parameters()).unwrap());
+    let MechanicalPartParameters::HexNut { thread, .. } = &mut source.parameters else {
+        panic!()
+    };
+    thread.radial_allowance = length(0.1);
+    assert!(!source.matches_reference_dimensions(s.parameters()).unwrap());
+}

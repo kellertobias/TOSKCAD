@@ -1,5 +1,6 @@
 //! Self-contained hardware geometry. Catalog references never drive dimensions.
 mod prepare;
+mod reference;
 use super::{
     BodyOutput, PrimitiveFrame, ResolvedThread, ThreadMode, ThreadParameters,
     common::*,
