@@ -19,6 +19,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::THREAD_TYPE => {
             model::ThreadDefinition::from_definition(d)?;
         }
+        model::GEAR_TYPE => {
+            model::GearDefinition::from_definition(d)?;
+        }
         model::EXTRUDE_TYPE => {
             model::ExtrudeDefinition::from_definition(d)?;
         }
