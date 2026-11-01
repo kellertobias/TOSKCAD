@@ -161,6 +161,13 @@ fn rectangle_inspector_prompts_corners_without_apply_and_commits_on_the_second_c
     h.click([40., 20.]);
     assert_eq!(h.session.revision(), before + 1);
     assert_rectangle(&h.geometry());
+    // Reconcile the newly drawn element after the async presentation arrives.
+    // This must not steal the active drawing tool's commit/next-step guidance.
+    let curve = h.geometry()[0].id();
+    h.editor.element = Some(curve);
+    h.editor.constraints.clear_geometry_selection();
+    h.settle();
+    assert_eq!(h.editor.constraints.selection(), &[curve]);
     assert!(
         h.editor
             .message
@@ -176,6 +183,11 @@ fn rectangle_inspector_prompts_corners_without_apply_and_commits_on_the_second_c
     assert_eq!(h.editor.tool, None);
     assert_eq!(h.session.revision(), before + 1);
     assert_rectangle(&h.geometry());
+    // Once the drawing tool ends, ordinary selection guidance still applies.
+    h.editor.element = Some(curve);
+    h.editor.constraints.clear_geometry_selection();
+    h.settle();
+    assert!(h.editor.message.starts_with("1 selected sketch entities"));
 }
 
 #[test]

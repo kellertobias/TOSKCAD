@@ -2959,7 +2959,9 @@ impl SketchEditor {
                                         if self.constraints.selection()!=selection_before {
                                             self.profiles.clear();
                                             self.cancel_profile_clicks();
-                                            self.message=format!("{} selected sketch entities · Shift-click adds or removes",self.constraints.selection().len());
+                                            if self.tool.is_none() {
+                                                self.message=format!("{} selected sketch entities · Shift-click adds or removes",self.constraints.selection().len());
+                                            }
                                         }
                                         if session.revision() != before {
                                             self.message =
