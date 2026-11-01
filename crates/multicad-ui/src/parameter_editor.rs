@@ -185,6 +185,14 @@ impl ParameterEditor {
         self.revision = session.revision();
         self.guard = session_guard(session);
     }
+    /// Navigation needs fresh source rows, but an unchanged session already
+    /// has them. Keep the prepared guard: it checks both session identity and
+    /// revision without preparing/validating another complete document.
+    pub(crate) fn sync_clean_session(&mut self, session: &Session) {
+        if !self.dirty() && session.validate_preview(&self.guard).is_err() {
+            self.reload(session);
+        }
+    }
     pub fn dirty(&self) -> bool {
         self.info_dirty() || self.rows_dirty()
     }
@@ -577,6 +585,51 @@ mod workflow_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clean_navigation_retains_rows_but_refreshes_changed_or_foreign_sessions() {
+        let first = Session::new(Document::new("First").unwrap()).unwrap();
+        let mut editor = ParameterEditor::new(&first);
+        let blank = editor.rows[0].id;
+        editor.search = "width".into();
+        editor.sync_clean_session(&first);
+        assert_eq!(editor.rows[0].id, blank);
+        assert_eq!(editor.search, "width");
+        let mut second = Session::new(Document::new("Second").unwrap()).unwrap();
+        assert_eq!(first.revision(), second.revision());
+        editor.sync_clean_session(&second);
+        assert_eq!(editor.info.name, "Second");
+        second
+            .apply(Request {
+                expected_revision: 0,
+                actor: Actor::local(Channel::Mcp),
+                label: "External rename".into(),
+                edits: vec![Mutation::RenameDocument("Updated".into())],
+            })
+            .unwrap();
+        editor.sync_clean_session(&second);
+        assert_eq!(editor.info.name, "Updated");
+        assert!(second.validate_preview(&editor.guard).is_ok());
+    }
+    #[test]
+    fn navigation_keeps_dirty_rows_and_their_stale_revision_guard() {
+        let mut session = Session::new(Document::new("First").unwrap()).unwrap();
+        let mut editor = ParameterEditor::new(&session);
+        editor.rows[0].name = "width".into();
+        editor.rows[0].expression = "600".into();
+        session
+            .apply(Request {
+                expected_revision: 0,
+                actor: Actor::local(Channel::Mcp),
+                label: "External rename".into(),
+                edits: vec![Mutation::RenameDocument("Updated".into())],
+            })
+            .unwrap();
+        editor.sync_clean_session(&session);
+        assert_eq!(editor.rows[0].expression, "600");
+        assert!(editor.apply(&mut session, Channel::Ui).is_err());
+        assert_eq!(session.document().name(), "Updated");
+        assert_eq!(session.revision(), 1);
+    }
     #[test]
     fn completing_a_row_adds_one_blank_and_commits_exposure_with_undo() {
         let mut session = Session::new(Document::new("Test").unwrap()).unwrap();

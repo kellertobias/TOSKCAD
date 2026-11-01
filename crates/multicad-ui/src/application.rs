@@ -610,10 +610,8 @@ impl Application {
         if self.drawing_blocks(command) {
             return Err("Apply or discard the drawing page edits first".into());
         }
-        if !self.current().editor.dirty() {
-            let project = self.current_mut();
-            project.editor.reload(&project.session);
-        }
+        let project = self.current_mut();
+        project.editor.sync_clean_session(&project.session);
         if let Command::SketchOperation(tool) = command
             && !args.is_empty()
         {
