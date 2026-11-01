@@ -751,6 +751,11 @@ impl Compiler {
                         model::read_thread(document, id).map_err(|e| error(Some(id), e))?;
                     crate::threads::build(id, &source, context.parameters(), &solids, self.policy)?
                 }
+                (model::MECHANICAL_PART_TYPE, model::MECHANICAL_PART_SCHEMA) => {
+                    let source = model::read_mechanical_part(document, id)
+                        .map_err(|e| error(Some(id), e))?;
+                    crate::mechanical_parts::build(id, &source, context.parameters(), self.policy)?
+                }
                 (model::GEAR_TYPE, model::GEAR_SCHEMA) => {
                     let source = model::read_gear(document, id).map_err(|e| error(Some(id), e))?;
                     crate::gears::build(id, &source, context.parameters(), self.policy)?

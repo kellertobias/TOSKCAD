@@ -86,6 +86,29 @@ pub(crate) fn build(
         .parameters
         .resolve(parameters, source.mode)
         .map_err(|e| error(Some(feature), e))?;
+    let target = source
+        .target
+        .as_ref()
+        .map(|input| {
+            solids.get(&input.producer).ok_or_else(|| {
+                error(
+                    Some(feature),
+                    "Thread receiving geometry is unavailable; repair its predecessor",
+                )
+            })
+        })
+        .transpose()?;
+    build_resolved(feature, resolved, source.mode, target, policy)
+}
+/// Reuse the same native thread and receiving-wall checks inside a typed
+/// mechanical Part, without inventing a second canonical thread definition.
+pub(crate) fn build_resolved(
+    feature: EntityId,
+    resolved: ResolvedThread,
+    mode: ThreadMode,
+    target: Option<&Solid>,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
     let tool = if resolved.representation == ThreadRepresentation::Modeled {
         let profile = resolved.profile;
         let local = Solid::helical_thread_named(
@@ -121,7 +144,7 @@ pub(crate) fn build(
         // Cosmetic internal threads show the unthreaded minor-diameter bore.
         // Manufacturing exporters must refuse this representation explicitly.
         let radius = resolved.major_radius_mm
-            - if source.mode == ThreadMode::CutInternal {
+            - if mode == ThreadMode::CutInternal {
                 resolved.profile.depth_mm
             } else {
                 0.
@@ -134,26 +157,18 @@ pub(crate) fn build(
             policy,
         )?
     };
-    if source.mode == ThreadMode::NewExternal {
+    if mode == ThreadMode::NewExternal {
         return Ok(tool);
     }
-    let input = source
-        .target
-        .as_ref()
-        .ok_or_else(|| error(Some(feature), "Receiving thread has no target predecessor"))?;
-    let target = solids.get(&input.producer).ok_or_else(|| {
-        error(
-            Some(feature),
-            "Thread receiving geometry is unavailable; repair its predecessor",
-        )
-    })?;
+    let target =
+        target.ok_or_else(|| error(Some(feature), "Receiving thread has no target predecessor"))?;
     if target.solid_count().map_err(|e| error(Some(feature), e))? != 1 {
         return Err(error(
             Some(feature),
             "Thread receiving target must be one connected solid",
         ));
     }
-    let cutter = match source.mode {
+    let cutter = match mode {
         ThreadMode::CutExternal => {
             let nominal = envelope(
                 feature,

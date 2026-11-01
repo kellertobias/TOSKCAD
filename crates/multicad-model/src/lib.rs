@@ -18,6 +18,7 @@ mod face_profile;
 mod fdm;
 mod gear_pairs;
 mod gears;
+mod mechanical_parts;
 pub use gear_pairs::GearPairCheck;
 pub mod imports;
 pub mod inspection;

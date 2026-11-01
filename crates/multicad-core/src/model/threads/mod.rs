@@ -337,7 +337,24 @@ pub fn read_thread(
 }
 
 /// A cosmetic thread anywhere in a producer's input history remains display
-/// geometry. Manufacturing callers must refuse it until it is set to Modeled.
+/// geometry, including a thread retained inside a mechanical hex-nut recipe.
+/// Manufacturing callers refuse it until the representation is Modeled.
+fn cosmetic_feature(document: &Document, id: EntityId) -> Result<bool, DocumentError> {
+    let Some(EntityData::Feature { definition, .. }) = document.get(id).map(|e| &e.data) else {
+        return Ok(false);
+    };
+    Ok(match definition.type_id.as_str() {
+        THREAD_TYPE => {
+            read_thread(document, id)?.parameters.representation
+                == ThreadRepresentation::CosmeticEnvelope
+        }
+        super::MECHANICAL_PART_TYPE => {
+            matches!(super::read_mechanical_part(document, id)?.parameters,
+            super::MechanicalPartParameters::HexNut { thread, .. } if thread.representation == ThreadRepresentation::CosmeticEnvelope)
+        }
+        _ => false,
+    })
+}
 pub fn cosmetic_thread_in_history(
     document: &Document,
     producer: EntityId,
@@ -348,30 +365,19 @@ pub fn cosmetic_thread_in_history(
         if !visited.insert(id) {
             continue;
         }
-        let entity = document
-            .get(id)
-            .ok_or_else(|| invalid("Thread export history has a missing dependency"))?;
-        if let EntityData::Feature { definition, .. } = &entity.data
-            && definition.type_id == THREAD_TYPE
-            && read_thread(document, id)?.parameters.representation
-                == ThreadRepresentation::CosmeticEnvelope
-        {
+        if document.get(id).is_none() {
+            return Err(invalid("Thread export history has a missing dependency"));
+        }
+        if cosmetic_feature(document, id)? {
             return Ok(Some(id));
         }
         pending.extend(document.evaluation_dependencies(id)?);
     }
     Ok(None)
 }
-
 pub fn has_cosmetic_threads(document: &Document) -> Result<bool, DocumentError> {
     for entity in document.entities() {
-        if let EntityData::Feature { definition, .. } = &entity.data
-            && definition.type_id == THREAD_TYPE
-            && ThreadDefinition::from_definition(definition)?
-                .parameters
-                .representation
-                == ThreadRepresentation::CosmeticEnvelope
-        {
+        if cosmetic_feature(document, entity.id)? {
             return Ok(true);
         }
     }
