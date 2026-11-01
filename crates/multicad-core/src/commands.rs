@@ -117,6 +117,20 @@ pub struct Prepared {
     label: String,
     evaluated: EvaluatedParameters,
 }
+/// An unforgeable, process-local freshness token for read-only UI context.
+/// It carries no candidate document and cannot be committed as an edit.
+///
+/// ```compile_fail
+/// use multicad_core::{commands::Session, document::Document};
+/// let mut session = Session::new(Document::new("Context").unwrap()).unwrap();
+/// let stamp = session.stamp();
+/// session.commit(stamp).unwrap();
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionStamp {
+    session: EntityId,
+    revision: u64,
+}
 impl Prepared {
     pub fn document(&self) -> &Document {
         &self.evaluated.document
@@ -200,6 +214,21 @@ impl Session {
     }
     pub fn document(&self) -> &Document {
         &self.current.document
+    }
+    pub fn stamp(&self) -> SessionStamp {
+        SessionStamp {
+            session: self.id,
+            revision: self.revision,
+        }
+    }
+    pub fn validate_stamp(&self, stamp: &SessionStamp) -> Result<(), CommandError> {
+        if stamp.session != self.id {
+            return Err(CommandError::new(
+                ErrorCode::ForeignPreview,
+                "Preview belongs to a different session",
+            ));
+        }
+        self.check_revision(stamp.revision)
     }
     pub fn parameters(&self) -> &EvaluatedParameters {
         &self.current
@@ -329,14 +358,10 @@ impl Session {
     /// Check preview scope and freshness without committing or altering history.
     /// A consumer can inspect/adopt the same owned preview before final Apply.
     pub fn validate_preview(&self, preview: &Prepared) -> Result<(), CommandError> {
-        if preview.session != self.id {
-            return Err(CommandError::new(
-                ErrorCode::ForeignPreview,
-                "Preview belongs to a different session",
-            ));
-        }
-        self.check_revision(preview.base_revision)?;
-        Ok(())
+        self.validate_stamp(&SessionStamp {
+            session: preview.session,
+            revision: preview.base_revision,
+        })
     }
     pub fn commit(&mut self, preview: Prepared) -> Result<Change, CommandError> {
         self.validate_preview(&preview)?;

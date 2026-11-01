@@ -24,7 +24,7 @@ impl ModelToolController {
         let Some(scope) = &self.scope else {
             return false;
         };
-        if session.validate_preview(&scope.session).is_err() {
+        if session.validate_stamp(&scope.session).is_err() {
             return false;
         }
         let changed = match self.form.as_mut().and_then(ModelForm::extrusion_mut) {

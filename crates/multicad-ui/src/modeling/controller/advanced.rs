@@ -2,7 +2,7 @@ use super::*;
 use crate::modeling::{AdvancedKind, AdvancedSelection};
 use multicad_core::model::{ProfileSource, SketchPathSource};
 pub(super) struct AdvancedContext {
-    guard: Prepared,
+    guard: SessionStamp,
     profiles: Vec<ProfileSource>,
     paths: Vec<SketchPathSource>,
 }
@@ -26,7 +26,7 @@ impl ModelToolController {
         if let Some(context) = self
             .advanced_context
             .as_ref()
-            .filter(|c| session.validate_preview(&c.guard).is_ok())
+            .filter(|c| session.validate_stamp(&c.guard).is_ok())
         {
             panel.set_sketch_context(context.profiles.clone(), context.paths.clone());
         }
@@ -94,7 +94,7 @@ impl ModelToolController {
         if self.advanced_active() {
             let scope = self.scope.as_ref().ok_or("Open advanced controls first")?;
             session
-                .validate_preview(&scope.session)
+                .validate_stamp(&scope.session)
                 .map_err(|_| "Sketch choices belong to a different source session")?;
         }
         if profiles.iter().any(|p| {
@@ -111,14 +111,7 @@ impl ModelToolController {
         }) {
             return Err("Sketch choices must belong to this source and paths must contain one authored line each".into());
         }
-        let guard = session
-            .prepare(Request {
-                expected_revision: session.revision(),
-                actor: Actor::local(Channel::Ui),
-                label: "Current solved sketch choices".into(),
-                edits: vec![],
-            })
-            .map_err(|e| e.to_string())?;
+        let guard = session.stamp();
         if let Some(ModelForm::Advanced(panel)) = &mut self.form {
             panel.set_sketch_context(profiles.clone(), paths.clone());
         }
@@ -132,7 +125,7 @@ impl ModelToolController {
     pub(super) fn seed_advanced_context(&mut self, session: &Session) {
         if let (Some(ModelForm::Advanced(panel)), Some(context)) =
             (&mut self.form, &self.advanced_context)
-            && session.validate_preview(&context.guard).is_ok()
+            && session.validate_stamp(&context.guard).is_ok()
         {
             panel.set_sketch_context(context.profiles.clone(), context.paths.clone());
         }

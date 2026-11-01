@@ -20,6 +20,54 @@ fn request(revision: u64, channel: Channel, edits: Vec<Mutation>) -> Request {
     }
 }
 #[test]
+fn read_only_stamps_reject_foreign_sessions_and_every_source_history_change() {
+    let document = Document::new("Read context").unwrap();
+    let mut owner = Session::new(document.clone()).unwrap();
+    let foreign = Session::new(document.clone()).unwrap();
+    let initial = owner.stamp();
+    owner.validate_stamp(&initial).unwrap();
+    assert_eq!(
+        foreign.validate_stamp(&initial).unwrap_err().code,
+        ErrorCode::ForeignPreview
+    );
+    assert_eq!(owner.document(), &document);
+    assert_eq!(owner.activity().count(), 0);
+    assert!(!owner.can_undo());
+    owner
+        .apply(request(
+            0,
+            Channel::Mcp,
+            vec![Mutation::Insert(parameter("width", "80"))],
+        ))
+        .unwrap();
+    assert_eq!(
+        owner.validate_stamp(&initial).unwrap_err().code,
+        ErrorCode::StaleRevision
+    );
+    let edited = owner.stamp();
+    owner
+        .undo(owner.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(owner.document(), &document);
+    assert_eq!(
+        owner.validate_stamp(&edited).unwrap_err().code,
+        ErrorCode::StaleRevision
+    );
+    assert_eq!(
+        owner.validate_stamp(&initial).unwrap_err().code,
+        ErrorCode::StaleRevision
+    );
+    let undone = owner.stamp();
+    owner
+        .redo(owner.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(
+        owner.validate_stamp(&undone).unwrap_err().code,
+        ErrorCode::StaleRevision
+    );
+    owner.validate_stamp(&owner.stamp()).unwrap();
+}
+#[test]
 fn one_payload_has_identical_results_across_ui_and_external_callers() {
     let document = Document::new("Shared").unwrap();
     let entity = parameter("width", "600");

@@ -12,7 +12,7 @@ pub const MAX_SYMBOL_INSTANCES: usize = 256;
 pub const MAX_SYMBOL_PARAMETERS: usize = 256;
 
 mod materialize;
-pub use materialize::{owned_entities, validate};
+pub use materialize::{owned_entities, owned_entities_in_session, validate};
 
 mod prepare;
 pub use prepare::*;

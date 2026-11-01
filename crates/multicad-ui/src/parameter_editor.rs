@@ -1,7 +1,7 @@
 //! Parameter draft editor. Widgets never mutate the committed document directly.
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Vec2};
 use multicad_core::{
-    commands::{Actor, Channel, CommandError, ErrorCode, Prepared, Request, Session},
+    commands::{Actor, Channel, CommandError, ErrorCode, Prepared, Request, Session, SessionStamp},
     document::{Definition, Document, Entity, EntityData, EntityId, Link, Mutation},
     project_file::info::{self, FileInfo},
 };
@@ -90,22 +90,12 @@ pub struct ParameterEditor {
     pub error: Option<CommandError>,
     pub preview: Option<Prepared>,
     revision: u64,
-    guard: Prepared,
+    guard: SessionStamp,
     /// File name, description and preview draft, applied with the table.
     pub info: FileInfo,
     info_baseline: FileInfo,
     /// Set when the file information was written by a newer schema.
     pub info_locked: Option<String>,
-}
-fn session_guard(session: &Session) -> Prepared {
-    session
-        .prepare(Request {
-            expected_revision: session.revision(),
-            actor: Actor::local(Channel::Ui),
-            label: "Open parameter editor".into(),
-            edits: vec![],
-        })
-        .expect("An empty request against a valid session must prepare")
 }
 impl ParameterEditor {
     pub fn new(session: &Session) -> Self {
@@ -116,7 +106,7 @@ impl ParameterEditor {
             error: None,
             preview: None,
             revision: session.revision(),
-            guard: session_guard(session),
+            guard: session.stamp(),
             info: FileInfo::default(),
             info_baseline: FileInfo::default(),
             info_locked: None,
@@ -126,7 +116,7 @@ impl ParameterEditor {
     }
     pub fn reload(&mut self, session: &Session) {
         let symbol_owned =
-            multicad_core::symbols::owned_entities(session.document()).unwrap_or_default();
+            multicad_core::symbols::owned_entities_in_session(session).unwrap_or_default();
         let mut ordered = Vec::new();
         if let Some(e)=session.document().entities().find(|e|matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==ORDER_TYPE)) && let EntityData::Extension{definition,..}=&e.data {ordered=serde_json::from_value::<Vec<EntityId>>(definition.data.clone()).unwrap_or_default();}
         let mut entities: Vec<_> = session
@@ -183,13 +173,13 @@ impl ParameterEditor {
         self.error = None;
         self.preview = None;
         self.revision = session.revision();
-        self.guard = session_guard(session);
+        self.guard = session.stamp();
     }
     /// Navigation needs fresh source rows, but an unchanged session already
-    /// has them. Keep the prepared guard: it checks both session identity and
-    /// revision without preparing/validating another complete document.
+    /// has them. Its stamp checks both session identity and revision without
+    /// preparing/validating another complete document.
     pub(crate) fn sync_clean_session(&mut self, session: &Session) {
-        if !self.dirty() && session.validate_preview(&self.guard).is_err() {
+        if !self.dirty() && session.validate_stamp(&self.guard).is_err() {
             self.reload(session);
         }
     }
@@ -222,7 +212,7 @@ impl ParameterEditor {
         }
     }
     pub fn prepare(&self, session: &Session, channel: Channel) -> Result<Prepared, CommandError> {
-        session.validate_preview(&self.guard)?;
+        session.validate_stamp(&self.guard)?;
         let authored = |r: &&Row| !r.empty() || session.document().get(r.id).is_some();
         for row in self.rows.iter().filter(authored) {
             if !row.complete() || row.unit.trim().is_empty() {
@@ -363,7 +353,7 @@ impl ParameterEditor {
         Ok(())
     }
     pub fn show(&mut self, ui: &mut egui::Ui, session: &Session) {
-        if let Err(error) = session.validate_preview(&self.guard) {
+        if let Err(error) = session.validate_stamp(&self.guard) {
             if self.dirty() {
                 self.preview = None;
                 self.error = Some(error);
@@ -608,7 +598,7 @@ mod tests {
             .unwrap();
         editor.sync_clean_session(&second);
         assert_eq!(editor.info.name, "Updated");
-        assert!(second.validate_preview(&editor.guard).is_ok());
+        assert!(second.validate_stamp(&editor.guard).is_ok());
     }
     #[test]
     fn navigation_keeps_dirty_rows_and_their_stale_revision_guard() {

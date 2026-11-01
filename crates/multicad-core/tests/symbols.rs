@@ -102,6 +102,48 @@ fn value(id: EntityId, n: f64) -> BTreeMap<EntityId, SymbolValue> {
     )])
 }
 #[test]
+fn validated_session_ownership_matches_full_definition_reads_and_tracks_history() {
+    let (_, definition, width, plan) = author_fixture(SymbolKind::Dynamic);
+    let (mut session, embedded) = host(&definition);
+    assert!(owned_entities_in_session(&session).unwrap().is_empty());
+    let request = SymbolPlaceRequest::new(
+        session.document(),
+        embedded,
+        "Placed",
+        value(width, 100.),
+        Placement::default(),
+    )
+    .unwrap();
+    session
+        .commit(
+            prepare_place(&session, session.revision(), actor(), &request)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let owned = owned_entities_in_session(&session).unwrap();
+    assert_eq!(owned, owned_entities(session.document()).unwrap());
+    assert!(owned.contains(&request.ids[&plan]));
+    assert!(owned.contains(&request.wrapper));
+    assert!(!owned.contains(&request.instance));
+    let source = Source::from_definition(match &definition.template.get(plan).unwrap().data {
+        EntityData::Sketch { definition, .. } => definition,
+        _ => unreachable!(),
+    })
+    .unwrap();
+    assert!(!owned.contains(&request.ids[&source.sketch.points[0].id]));
+    session.undo(session.revision(), actor()).unwrap();
+    assert!(owned_entities_in_session(&session).unwrap().is_empty());
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(owned_entities_in_session(&session).unwrap(), owned);
+    let mut invalid = session.document().clone();
+    invalid.remove(request.ids[&width]).unwrap();
+    assert!(
+        Session::new(invalid).is_err(),
+        "The fast read must not relax session validation of private source"
+    );
+}
+#[test]
 fn isolated_variants_expose_only_author_choices_and_reopen_with_fixed_ids() {
     let (library, def, width, plan) = author_fixture(SymbolKind::Dynamic);
     let (mut s, id) = host(&def);

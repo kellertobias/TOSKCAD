@@ -134,15 +134,16 @@ pub(crate) fn container_path(
 }
 impl TreeView {
     fn build(
-        document: &Document,
-        revision: u64,
+        session: &Session,
         collapsed: &BTreeSet<EntityId>,
         salt: egui::Id,
         show_sources: bool,
     ) -> Result<Self, String> {
+        let document = session.document();
+        let revision = session.revision();
         let index = Index::new(document).map_err(|error| error.to_string())?;
-        let symbol_owned =
-            multicad_core::symbols::owned_entities(document).map_err(|error| error.to_string())?;
+        let symbol_owned = multicad_core::symbols::owned_entities_in_session(session)
+            .map_err(|error| error.to_string())?;
         let mut destinations = vec![Destination {
             id: None,
             path: format!("{} (root)", document.name()),
@@ -428,8 +429,7 @@ impl ModelTree {
         let stamp = (session.document().id(), session.revision());
         if self.view.as_ref().is_none_or(|view| view.stamp != stamp) {
             self.view = Some(TreeView::build(
-                session.document(),
-                session.revision(),
+                session,
                 &self.collapsed,
                 self.salt,
                 self.show_sources,
@@ -1085,8 +1085,7 @@ mod tests {
         let owned = owned_entities(session.document()).unwrap();
         let build = |show_sources| {
             TreeView::build(
-                session.document(),
-                session.revision(),
+                &session,
                 &Default::default(),
                 egui::Id::new("symbol tree"),
                 show_sources,

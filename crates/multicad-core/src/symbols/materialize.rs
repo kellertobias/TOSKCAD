@@ -116,6 +116,34 @@ pub fn owned_entities(doc: &Document) -> Result<BTreeSet<EntityId>, DocumentErro
     }
     Ok(ids)
 }
+/// Read ownership from a validated session without reparsing every embedded
+/// definition. Session construction and transactional preparation still run
+/// full symbol validation, including pins, generated source and the rule that
+/// local sketch identities cannot alias canonical document entities.
+///
+/// Keep `owned_entities` for arbitrary, potentially edited Documents: those do
+/// not carry the session's validation guarantee.
+pub fn owned_entities_in_session(
+    session: &crate::commands::Session,
+) -> Result<BTreeSet<EntityId>, DocumentError> {
+    let document = session.document();
+    let mut owned = BTreeSet::new();
+    for entity in document.entities() {
+        if matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == INSTANCE_TYPE)
+        {
+            let record = read_instance(document, entity.id)?;
+            owned.extend(
+                record
+                    .ids
+                    .values()
+                    .copied()
+                    .filter(|id| document.get(*id).is_some()),
+            );
+            owned.extend([record.wrapper, record.wrapper_metadata, record.member]);
+        }
+    }
+    Ok(owned)
+}
 pub fn validate(doc: &Document) -> Result<(), DocumentError> {
     let defs = definitions(doc)?;
     let mut revisions = BTreeSet::new();

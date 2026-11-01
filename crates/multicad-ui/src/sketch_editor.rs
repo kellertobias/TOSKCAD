@@ -1894,7 +1894,9 @@ impl SketchEditor {
             self.message = error;
         }
     }
-    fn refresh_overlay_visibility(&mut self, document: &Document, revision: u64) {
+    fn refresh_overlay_visibility(&mut self, session: &Session) {
+        let document = session.document();
+        let revision = session.revision();
         let key = (document.id(), revision);
         if self
             .overlay_visibility
@@ -1906,45 +1908,32 @@ impl SketchEditor {
         // Private planting plans live in their local definition coordinates.
         // Drawings apply the occurrence pose; painting them here at the origin
         // would duplicate footprints in the ordinary 3D viewer.
-        let plans = multicad_core::symbols::definitions(document)
+        // Materialized metadata already refers to the canonical private sketch
+        // identities. Reading it avoids reconstructing and validating all pinned
+        // definition Documents merely to decide which overlays to paint.
+        let private_plans = multicad_core::symbols::owned_entities_in_session(session)
             .unwrap_or_default()
             .into_iter()
-            .map(|(id, definition)| {
-                let mut plans =
-                    multicad_core::plants::template_for(&definition.template, definition.root)
-                        .ok()
-                        .flatten()
-                        .map(|plant| plant.plan)
-                        .into_iter()
-                        .collect::<Vec<_>>();
-                if let Ok(Some(equipment)) =
-                    multicad_core::equipment::template_for(&definition.template, definition.root)
-                {
-                    plans.push(equipment.footprint);
-                    plans.extend(equipment.mark);
-                }
-                (id, plans)
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let private_plans = document
-            .entities()
-            .flat_map(|entity| {
-                if let EntityData::Extension { definition, .. } = &entity.data
-                    && definition.type_id == multicad_core::symbols::INSTANCE_TYPE
-                {
-                    if let Ok(instance) = multicad_core::symbols::read_instance(document, entity.id)
-                    {
-                        return plans
-                            .get(&instance.definition)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|plan| instance.ids.get(plan).copied())
-                            .collect::<Vec<_>>();
+            .filter_map(|id| document.get(id))
+            .flat_map(|entity| match &entity.data {
+                EntityData::Extension { definition, .. } => match definition.type_id.as_str() {
+                    multicad_core::plants::TEMPLATE_TYPE => {
+                        multicad_core::plants::PlantTemplate::from_definition(definition)
+                            .ok()
+                            .map(|value| vec![value.plan])
+                            .unwrap_or_default()
                     }
-                    vec![]
-                } else {
-                    vec![]
-                }
+                    multicad_core::equipment::TEMPLATE_TYPE => {
+                        multicad_core::equipment::Template::from_definition(definition)
+                            .ok()
+                            .map(|value| {
+                                std::iter::once(value.footprint).chain(value.mark).collect()
+                            })
+                            .unwrap_or_default()
+                    }
+                    _ => vec![],
+                },
+                _ => vec![],
             })
             .collect::<std::collections::BTreeSet<_>>();
         let visible = multicad_core::hierarchy::Index::new(document)
@@ -3192,7 +3181,7 @@ impl SketchEditor {
                         }
                     });
             });
-        self.refresh_overlay_visibility(session.document(), session.revision());
+        self.refresh_overlay_visibility(session);
         let mut current = feed.is_current(session.document().id(), session.revision());
         let mut repair_view = false;
         let mut model_view = false;
@@ -3615,7 +3604,7 @@ impl SketchEditor {
         let sketch_mode = sketch_mode && !self.measurement.active();
         let edge_face_picking = self.model.edge_treatment_pick_kind()
             == Some(multicad_core::references::TopologyKind::Face);
-        self.refresh_overlay_visibility(session.document(), session.revision());
+        self.refresh_overlay_visibility(session);
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         self.viewport_rect = Some(rect);
         crate::camera_gestures::navigate(ui, &response, &mut self.camera);
@@ -7684,6 +7673,52 @@ mod inspector_tests;
 mod planting_overlay_tests {
     use super::*;
     #[test]
+    fn private_equipment_footprints_and_marks_hide_but_explicit_editing_still_works() {
+        use multicad_core::{equipment, symbols};
+        for kind in [equipment::Kind::PowerOutletTypeF, equipment::Kind::Bathtub] {
+            let mut session = Session::new(Document::new("Equipment overlays").unwrap()).unwrap();
+            let definition = equipment::generic_definition(kind).unwrap();
+            let template = equipment::template_for(&definition.template, definition.root)
+                .unwrap()
+                .unwrap();
+            let imported =
+                symbols::prepare_import(&session, 0, Actor::local(Channel::Ui), &definition)
+                    .unwrap();
+            let embedded = imported.definition;
+            session.commit(imported.prepared).unwrap();
+            let place = symbols::SymbolPlaceRequest::new(
+                session.document(),
+                embedded,
+                "Equipment",
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+            session
+                .commit(
+                    symbols::prepare_place(
+                        &session,
+                        session.revision(),
+                        Actor::local(Channel::Ui),
+                        &place,
+                    )
+                    .unwrap()
+                    .prepared,
+                )
+                .unwrap();
+            let mut editor = SketchEditor::default();
+            editor.refresh_overlay_visibility(&session);
+            for source in std::iter::once(template.footprint).chain(template.mark) {
+                let private = place.ids[&source];
+                assert!(!editor.overlay_visible(private), "{kind:?}");
+                editor.editing = true;
+                editor.selected = Some(private);
+                assert!(editor.overlay_visible(private));
+                editor.editing = false;
+            }
+        }
+    }
+    #[test]
     fn private_plant_plan_is_not_painted_at_the_origin_but_user_sketches_remain_visible() {
         let actor = multicad_core::commands::Actor::local(Channel::Ui);
         let mut session = Session::new(Document::new("Plant overlays").unwrap()).unwrap();
@@ -7724,7 +7759,7 @@ mod planting_overlay_tests {
             })
             .unwrap();
         let mut editor = SketchEditor::default();
-        editor.refresh_overlay_visibility(session.document(), session.revision());
+        editor.refresh_overlay_visibility(&session);
         assert!(!editor.overlay_visible(plan));
         assert!(editor.overlay_visible(sketch));
     }

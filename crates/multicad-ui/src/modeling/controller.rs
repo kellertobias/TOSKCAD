@@ -23,8 +23,10 @@ use crate::{
     egui,
     viewport::{Scene, SceneBackend, SceneStamp, VisibilityFilter},
 };
+#[cfg(test)]
+use multicad_core::commands::Request;
 use multicad_core::{
-    commands::{Actor, Channel, Prepared, Request, Session},
+    commands::{Actor, Channel, Prepared, Session, SessionStamp},
     document::{EntityData, EntityId},
     model::{
         self, CreatedBody, ExtrudeRequest, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest,
@@ -37,9 +39,8 @@ use proof::SceneProof;
 use std::sync::Arc;
 
 struct Scope {
-    /// A source-neutral transaction also binds a newly opened form to the
-    /// originating Session before there is any extrusion transaction.
-    session: Prepared,
+    /// Read-only source context remains bound to its originating session.
+    session: SessionStamp,
     source: ContentHash,
     resources: ProjectResources,
     execution: Execution,
@@ -1075,7 +1076,7 @@ impl ModelToolController {
         &mut self,
         session: &Session,
         resources: &ProjectResources,
-        channel: Channel,
+        _channel: Channel,
         form: ModelForm,
     ) -> Result<(), String> {
         if !self.has_backend() {
@@ -1084,14 +1085,7 @@ impl ModelToolController {
         if self.active() {
             return Err("Apply or cancel the active modeling tool first".into());
         }
-        let scope = session
-            .prepare(Request {
-                expected_revision: session.revision(),
-                actor: Actor::local(channel),
-                label: "Open modeling controls".into(),
-                edits: vec![],
-            })
-            .map_err(|error| error.to_string())?;
+        let scope = session.stamp();
         let source = ContentHash::document(session.document())?;
         self.form = Some(form);
         if let Some(panel) = self.form.as_mut().and_then(ModelForm::extrusion_mut) {
@@ -1179,7 +1173,7 @@ impl ModelToolController {
         let Some(scope) = &self.scope else {
             return false;
         };
-        if session.validate_preview(&scope.session).is_err() {
+        if session.validate_stamp(&scope.session).is_err() {
             return false;
         }
         let changed = match self.form.as_mut() {
@@ -1285,7 +1279,7 @@ impl ModelToolController {
         full: bool,
     ) -> Result<(), String> {
         let scope = self.scope.as_ref().ok_or("Start a modeling tool first")?;
-        session.validate_preview(&scope.session).map_err(|_| {
+        session.validate_stamp(&scope.session).map_err(|_| {
             "The source session changed; cancel the modeling tool and start again".to_string()
         })?;
         if &scope.resources != resources {
