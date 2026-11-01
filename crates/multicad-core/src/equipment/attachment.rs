@@ -351,6 +351,31 @@ impl Attachment {
                         "Equipment anchor is outside the wall height; repair its mounting height or floor datum",
                     ));
                 }
+                if resolved.layers.is_some() {
+                    let z = world_z - resolved.base_z_mm;
+                    let in_span = |offset: f64, width: f64| {
+                        along >= offset - 1e-6 && along <= offset + width + 1e-6
+                    };
+                    let opening = resolved.openings.iter().any(|opening| {
+                        in_span(opening.offset_mm, opening.width_mm)
+                            && z >= opening.sill_mm - 1e-6
+                            && z <= opening.sill_mm + opening.height_mm + 1e-6
+                    });
+                    let cutout = resolved.cutouts.iter().any(|cutout| {
+                        in_span(cutout.offset_mm, cutout.width_mm)
+                            && (cutout.through
+                                || matches!(
+                                    (*side, cutout.face),
+                                    (WallSide::Left, model::WallFace::Left)
+                                        | (WallSide::Right, model::WallFace::Right)
+                                ))
+                    });
+                    if opening || cutout {
+                        return Err(invalid(
+                            "Equipment anchor lies in an opening or cutout; reattach it to an intact wall face",
+                        ));
+                    }
+                }
                 let tangent = [d[0] / length, d[1] / length];
                 let normal = [-tangent[1], tangent[0]];
                 let (left, right) = resolved.physical_face_offsets()?;

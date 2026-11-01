@@ -781,3 +781,218 @@ fn placement_fields_cannot_be_smuggled_into_legacy_wall_schema() {
     assert!(WallDefinition::from_definition(&misleading).is_err());
     assert_eq!(WallDefinition::from_definition(&legacy).unwrap(), source);
 }
+
+#[test]
+fn path_reversal_preserves_open_wall_side_and_refuses_silent_reference_rebinding() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition, NewType, NewTypeKind, WallChange},
+    };
+    let (document, stack) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let actor = || Actor::local(Channel::Ui);
+    let ty = NewType::new(
+        "Reversible construction",
+        NewTypeKind::LayeredWall(LayeredWallTypeDefinition {
+            layers: stack,
+            height: length(2700.),
+            reference: WallLayerReference::Outside,
+        }),
+    );
+    let mut request = wall_request(ty.id);
+    let preview =
+        model::prepare_wall_change(&session, 0, actor(), &[ty], &WallChange::Create(&request))
+            .unwrap();
+    session.commit(preview.prepared).unwrap();
+    let old = model::resolve_wall(session.document(), session.parameters(), &request.wall).unwrap();
+    let before = session.document().clone();
+    request.wall.path.reverse();
+    assert!(
+        model::prepare_wall_change(
+            &session,
+            1,
+            actor(),
+            &[],
+            &WallChange::Edit {
+                feature: request.feature,
+                wall: &request.wall
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(session.document(), &before);
+    request.wall.layer_placement.as_mut().unwrap().flipped = true;
+    let preview = model::prepare_wall_change(
+        &session,
+        1,
+        actor(),
+        &[],
+        &WallChange::Edit {
+            feature: request.feature,
+            wall: &request.wall,
+        },
+    )
+    .unwrap();
+    let reversed = model::resolve_wall(
+        preview.prepared.document(),
+        session.parameters(),
+        &request.wall,
+    )
+    .unwrap();
+    let area = |wall: &model::ResolvedWall| {
+        let plan = wall.plan().unwrap();
+        (0..plan.outer.points.len())
+            .map(|i| {
+                let a = plan.outer.points[i];
+                let b = plan.outer.points[(i + 1) % plan.outer.points.len()];
+                a[0] * b[1] - a[1] * b[0]
+            })
+            .sum::<f64>()
+            .abs()
+            / 2.
+    };
+    assert!((area(&old) - area(&reversed)).abs() < 1e-6);
+    drop(preview);
+    let reference = Entity::new(
+        "Dependent face sketch",
+        EntityData::Extension {
+            definition: multicad_core::document::Definition {
+                type_id: "test.reference".into(),
+                schema_version: 1,
+                data: serde_json::json!({}),
+            },
+            inputs: vec![multicad_core::document::Link::new(request.feature, "host")],
+        },
+    );
+    session
+        .apply(multicad_core::commands::Request {
+            expected_revision: 1,
+            actor: actor(),
+            label: "Add dependent reference".into(),
+            edits: vec![Mutation::Insert(reference)],
+        })
+        .unwrap();
+    assert!(
+        model::prepare_wall_change(
+            &session,
+            2,
+            actor(),
+            &[],
+            &WallChange::Edit {
+                feature: request.feature,
+                wall: &request.wall
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn layered_equipment_anchors_in_voids_require_repair_but_lintels_and_the_opposite_face_remain_usable()
+ {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        equipment::{Attachment, HostPlacement, WallSide},
+        model::{self, LayeredWallTypeDefinition, NewType, NewTypeKind, WallChange},
+    };
+    let (document, stack) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let actor = || Actor::local(Channel::Ui);
+    let (floor, p) = model::prepare_level(
+        &session,
+        0,
+        actor(),
+        "Ground",
+        &model::LevelDefinition {
+            elevation: length(0.),
+            height: length(3000.),
+            slab_thickness: length(200.),
+        },
+    )
+    .unwrap();
+    session.commit(p).unwrap();
+    let ty = NewType::new(
+        "Hosted layers",
+        NewTypeKind::LayeredWall(LayeredWallTypeDefinition {
+            layers: stack,
+            height: length(2700.),
+            reference: WallLayerReference::Outside,
+        }),
+    );
+    let door = NewType::new(
+        "Door",
+        NewTypeKind::Opening(model::OpeningTypeDefinition {
+            kind: model::OpeningKind::Door {
+                hinge: model::Hinge::Start,
+                swing: model::Swing::Left,
+            },
+            width: length(900.),
+            height: length(2100.),
+            sill: length(0.),
+        }),
+    );
+    let mut request = wall_request(ty.id);
+    request.wall.openings.push(model::Opening {
+        id: EntityId::new(),
+        opening_type: door.id,
+        segment: 0,
+        offset: length(500.),
+        width: None,
+        height: None,
+        sill: None,
+    });
+    request.wall.cutouts.push(model::VerticalCutout {
+        id: EntityId::new(),
+        segment: 0,
+        offset: length(1700.),
+        width: length(400.),
+        depth: Some(length(20.)),
+        face: model::WallFace::Left,
+    });
+    let p = model::prepare_wall_change(
+        &session,
+        1,
+        actor(),
+        &[ty, door],
+        &WallChange::Create(&request),
+    )
+    .unwrap();
+    session.commit(p.prepared).unwrap();
+    let anchor = |along, height, side| Attachment {
+        owner: EntityId::new(),
+        floor,
+        placement: HostPlacement::Wall {
+            wall: request.feature,
+            segment: 0,
+            point_count: 3,
+            closed: false,
+            side,
+            along: length(along),
+            standoff: length(0.),
+            height: length(height),
+            rotation: model::angle(0.),
+        },
+    };
+    assert!(
+        anchor(1000., 300., WallSide::Left)
+            .resolve(session.document(), session.parameters())
+            .unwrap_err()
+            .to_string()
+            .contains("reattach")
+    );
+    assert!(
+        anchor(1000., 2300., WallSide::Left)
+            .resolve(session.document(), session.parameters())
+            .is_ok()
+    );
+    assert!(
+        anchor(1900., 300., WallSide::Left)
+            .resolve(session.document(), session.parameters())
+            .is_err()
+    );
+    assert!(
+        anchor(1900., 300., WallSide::Right)
+            .resolve(session.document(), session.parameters())
+            .is_ok()
+    );
+}

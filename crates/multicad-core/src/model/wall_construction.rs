@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub const LAYERED_WALL_TYPE_SCHEMA: u32 = 2;
 pub const LAYERED_WALL_TYPE_CAPABILITY: &str = "architecture.wall_type.2";
 pub const LAYERED_WALL_CAPABILITY: &str = "architecture.wall.2";
+pub const LAYERED_WALL_SCHEMA: u32 = 2;
 
 fn is_false(value: &bool) -> bool {
     !*value

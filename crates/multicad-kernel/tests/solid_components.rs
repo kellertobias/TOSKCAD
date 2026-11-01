@@ -167,4 +167,16 @@ fn cancellation_and_identity_errors_do_not_publish_partial_copies_or_mutate_the_
     assert_eq!(error.kind, GeometryErrorKind::Cancelled);
     assert_eq!(compound.topology_snapshot(owner, 0).unwrap(), before);
     assert_eq!(compound.solid_components(policy()).unwrap().len(), 2);
+    let calls = AtomicUsize::new(0);
+    let error = match Solid::compound_named_interruptible(
+        &[&a, &b],
+        owner,
+        policy(),
+        Some(&|| calls.fetch_add(1, Ordering::SeqCst) >= 2),
+    ) {
+        Ok(_) => panic!("Cancelled construction published a partial compound"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, GeometryErrorKind::Cancelled);
+    assert_eq!(compound.topology_snapshot(owner, 0).unwrap(), before);
 }

@@ -98,7 +98,7 @@ impl WallOpeningChange {
                 .find(|t| t.id == o.opening_type)
                 .and_then(|t| match &t.kind {
                     NewTypeKind::Opening(v) => Some(v.kind.clone()),
-                    NewTypeKind::Wall(_) => None,
+                    NewTypeKind::Wall(_) | NewTypeKind::LayeredWall(_) => None,
                 })
                 .or_else(|| {
                     read_opening_type(document, o.opening_type)

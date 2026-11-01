@@ -166,24 +166,51 @@ fn origins(id: EntityId, roles: impl IntoIterator<Item = String>) -> Vec<Origin>
         .collect()
 }
 
-pub(crate) fn build(
-    document: &Document,
-    parameters: &EvaluatedParameters,
+fn ensure_disjoint_members(
+    members: &[Solid],
     id: EntityId,
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
-) -> Result<Solid, ModelError> {
-    let e = |e: multicad_core::document::DocumentError| error(Some(id), e);
-    let source = model::read_wall(document, id).map_err(e)?;
-    let wall = model::resolve_wall(document, parameters, &source).map_err(e)?;
-    if wall.layers.is_some() {
-        return Err(error(
-            Some(id),
-            "Layered wall native generation is not available yet; the source construction is retained",
-        ));
+) -> Result<(), ModelError> {
+    // A compound intentionally retains overlaps. Prove disjoint material
+    // volumes before constructing it; do not use a union to hide bad offsets.
+    let bounds = members
+        .iter()
+        .map(|solid| solid.bounds().map_err(|e| error(Some(id), e)))
+        .collect::<Result<Vec<_>, _>>()?;
+    for i in 0..members.len() {
+        for j in i + 1..members.len() {
+            if interrupt.is_some_and(|f| f()) {
+                return Err(error(Some(id), "Wall evaluation superseded"));
+            }
+            if (0..3).any(|axis| {
+                bounds[i].max[axis] <= bounds[j].min[axis]
+                    || bounds[j].max[axis] <= bounds[i].min[axis]
+            }) {
+                continue;
+            }
+            if members[i]
+                .boolean(&members[j], BooleanOperation::Intersect, policy)
+                .map_err(|e| error(Some(id), e))?
+                .is_some()
+            {
+                return Err(error(
+                    Some(id),
+                    "Material bands overlap for this wall path; adjust the construction or repair the corner geometry",
+                ));
+            }
+        }
     }
-    let plan = wall.plan().map_err(e)?;
-    wall.check_openings(&plan).map_err(e)?;
+    Ok(())
+}
+
+fn extrude_region(
+    wall: &model::ResolvedWall,
+    plan: &model::WallPlan,
+    id: EntityId,
+    policy: GeometryPolicy,
+    band: Option<&model::WallLayerBand>,
+) -> Result<Solid, ModelError> {
     let profile = CurvedProfile {
         frame: PlaneFrame {
             origin: [0., 0., wall.base_z_mm],
@@ -198,15 +225,43 @@ pub(crate) fn build(
         .roles
         .iter()
         .chain(plan.holes.iter().flat_map(|h| &h.roles))
-        .cloned();
-    let mut solid = Solid::extrude_curved_profile_vector_named(
+        .map(|role| {
+            if let Some(band) = band {
+                let outside_left = band.outside_mm > band.inside_mm;
+                if let Some(segment) = role.strip_prefix("wall.seg.") {
+                    if let Some(segment) = segment.strip_suffix(".left") {
+                        return format!(
+                            "wall.layer.seg.{segment}.{}",
+                            if outside_left { "outside" } else { "inside" }
+                        );
+                    }
+                    if let Some(segment) = segment.strip_suffix(".right") {
+                        return format!(
+                            "wall.layer.seg.{segment}.{}",
+                            if outside_left { "inside" } else { "outside" }
+                        );
+                    }
+                }
+            }
+            role.clone()
+        });
+    Solid::extrude_curved_profile_vector_named(
         &profile,
         [0., 0., wall.height_mm],
         id,
         &origins(id, roles),
         policy,
     )
-    .map_err(|e| error(Some(id), e))?;
+    .map_err(|e| error(Some(id), e))
+}
+fn cut_tools(
+    wall: &model::ResolvedWall,
+    plan: &model::WallPlan,
+    id: EntityId,
+    policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Vec<Solid>, ModelError> {
+    let mut tools = vec![];
     let depth = plan.left_mm - plan.right_mm + 2.;
     for opening in &wall.openings {
         if interrupt.is_some_and(|f| f()) {
@@ -247,17 +302,14 @@ pub(crate) fn build(
             policy,
         )
         .map_err(|e| error(Some(id), e))?;
-        solid = solid
-            .boolean(&tool, BooleanOperation::Subtract, policy)
-            .map_err(|e| error(Some(id), e))?
-            .ok_or_else(|| error(Some(id), "An opening removed the whole wall"))?;
+        tools.push(tool);
     }
     for cutout in &wall.cutouts {
         if interrupt.is_some_and(|f| f()) {
             return Err(error(Some(id), "Wall evaluation superseded"));
         }
         let seg = plan.segments[cutout.segment];
-        let ([a, b], [low, high]) = wall.cutout_span(&plan, cutout);
+        let ([a, b], [low, high]) = wall.cutout_span(plan, cutout);
         // Reach 1 mm past every free wall face so no sliver skin remains;
         // a chase's back face stays exactly at its depth.
         let (low, high) = match (cutout.through, cutout.face) {
@@ -297,18 +349,131 @@ pub(crate) fn build(
             policy,
         )
         .map_err(|e| error(Some(id), e))?;
-        solid = solid
-            .boolean(&tool, BooleanOperation::Subtract, policy)
+        tools.push(tool);
+    }
+    Ok(tools)
+}
+fn cut_region(
+    mut solid: Solid,
+    tools: &[Solid],
+    id: EntityId,
+    policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Option<Solid>, ModelError> {
+    for tool in tools {
+        if interrupt.is_some_and(|f| f()) {
+            return Err(error(Some(id), "Wall evaluation superseded"));
+        }
+        let Some(next) = solid
+            .boolean(tool, BooleanOperation::Subtract, policy)
             .map_err(|e| error(Some(id), e))?
-            .ok_or_else(|| error(Some(id), "A vertical cutout removed the whole wall"))?;
+        else {
+            return Ok(None);
+        };
+        solid = next;
     }
-    if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
-        return Err(error(
-            Some(id),
-            "Openings split the wall into separate pieces; keep wall above and beside each opening",
-        ));
+    Ok(Some(solid))
+}
+pub(crate) fn build(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    id: EntityId,
+    policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Solid, ModelError> {
+    let e = |e: multicad_core::document::DocumentError| error(Some(id), e);
+    let source = model::read_wall(document, id).map_err(e)?;
+    let wall = model::resolve_wall(document, parameters, &source).map_err(e)?;
+    let plan = wall.plan().map_err(e)?;
+    wall.check_openings(&plan).map_err(e)?;
+    if let Some(layers) = &wall.layers {
+        for layer in &layers.stack.layers {
+            if layer.thickness_mm > 0. && layer.thickness_mm < policy.minimum_feature_mm {
+                let name =
+                    match model::read_wall_construction(document, source.wall_type).map_err(e)? {
+                        model::WallTypeConstruction::Layered(ty) => ty
+                            .layers
+                            .layers
+                            .into_iter()
+                            .find(|item| item.id == layer.id)
+                            .map(|item| item.name)
+                            .unwrap_or_else(|| "Wall layer".into()),
+                        _ => "Wall layer".into(),
+                    };
+                return Err(error(
+                    Some(id),
+                    format!(
+                        "{name}: thickness {} mm is below the native minimum {} mm",
+                        layer.thickness_mm, policy.minimum_feature_mm
+                    ),
+                ));
+            }
+        }
+        let (left, right) = wall.physical_face_offsets().map_err(e)?;
+        if wall.cutouts.iter().any(|cutout| {
+            !cutout.through
+                && ((cutout.face == model::WallFace::Left && (left - plan.left_mm).abs() > 1e-6)
+                    || (cutout.face == model::WallFace::Right
+                        && (right - plan.right_mm).abs() > 1e-6)
+                    || cutout.depth_mm >= left - right - 1e-6)
+        }) {
+            return Err(error(
+                Some(id),
+                "Partial-depth cuts from exterior cavity datums or through all physical material are unsupported; choose an intact physical face and a shallower cut",
+            ));
+        }
     }
-    Ok(solid)
+    let tools = cut_tools(&wall, &plan, id, policy, interrupt)?;
+    let Some(layers) = &wall.layers else {
+        let solid = cut_region(
+            extrude_region(&wall, &plan, id, policy, None)?,
+            &tools,
+            id,
+            policy,
+            interrupt,
+        )?
+        .ok_or_else(|| error(Some(id), "Openings removed all wall material"))?;
+        if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
+            return Err(error(
+                Some(id),
+                "Openings split the wall into separate pieces; keep wall above and beside each opening",
+            ));
+        }
+        return Ok(solid);
+    };
+    let mut members = vec![];
+    for (layer, band) in layers.stack.layers.iter().zip(&layers.bands) {
+        if !layer.solid {
+            continue;
+        }
+        if interrupt.is_some_and(|f| f()) {
+            return Err(error(Some(id), "Wall evaluation superseded"));
+        }
+        let layer_plan = wall
+            .plan_region(
+                band.outside_mm.max(band.inside_mm),
+                band.outside_mm.min(band.inside_mm),
+            )
+            .map_err(e)?;
+        let solid = extrude_region(&wall, &layer_plan, id, policy, Some(band))?;
+        if let Some(solid) = cut_region(solid, &tools, id, policy, interrupt)? {
+            members.push(
+                solid
+                    .with_component_origin(id, layer.id)
+                    .map_err(|e| error(Some(id), e))?,
+            );
+        }
+    }
+    if members.is_empty() {
+        return Err(error(Some(id), "Openings removed all wall material"));
+    }
+    if members.len() == 1 {
+        return Ok(members.pop().expect("one retained material member"));
+    }
+    ensure_disjoint_members(&members, id, policy, interrupt)?;
+    let members = members.iter().collect::<Vec<_>>();
+    Solid::compound_named_interruptible(&members, id, policy, interrupt)
+        .map_err(|e| error(Some(id), e))
 }
 
 /// The wall feature producing a Part, if it is one.
@@ -442,5 +607,35 @@ impl Model {
         .map_err(e)?;
         let plan = wall.plan().map_err(e)?;
         Ok((wall, plan))
+    }
+}
+
+#[cfg(test)]
+mod layer_guard_tests {
+    use super::*;
+    #[test]
+    fn exact_overlap_guard_allows_contact_rejects_material_overlap_and_observes_cancel() {
+        let id = EntityId::new();
+        let policy = GeometryPolicy::default();
+        let a = Solid::box_named([10.; 3], id, policy).unwrap();
+        let move_by = |x| {
+            a.transformed(multicad_kernel::RigidTransform {
+                translation_mm: [x, 0., 0.],
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        ensure_disjoint_members(&[move_by(0.), move_by(10.)], id, policy, None).unwrap();
+        assert!(
+            ensure_disjoint_members(&[move_by(0.), move_by(9.5)], id, policy, None)
+                .unwrap_err()
+                .message
+                .contains("overlap")
+        );
+        assert!(crate::is_superseded(
+            &ensure_disjoint_members(&[move_by(0.), move_by(10.)], id, policy, Some(&|| true))
+                .unwrap_err()
+        ));
+        assert!((a.volume_mm3().unwrap() - 1000.).abs() < 1e-6);
     }
 }

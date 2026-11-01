@@ -8,7 +8,7 @@ solid and plan symbols).
 
 ## Types and instances
 
-- **Wall type.** An `architecture.wall_type` extension entity. It holds the
+- **Uniform wall type (schema 1).** An `architecture.wall_type` extension entity. It holds the
   thickness, height and justification, plus an optional material.
   Justification says which side of the drawn path the wall occupies: center,
   left or right, looking along the path.
@@ -25,6 +25,47 @@ solid and plan symbols).
     segment start to the start jamb), with optional width, height and sill
     overrides;
   - its vertical cutouts (see below).
+
+### Layered construction (CAD-204, in progress)
+
+The existing wall-type catalog also accepts `architecture.wall_type` schema 2.
+`LayeredWallTypeDefinition` stores an ordered outside-to-inside `WallLayerStack`,
+height and reference alignment. A layer has a stable local identity, name,
+optional role and one construction kind: finite solid with a material link,
+finite air cavity without a material, or zero-thickness coating with a material
+link. Total thickness is derived from dimensional layers; no independent total
+or overall material is stored. Existing uniform types retain schema 1.
+
+A layered wall uses `architecture.wall` schema 2 and explicit `WallLayerPlacement`:
+reference inheritance/override and a persisted flip. Overall Outside, Center,
+Inside or either boundary of a named layer can be the reference. Closed runs
+resolve Outside toward the polygon exterior for either winding. Reversing an
+open run must also flip its construction to preserve its physical sides;
+reverse-direction edits with openings or incoming references require explicit
+repair. Removed reference layers are diagnosed. Whole-Part material and uniform
+thickness/justification overrides are rejected for layered walls.
+
+Native generation extrudes each finite material band using global offsets and
+the full construction's miter limits, subtracts common opening/chase tools in
+global wall coordinates, checks material bands for positive-volume overlap, and
+retains the members as an exact compound. Coatings and cavities do not become
+fictitious solids. Components carry the source wall feature and stable layer
+identity in exact native topology ancestry. Native component extraction copies
+those solids and ancestry; enumeration order is not a persistent identity.
+Finite layers below the active native minimum feature size fail without being
+inflated. Partial-depth cuts from exterior cavity datums, or through the whole
+physical width while described as a chase, are currently refused.
+
+Equipment uses physical finite-solid face offsets. Layered-wall anchors inside
+an opening or a cutout on the selected face require reattachment; a lintel or
+an intact opposite face remains usable. This is anchor validation, not a claim
+of complete equipment footprint/clearance certification.
+
+This increment establishes source and native geometry contracts. The graphical
+construction editor, per-layer appearance/hatch publication, separate-wall T
+joins and project-authored dynamic-symbol integration under CAD-206 remain
+in progress. The existing graphical wall form still authors uniform types.
+Source/native tests do not establish graphical workflow or human acceptance.
 
 ### Vertical cutouts
 
@@ -76,7 +117,9 @@ the same transaction as the wall that uses them.
    Each vertical cutout is a plan rectangle extruded from 1 mm below the base
    to 1 mm above the top. Its roles are `cutout.<id>.jamb.start` and
    `.jamb.end`, plus `.back` for the face at a chase's depth.
-4. **Result check.** The result must be one connected solid.
+4. **Result check.** A uniform wall must remain one connected solid. Layered
+   constructions retain disjoint exact material solids, including disconnected
+   fragments created by supported chases, rather than fusing materials.
 
 ### What the planner refuses
 

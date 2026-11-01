@@ -249,7 +249,26 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        Self::compound_named_interruptible(solids, feature, policy, None)
+    }
+    pub fn compound_named_interruptible(
+        solids: &[&Solid],
+        feature: EntityId,
+        policy: GeometryPolicy,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, GeometryError> {
         policy.validate()?;
+        let checkpoint = || {
+            if interrupt.is_some_and(|f| f()) {
+                Err(failure(
+                    GeometryErrorKind::Cancelled,
+                    "Compound construction superseded",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        checkpoint()?;
         if feature.is_nil() || solids.is_empty() || solids.len() > 128 {
             return Err(failure(
                 GeometryErrorKind::Input,
@@ -268,9 +287,11 @@ impl Solid {
         let mut job =
             ffi::compound_job().map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         for solid in solids {
+            checkpoint()?;
             ffi::compound_add(job.pin_mut(), &solid.native.0)
                 .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         }
+        checkpoint()?;
         let handle = ffi::compound_finish(job.pin_mut())
             .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         let mut result = Self::adopt(handle, policy, "compound")?;
@@ -281,6 +302,7 @@ impl Solid {
             ));
         }
         result.inherit_provenance(solids, None)?;
+        checkpoint()?;
         Ok(result)
     }
 }

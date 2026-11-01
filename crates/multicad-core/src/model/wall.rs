@@ -449,6 +449,11 @@ pub fn resolve_wall(
     wall: &WallDefinition,
 ) -> Result<ResolvedWall, DocumentError> {
     let mm = |d: &Dimension| number(d, Unit::Millimeter, parameters);
+    let points = wall
+        .path
+        .iter()
+        .map(|[x, y]| Ok([mm(x)?, mm(y)?]))
+        .collect::<Result<Vec<_>, DocumentError>>()?;
     let (thickness_mm, height_mm, justification, layers) =
         match super::read_wall_construction(document, wall.wall_type)? {
             super::WallTypeConstruction::Uniform(ty) => {
@@ -472,7 +477,13 @@ pub fn resolve_wall(
                     .layer_placement
                     .as_ref()
                     .ok_or_else(|| invalid("Layered wall needs an explicit layer placement"))?;
-                let layers = ty.resolve_layers(document, parameters, placement)?;
+                let mut orientation = placement.clone();
+                // Closed runs define Outside geometrically, not from whichever
+                // winding happened to be used while drawing the same room.
+                if wall.closed && signed_area(&points) > 0. {
+                    orientation.flipped = !orientation.flipped;
+                }
+                let layers = ty.resolve_layers(document, parameters, &orientation)?;
                 (
                     layers.stack.thickness_mm,
                     mm(wall.height.as_ref().unwrap_or(&ty.height))?,
@@ -484,11 +495,6 @@ pub fn resolve_wall(
     if thickness_mm <= 1e-3 || height_mm <= 1e-3 {
         return Err(invalid("Wall thickness and height must be positive"));
     }
-    let points = wall
-        .path
-        .iter()
-        .map(|[x, y]| Ok([mm(x)?, mm(y)?]))
-        .collect::<Result<Vec<_>, DocumentError>>()?;
     let mut openings = vec![];
     for o in &wall.openings {
         let t = read_opening_type(document, o.opening_type)?;
@@ -1219,6 +1225,7 @@ pub fn prepare_wall_edit(
 #[derive(Clone, Debug, PartialEq)]
 pub enum NewTypeKind {
     Wall(WallTypeDefinition),
+    LayeredWall(super::LayeredWallTypeDefinition),
     Opening(OpeningTypeDefinition),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -1247,6 +1254,10 @@ impl NewType {
                     inputs: v.inputs(),
                 }
             }
+            NewTypeKind::LayeredWall(v) => EntityData::Extension {
+                definition: v.definition()?,
+                inputs: v.inputs(),
+            },
             NewTypeKind::Opening(v) => {
                 v.validate()?;
                 EntityData::Extension {
@@ -1299,6 +1310,14 @@ pub(super) fn prepare_wall_change_labeled(
     }
     let candidate = session.document().edited(&edits)?;
     let parameters = crate::parameters::evaluate(&candidate)?;
+    for ty in new_types {
+        if let NewTypeKind::LayeredWall(value) = &ty.kind {
+            value.layers.resolve(&candidate, &parameters)?;
+            if number(&value.height, Unit::Millimeter, &parameters)? <= 0. {
+                return Err(error("Wall type height must be positive"));
+            }
+        }
+    }
     let (wall, output, label) = match change {
         WallChange::Create(request) => {
             if request.wall.output.body != request.body {
@@ -1331,6 +1350,54 @@ pub(super) fn prepare_wall_change_labeled(
     wall.validate()?;
     let resolved = resolve_wall(&candidate, &parameters, wall)?;
     resolved.check_openings(&resolved.plan()?)?;
+    if let WallChange::Edit { feature, .. } = change {
+        let previous = read_wall(&candidate, *feature)?;
+        if previous.layer_placement.is_some()
+            && wall.layer_placement.is_some()
+            && previous.closed == wall.closed
+        {
+            let old = resolve_wall(&candidate, &parameters, &previous)?;
+            let same =
+                |a: [f64; 2], b: [f64; 2]| a.into_iter().zip(b).all(|(a, b)| (a - b).abs() <= 1e-8);
+            let n = old.points.len();
+            let reversed = n == resolved.points.len()
+                && if wall.closed {
+                    (0..n).any(|start| {
+                        (0..n).all(|i| same(old.points[i], resolved.points[(start + n - i) % n]))
+                    })
+                } else {
+                    old.points
+                        .iter()
+                        .rev()
+                        .zip(&resolved.points)
+                        .all(|(a, b)| same(*a, *b))
+                };
+            if reversed {
+                if !wall.closed
+                    && previous.layer_placement.as_ref().map(|p| p.flipped)
+                        == wall.layer_placement.as_ref().map(|p| p.flipped)
+                {
+                    return Err(error(
+                        "Reversing an open wall path must also flip the construction to preserve Outside and Inside",
+                    ));
+                }
+                let referenced = candidate
+                    .entities()
+                    .filter(|entity| entity.id != *feature && entity.id != wall.output.body)
+                    .any(|entity| {
+                        entity.references().iter().any(|link| {
+                            link.target == *feature
+                                || (link.target == wall.output.body && link.geometry.is_some())
+                        })
+                    });
+                if !previous.openings.is_empty() || !previous.cutouts.is_empty() || referenced {
+                    return Err(error(
+                        "Reverse-direction edits require explicit repair of existing openings and hosted or geometric references",
+                    ));
+                }
+            }
+        }
+    }
     match change {
         WallChange::Create(request) => {
             for id in [request.feature, request.body] {
