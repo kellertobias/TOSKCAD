@@ -543,3 +543,60 @@ fn level_edits_change_world_placement_while_retaining_the_authored_floor_offset(
     assert!(layout.infills.iter().all(|p| p.position_mm[2] == 4200.));
     assert_eq!(outputs(session.document(), run.id), before);
 }
+
+#[test]
+fn changing_infill_kind_replaces_physical_members_and_never_retargets_an_old_panel_reference() {
+    let (mut session, ty, _) = fixture();
+    let run = request(ty.id, "Boundary", 2000.);
+    create(&mut session, &ty, &run, true);
+    let original = outputs(session.document(), run.id);
+    let old_panel = original
+        .iter()
+        .find(|(key, _)| matches!(key, FenceMemberKey::Infill { .. }))
+        .unwrap();
+    let key = *old_panel.0;
+    let (old_feature, old_part) = *old_panel.1;
+    let mut edit = ty;
+    edit.construction.infills[0].construction = FenceInfillKind::Pickets {
+        width: length(70.),
+        depth: length(20.),
+        maximum_gap: length(100.),
+    };
+    let change = FenceChange {
+        edit_type: Some(edit),
+        ..Default::default()
+    };
+    let prepared = prepare_fence_change(&session, session.revision(), actor(), &change).unwrap();
+    let staged = prepared.model.prepared.document();
+    let replacement = outputs(staged, run.id);
+    assert_ne!(replacement[&key], (old_feature, old_part));
+    assert!(staged.get(old_feature).is_none());
+    assert!(staged.get(old_part).is_none());
+    for (key, output) in &original {
+        if matches!(key, FenceMemberKey::Post { .. }) {
+            assert_eq!(replacement[key], *output);
+        }
+    }
+    let measurement = Entity::new(
+        "Panel-specific measurement",
+        EntityData::Extension {
+            definition: Definition {
+                type_id: "test.measurement".into(),
+                schema_version: 1,
+                data: serde_json::json!({}),
+            },
+            inputs: vec![Link::new(old_part, "measured_part")],
+        },
+    );
+    let request = multicad_core::commands::Request {
+        expected_revision: session.revision(),
+        actor: actor(),
+        label: "Reference the complete panel".into(),
+        edits: vec![Mutation::Insert(measurement)],
+    };
+    session.commit(session.prepare(request).unwrap()).unwrap();
+    let before = session.document().clone();
+    let error = prepare_fence_change(&session, session.revision(), actor(), &change).unwrap_err();
+    assert!(error.to_string().contains("Panel-specific measurement"));
+    assert_eq!(session.document(), &before);
+}

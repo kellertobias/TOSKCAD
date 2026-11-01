@@ -270,13 +270,46 @@ pub fn prepare_fence_change(
         })?;
         let specs = layout.member_specs();
         let mut previous = existing.remove(run).unwrap_or_default();
+        let old_construction = document
+            .get(*run)
+            .map(|_| {
+                read_fence_run(document, *run)
+                    .and_then(|source| read_fence_type(document, source.fence_type))
+            })
+            .transpose()?;
+        let new_construction = read_fence_type(&stage, source.fence_type)?;
         for spec in specs {
             let name = format!(
                 "{} / {}",
                 short_name(&stage.get(*run).expect("staged run").name),
                 spec.name
             );
-            let output = if let Some(output) = previous.remove(&spec.key) {
+            // A panel becoming a rail or an array of pickets has no retained
+            // physical-member identity, even if its recipe ID stays stable.
+            // Keep the old output in `previous` so removal/reference repair
+            // follows the same atomic path as any other deleted member.
+            let same_family = match spec.key {
+                FenceMemberKey::Post { .. } => true,
+                FenceMemberKey::Infill { infill } => old_construction
+                    .as_ref()
+                    .and_then(|old| old.infills.iter().find(|r| r.id == infill.recipe))
+                    .zip(
+                        new_construction
+                            .infills
+                            .iter()
+                            .find(|r| r.id == infill.recipe),
+                    )
+                    .is_some_and(|(old, new)| {
+                        std::mem::discriminant(&old.construction)
+                            == std::mem::discriminant(&new.construction)
+                    }),
+            };
+            let retained = if same_family {
+                previous.remove(&spec.key)
+            } else {
+                None
+            };
+            let output = if let Some(output) = retained {
                 let mut part = document
                     .get(output.body)
                     .expect("checked member Part")

@@ -75,7 +75,10 @@ optional run create/edit. Shared edits reconcile all consuming runs. A current
 run's post-position repair can be included in the same candidate; another run's
 unresolved override refuses the entire edit and identifies that run.
 
-Retained semantic keys keep their Feature and Part IDs. Parts retain unrelated
+Compatible semantic keys within the same infill kind keep their Feature and Part
+IDs. Changing a panel, rail or picket recipe into another kind replaces its
+physical members, even when the recipe ID remains stable; old references require
+repair instead of following the first replacement member. Parts retain unrelated
 description, tags and downstream history. Removed members with downstream or
 external references require repair. Their owned manufacturing metadata is removed
 with them only when removal is safe. Source and group names remain editable;
