@@ -501,6 +501,7 @@ impl Default for Registry {
                                 !matches!(
                                     tool,
                                     ModelingTool::Copy
+                                        | ModelingTool::Thread
                                         | ModelingTool::Boolean
                                         | ModelingTool::Wall
                                         | ModelingTool::Door
@@ -551,6 +552,7 @@ impl Default for Registry {
                     tab(
                         "Mechanical",
                         &[
+                            "thread",
                             "library",
                             "place-component",
                             "relationship",
@@ -809,7 +811,9 @@ mod tests {
                 registry.workbench_tab(Mode::Model, tool.action, Some(mechanical)),
                 Some(mechanical)
             );
-            if *id == "library" {
+            if *id == "thread" {
+                assert_eq!(tool.action, Command::Modeling(ModelingTool::Thread));
+            } else if *id == "library" {
                 assert_eq!(tool.action, Command::Extension("library"));
             } else {
                 assert!(matches!(tool.action, Command::Assembly(_)));
@@ -996,6 +1000,7 @@ mod tests {
                 !matches!(
                     tool,
                     ModelingTool::Copy
+                        | ModelingTool::Thread
                         | ModelingTool::Boolean
                         | ModelingTool::Wall
                         | ModelingTool::Door

@@ -294,6 +294,9 @@ impl SketchEditor {
         if matches!(tool, ModelingTool::Box | ModelingTool::Cylinder) {
             return self.begin_primitive(session, resources, tool, channel);
         }
+        if tool == ModelingTool::Thread {
+            return self.begin_thread(session, resources, feed, channel);
+        }
         if tool == ModelingTool::Wall {
             return self.begin_wall(session, resources, channel);
         }

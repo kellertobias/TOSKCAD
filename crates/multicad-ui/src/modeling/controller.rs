@@ -15,6 +15,7 @@ use super::{
     revolve::RevolvePanel,
     scaling::ScalePanel,
     split::SplitPanel,
+    thread::ThreadPanel,
 };
 use crate::{
     egui,
@@ -159,6 +160,7 @@ impl ModelToolController {
             || super::PlacementCommand::editable(document, feature)
             || multicad_core::model::read_alignment(document, feature).is_ok()
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
+            || multicad_core::model::read_thread(document, feature).is_ok()
         {
             return true;
         }
@@ -364,6 +366,23 @@ impl ModelToolController {
                     parameters: source.parameters,
                 })?))
             }
+            model::THREAD_TYPE => {
+                let source = model::read_thread(document, feature).map_err(|e| e.to_string())?;
+                ModelForm::Thread(Box::new(ThreadPanel::new(
+                    model::ThreadRequest {
+                        feature,
+                        body: source.output.body,
+                        name: entity.name.clone(),
+                        target: source.target,
+                        mode: source.mode,
+                        parameters: source.parameters,
+                    },
+                    session.parameters().clone(),
+                    vec![],
+                    &Default::default(),
+                    true,
+                )?))
+            }
             model::SLAB_TYPE | model::STAIR_TYPE => {
                 let body = model::read_slab(document, feature)
                     .map(|s| s.output.body)
@@ -484,6 +503,34 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Primitive(Box::new(PrimitivePanel::new(request)?)),
+        )
+    }
+    pub fn begin_thread(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: Option<&Scene>,
+        selected: &std::collections::BTreeSet<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let choices = scene
+            .and_then(|scene| {
+                super::body_choices::choices(session.document(), session.revision(), scene).ok()
+            })
+            .unwrap_or_default();
+        let name = GeneratedNames::new(session.document()).numbered("Thread", " feature");
+        let request = multicad_core::model::ThreadRequest::new(name, Default::default());
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Thread(Box::new(ThreadPanel::new(
+                request,
+                session.parameters().clone(),
+                choices,
+                selected,
+                false,
+            )?)),
         )
     }
     pub fn begin_wall(
@@ -1652,3 +1699,6 @@ mod chamfer_tests;
 
 #[cfg(test)]
 mod advanced_tests;
+
+#[cfg(test)]
+mod thread_tests;

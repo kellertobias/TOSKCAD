@@ -18,6 +18,7 @@ use super::{
     scaling::ScalePanel,
     sheet::{SheetCommand, SheetPanel},
     split::{SplitEvent, SplitPanel},
+    thread::ThreadPanel,
     wall::{WallCommand, WallPanel},
     weld_connection::ConnectionPanel,
     weld_form::WeldPanel,
@@ -38,6 +39,7 @@ use multicad_core::{
 pub enum ModelRequest {
     Extrude(Box<ExtrudeRequest>),
     Primitive(Box<PrimitiveRequest>),
+    Thread(Box<model::ThreadRequest>),
     Revolve(Box<RevolveRequest>),
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
@@ -158,6 +160,13 @@ impl ModelRequest {
                 feature,
                 &request.parameters,
             ),
+            Self::Thread(request) => model::prepare_thread_edit(
+                session,
+                session.revision(),
+                actor,
+                feature,
+                &request.parameters,
+            ),
             Self::Revolve(request) => model::prepare_revolve_edit(
                 session,
                 session.revision(),
@@ -260,6 +269,9 @@ impl ModelRequest {
             Self::Primitive(request) => {
                 model::prepare_primitive(session, session.revision(), actor, request)
             }
+            Self::Thread(request) => {
+                model::prepare_thread(session, session.revision(), actor, request)
+            }
             Self::Revolve(request) => {
                 model::prepare_revolve(session, session.revision(), actor, request)
             }
@@ -351,6 +363,7 @@ pub(super) enum ModelEvent {
 pub(super) enum ModelForm {
     Extrude(Box<ExtrudePanel>),
     Primitive(Box<PrimitivePanel>),
+    Thread(Box<ThreadPanel>),
     Revolve(Box<RevolvePanel>),
     Boolean(Box<BooleanPanel>),
     BooleanEdit(Box<BooleanEditPanel>),
@@ -378,6 +391,7 @@ impl ModelForm {
         match self {
             Self::Extrude(panel) => panel.stamp().expect("active extrusion form"),
             Self::Primitive(panel) => panel.stamp(),
+            Self::Thread(panel) => panel.stamp(),
             Self::Revolve(panel) => panel.stamp(),
             Self::Boolean(panel) => panel.stamp(),
             Self::BooleanEdit(panel) => panel.stamp(),
@@ -405,6 +419,7 @@ impl ModelForm {
         match self {
             Self::Extrude(_) => "Extrude",
             Self::Primitive(panel) => panel.label(),
+            Self::Thread(panel) => panel.label(),
             Self::Revolve(_) => "Revolve",
             Self::Boolean(_) => "Boolean",
             Self::BooleanEdit(_) => "Boolean",
@@ -488,6 +503,9 @@ impl ModelForm {
             Self::Primitive(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Primitive(Box::new(request))),
+            Self::Thread(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|request| ModelRequest::Thread(Box::new(request))),
             Self::Revolve(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Revolve(Box::new(request))),
@@ -525,6 +543,7 @@ impl ModelForm {
                     ExtrudeEvent::Cancel => ModelEvent::Cancel,
                 }),
             Self::Primitive(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Thread(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Revolve(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Boolean(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::BooleanEdit(panel) => panel.show(ui, document, capabilities.new_body, preview),

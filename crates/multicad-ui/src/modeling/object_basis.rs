@@ -156,6 +156,20 @@ impl Resolver<'_> {
                 .map_err(error)?;
                 Ok(frame_basis(frame))
             }
+            model::THREAD_TYPE => {
+                let source = model::read_thread(self.document, feature).map_err(error)?;
+                if let Some(target) = source.target {
+                    self.feature(target.producer, seen)
+                } else {
+                    Ok(frame_basis(
+                        source
+                            .parameters
+                            .frame
+                            .resolve(self.parameters)
+                            .map_err(error)?,
+                    ))
+                }
+            }
             model::TRANSFORM_TYPE => {
                 let source = model::read_transform(self.document, feature).map_err(error)?;
                 let upstream = self.feature(source.input.producer, seen)?;

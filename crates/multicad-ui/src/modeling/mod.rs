@@ -41,6 +41,7 @@ mod scaling;
 mod sheet;
 mod split;
 mod termination;
+mod thread;
 pub(crate) mod value_entry;
 mod wall;
 mod weld_connection;
@@ -69,6 +70,7 @@ pub enum ModelingTool {
     Extrude,
     Box,
     Cylinder,
+    Thread,
     Revolve,
     Boolean,
     Split,
@@ -96,9 +98,10 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::Box,
         Self::Cylinder,
+        Self::Thread,
         Self::Wall,
         Self::Door,
         Self::Window,
@@ -143,6 +146,7 @@ impl ModelingTool {
             Self::Extrude => "extrude",
             Self::Box => "box",
             Self::Cylinder => "cylinder",
+            Self::Thread => "thread",
             Self::Revolve => "revolve",
             Self::Boolean => "boolean",
             Self::Split => "split",
@@ -183,6 +187,7 @@ impl ModelingTool {
             Self::Extrude => "Extrude",
             Self::Box => "Box",
             Self::Cylinder => "Cylinder",
+            Self::Thread => "Thread",
             Self::Revolve => "Revolve",
             Self::Boolean => "Boolean",
             Self::Split => "Split",
@@ -223,6 +228,7 @@ impl ModelingTool {
             Self::Extrude => crate::icons::Icon::Extrude,
             Self::Box => crate::icons::Icon::Box,
             Self::Cylinder => crate::icons::Icon::Cylinder,
+            Self::Thread => crate::icons::Icon::Revolve,
             Self::Revolve => crate::icons::Icon::Revolve,
             Self::Boolean => crate::icons::Icon::Boolean,
             Self::Split => crate::icons::Icon::Split,
@@ -259,6 +265,7 @@ impl ModelingTool {
             Self::Extrude => &["ext", "extrusion"],
             Self::Box => &["cube", "add-box"],
             Self::Cylinder => &["cyl", "add-cylinder"],
+            Self::Thread => &["screw-thread", "tap-thread", "helical-thread"],
             Self::Revolve => &["rev", "lathe"],
             Self::Boolean => &["combine", "body-operation"],
             Self::Split => &["split-body", "inside-outside"],
@@ -310,6 +317,9 @@ impl ModelingTool {
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::Thread => {
+                "Usage: thread (choose a sourced or explicit custom profile, pitch, starts, representation and receiving Part in the Inspector; Preview and Apply)"
+            }
             Self::Advanced(_) => {
                 "Usage: choose explicit source geometry and controls in the Inspector, then Preview and Apply"
             }
@@ -390,6 +400,9 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::Thread => {
+                "Requires native modeling and no pending edits. Receiving cuts need a complete matching cylinder/cone or sufficient internal wall; a new shaft does not require a sketch."
+            }
             Self::Advanced(AdvancedKind::Sweep | AdvancedKind::Loft) => {
                 "Choose current closed sketch profiles and an explicitly ordered path or section list. Native Preview validates the resulting solid."
             }

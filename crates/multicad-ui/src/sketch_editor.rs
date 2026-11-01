@@ -1091,6 +1091,28 @@ impl SketchEditor {
         );
         Ok(())
     }
+    pub fn begin_thread(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        feed: &crate::viewport::SceneFeed,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Install native modeling and apply or cancel pending edits before creating a thread".into());
+        }
+        let scene = feed
+            .visible()
+            .filter(|_| feed.is_current(session.document().id(), session.revision()))
+            .cloned();
+        let selected = self.tree_selection.clone();
+        self.finish()?;
+        self.model
+            .begin_thread(session, resources, scene.as_deref(), &selected, channel)?;
+        self.message =
+            "Thread · configure its profile, representation and axis, then Preview".into();
+        Ok(())
+    }
     pub fn begin_wall(
         &mut self,
         session: &Session,
