@@ -215,6 +215,33 @@ pub fn prepare_gear_pair_edit(
     pair: EntityId,
     parameters: &GearPairParameters,
 ) -> Result<GearPairPrepared, CommandError> {
+    pair_edit(session, expected_revision, actor, pair, parameters, None)
+}
+pub fn prepare_gear_pair_geometry_edit(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    pair: EntityId,
+    parameters: &GearPairParameters,
+    gears: &[GearParameters; 2],
+) -> Result<GearPairPrepared, CommandError> {
+    pair_edit(
+        session,
+        expected_revision,
+        actor,
+        pair,
+        parameters,
+        Some(gears),
+    )
+}
+fn pair_edit(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    pair: EntityId,
+    parameters: &GearPairParameters,
+    gears: Option<&[GearParameters; 2]>,
+) -> Result<GearPairPrepared, CommandError> {
     revision(session, expected_revision)?;
     let mut source = read_gear_pair(session.document(), pair)?;
     if source.parameters.gears != parameters.gears {
@@ -222,29 +249,49 @@ pub fn prepare_gear_pair_edit(
             "A gear pair edit preserves both member recipes and their identities",
         ));
     }
-    resolve_gear_pair_parameters(session.document(), session.parameters(), parameters)?;
+    let mut candidate = session.document().clone();
+    if let Some(gears) = gears {
+        for (index, parameters) in gears.iter().enumerate() {
+            // Derived Sessions combine checked source edits only. The caller
+            // receives one transaction tied to the original live Session.
+            let stage = Session::new(candidate)?;
+            let edit = prepare_gear_edit(
+                &stage,
+                stage.revision(),
+                actor.clone(),
+                source.parameters.gears[index],
+                parameters,
+            )?;
+            candidate = edit.prepared.document().clone();
+        }
+    }
+    resolve_gear_pair_parameters(&candidate, session.parameters(), parameters)?;
     source.parameters = parameters.clone();
     let name = &session
         .document()
         .get(pair)
         .ok_or_else(|| error("Gear pair is missing"))?
         .name;
+    candidate = candidate.edited(&[Mutation::Replace(extension(
+        pair,
+        name,
+        source.definition()?,
+        source.parameters.inputs()?,
+    ))])?;
     let prepared = session.prepare(Request {
         expected_revision,
         actor,
         label: "Edit gear pair".into(),
-        edits: vec![Mutation::Replace(extension(
-            pair,
-            name,
-            source.definition()?,
-            source.parameters.inputs()?,
-        ))],
+        edits: crate::model::extrude_boolean::delta(session.document(), &candidate)?,
     })?;
+    if prepared.document() != &candidate {
+        return Err(error("Gear pair edit changed while combining source"));
+    }
     let outputs = parameters
         .gears
         .iter()
         .map(|id| {
-            read_gear(session.document(), *id).map(|s| CreatedBody {
+            read_gear(&candidate, *id).map(|s| CreatedBody {
                 feature: *id,
                 body: s.output.body,
             })

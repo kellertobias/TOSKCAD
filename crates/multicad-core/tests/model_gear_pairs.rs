@@ -320,3 +320,47 @@ fn outer_pair_occurrence_uses_normal_move_and_copy_without_rewriting_its_definit
     near(pose.translation_mm[0], 100.);
     near(pose.translation_mm[1], 100.);
 }
+
+#[test]
+fn both_gear_recipes_update_atomically_and_pose_only_edits_preserve_them_exactly() {
+    let mut s = session();
+    let r = request();
+    let p = prepare_gear_pair(&s, 0, actor(), &r).unwrap();
+    s.commit(p.prepared).unwrap();
+    let before = s.document().clone();
+    let gears = r.gears.each_ref().map(|g| GearParameters {
+        module: length(3.),
+        ..g.parameters.clone()
+    });
+    let mut parameters = r.parameters.clone();
+    parameters.drive_angle = angle(45.);
+    let p = prepare_gear_pair_geometry_edit(&s, 1, actor(), r.pair, &parameters, &gears).unwrap();
+    assert_eq!(s.document(), &before);
+    assert_eq!(p.outputs.len(), 2);
+    let resolved =
+        resolve_gear_pair_parameters(p.prepared.document(), s.parameters(), &parameters).unwrap();
+    near(resolved.center_distance_mm, 75.);
+    let mut bad = gears.clone();
+    bad[1].teeth = count(3.);
+    assert!(prepare_gear_pair_geometry_edit(&s, 1, actor(), r.pair, &parameters, &bad).is_err());
+    assert_eq!(s.document(), &before);
+    s.commit(p.prepared).unwrap();
+    let edited = s.document().clone();
+    assert_eq!(
+        read_gear_pair(s.document(), r.pair).unwrap().outputs,
+        r.outputs
+    );
+    s.undo(2, actor()).unwrap();
+    assert_eq!(s.document(), &before);
+    s.redo(3, actor()).unwrap();
+    assert_eq!(s.document(), &edited);
+    parameters.drive_angle = angle(90.);
+    let p = prepare_gear_pair_edit(&s, 4, actor(), r.pair, &parameters).unwrap();
+    for gear in &r.gears {
+        assert_eq!(
+            p.prepared.document().get(gear.feature),
+            s.document().get(gear.feature)
+        );
+    }
+    assert_eq!(s.document(), &edited);
+}

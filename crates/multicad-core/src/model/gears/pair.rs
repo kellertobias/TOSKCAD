@@ -246,56 +246,68 @@ pub fn resolve_gear_pair_parameters(
     evaluated: &EvaluatedParameters,
     parameters: &GearPairParameters,
 ) -> Result<ResolvedGearPair, DocumentError> {
-    parameters.validate()?;
-    let gears = parameters
-        .gears
-        .map(|id| read_gear(document, id).and_then(|s| s.parameters.resolve(evaluated)));
-    let [a, b] = gears;
-    let gears = [a?, b?];
-    let [a, b] = &gears;
-    if a.family != b.family
-        || !close(a.transverse_module_mm, b.transverse_module_mm)
-        || !close(
-            a.transverse_pressure_angle_rad,
-            b.transverse_pressure_angle_rad,
-        )
-        || !close(a.face_width_mm, b.face_width_mm)
-        || !close(a.center_gap_mm, b.center_gap_mm)
-        || !close(a.helix_angle_rad, b.helix_angle_rad)
-        || (a.family != GearFamily::Spur && a.twist_rad_per_mm * b.twist_rad_per_mm >= 0.)
-    {
-        return Err(invalid(
-            "This external parallel-axis pair needs matching family, transverse module/pressure angle, face width and center gap, plus equal helix magnitude and opposite hands",
-        ));
-    }
-    let drive = number(&parameters.drive_angle, Unit::Radian, evaluated)?;
-    if drive.abs() > 2000. * PI {
-        return Err(invalid(
-            "Gear pair drive angle exceeds the bounded 1000-turn coordinate",
-        ));
-    }
-    let center = a.pitch_radius_mm + b.pitch_radius_mm;
-    let phases = [
-        drive,
-        PI + PI / f64::from(b.teeth) - drive * f64::from(a.teeth) / f64::from(b.teeth),
-    ];
-    let base = parameters.frame.resolve(evaluated)?;
-    let mating = std::array::from_fn(|index| {
-        let (sin, cos) = phases[index].rem_euclid(2. * PI).sin_cos();
-        ReferenceFrame {
-            origin_mm: std::array::from_fn(|i| {
-                base.origin[i] + if index == 1 { base.u[i] * center } else { 0. }
-            }),
-            u: std::array::from_fn(|i| base.u[i] * cos + base.v[i] * sin),
-            v: std::array::from_fn(|i| -base.u[i] * sin + base.v[i] * cos),
+    let a = read_gear(document, parameters.gears[0])?;
+    let b = read_gear(document, parameters.gears[1])?;
+    parameters.resolve_recipes([&a.parameters, &b.parameters], evaluated)
+}
+impl GearPairParameters {
+    /// Shared source-only validation for proposed UI/MCP recipes. A successful
+    /// result still requires the complete native candidate gate before Apply.
+    pub fn resolve_recipes(
+        &self,
+        recipes: [&GearParameters; 2],
+        evaluated: &EvaluatedParameters,
+    ) -> Result<ResolvedGearPair, DocumentError> {
+        self.validate()?;
+        let gears = [
+            recipes[0].resolve(evaluated)?,
+            recipes[1].resolve(evaluated)?,
+        ];
+        let [a, b] = &gears;
+        if a.family != b.family
+            || !close(a.transverse_module_mm, b.transverse_module_mm)
+            || !close(
+                a.transverse_pressure_angle_rad,
+                b.transverse_pressure_angle_rad,
+            )
+            || !close(a.face_width_mm, b.face_width_mm)
+            || !close(a.center_gap_mm, b.center_gap_mm)
+            || !close(a.helix_angle_rad, b.helix_angle_rad)
+            || (a.family != GearFamily::Spur && a.twist_rad_per_mm * b.twist_rad_per_mm >= 0.)
+        {
+            return Err(invalid(
+                "This external parallel-axis pair needs matching family, transverse module/pressure angle, face width and center gap, plus equal helix magnitude and opposite hands",
+            ));
         }
-    });
-    Ok(ResolvedGearPair {
-        gears,
-        center_distance_mm: center,
-        phases_rad: phases,
-        mating,
-    })
+        let drive = number(&self.drive_angle, Unit::Radian, evaluated)?;
+        if drive.abs() > 2000. * PI {
+            return Err(invalid(
+                "Gear pair drive angle exceeds the bounded 1000-turn coordinate",
+            ));
+        }
+        let center = a.pitch_radius_mm + b.pitch_radius_mm;
+        let phases = [
+            drive,
+            PI + PI / f64::from(b.teeth) - drive * f64::from(a.teeth) / f64::from(b.teeth),
+        ];
+        let base = self.frame.resolve(evaluated)?;
+        let mating = std::array::from_fn(|index| {
+            let (sin, cos) = phases[index].rem_euclid(2. * PI).sin_cos();
+            ReferenceFrame {
+                origin_mm: std::array::from_fn(|i| {
+                    base.origin[i] + if index == 1 { base.u[i] * center } else { 0. }
+                }),
+                u: std::array::from_fn(|i| base.u[i] * cos + base.v[i] * sin),
+                v: std::array::from_fn(|i| -base.u[i] * sin + base.v[i] * cos),
+            }
+        });
+        Ok(ResolvedGearPair {
+            gears,
+            center_distance_mm: center,
+            phases_rad: phases,
+            mating,
+        })
+    }
 }
 pub fn resolve_gear_pair_anchor(
     document: &Document,
