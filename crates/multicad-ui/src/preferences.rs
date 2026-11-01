@@ -274,6 +274,26 @@ mod tests {
         }
     }
     #[test]
+    fn existing_preferences_gain_mechanical_without_changing_other_workbenches() {
+        let registry = Registry::default();
+        let mut preferences = Preferences::defaults(&registry);
+        preferences.set_visible(Mode::Model, "Weld", false).unwrap();
+        preferences
+            .workbenches
+            .get_mut(&Mode::Model)
+            .unwrap()
+            .retain(|entry| entry.title != "Mechanical");
+        let previous = preferences.workbenches[&Mode::Model].clone();
+        preferences.normalize(&registry);
+        let model = &preferences.workbenches[&Mode::Model];
+        assert_eq!(&model[..previous.len()], previous);
+        assert_eq!(model.last().unwrap().title, "Mechanical");
+        assert!(model.last().unwrap().visible);
+        let normalized = preferences.clone();
+        preferences.normalize(&registry);
+        assert_eq!(preferences, normalized);
+    }
+    #[test]
     fn legacy_fdm_preferences_keep_visibility_and_move_before_relationships() {
         let registry = Registry::default();
         let mut preferences = Preferences::defaults(&registry);
@@ -319,7 +339,7 @@ mod tests {
         assert!(!model.contains(&"Wood"));
         assert_eq!(&model[..3], ["Sheet metal", "Common", "Architecture"]);
         let materials = model.iter().position(|t| *t == "Materials").unwrap();
-        assert_eq!(model[materials + 1], "Relationships");
+        assert_eq!(model[materials + 1], "Mechanical");
         // Other modes are untouched; showing it again restores it in place.
         assert_eq!(
             titles(&preferences, &registry, Mode::Export),

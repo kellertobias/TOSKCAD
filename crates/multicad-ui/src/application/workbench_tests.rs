@@ -37,6 +37,28 @@ fn tab_index(app: &Application, mode: Mode, title: &str) -> usize {
 fn action(app: &Application, id: &str) -> Command {
     app.registry.tool(id).unwrap().action
 }
+#[test]
+fn mechanical_assembly_tools_keep_their_workbench_and_cancel_without_edits() {
+    for id in [
+        "place-component",
+        "relationship",
+        "joint-motion",
+        "interference",
+        "motion-range",
+    ] {
+        let mut app = app();
+        app.mode = Mode::Model;
+        let mechanical = tab_index(&app, Mode::Model, "Mechanical");
+        app.tab = mechanical;
+        let before = app.current().session.document().clone();
+        app.invoke(action(&app, id), &[], Channel::Ui).unwrap();
+        assert_eq!((app.mode, app.tab), (Mode::Model, mechanical), "{id}");
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert_eq!(app.current().session.document(), &before, "{id}");
+        assert_eq!(app.current().session.revision(), 0, "{id}");
+        assert_eq!(app.tab, mechanical, "{id}");
+    }
+}
 /// Window/Door additionally need an applied wall; they share this path.
 const SPECIALIZED: [(&str, &str); 7] = [
     ("Architecture", "wall"),

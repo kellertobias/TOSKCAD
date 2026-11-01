@@ -267,7 +267,19 @@ mod tests {
         changed.length_unit = LengthUnit::Inch;
         changed.title_logo = false;
         changed.set_visible(Mode::Model, "Weld", false).unwrap();
-        changed.move_workbench(Mode::Model, "Import", -8).unwrap();
+        changed
+            .set_visible(Mode::Model, "Mechanical", false)
+            .unwrap();
+        changed
+            .move_workbench(Mode::Model, "Mechanical", -1)
+            .unwrap();
+        let import = changed.workbenches[&Mode::Model]
+            .iter()
+            .position(|entry| entry.title == "Import")
+            .unwrap();
+        changed
+            .move_workbench(Mode::Model, "Import", -(import as isize))
+            .unwrap();
         first.apply_preferences(changed.clone());
         wait_saved(&mut first);
         drop(first);
@@ -280,6 +292,7 @@ mod tests {
         let model = titles(&second);
         assert_eq!(model[0], "Import");
         assert!(!model.contains(&"Weld"));
+        assert!(!model.contains(&"Mechanical"));
         // Restore defaults is persisted the same way.
         second.apply_preferences(Preferences::defaults(&second.registry));
         wait_saved(&mut second);

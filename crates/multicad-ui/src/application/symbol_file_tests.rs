@@ -299,8 +299,17 @@ fn another_tool_closes_read_only_library_without_leaving_a_hidden_inspector_owne
     app.set_scene_backends(factory.clone());
     app.set_model_backends(factory);
     app.mode = Mode::Model;
+    let mechanical = app
+        .registry
+        .workspace(Mode::Model)
+        .tabs
+        .iter()
+        .position(|tab| tab.title == "Mechanical")
+        .unwrap();
+    app.tab = mechanical;
     app.invoke(Command::Extension("library"), &[], Channel::Ui)
         .unwrap();
+    assert_eq!(app.tab, mechanical);
     assert!(app.current().sketch.symbol_active());
     assert!(!app.current().pending_edits());
     assert!(app.enabled(Command::Extension("symbol")));

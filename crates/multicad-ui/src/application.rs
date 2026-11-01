@@ -1270,13 +1270,7 @@ impl Application {
                     channel,
                 )?;
                 self.mode = Mode::Model;
-                self.tab = self
-                    .registry
-                    .workspace(Mode::Model)
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.tools.contains(&tool.id()))
-                    .unwrap_or(0);
+                self.tab = self.workbench_tab(Mode::Model, command);
                 self.message = format!("{} · choose controls in the Inspector", tool.label());
             }
             Command::Transfer => {

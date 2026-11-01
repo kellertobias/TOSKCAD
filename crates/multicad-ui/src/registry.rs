@@ -548,6 +548,17 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: false,
                     },
+                    tab(
+                        "Mechanical",
+                        &[
+                            "library",
+                            "place-component",
+                            "relationship",
+                            "joint-motion",
+                            "interference",
+                            "motion-range",
+                        ],
+                    ),
                     tab("Materials", &["materials"]),
                     tab("Import", &["import-step", "import-kicad", "import-update"]),
                 ],
@@ -682,7 +693,7 @@ impl Registry {
                 || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
         })
     }
-    /// Tools matching `query` by id, label or alias, followed by the
+    /// Tools matching `query` by id, label, alias or workbench, followed by the
     /// workflows that write an output format it names (CAD-157).
     pub fn search(&self, query: &str) -> Vec<&Tool> {
         let query = query.trim().to_lowercase();
@@ -697,6 +708,12 @@ impl Registry {
                         .aliases
                         .iter()
                         .any(|alias| alias.to_lowercase().contains(&query))
+                    || self.workspaces.iter().any(|workspace| {
+                        workspace.tabs.iter().any(|tab| {
+                            tab.title.to_lowercase().contains(&query)
+                                && tab.tools.contains(&tool.id)
+                        })
+                    })
             })
             .collect();
         for route in crate::tool_search::routes(&query) {
@@ -762,6 +779,43 @@ impl Registry {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    #[test]
+    fn mechanical_reuses_global_library_and_assembly_commands_without_new_modes() {
+        let registry = Registry::default();
+        assert_eq!(
+            Mode::ALL.map(Mode::title),
+            ["Parameters", "Sketch", "Model", "Drawings", "Export"]
+        );
+        let model = registry.workspace(Mode::Model);
+        let mechanical = model
+            .tabs
+            .iter()
+            .position(|tab| tab.title == "Mechanical")
+            .unwrap();
+        assert_eq!(
+            model
+                .tabs
+                .iter()
+                .find(|tab| tab.title == "Weld")
+                .unwrap()
+                .tools,
+            ["tube", "cope", "weld-joint", "weld-list"]
+        );
+        let found = registry.search("  MECHANICAL ");
+        for id in &model.tabs[mechanical].tools {
+            let tool = registry.tool(id).unwrap();
+            assert!(found.iter().any(|found| found.id == *id));
+            assert_eq!(
+                registry.workbench_tab(Mode::Model, tool.action, Some(mechanical)),
+                Some(mechanical)
+            );
+            if *id == "library" {
+                assert_eq!(tool.action, Command::Extension("library"));
+            } else {
+                assert!(matches!(tool.action, Command::Assembly(_)));
+            }
+        }
+    }
     #[test]
     fn finder_matches_labels_and_aliases_independently_of_case_and_surrounding_space() {
         let registry = Registry::default();
