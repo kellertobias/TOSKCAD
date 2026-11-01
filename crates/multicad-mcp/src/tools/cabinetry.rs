@@ -23,6 +23,8 @@ use multicad_core::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
+mod cabinet_options;
+pub use cabinet_options::CabinetArgs;
 
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -91,6 +93,11 @@ pub struct CarcassArgs {
     pub depth: Quantity,
     /// Panel stock for the sides, top, bottom and shelves.
     pub stock: String,
+    /// Explicit Cabinet configuration. Replaces all shelf rows/settings when
+    /// provided. On edit, omission preserves an existing explicit definition;
+    /// legacy shelf_count/shelf_offsets apply only without this configuration.
+    #[serde(default)]
+    pub cabinet: Option<CabinetArgs>,
     #[serde(default)]
     pub construction: Option<ConstructionArg>,
     pub back: BackKindArg,
@@ -297,8 +304,16 @@ pub(super) fn set_carcass(host: &dyn Host, call: &Request, args: CarcassArgs) ->
             .ok_or_else(|| ToolError::invalid("This back needs back_stock"))
     };
     let origin = args.origin_mm.unwrap_or([0.; 3]);
+    let edit = args.carcass.as_deref().map(id).transpose()?;
+    let previous = edit.map(|id| model::read_carcass(d, id)).transpose()?;
+    let cabinet = match &args.cabinet {
+        Some(options) => {
+            Some(options.definition(d, e, previous.as_ref().and_then(|c| c.cabinet.as_ref()))?)
+        }
+        None => previous.as_ref().and_then(|c| c.cabinet.clone()),
+    };
     let definition = CarcassDefinition {
-        cabinet: None,
+        cabinet,
         origin: origin.map(length),
         rotation: angle(args.rotation_deg),
         width: q(&args.width, d, e)?,
@@ -337,7 +352,6 @@ pub(super) fn set_carcass(host: &dyn Host, call: &Request, args: CarcassArgs) ->
         front_band: band(&args.front_band, d, e)?,
         group: None,
     };
-    let edit = args.carcass.as_deref().map(id).transpose()?;
     let name = args.name.clone();
     let group = args.group.unwrap_or(true);
     let call_owned = call.clone();
@@ -525,6 +539,30 @@ pub struct TenonArgs {
     #[serde(default)]
     pub fit: Option<Quantity>,
 }
+impl TenonArgs {
+    fn spec(
+        &self,
+        d: &Document,
+        e: &EvaluatedParameters,
+    ) -> Result<model::LooseTenonSpec, ToolError> {
+        let or = |v: &Option<Quantity>, default: f64| {
+            opt(v, d, e).map(|v| v.unwrap_or_else(|| length(default)))
+        };
+        Ok(model::LooseTenonSpec {
+            thickness: or(&self.thickness, 8.)?,
+            width: or(&self.width, 22.)?,
+            length: or(&self.length, 40.)?,
+            count: self.count.unwrap_or(2),
+            inset: or(&self.inset, 60.)?,
+            offset: opt(&self.offset, d, e)?,
+            face_depth: or(&self.face_depth, 15.)?,
+            edge_depth: or(&self.edge_depth, 28.)?,
+            face_play: or(&self.face_play, 6.)?,
+            edge_play: or(&self.edge_play, 0.)?,
+            fit: or(&self.fit, 0.)?,
+        })
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PanelJointArgs {
@@ -588,23 +626,7 @@ pub(super) fn set_panel_joint(host: &dyn Host, call: &Request, args: PanelJointA
         },
         JointKindArg::LooseTenon => {
             let t = args.tenon.unwrap_or_default();
-            let (d, e) = (&document, &evaluated);
-            let or = |v: &Option<Quantity>, default: f64| {
-                opt(v, d, e).map(|v| v.unwrap_or_else(|| length(default)))
-            };
-            PanelJointKind::LooseTenon(Box::new(model::LooseTenonSpec {
-                thickness: or(&t.thickness, 8.)?,
-                width: or(&t.width, 22.)?,
-                length: or(&t.length, 40.)?,
-                count: t.count.unwrap_or(2),
-                inset: or(&t.inset, 60.)?,
-                offset: opt(&t.offset, d, e)?,
-                face_depth: or(&t.face_depth, 15.)?,
-                edge_depth: or(&t.edge_depth, 28.)?,
-                face_play: or(&t.face_play, 6.)?,
-                edge_play: or(&t.edge_play, 0.)?,
-                fit: or(&t.fit, 0.)?,
-            }))
+            PanelJointKind::LooseTenon(Box::new(t.spec(&document, &evaluated)?))
         }
     };
     let existing = args.joint.as_deref().map(id).transpose()?;

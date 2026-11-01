@@ -33,6 +33,159 @@ fn panel<'a>(list: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no panel {name}"))
 }
 
+fn review_project(name: &str, document: Document) {
+    let Ok(directory) = std::env::var("MULTICAD_CABINET_REVIEW") else {
+        return;
+    };
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut file = std::fs::File::create(std::path::Path::new(&directory).join(name)).unwrap();
+    multicad_core::project_file::write(
+        &multicad_core::project_file::ProjectFile::new(document).unwrap(),
+        &mut file,
+        Default::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn mcp_explicit_cabinet_preserves_rows_and_drives_mixed_support_and_joinery() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Cabinet review").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, args: Value| dispatch(&host, &call(), name, args);
+    let mut stocks = vec![];
+    for (revision, name, thickness) in [(0, "Birch 18", 18), (1, "HDF 6", 6), (2, "Birch 24", 24)] {
+        stocks.push(run("create_panel_stock",json!({"expected_revision":revision,"name":name,"material_name":name,"thickness_mm":thickness,"sheet_length_mm":2500,"sheet_width_mm":1250})).unwrap()["stock"].clone());
+    }
+    review_project("stock-only.tcd", host.document());
+    let mut args = json!({"expected_revision":3,"name":"Configured cabinet","width":mm(800.),"height":mm(2000.),"depth":mm(600.),"stock":stocks[0],"back":"inset","back_stock":stocks[1],"back_recess":mm(10.),"shelf_setback":mm(20.),"shelf_clearance":mm(1.),
+    "cabinet":{"toe_clearance":mm(100.),"shelf_stock":stocks[0],"joinery":"dowels","shelves":[
+        {"key":0,"underside":mm(500.),"depth":mm(420.),"support":{"kind":"fixed"}},
+        {"key":3,"depth":mm(350.),"stock":stocks[1],"support":{"kind":"system32","level":28}}
+    ]}});
+    let created = run("set_carcass", args.clone()).unwrap();
+    assert_eq!(created["revision"], 4);
+    let id = created["carcass"].clone();
+    let list = run("cut_list", json!({})).unwrap();
+    let fixed = panel(&list, "Configured cabinet shelf 1")["part"].clone();
+    let adjustable = panel(&list, "Configured cabinet shelf 4")["part"].clone();
+    assert_eq!(
+        panel(&list, "Configured cabinet shelf 1")["finished_mm"],
+        json!([764., 420.])
+    );
+    assert_eq!(
+        panel(&list, "Configured cabinet shelf 4")["finished_mm"],
+        json!([762., 350.])
+    );
+    assert_eq!(
+        panel(&list, "Configured cabinet shelf 4")["thickness_mm"],
+        6.
+    );
+    assert_eq!(
+        list["machining"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == "dowel drilling")
+            .count(),
+        12
+    );
+    review_project("dowels.tcd", host.document());
+    args["carcass"] = id.clone();
+    args["expected_revision"] = json!(4);
+    args["width"] = mm(820.);
+    // An older caller editing the envelope must not erase the richer source.
+    let mut legacy_edit = args.clone();
+    legacy_edit.as_object_mut().unwrap().remove("cabinet");
+    run("set_carcass", legacy_edit).unwrap();
+    let document = host.document();
+    let source = multicad_core::model::read_carcass(
+        &document,
+        multicad_core::document::EntityId::parse(id.as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(source.cabinet.as_ref().unwrap().shelves.len(), 2);
+    assert!(matches!(
+        source.cabinet.as_ref().unwrap().shelves[1].support,
+        multicad_core::model::ShelfSupport::System32 { level: 28 }
+    ));
+    args["expected_revision"] = json!(5);
+    args["cabinet"]["shelf_stock"] = stocks[2].clone();
+    run("set_carcass", args.clone()).unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    assert_eq!(panel(&list, "Configured cabinet shelf 1")["part"], fixed);
+    assert_eq!(
+        panel(&list, "Configured cabinet shelf 1")["thickness_mm"],
+        24.
+    );
+    assert_eq!(
+        panel(&list, "Configured cabinet shelf 4")["part"],
+        adjustable
+    );
+    assert_eq!(
+        panel(&list, "Configured cabinet shelf 4")["stock"],
+        stocks[1]
+    );
+    assert_eq!(
+        panel(&list, "Configured cabinet shelf 4")["thickness_mm"],
+        6.
+    );
+    args["expected_revision"] = json!(6);
+    args["back"] = json!("none");
+    args["cabinet"]["joinery"] = json!("domino");
+    args["cabinet"]["domino"] = json!({"thickness":mm(6.),"width":mm(20.),"length":mm(40.),"inset":mm(60.),"face_depth":mm(12.),"edge_depth":mm(30.),"face_play":mm(0.),"fit":mm(0.1)});
+    run("set_carcass", args.clone()).unwrap();
+    let list = run("cut_list", json!({})).unwrap();
+    assert_eq!(list["panels"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        list["machining"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == "loose-tenon mortise")
+            .count(),
+        12
+    );
+    assert_eq!(
+        list["machining"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == "shelf pins")
+            .count(),
+        2
+    );
+    review_project("domino.tcd", host.document());
+    let before = host.document();
+    args["expected_revision"] = json!(7);
+    let cancelled = call();
+    cancelled
+        .cancel
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(dispatch(&host, &cancelled, "set_carcass", args.clone()).is_err());
+    assert_eq!(host.document(), before);
+    let mut bad = args.clone();
+    bad["cabinet"]["shelves"][0]["key"] = json!(u32::MAX);
+    bad["cabinet"]["shelves"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("underside");
+    assert!(run("set_carcass", bad).is_err());
+    assert_eq!(host.document(), before);
+    let mut bad = args.clone();
+    bad["cabinet"]["shelves"][0]["depth"] = mm(700.);
+    assert!(run("set_carcass", bad).is_err());
+    assert_eq!(host.document(), before);
+    args["cabinet"]["shelves"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("underside");
+    assert!(run("set_carcass", args).is_err());
+    assert_eq!(host.document(), before);
+}
+
 #[test]
 fn mcp_builds_a_carcass_panels_and_stack_and_reads_the_cut_list() {
     let host = Headless::new(
