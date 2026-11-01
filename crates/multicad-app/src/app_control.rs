@@ -368,7 +368,25 @@ mod tests {
         };
         let reference =
             workflow(&mut |name, arguments| dispatch(&headless, &call, name, arguments).unwrap());
-        assert_eq!(window, reference);
+        for key in ["revision", "counts", "parameters"] {
+            assert_eq!(window[key], reference[key], "{key}");
+        }
+        for (state, expected_volume) in [("edited", 9000.), ("undone", 4000.)] {
+            for result in [&window, &reference] {
+                let parts = result[state].as_array().unwrap();
+                assert_eq!(parts.len(), 1, "{state}");
+                assert_eq!(parts[0]["solids"], 1, "{state}");
+                let volume = parts[0]["volume"].as_f64().unwrap();
+                // OCCT integration may differ by a few ULPs between equivalent
+                // solids. Both transports must still yield the analytic box
+                // volume in mm³, with all document state compared exactly.
+                assert!(
+                    (volume - expected_volume).abs() <= 1e-8,
+                    "{state}: {volume} mm³, expected {expected_volume} mm³"
+                );
+            }
+            assert_eq!(window[state][0]["bounds"], reference[state][0]["bounds"]);
+        }
         assert_eq!(window["revision"], 11);
 
         // The window's own Session holds the result, attributed to MCP.
