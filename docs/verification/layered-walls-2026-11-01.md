@@ -1,5 +1,9 @@
 # Layered-wall verification checkpoint
 
+The sections below retain evidence from successive implementation checkpoints.
+The final status is recorded in the last section; earlier pending statements
+apply only to their named checkpoint.
+
 CAD-204 is in progress. This checkpoint covers canonical source, exact native
 geometry and reference guards on macOS. It does not establish actual macOS editor interaction,
 shared Library integration under CAD-206, or human acceptance. Native UI-control tooling is
@@ -166,3 +170,11 @@ Formatting and strict whole-workspace/all-target Clippy pass for this increment
 (Clippy: 6m16s). The final full workspace test run is active on the frozen source;
 no pass is claimed yet. Actual macOS editor interaction, CAD-206 cross-project
 path/context/Library integration and human acceptance remain outstanding.
+
+## Final repository result and acceptance gaps
+
+The implementation pinned at `fa89ed9` passes the required full workspace run: 2,144 tests passed, zero failed and 4 ignored across 247 result groups, with exit status zero. Formatting and strict whole-workspace/all-target Clippy also pass (Clippy: 6m16s). `workspace-final-tests.log` and `final-checks.json` in the local artifact directory record this result. Focused counts above overlap this full run and must not be added to it.
+
+The ignored cases are the interrupted-writer subprocess helper, a check requiring a local Blender executable and two explicitly hardware-only GPU checks. Both GPU checks passed separately on Apple M5 Max/Metal, together with shader validation.
+
+Actual macOS graphical type authoring/drawing/editing remains unverified because native UI-control tooling is unavailable. Cross-project path/context Library materialization and pinned updates remain under [CAD-206](https://plans.tokenet.de/CAD/206). CAD-204 is released for these remaining criteria, without claiming completion or human acceptance. Windows/Linux runtime evidence is separate. No desktop windows were created by the headless checks, and nothing was pushed, installed or published.
