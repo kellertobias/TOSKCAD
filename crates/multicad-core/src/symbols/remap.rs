@@ -22,6 +22,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::GEAR_TYPE => {
             model::GearDefinition::from_definition(d)?;
         }
+        model::GEAR_PAIR_TYPE => {
+            model::GearPairDefinition::from_definition(d)?;
+        }
         model::EXTRUDE_TYPE => {
             model::ExtrudeDefinition::from_definition(d)?;
         }

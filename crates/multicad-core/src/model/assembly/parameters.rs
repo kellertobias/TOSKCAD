@@ -97,8 +97,17 @@ impl JointKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum JointAnchor {
-    Frame { frame: Box<PrimitiveFrame> },
-    Geometry { reference: EntityId },
+    Frame {
+        frame: Box<PrimitiveFrame>,
+    },
+    Geometry {
+        reference: EntityId,
+    },
+    GearPairFrame {
+        pair: EntityId,
+        member: crate::model::GearPairMember,
+        space: crate::model::GearPairSpace,
+    },
 }
 impl Default for JointAnchor {
     fn default() -> Self {
@@ -225,6 +234,9 @@ impl JointParameters {
                 JointAnchor::Frame { frame } => frame.validate()?,
                 JointAnchor::Geometry { reference } if reference.is_nil() => {
                     return Err(invalid("Joint capture must be non-nil"));
+                }
+                JointAnchor::GearPairFrame { pair, .. } if pair.is_nil() => {
+                    return Err(invalid("Gear pair anchor must identify a non-nil pair"));
                 }
                 _ => {}
             }

@@ -1,4 +1,6 @@
 //! Canonical involute gear intent. Native receipts still gate geometry Apply.
+mod pair;
+mod pair_prepare;
 mod prepare;
 mod profiles;
 use super::{
@@ -13,6 +15,8 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     sketch::Frame,
 };
+pub use pair::*;
+pub use pair_prepare::*;
 pub use prepare::*;
 pub use profiles::*;
 use serde::{Deserialize, Serialize};

@@ -487,6 +487,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::PRIMITIVE_CAPABILITY.into(),
         crate::model::THREAD_CAPABILITY.into(),
         crate::model::GEAR_CAPABILITY.into(),
+        crate::model::GEAR_PAIR_CAPABILITY.into(),
         crate::model::REVOLVE_CAPABILITY.into(),
         crate::model::FACE_PROFILE_CAPABILITY.into(),
         crate::sketch_regions::FACE_SKETCH_REGIONS_CAPABILITY.into(),

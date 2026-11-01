@@ -72,7 +72,7 @@ pub fn joint_driver(
     Ok(found)
 }
 fn anchor(
-    _document: &Document,
+    document: &Document,
     revision: u64,
     anchor: &JointAnchor,
     inputs: &[AlignmentInput],
@@ -80,6 +80,11 @@ fn anchor(
     snapshots: &BTreeMap<EntityId, TopologySnapshot>,
 ) -> Result<ReferenceFrame, DocumentError> {
     match anchor {
+        JointAnchor::GearPairFrame {
+            pair,
+            member,
+            space,
+        } => crate::model::resolve_gear_pair_anchor(document, parameters, *pair, *member, *space),
         JointAnchor::Frame { frame } => {
             let f = frame.resolve(parameters)?;
             Ok(ReferenceFrame {

@@ -247,6 +247,14 @@ pub fn prepare_joint_edit(
 ) -> Result<AssemblyPrepared, CommandError> {
     revision(session, expected_revision)?;
     let (mut source, _) = read_joint(session.document(), request.driver)?;
+    if [&source.parameters.moving, &source.parameters.target]
+        .iter()
+        .any(|a| matches!(a, JointAnchor::GearPairFrame { .. }))
+    {
+        return Err(error(
+            "This relationship is controlled by a gear pair; edit the pair drive or gear recipes",
+        ));
+    }
     if source.owner != request.owner
         || joint_driver(session.document(), request.owner)? != Some(request.driver)
     {

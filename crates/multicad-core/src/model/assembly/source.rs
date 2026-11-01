@@ -78,6 +78,14 @@ impl JointDefinition {
         if let Some(parent) = self.parameters.parent {
             links.push(Link::new(parent, "joint/parent"));
         }
+        for (anchor, role) in [
+            (&self.parameters.moving, "moving"),
+            (&self.parameters.target, "target"),
+        ] {
+            if let JointAnchor::GearPairFrame { pair, .. } = anchor {
+                links.push(Link::new(*pair, format!("joint/gear_pair/{role}")));
+            }
+        }
         let wanted = [&self.parameters.moving, &self.parameters.target]
             .into_iter()
             .filter_map(|a| {
@@ -149,6 +157,16 @@ pub fn read_joint(
         })
         .collect::<Vec<_>>();
     exact_links(links, &source.inputs(&references)?)?;
+    for anchor in [&source.parameters.moving, &source.parameters.target] {
+        if let JointAnchor::GearPairFrame { pair, .. } = anchor {
+            let pair = crate::model::read_gear_pair(document, *pair)?;
+            if !pair.outputs.joints.contains(&id) {
+                return Err(invalid(
+                    "A derived gear anchor belongs only to its pair-controlled relationship",
+                ));
+            }
+        }
+    }
     let Some(EntityData::Instance { component, .. }) = document.get(source.owner).map(|e| &e.data)
     else {
         return Err(invalid("Joint owner must be an existing Instance"));

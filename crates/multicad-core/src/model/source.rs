@@ -679,6 +679,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::extrude_group::validate_document(document)?;
     super::placement::validate_document(document)?;
     super::assembly::validate_document(document)?;
+    super::gears::validate_pairs(document)?;
     super::transfer::validate_document(document)?;
     super::wall::validate_document(document)?;
     super::level::validate_document(document)?;
@@ -783,6 +784,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::INSTANCE_PLACEMENT_TYPE,
                     super::INSTANCE_ALIGNMENT_TYPE,
                     super::JOINT_TYPE,
+                    super::GEAR_PAIR_TYPE,
                     super::ASSEMBLY_TYPE,
                     super::NAMED_POSE_TYPE,
                     super::TRANSFER_GROUP_TYPE,

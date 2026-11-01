@@ -30,25 +30,43 @@ pub fn prepare_gear(
     actor: Actor,
     request: &GearRequest,
 ) -> Result<ModelPrepared, CommandError> {
-    revision(session, expected_revision)?;
-    request.parameters.resolve(session.parameters())?;
-    let source = GearDefinition {
-        output: BodyOutput { body: request.body },
-        parameters: request.parameters.clone(),
-    };
-    prepare_bodies(
+    prepare_gears(
         session,
         expected_revision,
         actor,
-        "Create gear",
-        vec![BodyDraft {
-            feature: request.feature,
-            body: request.body,
-            name: request.name.clone(),
-            definition: source.definition()?,
-            inputs: source.inputs()?,
-        }],
+        std::slice::from_ref(request),
     )
+}
+pub(super) fn prepare_gears(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    requests: &[GearRequest],
+) -> Result<ModelPrepared, CommandError> {
+    revision(session, expected_revision)?;
+    if !(1..=2).contains(&requests.len()) {
+        return Err(crate::model::common::error(
+            "Choose one gear or one two-gear pair",
+        ));
+    }
+    let drafts = requests
+        .iter()
+        .map(|request| {
+            request.parameters.resolve(session.parameters())?;
+            let source = GearDefinition {
+                output: BodyOutput { body: request.body },
+                parameters: request.parameters.clone(),
+            };
+            Ok(BodyDraft {
+                feature: request.feature,
+                body: request.body,
+                name: request.name.clone(),
+                definition: source.definition()?,
+                inputs: source.inputs()?,
+            })
+        })
+        .collect::<Result<Vec<_>, CommandError>>()?;
+    prepare_bodies(session, expected_revision, actor, "Create gear", drafts)
 }
 pub fn prepare_gear_edit(
     session: &Session,
