@@ -2,7 +2,7 @@ name: Native regression suites
 
 # Read-only build/test evidence on three operating systems. No publication,
 # credentials, tags or tracked-file changes. Named suites identify failures in
-# file recovery, cancellation, exporters and other areas. Packaging separately
+# file recovery, cancellation, exporters and other areas. The caller separately
 # gates the complete workspace; logs and headless budget reports are kept.
 on:
   workflow_call:
