@@ -412,6 +412,7 @@ pub fn build() -> Result<Scenario, Error> {
     let request = WallRequest::new(
         "Makerspace walls",
         WallDefinition {
+            layer_placement: None,
             output: BodyOutput {
                 body: EntityId::new(),
             },

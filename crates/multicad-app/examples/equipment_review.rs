@@ -51,6 +51,7 @@ pub fn build() -> Result<Apartment, Error> {
     let wall = WallRequest::new(
         "Apartment perimeter",
         WallDefinition {
+            layer_placement: None,
             output: BodyOutput {
                 body: EntityId::new(),
             },
@@ -89,6 +90,7 @@ pub fn build() -> Result<Apartment, Error> {
         let request = WallRequest::new(
             name,
             WallDefinition {
+                layer_placement: None,
                 output: BodyOutput {
                     body: EntityId::new(),
                 },

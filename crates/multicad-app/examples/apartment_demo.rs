@@ -261,6 +261,7 @@ fn wall(
     let request = WallRequest::new(
         name,
         WallDefinition {
+            layer_placement: None,
             output: BodyOutput {
                 body: EntityId::new(),
             },

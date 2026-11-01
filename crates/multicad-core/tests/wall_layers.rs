@@ -475,3 +475,309 @@ fn forged_layer_source_links_and_conflicting_totals_are_refused_at_document_entr
             .is_err()
     );
 }
+
+fn wall_request(wall_type: EntityId) -> multicad_core::model::WallRequest {
+    use multicad_core::model::{BodyOutput, WallDefinition, WallLayerPlacement, WallRequest};
+    WallRequest::new(
+        "Layered L wall",
+        WallDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            wall_type,
+            layer_placement: Some(WallLayerPlacement::default()),
+            path: vec![
+                [length(0.), length(0.)],
+                [length(4000.), length(0.)],
+                [length(4000.), length(3000.)],
+            ],
+            closed: false,
+            level: None,
+            base_z: length(0.),
+            thickness: None,
+            height: None,
+            justification: None,
+            openings: vec![],
+            cutouts: vec![],
+        },
+    )
+}
+#[test]
+fn layered_l_band_plans_share_corners_and_conserve_the_exact_envelope_under_flip() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition, WallChange},
+    };
+    let (document, stack) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let value = LayeredWallTypeDefinition {
+        layers: stack,
+        height: length(2700.),
+        reference: WallLayerReference::Center,
+    };
+    let actor = || Actor::local(Channel::Ui);
+    let (id, prepared) =
+        model::prepare_layered_wall_type(&session, 0, actor(), "L construction", &value).unwrap();
+    session.commit(prepared).unwrap();
+    let mut request = wall_request(id);
+    let area = |plan: &model::WallPlan| {
+        let polygon = |points: &[[f64; 2]]| {
+            (0..points.len())
+                .map(|i| {
+                    let a = points[i];
+                    let b = points[(i + 1) % points.len()];
+                    a[0] * b[1] - a[1] * b[0]
+                })
+                .sum::<f64>()
+                .abs()
+                / 2.
+        };
+        polygon(&plan.outer.points) - plan.holes.iter().map(|h| polygon(&h.points)).sum::<f64>()
+    };
+    for flipped in [false, true] {
+        request.wall.layer_placement.as_mut().unwrap().flipped = flipped;
+        let preview =
+            model::prepare_wall_change(&session, 1, actor(), &[], &WallChange::Create(&request))
+                .unwrap();
+        let source = model::resolve_wall(
+            preview.prepared.document(),
+            session.parameters(),
+            &request.wall,
+        )
+        .unwrap();
+        let envelope = source.plan().unwrap();
+        let layers = source.layers.as_ref().unwrap();
+        let mut total = 0.;
+        for band in &layers.bands {
+            let (left, right) = (
+                band.outside_mm.max(band.inside_mm),
+                band.outside_mm.min(band.inside_mm),
+            );
+            if left > right {
+                total += area(&source.plan_region(left, right).unwrap());
+            }
+        }
+        assert!((area(&envelope) - total).abs() < 1e-6);
+        assert!(
+            source
+                .plan_region(envelope.left_mm + 1., envelope.right_mm)
+                .is_err()
+        );
+        assert_eq!(source.thickness_mm, 352.5);
+        assert_eq!(session.revision(), 1, "Planning remains source-neutral");
+    }
+}
+
+#[test]
+fn layer_placement_and_material_authority_survive_source_history_and_file_roundtrip() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::{self, LayeredWallTypeDefinition, WallChange},
+        project_file,
+    };
+    let (document, stack) = fixture();
+    let mut session = Session::new(document).unwrap();
+    let actor = || Actor::local(Channel::Ui);
+    let value = LayeredWallTypeDefinition {
+        layers: stack,
+        height: length(2700.),
+        reference: WallLayerReference::Outside,
+    };
+    let (id, prepared) =
+        model::prepare_layered_wall_type(&session, 0, actor(), "Oriented construction", &value)
+            .unwrap();
+    session.commit(prepared).unwrap();
+    let mut request = wall_request(id);
+    request.wall.layer_placement.as_mut().unwrap().flipped = true;
+    let preview =
+        model::prepare_wall_change(&session, 1, actor(), &[], &WallChange::Create(&request))
+            .unwrap();
+    session.commit(preview.prepared).unwrap();
+    assert_eq!(
+        model::read_wall(session.document(), request.feature).unwrap(),
+        request.wall
+    );
+    let project = project_file::ProjectFile::new(session.document().clone()).unwrap();
+    assert!(
+        project
+            .capabilities()
+            .contains(model::LAYERED_WALL_CAPABILITY)
+    );
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(
+        model::read_wall(&opened.project.document, request.feature).unwrap(),
+        request.wall
+    );
+    let original = session.document().clone();
+    let mut bad = request.wall.clone();
+    bad.thickness = Some(length(500.));
+    assert!(
+        model::prepare_wall_change(
+            &session,
+            2,
+            actor(),
+            &[],
+            &WallChange::Edit {
+                feature: request.feature,
+                wall: &bad
+            }
+        )
+        .is_err()
+    );
+    bad = request.wall.clone();
+    bad.layer_placement.as_mut().unwrap().reference = Some(WallLayerReference::Boundary {
+        layer: EntityId::new(),
+        side: WallLayerSide::Outside,
+    });
+    assert!(
+        model::prepare_wall_change(
+            &session,
+            2,
+            actor(),
+            &[],
+            &WallChange::Edit {
+                feature: request.feature,
+                wall: &bad
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(session.document(), &original);
+    let mut part = session.document().get(request.body).unwrap().clone();
+    if let EntityData::Part { material, .. } = &mut part.data {
+        *material = value.layers.layers[0].construction.material();
+    }
+    assert!(
+        session
+            .document()
+            .edited(&[Mutation::Replace(part)])
+            .is_err()
+    );
+    session.undo(2, actor()).unwrap();
+    assert!(model::walls(session.document()).next().is_none());
+    session.redo(3, actor()).unwrap();
+    assert_eq!(
+        model::read_wall(session.document(), request.feature).unwrap(),
+        request.wall
+    );
+}
+
+#[test]
+fn equipment_hosts_follow_real_material_faces_after_layer_reference_and_flip_edits() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        equipment::{Attachment, HostPlacement, WallSide},
+        model::{self, LayeredWallTypeDefinition, WallChange},
+    };
+    let (document, mut stack) = fixture();
+    stack.layers.insert(
+        0,
+        WallLayer {
+            id: EntityId::new(),
+            name: "Outside cavity datum".into(),
+            role: None,
+            construction: WallLayerKind::Cavity {
+                thickness: length(20.),
+            },
+        },
+    );
+    let mut session = Session::new(document).unwrap();
+    let actor = || Actor::local(Channel::Ui);
+    let (floor, preview) = model::prepare_level(
+        &session,
+        0,
+        actor(),
+        "Floor",
+        &model::LevelDefinition {
+            elevation: length(0.),
+            height: length(3000.),
+            slab_thickness: length(200.),
+        },
+    )
+    .unwrap();
+    session.commit(preview).unwrap();
+    let value = LayeredWallTypeDefinition {
+        layers: stack,
+        height: length(2700.),
+        reference: WallLayerReference::Outside,
+    };
+    let (id, preview) =
+        model::prepare_layered_wall_type(&session, 1, actor(), "Hosted construction", &value)
+            .unwrap();
+    session.commit(preview).unwrap();
+    let mut request = wall_request(id);
+    let preview =
+        model::prepare_wall_change(&session, 2, actor(), &[], &WallChange::Create(&request))
+            .unwrap();
+    session.commit(preview.prepared).unwrap();
+    let attachment = Attachment {
+        owner: EntityId::new(),
+        floor,
+        placement: HostPlacement::Wall {
+            wall: request.feature,
+            segment: 0,
+            point_count: 3,
+            closed: false,
+            side: WallSide::Left,
+            along: length(1000.),
+            standoff: length(5.),
+            height: length(300.),
+            rotation: model::angle(0.),
+        },
+    };
+    assert_eq!(
+        attachment
+            .resolve(session.document(), session.parameters())
+            .unwrap()
+            .pose
+            .translation_mm,
+        [1000., -15., 300.],
+        "An outside cavity is not a physical mounting face"
+    );
+    request.wall.layer_placement.as_mut().unwrap().flipped = true;
+    let preview = model::prepare_wall_change(
+        &session,
+        3,
+        actor(),
+        &[],
+        &WallChange::Edit {
+            feature: request.feature,
+            wall: &request.wall,
+        },
+    )
+    .unwrap();
+    session.commit(preview.prepared).unwrap();
+    assert_eq!(
+        attachment
+            .resolve(session.document(), session.parameters())
+            .unwrap()
+            .pose
+            .translation_mm,
+        [1000., 377.5, 300.]
+    );
+}
+
+#[test]
+fn placement_fields_cannot_be_smuggled_into_legacy_wall_schema() {
+    use multicad_core::model::WallDefinition;
+    let mut source = wall_request(EntityId::new()).wall;
+    let version_two = source.definition().unwrap();
+    let mut downgraded = version_two.clone();
+    downgraded.schema_version = 1;
+    assert!(WallDefinition::from_definition(&downgraded).is_err());
+    source.layer_placement = None;
+    let legacy = source.definition().unwrap();
+    assert_eq!(legacy.schema_version, 1);
+    assert!(legacy.data.get("layer_placement").is_none());
+    let mut misleading = legacy.clone();
+    misleading.data["layer_placement"] = serde_json::Value::Null;
+    assert!(WallDefinition::from_definition(&misleading).is_err());
+    assert_eq!(WallDefinition::from_definition(&legacy).unwrap(), source);
+}

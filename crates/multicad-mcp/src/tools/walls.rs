@@ -196,6 +196,7 @@ fn wall_value(
         });
     }
     Ok(WallDefinition {
+        layer_placement: None,
         output: BodyOutput { body },
         wall_type: id(&args.wall_type)?,
         path: args

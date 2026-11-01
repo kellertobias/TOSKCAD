@@ -176,6 +176,12 @@ pub(crate) fn build(
     let e = |e: multicad_core::document::DocumentError| error(Some(id), e);
     let source = model::read_wall(document, id).map_err(e)?;
     let wall = model::resolve_wall(document, parameters, &source).map_err(e)?;
+    if wall.layers.is_some() {
+        return Err(error(
+            Some(id),
+            "Layered wall native generation is not available yet; the source construction is retained",
+        ));
+    }
     let plan = wall.plan().map_err(e)?;
     wall.check_openings(&plan).map_err(e)?;
     let profile = CurvedProfile {

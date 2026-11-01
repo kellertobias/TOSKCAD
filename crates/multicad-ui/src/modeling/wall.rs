@@ -305,6 +305,7 @@ impl WallPanel {
             name: self.name.clone(),
             editing: self.editing,
             wall: WallDefinition {
+                layer_placement: None,
                 output: BodyOutput { body: self.body },
                 wall_type,
                 path: self.outline.dimensions(document)?,

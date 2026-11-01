@@ -15,6 +15,25 @@ use serde::{Deserialize, Serialize};
 
 pub const LAYERED_WALL_TYPE_SCHEMA: u32 = 2;
 pub const LAYERED_WALL_TYPE_CAPABILITY: &str = "architecture.wall_type.2";
+pub const LAYERED_WALL_CAPABILITY: &str = "architecture.wall.2";
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WallLayerPlacement {
+    /// None inherits the type's reference boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<WallLayerReference>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flipped: bool,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedWallLayerConstruction {
+    pub stack: super::ResolvedWallLayerStack,
+    pub bands: Vec<super::WallLayerBand>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +44,20 @@ pub struct LayeredWallTypeDefinition {
     pub reference: WallLayerReference,
 }
 impl LayeredWallTypeDefinition {
+    pub fn resolve_layers(
+        &self,
+        document: &Document,
+        parameters: &crate::parameters::EvaluatedParameters,
+        placement: &WallLayerPlacement,
+    ) -> Result<ResolvedWallLayerConstruction, DocumentError> {
+        self.validate()?;
+        let stack = self.layers.resolve(document, parameters)?;
+        let bands = stack.bands(
+            placement.reference.unwrap_or(self.reference),
+            placement.flipped,
+        )?;
+        Ok(ResolvedWallLayerConstruction { stack, bands })
+    }
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.layers.validate()?;
         check_dimension(&self.height, Unit::Millimeter)?;

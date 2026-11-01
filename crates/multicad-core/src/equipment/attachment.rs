@@ -353,12 +353,7 @@ impl Attachment {
                 }
                 let tangent = [d[0] / length, d[1] / length];
                 let normal = [-tangent[1], tangent[0]];
-                let half = resolved.thickness_mm / 2.;
-                let (left, right) = match resolved.justification {
-                    model::Justification::Center => (half, -half),
-                    model::Justification::Left => (resolved.thickness_mm, 0.),
-                    model::Justification::Right => (0., -resolved.thickness_mm),
-                };
+                let (left, right) = resolved.physical_face_offsets()?;
                 let offset = match side {
                     WallSide::Left => left + standoff,
                     WallSide::Right => right - standoff,

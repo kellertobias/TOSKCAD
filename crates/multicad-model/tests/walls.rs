@@ -132,6 +132,7 @@ fn fixture() -> Fixture {
 }
 fn l_wall(f: &Fixture) -> WallDefinition {
     WallDefinition {
+        layer_placement: None,
         output: model::BodyOutput {
             body: EntityId::new(),
         },
@@ -336,6 +337,7 @@ fn walls_cut_openings_follow_types_and_keep_overrides() {
 fn closed_room_and_plan_section_show_door_swings_and_window_panes() {
     let mut f = fixture();
     let room = WallDefinition {
+        layer_placement: None,
         path: vec![
             point(0., 0.),
             point(5000., 0.),
@@ -437,6 +439,7 @@ fn room_tools_place_openings_and_vertical_cutouts_natively_and_survive_reopen() 
     use model::{VerticalCutout, WallFace, WallOpeningChange, prepare_wall_opening};
     let mut f = fixture();
     let straight = WallDefinition {
+        layer_placement: None,
         path: vec![point(0., 0.), point(6000., 0.)],
         openings: vec![],
         ..l_wall(&f)
@@ -591,6 +594,7 @@ fn default_room_plan_hatches_cut_walls_with_real_door_and_window_voids() {
     .unwrap();
     f.s.commit(p).unwrap();
     let room = WallDefinition {
+        layer_placement: None,
         wall_type: plain,
         path: vec![
             point(0., 0.),

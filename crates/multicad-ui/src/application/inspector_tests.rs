@@ -302,6 +302,7 @@ fn room_door_tool_previews_and_applies_one_wall_transaction() {
     let request = WallRequest::new(
         "Wall 1",
         WallDefinition {
+            layer_placement: None,
             output: BodyOutput {
                 body: EntityId::new(),
             },

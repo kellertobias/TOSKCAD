@@ -126,6 +126,9 @@ pub struct VerticalCutout {
 pub struct WallDefinition {
     pub output: BodyOutput,
     pub wall_type: EntityId,
+    /// Explicit layer orientation/reference, absent on legacy uniform walls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_placement: Option<super::WallLayerPlacement>,
     /// Path vertices in world X/Y millimeters on the plane z = `base_z`.
     pub path: Vec<[Dimension; 2]>,
     #[serde(default)]
@@ -183,6 +186,13 @@ impl OpeningTypeDefinition {
 }
 impl WallDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
+        if self.layer_placement.is_some()
+            && (self.thickness.is_some() || self.justification.is_some())
+        {
+            return Err(invalid(
+                "Layered walls use layer thicknesses and a layer reference; independent total thickness or uniform justification overrides are not supported",
+            ));
+        }
         if self.output.body.is_nil() || self.wall_type.is_nil() {
             return Err(invalid("A wall needs an output Part and a wall type"));
         }
@@ -246,10 +256,24 @@ impl WallDefinition {
     }
     pub fn definition(&self) -> Result<Definition, DocumentError> {
         self.validate()?;
-        definition(WALL_TYPE, self)
+        let mut value = definition(WALL_TYPE, self)?;
+        if self.layer_placement.is_some() {
+            value.schema_version = 2;
+        }
+        Ok(value)
     }
     pub fn from_definition(d: &Definition) -> Result<Self, DocumentError> {
-        let value: Self = parse(d, WALL_TYPE)?;
+        if d.type_id != WALL_TYPE || ![1, 2].contains(&d.schema_version) {
+            return Err(invalid("Unsupported wall source schema"));
+        }
+        if d.schema_version == 1 && d.data.get("layer_placement").is_some() {
+            return Err(invalid("Layer placement requires wall source schema 2"));
+        }
+        let value: Self =
+            serde_json::from_value(d.data.clone()).map_err(|e| invalid(e.to_string()))?;
+        if (d.schema_version == 2) != value.layer_placement.is_some() {
+            return Err(invalid("Wall layer placement and source schema disagree"));
+        }
         value.validate()?;
         Ok(value)
     }
@@ -328,7 +352,25 @@ pub fn read_wall(document: &Document, feature: EntityId) -> Result<WallDefinitio
         return Err(invalid("Wall source and canonical input links disagree"));
     }
     if document.get(wall.wall_type).is_some() {
-        read_wall_type(document, wall.wall_type)?;
+        match super::read_wall_construction(document, wall.wall_type)? {
+            super::WallTypeConstruction::Uniform(_) if wall.layer_placement.is_some() => {
+                return Err(invalid("Layer placement requires a layered wall type"));
+            }
+            super::WallTypeConstruction::Layered(ty) => {
+                let placement = wall
+                    .layer_placement
+                    .as_ref()
+                    .ok_or_else(|| invalid("Layered wall needs an explicit layer placement"))?;
+                if let Some(super::WallLayerReference::Boundary { layer, .. }) = placement.reference
+                    && !ty.layers.layers.iter().any(|item| item.id == layer)
+                {
+                    return Err(invalid(
+                        "The wall reference layer was removed; choose another boundary",
+                    ));
+                }
+            }
+            _ => {}
+        }
     }
     for opening in &wall.openings {
         if document.get(opening.opening_type).is_some() {
@@ -336,9 +378,17 @@ pub fn read_wall(document: &Document, feature: EntityId) -> Result<WallDefinitio
         }
     }
     if let Some(entity) = document.get(wall.output.body) {
-        let EntityData::Part { features, .. } = &entity.data else {
+        let EntityData::Part {
+            features, material, ..
+        } = &entity.data
+        else {
             return Err(invalid("Wall output must identify a Part"));
         };
+        if wall.layer_placement.is_some() && material.is_some() {
+            return Err(invalid(
+                "Set layered wall materials on the construction layers, not on the whole wall Part",
+            ));
+        }
         if !features.contains(&feature) {
             return Err(invalid("Wall output Part must contain its wall feature"));
         }
@@ -383,6 +433,7 @@ pub struct ResolvedWallCutout {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedWall {
+    pub layers: Option<super::ResolvedWallLayerConstruction>,
     pub points: Vec<[f64; 2]>,
     pub closed: bool,
     pub base_z_mm: f64,
@@ -397,10 +448,39 @@ pub fn resolve_wall(
     parameters: &EvaluatedParameters,
     wall: &WallDefinition,
 ) -> Result<ResolvedWall, DocumentError> {
-    let ty = read_wall_type(document, wall.wall_type)?;
     let mm = |d: &Dimension| number(d, Unit::Millimeter, parameters);
-    let thickness_mm = mm(wall.thickness.as_ref().unwrap_or(&ty.thickness))?;
-    let height_mm = mm(wall.height.as_ref().unwrap_or(&ty.height))?;
+    let (thickness_mm, height_mm, justification, layers) =
+        match super::read_wall_construction(document, wall.wall_type)? {
+            super::WallTypeConstruction::Uniform(ty) => {
+                if wall.layer_placement.is_some() {
+                    return Err(invalid("Layer placement requires a layered wall type"));
+                }
+                (
+                    mm(wall.thickness.as_ref().unwrap_or(&ty.thickness))?,
+                    mm(wall.height.as_ref().unwrap_or(&ty.height))?,
+                    wall.justification.unwrap_or(ty.justification),
+                    None,
+                )
+            }
+            super::WallTypeConstruction::Layered(ty) => {
+                if wall.thickness.is_some() || wall.justification.is_some() {
+                    return Err(invalid(
+                        "Layered walls cannot override total thickness or uniform justification",
+                    ));
+                }
+                let placement = wall
+                    .layer_placement
+                    .as_ref()
+                    .ok_or_else(|| invalid("Layered wall needs an explicit layer placement"))?;
+                let layers = ty.resolve_layers(document, parameters, placement)?;
+                (
+                    layers.stack.thickness_mm,
+                    mm(wall.height.as_ref().unwrap_or(&ty.height))?,
+                    Justification::Center,
+                    Some(layers),
+                )
+            }
+        };
     if thickness_mm <= 1e-3 || height_mm <= 1e-3 {
         return Err(invalid("Wall thickness and height must be positive"));
     }
@@ -443,12 +523,13 @@ pub fn resolve_wall(
         None => 0.,
     };
     Ok(ResolvedWall {
+        layers,
         points,
         closed: wall.closed,
         base_z_mm: level_z + mm(&wall.base_z)?,
         thickness_mm,
         height_mm,
-        justification: wall.justification.unwrap_or(ty.justification),
+        justification,
         openings,
         cutouts,
     })
@@ -530,6 +611,31 @@ fn simple(points: &[[f64; 2]]) -> bool {
 }
 
 impl ResolvedWall {
+    /// Left/right physical material faces for hosted objects. Outer cavity
+    /// metadata belongs to the construction reference envelope, not a solid
+    /// face on which equipment can be mounted.
+    pub fn physical_face_offsets(&self) -> Result<(f64, f64), DocumentError> {
+        let Some(layers) = &self.layers else {
+            return Ok(self.offsets());
+        };
+        let (left, right) = layers
+            .stack
+            .layers
+            .iter()
+            .zip(&layers.bands)
+            .filter(|(layer, _)| layer.solid)
+            .flat_map(|(_, band)| [band.outside_mm, band.inside_mm])
+            .fold(
+                (f64::NEG_INFINITY, f64::INFINITY),
+                |(left, right), value| (left.max(value), right.min(value)),
+            );
+        if !left.is_finite() || !right.is_finite() || left <= right {
+            return Err(invalid(
+                "Wall construction has no finite material face for attachment",
+            ));
+        }
+        Ok((left, right))
+    }
     pub fn segments(&self) -> Result<Vec<Segment>, DocumentError> {
         let n = self.points.len();
         let count = if self.closed { n } else { n - 1 };
@@ -552,6 +658,16 @@ impl ResolvedWall {
             .collect()
     }
     fn offsets(&self) -> (f64, f64) {
+        if let Some(layers) = &self.layers {
+            return layers
+                .bands
+                .iter()
+                .flat_map(|band| [band.outside_mm, band.inside_mm])
+                .fold(
+                    (f64::NEG_INFINITY, f64::INFINITY),
+                    |(left, right), value| (left.max(value), right.min(value)),
+                );
+        }
         let t = self.thickness_mm;
         match self.justification {
             Justification::Center => (t / 2., -t / 2.),
@@ -592,8 +708,24 @@ impl ResolvedWall {
     }
     /// The closed outline of the wall in plan, with stable edge roles.
     pub fn plan(&self) -> Result<WallPlan, DocumentError> {
-        let segments = self.segments()?;
         let (left, right) = self.offsets();
+        self.plan_region(left, right)
+    }
+    /// Plan an exact material band using global offsets, so thin finish layers
+    /// keep the same corner intersections and miter envelope as the full wall.
+    pub fn plan_region(&self, left: f64, right: f64) -> Result<WallPlan, DocumentError> {
+        let (outer_left, outer_right) = self.offsets();
+        if !left.is_finite()
+            || !right.is_finite()
+            || left <= right
+            || left > outer_left + 1e-9
+            || right < outer_right - 1e-9
+        {
+            return Err(invalid(
+                "Wall band offsets must define a positive-width region inside the construction",
+            ));
+        }
+        let segments = self.segments()?;
         let n = segments.len();
         let side = |offset: f64| -> Result<Vec<[f64; 2]>, DocumentError> {
             if self.closed {
@@ -1222,7 +1354,10 @@ pub(super) fn prepare_wall_change_labeled(
                 request.name.clone(),
                 EntityData::Part {
                     features: vec![request.feature],
-                    material: read_wall_type(&candidate, wall.wall_type)?.material,
+                    material: match super::read_wall_construction(&candidate, wall.wall_type)? {
+                        super::WallTypeConstruction::Uniform(ty) => ty.material,
+                        super::WallTypeConstruction::Layered(_) => None,
+                    },
                     tags: BTreeSet::new(),
                 },
             );
@@ -1259,6 +1394,7 @@ mod tests {
     use super::*;
     fn wall(points: &[[f64; 2]], closed: bool, j: Justification) -> ResolvedWall {
         ResolvedWall {
+            layers: None,
             points: points.to_vec(),
             closed,
             base_z_mm: 0.,
@@ -1366,6 +1502,7 @@ mod tests {
             }),
         );
         let wall = WallDefinition {
+            layer_placement: None,
             output: BodyOutput {
                 body: EntityId::new(),
             },

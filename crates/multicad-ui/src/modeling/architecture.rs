@@ -1101,6 +1101,7 @@ mod tests {
             let request = WallRequest::new(
                 format!("Room {}", k + 1),
                 WallDefinition {
+                    layer_placement: None,
                     output: BodyOutput {
                         body: EntityId::new(),
                     },

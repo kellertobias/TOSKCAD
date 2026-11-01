@@ -282,6 +282,7 @@ mod tests {
         let request = WallRequest::new(
             "Wall",
             WallDefinition {
+                layer_placement: None,
                 output: BodyOutput {
                     body: EntityId::new(),
                 },

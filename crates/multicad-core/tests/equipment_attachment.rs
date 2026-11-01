@@ -46,6 +46,7 @@ fn seed() -> (Session, EntityId, EntityId) {
     let wall = WallRequest::new(
         "Host wall",
         WallDefinition {
+            layer_placement: None,
             output: BodyOutput {
                 body: EntityId::new(),
             },

@@ -172,6 +172,7 @@ fn levels_host_slabs_pedestals_stairs_and_walls_that_follow_level_edits() {
             &WallRequest::new(
                 "Upper wall",
                 WallDefinition {
+                    layer_placement: None,
                     output: BodyOutput {
                         body: EntityId::new(),
                     },
@@ -355,6 +356,7 @@ fn service_envelopes_report_model_clearance_and_show_in_plan() {
     let wall = WallRequest::new(
         "Front wall",
         WallDefinition {
+            layer_placement: None,
             output: BodyOutput {
                 body: EntityId::new(),
             },
