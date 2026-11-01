@@ -223,6 +223,7 @@ fn kicad_board_components_and_reimport() {
     );
     let board_path = dir.path().join("control.kicad_pcb");
     std::fs::write(&board_path, BOARD).unwrap();
+    let board_path = board_path.canonicalize().unwrap();
     let import = read_kicad_file(&board_path, &KicadOptions::default()).unwrap();
     assert_eq!(import.board.holes.len(), 2, "only the M3 mounting holes");
     assert_eq!(import.models.len(), 1);

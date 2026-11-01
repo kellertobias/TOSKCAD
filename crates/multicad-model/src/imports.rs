@@ -84,6 +84,10 @@ fn resolve_model(board_dir: &Path, path: &str) -> Option<PathBuf> {
         };
         text.replace_range(start..=end, &value);
     }
+    // Canonical Windows board/environment paths can have a verbatim prefix.
+    // Unlike ordinary Windows paths, those do not accept KiCad's '/' separator.
+    #[cfg(windows)]
+    let text = text.replace('/', "\\");
     let base = PathBuf::from(&text);
     let base = if base.is_relative() {
         board_dir.join(base)
@@ -97,6 +101,7 @@ fn resolve_model(board_dir: &Path, path: &str) -> Option<PathBuf> {
     };
     candidates.into_iter().find(|p| p.is_file())
 }
+
 /// Read a board and every selected footprint model that can be found.
 pub fn read_kicad_file(path: &Path, options: &KicadOptions) -> Result<KicadImport, ModelError> {
     let text = std::fs::read_to_string(path)
@@ -303,4 +308,28 @@ pub(crate) fn build_component(
     Solid::extrude_curved_profile_vector_named(&profile, [0., 0., c.height_mm], id, &roles, policy)
         .and_then(|s| s.transformed(place))
         .map_err(|e| error(Some(id), e))
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::resolve_model;
+
+    #[test]
+    fn forward_slash_models_resolve_beside_a_canonical_board_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let board_dir = directory.path().canonicalize().unwrap();
+        let models = board_dir.join("models with spaces");
+        std::fs::create_dir(&models).unwrap();
+        let model = models.join("button.step");
+        std::fs::write(&model, b"path resolution fixture").unwrap();
+        for path in [
+            "${KIPRJMOD}/models with spaces/button.step",
+            "${KIPRJMOD}/models with spaces/button.wrl",
+            "models with spaces/button.step",
+        ] {
+            let found = resolve_model(&board_dir, path).expect(path);
+            assert_eq!(found.canonicalize().unwrap(), model.canonicalize().unwrap());
+        }
+        assert!(resolve_model(&board_dir, "${KIPRJMOD}/missing.step").is_none());
+    }
 }
