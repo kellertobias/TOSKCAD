@@ -23,6 +23,12 @@ impl SketchEditor {
         if self.advanced_context_stamp == Some(batch) {
             return Ok(());
         }
+        if batch.1 == 0 {
+            self.model
+                .set_advanced_sketch_context(session, vec![], vec![])?;
+            self.advanced_context_stamp = Some(batch);
+            return Ok(());
+        }
         let document = session.document();
         let hash = session.source_hash()?;
         let mut profiles = Vec::new();

@@ -3174,7 +3174,20 @@ mod tests {
         .unwrap();
         app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
         assert!(app.current().session.can_undo() && app.current().session.can_redo());
-        shortcut_frame(&ctx, &mut app, vec![]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            shortcut_frame(&ctx, &mut app, vec![]);
+            if app.current().sketch.sketch_evaluation_status()
+                == crate::sketch_evaluation::EvaluationStatus::Ready
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Sketch preparation timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         app.current_mut().sketch.toggle_transform();
         shortcut_frame(&ctx, &mut app, vec![]);
         let sketch = &app.current().sketch;

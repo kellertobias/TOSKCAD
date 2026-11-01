@@ -363,6 +363,11 @@ impl SketchEditor {
         self.materials.open(session);
         Ok(())
     }
+    /// Preparation/solve status exposed to hosts without granting access to
+    /// retained display-only geometry or worker queues.
+    pub fn sketch_evaluation_status(&self) -> crate::sketch_evaluation::EvaluationStatus {
+        self.sketch_evaluation.status()
+    }
     pub fn has_query_factory(&self) -> bool {
         self.sketch_evaluation.has_query_factory()
     }
@@ -2952,7 +2957,7 @@ impl SketchEditor {
                         if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
                         else if feed.refining() {ui.small("Refining display…");}
                         else if feed.pending() {ui.small("Rebuilding model…");}
-                        if self.sketch_evaluation.pending() {ui.small("Solving sketches…");}
+                        if self.sketch_evaluation.pending() && !self.sketch_evaluation.hash_pending() {ui.small("Solving sketches…");}
                         if let Some(error)=self.sketch_evaluation.error() {ui.colored_label(Color32::LIGHT_RED,error);}
                         if let Some(failure)=self.selected.and_then(|id|self.sketch_evaluation.errors().get(&id)) {ui.colored_label(Color32::LIGHT_RED,&failure.message);}
                         if let Some(error)=feed.quality_error() {ui.colored_label(Color32::LIGHT_YELLOW,error);if ui.button("Retry display refinement").clicked(){feed.retry_quality();}}
@@ -3606,6 +3611,15 @@ impl SketchEditor {
         self.viewport_rect = Some(rect);
         crate::camera_gestures::navigate(ui, &response, &mut self.camera);
         let painter = ui.painter().with_clip_rect(rect);
+        if self.sketch_evaluation.hash_pending() {
+            painter.text(
+                rect.left_top() + Vec2::new(12., 12.),
+                egui::Align2::LEFT_TOP,
+                "Preparing sketches…",
+                egui::FontId::proportional(12.),
+                Color32::GRAY,
+            );
+        }
         let project = |p: [f64; 3], camera: &Camera| {
             let p = camera.project(p.map(|v| v as f32), rect);
             Pos2::new(p[0], p[1])
@@ -5408,24 +5422,23 @@ mod tests {
         }
     }
     fn settle(editor: &mut SketchEditor, session: &Session) {
-        if let Some(report) = editor
-            .evaluated
-            .clone()
-            .filter(|r| r.revision == session.revision())
-        {
-            editor.sketch_evaluation.sync_creation_report(
-                session.document(),
-                session.revision(),
-                report,
-            );
-        } else {
-            editor
-                .sketch_evaluation
-                .sync(session.document(), session.revision(), None);
-        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while editor.sketch_evaluation.pending() {
+        loop {
+            if let Some(report) = editor
+                .evaluated
+                .clone()
+                .filter(|r| r.revision == session.revision())
+            {
+                editor
+                    .sketch_evaluation
+                    .sync_creation_session(session, report);
+            } else {
+                editor.sketch_evaluation.sync_session(session, None);
+            }
             editor.sketch_evaluation.poll();
+            if !editor.sketch_evaluation.pending() {
+                break;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "Sketch worker timed out"

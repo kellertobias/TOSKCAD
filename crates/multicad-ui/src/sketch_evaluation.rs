@@ -20,6 +20,8 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
 };
+mod hash_worker;
+use hash_worker::HashWorker;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceStamp {
@@ -373,6 +375,9 @@ pub struct SketchEvaluationFeed {
     active_pick: Option<ProfilePickStamp>,
     queued_pick: Option<PickJob>,
     source: Option<SourceSnapshot>,
+    hash_worker: Option<HashWorker>,
+    session_source: Option<multicad_core::commands::SessionStamp>,
+    pending_hash_source: Option<multicad_core::commands::SessionStamp>,
     report: Option<(ReferenceStamp, Arc<ReferenceReport>)>,
     expected: Option<EvaluationStamp>,
     worker: Option<Worker>,
@@ -414,6 +419,9 @@ impl SketchEvaluationFeed {
             active_pick: None,
             queued_pick: None,
             source: None,
+            hash_worker: None,
+            session_source: None,
+            pending_hash_source: None,
             report: None,
             expected: None,
             worker: None,
@@ -457,6 +465,8 @@ impl SketchEvaluationFeed {
         revision: u64,
         references: Option<(SceneStamp, ReferenceReport)>,
     ) {
+        self.session_source = None;
+        self.pending_hash_source = None;
         self.sync_context(
             document,
             revision,
@@ -471,11 +481,14 @@ impl SketchEvaluationFeed {
         session: &multicad_core::commands::Session,
         references: Option<(SceneStamp, ReferenceReport)>,
     ) {
+        let Some(hash) = self.session_hash(session) else {
+            return;
+        };
         self.sync_context(
             session.document(),
             session.revision(),
             references.map(|(stamp, report)| (ReferenceStamp::Scene(stamp), report)),
-            Some(session.source_hash()),
+            Some(hash),
         );
     }
     /// Use only a report explicitly revalidated for the committed source by a
@@ -487,6 +500,8 @@ impl SketchEvaluationFeed {
         revision: u64,
         report: ReferenceReport,
     ) {
+        self.session_source = None;
+        self.pending_hash_source = None;
         self.sync_context(
             document,
             revision,
@@ -505,6 +520,9 @@ impl SketchEvaluationFeed {
         session: &multicad_core::commands::Session,
         report: ReferenceReport,
     ) {
+        let Some(hash) = self.session_hash(session) else {
+            return;
+        };
         self.sync_context(
             session.document(),
             session.revision(),
@@ -515,8 +533,61 @@ impl SketchEvaluationFeed {
                 },
                 report,
             )),
-            Some(session.source_hash()),
+            Some(hash),
         );
+    }
+    fn session_hash(
+        &mut self,
+        session: &multicad_core::commands::Session,
+    ) -> Option<Result<ContentHash, String>> {
+        let stamp = session.stamp();
+        if self.session_source != Some(stamp) {
+            self.session_source = Some(stamp);
+            self.cancel_profile_pick();
+            self.current.clear();
+            self.failures.clear();
+            self.expected = None;
+            self.queued = None;
+            self.error = None;
+            self.refresh_queries = true;
+            self.desired.store(u64::MAX, Ordering::Release);
+            if self.retained_document != Some(session.document().id()) {
+                self.last_valid.clear();
+                self.retained_document = Some(session.document().id());
+            }
+        }
+        if let Some(worker) = &mut self.hash_worker
+            && let Err(error) = worker.poll()
+        {
+            self.error = Some(error);
+            self.pending_hash_source = None;
+            return None;
+        }
+        if let Some(hash) = session.cached_source_hash() {
+            self.pending_hash_source = None;
+            return Some(hash);
+        }
+        self.pending_hash_source = Some(stamp);
+        if self.hash_worker.is_none() {
+            match HashWorker::new() {
+                Ok(worker) => self.hash_worker = Some(worker),
+                Err(error) => {
+                    self.error = Some(error);
+                    self.pending_hash_source = None;
+                    return None;
+                }
+            }
+        }
+        if let Err(error) = self
+            .hash_worker
+            .as_mut()
+            .expect("hash worker installed")
+            .request(session)
+        {
+            self.error = Some(error);
+            self.pending_hash_source = None;
+        }
+        None
     }
     fn sync_context(
         &mut self,
@@ -784,8 +855,11 @@ impl SketchEvaluationFeed {
     pub fn pending(&self) -> bool {
         self.geometry_pending() || self.pick_pending()
     }
+    pub fn hash_pending(&self) -> bool {
+        self.pending_hash_source.is_some()
+    }
     pub fn geometry_pending(&self) -> bool {
-        self.active.is_some() || self.queued.is_some()
+        self.hash_pending() || self.active.is_some() || self.queued.is_some()
     }
     pub fn pick_pending(&self) -> bool {
         self.active_pick.is_some() || self.queued_pick.is_some()
@@ -881,6 +955,15 @@ impl SketchEvaluationFeed {
         }
     }
     pub fn retry(&mut self) {
+        self.session_source = None;
+        self.pending_hash_source = None;
+        if self
+            .hash_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_busy())
+        {
+            self.hash_worker = None;
+        }
         self.desired.store(u64::MAX, Ordering::Release);
         self.cancel_profile_pick();
         // A cooperative cancellation can finish later. Keep that worker until
@@ -903,25 +986,35 @@ mod tests {
     use super::*;
     #[test]
     fn session_sync_reuses_stable_hash_and_rekeys_same_identity_revision_different_source() {
-        let document=Document::new("First source").unwrap();
-        let first=multicad_core::commands::Session::new(document.clone()).unwrap();
-        let second=multicad_core::commands::Session::new(document.edited(&[multicad_core::document::Mutation::RenameDocument("Other source".into())]).unwrap()).unwrap();
-        assert_eq!(first.document().id(),second.document().id());
-        assert_eq!(first.revision(),second.revision());
-        let mut feed=SketchEvaluationFeed::default();
-        feed.sync_session(&first,None);
-        let original=feed.current_stamp().unwrap();
-        feed.sync_session(&first,None);
-        assert_eq!(feed.current_stamp(),Some(original));
-        feed.sync_session(&second,None);
-        let changed=feed.current_stamp().unwrap();
-        assert_ne!(changed.source_hash,original.source_hash);
-        assert!(changed.generation>original.generation);
-        assert_eq!(changed.source_hash,ContentHash::document(second.document()).unwrap());
-        feed.sync_session(&first,None);
-        let restored=feed.current_stamp().unwrap();
-        assert_eq!(restored.source_hash,original.source_hash);
-        assert!(restored.generation>changed.generation);
+        let document = Document::new("First source").unwrap();
+        let first = multicad_core::commands::Session::new(document.clone()).unwrap();
+        let second = multicad_core::commands::Session::new(
+            document
+                .edited(&[multicad_core::document::Mutation::RenameDocument(
+                    "Other source".into(),
+                )])
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first.document().id(), second.document().id());
+        assert_eq!(first.revision(), second.revision());
+        let mut feed = SketchEvaluationFeed::default();
+        sync_session_ready(&mut feed, &first);
+        let original = feed.current_stamp().unwrap();
+        feed.sync_session(&first, None);
+        assert_eq!(feed.current_stamp(), Some(original));
+        sync_session_ready(&mut feed, &second);
+        let changed = feed.current_stamp().unwrap();
+        assert_ne!(changed.source_hash, original.source_hash);
+        assert!(changed.generation > original.generation);
+        assert_eq!(
+            changed.source_hash,
+            ContentHash::document(second.document()).unwrap()
+        );
+        feed.sync_session(&first, None);
+        let restored = feed.current_stamp().unwrap();
+        assert_eq!(restored.source_hash, original.source_hash);
+        assert!(restored.generation > changed.generation);
     }
     use multicad_core::{
         commands::{Actor, Channel, Request, Session},
@@ -937,6 +1030,71 @@ mod tests {
         sync::{Mutex, atomic::AtomicUsize},
         time::{Duration, Instant},
     };
+
+    fn sync_session_ready(feed: &mut SketchEvaluationFeed, session: &Session) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            feed.sync_session(session, None);
+            feed.poll();
+            if !feed.hash_pending() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Source hash preparation timed out"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(feed.error().is_none(), "{:?}", feed.error());
+    }
+    #[test]
+    fn blocked_hash_work_coalesces_edits_and_retry_without_publishing_old_source() {
+        use std::sync::{Arc, mpsc};
+        let (started, entered) = mpsc::sync_channel(1);
+        let (release, gate) = mpsc::sync_channel(1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let worker = HashWorker::spawn(move |snapshot| {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                started.send(()).unwrap();
+                gate.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            snapshot.session().source_hash().map(|_| ())
+        })
+        .unwrap();
+        let mut session = Session::new(Document::new("Old").unwrap()).unwrap();
+        let mut feed = SketchEvaluationFeed::default();
+        feed.hash_worker = Some(worker);
+        feed.sync_session(&session, None);
+        entered.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(feed.hash_pending());
+        assert_eq!(feed.status(), EvaluationStatus::Pending);
+        assert!(feed.current_stamp().is_none());
+        session
+            .apply(Request {
+                actor: actor(),
+                label: "Rename".into(),
+                expected_revision: session.revision(),
+                edits: vec![Mutation::RenameDocument("Latest".into())],
+            })
+            .unwrap();
+        for _ in 0..20 {
+            feed.retry();
+            feed.sync_session(&session, None);
+            assert!(feed.current_stamp().is_none());
+            assert!(feed.hash_pending());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        release.send(()).unwrap();
+        sync_session_ready(&mut feed, &session);
+        let stamp = feed.current_stamp().unwrap();
+        assert_eq!(stamp.revision, session.revision());
+        assert_eq!(
+            stamp.source_hash,
+            ContentHash::document(session.document()).unwrap()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 
     fn actor() -> Actor {
         Actor::local(Channel::Ui)

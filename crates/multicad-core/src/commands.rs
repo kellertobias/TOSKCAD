@@ -6,7 +6,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, VecDeque},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -153,9 +153,9 @@ impl Prepared {
 }
 pub struct Session {
     id: EntityId,
-    current: EvaluatedParameters,
+    current: Arc<EvaluatedParameters>,
     revision: u64,
-    source_hash: OnceLock<Result<crate::project_file::ContentHash, String>>,
+    source_hash: Arc<OnceLock<Result<crate::project_file::ContentHash, String>>>,
     saved: Option<Document>,
     undo: VecDeque<History>,
     redo: VecDeque<History>,
@@ -208,9 +208,9 @@ impl Session {
     pub fn new(document: Document) -> Result<Self, CommandError> {
         Ok(Self {
             id: EntityId::new(),
-            current: parameters::evaluate(&document)?,
+            current: Arc::new(parameters::evaluate(&document)?),
             revision: 0,
-            source_hash: OnceLock::new(),
+            source_hash: Arc::new(OnceLock::new()),
             saved: None,
             undo: VecDeque::new(),
             redo: VecDeque::new(),
@@ -227,10 +227,15 @@ impl Session {
             .get_or_init(|| crate::project_file::ContentHash::document(self.document()))
             .clone()
     }
+    /// Nonblocking access for interactive consumers. A preparation snapshot
+    /// may fill this revision's shared immutable cache on a background worker.
+    pub fn cached_source_hash(&self) -> Option<Result<crate::project_file::ContentHash, String>> {
+        self.source_hash.get().cloned()
+    }
     fn replace_current(&mut self, current: EvaluatedParameters, revision: u64) {
-        self.current = current;
+        self.current = Arc::new(current);
         self.revision = revision;
-        self.source_hash = OnceLock::new();
+        self.source_hash = Arc::new(OnceLock::new());
     }
     pub fn stamp(&self) -> SessionStamp {
         SessionStamp {
@@ -253,6 +258,8 @@ impl Session {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    /// Share immutable evaluated state without copying the canonical document
+    /// on the interactive thread. Source replacement installs a new allocation.
     pub fn preparation_snapshot(&self) -> PreparationSnapshot {
         PreparationSnapshot {
             session: Self {

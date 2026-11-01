@@ -125,6 +125,29 @@ fn cached_source_hash_matches_canonical_bytes_after_edits_history_and_file_captu
     assert_ne!(other.source_hash().unwrap(), session.source_hash().unwrap());
 }
 #[test]
+fn late_snapshot_hash_populates_only_its_original_source_epoch() {
+    let mut owner = Session::new(Document::new("Epoch").unwrap()).unwrap();
+    assert!(owner.cached_source_hash().is_none());
+    let old = owner.preparation_snapshot();
+    owner
+        .apply(request(
+            0,
+            Channel::Ui,
+            vec![Mutation::RenameDocument("New epoch".into())],
+        ))
+        .unwrap();
+    let prior = old.session().source_hash().unwrap();
+    assert!(owner.cached_source_hash().is_none());
+    let current = owner.preparation_snapshot();
+    let expected = current.session().source_hash().unwrap();
+    assert_ne!(prior, expected);
+    assert_eq!(owner.cached_source_hash(), Some(Ok(expected)));
+    assert_eq!(
+        expected,
+        multicad_core::project_file::ContentHash::document(owner.document()).unwrap()
+    );
+}
+#[test]
 fn one_payload_has_identical_results_across_ui_and_external_callers() {
     let document = Document::new("Shared").unwrap();
     let entity = parameter("width", "600");
