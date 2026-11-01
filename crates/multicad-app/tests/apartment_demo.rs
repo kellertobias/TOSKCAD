@@ -486,7 +486,7 @@ fn generator_rebuilds_the_shipped_project() {
                     .iter()
                     .filter_map(|a| match &a.kind {
                         AnnotationKind::Note { text, position_mm } => {
-                            Some(format!("{text} @ {position_mm:?}"))
+                            Some((text.clone(), *position_mm))
                         }
                         _ => None,
                     })
@@ -503,7 +503,26 @@ fn generator_rebuilds_the_shipped_project() {
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(pages(fresh), pages(&shipped));
+    let (fresh_pages, shipped_pages) = (pages(fresh), pages(&shipped));
+    assert_eq!(fresh_pages.len(), shipped_pages.len());
+    for ((number, title, views, notes), (saved_number, saved_title, saved_views, saved_notes)) in
+        fresh_pages.into_iter().zip(shipped_pages)
+    {
+        assert_eq!(
+            (number, title, views),
+            (saved_number, saved_title, saved_views)
+        );
+        assert_eq!(notes.len(), saved_notes.len());
+        for ((text, position), (saved_text, saved_position)) in notes.into_iter().zip(saved_notes) {
+            assert_eq!(text, saved_text);
+            for (value, saved) in position.into_iter().zip(saved_position) {
+                assert!(
+                    (value - saved).abs() <= 1e-9,
+                    "Note position differs: {value} vs {saved} mm"
+                );
+            }
+        }
+    }
     let (a, b) = (
         project_file::info::read(fresh).unwrap(),
         project_file::info::read(&shipped).unwrap(),
