@@ -1,3 +1,4 @@
+<!-- Kind: reference; Audience: native app and Library maintainers; Purpose: document file metadata and the shared installation Library; Non-goals: certify catalog stock, CAD geometry or platform acceptance. -->
 # File metadata and the installation library (CAD-141)
 
 ## File metadata
@@ -78,4 +79,4 @@ The user's decision of 2026-10-30: Add to Library marks the file as listed in th
 - Moved files are not discovered automatically. There is no synchronization or cloud sharing. Hardware cards cover washer, hex-nut and bearing-envelope recipes. Included hardware currently comprises four curated bearing mounting envelopes; stocked screws/nuts/washers, material filters and detailed bearing internals remain open CAD-200 work.
 - The capture uses the window screenshot of the drawn 3D view, so overlays drawn inside the viewport rect are included.
 - No dedicated MCP tool edits file information. Clients can use the generic typed document mutations.
-- Evidence comes from native unit and app tests with fake and real temporary-directory stores, plus an injected screenshot. Interactive macOS review, real GPU screenshot capture and Windows/Linux runtime are not verified.
+- Initial CAD-141 evidence came from native unit/app tests with fake and real temporary-directory stores and an injected screenshot. The CAD-200 macOS review additionally exercised real save-time capture, original-file listing, dimension search, explicit import/placement, included-resource discovery, configured bearing save/reopen and rejected invalid native previews. Independent native STEP readbacks checked actual exported geometry. See the [CAD-200 Working Log](https://plans.tokenet.de/CAD/200) for the exact builds, scope and local artifacts. Windows/Linux interactive runtime and human acceptance remain separate.

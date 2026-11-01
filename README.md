@@ -53,7 +53,7 @@ The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow
 
 [Parametric gears](docs/architecture/gears.md) records the external involute single/pair foundation, native validation limits and unfinished family and parameter coverage.
 
-Mechanical catalog work follows the [retained hardware dimensions decision](docs/architecture/0026-retained-hardware-dimensions.md). Catalog coverage and the native library workflow remain under development.
+Mechanical catalog work follows the [retained hardware dimensions decision](docs/architecture/0026-retained-hardware-dimensions.md). The shared Library includes [four curated bearing mounting envelopes](library/README.md) with editable dimensions and pinned definitions. Complete fastener catalog coverage and connection integration remain under development.
 
 The [spline editing checkpoint](docs/verification/native-spline-editing-2026-10-28.md) records exact trims, bounded tangent continuation, explicit contact choice, guarded background previews and native save/reopen checks.
 
