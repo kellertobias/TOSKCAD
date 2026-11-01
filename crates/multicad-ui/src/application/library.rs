@@ -47,6 +47,10 @@ impl Application {
         }
     }
     fn accept_library_event(&mut self, event: LibraryEvent) {
+        let refresh = matches!(
+            &event,
+            LibraryEvent::Loaded(Ok(_)) | LibraryEvent::Registered { result: Ok(_), .. }
+        );
         match event {
             LibraryEvent::Loaded(Ok(entries)) => {
                 self.library.entries = entries;
@@ -101,6 +105,12 @@ impl Application {
                         self.message_error = true;
                     }
                 }
+            }
+        }
+        if refresh {
+            let entries = std::sync::Arc::new(self.library.entries.clone());
+            for project in &mut self.projects {
+                project.sketch.set_installed_symbol_library(entries.clone());
             }
         }
     }

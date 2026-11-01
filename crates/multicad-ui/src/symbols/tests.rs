@@ -20,6 +20,61 @@ use std::{
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
 }
+#[test]
+fn installed_library_load_is_explicit_filtered_and_source_neutral() {
+    use crate::library::LibraryEntry;
+    use std::sync::Arc;
+    let (mut session, _, _) = fixture();
+    let before = session.document().clone();
+    let revision = session.revision();
+    let entry = LibraryEntry {
+        id: EntityId::new(),
+        document: EntityId::new(),
+        path: "/offline/library/custom-washer.tcd".into(),
+        name: "Custom washer".into(),
+        description: "Steel ring".into(),
+        preview: None,
+        registered_unix_ms: 1,
+        symbol_definitions: 1,
+        problem: None,
+    };
+    let mut missing = entry.clone();
+    missing.id = EntityId::new();
+    missing.name = "Missing washer".into();
+    missing.problem = Some("Original file is missing".into());
+    let mut plain = entry.clone();
+    plain.id = EntityId::new();
+    plain.name = "Plain washer".into();
+    plain.symbol_definitions = 0;
+    let mut c = controller();
+    c.set_installed_library(Arc::new(vec![entry.clone(), missing, plain]));
+    begin(&mut c, &session, SymbolTool::Library, Default::default());
+    let ctx = egui::Context::default();
+    c.form.as_mut().unwrap().filter = "STEEL custom".into();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+    let button = point(&output, "Load definitions");
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut session, button, 1800.);
+    assert_eq!(
+        c.take_action(),
+        Some(SymbolAction::OpenInstalled(entry.path))
+    );
+    assert_eq!(c.take_action(), None);
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), revision);
+    assert!(!c.pending());
+    c.form.as_mut().unwrap().filter = "missing".into();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+    point(&output, "Original file is missing");
+    output.drop_without_applying_deltas();
+    c.form.as_mut().unwrap().filter = "plain".into();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+    point(
+        &output,
+        "No reusable definitions. Open this file and use Create symbol before placing it here.",
+    );
+    output.drop_without_applying_deltas();
+}
 fn fixture() -> (Session, PrimitiveRequest, EntityId) {
     let mut session = Session::new(Document::new("Symbol UI").unwrap()).unwrap();
     let parameter = Entity::new(

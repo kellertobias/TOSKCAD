@@ -17,9 +17,17 @@ impl Application {
             self.message_error = true;
             return;
         }
+        if let SymbolAction::OpenInstalled(path) = action {
+            if let Err(error) = self.load_symbol_library(path) {
+                self.message = error;
+                self.message_error = true;
+            }
+            return;
+        }
         self.file_action = Some(match action {
             SymbolAction::ImportLibrary => FileAction::SymbolOpen,
             SymbolAction::SaveDefinition(id) => FileAction::SymbolSave(id),
+            SymbolAction::OpenInstalled(_) => unreachable!("handled above"),
         });
         self.file_document = Some(self.current().local_id);
         self.file_path.clear();

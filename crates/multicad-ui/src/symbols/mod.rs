@@ -3,6 +3,7 @@ mod controller;
 mod fields;
 mod forms;
 mod inspector;
+mod installed;
 mod proof;
 #[cfg(test)]
 mod tests;
@@ -36,6 +37,7 @@ pub struct SymbolSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SymbolAction {
     ImportLibrary,
+    OpenInstalled(std::path::PathBuf),
     SaveDefinition(EntityId),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -23,6 +23,7 @@ pub(super) struct Catalogue<'a> {
     pub embedded_pins: &'a BTreeMap<EntityId, ContentHash>,
     pub library: &'a [SymbolDefinition],
     pub library_pins: &'a [ContentHash],
+    pub installed: &'a mut super::installed::Installed,
 }
 pub(super) fn show(
     form: &mut Form,
@@ -42,7 +43,9 @@ pub(super) fn show(
     let mut error = None;
     ui.add_enabled_ui(enabled, |ui| { match &mut form.operation {
         Operation::Library=>{
-            changed|=fields::text(ui,"Filter symbols",&mut form.filter,"Search embedded and loaded library definitions by name or revision");
+            changed|=fields::text(ui,"Filter symbols",&mut form.filter,"Search listed files, embedded and loaded definitions");
+            action=catalogue.installed.show(ui,&form.filter);
+            ui.separator();
             if ui.button("Open library file…").on_hover_text("Load definitions without changing this project. Embedded pins continue working when the file is unavailable").clicked(){action=Some(SymbolAction::ImportLibrary);}
             ui.strong("Embedded in this project");
             let filter=form.filter.to_lowercase();

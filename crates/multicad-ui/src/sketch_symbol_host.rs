@@ -4,6 +4,12 @@ use crate::symbols::{SymbolAction, SymbolOutcome, SymbolSelection, SymbolTool};
 use multicad_core::project_file::ProjectResources;
 
 impl SketchEditor {
+    pub fn set_installed_symbol_library(
+        &mut self,
+        entries: std::sync::Arc<Vec<crate::library::LibraryEntry>>,
+    ) {
+        self.symbols.set_installed_library(entries);
+    }
     pub fn set_symbol_backend(&mut self, backend: Box<dyn crate::viewport::SceneBackend>) {
         self.symbols.set_backend(backend);
     }

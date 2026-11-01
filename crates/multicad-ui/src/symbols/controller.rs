@@ -44,12 +44,16 @@ pub struct SymbolController {
     candidate: Option<Candidate>,
     handoff: Option<Handoff>,
     pub(super) library: Vec<SymbolDefinition>,
+    installed: super::installed::Installed,
     library_pins: Vec<ContentHash>,
     actions: VecDeque<SymbolAction>,
     generation: u64,
     pub(super) error: Option<String>,
 }
 impl SymbolController {
+    pub fn set_installed_library(&mut self, entries: Arc<Vec<crate::library::LibraryEntry>>) {
+        self.installed.entries = entries;
+    }
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
         self.cancel();
         self.backend = Some(backend);
@@ -403,6 +407,7 @@ impl SymbolController {
                 embedded_pins: &self.scope.as_ref()?.embedded_pins,
                 library: &self.library,
                 library_pins: &self.library_pins,
+                installed: &mut self.installed,
             },
             enabled && current && !pending,
         );

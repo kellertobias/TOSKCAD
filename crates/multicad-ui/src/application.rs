@@ -1043,7 +1043,9 @@ impl Application {
                 } else {
                     crate::symbols::SymbolTool::Library
                 };
+                let installed = std::sync::Arc::new(self.library.entries.clone());
                 let p = self.current_mut();
+                p.sketch.set_installed_symbol_library(installed);
                 p.sketch
                     .begin_symbol(tool, &p.session, &p.resources, &p.scene, channel)?;
                 self.mode = Mode::Model;
