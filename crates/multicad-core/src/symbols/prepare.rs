@@ -152,6 +152,16 @@ pub fn prepare_import(
 ) -> Result<SymbolPrepared, CommandError> {
     embed(session, revision, actor, value, EntityId::new())
 }
+/// Retain a composite transaction's chosen import identity across previews.
+pub(crate) fn prepare_import_at(
+    session: &Session,
+    revision: u64,
+    actor: Actor,
+    value: &SymbolDefinition,
+    id: EntityId,
+) -> Result<SymbolPrepared, CommandError> {
+    embed(session, revision, actor, value, id)
+}
 pub fn prepare_author(
     session: &Session,
     revision: u64,

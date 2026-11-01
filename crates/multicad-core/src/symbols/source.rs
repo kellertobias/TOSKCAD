@@ -91,6 +91,13 @@ impl SymbolDefinition {
         {
             return Err(invalid("Symbol plan must be a captured constrained sketch"));
         }
+        if let Some(plant) = crate::plants::template_for(&self.template, self.root)?
+            && self.plan.as_ref().map(|p| p.sketch) != Some(plant.plan)
+        {
+            return Err(invalid(
+                "Plant definition and its linked plan do not share one source",
+            ));
+        }
         for e in self.template.entities() {
             super::remap::validate_entity(e)?;
         }
@@ -217,6 +224,19 @@ pub(super) fn author(
         let e = bound.get(id).ok_or(DocumentError::Missing(id))?;
         super::remap::validate_entity(e)?;
         queue.extend(e.references().iter().map(|l| l.target));
+        if matches!(
+            e.data,
+            EntityData::Part { .. } | EntityData::Assembly { .. }
+        ) {
+            for metadata in bound.entities() {
+                if let EntityData::Extension { definition, .. } = &metadata.data
+                    && definition.type_id == crate::plants::TEMPLATE_TYPE
+                    && crate::plants::PlantTemplate::from_definition(definition)?.component == id
+                {
+                    queue.push_back(metadata.id);
+                }
+            }
+        }
         if matches!(e.data, EntityData::Assembly { .. }) {
             for m in bound.entities() {
                 if let EntityData::Extension { definition, .. } = &m.data

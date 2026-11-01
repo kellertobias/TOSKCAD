@@ -408,6 +408,9 @@ impl ProjectFile {
         if crate::symbols::required_capability(&self.document) {
             required.insert(crate::symbols::PROJECT_CAPABILITY.into());
         }
+        if crate::plants::required_capability(&self.document) {
+            required.insert(crate::plants::CAPABILITY.into());
+        }
         required
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -460,6 +463,7 @@ impl ProjectFile {
 pub fn supported_capabilities() -> BTreeSet<String> {
     BTreeSet::from([
         crate::symbols::CAPABILITY.into(),
+        crate::plants::CAPABILITY.into(),
         crate::symbols::PROJECT_CAPABILITY.into(),
         "core.document.1".into(),
         crate::drawings::CAPABILITY.into(),

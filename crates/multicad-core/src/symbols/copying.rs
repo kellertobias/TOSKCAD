@@ -64,6 +64,18 @@ pub(crate) fn copy_owned_variant(
         .map(Mutation::Insert)
         .collect::<Vec<_>>();
     edits.push(Mutation::Insert(record_entity(request.record, &value)?));
+    for entity in doc.entities() {
+        if let crate::document::EntityData::Extension { definition, .. } = &entity.data
+            && definition.type_id == crate::plants::INSTANCE_TYPE
+        {
+            let mut settings = crate::plants::PlantInstance::from_definition(definition)?;
+            if settings.symbol_instance == old_record {
+                settings.symbol_instance = request.record;
+                // User text is literal: UUID-looking labels are not identities.
+                edits.push(Mutation::Insert(settings.entity(EntityId::new())?));
+            }
+        }
+    }
     Ok(Some((value.wrapper, edits, rekey)))
 }
 pub(crate) fn rekey_copied_driver(

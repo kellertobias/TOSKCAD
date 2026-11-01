@@ -16,6 +16,7 @@ pub mod manufacturing;
 pub mod materials;
 pub mod model;
 pub mod parameters;
+pub mod plants;
 pub mod project_file;
 pub mod project_path;
 pub mod references;
