@@ -297,6 +297,12 @@ impl SketchEditor {
         if tool == ModelingTool::Thread {
             return self.begin_thread(session, resources, feed, channel);
         }
+        if tool == ModelingTool::Gear {
+            self.finish()?;
+            self.model.begin_gear(session, resources, channel)?;
+            self.message = "Gear · configure its profile and axis, then Preview".into();
+            return Ok(());
+        }
         if tool == ModelingTool::Wall {
             return self.begin_wall(session, resources, channel);
         }

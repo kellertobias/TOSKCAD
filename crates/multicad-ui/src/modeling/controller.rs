@@ -8,6 +8,7 @@ use super::{
     edge_treatment::EdgeTreatmentPanel,
     extrude_operation::{BooleanIdentities, CutDiscovery, OperationControls},
     form::{ModelEvent, ModelForm, ToolProof},
+    gear::GearPanel,
     group_edit::GroupEditPanel,
     names::GeneratedNames,
     placement::PlacementPanel,
@@ -161,6 +162,7 @@ impl ModelToolController {
             || multicad_core::model::read_alignment(document, feature).is_ok()
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
             || multicad_core::model::read_thread(document, feature).is_ok()
+            || multicad_core::model::read_gear(document, feature).is_ok()
         {
             return true;
         }
@@ -366,6 +368,19 @@ impl ModelToolController {
                     parameters: source.parameters,
                 })?))
             }
+            model::GEAR_TYPE => {
+                let source = model::read_gear(document, feature).map_err(|e| e.to_string())?;
+                ModelForm::Gear(Box::new(GearPanel::new(
+                    model::GearRequest {
+                        feature,
+                        body: source.output.body,
+                        name: entity.name.clone(),
+                        parameters: source.parameters,
+                    },
+                    session.parameters().clone(),
+                    true,
+                )?))
+            }
             model::THREAD_TYPE => {
                 let source = model::read_thread(document, feature).map_err(|e| e.to_string())?;
                 ModelForm::Thread(Box::new(ThreadPanel::new(
@@ -529,6 +544,25 @@ impl ModelToolController {
                 session.parameters().clone(),
                 choices,
                 selected,
+                false,
+            )?)),
+        )
+    }
+    pub fn begin_gear(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Gear", " feature");
+        let request = multicad_core::model::GearRequest::new(name, Default::default());
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Gear(Box::new(GearPanel::new(
+                request,
+                session.parameters().clone(),
                 false,
             )?)),
         )
@@ -1700,5 +1734,7 @@ mod chamfer_tests;
 #[cfg(test)]
 mod advanced_tests;
 
+#[cfg(test)]
+mod gear_tests;
 #[cfg(test)]
 mod thread_tests;

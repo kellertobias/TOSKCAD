@@ -8,6 +8,7 @@ use super::{
     cabinet::{CabinetCommand, CabinetPanel},
     edge_treatment::EdgeTreatmentPanel,
     fdm_aid::{FdmAidCommand, FdmAidPanel},
+    gear::GearPanel,
     group_edit::GroupEditPanel,
     joint::{JointCommand, JointPanel},
     machining::{MachiningCommand, MachiningPanel},
@@ -40,6 +41,7 @@ pub enum ModelRequest {
     Extrude(Box<ExtrudeRequest>),
     Primitive(Box<PrimitiveRequest>),
     Thread(Box<model::ThreadRequest>),
+    Gear(Box<model::GearRequest>),
     Revolve(Box<RevolveRequest>),
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
@@ -167,6 +169,13 @@ impl ModelRequest {
                 feature,
                 &request.parameters,
             ),
+            Self::Gear(request) => model::prepare_gear_edit(
+                session,
+                session.revision(),
+                actor,
+                feature,
+                &request.parameters,
+            ),
             Self::Revolve(request) => model::prepare_revolve_edit(
                 session,
                 session.revision(),
@@ -272,6 +281,7 @@ impl ModelRequest {
             Self::Thread(request) => {
                 model::prepare_thread(session, session.revision(), actor, request)
             }
+            Self::Gear(request) => model::prepare_gear(session, session.revision(), actor, request),
             Self::Revolve(request) => {
                 model::prepare_revolve(session, session.revision(), actor, request)
             }
@@ -364,6 +374,7 @@ pub(super) enum ModelForm {
     Extrude(Box<ExtrudePanel>),
     Primitive(Box<PrimitivePanel>),
     Thread(Box<ThreadPanel>),
+    Gear(Box<GearPanel>),
     Revolve(Box<RevolvePanel>),
     Boolean(Box<BooleanPanel>),
     BooleanEdit(Box<BooleanEditPanel>),
@@ -392,6 +403,7 @@ impl ModelForm {
             Self::Extrude(panel) => panel.stamp().expect("active extrusion form"),
             Self::Primitive(panel) => panel.stamp(),
             Self::Thread(panel) => panel.stamp(),
+            Self::Gear(panel) => panel.stamp(),
             Self::Revolve(panel) => panel.stamp(),
             Self::Boolean(panel) => panel.stamp(),
             Self::BooleanEdit(panel) => panel.stamp(),
@@ -420,6 +432,7 @@ impl ModelForm {
             Self::Extrude(_) => "Extrude",
             Self::Primitive(panel) => panel.label(),
             Self::Thread(panel) => panel.label(),
+            Self::Gear(panel) => panel.label(),
             Self::Revolve(_) => "Revolve",
             Self::Boolean(_) => "Boolean",
             Self::BooleanEdit(_) => "Boolean",
@@ -506,6 +519,9 @@ impl ModelForm {
             Self::Thread(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Thread(Box::new(request))),
+            Self::Gear(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|request| ModelRequest::Gear(Box::new(request))),
             Self::Revolve(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Revolve(Box::new(request))),
@@ -544,6 +560,7 @@ impl ModelForm {
                 }),
             Self::Primitive(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Thread(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::Gear(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Revolve(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Boolean(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::BooleanEdit(panel) => panel.show(ui, document, capabilities.new_body, preview),

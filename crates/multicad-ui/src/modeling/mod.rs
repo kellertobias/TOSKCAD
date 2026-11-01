@@ -15,6 +15,7 @@ mod extrude;
 mod extrude_operation;
 mod fdm_aid;
 mod form;
+mod gear;
 mod gizmo;
 mod group_edit;
 #[cfg(test)]
@@ -71,6 +72,7 @@ pub enum ModelingTool {
     Box,
     Cylinder,
     Thread,
+    Gear,
     Revolve,
     Boolean,
     Split,
@@ -98,10 +100,11 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
+        Self::Gear,
         Self::Wall,
         Self::Door,
         Self::Window,
@@ -147,6 +150,7 @@ impl ModelingTool {
             Self::Box => "box",
             Self::Cylinder => "cylinder",
             Self::Thread => "thread",
+            Self::Gear => "gear",
             Self::Revolve => "revolve",
             Self::Boolean => "boolean",
             Self::Split => "split",
@@ -188,6 +192,7 @@ impl ModelingTool {
             Self::Box => "Box",
             Self::Cylinder => "Cylinder",
             Self::Thread => "Thread",
+            Self::Gear => "Gear",
             Self::Revolve => "Revolve",
             Self::Boolean => "Boolean",
             Self::Split => "Split",
@@ -229,6 +234,7 @@ impl ModelingTool {
             Self::Box => crate::icons::Icon::Box,
             Self::Cylinder => crate::icons::Icon::Cylinder,
             Self::Thread => crate::icons::Icon::Revolve,
+            Self::Gear => crate::icons::Icon::Revolve,
             Self::Revolve => crate::icons::Icon::Revolve,
             Self::Boolean => crate::icons::Icon::Boolean,
             Self::Split => crate::icons::Icon::Split,
@@ -266,6 +272,7 @@ impl ModelingTool {
             Self::Box => &["cube", "add-box"],
             Self::Cylinder => &["cyl", "add-cylinder"],
             Self::Thread => &["screw-thread", "tap-thread", "helical-thread"],
+            Self::Gear => &["spur-gear", "helical-gear", "herringbone-gear"],
             Self::Revolve => &["rev", "lathe"],
             Self::Boolean => &["combine", "body-operation"],
             Self::Split => &["split-body", "inside-outside"],
@@ -317,6 +324,9 @@ impl ModelingTool {
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::Gear => {
+                "Usage: gear (choose family, module system, teeth, bore and clearance in the Inspector; Preview and Apply)"
+            }
             Self::Thread => {
                 "Usage: thread (choose a sourced or explicit custom profile, pitch, starts, representation and receiving Part in the Inspector; Preview and Apply)"
             }
@@ -400,6 +410,9 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::Gear => {
+                "Requires native modeling and no pending edits. Supports unshifted external spur, helical, continuous herringbone and gapped double-helical gears."
+            }
             Self::Thread => {
                 "Requires native modeling and no pending edits. Receiving cuts need a complete matching cylinder/cone or sufficient internal wall; a new shaft does not require a sketch."
             }

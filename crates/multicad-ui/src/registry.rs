@@ -502,6 +502,7 @@ impl Default for Registry {
                                     tool,
                                     ModelingTool::Copy
                                         | ModelingTool::Thread
+                                        | ModelingTool::Gear
                                         | ModelingTool::Boolean
                                         | ModelingTool::Wall
                                         | ModelingTool::Door
@@ -553,6 +554,7 @@ impl Default for Registry {
                         "Mechanical",
                         &[
                             "thread",
+                            "gear",
                             "library",
                             "place-component",
                             "relationship",
@@ -813,6 +815,8 @@ mod tests {
             );
             if *id == "thread" {
                 assert_eq!(tool.action, Command::Modeling(ModelingTool::Thread));
+            } else if *id == "gear" {
+                assert_eq!(tool.action, Command::Modeling(ModelingTool::Gear));
             } else if *id == "library" {
                 assert_eq!(tool.action, Command::Extension("library"));
             } else {
@@ -1001,6 +1005,7 @@ mod tests {
                     tool,
                     ModelingTool::Copy
                         | ModelingTool::Thread
+                        | ModelingTool::Gear
                         | ModelingTool::Boolean
                         | ModelingTool::Wall
                         | ModelingTool::Door

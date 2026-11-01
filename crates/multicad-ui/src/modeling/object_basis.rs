@@ -156,6 +156,16 @@ impl Resolver<'_> {
                 .map_err(error)?;
                 Ok(frame_basis(frame))
             }
+            model::GEAR_TYPE => {
+                let source = model::read_gear(self.document, feature).map_err(error)?;
+                Ok(frame_basis(
+                    source
+                        .parameters
+                        .frame
+                        .resolve(self.parameters)
+                        .map_err(error)?,
+                ))
+            }
             model::THREAD_TYPE => {
                 let source = model::read_thread(self.document, feature).map_err(error)?;
                 if let Some(target) = source.target {
