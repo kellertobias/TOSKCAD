@@ -1,12 +1,149 @@
 //! Explicit window-close choices remain in Rust, including native Quit requests.
 use super::*;
+#[cfg(test)]
+#[path = "closing_save_tests.rs"]
+mod save_tests;
+pub(super) struct CloseSave {
+    queue: VecDeque<EntityId>,
+    waiting: Option<EntityId>,
+    original: EntityId,
+}
 impl Application {
+    fn close_busy(&self) -> bool {
+        self.recents_writing()
+            || self.capture_pending()
+            || self.picker_scope.is_some()
+            || self.file_action.is_some()
+            || self.replacement.is_some()
+            || !self.pending_files.is_empty()
+            || self
+                .projects
+                .iter()
+                .any(|p| p.exchange.writing() || p.print.writing())
+    }
+    pub(super) fn cancel_close(&mut self) {
+        if let Some(save) = self.close_save.take()
+            && let Some(index) = self
+                .projects
+                .iter()
+                .position(|p| p.local_id == save.original)
+        {
+            self.activate_project(index);
+        }
+        self.close_confirm = false;
+        self.close_after_recents = false;
+        self.close_allowed = false;
+    }
+    fn fail_close_save(&mut self, save: CloseSave, message: String) {
+        if self.picker_scope.is_none()
+            && !self.capture_pending()
+            && self.pending_files.is_empty()
+            && matches!(self.file_action, Some(FileAction::Save))
+        {
+            self.file_action = None;
+            self.file_document = None;
+            self.replacement = None;
+        }
+        self.close_save = Some(save);
+        self.cancel_close();
+        self.message = message;
+        self.message_error = true;
+    }
+    fn begin_close_save(&mut self) -> Result<(), String> {
+        if self.close_save.is_some() || self.close_busy() {
+            return Err(
+                "Wait for file and export operations to finish before saving and quitting".into(),
+            );
+        }
+        if self.projects.iter().any(Project::pending_edits) {
+            return Err(
+                "Apply or cancel every document's pending tool edits before saving and quitting"
+                    .into(),
+            );
+        }
+        self.close_save = Some(CloseSave {
+            queue: self
+                .projects
+                .iter()
+                .filter(|p| Some(p.local_id) != self.welcome_placeholder && p.dirty())
+                .map(|p| p.local_id)
+                .collect(),
+            waiting: None,
+            original: self.current().local_id,
+        });
+        self.message_error = false;
+        self.message = "Saving all unsaved documents before quitting…".into();
+        Ok(())
+    }
+    fn drive_close_save(&mut self, ctx: &egui::Context) {
+        let Some(mut save) = self.close_save.take() else {
+            return;
+        };
+        if self.message_error {
+            let message = format!("Save and Quit stopped: {}", self.message);
+            self.fail_close_save(save, message);
+            return;
+        }
+        if self.close_busy() {
+            self.close_save = Some(save);
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            return;
+        }
+        if let Some(id) = save.waiting.take()
+            && !self
+                .projects
+                .iter()
+                .find(|p| p.local_id == id)
+                .is_some_and(|p| !p.dirty())
+        {
+            self.fail_close_save(save, "Save and Quit stopped: a document is still unsaved or changed during saving. Your documents remain open.".into());
+            return;
+        }
+        if self.projects.iter().any(Project::pending_edits) {
+            self.fail_close_save(
+                save,
+                "Save and Quit stopped: apply or cancel pending tool edits first.".into(),
+            );
+            return;
+        }
+        while let Some(id) = save.queue.pop_front() {
+            let Some(index) = self.projects.iter().position(|p| p.local_id == id) else {
+                self.fail_close_save(
+                    save,
+                    "Save and Quit stopped: a queued document is no longer open.".into(),
+                );
+                return;
+            };
+            if !self.projects[index].dirty() {
+                continue;
+            }
+            self.activate_project(index);
+            save.waiting = Some(id);
+            self.close_save = Some(save);
+            self.execute(Command::Save, &[], Channel::Ui);
+            ctx.request_repaint();
+            return;
+        }
+        if self
+            .projects
+            .iter()
+            .any(|p| Some(p.local_id) != self.welcome_placeholder && p.dirty())
+        {
+            self.fail_close_save(save, "Save and Quit stopped: another document changed. Review and save it before quitting.".into());
+            return;
+        }
+        self.close_confirm = false;
+        self.close_after_recents = false;
+        self.close_allowed = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
     fn recents_writing(&self) -> bool {
         self.recent_worker
             .as_ref()
             .is_some_and(|worker| worker.writing())
     }
     pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
+        self.drive_close_save(ctx);
         let shortcut = crate::quit_shortcut::take(ctx) > 0;
         let was_confirming = self.close_confirm;
         if shortcut && was_confirming {
@@ -45,15 +182,7 @@ impl Application {
         &mut self,
         ctx: &egui::Context,
     ) -> Result<(), String> {
-        if self.recents_writing()
-            || self.capture_pending()
-            || self.picker_scope.is_some()
-            || !self.pending_files.is_empty()
-            || self
-                .projects
-                .iter()
-                .any(|p| p.exchange.writing() || p.print.writing())
-        {
+        if self.close_save.is_some() || self.close_busy() {
             return Err("Wait for file and export operations to finish before closing".into());
         }
         self.close_allowed = true;
@@ -65,6 +194,11 @@ impl Application {
         if !self.close_confirm {
             return;
         }
+        // Keep the operating-system picker/error dialog above the app, and
+        // let save-time screenshots capture the document without this modal.
+        if self.file_action.is_some() || self.replacement.is_some() || self.capture_pending() {
+            return;
+        }
         let dirty: Vec<_> = self
             .projects
             .iter()
@@ -72,13 +206,7 @@ impl Application {
             .filter(|(_, p)| Some(p.local_id) != self.welcome_placeholder && p.dirty())
             .map(|(index, p)| (index, p.title(), p.pending_edits()))
             .collect();
-        let busy = self.recents_writing()
-            || self.picker_scope.is_some()
-            || !self.pending_files.is_empty()
-            || self
-                .projects
-                .iter()
-                .any(|p| p.exchange.writing() || p.print.writing());
+        let busy = self.close_save.is_some() || self.close_busy();
         let response = crate::controls::modal(
             ctx,
             "unsaved-documents",
@@ -89,41 +217,27 @@ impl Application {
                 } else if dirty.is_empty() {
                     ui.label("All documents are saved. You can close this window.");
                 } else {
-                    ui.label("Choose a document to save, or close without saving the changes listed below.");
+                    ui.label("Save and Quit saves every unsaved document listed below.");
                 }
-                for (index, name, draft) in &dirty {
-                    if ui
-                        .selectable_label(
-                            self.active == *index,
-                            format!("{}{}", name, if *draft { " · unapplied edits" } else { "" }),
-                        )
-                        .on_hover_text("Select this document before saving or reviewing its edits")
-                        .clicked()
-                    {
-                        if self.active != *index {
-                            self.leave_project_status();
-                            self.active = *index;
-                            self.enter_project_status();
-                        }
-                        self.mode = if self.current().exchange.dirty() {
-                            Mode::Export
-                        } else if self.current().drawings.dirty() {
-                            Mode::Drawings
-                        } else {
-                            Mode::Parameters
-                        };
-                        self.tab = 0;
-                    }
+                for (_, name, draft) in &dirty {
+                    ui.label(format!(
+                        "{}{}",
+                        name,
+                        if *draft { " · unapplied edits" } else { "" }
+                    ));
                 }
-                if self.current().pending_edits() {
-                    ui.label("Apply or discard this document's pending edits before saving.");
+                if self.projects.iter().any(Project::pending_edits) {
+                    ui.label("Apply or cancel pending tool edits in every document before saving.");
+                }
+                if self.message_error {
+                    ui.colored_label(Color32::LIGHT_RED, &self.message);
                 }
                 ui.horizontal(|ui| {
-                if ui.button("Cancel").on_hover_text("Keep all documents open").clicked() {self.close_confirm=false;}
-                let selected_unsaved = dirty.iter().any(|(index, _, _)| *index == self.active);
-                if ui.add_enabled(!busy && selected_unsaved && self.enabled(Command::Save),egui::Button::new("Save selected document")).on_hover_text("Save the selected unsaved tab; a new document needs a destination").on_disabled_hover_text("Select an unsaved document and finish or discard its pending edits before saving").clicked() {
-                    self.close_confirm=false;
-                    self.execute(Command::Save,&[],Channel::Ui);
+                if ui.button("Cancel").on_hover_text("Keep all documents open").clicked() {self.cancel_close();}
+                if ui.add_enabled(!busy && !self.projects.iter().any(Project::pending_edits),egui::Button::new("Save and Quit")).on_hover_text("Save every unsaved document, then quit only after all writes succeed").on_disabled_hover_text("Finish file operations and apply or cancel pending tool edits in every document").clicked()
+                    && let Err(error) = self.begin_close_save() {
+                    self.message = error;
+                    self.message_error = true;
                 }
                 let label=if dirty.is_empty() {"Close window"} else {"Close without saving"};
                 if ui.add_enabled(!busy,egui::Button::new(label)).on_hover_text("Close this window and its documents; unapplied and unsaved changes are discarded. Existing project files and recovery snapshots remain intact.").clicked()
@@ -132,7 +246,7 @@ impl Application {
             },
         );
         if response.should_close() {
-            self.close_confirm = false;
+            self.cancel_close();
         }
     }
 }
@@ -429,7 +543,7 @@ mod tests {
         }
     }
     #[test]
-    fn close_save_requires_selection_in_the_unsaved_list_and_routes_to_that_document() {
+    fn close_save_automatically_targets_the_dirty_document_instead_of_the_clean_active_tab() {
         let mut app = Application::new(Box::new(Storage)).unwrap();
         app.pending_files.clear();
         let unsaved = app.projects[0].local_id;
@@ -440,20 +554,10 @@ mod tests {
         app.active = 1;
         app.close_confirm = true;
         let ctx = egui::Context::default();
-        click_dialog(&mut app, &ctx, "Save selected document");
-        assert!(
-            app.close_confirm,
-            "A clean active tab is not selected in the unsaved list"
-        );
-        assert!(
-            app.pending_files.is_empty(),
-            "Do not submit a save for a different clean tab"
-        );
-        assert!(app.file_action.is_none());
-        click_dialog(&mut app, &ctx, "Untitled");
+        click_dialog(&mut app, &ctx, "Save and Quit");
+        close_frame(&mut app, &ctx, false);
+        assert!(app.close_confirm && !app.close_allowed);
         assert_eq!(app.active, 0);
-        click_dialog(&mut app, &ctx, "Save selected document");
-        assert!(!app.close_confirm);
         assert!(matches!(app.file_action, Some(FileAction::Save)));
         assert_eq!(app.file_document, Some(unsaved));
         assert!(
@@ -468,12 +572,12 @@ mod tests {
         app.close_confirm = true;
         app.current_mut().editor.rows[0].name = "unfinished".into();
         let ctx = egui::Context::default();
-        click_dialog(&mut app, &ctx, "Save selected document");
+        click_dialog(&mut app, &ctx, "Save and Quit");
         assert!(app.close_confirm && app.file_action.is_none());
         let editor = ParameterEditor::new(&app.projects[0].session);
         app.projects[0].editor = editor;
         app.pending_files.insert(42, PendingFile::Discover);
-        click_dialog(&mut app, &ctx, "Save selected document");
+        click_dialog(&mut app, &ctx, "Save and Quit");
         assert!(app.close_confirm && app.file_action.is_none());
         assert_eq!(app.pending_files.len(), 1);
     }

@@ -178,6 +178,11 @@ impl Application {
         if self.file_action.is_none() {
             return;
         }
+        // Preview capture must contain the document rather than the file
+        // progress modal. File-action ownership still blocks all editing.
+        if self.capture_pending() {
+            return;
+        }
         if !self.picker_started && !self.file_busy() && self.replacement.is_none() {
             self.picker_started = true;
             if let Err(error) = self.start_native_picker() {

@@ -176,6 +176,7 @@ pub struct Application {
     close_confirm: bool,
     close_allowed: bool,
     close_after_recents: bool,
+    close_save: Option<closing::CloseSave>,
     pub shortcuts: ShortcutMap,
     shortcut_runtime: shortcuts::Runtime,
     shortcut_help: bool,
@@ -248,6 +249,7 @@ impl Application {
             close_confirm: false,
             close_allowed: false,
             close_after_recents: false,
+            close_save: None,
             shortcuts: ShortcutMap::standard(),
             shortcut_runtime: shortcuts::Runtime::default(),
             shortcut_help: false,
@@ -279,10 +281,13 @@ impl Application {
         Ok(app)
     }
     fn should_defer_close(&self) -> bool {
-        self.projects
-            .iter()
-            .filter(|p| Some(p.local_id) != self.welcome_placeholder)
-            .any(|p| p.dirty() || p.exchange.writing() || p.print.writing())
+        self.close_save.is_some()
+            || self.capture_pending()
+            || self
+                .projects
+                .iter()
+                .filter(|p| Some(p.local_id) != self.welcome_placeholder)
+                .any(|p| p.dirty() || p.exchange.writing() || p.print.writing())
             || self
                 .pending_files
                 .values()
@@ -2076,7 +2081,7 @@ impl Application {
             } else if self.settings_open {
                 self.settings_open = false;
             } else if self.close_confirm {
-                self.close_confirm = false;
+                self.cancel_close();
             }
             self.focus_search = false;
             self.focus_command = false;
