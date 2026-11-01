@@ -36,6 +36,7 @@ fn installed_library_load_is_explicit_filtered_and_source_neutral() {
         preview: None,
         registered_unix_ms: 1,
         symbol_definitions: 1,
+        mechanical_parts: Vec::new(),
         problem: None,
     };
     let mut missing = entry.clone();
@@ -74,6 +75,51 @@ fn installed_library_load_is_explicit_filtered_and_source_neutral() {
         "No reusable definitions. Open this file and use Create symbol before placing it here.",
     );
     output.drop_without_applying_deltas();
+}
+#[test]
+fn loaded_hardware_definitions_remain_findable_by_their_source_dimensions() {
+    let mut source = Session::new(Document::new("Hardware file").unwrap()).unwrap();
+    let request = model::MechanicalPartRequest::new(
+        "Ring",
+        model::MechanicalPartParameters::Washer {
+            bore_diameter: length(3.2),
+            outside_diameter: length(7.),
+            thickness: length(0.5),
+            frame: Default::default(),
+        },
+    );
+    let prepared = model::prepare_mechanical_part(&source, 0, actor(), &request).unwrap();
+    source.commit(prepared.prepared).unwrap();
+    let author = SymbolAuthorRequest::new(
+        "Reusable ring",
+        request.body,
+        SymbolKind::Static,
+        vec![],
+        None,
+    );
+    let prepared = symbols::prepare_author(&source, source.revision(), actor(), &author).unwrap();
+    source.commit(prepared.prepared).unwrap();
+    let definition = symbols::read_definition(source.document(), author.definition).unwrap();
+    let (mut session, _, _) = fixture();
+    let before = session.document().clone();
+    let mut c = controller();
+    c.set_library_snapshot(vec![definition]).unwrap();
+    begin(&mut c, &session, SymbolTool::Library, Default::default());
+    c.form.as_mut().unwrap().filter = "washer 3.2".into();
+    let ctx = egui::Context::default();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+    let import = point(&output, "Import definition");
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut session, import, 1800.);
+    assert!(matches!(
+        c.form.as_ref().unwrap().operation,
+        Operation::Import(_)
+    ));
+    assert_eq!(
+        session.document(),
+        &before,
+        "choosing Import still requires native Preview and Apply"
+    );
 }
 fn fixture() -> (Session, PrimitiveRequest, EntityId) {
     let mut session = Session::new(Document::new("Symbol UI").unwrap()).unwrap();

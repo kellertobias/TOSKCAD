@@ -350,6 +350,8 @@ pub struct ProjectCard {
     /// Set when the file information exists but cannot be shown by this build.
     pub info_error: Option<String>,
     pub symbol_definitions: usize,
+    /// Source/default dimensions, not evaluated physical occurrences.
+    pub mechanical_parts: Vec<crate::model::MechanicalPartCard>,
     pub format_version: u32,
     pub source_hash: ContentHash,
 }
@@ -391,6 +393,7 @@ pub fn card(
         info,
         info_error,
         symbol_definitions,
+        mechanical_parts: crate::model::mechanical_part_cards(&document),
         format_version: version,
         source_hash: manifest.source.sha256,
     })

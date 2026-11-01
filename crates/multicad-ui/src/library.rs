@@ -30,6 +30,7 @@ pub struct LibraryEntry {
     pub preview: Option<PreviewImage>,
     pub registered_unix_ms: u64,
     pub symbol_definitions: usize,
+    pub mechanical_parts: Vec<multicad_core::model::MechanicalPartCard>,
     /// Set when the file is missing, unreadable or now holds another project.
     pub problem: Option<String>,
 }

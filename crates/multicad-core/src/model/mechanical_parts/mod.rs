@@ -1,4 +1,5 @@
 //! Self-contained hardware geometry. Catalog references never drive dimensions.
+mod cards;
 mod prepare;
 mod reference;
 use super::{
@@ -12,6 +13,7 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     sketch::Frame,
 };
+pub use cards::*;
 pub use prepare::*;
 use serde::{Deserialize, Serialize};
 

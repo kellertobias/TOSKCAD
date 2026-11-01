@@ -20,6 +20,7 @@ struct Scope {
     resources: ProjectResources,
     embedded: Vec<(EntityId, SymbolDefinition)>,
     embedded_pins: BTreeMap<EntityId, ContentHash>,
+    embedded_search: BTreeMap<EntityId, String>,
 }
 struct Candidate {
     prepared: Prepared,
@@ -46,6 +47,7 @@ pub struct SymbolController {
     pub(super) library: Vec<SymbolDefinition>,
     installed: super::installed::Installed,
     library_pins: Vec<ContentHash>,
+    library_search: Vec<String>,
     actions: VecDeque<SymbolAction>,
     generation: u64,
     pub(super) error: Option<String>,
@@ -85,6 +87,11 @@ impl SymbolController {
         let (pins, definitions) = entries.into_values().unzip();
         self.library_pins = pins;
         self.library = definitions;
+        self.library_search = self
+            .library
+            .iter()
+            .map(super::installed::definition_search)
+            .collect();
         Ok(())
     }
     pub fn active(&self) -> bool {
@@ -149,6 +156,10 @@ impl SymbolController {
             .map_err(|e| e.to_string())?;
         let embedded =
             multicad_core::symbols::definitions(session.document()).map_err(|e| e.to_string())?;
+        let embedded_search = embedded
+            .iter()
+            .map(|(id, definition)| (*id, super::installed::definition_search(definition)))
+            .collect();
         let embedded_pins = embedded
             .iter()
             .map(|(id, definition)| {
@@ -159,6 +170,7 @@ impl SymbolController {
             })
             .collect::<Result<_, _>>()?;
         self.scope = Some(Scope {
+            embedded_search,
             embedded,
             embedded_pins,
             guard,
@@ -405,8 +417,10 @@ impl SymbolController {
             super::inspector::Catalogue {
                 embedded: &self.scope.as_ref()?.embedded,
                 embedded_pins: &self.scope.as_ref()?.embedded_pins,
+                embedded_search: &self.scope.as_ref()?.embedded_search,
                 library: &self.library,
                 library_pins: &self.library_pins,
+                library_search: &self.library_search,
                 installed: &mut self.installed,
             },
             enabled && current && !pending,

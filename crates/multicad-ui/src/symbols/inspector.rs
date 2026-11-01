@@ -21,8 +21,10 @@ enum Next {
 pub(super) struct Catalogue<'a> {
     pub embedded: &'a [(EntityId, SymbolDefinition)],
     pub embedded_pins: &'a BTreeMap<EntityId, ContentHash>,
+    pub embedded_search: &'a BTreeMap<EntityId, String>,
     pub library: &'a [SymbolDefinition],
     pub library_pins: &'a [ContentHash],
+    pub library_search: &'a [String],
     pub installed: &'a mut super::installed::Installed,
 }
 pub(super) fn show(
@@ -51,7 +53,7 @@ pub(super) fn show(
             let filter=form.filter.to_lowercase();
             let mut shown=0;
             for (id,definition) in definitions {
-                if !format!("{} {}",definition.name,definition.revision).to_lowercase().contains(&filter){continue;}
+                if !super::installed::contains_terms(&catalogue.embedded_search[id], &filter){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
@@ -65,8 +67,8 @@ pub(super) fn show(
             if shown==0{ui.label("No matching embedded symbols");}
             ui.separator();ui.strong("Loaded library · import before placing");
             let mut shown=0;
-            for (definition,pin) in library.iter().zip(catalogue.library_pins) {
-                if !format!("{} {}",definition.name,definition.revision).to_lowercase().contains(&filter){continue;}
+            for ((definition,pin),search) in library.iter().zip(catalogue.library_pins).zip(catalogue.library_search) {
+                if !super::installed::contains_terms(search, &filter){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);

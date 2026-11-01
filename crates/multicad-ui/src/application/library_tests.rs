@@ -78,6 +78,7 @@ impl LibraryStore for Library {
             path: request.path.clone(),
             registered_unix_ms: 1,
             symbol_definitions: 0,
+            mechanical_parts: Vec::new(),
             problem: None,
         };
         if outcome == Registration::Added {
@@ -307,6 +308,7 @@ fn library_entries_are_shared_by_every_project_in_the_installation() {
         path: PathBuf::from("/elsewhere/y.multicad"),
         registered_unix_ms: 1,
         symbol_definitions: 2,
+        mechanical_parts: Vec::new(),
         problem: None,
     });
     app.library.worker.as_mut().unwrap().reload().unwrap();

@@ -202,6 +202,7 @@ impl LibraryFileStore {
             preview: None,
             registered_unix_ms: record.registered_unix_ms,
             symbol_definitions: 0,
+            mechanical_parts: Vec::new(),
             problem: None,
         };
         let card = match File::open(&path) {
@@ -227,6 +228,7 @@ impl LibraryFileStore {
                 entry.description = card.info.description;
                 entry.preview = card.info.preview;
                 entry.symbol_definitions = card.symbol_definitions;
+                entry.mechanical_parts = card.mechanical_parts;
             }
             Err(error) => {
                 entry.problem = Some(format!(

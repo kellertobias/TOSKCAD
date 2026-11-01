@@ -22,6 +22,75 @@ fn washer() -> MechanicalPartParameters {
         frame: Default::default(),
     }
 }
+#[test]
+fn library_cards_describe_pinned_defaults_not_changed_authoring_geometry() {
+    let mut s = session();
+    let mut request = MechanicalPartRequest::new("Reference washer", washer());
+    request.provenance = Some(MechanicalPartProvenance {
+        catalog_id: "test-only".into(),
+        revision: "fixture-1".into(),
+        designation: "Test ring".into(),
+        source_url: "https://example.invalid/fixture".into(),
+        reference_geometry: washer(),
+    });
+    let prepared = prepare_mechanical_part(&s, s.revision(), actor(), &request).unwrap();
+    s.commit(prepared.prepared).unwrap();
+    let cards = mechanical_part_cards(s.document());
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].symbol, None);
+    assert!(cards[0].matches_reference_dimensions);
+    assert_eq!(cards[0].dimensions_mm["Bore"], 3.2);
+    assert_eq!(cards[0].dimensions_mm["Outside diameter"], 7.);
+    assert_eq!(cards[0].dimensions_mm["Thickness"], 0.5);
+    assert!(
+        !cards[0]
+            .dimensions_mm
+            .contains_key("Nominal thread diameter")
+    );
+    let author = SymbolAuthorRequest::new(
+        "Reusable ring",
+        request.body,
+        SymbolKind::Static,
+        vec![],
+        None,
+    );
+    let prepared = symbols::prepare_author(&s, s.revision(), actor(), &author).unwrap();
+    s.commit(prepared.prepared).unwrap();
+    let definition = symbols::read_definition(s.document(), author.definition).unwrap();
+    let mut changed = washer();
+    let MechanicalPartParameters::Washer { thickness, .. } = &mut changed else {
+        panic!()
+    };
+    *thickness = length(1.);
+    let prepared =
+        prepare_mechanical_part_edit(&s, s.revision(), actor(), request.feature, &changed).unwrap();
+    s.commit(prepared.prepared).unwrap();
+    let live = read_mechanical_part(s.document(), request.feature).unwrap();
+    assert!(!live.matches_reference_dimensions(s.parameters()).unwrap());
+    let cards = mechanical_part_cards(s.document());
+    assert_eq!(cards.len(), 1, "do not duplicate author and template");
+    assert_eq!(
+        cards[0].symbol,
+        Some((definition.symbol, definition.revision))
+    );
+    assert_eq!(cards[0].dimensions_mm["Thickness"], 0.5);
+    assert!(cards[0].matches_reference_dimensions);
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(s.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let card = project_file::card(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(card.mechanical_parts, cards);
+    assert_eq!(card.symbol_definitions, 1);
+}
 fn add_width(s: &mut Session) -> EntityId {
     let p = Entity::new(
         "outside",

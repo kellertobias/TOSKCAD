@@ -66,13 +66,14 @@ The user's decision of 2026-10-30: Add to Library marks the file as listed in th
   - unreadable: fix or re-save the file, or remove the entry.
 
   *Remove from library* removes only the listing.
-- **Use symbols** loads an entry's symbol definitions from the original file through the existing CAD-70 explicit import and Compare update workflow. Nothing updates placed instances automatically.
+- **Use symbols** loads an entry's symbol definitions from the original file through the existing CAD-70 explicit import and Compare update workflow. The Model Library browser also lists these same installation entries, with saved previews and a name/description/path search. Its **Load definitions** action uses the same bounded, guarded file read; loading does not import or place anything. Nothing updates placed instances automatically.
+- **Hardware source cards** are computed from the checked canonical source without native geometry. When a file contains reusable definitions, the cards describe their pinned template defaults, rather than the potentially edited authoring Parts. Otherwise they describe source recipes without making those Parts reusable definitions. The browser can filter by hardware family and search names, retained designations and dimension facts. Washer bore is labelled as bore, never inferred to be a nominal thread diameter. Reference-dimension matches do not certify a catalog, stock availability or current-standard compliance. These cards are source metadata, not physical occurrence or BOM evidence.
 - **Migration:** a version 1 index written by the earlier development build (managed copies) is read by taking each entry's recorded `source_path` as its listed location. Entries without one are skipped. Old copies in `entries/` are ignored and left untouched; the index is rewritten as version 2 on the next change.
 - **Failures** are reported as actionable messages: missing source, changed on disk, an unreadable or oversized image, a damaged index, and storage write or lock failures.
 
 ## Limitations
 
-- The library can be browsed only in the Parameters sidebar, with no search. Moved files are not discovered automatically. There is no synchronization or cloud sharing.
+- Moved files are not discovered automatically. There is no synchronization or cloud sharing. Hardware cards currently cover washer, hex-nut and bearing-envelope recipes; they do not provide a bundled verified stock catalog or screw families.
 - The capture uses the window screenshot of the drawn 3D view, so overlays drawn inside the viewport rect are included.
 - No dedicated MCP tool edits file information. Clients can use the generic typed document mutations.
 - Evidence comes from native unit and app tests with fake and real temporary-directory stores, plus an injected screenshot. Interactive macOS review, real GPU screenshot capture and Windows/Linux runtime are not verified.
