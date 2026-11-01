@@ -8,7 +8,7 @@ The palette uses `#4599D2`, sampled from the approved logo background, with pale
 
 ## Assets and evidence
 
-The native screenshots were captured on macOS on October 31, 2026. Each shows an editable copy of a bundled project, with the cursor parked over the application title outside the model and drawing content.
+The native screenshots were captured on macOS on November 1, 2026. Each shows an editable copy of a bundled project, with the cursor parked in an empty header area, clear of the application name, controls and model.
 
 | Assets | Source and capture |
 | --- | --- |
@@ -21,7 +21,7 @@ The native screenshots were captured on macOS on October 31, 2026. Each shows an
 | `front-panel.jpg` | Sheet metal workbench, native assembly preview at zero separation to show grey aluminium and black PETG. The ordinary aggregate assembly view currently uses a uniform colour. |
 | `apartment.jpg` | Refreshed apartment in Architecture with its linked bench and cabinet, using a 1.2 m display section to show the furniture. The cut is uncapped and leaves source geometry unchanged. |
 
-The bench and guide captures use `artifacts/development/build-0RbR81/MultiCAD.app` in the isolated release worktree, rebuilt with `./build`. Its executable SHA-256 is `8d08e14874e0f125f9a602abc2afdf445b7fdffa33970611d15d6719369dce2f`. The apartment uses `build-2ssm91/MultiCAD.app`, SHA-256 `34c0cf14f1797ac98b47092ddeeece4218a580e9fca49589ecf5b766e2b98cd4`. The unchanged cabinet and panel captures use the earlier `build-XnuMFV/MultiCAD.app`, SHA-256 `94851a7d7c4491cab168b2b924f6d3cc77dfe426513ad6e6e4985f71ef8e9734`. These are development builds from the working tree, not clean release binaries.
+All seven raster captures use the native executable from the successful [macOS package job](https://github.com/kellertobias/TOSKCAD/actions/runs/41280782003/job/124772142089) at source commit `0562e39bf798694ab678d0baa950d01c66370994`. The capture copy has a separate bundle identifier and a new ad-hoc signature so input stays separate from other running ToskCAD windows. Its executable SHA-256 is `05cceb75cb46ec4a2cefaee4908c98e7878e00b30cf6d0130b827a20aad9c1f7`. Application code and bundled project files are unchanged. This locally signed capture copy is not a distributed release artifact.
 
 Capture copies live under ignored `artifacts/website-revision/captures/` and `artifacts/website-focus/`, with cameras saved through the native MCP API. The sources are [`examples/welded-workbench.tcd`](../examples/welded-workbench.tcd), [`cabinet.tcd`](../examples/cabinet.tcd), [`front-panel.tcd`](../examples/front-panel.tcd), [`drill-guide.tcd`](../examples/drill-guide.tcd) and [`apartment.tcd`](../examples/apartment.tcd). The apartment's references were explicitly refreshed while retaining its project, room and placement identities. Its sofa and coffee table leave the bedroom approach clear.
 
