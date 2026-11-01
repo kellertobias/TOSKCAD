@@ -15,6 +15,7 @@ fn main() {
         .file("src/planar_contours.cpp")
         .file("src/advanced.cpp")
         .file("src/sketch_references.cpp")
+        .file("src/threads.cpp")
         .include("include")
         .include(root.join("include"))
         .std("c++17")
@@ -52,6 +53,8 @@ fn main() {
         "include/advanced.hpp",
         "src/sketch_references.cpp",
         "include/sketch_references.hpp",
+        "src/threads.cpp",
+        "include/threads.hpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

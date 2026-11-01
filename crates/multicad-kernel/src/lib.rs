@@ -46,6 +46,20 @@ mod ffi {
         minimum_feature: f64,
         maximum_length: f64,
     }
+    pub struct ThreadData {
+        radius: f64,
+        pitch: f64,
+        height: f64,
+        depth: f64,
+        crest_width: f64,
+        lower_slope: f64,
+        upper_slope: f64,
+        taper: f64,
+        overlap: f64,
+        tolerance: f64,
+        starts: u32,
+        left: bool,
+    }
     pub struct FaceInfo {
         pub index: u32,
         pub planar: bool,
@@ -227,6 +241,8 @@ mod ffi {
         include!("planar_contours.hpp");
         include!("advanced.hpp");
         include!("sketch_references.hpp");
+        include!("threads.hpp");
+        fn helical_thread(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
         fn sketch_reference_geometry(
             shape: &Shape,
             kind: u8,
@@ -445,6 +461,8 @@ mod advanced;
 pub use advanced::TreatmentFace;
 mod advanced_operations;
 mod advanced_profiles;
+mod threads;
+pub use threads::HelicalThread;
 mod edge_treatment;
 pub use edge_treatment::{EdgeTreatment, SidedChamfer, SidedTreatmentEdge, TreatmentEdge};
 mod drawing;

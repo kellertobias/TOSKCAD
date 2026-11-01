@@ -72,6 +72,61 @@ fn side_frame(profile: &Profile, edge: &ProfileEdge, height: f64) -> Option<Refe
 }
 
 impl Solid {
+    pub(crate) fn name_thread(
+        &mut self,
+        feature: EntityId,
+        starts: u32,
+    ) -> Result<(), GeometryError> {
+        let mut elements: BTreeMap<_, _> = self
+            .topology_snapshot(feature, 0)?
+            .elements
+            .into_iter()
+            .map(|element| (element.key, element))
+            .collect();
+        let mut caps = [false; 2];
+        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+            let role = match seed.role {
+                0 | 1 => {
+                    caps[seed.role as usize] = true;
+                    if seed.role == 0 {
+                        "cap.start".into()
+                    } else {
+                        "cap.end".into()
+                    }
+                }
+                2 if seed.source_index / 4 < starts && seed.source_index % 4 < 3 => {
+                    let flank = ["lower", "crest", "upper"][(seed.source_index % 4) as usize];
+                    format!("thread/start/{}/{flank}", seed.source_index / 4)
+                }
+                3 if seed.source_index == 0 => "thread.root".into(),
+                _ => return Err(failure("Unknown native thread face source")),
+            };
+            let element = elements
+                .get_mut(&key(0, seed.face)?)
+                .ok_or_else(|| failure("Thread ancestry names an absent face"))?;
+            let origin = Origin {
+                source: feature,
+                role,
+            };
+            element.origins.insert(origin.clone());
+            if let Some(AnalyticGeometry::Plane { frame }) = element.geometry
+                && !element.frames.iter().any(|known| known.origin == origin)
+            {
+                element.frames.push(AnchoredFrame { origin, frame });
+            }
+        }
+        if !caps.into_iter().all(|cap| cap)
+            || elements
+                .values()
+                .any(|element| element.key.kind == TopologyKind::Face && element.origins.is_empty())
+        {
+            return Err(failure(
+                "Native thread needs complete face ancestry and both end caps",
+            ));
+        }
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        self.finish_provenance(elements, &nodes)
+    }
     pub(crate) fn name_advanced_profile(
         &mut self,
         feature: EntityId,
