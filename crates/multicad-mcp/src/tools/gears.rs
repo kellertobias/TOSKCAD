@@ -54,7 +54,7 @@ pub struct GearScalarArg {
     pub expression: Option<String>,
 }
 impl GearScalarArg {
-    fn dimension(
+    pub(super) fn dimension(
         &self,
         document: &Document,
         evaluated: &EvaluatedParameters,
@@ -97,6 +97,12 @@ pub struct GearArgs {
     /// Required for creation; omit for edits.
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(flatten)]
+    pub recipe: GearRecipeArgs,
+}
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GearRecipeArgs {
     #[serde(default)]
     pub family: Option<GearFamilyArg>,
     /// Selects the convention for both module and pressure_angle.
@@ -146,8 +152,8 @@ pub struct GearArgs {
 pub struct InspectGearArgs {
     pub gear: String,
 }
-fn parameters(
-    args: &GearArgs,
+pub(super) fn parameters(
+    args: &GearRecipeArgs,
     previous: Option<&GearParameters>,
     document: &Document,
     evaluated: &EvaluatedParameters,
@@ -226,7 +232,8 @@ pub(super) fn gear_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult 
     Ok(
         json!({"families":GearFamily::ALL.map(|f| json!({"family":f,"label":f.label(),"supported":f.supported(),"source":f.source()})),
         "sources":[model::GEAR_DIMENSIONS_SOURCE_URL,model::GEAR_PROFILE_SOURCE_URL,model::GEAR_FILLET_SOURCE_URL],
-        "scope":"Unshifted external gears, custom circular root fillets; no paired placement, strength, fit or accuracy certification. Conservative normal-angle tooth-count policy; unsupported families fail closed."}),
+        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family, transverse module/pressure angle, width/gap and compatible opposite helix hands; unmodified periodic generator Parts only"},
+        "scope":"Unshifted external gears and parallel-axis pairs, custom circular root fillets; no strength, fit or accuracy certification. Conservative normal-angle tooth-count policy; unsupported families fail closed."}),
     )
 }
 pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) -> ToolResult {
@@ -262,7 +269,7 @@ pub(super) fn set_gear(host: &dyn Host, call: &Request, args: GearArgs) -> ToolR
         ));
     }
     let parameters = parameters(
-        &args,
+        &args.recipe,
         previous.as_ref().map(|s| &s.parameters),
         &document,
         &evaluated,
@@ -299,4 +306,26 @@ pub(super) fn set_gear(host: &dyn Host, call: &Request, args: GearArgs) -> ToolR
     let owned = call.clone();
     let committed = with(host, move |target| commit(target, &owned, prepared))??;
     Ok(json!({"revision":committed,"gear":feature,"part":body}))
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    #[test]
+    fn shared_recipe_keeps_the_existing_flat_wire_and_rejects_unknown_fields() {
+        let value = json!({"expected_revision":0,"name":"Gear","module":{"value":2.,"unit":"mm"},"family":"spur"});
+        let args: GearArgs = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(args.recipe.family, Some(GearFamilyArg::Spur)));
+        assert!(args.recipe.module.is_some());
+        let mut bad = value;
+        bad["unverified_grade"] = json!(6);
+        assert!(serde_json::from_value::<GearArgs>(bad).is_err());
+        assert!(
+            serde_json::from_value::<GearRecipeArgs>(json!({"gear":"not-a-recipe-field"})).is_err()
+        );
+        let schema = serde_json::to_value(schemars::schema_for!(GearArgs)).unwrap();
+        assert!(schema["properties"]["module"].is_object());
+        assert!(schema["properties"]["family"].is_object());
+        assert!(schema["properties"].get("recipe").is_none());
+    }
 }

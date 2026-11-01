@@ -39,6 +39,7 @@ use std::{
 mod cabinetry;
 mod engraving;
 mod fdm;
+mod gear_pairs;
 mod gears;
 mod guides;
 mod imports;
@@ -62,6 +63,8 @@ pub use engraving::EngravingArgs;
 use engraving::create_engraving_sketch;
 pub use fdm::{AidArgs, AidKindArg, ProcessArgs, RemoveAidArgs, TabContactArgs};
 use fdm::{fdm_aid_report, fdm_tab_contact, remove_fdm_aid, set_fdm_aid, set_fdm_process};
+pub use gear_pairs::{GearPairArgs, InspectGearPairArgs};
+use gear_pairs::{inspect_gear_pair, set_gear_pair};
 pub use gears::{GearArgs, InspectGearArgs};
 use gears::{gear_profiles, inspect_gear, set_gear};
 pub use text::{
@@ -269,6 +272,12 @@ tools! {
     "set_gear" => GearArgs, "Create or edit gear", false,
         "Create an unshifted external involute gear or edit by feature ID, preserving omitted fields and Part identity. Module and pressure angle use the explicit normal/transverse system; helix magnitude and hand are separate. Backlash is per-gear reference-circle tooth thinning; fabrication_allowance is additional thinning. Supports spur, helical, continuous herringbone and gapped double-helical. Native evaluation precedes one attributable transaction or owner review. Unsupported families/profile shifts, undercut policy, insufficient walls and failed geometry change nothing. Pair placement is not provided by this tool.",
         set_gear;
+    "inspect_gear_pair" => InspectGearPairArgs, "Inspect gear pair", true,
+        "Read canonical member recipes and resolved center distance, tooth phase and mating frames without evaluating geometry. evaluate_model reports the actual native current-pose and sampled interference checks.",
+        inspect_gear_pair;
+    "set_gear_pair" => GearPairArgs, "Create or edit gear pair", false,
+        "Create two named parametric gears, a reusable assembly, pair-controlled Fixed relationships and one ordinary placed occurrence in one native-checked transaction. Default first member has20teeth; creation inherits its settings for a30tooth opposite-hand second member before applying explicit overrides. Pair origin/axes control layout; member frames describe local definitions. Edits retain omitted member fields independently and can update both recipes atomically; drive-only edits preserve them. Current coverage requires matching external family, transverse module/pressure angle, width/gap and compatible opposite helix hands. Native current pose and nine phases over one pinion tooth cycle are checked under the generator-only periodic assumption; this does not certify continuous collision-free motion, strength or fit.",
+        set_gear_pair;
     "undo" => RevisionArgs, "Undo", false,
         "Undo the most recent committed transaction, from any channel, if expected_revision is current.",
         undo;
@@ -288,7 +297,7 @@ tools! {
         "Save the document to the project file in scope, if expected_revision is current. Never writes elsewhere.",
         save_project;
     "export_step" => ExportStep, "Export STEP", true,
-        "Write one final part as a STEP B-rep into the export folder in scope (bare file name ending .step or .stp). The written file is read back and its volume reported. Does not change the document.",
+        "Write one current Part definition as a STEP B-rep into the export folder in scope (bare file name ending .step or .stp), including definition-only Parts of an Assembly. Uses definition coordinates; export sets with occurrence paths select posed members. Consumed Parts remain unavailable. The file is read back and its volume reported. Does not change the document.",
         export_step;
     "set_level" => LevelArgs, "Create or edit level", false,
         "Create a building level (elevation, floor-to-floor height, slab thickness) or edit one by ID. Every hosted slab, pedestal, stair and wall rebuilds and is evaluated natively before commit.",
@@ -1730,6 +1739,9 @@ fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
         "instances": instances,
         "consumed_parts": snapshot.consumed_bodies,
         "references": references,
+        "gear_pairs":model.gear_pair_checks().values().collect::<Vec<_>>(),
+        "physical_leaves":model.assembly_evaluation().leaves,
+        "source_hash":snapshot.stamp.source_hash,
     }))
 }
 
@@ -1839,9 +1851,19 @@ fn export_step(host: &dyn Host, call: &Request, args: ExportStep) -> ToolResult 
         return Err(ToolError::not_found(part, "Part"));
     }
     let model = compile(&document, revision, call)?;
-    let feature = *model.snapshot().bodies.get(&part).ok_or_else(|| {
-        ToolError::new("model_failed", "The part has no final solid").involving(part)
-    })?;
+    let definition_parts = multicad_core::model::assembly_definition_parts(&document)?;
+    let feature = *model
+        .snapshot()
+        .bodies
+        .get(&part)
+        .or_else(|| {
+            (definition_parts.contains(&part) && !model.snapshot().consumed_bodies.contains(&part))
+                .then(|| model.snapshot().body_sources.get(&part))
+                .flatten()
+        })
+        .ok_or_else(|| {
+            ToolError::new("model_failed", "The part has no final solid").involving(part)
+        })?;
     if multicad_core::model::cosmetic_thread_in_history(&document, feature)?.is_some() {
         return Err(ToolError::new(
             "unsupported",

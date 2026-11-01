@@ -317,7 +317,7 @@ a single gear's setting.
 Current geometry covers unshifted external spur, helical, continuous-center
 herringbone and gapped double-helical gears with a through bore. Root fillets
 are custom circular arcs, not a generated cutter trochoid. Internal rings,
-racks, bevel gears, worms, nonzero profile shift and paired placement are
+racks, bevel gears, worms and nonzero profile shift are
 unavailable. The conservative tooth-count policy uses the normal pressure angle
 without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
 or cutter-generation certification follows from a successful preview.
@@ -331,6 +331,39 @@ The tool prepares the canonical transaction, evaluates its candidate with the
 native kernel, then commits or queues it under the owner's review policy.
 Unsupported families, invalid units or dimensions, inadequate bore walls,
 native failures, cancellation and stale revisions leave the document unchanged.
+
+`set_gear_pair` creates two named gear Parts, a reusable Assembly, its internal
+relationships and one placed occurrence in a single transaction. Creation
+requires a name. The first member defaults to 20 teeth. The second inherits
+the first recipe with 30 teeth and opposite helix hand, then applies explicit
+second-member overrides. Spur members use hand `none`.
+
+An edit retains omitted fields independently for each member. Supplying both
+recipes changes them atomically, so a shared module change can keep the pair
+compatible. A drive-only edit preserves the gear definitions exactly. Explicit
+`null` has the same effect as omission. Edits retain names and output identities.
+`inspect_gear_pair` reads source and derived center distance, phases and frames;
+`evaluate_model` reports actual native pair checks and physical leaf paths.
+
+Pair origin and axes control layout within the Assembly definition. Member
+frames describe their local Part definitions; derived anchors maintain mating
+placement when those local frames change. The returned occurrence supports
+normal component Move/Copy. Copies share the definition's internal drive angle
+and keep independent outer placements.
+
+Pairs require matching external family, transverse module and pressure angle,
+face width and center gap, with equal helix magnitude and opposite hands where
+applicable. Their current Part heads must remain the gear generators. Native
+evaluation checks the current pose and nine phases over one pinion tooth cycle.
+Unchanged geometry can reuse a completed cycle check; the current pose is always
+checked. These samples do not establish continuous collision-free motion, load
+capacity or manufacturing fit.
+
+Direct `export_step` accepts an Assembly's definition-only gear Part as well as
+a standalone Part. It exports that Part's definition coordinates. Export sets
+with occurrence paths select posed assembly members. Definition-only sources
+do not become duplicate physical outputs, and consumed Parts remain unavailable
+through direct Part export.
 
 ## Architecture
 
