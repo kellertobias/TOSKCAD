@@ -51,6 +51,8 @@ The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow
 
 [Parametric threads](docs/architecture/threads.md) documents the Mechanical thread feature, sourced basic metric presets, explicit Custom profiles and unavailable families. Cosmetic envelopes require a switch to Modeled before manufacturing export.
 
+[Parametric gears](docs/architecture/gears.md) records the external involute single/pair foundation, native validation limits and unfinished family and parameter coverage.
+
 The [spline editing checkpoint](docs/verification/native-spline-editing-2026-10-28.md) records exact trims, bounded tangent continuation, explicit contact choice, guarded background previews and native save/reopen checks.
 
 The [occurrence-reference checkpoint](docs/verification/native-occurrence-references-2026-10-29.md) records exact finite projections and sections, independently placed assembly copies, explicit repair and source-bound native preview guards.
