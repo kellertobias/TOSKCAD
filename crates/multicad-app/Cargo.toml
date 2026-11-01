@@ -19,6 +19,7 @@ multicad-solver.workspace = true
 multicad-model.workspace = true
 multicad-ui.workspace = true
 multicad-mcp.workspace = true
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 tempfile = "=3.27.0"
 rfd = "=0.16.0"

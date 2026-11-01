@@ -2123,6 +2123,16 @@ pub fn render_preview(
     model: &Model,
     spread: bool,
 ) -> Result<project_file::info::PreviewImage, Error> {
+    render_preview_with_color(document, model, spread, color_for)
+}
+
+/// Reuse the native-mesh renderer with an explicit display palette.
+pub fn render_preview_with_color(
+    document: &Document,
+    model: &Model,
+    spread: bool,
+    color_for: impl Fn(&str) -> [f32; 3],
+) -> Result<project_file::info::PreviewImage, Error> {
     use multicad_model::export::mesh::tessellate;
     use multicad_ui::egui::{Color32, ColorImage};
     let (w, h) = (480usize, 640usize);

@@ -1,0 +1,53 @@
+{
+  "format": "toskcad.hardware-curation",
+  "version": 1,
+  "revision": "1",
+  "data_source": "https://github.com/boltsparts/boltsparts/blob/5c83300a57761f70db87f50c9a1f647c7278a4c2/data/bearings.blt",
+  "data_revision": "5c83300a57761f70db87f50c9a1f647c7278a4c2",
+  "data_license": "LGPL-2.1-or-later",
+  "data_sha256": "98d1583dbb8c518b2e16516ae432ada2f3ca96c5603bd00126f9a2fdd5157014",
+  "verified_on": "2026-11-01",
+  "scope": "Independently authored parametric external mounting envelopes; no raceways, rolling elements, shields, seals or fillets. No manufacturer CAD, pictures, logos or prose redistributed. Only selected outer dimensions from the licensed BOLTS reference are used. Manufacturer pages independently cross-check d/D/B; they are not redistribution grants. No tolerance, load, fit or current-standard certification.",
+  "entries": [
+    {
+      "id": "bearing.open.608",
+      "file": "bearing-open-608.tcd",
+      "designation": "608",
+      "bore_mm": 8,
+      "outside_mm": 22,
+      "width_mm": 7,
+      "protection": "open",
+      "verification_url": "https://www.jtekt.co.jp/products/bearing/en/p/detail/?pno=608"
+    },
+    {
+      "id": "bearing.open.6000",
+      "file": "bearing-open-6000.tcd",
+      "designation": "6000",
+      "bore_mm": 10,
+      "outside_mm": 26,
+      "width_mm": 8,
+      "protection": "open",
+      "verification_url": "https://koyo.jtekt.co.jp/en/products/detail/?pno=6000"
+    },
+    {
+      "id": "bearing.open.6200",
+      "file": "bearing-open-6200.tcd",
+      "designation": "6200",
+      "bore_mm": 10,
+      "outside_mm": 30,
+      "width_mm": 9,
+      "protection": "open",
+      "verification_url": "https://www.jtekt.co.jp/products/bearing/en/p/detail/?pno=6200"
+    },
+    {
+      "id": "bearing.open.6300",
+      "file": "bearing-open-6300.tcd",
+      "designation": "6300",
+      "bore_mm": 10,
+      "outside_mm": 35,
+      "width_mm": 11,
+      "protection": "open",
+      "verification_url": "https://www.jtekt.co.jp/products/bearing/en/p/detail/?pno=6300"
+    }
+  ]
+}

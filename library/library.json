@@ -1,0 +1,33 @@
+{
+  "entries": [
+    {
+      "document": "cad20000-0000-4000-8000-00000000ed80",
+      "file": "bearing-open-608.tcd",
+      "sha256": "0f541bd3e7477fb736572c73573f9d8bc055b4ce0beacf529f96d594c5e14514"
+    },
+    {
+      "document": "cad20000-0000-4000-8000-0000000927c0",
+      "file": "bearing-open-6000.tcd",
+      "sha256": "ad2107734a22c87f17b11d3742931f95978e63e0b9762dba2aeb44bbaee3bcf9"
+    },
+    {
+      "document": "cad20000-0000-4000-8000-0000000975e0",
+      "file": "bearing-open-6200.tcd",
+      "sha256": "4d85bc30aee327ae50eef2cc5128d9989324b46ac6f3b8cfcaaf8822230efa5a"
+    },
+    {
+      "document": "cad20000-0000-4000-8000-000000099cf0",
+      "file": "bearing-open-6300.tcd",
+      "sha256": "a0a85864e183857d3ff0be71b97d84ab90362af9c65f833dd8795a054a1fff97"
+    }
+  ],
+  "format": "toskcad.bundled-library",
+  "requires": [
+    "curation.json",
+    "sources/bolts/bearings.blt",
+    "sources/bolts/COPYING.LESSER",
+    "README.md"
+  ],
+  "revision": "1",
+  "version": 1
+}
