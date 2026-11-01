@@ -59,12 +59,23 @@ impl Backdrop {
                     blur(&image),
                     egui::TextureOptions::LINEAR,
                 ));
-            } else if self.passes < 120 {
+            } else if self.passes < 30 {
                 self.passes += 1;
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                // Wgpu captures the frame after the Screenshot request.
+                // Keep capture frames free of this dialog until its reply.
+                return false;
             }
         }
         true
+    }
+    #[cfg(test)]
+    pub(super) fn testing_screenshot(&self) -> egui::Event {
+        egui::Event::Screenshot {
+            viewport_id: egui::ViewportId::ROOT,
+            user_data: egui::UserData::new(QuitCapture(self.tag)),
+            image: std::sync::Arc::new(egui::ColorImage::filled([20, 20], Color32::GRAY)),
+        }
     }
     pub(super) fn paint(&self, ctx: &egui::Context, layer: egui::LayerId) {
         if let Some(texture) = &self.texture {
@@ -188,7 +199,7 @@ mod tests {
                 |_| ready = backdrop.prepare(&ctx),
             )
             .drop_without_applying_deltas();
-            assert!(ready);
+            assert_eq!(ready, tag == backdrop.tag);
             assert_eq!(backdrop.texture.is_some(), tag == backdrop.tag);
         }
         let old = backdrop.tag;

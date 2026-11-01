@@ -264,7 +264,7 @@ impl Application {
             if self.message_error {ui.add_space(10.);ui.colored_label(Color32::LIGHT_RED,&self.message);}
             ui.add_space(20.);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                let save=ui.add_enabled(!busy && !drafts,egui::Button::new("Save and Quit").shortcut_text("Enter").min_size(egui::vec2(170.,36.)).fill(ui.visuals().selection.bg_fill))
+                let save=ui.add_enabled(!busy && !drafts,egui::Button::new(egui::RichText::new("Save and Quit").color(Color32::WHITE)).shortcut_text(egui::RichText::new("Enter").color(Color32::from_white_alpha(210))).min_size(egui::vec2(170.,36.)).fill(ui.visuals().selection.bg_fill))
                     .on_hover_text("Save every unsaved document, then quit after all writes succeed").clicked();
                 let cancel=ui.add(egui::Button::new("Cancel").shortcut_text("Escape").min_size(egui::vec2(130.,36.))).clicked();
                 (save,cancel)
@@ -476,8 +476,11 @@ mod tests {
     fn dialog_frame(
         app: &mut Application,
         ctx: &egui::Context,
-        events: Vec<egui::Event>,
+        mut events: Vec<egui::Event>,
     ) -> egui::FullOutput {
+        if app.close_confirm {
+            events.push(app.close_backdrop.testing_screenshot());
+        }
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
