@@ -291,6 +291,10 @@ Direct `export_step` also refuses a selected producer whose dependency history
 contains a cosmetic thread. An unrelated cosmetic Part does not block export
 of a physical Part.
 
+## Apartment equipment control
+
+`equipment_profiles`, `inspect_equipment` and `set_equipment` share the native equipment source API. Creation requires an explicit named floor identity and floor/wall/ceiling placement intent. Lengths carry units. Edits retain omitted fields and the original pinned family; a supplied replacement host repairs unresolved host intent. Inspection reports source and host errors separately. Service and door access boxes remain separate from physical geometry, and display visibility does not disable explicit clearance checks. Native preflight, cancellation and stale-revision guards apply before a single attributable commit. [Equipment source and drawing policy](equipment.md) defines mounting datums and output behavior. The generated tools list owns the exact schemas.
+
 ## Planting control
 
 `set_plant` and `inspect_plant` share the Architecture planting transactions.

@@ -57,6 +57,8 @@ Mechanical catalog work follows the [retained hardware dimensions decision](docs
 
 [Planting](docs/architecture/plants.md) adds generic editable trees and shrubs under Architecture, with linked canopy footprints for scaled drawings and presets in the shared included Library.
 
+[Apartment equipment](docs/architecture/equipment.md) provides generic electrical, heating, sanitary and appliance families with explicit floor/wall/ceiling hosts, editable dimensions, linked plan symbols and presets in the same included Library.
+
 The [spline editing checkpoint](docs/verification/native-spline-editing-2026-10-28.md) records exact trims, bounded tangent continuation, explicit contact choice, guarded background previews and native save/reopen checks.
 
 The [occurrence-reference checkpoint](docs/verification/native-occurrence-references-2026-10-29.md) records exact finite projections and sections, independently placed assembly copies, explicit repair and source-bound native preview guards.
