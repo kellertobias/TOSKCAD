@@ -682,6 +682,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::gears::validate_pairs(document)?;
     super::transfer::validate_document(document)?;
     super::wall::validate_document(document)?;
+    super::fence::validate_fences(document)?;
     super::level::validate_document(document)?;
     super::cabinetry::validate_document(document)?;
     super::imports::validate_document(document)?;
@@ -761,6 +762,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::TRANSFER_TYPE,
                     super::ALIGN_TYPE,
                     super::WALL_TYPE,
+                    super::FENCE_MEMBER_TYPE,
                     super::SLAB_TYPE,
                     super::STAIR_TYPE,
                     super::PANEL_TYPE,
@@ -793,6 +795,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::NAMED_POSE_TYPE,
                     super::TRANSFER_GROUP_TYPE,
                     super::WALL_TYPE_KIND,
+                    super::FENCE_TYPE_KIND,
+                    super::FENCE_RUN_KIND,
                     super::OPENING_TYPE_KIND,
                     super::LEVEL_KIND,
                     super::ENVELOPE_KIND,

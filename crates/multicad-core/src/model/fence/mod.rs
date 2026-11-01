@@ -14,7 +14,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 mod layout;
+mod prepare;
+mod records;
 pub use layout::*;
+pub use prepare::*;
+pub use records::*;
+
+pub(super) fn validate_fences(document: &Document) -> Result<(), DocumentError> {
+    records::validate_document(document)
+}
 
 pub const MAX_FENCE_INFILL_RECIPES: usize = 32;
 

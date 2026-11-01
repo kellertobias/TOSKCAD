@@ -5,7 +5,9 @@ use super::*;
 use std::collections::BTreeMap;
 
 pub const MAX_FENCE_PATH_POINTS: usize = 256;
-pub const MAX_FENCE_MEMBERS: usize = 4096;
+/// A new member needs a Feature and Part. Reserve source/type/group/hierarchy
+/// edits so the largest single run still fits one canonical transaction.
+pub const MAX_FENCE_MEMBERS: usize = (crate::commands::MAX_TRANSACTION_EDITS - 4) / 2;
 const EPS: f64 = 1e-6;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

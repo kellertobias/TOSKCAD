@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeSet, VecDeque},
     sync::{Arc, OnceLock},
 };
+pub const MAX_TRANSACTION_EDITS: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
@@ -344,7 +345,7 @@ impl Session {
             || request.actor.id.len() > 256
             || request.label.trim().is_empty()
             || request.label.len() > 1024
-            || request.edits.len() > 4096
+            || request.edits.len() > MAX_TRANSACTION_EDITS
         {
             return Err(CommandError::new(
                 ErrorCode::InvalidRequest,
