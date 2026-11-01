@@ -112,6 +112,12 @@ pub struct OpeningArg {
 pub struct WallArgs {
     pub expected_revision: u64,
     pub wall_type: String,
+    /// Layered types only. Omit on edits to retain the current reference/flip.
+    #[serde(default)]
+    pub layer_placement: Option<super::wall_layers::LayerPlacementArg>,
+    /// Explicit shared-type scope; commits the type plus this wall atomically.
+    #[serde(default)]
+    pub edit_shared_construction: Option<super::wall_layers::SharedConstructionArg>,
     /// Path vertices in world X/Y millimeters.
     pub path_mm: Vec<[f64; 2]>,
     /// Close the path into a loop (a room).
@@ -196,7 +202,25 @@ fn wall_value(
         });
     }
     Ok(WallDefinition {
-        layer_placement: None,
+        layer_placement: if matches!(
+            model::read_wall_construction(document, id(&args.wall_type)?)?,
+            model::WallTypeConstruction::Layered(_)
+        ) {
+            Some(
+                args.layer_placement
+                    .as_ref()
+                    .map(super::wall_layers::LayerPlacementArg::value)
+                    .transpose()?
+                    .or_else(|| previous.and_then(|p| p.layer_placement.clone()))
+                    .unwrap_or_default(),
+            )
+        } else if args.layer_placement.is_some() {
+            return Err(ToolError::invalid(
+                "Layer placement requires a layered construction",
+            ));
+        } else {
+            None
+        },
         output: BodyOutput { body },
         wall_type: id(&args.wall_type)?,
         path: args
@@ -357,6 +381,12 @@ fn finish(
 pub(super) fn create_wall(host: &dyn Host, call: &Request, args: CreateWallArgs) -> ToolResult {
     let (document, revision, evaluated) = snapshot(host)?;
     revision_matches(revision, args.wall.expected_revision)?;
+    let construction = args
+        .wall
+        .edit_shared_construction
+        .as_ref()
+        .map(|edit| edit.value(id(&args.wall.wall_type)?, &document, &evaluated))
+        .transpose()?;
     let request = WallRequest::new(
         args.name,
         wall_value(&args.wall, EntityId::new(), &document, &evaluated, None)?,
@@ -366,11 +396,13 @@ pub(super) fn create_wall(host: &dyn Host, call: &Request, args: CreateWallArgs)
     let prepared = with(host, move |target| {
         revision_guard(target, revision)?;
         Ok::<_, ToolError>(
-            model::prepare_wall(
+            model::prepare_wall_construction_change(
                 target.session(),
                 revision,
                 call_owned.actor.clone(),
-                &request,
+                &[],
+                &model::WallChange::Create(&request),
+                construction.as_ref(),
             )?
             .prepared,
         )
@@ -383,6 +415,12 @@ pub(super) fn edit_wall(host: &dyn Host, call: &Request, args: EditWallArgs) -> 
     revision_matches(revision, args.source.expected_revision)?;
     let current =
         model::read_wall(&document, feature).map_err(|e| ToolError::from(e).involving(feature))?;
+    let construction = args
+        .source
+        .edit_shared_construction
+        .as_ref()
+        .map(|edit| edit.value(id(&args.source.wall_type)?, &document, &evaluated))
+        .transpose()?;
     let wall = wall_value(
         &args.source,
         current.output.body,
@@ -395,12 +433,16 @@ pub(super) fn edit_wall(host: &dyn Host, call: &Request, args: EditWallArgs) -> 
     let prepared = with(host, move |target| {
         revision_guard(target, revision)?;
         Ok::<_, ToolError>(
-            model::prepare_wall_edit(
+            model::prepare_wall_construction_change(
                 target.session(),
                 revision,
                 call_owned.actor.clone(),
-                feature,
-                &wall,
+                &[],
+                &model::WallChange::Edit {
+                    feature,
+                    wall: &wall,
+                },
+                construction.as_ref(),
             )?
             .prepared,
         )
@@ -970,10 +1012,14 @@ pub(super) fn inspect_wall(host: &dyn Host, _: &Request, args: InspectWallArgs) 
             })
         })
         .collect();
+    let layers=wall.layers.as_ref().map(|construction|construction.stack.layers.iter().zip(&construction.bands).map(|(layer,band)|json!({"layer":layer.id,"material":layer.material,"solid":layer.solid,"thickness_mm":layer.thickness_mm,"outside_mm":band.outside_mm,"inside_mm":band.inside_mm})).collect::<Vec<_>>());
     Ok(json!({
         "revision": revision,
         "wall": feature,
         "part": source.output.body,
+        "wall_type":source.wall_type,
+        "layer_placement":source.layer_placement,
+        "layers":layers,
         "closed": wall.closed,
         "thickness_mm": wall.thickness_mm,
         "height_mm": wall.height_mm,

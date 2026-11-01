@@ -1,7 +1,7 @@
 # Layered-wall verification checkpoint
 
 CAD-204 is in progress. This checkpoint covers canonical source, exact native
-geometry and reference guards on macOS. It does not establish graphical authoring,
+geometry and reference guards on macOS. It does not establish actual macOS editor interaction,
 separate-wall T joins, shared Library
 integration under CAD-206, or human acceptance. Native UI-control tooling is
 unavailable; CLI tests are not a substitute for those graphical checks.
@@ -86,5 +86,44 @@ pass (three tests), covering material colors, instance fallback, selection,
 section clipping, edges and cached meshes. Native fixtures and PDF/DXF/SVG files
 are in `artifacts/layered-wall-review-20261101/material-plans/`. Formatting and strict all-target workspace Clippy pass for this increment;
 final feature-wide workspace tests remain
-pending. The graphical construction editor, separate-wall T joins, Library
-integration under CAD-206 and actual macOS interaction are still outstanding.
+pending. The editor/shared-command increment below follows this checkpoint;
+separate-wall T joins, Library integration under CAD-206 and actual macOS
+interaction are still outstanding.
+
+## Construction editor and shared commands
+
+Atomic shared construction editing is committed in `7d169bc`. The same typed
+source transaction serves the native wall form and MCP. Source tests cover the
+affected-user list, shared changes with retained instance height overrides,
+Cancel, one-step Undo/Redo and boundary removal with an atomic current-wall
+repair. Another wall's unresolved boundary refuses the entire change. The
+complete core suite passes: 455 tests, zero failures, 61 result groups.
+
+The native form now includes the proportionate layer diagram, labeled coatings
+and air, band/row selection, add/remove/duplicate/reorder, material/dimension
+controls, derived total, construction and instance references, and mirrored flip.
+Shared editing lists existing affected walls; duplication makes an independent
+type in the existing catalog. Immutable source stamps and evaluated snapshots
+avoid idle hashing and parameter reconstruction.
+
+Six focused UI tests pass. They inspect actual egui paint output and send pointer
+events to material bands and the coating row, verify the effective instance
+reference marker and mirrored bands, and check source refresh across distinct
+Sessions with identical document ID/revision. Native form preparations produce
+real layered solids, preserve shared versus duplicated scope and instance IDs,
+and save/reopen as editable TCD source. Both uniform and layered rooms use the
+existing viewport path-click handler and native preview, with local redraw
+cancellation restoring the original closed path. These are headless widget and
+native service checks, not a macOS window authoring demonstration.
+
+Four MCP integration tests pass, including the new layered workflow. It checks
+native finite-solid counts/volume, retained IDs and bound dimensions after a
+parameter rename plus name reuse, duplicate-ID refusal, retained placement,
+shared type plus boundary repair in one edit, cancellation and read-only access.
+Construction inspection returns editable tool input and full bound source;
+unused-type creation explicitly makes no solid claim. Existing native layered,
+wall and cutout regressions pass: 14 tests across three groups. Formatting and
+strict whole-workspace/all-target Clippy pass (7m27s). Logs are retained in
+`artifacts/layered-wall-review-20261101/`; full final feature workspace tests
+remain pending. Separate-wall T joins, termination policy, CAD-206 integration,
+actual graphical checks and human acceptance remain outstanding.

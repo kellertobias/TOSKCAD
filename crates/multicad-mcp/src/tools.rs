@@ -57,6 +57,7 @@ mod schedules;
 mod sheet_metal;
 mod text;
 mod threads;
+mod wall_layers;
 mod walls;
 pub use cabinetry::{
     CarcassArgs, DeleteJointArgs, DeleteMachiningArgs, HardwareArgs, MachiningArgs, PanelArgs,
@@ -106,6 +107,10 @@ use sheet_metal::{
     convert_to_sheet, create_sheet_stock, export_sheet_dxf, set_sheet_fasteners, set_sheet_forming,
     set_sheet_part, sheet_edges, sheet_hardware, sheet_metal, unfold_sheet,
 };
+pub use wall_layers::{
+    CreateLayeredWallTypeArgs, EditLayeredWallTypeArgs, InspectWallConstructionArgs,
+};
+use wall_layers::{create_layered_wall_type, edit_layered_wall_type, inspect_wall_construction};
 pub use walls::{
     CreateWallArgs, EditWallArgs, EditWallTypeArgs, FaceArg, InspectVerticalCutoutArgs,
     InspectWallArgs, NewOpeningTypeArg, OpeningTypeArgs, PlanRectangleArg,
@@ -350,6 +355,15 @@ tools! {
     "set_drawing_guide" => GuideArgs, "Create or edit drawing guide", false,
         "Create or edit a floor plan (cut height and view depth above each listed level), section (plan line, optional depth, limited to the levels' extent) or elevation (plan direction) guide, and optionally generate or update its linked drawing views in the same transaction. Rerunning updates the views it made before; views whose level left the guide are reported as stale. Generated views are evaluated natively before commit.",
         set_drawing_guide;
+    "create_layered_wall_type" => CreateLayeredWallTypeArgs, "Create layered construction", false,
+        "Create a named reusable Outside-to-Inside wall layer stack. Finite solids carry materials, air cavities carry real width, and coatings carry zero-volume material metadata. Returns stable layer IDs; no solid is made until create_wall uses the type. Keep layer IDs when editing.",
+        create_layered_wall_type;
+    "edit_layered_wall_type" => EditLayeredWallTypeArgs, "Edit shared construction", false,
+        "Explicitly change a shared layered construction, retaining layer IDs. Every active affected wall is checked natively before commit; missing boundary references require repair. Use edit_wall with edit_shared_construction to repair that wall's reference atomically. Other walls must remain valid. No cross-project Library definition is silently updated.",
+        edit_layered_wall_type;
+    "inspect_wall_construction" => InspectWallConstructionArgs, "Inspect wall construction", true,
+        "Inspect the uniform or layered canonical construction, derived total width, source-bound expressions, stable layer IDs and affected wall IDs. The layered construction field is suitable for a subsequent edit request.",
+        inspect_wall_construction;
     "create_wall_type" => WallTypeArgs, "Create wall type", false,
         "Create a reusable wall type: thickness, height, justification (center, left or right of the drawn path) and an optional material for new walls. Commits one transaction.",
         create_wall_type;

@@ -48,6 +48,7 @@ mod termination;
 mod thread;
 pub(crate) mod value_entry;
 mod wall;
+mod wall_layers;
 mod weld_connection;
 mod weld_form;
 mod weldment;

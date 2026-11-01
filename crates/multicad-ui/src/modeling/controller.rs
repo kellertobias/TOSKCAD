@@ -1780,6 +1780,9 @@ impl ModelToolController {
         if let Some(ModelForm::FdmAid(panel)) = self.form.as_mut() {
             panel.set_review(review);
         }
+        if let Some(ModelForm::Wall(panel)) = self.form.as_mut() {
+            panel.sync_source(session);
+        }
         let event = self
             .form
             .as_mut()

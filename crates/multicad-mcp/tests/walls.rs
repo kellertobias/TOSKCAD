@@ -436,3 +436,162 @@ fn mcp_vertical_cutouts_choose_walls_and_slabs_and_cut_shafts_over_levels() {
             .is_empty()
     );
 }
+
+#[test]
+fn layered_tools_retain_source_bindings_native_materials_and_atomic_reference_repairs() {
+    use multicad_core::{
+        commands::Request as Edit,
+        document::{Entity, EntityData, Mutation},
+        model,
+    };
+    let material = Entity::new(
+        "Brick",
+        EntityData::Material {
+            density_kg_m3: None,
+            color_rgba: [160, 80, 60, 255],
+            section_hatch: None,
+        },
+    );
+    let parameter = Entity::new(
+        "layer_width",
+        EntityData::Parameter {
+            expression: "80".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let document = Document::new("Layered tools")
+        .unwrap()
+        .edited(&[
+            Mutation::Insert(material.clone()),
+            Mutation::Insert(parameter.clone()),
+        ])
+        .unwrap();
+    let host = Headless::new(Workspace::new(document).unwrap(), None, false);
+    let run = |name: &str, args: Value| dispatch(&host, &call(), name, args);
+    let created=run("create_layered_wall_type",json!({"expected_revision":0,"name":"Exterior","construction":{
+        "layers":[
+            {"name":"Paint","construction":{"kind":"coating","material":material.id}},
+            {"name":"Outer brick","construction":{"kind":"solid","material":material.id,"thickness":{"expression":"=$layer_width","unit":"mm"}}},
+            {"name":"Air","construction":{"kind":"cavity","thickness":mm(30.)}},
+            {"name":"Inner brick","construction":{"kind":"solid","material":material.id,"thickness":mm(120.)}}
+        ],"height":mm(2700.),"reference":{"kind":"outside"}
+    }})).unwrap();
+    let ty = created["wall_type"].as_str().unwrap().to_owned();
+    let construction = created["construction"].clone();
+    let boundary = construction["layers"][1]["id"].as_str().unwrap().to_owned();
+    let wall=run("create_wall",json!({"expected_revision":1,"name":"Layered wall","wall_type":ty,"path_mm":[[0,0],[4000,0]],
+        "layer_placement":{"flipped":true,"reference":{"kind":"boundary","layer":boundary,"side":"inside"}}})).unwrap();
+    assert_eq!(wall["solid_count"], 2);
+    near(wall["volume_mm3"].as_f64().unwrap(), 4000. * 200. * 2700.);
+    let wall_id = wall["wall"].as_str().unwrap().to_owned();
+    let inspect = run("inspect_wall", json!({"wall":wall_id})).unwrap();
+    assert_eq!(inspect["layers"].as_array().unwrap().len(), 4);
+    assert_eq!(inspect["layer_placement"]["flipped"], true);
+    assert_eq!(
+        inspect["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["solid"] == true)
+            .count(),
+        2
+    );
+    // A GUI-side parameter rename followed by a new parameter with the old name
+    // must not rebind a retained MCP layer's unchanged source expression.
+    multicad_mcp::host::with(&host, move |target| {
+        let session = target.session_mut();
+        let mut renamed = session.document().get(parameter.id).unwrap().clone();
+        renamed.name = "renamed_width".into();
+        let replacement = Entity::new(
+            "layer_width",
+            EntityData::Parameter {
+                expression: "900".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        session
+            .apply(Edit {
+                expected_revision: 2,
+                actor: Actor::local(Channel::Ui),
+                label: "Rename and replace parameter name".into(),
+                edits: vec![Mutation::Replace(renamed), Mutation::Insert(replacement)],
+            })
+            .unwrap();
+    })
+    .unwrap();
+    let inspected = run("inspect_wall_construction", json!({"wall_type":ty})).unwrap();
+    assert_eq!(inspected["construction"], construction);
+    assert_eq!(inspected["affected_walls"].as_array().unwrap().len(), 1);
+    run("edit_layered_wall_type",json!({"expected_revision":3,"wall_type":ty,"name":"Exterior revised","construction":inspected["construction"]})).unwrap();
+    let inspected = run("inspect_wall", json!({"wall":wall_id})).unwrap();
+    near(inspected["thickness_mm"].as_f64().unwrap(), 230.);
+    let before = host.document();
+    let mut bad = construction.clone();
+    bad["layers"][2]["id"] = bad["layers"][1]["id"].clone();
+    assert!(run("edit_layered_wall_type",json!({"expected_revision":4,"wall_type":ty,"name":"Invalid duplicate","construction":bad})).is_err());
+    assert_eq!(host.document(), before);
+    let edited = run(
+        "edit_wall",
+        json!({"expected_revision":4,"wall":wall_id,"wall_type":ty,"path_mm":[[0,0],[5000,0]]}),
+    )
+    .unwrap();
+    near(edited["volume_mm3"].as_f64().unwrap(), 5000. * 200. * 2700.);
+    assert_eq!(
+        run("inspect_wall", json!({"wall":wall_id})).unwrap()["layer_placement"]["reference"]["layer"],
+        boundary
+    );
+    let mut repaired = construction;
+    repaired["layers"].as_array_mut().unwrap().remove(1);
+    let result=run("edit_wall",json!({"expected_revision":5,"wall":wall_id,"wall_type":ty,"path_mm":[[0,0],[5000,0]],
+        "layer_placement":{"flipped":true,"reference":null},"edit_shared_construction":{"name":"Boundary repaired","construction":repaired}})).unwrap();
+    assert_eq!(result["solid_count"], 1);
+    near(result["volume_mm3"].as_f64().unwrap(), 5000. * 120. * 2700.);
+    let final_document = host.document();
+    assert_eq!(
+        model::read_wall(
+            &final_document,
+            multicad_core::document::EntityId::parse(&wall_id).unwrap()
+        )
+        .unwrap()
+        .layer_placement
+        .unwrap()
+        .reference,
+        None
+    );
+    let mut cancelled = call();
+    cancelled.cancel = Arc::new(AtomicBool::new(true));
+    assert!(
+        dispatch(
+            &host,
+            &cancelled,
+            "edit_wall",
+            json!({"expected_revision":6,"wall":wall_id,"wall_type":ty,"path_mm":[[0,0],[6000,0]]})
+        )
+        .is_err()
+    );
+    assert_eq!(host.document(), final_document);
+    let read_only = Headless::new(Workspace::new(final_document.clone()).unwrap(), None, true);
+    assert!(
+        dispatch(
+            &read_only,
+            &call(),
+            "inspect_wall_construction",
+            json!({"wall_type":ty})
+        )
+        .is_ok()
+    );
+    assert!(
+        dispatch(
+            &read_only,
+            &call(),
+            "edit_layered_wall_type",
+            json!({"expected_revision":0,"wall_type":ty,"name":"Refused","construction":repaired})
+        )
+        .is_err()
+    );
+    assert_eq!(read_only.document(), final_document);
+}

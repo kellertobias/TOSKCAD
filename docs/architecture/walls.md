@@ -61,11 +61,10 @@ an opening or a cutout on the selected face require reattachment; a lintel or
 an intact opposite face remains usable. This is anchor validation, not a claim
 of complete equipment footprint/clearance certification.
 
-This increment establishes source and native geometry contracts. The graphical
-construction editor, separate-wall T
-joins and project-authored dynamic-symbol integration under CAD-206 remain
-in progress. The existing graphical wall form still authors uniform types.
-Source/native tests do not establish graphical workflow or human acceptance.
+The existing native wall form now authors uniform and layered constructions.
+Separate-wall T joins and project-authored dynamic-symbol integration under
+CAD-206 remain in progress. Actual macOS editor interaction and human acceptance
+are separate from source, native geometry and painted-widget checks.
 
 Finite layer faces publish their source-owned material through the exact
 `component/<layer UUID>` provenance. Unknown, missing or ambiguous ownership
@@ -81,6 +80,39 @@ use 0.18 mm on paper, reduced to one third of a thin layer's paper width with a
 0.05 mm minimum. Layers narrower than 0.5 mm on paper omit hatching and report a
 larger-detail warning. This scale rule changes ink only; it never widens a layer.
 Uniform walls retain their existing 0.5 mm cut outlines.
+
+### Layer construction editor and update scope
+
+Choose **New type… → Layered construction** to author a stack. The live diagram
+uses true finite-layer proportions; coatings have a labeled zero-volume line and
+air has real width. Select a band or its labeled row, then change its material,
+thickness, name or optional role. Add, remove, duplicate and reorder layers with
+the corresponding controls. Duplication creates a distinct local layer identity;
+reordering preserves it. The total remains derived.
+
+Choose the construction's Outside, Center, Inside or a specific layer boundary.
+The wall can inherit that reference or override it independently. Its path marker
+and mirrored Flip preview use the effective instance reference. Removing a
+referenced layer requires an explicit replacement; it never silently selects
+another boundary. Layer thicknesses belong to the shared construction. A wall
+can override height/reference/flip; use a separate type for independent layers.
+
+An existing construction starts read-only, with selectable bands and rows.
+**Edit shared construction** lists existing affected walls and enables the shared
+name, height and layer controls. **Duplicate as a separate type** creates another
+entry in the same catalog and changes only the current wall's type. **Discard
+construction edits** restores the shared definition and keeps the wall's height
+override. Preview/Cancel/Apply uses the existing native modeling transaction;
+Undo restores the shared type and wall together. All active affected geometry is
+checked before Apply. An unresolved reference on another wall refuses the edit.
+
+`WallConstructionEdit`, `prepare_wall_construction_change`,
+`prepare_wall_construction_edit` and `wall_construction_users` provide the same
+scope to UI and MCP. All linked source mutations stage before validation, allowing
+the current wall's boundary repair to accompany a shared layer removal. The
+editor shares immutable evaluated session state and caches material choices,
+resolved bands and impact lists by process-local source stamp. Idle painting
+neither hashes the document nor reconstructs the parameter table.
 
 ### Vertical cutouts
 
@@ -294,12 +326,18 @@ through the shared page render.
   or cutout (`WallOpeningChange`), with any new types, through the same
   planner as a wall edit. `plan_wall_opening` runs the same checks without
   staging, and `locate_on_wall` maps a plan point to a segment and distance.
-- **MCP:** `create_wall_type`, `edit_wall_type`, `create_opening_type`,
+- **MCP:** `create_wall_type`, `edit_wall_type`, `create_layered_wall_type`,
+  `edit_layered_wall_type`, `inspect_wall_construction`, `create_opening_type`,
   `create_wall`, `edit_wall` (keeps cutouts), `inspect_wall`,
   `set_wall_opening`, `set_vertical_cutout` (wall, `slabs` or
   `from_level`/`to_level`, and `plan`), `remove_wall_opening`,
-  `remove_vertical_cutout` and `inspect_vertical_cutout`. Each mutation is
-  evaluated natively before commit.
+  `remove_vertical_cutout` and `inspect_vertical_cutout`. Wall geometry and
+  shared-type changes are evaluated natively before commit. Creating an unused
+  type records source only. Layered create/edit-wall calls accept explicit
+  `layer_placement` and `edit_shared_construction`; omission retains an existing
+  wall's placement. Retained layer IDs also retain bound parameter identities
+  through a parameter rename. Construction inspection returns a reusable tool
+  input plus the complete bound source definition and affected wall IDs.
 
 ## Limits
 
