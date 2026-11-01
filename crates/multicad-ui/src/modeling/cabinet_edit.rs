@@ -321,6 +321,7 @@ impl CabinetGuide {
             }
         };
         let mut labels = 0;
+        let mut occupied = vec![];
         let mut label = |at: [f64; 3], text: &str, color| {
             let p = camera.project(at.map(|v| v as f32), rect);
             let pos = egui::pos2(p[0], p[1]);
@@ -329,7 +330,11 @@ impl CabinetGuide {
             }
             let galley =
                 painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.), color);
-            let r = egui::Rect::from_center_size(pos, galley.size()).expand(3.);
+            let r = label_rect(pos, galley.size(), rect, &occupied);
+            if r.center().distance(pos) > 8. {
+                painter.line_segment([pos, r.center()], egui::Stroke::new(0.7, color));
+            }
+            occupied.push(r);
             painter.rect_filled(r, 3., egui::Color32::from_black_alpha(170));
             painter.galley(r.min + egui::vec2(3., 3.), galley, color);
             labels += 1;
@@ -364,5 +369,65 @@ impl CabinetGuide {
             label(*at, text, measure.color);
         }
         labels
+    }
+}
+
+/// Keep nearby dimension and shelf labels readable as the camera rotates.
+fn label_rect(
+    anchor: egui::Pos2,
+    text_size: egui::Vec2,
+    viewport: egui::Rect,
+    occupied: &[egui::Rect],
+) -> egui::Rect {
+    let size = text_size + egui::vec2(6., 6.);
+    let clamp = |p: egui::Pos2| {
+        let half = size * 0.5;
+        let center = egui::pos2(
+            p.x.clamp(
+                viewport.left() + half.x.min(viewport.width() * 0.5),
+                viewport.right() - half.x.min(viewport.width() * 0.5),
+            ),
+            p.y.clamp(
+                viewport.top() + half.y.min(viewport.height() * 0.5),
+                viewport.bottom() - half.y.min(viewport.height() * 0.5),
+            ),
+        );
+        egui::Rect::from_center_size(center, size)
+    };
+    let initial = clamp(anchor);
+    for step in 0..=64 {
+        for direction in [1., -1.] {
+            let candidate = clamp(anchor + egui::vec2(0., step as f32 * (size.y + 3.) * direction));
+            if occupied.iter().all(|r| !r.expand(2.).intersects(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    initial
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn coincident_datum_and_shelf_labels_remain_separate_and_inside_the_viewport() {
+        let viewport = egui::Rect::from_min_max(egui::pos2(200., 100.), egui::pos2(1000., 800.));
+        let mut placed = vec![];
+        for anchor in [
+            egui::pos2(220., 780.),
+            egui::pos2(220., 780.),
+            egui::pos2(230., 782.),
+            egui::pos2(220., 780.),
+        ] {
+            let r = label_rect(anchor, egui::vec2(330., 14.), viewport, &placed);
+            assert!(viewport.contains_rect(r));
+            assert!(
+                placed
+                    .iter()
+                    .all(|previous: &egui::Rect| !previous.intersects(r))
+            );
+            placed.push(r);
+        }
     }
 }
