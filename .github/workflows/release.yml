@@ -81,10 +81,10 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: linux-x64
-            timeout_minutes: 120
+            timeout_minutes: 180
           - os: macos-15
             target: macos-arm64
-            timeout_minutes: 120
+            timeout_minutes: 180
           - os: windows-2025
             target: windows-x64
             timeout_minutes: 240
