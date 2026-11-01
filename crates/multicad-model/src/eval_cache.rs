@@ -42,6 +42,12 @@
 //! an occurrence reference. A new provider is therefore uncached until it is
 //! audited and added here.
 //!
+//! Fence geometry reads its declared run/type/path/level/parameter closure.
+//! A miss validates the complete run before returning any member solid, even
+//! for source-scoped compilation. The compiler checks complete member identity
+//! and material assignments before every hit; those checks cannot be skipped
+//! by a cached shape. Failed partial run generation returns no cacheable member.
+//!
 //! # Lifetime, memory and threads
 //!
 //! Entries are only stored for successfully evaluated features, so a
@@ -91,6 +97,10 @@ pub fn cacheable_type(type_id: &str) -> bool {
         model::ADVANCED_TYPE,
         model::ALIGN_TYPE,
         model::PANEL_TYPE,
+        // Every miss proves the complete run before returning a member. Typed
+        // run/type/path/level/parameter links cover geometry; the compiler also
+        // checks the full member/material set before accepting a cache hit.
+        model::FENCE_MEMBER_TYPE,
         model::PANEL_JOINT_CUT_TYPE,
         model::MACHINING_CUT_TYPE,
         model::SHEET_TYPE,
@@ -557,6 +567,7 @@ mod tests {
     fn cacheable_types_exclude_scanning_and_unknown_providers() {
         assert!(cacheable_type(model::EXTRUDE_TYPE));
         assert!(cacheable_type(model::MEMBER_TYPE));
+        assert!(cacheable_type(model::FENCE_MEMBER_TYPE));
         for excluded in [
             model::WALL_TYPE,
             model::SLAB_TYPE,

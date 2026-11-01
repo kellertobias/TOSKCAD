@@ -498,6 +498,7 @@ impl Compiler {
         let mut member_paths = BTreeMap::new();
         let mut weld_paths = crate::weldment::Paths::new(&context);
         let mut sheet_layouts = BTreeMap::new();
+        let mut fences = crate::fences::Context::new(document, context.parameters());
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
@@ -623,6 +624,11 @@ impl Compiler {
                 return Err(error(Some(id), "Model exceeds the native feature budget"));
             }
             // CAD-150: an unchanged result key reuses the earlier exact result.
+            let fence_source = if definition.type_id == model::FENCE_MEMBER_TYPE {
+                Some(fences.prepare(id, interrupt)?)
+            } else {
+                None
+            };
             let key = cached.as_mut().and_then(|c| c.key(id));
             if let Some((solid, shape, extras)) =
                 key.and_then(|key| cached.as_mut().and_then(|c| c.lookup(&key, revision)))
@@ -780,6 +786,12 @@ impl Compiler {
                     panel_frames.insert(id, frame);
                     solid
                 }
+                (model::FENCE_MEMBER_TYPE, model::FENCE_SCHEMA) => fences.build(
+                    id,
+                    fence_source.as_ref().expect("prepared fence source"),
+                    self.policy,
+                    interrupt,
+                )?,
                 (model::PANEL_JOINT_CUT_TYPE, model::PANEL_JOINT_CUT_SCHEMA) => {
                     crate::cabinetry::build_joint_cut(
                         document,

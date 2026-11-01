@@ -16,6 +16,7 @@ mod external_repair;
 mod extrude;
 mod face_profile;
 mod fdm;
+mod fences;
 mod gear_pairs;
 mod gears;
 mod mechanical_parts;
