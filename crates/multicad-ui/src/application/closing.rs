@@ -196,6 +196,9 @@ impl Application {
         if self.close_save.is_some() || self.close_busy() {
             return Err("Wait for file and export operations to finish before closing".into());
         }
+        if self.projects.iter().any(Project::pending_edits) {
+            return Err("Apply or cancel pending tool edits before quitting".into());
+        }
         self.close_allowed = true;
         self.close_confirm = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -263,15 +266,23 @@ impl Application {
             if drafts {ui.add_space(10.);ui.label("Apply or cancel pending tool edits in every document before saving or quitting.");}
             if self.message_error {ui.add_space(10.);ui.colored_label(Color32::LIGHT_RED,&self.message);}
             ui.add_space(20.);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                let save=ui.add_enabled(!busy && !drafts,egui::Button::new(egui::RichText::new("Save and Quit").color(Color32::WHITE)).shortcut_text(egui::RichText::new("Enter").color(Color32::from_white_alpha(210))).min_size(egui::vec2(170.,36.)).fill(ui.visuals().selection.bg_fill))
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),36.),egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),|ui| {
+                ui.spacing_mut().item_spacing.x=8.;
+                let save=crate::controls::dialog_action(ui,"Save and Quit","Enter",195.,!busy && !drafts,Some(ui.visuals().selection.bg_fill))
                     .on_hover_text("Save every unsaved document, then quit after all writes succeed").clicked();
-                let cancel=ui.add(egui::Button::new("Cancel").shortcut_text("Escape").min_size(egui::vec2(130.,36.))).clicked();
-                (save,cancel)
+                let quit=crate::controls::dialog_action(ui,"Quit",quit_shortcut_label(),135.,!busy && !drafts,None)
+                    .on_hover_text("Quit without saving the unsaved documents").clicked();
+                let cancel=crate::controls::dialog_action(ui,"Cancel","Escape",150.,true,None).clicked();
+                (save,quit,cancel)
             }).inner
         });
-        if response.inner.1 || response.should_close() {
+        if response.inner.2 || response.should_close() {
             self.cancel_close();
+        } else if response.inner.1 && !busy && !drafts {
+            if let Err(error) = self.confirm_close_without_saving(ctx) {
+                self.message = error;
+                self.message_error = true;
+            }
         } else if (response.inner.0 || enter)
             && !busy
             && !drafts
@@ -280,6 +291,15 @@ impl Application {
             self.message = error;
             self.message_error = true;
         }
+    }
+}
+fn quit_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘Q"
+    } else if cfg!(target_os = "windows") {
+        "Alt+F4"
+    } else {
+        "Ctrl+Q"
     }
 }
 fn repeat_instruction() -> &'static str {
@@ -521,9 +541,11 @@ mod tests {
             "File is not saved. Do you really want to quit?",
             repeat_instruction(),
             "Cancel",
+            "Quit",
             "Save and Quit",
             "Escape",
             "Enter",
+            quit_shortcut_label(),
         ] {
             assert!(
                 shown.iter().any(|s| s == label),
@@ -726,6 +748,27 @@ mod tests {
         );
         output.drop_without_applying_deltas();
         assert_eq!(app.current().session.document(), &before);
+        assert!(app.current().dirty());
+    }
+    #[test]
+    fn quit_button_discards_explicitly_but_is_blocked_for_jobs_and_unapplied_edits() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        app.close_confirm = true;
+        let original = app.current().session.document().clone();
+        let ctx = egui::Context::default();
+        app.pending_files.insert(42, PendingFile::Discover);
+        click_dialog(&mut app, &ctx, "Quit");
+        assert!(!app.close_allowed && app.close_confirm);
+        app.pending_files.clear();
+        app.current_mut().editor.rows[0].name = "Pending draft".into();
+        click_dialog(&mut app, &ctx, "Quit");
+        assert!(!app.close_allowed && app.close_confirm);
+        assert!(app.confirm_close_without_saving(&ctx).is_err());
+        app.current_mut().editor = ParameterEditor::new(&app.current().session);
+        click_dialog(&mut app, &ctx, "Quit");
+        assert!(app.close_allowed && !app.close_confirm);
+        assert_eq!(app.current().session.document(), &original);
         assert!(app.current().dirty());
     }
 }

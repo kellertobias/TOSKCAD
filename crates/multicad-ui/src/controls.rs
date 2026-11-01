@@ -43,6 +43,128 @@ pub(crate) fn inspector_combo(ui: &egui::Ui, id: impl egui::AsIdSalt) -> egui::C
         .width(inspector_width(ui))
         .truncate()
 }
+/// Dialog actions keep a padded left label and right shortcut column. Use the
+/// native Button widget so keyboard focus and accessibility stay intact.
+pub(crate) fn dialog_action(
+    ui: &mut egui::Ui,
+    label: &str,
+    shortcut: &str,
+    min_width: f32,
+    enabled: bool,
+    fill: Option<Color32>,
+) -> egui::Response {
+    let style = ui.style().clone();
+    ui.spacing_mut().button_padding = Vec2::new(15., 8.);
+    ui.style_mut().override_text_valign = Some(egui::Align::Center);
+    let mut label = egui::RichText::new(label);
+    let mut shortcut = egui::RichText::new(shortcut);
+    if fill.is_some() {
+        label = label.color(Color32::WHITE);
+        shortcut = shortcut.color(Color32::from_white_alpha(210));
+    }
+    let mut button = egui::Button::new(label)
+        .shortcut_text(shortcut)
+        .min_size(Vec2::new(min_width, 36.));
+    if let Some(fill) = fill {
+        button = button.fill(fill);
+    }
+    let response = ui.add_enabled(enabled, |ui: &mut egui::Ui| {
+        ui.add_sized(Vec2::new(min_width, 36.), button)
+    });
+    ui.set_style(style);
+    response
+}
+#[cfg(test)]
+mod dialog_action_tests {
+    use super::*;
+    use egui::Rect;
+    #[test]
+    fn dialog_labels_and_shortcuts_keep_symmetric_padding_and_centering_when_wrapped_or_disabled() {
+        for width in [560., 320.] {
+            for enabled in [true, false] {
+                let ctx = egui::Context::default();
+                crate::theme::configure(&ctx);
+                let mut rectangles = vec![];
+                for _ in 0..3 {
+                    rectangles.clear();
+                    let output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                Pos2::ZERO,
+                                Vec2::new(width, 160.),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| {
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(ui.available_width(), 36.),
+                                egui::Layout::right_to_left(egui::Align::Center)
+                                    .with_main_wrap(true),
+                                |ui| {
+                                    for (label, hint, min_width) in [
+                                        ("Save and Quit", "Enter", 195.),
+                                        ("Quit", "⌘Q", 135.),
+                                        ("Cancel", "Escape", 150.),
+                                    ] {
+                                        let response = dialog_action(
+                                            ui,
+                                            label,
+                                            hint,
+                                            min_width,
+                                            enabled,
+                                            (label == "Save and Quit").then_some(Color32::BLUE),
+                                        );
+                                        rectangles.push((label, hint, response.rect));
+                                    }
+                                },
+                            );
+                        },
+                    );
+                    let text_rectangles = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(t) => Some((
+                                t.galley.text().to_owned(),
+                                Rect::from_min_size(t.pos, t.galley.size()),
+                            )),
+                            _ => None,
+                        })
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    output.drop_without_applying_deltas();
+                    for (label, hint, rect) in &rectangles {
+                        let text = |value: &str| {
+                            text_rectangles
+                                .get(value)
+                                .copied()
+                                .unwrap_or_else(|| panic!("Missing {value} at width {width}: {rectangles:?}; {text_rectangles:?}"))
+                        };
+                        let label_rect = text(label);
+                        let hint_rect = text(hint);
+                        let left = label_rect.left() - rect.left();
+                        let right = rect.right() - hint_rect.right();
+                        assert!((12. ..=16.).contains(&left), "{label} left padding {left}");
+                        assert!(
+                            (12. ..=16.).contains(&right),
+                            "{label} right padding {right}"
+                        );
+                        assert!(
+                            (left - right).abs() < 1.,
+                            "{label}: asymmetric {left}/{right}"
+                        );
+                        assert!((label_rect.center().y - rect.center().y).abs() < 1.);
+                        assert!((hint_rect.center().y - rect.center().y).abs() < 1.);
+                        assert!(label_rect.right() + 8. <= hint_rect.left());
+                        assert!(
+                            rect.left() >= 0. && rect.right() <= width,
+                            "{label}: clipped at width {width}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
 /// egui's default collapsing header extends to its full unwrapped title.
 /// Bound the title before handing it to the header so a disclosure cannot
 /// increase the width of a user's resizable Inspector.
