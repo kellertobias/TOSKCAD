@@ -156,6 +156,16 @@ impl Resolver<'_> {
                 .map_err(error)?;
                 Ok(frame_basis(frame))
             }
+            model::MECHANICAL_PART_TYPE => {
+                let source = model::read_mechanical_part(self.document, feature).map_err(error)?;
+                Ok(frame_basis(
+                    source
+                        .parameters
+                        .frame()
+                        .resolve(self.parameters)
+                        .map_err(error)?,
+                ))
+            }
             model::GEAR_TYPE => {
                 let source = model::read_gear(self.document, feature).map_err(error)?;
                 Ok(frame_basis(

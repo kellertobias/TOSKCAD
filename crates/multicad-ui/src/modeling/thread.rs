@@ -128,8 +128,16 @@ impl ThreadPanel {
                 .as_ref()
                 .map_or(self.request.body, |target| target.body);
         }
+        request.parameters = self.recipe(document, self.mode)?;
+        Ok(request)
+    }
+    pub(super) fn recipe(
+        &self,
+        document: &Document,
+        mode: ThreadMode,
+    ) -> Result<ThreadParameters, String> {
         let basis = self.plane.map(Datum::frame);
-        request.parameters = ThreadParameters {
+        let parameters = ThreadParameters {
             family: self.family,
             custom: if self.family == ThreadFamily::Custom {
                 Some(CustomThreadProfile {
@@ -163,13 +171,171 @@ impl ThreadPanel {
             fit: self.request.parameters.fit,
             runout: self.request.parameters.runout,
         };
-        // Calculations use the immutable opening source. The controller revokes
-        // previews if the source changes instead of applying stale controls.
-        request
-            .parameters
-            .resolve(&self.parameters, request.mode)
+        parameters
+            .resolve(&self.parameters, mode)
             .map_err(|e| e.to_string())?;
-        Ok(request)
+        Ok(parameters)
+    }
+    pub(super) fn recipe_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        mode: ThreadMode,
+        length_label: &str,
+        show_frame: bool,
+    ) -> bool {
+        let mut changed = false;
+        ui.separator();
+        ui.label("Profile family");
+        controls::inspector_combo(ui, "thread-family")
+            .selected_text(self.family.label())
+            .show_ui(ui, |ui| {
+                for family in ThreadFamily::ALL {
+                    let response = ui
+                        .add_enabled(
+                            family.supported(),
+                            egui::Button::selectable(self.family == family, family.label()),
+                        )
+                        .on_hover_text(family.source())
+                        .on_disabled_hover_text(
+                            "Not implemented; no standard-family geometry is claimed",
+                        );
+                    if response.clicked() {
+                        changed |= self.family != family;
+                        self.family = family;
+                    }
+                }
+            });
+        ui.small(self.family.source());
+        if self.family == ThreadFamily::IsoMetric {
+            let mut preset = None;
+            controls::inspector_combo(ui, "thread-preset")
+                .selected_text("Choose a sourced metric preset…")
+                .show_ui(ui, |ui| {
+                    for p in model::metric_thread_presets() {
+                        if ui.selectable_label(false, &p.designation).clicked() {
+                            preset = Some(p);
+                        }
+                    }
+                });
+            if let Some(p) = preset {
+                self.diameter = DimensionField::from_dimension(&model::length(p.diameter_mm), "mm")
+                    .expect("finite preset");
+                self.pitch = DimensionField::from_dimension(&model::length(p.pitch_mm), "mm")
+                    .expect("finite preset");
+                changed = true;
+            }
+            ui.small("Basic profile only; no ISO 965 tolerance class. Multiple starts use this profile as custom geometry, not a standard fastening designation.");
+        }
+        changed |= self.diameter.show(
+            ui,
+            "Nominal major diameter",
+            "Basic crest diameter at the base plane, before fabrication allowance",
+        );
+        changed |= self.pitch.show(
+            ui,
+            "Pitch",
+            "Axial spacing of adjacent threads; lead = pitch × starts",
+        );
+        changed |= self.length.show(
+            ui,
+            length_label,
+            "Complete receiving length from the base plane; at least one pitch",
+        );
+        ui.horizontal(|ui| {
+            ui.label("Starts");
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.starts).range(1..=8))
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            for (hand, label) in [
+                (ThreadHand::Right, "Right hand"),
+                (ThreadHand::Left, "Left hand"),
+            ] {
+                changed |= ui.radio_value(&mut self.hand, hand, label).changed();
+            }
+        });
+        if self.family == ThreadFamily::Custom {
+            for (field, label) in self.custom.iter_mut().zip([
+                "Radial thread depth",
+                "Axial crest width",
+                "Lower flank from radial (deg)",
+                "Upper flank from radial (deg)",
+                "Radius taper (mm/mm)",
+            ]) {
+                changed |= field.show(
+                    ui,
+                    label,
+                    "Explicit custom axial profile; diameter taper is twice radius taper",
+                );
+            }
+        }
+        ui.separator();
+        ui.strong("Fabrication allowance");
+        ui.small("Separate from the nominal basic profile. Positive clearance shrinks external material or enlarges an internal cut.");
+        changed |= self.radial.show(
+            ui,
+            "Radial clearance",
+            "Millimetres on radius; not an ISO tolerance class",
+        );
+        changed |= self.axial.show(
+            ui,
+            "Axial clearance",
+            "Total tooth-width allowance in millimetres",
+        );
+        if mode == ThreadMode::CutInternal {
+            changed |= self.wall.show(
+                ui,
+                "Minimum receiving wall",
+                "Required material around the complete thread, beyond the major radius",
+            );
+        }
+        ui.separator();
+        ui.strong("Representation");
+        for representation in [
+            ThreadRepresentation::Modeled,
+            ThreadRepresentation::CosmeticEnvelope,
+        ] {
+            changed |= ui
+                .radio_value(
+                    &mut self.representation,
+                    representation,
+                    representation.label(),
+                )
+                .changed();
+        }
+        if self.representation == ThreadRepresentation::CosmeticEnvelope {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Display only. Switch to Modeled before STEP, mesh or print export.",
+            );
+        }
+        if show_frame {
+            ui.separator();
+            ui.label("Axis plane");
+            controls::inspector_combo(ui, "thread-plane")
+                .selected_text(self.plane.map_or("Stored orientation", Datum::label))
+                .show_ui(ui, |ui| {
+                    for datum in Datum::ALL {
+                        changed |= ui
+                            .selectable_value(&mut self.plane, Some(datum), datum.label())
+                            .changed();
+                    }
+                });
+            ui.small("The thread axis follows the plane normal. Origin is the base center in project coordinates.");
+            for (field, label) in
+                self.origin
+                    .iter_mut()
+                    .zip(["Base center X", "Base center Y", "Base center Z"])
+            {
+                changed |= field.show(
+                    ui,
+                    label,
+                    "Explicit axis placement; formulas may reference $parameters",
+                );
+            }
+        }
+        changed
     }
     pub fn show(
         &mut self,
@@ -246,155 +412,7 @@ impl ThreadPanel {
                     .map_or("Missing Part", |e| e.name.as_str())
             ));
         }
-        ui.separator();
-        ui.label("Profile family");
-        controls::inspector_combo(ui, "thread-family")
-            .selected_text(self.family.label())
-            .show_ui(ui, |ui| {
-                for family in ThreadFamily::ALL {
-                    let response = ui
-                        .add_enabled(
-                            family.supported(),
-                            egui::Button::selectable(self.family == family, family.label()),
-                        )
-                        .on_hover_text(family.source())
-                        .on_disabled_hover_text(
-                            "Not implemented; no standard-family geometry is claimed",
-                        );
-                    if response.clicked() {
-                        changed |= self.family != family;
-                        self.family = family;
-                    }
-                }
-            });
-        ui.small(self.family.source());
-        if self.family == ThreadFamily::IsoMetric {
-            let mut preset = None;
-            controls::inspector_combo(ui, "thread-preset")
-                .selected_text("Choose a sourced metric preset…")
-                .show_ui(ui, |ui| {
-                    for p in model::metric_thread_presets() {
-                        if ui.selectable_label(false, &p.designation).clicked() {
-                            preset = Some(p);
-                        }
-                    }
-                });
-            if let Some(p) = preset {
-                self.diameter = DimensionField::from_dimension(&model::length(p.diameter_mm), "mm")
-                    .expect("finite preset");
-                self.pitch = DimensionField::from_dimension(&model::length(p.pitch_mm), "mm")
-                    .expect("finite preset");
-                changed = true;
-            }
-            ui.small("Basic profile only; no ISO 965 tolerance class. Multiple starts use this profile as custom geometry, not a standard fastening designation.");
-        }
-        changed |= self.diameter.show(
-            ui,
-            "Nominal major diameter",
-            "Basic crest diameter at the base plane, before fabrication allowance",
-        );
-        changed |= self.pitch.show(
-            ui,
-            "Pitch",
-            "Axial spacing of adjacent threads; lead = pitch × starts",
-        );
-        changed |= self.length.show(
-            ui,
-            "Thread length",
-            "Complete receiving length from the base plane; at least one pitch",
-        );
-        ui.horizontal(|ui| {
-            ui.label("Starts");
-            changed |= ui
-                .add(egui::DragValue::new(&mut self.starts).range(1..=8))
-                .changed();
-        });
-        ui.horizontal(|ui| {
-            for (hand, label) in [
-                (ThreadHand::Right, "Right hand"),
-                (ThreadHand::Left, "Left hand"),
-            ] {
-                changed |= ui.radio_value(&mut self.hand, hand, label).changed();
-            }
-        });
-        if self.family == ThreadFamily::Custom {
-            for (field, label) in self.custom.iter_mut().zip([
-                "Radial thread depth",
-                "Axial crest width",
-                "Lower flank from radial (deg)",
-                "Upper flank from radial (deg)",
-                "Radius taper (mm/mm)",
-            ]) {
-                changed |= field.show(
-                    ui,
-                    label,
-                    "Explicit custom axial profile; diameter taper is twice radius taper",
-                );
-            }
-        }
-        ui.separator();
-        ui.strong("Fabrication allowance");
-        ui.small("Separate from the nominal basic profile. Positive clearance shrinks external material or enlarges an internal cut.");
-        changed |= self.radial.show(
-            ui,
-            "Radial clearance",
-            "Millimetres on radius; not an ISO tolerance class",
-        );
-        changed |= self.axial.show(
-            ui,
-            "Axial clearance",
-            "Total tooth-width allowance in millimetres",
-        );
-        if self.mode == ThreadMode::CutInternal {
-            changed |= self.wall.show(
-                ui,
-                "Minimum receiving wall",
-                "Required material around the complete thread, beyond the major radius",
-            );
-        }
-        ui.separator();
-        ui.strong("Representation");
-        for representation in [
-            ThreadRepresentation::Modeled,
-            ThreadRepresentation::CosmeticEnvelope,
-        ] {
-            changed |= ui
-                .radio_value(
-                    &mut self.representation,
-                    representation,
-                    representation.label(),
-                )
-                .changed();
-        }
-        if self.representation == ThreadRepresentation::CosmeticEnvelope {
-            ui.colored_label(
-                egui::Color32::YELLOW,
-                "Display only. Switch to Modeled before STEP, mesh or print export.",
-            );
-        }
-        ui.separator();
-        ui.label("Axis plane");
-        controls::inspector_combo(ui, "thread-plane")
-            .selected_text(self.plane.map_or("Stored orientation", Datum::label))
-            .show_ui(ui, |ui| {
-                for datum in Datum::ALL {
-                    changed |= ui
-                        .selectable_value(&mut self.plane, Some(datum), datum.label())
-                        .changed();
-                }
-            });
-        ui.small("The thread axis follows the plane normal. Origin is the base center in project coordinates.");
-        for (field, label) in
-            self.origin
-                .iter_mut()
-                .zip(["Base center X", "Base center Y", "Base center Z"])
-        {
-            changed |= field.show(
-                ui,
-                label,
-                "Explicit axis placement; formulas may reference $parameters",
-            );
-        }
+        changed |= self.recipe_controls(ui, self.mode, "Thread length", true);
         let validation = self.request(document, enabled);
         match &validation {
             Ok(request) => {

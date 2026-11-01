@@ -297,6 +297,14 @@ impl SketchEditor {
         if tool == ModelingTool::Thread {
             return self.begin_thread(session, resources, feed, channel);
         }
+        if tool == ModelingTool::MechanicalPart {
+            self.finish()?;
+            self.model
+                .begin_mechanical_part(session, resources, channel)?;
+            self.message =
+                "Hardware · configure a washer, nut or mounting envelope, then Preview".into();
+            return Ok(());
+        }
         if tool == ModelingTool::Gear {
             self.finish()?;
             self.model.begin_gear(session, resources, channel)?;

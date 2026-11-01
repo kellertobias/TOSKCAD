@@ -10,6 +10,7 @@ use super::{
     form::{ModelEvent, ModelForm, ToolProof},
     gear::GearPanel,
     group_edit::GroupEditPanel,
+    mechanical_part::MechanicalPartPanel,
     names::GeneratedNames,
     placement::PlacementPanel,
     primitive::PrimitivePanel,
@@ -26,7 +27,7 @@ use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     document::{EntityData, EntityId},
     model::{
-        CreatedBody, ExtrudeRequest, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest,
+        self, CreatedBody, ExtrudeRequest, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest,
         RevolveRequest, length,
     },
     project_file::{ContentHash, ProjectResources},
@@ -190,6 +191,7 @@ impl ModelToolController {
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
             || multicad_core::model::read_thread(document, feature).is_ok()
             || multicad_core::model::read_gear(document, feature).is_ok()
+            || multicad_core::model::read_mechanical_part(document, feature).is_ok()
             || multicad_core::model::read_gear_pair(document, feature).is_ok()
         {
             return true;
@@ -400,6 +402,21 @@ impl ModelToolController {
                     parameters: source.parameters,
                 })?))
             }
+            model::MECHANICAL_PART_TYPE => {
+                let source =
+                    model::read_mechanical_part(document, feature).map_err(|e| e.to_string())?;
+                ModelForm::MechanicalPart(Box::new(MechanicalPartPanel::new(
+                    model::MechanicalPartRequest {
+                        feature,
+                        body: source.output.body,
+                        name: body_name(source.output.body)?,
+                        parameters: source.parameters,
+                        provenance: source.provenance,
+                    },
+                    session.parameters().clone(),
+                    true,
+                )?))
+            }
             model::GEAR_TYPE => {
                 let source = model::read_gear(document, feature).map_err(|e| e.to_string())?;
                 ModelForm::Gear(Box::new(GearPanel::new(
@@ -576,6 +593,33 @@ impl ModelToolController {
                 session.parameters().clone(),
                 choices,
                 selected,
+                false,
+            )?)),
+        )
+    }
+    pub fn begin_mechanical_part(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Hardware", " feature");
+        let request = model::MechanicalPartRequest::new(
+            name,
+            model::MechanicalPartParameters::Washer {
+                bore_diameter: length(3.2),
+                outside_diameter: length(7.),
+                thickness: length(0.5),
+                frame: Default::default(),
+            },
+        );
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::MechanicalPart(Box::new(MechanicalPartPanel::new(
+                request,
+                session.parameters().clone(),
                 false,
             )?)),
         )
@@ -1391,6 +1435,7 @@ impl ModelToolController {
                     | ModelRequest::Advanced(_)
                     | ModelRequest::Alignment(_)
                     | ModelRequest::GearPair(_)
+                    | ModelRequest::MechanicalPart(_)
             ) || !matches!(execution, Execution::Create),
             aid: match request {
                 ModelRequest::FdmAid(command) => Some(command.request.feature),
@@ -1782,3 +1827,6 @@ mod advanced_tests;
 mod gear_tests;
 #[cfg(test)]
 mod thread_tests;
+
+#[cfg(test)]
+mod mechanical_part_tests;

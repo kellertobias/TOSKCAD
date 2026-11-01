@@ -24,6 +24,7 @@ mod guide_fields;
 mod joinery_fields;
 mod joint;
 mod machining;
+mod mechanical_part;
 mod names;
 #[cfg(test)]
 pub(crate) mod native_fixture;
@@ -74,6 +75,7 @@ pub enum ModelingTool {
     Cylinder,
     Thread,
     Gear,
+    MechanicalPart,
     Revolve,
     Boolean,
     Split,
@@ -101,11 +103,12 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
         Self::Gear,
+        Self::MechanicalPart,
         Self::Wall,
         Self::Door,
         Self::Window,
@@ -152,6 +155,7 @@ impl ModelingTool {
             Self::Cylinder => "cylinder",
             Self::Thread => "thread",
             Self::Gear => "gear",
+            Self::MechanicalPart => "mechanical-part",
             Self::Revolve => "revolve",
             Self::Boolean => "boolean",
             Self::Split => "split",
@@ -194,6 +198,7 @@ impl ModelingTool {
             Self::Cylinder => "Cylinder",
             Self::Thread => "Thread",
             Self::Gear => "Gear",
+            Self::MechanicalPart => "Hardware",
             Self::Revolve => "Revolve",
             Self::Boolean => "Boolean",
             Self::Split => "Split",
@@ -236,6 +241,7 @@ impl ModelingTool {
             Self::Cylinder => crate::icons::Icon::Cylinder,
             Self::Thread => crate::icons::Icon::Revolve,
             Self::Gear => crate::icons::Icon::Revolve,
+            Self::MechanicalPart => crate::icons::Icon::Revolve,
             Self::Revolve => crate::icons::Icon::Revolve,
             Self::Boolean => crate::icons::Icon::Boolean,
             Self::Split => crate::icons::Icon::Split,
@@ -274,6 +280,7 @@ impl ModelingTool {
             Self::Cylinder => &["cyl", "add-cylinder"],
             Self::Thread => &["screw-thread", "tap-thread", "helical-thread"],
             Self::Gear => &["spur-gear", "helical-gear", "herringbone-gear"],
+            Self::MechanicalPart => &["washer", "hex-nut", "bearing-envelope"],
             Self::Revolve => &["rev", "lathe"],
             Self::Boolean => &["combine", "body-operation"],
             Self::Split => &["split-body", "inside-outside"],
@@ -325,6 +332,9 @@ impl ModelingTool {
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::MechanicalPart => {
+                "Usage: mechanical-part (configure a washer, hex nut or bearing mounting envelope; Preview and Apply)"
+            }
             Self::Gear => {
                 "Usage: gear (choose family, module system, teeth, bore and clearance in the Inspector; Preview and Apply)"
             }
@@ -411,6 +421,9 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::MechanicalPart => {
+                "Requires native modeling and no pending edits. Generic washers, hex nuts and bearing mounting envelopes; no verified stocked catalog designation."
+            }
             Self::Gear => {
                 "Requires native modeling and no pending edits. Supports unshifted external spur, helical, continuous herringbone and gapped double-helical gears."
             }
