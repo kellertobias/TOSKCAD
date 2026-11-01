@@ -72,6 +72,92 @@ fn side_frame(profile: &Profile, edge: &ProfileEdge, height: f64) -> Option<Refe
 }
 
 impl Solid {
+    pub(crate) fn name_gear(
+        &mut self,
+        feature: EntityId,
+        teeth: u32,
+        sweep: crate::GearSweep,
+    ) -> Result<(), GeometryError> {
+        let mut elements: BTreeMap<_, _> = self
+            .topology_snapshot(feature, 0)?
+            .elements
+            .into_iter()
+            .map(|element| (element.key, element))
+            .collect();
+        let chevron = matches!(
+            sweep,
+            crate::GearSweep::Chevron | crate::GearSweep::GappedChevron { .. }
+        );
+        let mut caps = [false; 2];
+        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+            let role = match seed.role {
+                0 | 1 => {
+                    caps[seed.role as usize] = true;
+                    if seed.role == 0 {
+                        "gear/end.start"
+                    } else {
+                        "gear/end.end"
+                    }
+                    .into()
+                }
+                2 => "gear/bore".into(),
+                3 => "gear/root.core".into(),
+                4 | 5 if matches!(sweep, crate::GearSweep::GappedChevron { .. }) => {
+                    if seed.role == 4 {
+                        "gear/gap.lower"
+                    } else {
+                        "gear/gap.upper"
+                    }
+                    .into()
+                }
+                6 | 7 if seed.source_index / 8 < teeth && (seed.role == 6 || chevron) => {
+                    let band = if !chevron {
+                        "whole"
+                    } else if seed.role == 6 {
+                        "lower"
+                    } else {
+                        "upper"
+                    };
+                    let side = [
+                        "fillet.left",
+                        "continuation.left",
+                        "involute.left",
+                        "tip",
+                        "involute.right",
+                        "continuation.right",
+                        "fillet.right",
+                        "root",
+                    ][(seed.source_index % 8) as usize];
+                    format!("gear/{band}/tooth/{}/{side}", seed.source_index / 8)
+                }
+                _ => return Err(failure("Unknown native gear face source")),
+            };
+            let element = elements
+                .get_mut(&key(0, seed.face)?)
+                .ok_or_else(|| failure("Gear ancestry names an absent face"))?;
+            let origin = Origin {
+                source: feature,
+                role,
+            };
+            element.origins.insert(origin.clone());
+            if let Some(AnalyticGeometry::Plane { frame }) = element.geometry
+                && !element.frames.iter().any(|known| known.origin == origin)
+            {
+                element.frames.push(AnchoredFrame { origin, frame });
+            }
+        }
+        if !caps.into_iter().all(|cap| cap)
+            || elements
+                .values()
+                .any(|element| element.key.kind == TopologyKind::Face && element.origins.is_empty())
+        {
+            return Err(failure(
+                "Native gear needs complete face ancestry and both end caps",
+            ));
+        }
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        self.finish_provenance(elements, &nodes)
+    }
     pub(crate) fn name_thread(
         &mut self,
         feature: EntityId,
