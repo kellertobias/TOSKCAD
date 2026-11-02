@@ -1437,6 +1437,21 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
+        self.begin_fdm_aid_preset(
+            session,
+            resources,
+            channel,
+            crate::modeling::ModelingTool::FdmAid,
+        )
+    }
+    pub(crate) fn begin_fdm_aid_preset(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+        tool: crate::modeling::ModelingTool,
+    ) -> Result<(), String> {
+        let kind = tool.fdm_kind().ok_or("Expected an FDM design aid preset")?;
         if !self.primitive_ready() {
             return Err(
                 "Install native modeling and apply or cancel pending edits before adding print aids"
@@ -1449,19 +1464,21 @@ impl SketchEditor {
         self.finish()?;
         self.model
             .begin_fdm_aid(session, resources, &selection, channel)?;
+        self.model.choose_fdm_aid_kind(kind)?;
         self.message = match (target, note) {
             (Some(part), _) => format!(
-                "Tab / bridge / support · finished Part from the selection: {} · set the sizes in the Inspector, then Preview",
+                "{} · finished Part from the selection: {} · pick the contact in the viewer or enter coordinates, then Preview",
+                tool.label(),
                 session
                     .document()
                     .get(part)
                     .map_or(String::new(), |e| e.name.clone())
             ),
-            (None, Some(note)) => format!("Tab / bridge / support · {note}"),
-            (None, None) => {
-                "Tab / bridge / support · choose the finished Part and sizes in the Inspector, then Preview"
-                    .into()
-            }
+            (None, Some(note)) => format!("{} · {note}", tool.label()),
+            (None, None) => format!(
+                "{} · choose the finished Part and sizes in the Inspector, then Preview",
+                tool.label()
+            ),
         };
         Ok(())
     }

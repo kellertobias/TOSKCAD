@@ -115,33 +115,45 @@ fn a_selected_printed_part_seeds_the_print_aid_not_the_first_part() {
     let sheet = add_box(&mut session, "Sheet part 1", 0.);
     let knob = add_box(&mut session, "Printed control knob", 100.);
     let mut editor = editor();
-    editor.tree_selection = BTreeSet::from([knob]);
-    open(&mut editor, &session, ModelingTool::FdmAid);
-    assert_eq!(editor.model.form_targets(), Some(vec![knob]));
-    assert!(
-        editor.message.contains("Printed control knob"),
-        "{}",
-        editor.message
-    );
-    editor.cancel_model();
-    // Nothing selected with two Parts: no silent fallback to the first.
-    editor.tree_selection.clear();
-    open(&mut editor, &session, ModelingTool::FdmAid);
-    assert_eq!(editor.model.form_targets(), Some(vec![]));
-    assert!(
-        editor.message.contains("Select the finished Part"),
-        "{}",
-        editor.message
-    );
-    editor.cancel_model();
-    // Both selected: ambiguous, explained.
-    editor.tree_selection = BTreeSet::from([sheet, knob]);
-    open(&mut editor, &session, ModelingTool::FdmAid);
-    assert_eq!(editor.model.form_targets(), Some(vec![]));
-    assert!(
-        editor.message.contains("2 Parts are selected"),
-        "{}",
-        editor.message
-    );
-    editor.cancel_model();
+    for tool in [
+        ModelingTool::FdmAid,
+        ModelingTool::FdmBridge,
+        ModelingTool::FdmSupport,
+    ] {
+        editor.tree_selection = BTreeSet::from([knob]);
+        open(&mut editor, &session, tool);
+        assert_eq!(editor.model.form_targets(), Some(vec![knob]));
+        assert_eq!(editor.fdm_aid_kind(), tool.fdm_kind());
+        assert!(
+            editor.message.starts_with(tool.label()),
+            "{}",
+            editor.message
+        );
+        assert!(
+            editor.message.contains("Printed control knob"),
+            "{}",
+            editor.message
+        );
+        editor.cancel_model();
+        // Nothing selected with two Parts: no silent fallback to the first.
+        editor.tree_selection.clear();
+        open(&mut editor, &session, tool);
+        assert_eq!(editor.model.form_targets(), Some(vec![]));
+        assert!(
+            editor.message.contains("Select the finished Part"),
+            "{}",
+            editor.message
+        );
+        editor.cancel_model();
+        // Both selected: ambiguous, explained.
+        editor.tree_selection = BTreeSet::from([sheet, knob]);
+        open(&mut editor, &session, tool);
+        assert_eq!(editor.model.form_targets(), Some(vec![]));
+        assert!(
+            editor.message.contains("2 Parts are selected"),
+            "{}",
+            editor.message
+        );
+        editor.cancel_model();
+    }
 }
