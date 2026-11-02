@@ -10,8 +10,8 @@ mod targets;
 pub use edit::{ArchitectureEditRequest, prepare_architecture_edit};
 pub use inputs::{ArchitectureInputs, ArchitectureMaterialValue, configured_source};
 pub use instances::{
-    ArchitectureInstance, ArchitectureOutput, PLACEMENT_TYPE, architecture_instances,
-    read_architecture_instance,
+    ArchitectureInstance, ArchitectureOutput, PLACEMENT_TYPE, architecture_instance_for_output,
+    architecture_instances, read_architecture_instance,
 };
 pub(super) use instances::{private_entities, validate_instances};
 pub use placement::{

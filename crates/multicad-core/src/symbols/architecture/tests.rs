@@ -1153,6 +1153,7 @@ fn exposed_architectural_edits_reconcile_members_preserve_context_and_cancel_ato
         .dimensions
         .insert(blueprint.dimensions[0].id, length(2400.));
     let edit = ArchitectureEditRequest {
+        context: None,
         record: request.record,
         inputs,
     };
@@ -1198,4 +1199,130 @@ fn exposed_architectural_edits_reconcile_members_preserve_context_and_cancel_ato
     source.overrides.post_height = Some(length(9999.));
     raw.data = source.entity_data().unwrap();
     assert!(host.document().edited(&[Mutation::Replace(raw)]).is_err());
+}
+
+#[test]
+fn layout_input_and_post_position_repair_are_one_complete_context_transaction() {
+    let (mut authoring, mut blueprint, width, _) = fence();
+    let spacing = EntityId::new();
+    blueprint.dimensions.push(ArchitectureDimensionSlot {
+        id: spacing,
+        name: "Spacing".into(),
+        target: ArchitectureDimensionTarget::FenceSpacing,
+    });
+    let definition = author(&mut authoring, &blueprint, vec![width]);
+    let (mut host, id) = consumer(&definition);
+    let mut context = fence_context(4500.);
+    let ArchitectureContext::Fence {
+        path,
+        post_positions,
+        ..
+    } = &mut context
+    else {
+        unreachable!()
+    };
+    post_positions.push(FencePostPosition {
+        post: FencePostKey::Interior {
+            start: path.vertices[0].id,
+            end: path.vertices[1].id,
+            ordinal: 2,
+        },
+        offset: length(3500.),
+    });
+    let request = ArchitecturePlaceRequest::new(
+        host.document(),
+        id,
+        "Adjusted boundary",
+        ArchitectureInputs::default(),
+        context.clone(),
+    )
+    .unwrap();
+    let prepared = prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+    host.commit(prepared.prepared).unwrap();
+    let ArchitectureOutput::Fence { run, group } = request.output else {
+        unreachable!()
+    };
+    let before = host.document().clone();
+    let mut inputs = ArchitectureInputs::default();
+    inputs.dimensions.insert(spacing, length(1000.));
+    let mut edit = ArchitectureEditRequest {
+        record: request.record,
+        inputs,
+        context: None,
+    };
+    assert!(
+        prepare_architecture_edit(&host, host.revision(), actor(), &edit).is_err(),
+        "old offset becomes nonmonotonic and requires repair"
+    );
+    assert_eq!(host.document(), &before);
+    let ArchitectureContext::Fence {
+        path,
+        post_positions,
+        ..
+    } = &mut context
+    else {
+        unreachable!()
+    };
+    path.vertices[1].point[0] = length(5500.);
+    path.base_z = length(120.);
+    post_positions.clear();
+    edit.context = Some(context.clone());
+    let cancelled = prepare_architecture_edit(&host, host.revision(), actor(), &edit).unwrap();
+    assert_eq!(
+        fence_members(cancelled.prepared.document(), run)
+            .unwrap()
+            .len(),
+        13
+    );
+    assert_eq!(host.document(), &before);
+    drop(cancelled);
+    let prepared = prepare_architecture_edit(&host, host.revision(), actor(), &edit).unwrap();
+    let source = read_fence_run(prepared.prepared.document(), run).unwrap();
+    assert_eq!(source.path.base_z, length(120.));
+    assert!(source.post_positions.is_empty());
+    assert_eq!(source.group, group);
+    assert_eq!(
+        resolve_fence_run(
+            prepared.prepared.document(),
+            prepared.prepared.parameters(),
+            &source
+        )
+        .unwrap()
+        .posts[0]
+            .position_mm[2],
+        120.
+    );
+    let json = serde_json::to_value(
+        read_architecture_instance(prepared.prepared.document(), request.record).unwrap(),
+    )
+    .unwrap();
+    assert!(json.get("context").is_none());
+    assert!(json.get("path").is_none());
+    let mut selected = vec![run, group, request.record];
+    for (_, feature, body) in fence_members(prepared.prepared.document(), run).unwrap() {
+        selected.extend([feature, body]);
+    }
+    for selected in selected {
+        assert_eq!(
+            architecture_instance_for_output(prepared.prepared.document(), selected)
+                .unwrap()
+                .unwrap()
+                .0,
+            request.record
+        );
+    }
+    assert!(
+        architecture_instance_for_output(prepared.prepared.document(), EntityId::new())
+            .unwrap()
+            .is_none()
+    );
+    host.commit(prepared.prepared).unwrap();
+    let after = host.document().clone();
+    host.undo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &before);
+    host.redo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &after);
+    edit.context = Some(wall_context(3000.));
+    assert!(prepare_architecture_edit(&host, host.revision(), actor(), &edit).is_err());
+    assert_eq!(host.document(), &after);
 }

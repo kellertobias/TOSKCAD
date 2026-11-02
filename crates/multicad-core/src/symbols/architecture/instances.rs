@@ -239,3 +239,37 @@ pub(in crate::symbols) fn private_entities(
     }
     Ok(owned)
 }
+
+/// Resolve a selected real output without parsing embedded templates or pins.
+/// UI callers cache this projection when their source/selection context changes.
+pub fn architecture_instance_for_output(
+    document: &Document,
+    output: EntityId,
+) -> Result<Option<(EntityId, ArchitectureInstance)>, DocumentError> {
+    let anchor = match document.get(output).map(|e| &e.data) {
+        Some(EntityData::Feature { definition, .. })
+            if definition.type_id == model::FENCE_MEMBER_TYPE =>
+        {
+            model::read_fence_member(document, output)?.run
+        }
+        Some(EntityData::Part { features, .. }) => {
+            let member = features.iter().find(|id| matches!(document.get(**id).map(|e| &e.data), Some(EntityData::Feature { definition, .. }) if definition.type_id == model::FENCE_MEMBER_TYPE));
+            if let Some(member) = member {
+                model::read_fence_member(document, *member)?.run
+            } else {
+                output
+            }
+        }
+        _ => output,
+    };
+    for entity in document.entities() {
+        if matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == PLACEMENT_TYPE)
+        {
+            let value = read_architecture_instance(document, entity.id)?;
+            if value.output.anchors().contains(&anchor) || entity.id == output {
+                return Ok(Some((entity.id, value)));
+            }
+        }
+    }
+    Ok(None)
+}

@@ -300,6 +300,7 @@ fn role_symbols_generate_real_solids_from_independent_paths_and_reopen_without_a
             host.revision(),
             actor(),
             &ArchitectureEditRequest {
+                context: None,
                 record: first.record,
                 inputs,
             },
@@ -446,4 +447,115 @@ fn an_architectural_role_cannot_bypass_native_minimum_geometry_or_publish_partia
         assert!(cache.is_empty());
         assert_eq!(host.document(), &before);
     }
+}
+
+#[test]
+fn pinned_wall_openings_survive_path_base_and_flip_context_edits() {
+    let (definition, _) = authored(ArchitectureRole::Wall);
+    let mut host = Session::new(Document::new("Receiving wall context").unwrap()).unwrap();
+    let imported = symbols::prepare_import(&host, 0, actor(), &definition).unwrap();
+    let id = imported.definition;
+    host.commit(imported.prepared).unwrap();
+    let request = ArchitecturePlaceRequest::new(
+        host.document(),
+        id,
+        "Wall",
+        ArchitectureInputs::default(),
+        context(ArchitectureRole::Wall, 3000.),
+    )
+    .unwrap();
+    let prepared = prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+    host.commit(prepared.prepared).unwrap();
+    let ArchitectureOutput::Wall { feature, body } = request.output else {
+        unreachable!()
+    };
+    let (opening_type, prepared) = prepare_opening_type(
+        &host,
+        host.revision(),
+        actor(),
+        "Window",
+        &OpeningTypeDefinition {
+            kind: OpeningKind::Window,
+            width: length(600.),
+            height: length(800.),
+            sill: length(900.),
+        },
+    )
+    .unwrap();
+    host.commit(prepared).unwrap();
+    let mut wall = read_wall(host.document(), feature).unwrap();
+    wall.openings.push(Opening {
+        id: EntityId::new(),
+        opening_type,
+        segment: 0,
+        offset: length(500.),
+        width: None,
+        height: None,
+        sill: None,
+    });
+    let prepared = prepare_wall_edit(&host, host.revision(), actor(), feature, &wall).unwrap();
+    let model = Compiler::default()
+        .compile(prepared.prepared.document(), host.revision())
+        .unwrap();
+    near(
+        model.solid(body).unwrap().volume_mm3().unwrap(),
+        914_400_000.,
+    );
+    host.commit(prepared.prepared).unwrap();
+    let before = host.document().clone();
+    let context = ArchitectureContext::Wall {
+        path: vec![[length(0.), length(0.)], [length(4500.), length(0.)]],
+        closed: false,
+        level: None,
+        base_z: length(150.),
+        flipped: true,
+    };
+    let prepared = prepare_architecture_edit(
+        &host,
+        host.revision(),
+        actor(),
+        &ArchitectureEditRequest {
+            record: request.record,
+            inputs: ArchitectureInputs::default(),
+            context: Some(context),
+        },
+    )
+    .unwrap();
+    let edited = read_wall(prepared.prepared.document(), feature).unwrap();
+    assert_eq!(edited.openings, wall.openings);
+    assert_eq!(edited.wall_type, wall.wall_type);
+    assert_eq!(edited.output.body, body);
+    let model = Compiler::default()
+        .compile(prepared.prepared.document(), host.revision())
+        .unwrap();
+    let solid = model.solid(body).unwrap();
+    near(solid.volume_mm3().unwrap(), 1_400_400_000.);
+    let bounds = solid.bounds().unwrap();
+    near(bounds.min[2], 150.);
+    near(bounds.max[2], 2850.);
+    near(bounds.max[1] - bounds.min[1], 120.);
+    assert_eq!(
+        read_architecture_instance(prepared.prepared.document(), request.record)
+            .unwrap()
+            .pin,
+        definition.pin().unwrap()
+    );
+    assert_eq!(
+        architecture_instance_for_output(prepared.prepared.document(), body)
+            .unwrap()
+            .unwrap()
+            .0,
+        request.record
+    );
+    assert_eq!(
+        architecture_instance_for_output(prepared.prepared.document(), feature)
+            .unwrap()
+            .unwrap()
+            .0,
+        request.record
+    );
+    assert_eq!(host.document(), &before);
+    host.commit(prepared.prepared).unwrap();
+    host.undo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &before);
 }
