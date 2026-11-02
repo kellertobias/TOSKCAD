@@ -240,12 +240,50 @@ pub fn prepare_fence_change(
     for request in change.new_type.iter().chain(change.edit_type.iter()) {
         request.construction.resolve(&stage, &parameters)?;
     }
+    let (derived, members) =
+        reconcile_members(document, &stage, &parameters, &affected, hierarchy)?;
+    edits.extend(derived);
+    if edits.len() > MAX_TRANSACTION_EDITS {
+        return Err(error("Fence change exceeds the atomic transaction budget"));
+    }
+    let prepared = session.prepare(Request {
+        expected_revision,
+        actor,
+        label: "Edit fence construction or run".into(),
+        edits,
+    })?;
+    Ok(FencePrepared {
+        runs: affected.into_iter().collect(),
+        model: ModelPrepared {
+            prepared,
+            outputs: members
+                .iter()
+                .map(|(_, _, output)| output.clone())
+                .collect(),
+        },
+        members,
+    })
+}
+
+/// Derive real member source records from the staged canonical run/type.
+/// `document` is the pre-edit source so recipe kind conversions cannot retain
+/// an old panel identity as a rail or picket.
+type MemberOutputs = Vec<(EntityId, FenceMemberKey, CreatedBody)>;
+
+fn reconcile_members(
+    document: &Document,
+    stage: &Document,
+    parameters: &crate::parameters::EvaluatedParameters,
+    affected: &BTreeSet<EntityId>,
+    mut hierarchy: crate::hierarchy::Hierarchy,
+) -> Result<(Vec<Mutation>, MemberOutputs), CommandError> {
+    let mut edits = Vec::new();
     let mut existing: BTreeMap<EntityId, BTreeMap<FenceMemberKey, CreatedBody>> = BTreeMap::new();
     let mut properties = BTreeMap::new();
-    for entity in document.entities() {
+    for entity in stage.entities() {
         if matches!(&entity.data, EntityData::Feature { definition, .. } if definition.type_id == FENCE_MEMBER_TYPE)
         {
-            let source = read_fence_member(document, entity.id)?;
+            let source = read_fence_member(stage, entity.id)?;
             existing.entry(source.run).or_default().insert(
                 source.key,
                 CreatedBody {
@@ -260,9 +298,9 @@ pub fn prepare_fence_change(
     }
     let mut removed = BTreeSet::new();
     let mut members = Vec::new();
-    for run in &affected {
-        let source = read_fence_run(&stage, *run)?;
-        let layout = resolve_fence_run(&stage, &parameters, &source).map_err(|reason| {
+    for run in affected {
+        let source = read_fence_run(stage, *run)?;
+        let layout = resolve_fence_run(stage, parameters, &source).map_err(|reason| {
             error(format!(
                 "{}: {reason}",
                 stage.get(*run).expect("staged run").name
@@ -277,7 +315,7 @@ pub fn prepare_fence_change(
                     .and_then(|source| read_fence_type(document, source.fence_type))
             })
             .transpose()?;
-        let new_construction = read_fence_type(&stage, source.fence_type)?;
+        let new_construction = read_fence_type(stage, source.fence_type)?;
         for spec in specs {
             let name = format!(
                 "{} / {}",
@@ -288,46 +326,44 @@ pub fn prepare_fence_change(
             // physical-member identity, even if its recipe ID stays stable.
             // Keep the old output in `previous` so removal/reference repair
             // follows the same atomic path as any other deleted member.
-            let same_family = match spec.key {
-                FenceMemberKey::Post { .. } => true,
-                FenceMemberKey::Infill { infill } => old_construction
-                    .as_ref()
-                    .and_then(|old| old.infills.iter().find(|r| r.id == infill.recipe))
-                    .zip(
-                        new_construction
-                            .infills
-                            .iter()
-                            .find(|r| r.id == infill.recipe),
-                    )
-                    .is_some_and(|(old, new)| {
-                        std::mem::discriminant(&old.construction)
-                            == std::mem::discriminant(&new.construction)
-                    }),
-            };
+            let already_replaced = previous
+                .get(&spec.key)
+                .is_some_and(|output| document.get(output.feature).is_none());
+            let same_family = already_replaced
+                || match spec.key {
+                    FenceMemberKey::Post { .. } => true,
+                    FenceMemberKey::Infill { infill } => old_construction
+                        .as_ref()
+                        .and_then(|old| old.infills.iter().find(|r| r.id == infill.recipe))
+                        .zip(
+                            new_construction
+                                .infills
+                                .iter()
+                                .find(|r| r.id == infill.recipe),
+                        )
+                        .is_some_and(|(old, new)| {
+                            std::mem::discriminant(&old.construction)
+                                == std::mem::discriminant(&new.construction)
+                        }),
+                };
             let retained = if same_family {
                 previous.remove(&spec.key)
             } else {
                 None
             };
             let output = if let Some(output) = retained {
-                let mut part = document
-                    .get(output.body)
-                    .expect("checked member Part")
-                    .clone();
+                let mut part = stage.get(output.body).expect("checked member Part").clone();
                 part.name = name.clone();
                 let EntityData::Part { material, .. } = &mut part.data else {
                     unreachable!()
                 };
                 *material = Some(spec.material);
-                if &part != document.get(output.body).expect("existing Part") {
+                if &part != stage.get(output.body).expect("existing Part") {
                     edits.push(Mutation::Replace(part));
                 }
-                let mut feature = document
-                    .get(output.feature)
-                    .expect("checked member")
-                    .clone();
+                let mut feature = stage.get(output.feature).expect("checked member").clone();
                 feature.name = format!("{name} feature");
-                if &feature != document.get(output.feature).expect("existing feature") {
+                if &feature != stage.get(output.feature).expect("existing feature") {
                     edits.push(Mutation::Replace(feature));
                 }
                 output
@@ -370,8 +406,7 @@ pub fn prepare_fence_change(
             members.push((*run, spec.key, output));
         }
         for output in previous.values() {
-            let Some(EntityData::Part { features, .. }) =
-                document.get(output.body).map(|e| &e.data)
+            let Some(EntityData::Part { features, .. }) = stage.get(output.body).map(|e| &e.data)
             else {
                 unreachable!()
             };
@@ -405,7 +440,7 @@ pub fn prepare_fence_change(
     for children in hierarchy.members.values_mut() {
         children.retain(|id| !removed.contains(id));
     }
-    if &hierarchy != document.hierarchy() {
+    if &hierarchy != stage.hierarchy() {
         edits.push(Mutation::SetHierarchy(hierarchy));
     }
     if edits.len() > MAX_TRANSACTION_EDITS {
@@ -413,21 +448,47 @@ pub fn prepare_fence_change(
             "Shared fence change exceeds the atomic transaction budget; simplify the runs or duplicate the construction type",
         ));
     }
-    let prepared = session.prepare(Request {
-        expected_revision,
-        actor,
-        label: "Edit fence construction or run".into(),
-        edits,
-    })?;
-    Ok(FencePrepared {
-        runs: affected.into_iter().collect(),
-        model: ModelPrepared {
-            prepared,
-            outputs: members
-                .iter()
-                .map(|(_, _, output)| output.clone())
-                .collect(),
-        },
-        members,
-    })
+    Ok((edits, members))
+}
+
+/// Reconcile parameter-driven topology in the same source transaction. This is
+/// source validation; callers still need complete native preflight before Apply.
+pub(crate) fn reconcile_fence_sources(
+    before: &crate::parameters::EvaluatedParameters,
+    after: &crate::parameters::EvaluatedParameters,
+) -> Result<Vec<Mutation>, CommandError> {
+    let document = &before.document;
+    let stage = &after.document;
+    let parameters_changed = before.values != after.values;
+    let mut affected = BTreeSet::new();
+    for entity in fence_runs(stage) {
+        let source = read_fence_run(stage, entity.id)?;
+        let old = document.get(entity.id);
+        // Avoid resolving layouts for unrelated edits, including member metadata.
+        let level_changed = source
+            .level
+            .is_some_and(|id| document.get(id) != stage.get(id));
+        if !parameters_changed
+            && old == Some(entity)
+            && document.get(source.fence_type) == stage.get(source.fence_type)
+            && !level_changed
+        {
+            continue;
+        }
+        let layout = resolve_fence_run(stage, after, &source)?;
+        let previous = old
+            .map(|_| {
+                let run = read_fence_run(document, entity.id)?;
+                resolve_fence_run(document, before, &run)
+            })
+            .transpose()?;
+        if previous.as_ref() != Some(&layout) || old.map(|e| &e.name) != Some(&entity.name) {
+            affected.insert(entity.id);
+        }
+    }
+    if affected.is_empty() {
+        return Ok(Vec::new());
+    }
+    reconcile_members(document, stage, after, &affected, stage.hierarchy().clone())
+        .map(|(edits, _)| edits)
 }

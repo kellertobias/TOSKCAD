@@ -110,6 +110,13 @@ fn preview_cancel_apply_history_and_tcd_keep_complete_typed_fence_source() {
     };
     let cancelled = prepare_fence_change(&session, 0, actor(), &change).unwrap();
     assert_eq!(cancelled.members.len(), 7);
+    let hierarchy = cancelled.model.prepared.document().hierarchy();
+    assert!(hierarchy.members[&before.id()].contains(&run.definition.group));
+    let grouped = &hierarchy.members[&run.definition.group];
+    for (_, _, output) in &cancelled.members {
+        assert!(grouped.contains(&output.body));
+        assert!(grouped.contains(&output.feature));
+    }
     assert_eq!(session.document(), &before);
     drop(cancelled);
     assert_eq!(session.revision(), 0);
@@ -599,4 +606,183 @@ fn changing_infill_kind_replaces_physical_members_and_never_retargets_an_old_pan
     let error = prepare_fence_change(&session, session.revision(), actor(), &change).unwrap_err();
     assert!(error.to_string().contains("Panel-specific measurement"));
     assert_eq!(session.document(), &before);
+}
+
+fn parameter_driven_run(spacing: bool) -> (Session, Entity, FenceRunRequest) {
+    use multicad_core::{constraint_sketch::Dimension, parameters::BoundExpression};
+    let (mut session, mut ty, _) = fixture();
+    let parameter = Entity::new(
+        "driver",
+        EntityData::Parameter {
+            expression: if spacing { "2000" } else { "4500" }.into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let prepared = session
+        .prepare(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Add fence driver".into(),
+            edits: vec![Mutation::Insert(parameter.clone())],
+        })
+        .unwrap();
+    session.commit(prepared).unwrap();
+    let bound = Dimension::Expression {
+        expression: BoundExpression::bind(session.document(), "=$driver", "mm", None).unwrap(),
+    };
+    let mut run = request(ty.id, "Driven boundary", 4500.);
+    if spacing {
+        ty.construction.preferred_post_spacing = bound;
+    } else {
+        run.definition.path.vertices[1].point[0] = bound;
+    }
+    create(&mut session, &ty, &run, true);
+    (session, parameter, run)
+}
+fn driver_request(
+    session: &Session,
+    parameter: &Entity,
+    value: &str,
+) -> multicad_core::commands::Request {
+    let mut parameter = parameter.clone();
+    if let EntityData::Parameter { expression, .. } = &mut parameter.data {
+        *expression = value.into();
+    }
+    multicad_core::commands::Request {
+        expected_revision: session.revision(),
+        actor: Actor::local(Channel::Mcp),
+        label: "Change receiving parameter".into(),
+        edits: vec![Mutation::Replace(parameter)],
+    }
+}
+#[test]
+fn receiving_parameter_changes_reconcile_real_member_source_atomically_and_reopen() {
+    for (spacing, value, count) in [(false, "6500", 9), (true, "1000", 11)] {
+        let (mut session, parameter, run) = parameter_driven_run(spacing);
+        let before = session.document().clone();
+        let old = outputs(&before, run.id);
+        assert_eq!(old.len(), 7);
+        let cancelled = session
+            .prepare(driver_request(&session, &parameter, value))
+            .unwrap();
+        assert_eq!(outputs(cancelled.document(), run.id).len(), count);
+        assert_eq!(session.document(), &before);
+        drop(cancelled);
+        let prepared = session
+            .prepare(driver_request(&session, &parameter, value))
+            .unwrap();
+        let after = prepared.document().clone();
+        let new = outputs(&after, run.id);
+        let mut retained = 0;
+        for (key, output) in &old {
+            // Extending a segment replaces its last bay: the old corner-to-
+            // interior pair no longer denotes that physical panel.
+            if let Some(current) = new.get(key) {
+                assert_eq!(current, output, "retained semantic member");
+                retained += 1;
+            }
+        }
+        assert!(
+            retained >= 4,
+            "corner and existing interior post identities survive"
+        );
+        for vertex in &run.definition.path.vertices {
+            let key = FenceMemberKey::Post {
+                post: FencePostKey::Vertex { vertex: vertex.id },
+            };
+            assert_eq!(new[&key], old[&key]);
+        }
+        let layout = resolve_fence_run(&after, prepared.parameters(), &run.definition).unwrap();
+        assert_eq!(layout.member_specs().len(), count);
+        session.commit(prepared).unwrap();
+        session.undo(session.revision(), actor()).unwrap();
+        assert_eq!(session.document(), &before);
+        session.redo(session.revision(), actor()).unwrap();
+        assert_eq!(session.document(), &after);
+        let mut bytes = Vec::new();
+        project_file::write(
+            &project_file::ProjectFile::new(after.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let reopened = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap();
+        assert_eq!(reopened.project.document, after);
+    }
+}
+#[test]
+fn receiving_parameter_cannot_silently_remove_referenced_members() {
+    let (mut session, parameter, run) = parameter_driven_run(false);
+    let key = FenceMemberKey::Post {
+        post: FencePostKey::Interior {
+            start: run.definition.path.vertices[0].id,
+            end: run.definition.path.vertices[1].id,
+            ordinal: 2,
+        },
+    };
+    let feature = outputs(session.document(), run.id)[&key].0;
+    let reference = Entity::new(
+        "Retained measurement",
+        EntityData::Extension {
+            definition: Definition {
+                type_id: "test.measurement".into(),
+                schema_version: 1,
+                data: serde_json::json!({}),
+            },
+            inputs: vec![Link::new(feature, "measured_feature")],
+        },
+    );
+    let prepared = session
+        .prepare(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Add measurement".into(),
+            edits: vec![Mutation::Insert(reference)],
+        })
+        .unwrap();
+    session.commit(prepared).unwrap();
+    let before = session.document().clone();
+    let error = session
+        .prepare(driver_request(&session, &parameter, "3000"))
+        .unwrap_err();
+    assert!(error.to_string().contains("Retained measurement"));
+    assert_eq!(session.document(), &before);
+    let error = session
+        .prepare(driver_request(&session, &parameter, "0"))
+        .unwrap_err();
+    assert!(!error.to_string().is_empty());
+    assert_eq!(session.document(), &before);
+}
+#[test]
+fn unrelated_source_edits_preserve_member_metadata_without_reconciliation() {
+    let (mut session, parameter, run) = parameter_driven_run(false);
+    let body = outputs(session.document(), run.id)
+        .into_values()
+        .next()
+        .unwrap()
+        .1;
+    let mut part = session.document().get(body).unwrap().clone();
+    part.name = "Operator member label".into();
+    part.description = "Retained note".into();
+    let prepared = session
+        .prepare(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Describe member".into(),
+            edits: vec![Mutation::Replace(part.clone())],
+        })
+        .unwrap();
+    session.commit(prepared).unwrap();
+    assert_eq!(session.document().get(body), Some(&part));
+    let prepared = session
+        .prepare(driver_request(&session, &parameter, "4500"))
+        .unwrap();
+    assert_eq!(prepared.document(), session.document());
 }

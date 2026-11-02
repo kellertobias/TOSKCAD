@@ -794,3 +794,89 @@ fn linked_plan_elevation_pdf_and_dxf_measure_actual_members_at_three_scales() {
             .all(|v| matches!(v, ViewEvaluation::Ready { .. }))
     );
 }
+
+#[test]
+fn receiving_path_and_spacing_parameters_rebuild_complete_native_members_before_apply() {
+    use multicad_core::{constraint_sketch::Dimension, parameters::BoundExpression};
+    for (spacing, value, count, expected_volume) in [
+        (false, "6500", 9, 249_732_000.),
+        (true, "1000", 11, 204_120_000.),
+    ] {
+        let (mut session, mut ty, mut run, _) = fixture(&[[0., 0.], [4500., 0.]], false);
+        let mut driver = Entity::new(
+            "driver",
+            EntityData::Parameter {
+                expression: if spacing { "2000" } else { "4500" }.into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        let prepared = session
+            .prepare(multicad_core::commands::Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Add driver".into(),
+                edits: vec![Mutation::Insert(driver.clone())],
+            })
+            .unwrap();
+        session.commit(prepared).unwrap();
+        let bound = Dimension::Expression {
+            expression: BoundExpression::bind(session.document(), "=$driver", "mm", None).unwrap(),
+        };
+        if spacing {
+            ty.construction.preferred_post_spacing = bound;
+        } else {
+            run.definition.path.vertices[1].point[0] = bound;
+        }
+        apply(&mut session, &ty, &run);
+        let before = session.document().clone();
+        let compiler = Compiler::default();
+        let mut cache = EvaluationCache::default();
+        compiler
+            .compile_cached(&mut cache, &before, session.revision(), None)
+            .unwrap();
+        if let EntityData::Parameter { expression, .. } = &mut driver.data {
+            *expression = value.into();
+        }
+        let prepared = session
+            .prepare(multicad_core::commands::Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Mcp),
+                label: "Change receiving parameter".into(),
+                edits: vec![Mutation::Replace(driver)],
+            })
+            .unwrap();
+        let preview = compiler
+            .compile_cached(&mut cache, prepared.document(), session.revision(), None)
+            .unwrap();
+        assert_eq!(preview.snapshot().bodies.len(), count);
+        assert_eq!(
+            session.document(),
+            &before,
+            "native preview cannot Apply source"
+        );
+        session.commit(prepared).unwrap();
+        near(volume(&session, &preview, run.id), expected_volume, 0.01);
+        for (key, _, body) in fence_members(session.document(), run.id).unwrap() {
+            if matches!(key, FenceMemberKey::Post { .. }) {
+                let bounds = preview.solid(body).unwrap().bounds().unwrap();
+                near(bounds.max[0] - bounds.min[0], 90., 1e-4);
+                near(bounds.max[2] - bounds.min[2], 1800., 1e-4);
+            }
+        }
+        session.undo(session.revision(), actor()).unwrap();
+        let restored = compiler
+            .compile_cached(&mut cache, session.document(), session.revision(), None)
+            .unwrap();
+        assert_eq!(restored.snapshot().bodies.len(), 7);
+        near(volume(&session, &restored, run.id), 180_144_000., 0.01);
+        session.redo(session.revision(), actor()).unwrap();
+        let reopened = Session::new(session.document().clone()).unwrap();
+        near(
+            volume(&reopened, &compile(&reopened), run.id),
+            expected_volume,
+            0.01,
+        );
+    }
+}

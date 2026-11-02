@@ -366,13 +366,25 @@ impl Session {
             error.involved = involved.clone();
             error
         })?;
-        let evaluated = parameters::evaluate(&candidate).map_err(|error| {
+        let mut evaluated = parameters::evaluate(&candidate).map_err(|error| {
             let mut error = CommandError::from(error);
             error.involved.extend(involved);
             error.involved.sort();
             error.involved.dedup();
             error
         })?;
+        let derived = crate::model::reconcile_fence_sources(self.parameters(), &evaluated)?;
+        if request.edits.len() + derived.len() > MAX_TRANSACTION_EDITS {
+            return Err(CommandError::new(
+                ErrorCode::InvalidRequest,
+                "Source and derived fence members exceed the atomic transaction budget",
+            ));
+        }
+        if !derived.is_empty() {
+            // Reconciliation adds/removes only member geometry source records,
+            // material links and hierarchy. Parameter values stay authoritative.
+            evaluated.document = evaluated.document.edited(&derived)?;
+        }
         Ok(Prepared {
             session: self.id,
             base_revision: self.revision,
