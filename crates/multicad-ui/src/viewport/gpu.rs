@@ -392,12 +392,22 @@ impl Renderer {
         }
     }
 }
+/// Install the shared native viewport pipelines for a depth-enabled egui renderer.
+/// Offscreen hosts use the same resources as native windows; the render pass
+/// must provide a Depth32Float attachment.
+pub fn install_renderer(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    resources: &mut CallbackResources,
+) {
+    resources.insert(Renderer::new(device, format));
+}
 pub(crate) fn install(state: &egui_wgpu::RenderState) {
-    state
-        .renderer
-        .write()
-        .callback_resources
-        .insert(Renderer::new(&state.device, state.target_format));
+    install_renderer(
+        &state.device,
+        state.target_format,
+        &mut state.renderer.write().callback_resources,
+    );
 }
 #[derive(Clone)]
 struct View {

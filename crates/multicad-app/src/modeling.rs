@@ -8,6 +8,7 @@ use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
 use std::sync::Arc;
 #[cfg(test)]
+#[path = "modeling/tests.rs"]
 mod tests;
 
 pub struct Backend {

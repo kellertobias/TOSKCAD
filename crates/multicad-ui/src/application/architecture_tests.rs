@@ -14,10 +14,11 @@ fn app() -> Application {
     app.mode = Mode::Model;
     app
 }
-fn context() -> egui::Context {
+fn context(density: f32) -> egui::Context {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     crate::theme::configure(&ctx);
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("architecture-test-density"), density));
     ctx
 }
 fn paint(
@@ -26,15 +27,22 @@ fn paint(
     size: egui::Vec2,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    let mut output = ctx.run_ui(
-        egui::RawInput {
-            focused: true,
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-            events,
-            ..Default::default()
-        },
-        |ui| app.show(ui),
-    );
+    let density = ctx
+        .data(|data| data.get_temp::<f32>(egui::Id::new("architecture-test-density")))
+        .unwrap_or(1.);
+    let mut input = egui::RawInput {
+        focused: true,
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        events,
+        ..Default::default()
+    };
+    input
+        .viewports
+        .get_mut(&egui::ViewportId::ROOT)
+        .unwrap()
+        .native_pixels_per_point = Some(density);
+    let mut output = ctx.run_ui(input, |ui| app.show(ui));
+    assert_eq!(output.pixels_per_point, density);
     output.textures_delta.clear();
     output
 }
@@ -87,8 +95,12 @@ fn click(
 }
 #[test]
 fn actual_category_clicks_lift_parent_controls_and_back_close_restore_one_row_without_placement() {
-    for size in [egui::vec2(1100., 700.), egui::vec2(1360., 860.)] {
-        let ctx = context();
+    for (size, density) in [
+        (egui::vec2(1100., 700.), 1.),
+        (egui::vec2(1360., 860.), 1.),
+        (egui::vec2(1360., 860.), 2.),
+    ] {
+        let ctx = context(density);
         let mut app = app();
         let source = app.current().session.document().clone();
         paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
@@ -209,7 +221,7 @@ fn preset_commands_open_the_chosen_native_form_and_navigation_preserves_it_until
     use crate::modeling::native_fixture::NativeBackend;
     use multicad_core::equipment::Kind;
     let mut app = app();
-    let ctx = context();
+    let ctx = context(1.);
     let size = egui::vec2(1360., 860.);
     let before = app.current().session.document().clone();
     app.set_model_backends(std::sync::Arc::new(|| Box::new(NativeBackend::new())));

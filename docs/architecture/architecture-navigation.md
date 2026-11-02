@@ -52,7 +52,7 @@ keeps the selected category consistent with the tool that opened.
 
 [Painted pointer tests](../../crates/multicad-ui/src/application/architecture_tests.rs)
 check parent-control movement, Back/Close, category switching and source-neutral
-behavior at 1100 × 700 and 1360 × 860. They check per-project and saved context,
+behavior at 1100 × 700 and 1360 × 860, including native 2× input scale. They check per-project and saved context,
 explicit preset forms and preservation of a pending operation until Cancel.
 Catalog tests require every canonical family to remain reachable and aliases to
 resolve to real commands. Native catalog, MCP and export tests check the shared

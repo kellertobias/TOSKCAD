@@ -1,5 +1,8 @@
-//! Render the production Project UI offscreen with a real native project.
+//! Render production Project or Architecture UI offscreen with a real native project.
 //! This creates no window and provides no macOS interaction acceptance evidence.
+#[allow(dead_code)]
+#[path = "../../multicad-app/src/modeling.rs"]
+mod modeling;
 use eframe::{egui, egui_wgpu, wgpu};
 use multicad_core::{
     document::{Document, EntityId},
@@ -9,6 +12,7 @@ use multicad_ui::{
     application::{Application, DocumentStorage},
     library::{LibraryEntry, LibraryStore, RegisterReceipt, RegisterRequest},
 };
+use multicad_ui::{architecture_navigation::Category, registry::Mode, viewport::SceneStamp};
 use std::{
     future::Future,
     path::{Path, PathBuf},
@@ -65,24 +69,115 @@ fn wait<T>(future: impl Future<Output = T>) -> T {
         std::thread::park_timeout(Duration::from_millis(5));
     }
 }
+#[derive(Clone, Copy)]
+enum Review {
+    Project,
+    Architecture(Option<Category>),
+}
+impl Review {
+    fn name(self) -> String {
+        match self {
+            Self::Project => "project".into(),
+            Self::Architecture(None) => "architecture-root".into(),
+            Self::Architecture(Some(category)) => {
+                format!("architecture-{}", category.label().to_ascii_lowercase())
+            }
+        }
+    }
+}
+fn control(output: &egui::FullOutput, label: &str) -> Result<egui::Pos2, Error> {
+    // Feed egui's logical node bounds directly back to RawInput; native DPI
+    // belongs to the viewport and readback dimensions, not these positions.
+    let node = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .ok_or("No accessible controls")?
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| {
+            (node.label() == Some(label))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .max_by(|a, b| (a.y1 - a.y0).total_cmp(&(b.y1 - b.y0)))
+        .ok_or_else(|| format!("Missing painted control: {label}"))?;
+    Ok(egui::pos2(
+        (node.x0 + node.x1) as f32 / 2.,
+        (node.y0 + node.y1) as f32 / 2.,
+    ))
+}
+fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+    vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]
+}
+struct Capture<'a> {
+    source: &'a Path,
+    output: &'a Path,
+    size: [u32; 2],
+    density: f32,
+    review: Review,
+}
 fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     file: &project_file::ProjectFile,
-    source: &Path,
-    output: &Path,
-    size: [u32; 2],
-    density: f32,
-) -> Result<(), Error> {
+    capture: Capture<'_>,
+) -> Result<Option<SceneStamp>, Error> {
+    let Capture {
+        source,
+        output,
+        size,
+        density,
+        review,
+    } = capture;
     let mut app = Application::with_document(Box::new(ReadOnly), file.document.clone())?;
     app.current_mut().resources = file.resources.clone();
     app.current_mut().path = Some(source.to_path_buf());
     app.set_library_store(Box::new(ReadOnly));
+    let architecture = matches!(review, Review::Architecture(_));
+    if architecture {
+        app.mode = Mode::Model;
+        app.set_scene_backends(Arc::new(|| Box::new(modeling::Backend::new())));
+        app.set_model_backends(Arc::new(|| Box::new(modeling::Backend::new())));
+    }
+    let source_hash = project_file::ContentHash::document(app.current().session.document())?;
+    let mut routes: std::collections::VecDeque<_> = match review {
+        Review::Project => [].into_iter().collect(),
+        Review::Architecture(None) => ["Architecture"].into_iter().collect(),
+        Review::Architecture(Some(category)) => {
+            ["Architecture", category.label()].into_iter().collect()
+        }
+    };
+    let mut release = None;
+    let mut events = vec![];
+    let mut fitted = false;
+    let mut fitted_at = None;
+    let mut stable = 0;
+    let mut initial_scene = None;
+    let started = Instant::now();
     let context = egui::Context::default();
     multicad_ui::theme::configure(&context);
-    context.set_pixels_per_point(density);
+    context.enable_accesskit();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut renderer = egui_wgpu::Renderer::new(device, format, Default::default());
+    let mut renderer = egui_wgpu::Renderer::new(
+        device,
+        format,
+        egui_wgpu::RendererOptions {
+            depth_stencil_format: Some(wgpu::TextureFormat::Depth32Float),
+            ..Default::default()
+        },
+    );
+    if architecture {
+        multicad_ui::viewport::install_renderer(device, format, &mut renderer.callback_resources);
+    }
     let pixels = [
         (size[0] as f32 * density) as u32,
         (size[1] as f32 * density) as u32,
@@ -103,19 +198,75 @@ fn render(
         view_formats: &[],
     });
     let view = texture.create_view(&Default::default());
-    for index in 0..6 {
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(size[0] as f32, size[1] as f32),
-                )),
-                focused: true,
-                time: Some(index as f64 / 60.),
-                ..Default::default()
-            },
-            |ui| app.show(ui),
-        );
+    let depth = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Native viewport depth"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let depth_view = depth.create_view(&Default::default());
+    let mut index = 0;
+    loop {
+        if started.elapsed() > Duration::from_secs(120) {
+            return Err("Native offscreen view did not become ready".into());
+        }
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size[0] as f32, size[1] as f32),
+            )),
+            focused: true,
+            time: Some(started.elapsed().as_secs_f64()),
+            events: std::mem::take(&mut events),
+            ..Default::default()
+        };
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("root viewport")
+            .native_pixels_per_point = Some(density);
+        let mut output = context.run_ui(input, |ui| app.show(ui));
+        let ready = !architecture
+            || app.current().scene.is_current(
+                app.current().session.document().id(),
+                app.current().session.revision(),
+            ) && app.current().scene.visible().is_some();
+        if architecture && ready && !fitted {
+            app.current_mut().sketch.request_fit();
+            fitted = true;
+            fitted_at = Some(Instant::now());
+        }
+        if ready
+            && index >= 5
+            && (!architecture
+                || fitted_at
+                    .is_some_and(|time: Instant| time.elapsed() >= Duration::from_millis(500)))
+        {
+            if let Some(pos) = release.take() {
+                events = pointer(pos, false);
+            } else if let Some(label) = routes.pop_front() {
+                initial_scene = initial_scene
+                    .or_else(|| app.current().scene.visible().map(|scene| scene.stamp()));
+                let pos = match control(&output, label) {
+                    Ok(pos) => pos,
+                    Err(error) => {
+                        output.textures_delta.clear();
+                        return Err(error);
+                    }
+                };
+                events = pointer(pos, true);
+                release = Some(pos);
+            } else {
+                if stable == 0 {
+                    events = vec![egui::Event::PointerGone];
+                }
+                stable += 1;
+            }
+        }
         for (id, deltas) in &output.textures_delta.set {
             for delta in deltas {
                 renderer.update_texture(device, queue, *id, delta);
@@ -141,7 +292,14 @@ fn render(
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -153,7 +311,20 @@ fn render(
             renderer.free_texture(id);
         }
         output.textures_delta.free.clear();
+        index += 1;
+        if ready && routes.is_empty() && release.is_none() && events.is_empty() && stable >= 4 {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(5));
+    }
+    let current_scene = app.current().scene.visible().map(|scene| scene.stamp());
+    if architecture && current_scene != initial_scene {
+        return Err("Category navigation regenerated the native scene".into());
+    }
+    if project_file::ContentHash::document(app.current().session.document())? != source_hash
+        || app.current().session.revision() != 0
+    {
+        return Err("Offscreen navigation mutated the source".into());
     }
     let row_bytes = (pixels[0] * 4).div_ceil(256) * 256;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -200,7 +371,7 @@ fn render(
     let mut writer = encoder.write_header()?;
     writer.write_image_data(&rgba)?;
     writer.finish()?;
-    Ok(())
+    Ok(current_scene)
 }
 fn main() -> Result<(), Error> {
     let mut args = std::env::args_os().skip(1);
@@ -210,6 +381,11 @@ fn main() -> Result<(), Error> {
     )
     .canonicalize()?;
     let output = PathBuf::from(args.next().ok_or("Missing output directory")?);
+    let architecture = match args.next() {
+        None => false,
+        Some(arg) if arg == "--architecture" => true,
+        _ => return Err("Expected optional --architecture".into()),
+    };
     if args.next().is_some() {
         return Err("Unexpected argument".into());
     }
@@ -224,19 +400,38 @@ fn main() -> Result<(), Error> {
     let adapter = wait(instance.request_adapter(&Default::default()))?;
     let (device, queue) = wait(adapter.request_device(&Default::default()))?;
     let mut images = vec![];
+    let reviews: Vec<_> = if architecture {
+        std::iter::once(Review::Architecture(None))
+            .chain(Category::ALL.map(|c| Review::Architecture(Some(c))))
+            .collect()
+    } else {
+        vec![Review::Project]
+    };
     for (size, density) in [([1100, 700], 1.), ([1360, 860], 1.), ([1360, 860], 2.)] {
-        let name = format!("project-{}x{}-{}x.png", size[0], size[1], density as u32);
-        render(
-            &device,
-            &queue,
-            &project,
-            &source,
-            &output.join(&name),
-            size,
-            density,
-        )?;
-        images
-            .push(serde_json::json!({"file":name,"logical_size":size,"pixels_per_point":density}));
+        for review in &reviews {
+            let name = format!(
+                "{}-{}x{}-{}x.png",
+                review.name(),
+                size[0],
+                size[1],
+                density as u32
+            );
+            let destination = output.join(&name);
+            let stamp = render(
+                &device,
+                &queue,
+                &project,
+                Capture {
+                    source: &source,
+                    output: &destination,
+                    size,
+                    density,
+                    review: *review,
+                },
+            )?;
+            images.push(serde_json::json!({"file":name,"logical_size":size,"pixels_per_point":density,"native_scene":stamp.map(|stamp|serde_json::json!({"document":stamp.document,"revision":stamp.revision,"generation":stamp.generation}))}));
+            println!("Rendered {name}");
+        }
     }
     let report = serde_json::json!({"source":source,"document":project.document.id(),"gpu":format!("{:?}",adapter.get_info()),"images":images,"evidence":"Offscreen rendering of production Application/egui controls with real project data. No native window or macOS interaction."});
     std::fs::write(
