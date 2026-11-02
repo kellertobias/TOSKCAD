@@ -559,3 +559,174 @@ fn pinned_wall_openings_survive_path_base_and_flip_context_edits() {
     host.undo(host.revision(), actor()).unwrap();
     assert_eq!(host.document(), &before);
 }
+
+#[test]
+fn explicit_pin_updates_rebuild_native_roles_keep_overrides_and_reopen_with_complete_history() {
+    for role in [ArchitectureRole::Wall, ArchitectureRole::Fence] {
+        let (definition, height_slot) = authored(role);
+        let mut host = Session::new(Document::new("Receiving native upgrade").unwrap()).unwrap();
+        let imported = symbols::prepare_import(&host, 0, actor(), &definition).unwrap();
+        let id = imported.definition;
+        host.commit(imported.prepared).unwrap();
+        let (end, height, old_volume, new_volume, bodies) = match role {
+            ArchitectureRole::Wall => (3000., 2400., 864_000_000., 1_152_000_000., 1),
+            ArchitectureRole::Fence => (4500., 2000., 186_624_000., 235_440_000., 11),
+        };
+        let mut inputs = ArchitectureInputs::default();
+        inputs.dimensions.insert(height_slot, length(height));
+        let placed = ArchitecturePlaceRequest::new(
+            host.document(),
+            id,
+            "Pinned construction",
+            inputs,
+            context(role, end),
+        )
+        .unwrap();
+        let prepared =
+            prepare_architecture_place(&host, host.revision(), actor(), &placed).unwrap();
+        host.commit(prepared.prepared).unwrap();
+        let before = host.document().clone();
+        let mut next = definition.clone();
+        let blueprint = blueprint_for_definition(&next).unwrap().unwrap();
+        let mut entity = next.template.get(blueprint.construction).unwrap().clone();
+        entity.data = match role {
+            ArchitectureRole::Wall => {
+                let WallTypeConstruction::Layered(mut wall) =
+                    read_wall_construction(&next.template, blueprint.construction).unwrap()
+                else {
+                    unreachable!()
+                };
+                let WallLayerKind::Solid { thickness, .. } =
+                    &mut wall.layers.layers[0].construction
+                else {
+                    unreachable!()
+                };
+                *thickness = length(160.);
+                wall.height = length(4800.);
+                EntityData::Extension {
+                    definition: wall.definition().unwrap(),
+                    inputs: wall.inputs(),
+                }
+            }
+            ArchitectureRole::Fence => {
+                let mut fence = read_fence_type(&next.template, blueprint.construction).unwrap();
+                fence.height = length(4800.);
+                fence.preferred_post_spacing = length(1000.);
+                fence.post = FencePostProfile::Rectangular {
+                    width: length(90.),
+                    depth: length(110.),
+                };
+                EntityData::Extension {
+                    definition: multicad_core::document::Definition {
+                        type_id: FENCE_TYPE_KIND.into(),
+                        schema_version: FENCE_SCHEMA,
+                        data: serde_json::to_value(&fence).unwrap(),
+                    },
+                    inputs: fence.inputs(),
+                }
+            }
+        };
+        next.template = next.template.edited(&[Mutation::Replace(entity)]).unwrap();
+        next.revision = "r2".into();
+        next.validate().unwrap();
+        let report = symbols::compare_update(host.document(), id, &next).unwrap();
+        assert!(
+            report.architecture_error.is_none(),
+            "{:?}",
+            report.architecture_error
+        );
+        assert_eq!(report.affected_instances.len(), 1);
+        assert_eq!(
+            symbols::read_definition(host.document(), id)
+                .unwrap()
+                .pin()
+                .unwrap(),
+            definition.pin().unwrap()
+        );
+        let update = symbols::SymbolUpdateRequest::new(host.document(), id, next.clone()).unwrap();
+        let compiler = Compiler::default();
+        let cancelled = symbols::prepare_update(&host, host.revision(), actor(), &update).unwrap();
+        let preview = compiler
+            .compile(cancelled.prepared.document(), host.revision())
+            .unwrap();
+        assert_eq!(preview.snapshot().bodies.len(), bodies);
+        assert_eq!(host.document(), &before);
+        drop(cancelled);
+        let prepared = symbols::prepare_update(&host, host.revision(), actor(), &update).unwrap();
+        let model = compiler
+            .compile(prepared.prepared.document(), host.revision())
+            .unwrap();
+        let volume: f64 = model
+            .snapshot()
+            .bodies
+            .keys()
+            .map(|id| model.solid(*id).unwrap().volume_mm3().unwrap())
+            .sum();
+        near(volume, new_volume);
+        let record =
+            read_architecture_instance(prepared.prepared.document(), placed.record).unwrap();
+        assert_eq!(record.ids, placed.ids);
+        assert_eq!(record.inputs, placed.inputs);
+        assert_eq!(record.output, placed.output);
+        assert_eq!(record.pin, next.pin().unwrap());
+        match placed.output {
+            ArchitectureOutput::Wall { body, .. } => {
+                let bounds = model.solid(body).unwrap().bounds().unwrap();
+                near(bounds.max[2] - bounds.min[2], height);
+                near(bounds.max[1] - bounds.min[1], 160.);
+            }
+            ArchitectureOutput::Fence { run, .. } => {
+                for (key, _, body) in fence_members(prepared.prepared.document(), run).unwrap() {
+                    if matches!(key, FenceMemberKey::Post { .. }) {
+                        let bounds = model.solid(body).unwrap().bounds().unwrap();
+                        near(bounds.max[2] - bounds.min[2], height);
+                        near(bounds.max[0] - bounds.min[0], 90.);
+                        near(bounds.max[1] - bounds.min[1], 110.);
+                    }
+                }
+            }
+        }
+        host.commit(prepared.prepared).unwrap();
+        let after = host.document().clone();
+        host.undo(host.revision(), actor()).unwrap();
+        assert_eq!(host.document(), &before);
+        let model = compiler.compile(host.document(), host.revision()).unwrap();
+        near(
+            model
+                .snapshot()
+                .bodies
+                .keys()
+                .map(|id| model.solid(*id).unwrap().volume_mm3().unwrap())
+                .sum(),
+            old_volume,
+        );
+        host.redo(host.revision(), actor()).unwrap();
+        assert_eq!(host.document(), &after);
+        let mut bytes = Vec::new();
+        project_file::write(
+            &project_file::ProjectFile::new(after.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        drop(definition);
+        drop(next);
+        let reopened = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let model = compiler.compile(&reopened.project.document, 0).unwrap();
+        near(
+            model
+                .snapshot()
+                .bodies
+                .keys()
+                .map(|id| model.solid(*id).unwrap().volume_mm3().unwrap())
+                .sum(),
+            new_volume,
+        );
+        assert_eq!(reopened.project.document, after);
+    }
+}

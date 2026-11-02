@@ -163,6 +163,43 @@ pub enum ArchitectureOptionValue {
     FenceShortPanel { policy: FenceShortPanelPolicy },
 }
 impl ArchitectureOptionTarget {
+    pub fn value(
+        &self,
+        construction: &ArchitectureConstruction,
+    ) -> Result<ArchitectureOptionValue, DocumentError> {
+        match (self, construction) {
+            (Self::WallReference, ArchitectureConstruction::Wall(wall)) => {
+                Ok(ArchitectureOptionValue::WallReference {
+                    reference: wall.reference,
+                })
+            }
+            (Self::FenceLayout, ArchitectureConstruction::Fence(fence)) => {
+                Ok(ArchitectureOptionValue::FenceLayout {
+                    layout: fence.layout,
+                })
+            }
+            (Self::FenceShortPanel { recipe }, ArchitectureConstruction::Fence(fence)) => {
+                if let Some(model::FenceInfill {
+                    construction:
+                        FenceInfillKind::Panel {
+                            width: FencePanelWidth::Purchased { short_bay, .. },
+                            ..
+                        },
+                    ..
+                }) = fence.infills.iter().find(|r| r.id == *recipe)
+                {
+                    Ok(ArchitectureOptionValue::FenceShortPanel { policy: *short_bay })
+                } else {
+                    Err(invalid(
+                        "A short-panel policy requires an authored purchased panel",
+                    ))
+                }
+            }
+            _ => Err(invalid(
+                "Architectural option is incompatible with its construction",
+            )),
+        }
+    }
     pub fn apply(
         &self,
         value: &mut ArchitectureConstruction,

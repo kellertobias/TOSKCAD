@@ -7,6 +7,7 @@ mod instances;
 mod placement;
 mod remap;
 mod targets;
+mod upgrade;
 pub use edit::{ArchitectureEditRequest, prepare_architecture_edit};
 pub use inputs::{ArchitectureInputs, ArchitectureMaterialValue, configured_source};
 pub use instances::{
@@ -16,6 +17,10 @@ pub use instances::{
 pub(super) use instances::{private_entities, validate_instances};
 pub use placement::{
     ArchitectureContext, ArchitecturePlaceRequest, ArchitecturePrepared, prepare_architecture_place,
+};
+pub use upgrade::{ArchitectureSourceChange, ArchitectureUpgradeChange};
+pub(super) use upgrade::{
+    changes as upgrade_changes, compatible_roles, planned_removals, update_edits as upgrade_edits,
 };
 #[cfg(test)]
 mod tests;

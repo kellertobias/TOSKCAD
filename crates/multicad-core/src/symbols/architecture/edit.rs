@@ -56,7 +56,7 @@ pub fn prepare_architecture_edit(
     })
 }
 
-fn context_entity(
+pub(super) fn context_entity(
     document: &Document,
     value: &ArchitectureInstance,
     context: &ArchitectureContext,

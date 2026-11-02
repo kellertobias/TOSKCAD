@@ -1,3 +1,4 @@
+use super::architecture;
 use crate::{
     commands::Prepared,
     document::{Document, EntityId, Placement},
@@ -106,6 +107,10 @@ pub struct SymbolUpdateRequest {
     pub replacement: SymbolDefinition,
     pub maps: BTreeMap<EntityId, BTreeMap<EntityId, EntityId>>,
     pub instance_overrides: BTreeMap<EntityId, BTreeMap<EntityId, SymbolValue>>,
+    #[serde(default)]
+    pub architecture_inputs: BTreeMap<EntityId, architecture::ArchitectureInputs>,
+    #[serde(default)]
+    pub architecture_contexts: BTreeMap<EntityId, architecture::ArchitectureContext>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,6 +130,10 @@ pub struct SymbolUpgradeReport {
     pub changed_parameters: Vec<EntityId>,
     pub changed_entities: Vec<EntityId>,
     pub conflicts: Vec<SymbolOverrideConflict>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub architecture_changes: Vec<architecture::ArchitectureUpgradeChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture_error: Option<String>,
 }
 pub struct SymbolPrepared {
     pub prepared: Prepared,

@@ -85,7 +85,7 @@ impl SymbolUpdateRequest {
         definition: EntityId,
         replacement: SymbolDefinition,
     ) -> Result<Self, DocumentError> {
-        compare_update(doc, definition, &replacement)?;
+        validate_replacement(doc, definition, &replacement)?;
         let keys = super::remap::identities(&replacement)?;
         let mut maps = BTreeMap::new();
         let mut instance_overrides = BTreeMap::new();
@@ -98,11 +98,23 @@ impl SymbolUpdateRequest {
             );
             instance_overrides.insert(record, old.overrides);
         }
+        let mut architecture_inputs = BTreeMap::new();
+        for (record, old) in architecture::architecture_instances(doc, definition)? {
+            maps.insert(
+                record,
+                keys.iter()
+                    .map(|id| (*id, old.ids.get(id).copied().unwrap_or_default()))
+                    .collect(),
+            );
+            architecture_inputs.insert(record, old.inputs);
+        }
         Ok(Self {
             definition,
             replacement,
             maps,
             instance_overrides,
+            architecture_inputs,
+            architecture_contexts: BTreeMap::new(),
         })
     }
 }
@@ -263,11 +275,11 @@ pub fn prepare_edit(
         &[value],
     )
 }
-pub fn compare_update(
+fn validate_replacement(
     doc: &Document,
     definition: EntityId,
     replacement: &SymbolDefinition,
-) -> Result<SymbolUpgradeReport, DocumentError> {
+) -> Result<SymbolDefinition, DocumentError> {
     let old = read_definition(doc, definition)?;
     replacement.validate()?;
     if old.symbol != replacement.symbol {
@@ -278,6 +290,28 @@ pub fn compare_update(
     if old.revision == replacement.revision && old_pin != new_pin {
         return Err(invalid("Changed symbol content requires a new revision"));
     }
+    architecture::compatible_roles(&old, replacement)?;
+    Ok(old)
+}
+pub fn compare_update(
+    doc: &Document,
+    definition: EntityId,
+    replacement: &SymbolDefinition,
+) -> Result<SymbolUpgradeReport, DocumentError> {
+    let request = SymbolUpdateRequest::new(doc, definition, replacement.clone())?;
+    compare_update_request(doc, &request)
+}
+/// Compare an explicitly repaired update, including receiving context changes.
+/// The comparison prepares source only and carries no native geometry receipt.
+pub fn compare_update_request(
+    doc: &Document,
+    request: &SymbolUpdateRequest,
+) -> Result<SymbolUpgradeReport, DocumentError> {
+    let definition = request.definition;
+    let replacement = &request.replacement;
+    let old = validate_replacement(doc, definition, replacement)?;
+    let old_pin = old.pin()?;
+    let new_pin = replacement.pin()?;
     let previous = old.exposed.iter().copied().collect::<BTreeSet<_>>();
     let next = replacement.exposed.iter().copied().collect::<BTreeSet<_>>();
     let all = old
@@ -287,19 +321,43 @@ pub fn compare_update(
         .chain(replacement.template.entities().map(|e| e.id))
         .collect::<BTreeSet<_>>();
     let placed = instances(doc, definition)?;
-    let conflicts = placed
+    let mut conflicts: Vec<_> = placed
         .iter()
-        .flat_map(|(_, v)| {
-            override_errors(replacement, &v.overrides)
-                .into_iter()
-                .map(|(parameter, reason)| SymbolOverrideConflict {
-                    instance: v.instance,
-                    parameter,
-                    reason,
-                })
+        .flat_map(|(record, v)| {
+            override_errors(
+                replacement,
+                request
+                    .instance_overrides
+                    .get(record)
+                    .unwrap_or(&v.overrides),
+            )
+            .into_iter()
+            .map(|(parameter, reason)| SymbolOverrideConflict {
+                instance: v.instance,
+                parameter,
+                reason,
+            })
         })
         .collect();
-    Ok(SymbolUpgradeReport {
+    for (record, value) in architecture::architecture_instances(doc, definition)? {
+        conflicts.extend(
+            override_errors(
+                replacement,
+                &request
+                    .architecture_inputs
+                    .get(&record)
+                    .unwrap_or(&value.inputs)
+                    .parameters,
+            )
+            .into_iter()
+            .map(|(parameter, reason)| SymbolOverrideConflict {
+                instance: value.output.anchors()[1],
+                parameter,
+                reason,
+            }),
+        );
+    }
+    let mut report = SymbolUpgradeReport {
         old_pin,
         new_pin,
         affected_instances: placed.iter().map(|(_, v)| v.instance).collect(),
@@ -315,7 +373,51 @@ pub fn compare_update(
             .filter(|id| old.template.get(*id) != replacement.template.get(*id))
             .collect(),
         conflicts,
-    })
+        architecture_changes: architecture::upgrade_changes(doc, definition, &old, replacement)?,
+        architecture_error: None,
+    };
+    for change in &report.architecture_changes {
+        report.affected_instances.push(change.output.anchors()[1]);
+    }
+    if !report.architecture_changes.is_empty() {
+        let candidate = (|| -> Result<_, CommandError> {
+            let (edits, _) = update_edits(doc, request)?;
+            let session = Session::new(doc.clone())?;
+            session.prepare(Request {
+                expected_revision: 0,
+                actor: Actor::local(crate::commands::Channel::CommandLine),
+                label: "Compare architectural symbol update".into(),
+                edits,
+            })
+        })();
+        match candidate {
+            Ok(candidate) => {
+                for change in &mut report.architecture_changes {
+                    if let architecture::ArchitectureOutput::Fence { run, .. } = change.output {
+                        change.removed_members = crate::model::fence_members(doc, run)?
+                            .into_iter()
+                            .filter_map(|(_, _, body)| {
+                                candidate.document().get(body).is_none().then_some(body)
+                            })
+                            .collect();
+                    }
+                }
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                if reason.contains("removed fence member")
+                    && let Ok(removals) = architecture::planned_removals(doc, request, &old)
+                {
+                    for change in &mut report.architecture_changes {
+                        change.removed_members =
+                            removals.get(&change.record).cloned().unwrap_or_default();
+                    }
+                }
+                report.architecture_error = Some(reason);
+            }
+        }
+    }
+    Ok(report)
 }
 pub fn prepare_update(
     session: &Session,
@@ -325,7 +427,7 @@ pub fn prepare_update(
 ) -> Result<SymbolPrepared, CommandError> {
     stale(session, revision)?;
     let (edits, values) = update_edits(session.document(), request)?;
-    finish(
+    let mut result = finish(
         session,
         revision,
         actor,
@@ -333,7 +435,13 @@ pub fn prepare_update(
         edits,
         request.definition,
         &values,
-    )
+    )?;
+    result.instances.extend(
+        architecture::architecture_instances(result.prepared.document(), request.definition)?
+            .iter()
+            .map(|(_, value)| value.output.anchors()[1]),
+    );
+    Ok(result)
 }
 /// The checked source edits of an explicit definition update and the
 /// resulting instance records, before they are prepared as one transaction.
@@ -342,7 +450,7 @@ pub(super) fn update_edits(
     request: &SymbolUpdateRequest,
 ) -> Result<(Vec<Mutation>, Vec<SymbolInstance>), CommandError> {
     super::validate(doc)?;
-    compare_update(doc, request.definition, &request.replacement)?;
+    validate_replacement(doc, request.definition, &request.replacement)?;
     for (id, other) in definitions(doc)? {
         if id != request.definition
             && other.symbol == request.replacement.symbol
@@ -354,7 +462,16 @@ pub(super) fn update_edits(
     let old = read_definition(doc, request.definition)?;
     let previous = instances(doc, request.definition)?;
     let records = previous.iter().map(|(r, _)| *r).collect::<BTreeSet<_>>();
-    if request.maps.keys().copied().collect::<BTreeSet<_>>() != records
+    let all_records = records
+        .iter()
+        .copied()
+        .chain(
+            architecture::architecture_instances(doc, request.definition)?
+                .into_iter()
+                .map(|(id, _)| id),
+        )
+        .collect::<BTreeSet<_>>();
+    if request.maps.keys().copied().collect::<BTreeSet<_>>() != all_records
         || request
             .instance_overrides
             .keys()
@@ -416,5 +533,6 @@ pub(super) fn update_edits(
         edits.push(Mutation::Replace(record_entity(record, &value)?));
         values.push(value);
     }
+    edits.extend(architecture::upgrade_edits(doc, request, &old)?);
     Ok((edits, values))
 }

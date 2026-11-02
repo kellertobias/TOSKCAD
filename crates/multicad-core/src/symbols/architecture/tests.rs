@@ -1326,3 +1326,6 @@ fn layout_input_and_post_position_repair_are_one_complete_context_transaction() 
     assert!(prepare_architecture_edit(&host, host.revision(), actor(), &edit).is_err());
     assert_eq!(host.document(), &after);
 }
+
+#[path = "upgrade_tests.rs"]
+mod upgrades;
