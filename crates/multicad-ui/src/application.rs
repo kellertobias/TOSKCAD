@@ -4140,7 +4140,11 @@ mod tests {
         }
         assert!(app.enabled(split));
         app.invoke(split, &[], Channel::Ui).unwrap();
-        assert!(app.current().sketch.awaiting_model_targets());
+        assert!(!app.current().sketch.awaiting_model_targets());
+        assert!(
+            app.current().sketch.model_active(),
+            "Split exposes both input fields immediately"
+        );
         assert!(
             !app.current()
                 .sketch

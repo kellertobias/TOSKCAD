@@ -98,9 +98,10 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                     icon: Icon::Boolean,
                     tools: crate::registry::BOOLEAN_OPERATIONS
                         .map(|(id, ..)| id)
-                        .to_vec(),
+                        .into_iter()
+                        .chain(["split"])
+                        .collect(),
                 },
-                Entry::Tool("split"),
                 Entry::Tool("edge-treatment"),
                 Entry::Tool("shell"),
                 Entry::Tool("draft"),
@@ -109,8 +110,11 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
         Group {
             label: "Transform",
             entries: vec![
-                Entry::Tool("move"),
-                Entry::Tool("align"),
+                Entry::Menu {
+                    label: "Move / Copy",
+                    icon: Icon::Transform,
+                    tools: vec!["move", "align"],
+                },
                 Entry::Tool("scale"),
             ],
         },
@@ -326,7 +330,15 @@ fn menu_button(
         for id in tools {
             let tool = registry.tool(id).expect("menu catalog entry");
             if ui
-                .add_enabled(enabled(tool.action), egui::Button::new(tool.label))
+                .add_enabled_ui(enabled(tool.action), |ui| {
+                    icons::labeled_button_sized(
+                        ui,
+                        tool.icon,
+                        tool.label,
+                        egui::vec2(ui.available_width().max(160.), 28.),
+                    )
+                })
+                .inner
                 .on_hover_text(with_description(id, hint(tool.action, tool.label)))
                 .clicked()
             {
@@ -530,13 +542,24 @@ mod tests {
                 .entries
                 .iter()
                 .any(|e| matches!(e, Entry::Menu { label: "Boolean", tools, .. }
-                    if tools == &["boolean-join", "boolean-subtract", "boolean-intersect"]))
+                    if tools == &["boolean-join", "boolean-subtract", "boolean-intersect", "split"]))
         );
         assert!(
-            modify
+            !modify
                 .entries
                 .iter()
-                .any(|e| matches!(e, Entry::Tool("split")))
+                .any(|entry| matches!(entry, Entry::Tool("split")))
+        );
+        let transform = sections
+            .iter()
+            .find(|group| group.label == "Transform")
+            .unwrap();
+        assert!(transform.entries.iter().any(|entry| matches!(entry, Entry::Menu { label: "Move / Copy", tools, .. } if tools == &["move", "align"])));
+        assert!(
+            !transform
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, Entry::Tool("align")))
         );
         let ctx = egui::Context::default();
         let mut chosen = None;

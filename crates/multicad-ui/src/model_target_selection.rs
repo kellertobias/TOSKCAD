@@ -13,6 +13,8 @@ pub(super) struct Acquisition {
     source: ContentHash,
     session_guard: Prepared,
     started: bool,
+    split_generation: Option<u64>,
+    split_scene: Option<crate::viewport::SceneStamp>,
 }
 impl Acquisition {
     fn profiles(&self) -> bool {
@@ -21,6 +23,7 @@ impl Acquisition {
     fn accepts(&self, document: &Document, id: EntityId) -> bool {
         match document.get(id).map(|e| &e.data) {
             Some(EntityData::Sketch { .. }) => self.profiles(),
+            Some(EntityData::Plane { .. }) => self.tool == ModelingTool::Split,
             Some(EntityData::Part { .. }) => !self.profiles(),
             Some(EntityData::Instance { component, .. }) => {
                 matches!(
@@ -39,7 +42,9 @@ impl Acquisition {
         }
     }
     fn minimum(&self) -> usize {
-        if matches!(self.tool, ModelingTool::Boolean | ModelingTool::Split) {
+        if self.tool == ModelingTool::Split {
+            0
+        } else if self.tool == ModelingTool::Boolean {
             2
         } else {
             1
@@ -410,6 +415,8 @@ impl SketchEditor {
                 })
                 .map_err(|e| e.to_string())?,
             started: false,
+            split_generation: None,
+            split_scene: None,
         };
         let before = self.tree_selection.len();
         // The Part owning a preselected planar face is that face's context,
@@ -537,6 +544,60 @@ impl SketchEditor {
             self.message = "The source changed · select current targets again".into();
             return;
         }
+        if a.started && a.tool == ModelingTool::Split {
+            if confirm && let Err(error) = self.model.confirm_split(session.document()) {
+                self.message = error;
+            }
+            if let Some((generation, _, selected)) = self.model.split_selection() {
+                let mut sync = false;
+                if a.split_generation != Some(generation) {
+                    self.tree_selection = selected;
+                    a.split_generation = Some(generation);
+                    sync = true;
+                } else if self.tree_selection != selected {
+                    if let Err(error) = self
+                        .model
+                        .retarget_split(session.document(), &self.tree_selection)
+                    {
+                        self.message = error;
+                        self.tree_selection = selected;
+                    }
+                    a.split_generation = self
+                        .model
+                        .split_selection()
+                        .map(|(generation, _, _)| generation);
+                    sync = true;
+                }
+                if let Some(scene) = feed
+                    .visible()
+                    .filter(|_| feed.is_current(a.document, a.revision))
+                    .filter(|scene| sync || a.split_scene != Some(scene.stamp()))
+                {
+                    a.split_scene = Some(scene.stamp());
+                    let bodies = self
+                        .tree_selection
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            matches!(
+                                session.document().get(*id).map(|entity| &entity.data),
+                                Some(EntityData::Part { .. })
+                            )
+                        })
+                        .collect();
+                    if let Err(error) = self.solid.select_source_entities(
+                        session.document(),
+                        session.revision(),
+                        scene,
+                        &bodies,
+                    ) {
+                        self.message = error;
+                    }
+                }
+            }
+            self.acquisition = Some(a);
+            return;
+        }
         if a.started {
             if let Some(scene) = feed
                 .visible()
@@ -614,6 +675,7 @@ impl SketchEditor {
                     || matches!(
                         a.tool,
                         ModelingTool::Move
+                            | ModelingTool::Split
                             | ModelingTool::Copy
                             | ModelingTool::Align
                             | ModelingTool::Scale
@@ -655,7 +717,10 @@ impl SketchEditor {
             Ok(())
                 if matches!(
                     a.tool,
-                    ModelingTool::Move | ModelingTool::Copy | ModelingTool::Scale
+                    ModelingTool::Move
+                        | ModelingTool::Copy
+                        | ModelingTool::Scale
+                        | ModelingTool::Split
                 ) =>
             {
                 a.started = true;
@@ -709,6 +774,9 @@ impl SketchEditor {
         let Some(a) = &self.acquisition else {
             return false;
         };
+        if a.started && a.tool == ModelingTool::Split {
+            return false;
+        }
         if a.started {
             ui.small(if a.tool == ModelingTool::Scale { "Shift-click objects to add/remove targets. Drag the center for uniform scale or an axis handle for one factor. Option/Alt creates a copy." } else { "Shift-click objects to add/remove targets. Drag arrows, planes or rings. Option/Alt creates a copy." });
             ui.separator();
@@ -1171,7 +1239,16 @@ mod tests {
             editor
                 .activate_model_tool(&session, &Default::default(), &feed, tool, Channel::Ui)
                 .unwrap();
-            assert!(editor.awaiting_model_targets(), "{tool:?}");
+            if tool == ModelingTool::Split {
+                assert!(!editor.awaiting_model_targets());
+                assert!(editor.model.active());
+                assert_eq!(
+                    editor.model.split_selection().unwrap().1,
+                    crate::modeling::SplitInputField::Targets
+                );
+            } else {
+                assert!(editor.awaiting_model_targets(), "{tool:?}");
+            }
             assert!(!editor.accept_target_selection(
                 session.document(),
                 &BTreeSet::from([session.document().id()])
@@ -1202,5 +1279,271 @@ mod tests {
         assert!(!editor.model_interaction_active());
         assert!(!editor.has_pending_edits());
         assert_eq!(session.document(), &changed);
+    }
+    fn split_frame(
+        ctx: &egui::Context,
+        editor: &mut SketchEditor,
+        session: &mut Session,
+        feed: &mut SceneFeed,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1360., 860.))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ui| editor.show_project(ui, session, false, feed, &Default::default()),
+        )
+    }
+    fn split_text(out: &egui::FullOutput, label: &str) -> Pos2 {
+        out.shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Split text missing: {label}"))
+    }
+    fn split_click(
+        ctx: &egui::Context,
+        editor: &mut SketchEditor,
+        session: &mut Session,
+        feed: &mut SceneFeed,
+        label: &str,
+    ) {
+        let out = split_frame(ctx, editor, session, feed, vec![]);
+        let pos = split_text(&out, label);
+        out.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            split_frame(
+                ctx,
+                editor,
+                session,
+                feed,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+    }
+    fn split_enter() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+    fn choose_split_plane(
+        ctx: &egui::Context,
+        editor: &mut SketchEditor,
+        session: &mut Session,
+        feed: &mut SceneFeed,
+    ) {
+        split_click(ctx, editor, session, feed, "Plane");
+        split_click(ctx, editor, session, feed, "Choose a plane");
+        split_click(ctx, editor, session, feed, "XY · +Z normal");
+    }
+    #[test]
+    fn split_tool_first_shows_both_fields_before_display_and_native_failure_then_cancel_changes_nothing()
+     {
+        let (mut session, _, mut editor, _) = fixture();
+        let mut feed = SceneFeed::default();
+        let before = session.document().clone();
+        let revision = session.revision();
+        editor.tree_selection.clear();
+        editor
+            .activate_model_tool(
+                &session,
+                &Default::default(),
+                &feed,
+                ModelingTool::Split,
+                Channel::Ui,
+            )
+            .unwrap();
+        assert!(editor.model.active());
+        assert!(!editor.awaiting_model_targets());
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        for _ in 0..3 {
+            split_frame(&ctx, &mut editor, &mut session, &mut feed, vec![])
+                .drop_without_applying_deltas();
+        }
+        let out = split_frame(&ctx, &mut editor, &mut session, &mut feed, vec![]);
+        split_text(&out, "Targets · 0 selected · active");
+        split_text(&out, "Splitting tool · 0 selected");
+        out.drop_without_applying_deltas();
+        // Select source bodies without waiting for a display receipt; actual geometry still gates execution.
+        let targets: BTreeSet<_> = session
+            .document()
+            .entities()
+            .filter(|entity| matches!(entity.data, EntityData::Part { .. }))
+            .map(|entity| entity.id)
+            .collect();
+        editor.tree_selection = targets;
+        editor.advance_model_targets(&session, &Default::default(), &feed, false);
+        choose_split_plane(&ctx, &mut editor, &mut session, &mut feed);
+        // The explicitly chosen XY plane at zero is tangent to both boxes.
+        split_frame(
+            &ctx,
+            &mut editor,
+            &mut session,
+            &mut feed,
+            vec![split_enter()],
+        )
+        .drop_without_applying_deltas();
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut failed = false;
+        while Instant::now() < until {
+            let out = split_frame(&ctx, &mut editor, &mut session, &mut feed, vec![]);
+            failed=out.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text().contains("positive-volume")));
+            out.drop_without_applying_deltas();
+            if failed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(failed, "invalid native plane must report failure");
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
+        split_click(&ctx, &mut editor, &mut session, &mut feed, "Cancel");
+        assert!(!editor.model_interaction_active());
+        assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn split_enter_uses_native_validation_then_applies_two_targets_once_with_undo_redo() {
+        let (mut session, mut feed, mut editor, ids) = fixture();
+        let before = session.document().clone();
+        let revision = session.revision();
+        editor.tree_selection = BTreeSet::from(ids);
+        editor
+            .activate_model_tool(
+                &session,
+                &Default::default(),
+                &feed,
+                ModelingTool::Split,
+                Channel::Ui,
+            )
+            .unwrap();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        for _ in 0..3 {
+            split_frame(&ctx, &mut editor, &mut session, &mut feed, vec![])
+                .drop_without_applying_deltas();
+        }
+        choose_split_plane(&ctx, &mut editor, &mut session, &mut feed);
+        let out = split_frame(&ctx, &mut editor, &mut session, &mut feed, vec![]);
+        let pos =
+            out.platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    let bounds = node.bounds()?;
+                    (node.role() == egui::accesskit::Role::TextInput && node.value() == Some("0"))
+                        .then(|| {
+                            Pos2::new(
+                                ((bounds.x0 + bounds.x1) * 0.5) as f32,
+                                ((bounds.y0 + bounds.y1) * 0.5) as f32,
+                            )
+                        })
+                })
+                .expect("plane offset input");
+        out.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            split_frame(
+                &ctx,
+                &mut editor,
+                &mut session,
+                &mut feed,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+        split_frame(
+            &ctx,
+            &mut editor,
+            &mut session,
+            &mut feed,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: Some(egui::Key::A),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Text("15 mm".into()),
+            ],
+        )
+        .drop_without_applying_deltas();
+        let Some(crate::modeling::ModelRequest::SplitOperation(request)) =
+            editor.model_request_for_tests(&session)
+        else {
+            panic!("complete typed Split request")
+        };
+        assert_eq!(request.targets.len(), 2);
+        assert_eq!(session.document(), &before);
+        split_frame(
+            &ctx,
+            &mut editor,
+            &mut session,
+            &mut feed,
+            vec![split_enter()],
+        )
+        .drop_without_applying_deltas();
+        let until = Instant::now() + Duration::from_secs(10);
+        while session.revision() == revision && Instant::now() < until {
+            split_frame(&ctx, &mut editor, &mut session, &mut feed, vec![])
+                .drop_without_applying_deltas();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(session.revision(), revision + 1, "{}", editor.message);
+        assert!(!editor.model_interaction_active());
+        let after = session.document().clone();
+        let native = multicad_model::Compiler::default()
+            .compile(&after, session.revision())
+            .unwrap();
+        assert_eq!(native.snapshot().bodies.len(), 4);
+        for target in &request.targets {
+            for output in &target.outputs {
+                assert!(
+                    (native.solid(output.body).unwrap().volume_mm3().unwrap() - 13500.).abs()
+                        < 1e-5
+                );
+            }
+        }
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &before);
+        session
+            .redo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &after);
     }
 }

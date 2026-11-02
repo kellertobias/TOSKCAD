@@ -77,265 +77,426 @@ fn display(doc: &Document, revision: u64, outputs: &[CreatedBody], metadata: boo
     })
 }
 fn complete(session: &Session, outputs: &[CreatedBody], scene: &Scene) -> SplitPanel {
-    let mut p = SplitPanel::new(
+    let mut panel = SplitPanel::new(
         session.document(),
         session.revision(),
         scene,
         &BTreeSet::from([outputs[0].body]),
     )
     .unwrap();
-    p.tool = Some(outputs[1].body);
-    p
+    panel.tool = Some(outputs[1].body);
+    panel
+}
+fn paint(
+    ctx: &egui::Context,
+    panel: &mut SplitPanel,
+    document: &Document,
+    preview: PreviewState<'_>,
+    events: Vec<egui::Event>,
+) -> (egui::FullOutput, Option<SplitEvent>) {
+    let mut event = None;
+    let out = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100., 800.),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            let inspector = egui::Panel::right("split-review")
+                .exact_size(250.)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        event = panel.show(ui, document, true, preview);
+                    });
+                });
+            assert!(inspector.response.rect.width() <= 251.);
+        },
+    );
+    (out, event)
+}
+fn context() -> egui::Context {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    ctx
+}
+fn button(out: &egui::FullOutput, label: &str) -> egui::Rect {
+    out.platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            (node.label() == Some(label) && node.role() == egui::accesskit::Role::Button).then(
+                || {
+                    egui::Rect::from_min_max(
+                        egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                        egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                    )
+                },
+            )
+        })
+        .unwrap_or_else(|| panic!("missing {label}"))
+}
+fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+    vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        },
+    ]
+}
+fn key_enter() -> egui::Event {
+    egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: Some(egui::Key::Enter),
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    }
 }
 #[test]
-fn choices_require_current_source_receipt_and_do_not_guess_two_selected_roles() {
-    let (s, outputs, scene) = fixture();
-    let before = s.document().clone();
+fn both_required_fields_are_visible_from_source_entry_and_preselection_never_guesses_a_cutter() {
+    let (session, outputs, scene) = fixture();
+    let before = session.document().clone();
+    let selected = BTreeSet::from([outputs[0].body, outputs[1].body]);
+    let mut panel = SplitPanel::from_source(session.document(), &selected).unwrap();
+    assert_eq!(panel.targets, selected);
+    assert_eq!(panel.tool, None);
+    assert_eq!(panel.field, SplitInputField::Targets);
+    let ctx = context();
+    for _ in 0..2 {
+        paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Idle,
+            vec![],
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    let (out, _) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![],
+    );
+    let targets = button(&out, "Targets · 2 selected · active");
+    let tool = button(&out, "Splitting tool · 0 selected");
+    assert!(targets.bottom() < tool.top());
+    assert!(tool.bottom() < 180.);
+    out.drop_without_applying_deltas();
+    panel.confirm(session.document()).unwrap();
+    assert_eq!(panel.field, SplitInputField::Tool);
+    panel
+        .select(session.document(), &BTreeSet::from([outputs[2].body]))
+        .unwrap();
     assert_eq!(
-        SplitPanel::available(s.document(), s.revision(), &scene).unwrap(),
+        panel
+            .request(session.document(), true)
+            .unwrap()
+            .targets
+            .len(),
         2
     );
-    let p = SplitPanel::new(
-        s.document(),
-        s.revision(),
-        &scene,
-        &BTreeSet::from([outputs[0].body]),
-    )
-    .unwrap();
-    assert_eq!(p.target, Some(outputs[0].body));
-    assert!(p.tool.is_none());
-    assert!(p.request(s.document(), true).is_err());
-    let p = SplitPanel::new(
-        s.document(),
-        s.revision(),
-        &scene,
-        &BTreeSet::from([outputs[0].body, outputs[1].body]),
-    )
-    .unwrap();
-    assert!(p.target.is_none() && p.tool.is_none());
-    assert!(SplitPanel::new(s.document(), s.revision() + 1, &scene, &BTreeSet::new()).is_err());
-    let without = display(s.document(), s.revision(), &outputs, false);
-    assert!(SplitPanel::available(s.document(), s.revision(), &without).is_err());
-    let mut changed = before.clone();
-    changed
-        .rename("Different content at same revision")
-        .unwrap();
-    assert!(SplitPanel::new(&changed, s.revision(), &scene, &BTreeSet::new()).is_err());
-    assert_eq!(s.document(), &before);
-}
-#[test]
-fn output_ids_stay_fixed_across_names_keep_tool_and_explicit_role_changes() {
-    let (s, outputs, scene) = fixture();
-    let before = s.document().clone();
-    let mut p = complete(&s, &outputs, &scene);
-    let first = p.request(s.document(), true).unwrap();
-    p.outputs[0].name = "Inside cabinet stock".into();
-    p.outputs[1].name = "Outside cabinet stock".into();
-    p.keep_tools = true;
-    p.target = Some(outputs[2].body);
-    p.tool = Some(outputs[0].body);
-    let second = p.request(s.document(), true).unwrap();
-    for (a, b) in first.outputs.iter().zip(&second.outputs) {
-        assert_eq!((a.feature, a.body, a.side), (b.feature, b.body, b.side));
-    }
-    assert_eq!(second.target.body, outputs[2].body);
-    assert_eq!(second.tool.body, outputs[0].body);
-    assert!(second.keep_tools);
-    model::prepare_split(&s, s.revision(), actor(), &second).unwrap();
-    assert_eq!(s.document(), &before);
-    p.tool = p.target;
-    assert!(p.request(s.document(), true).is_err());
-    p.tool = Some(outputs[0].body);
-    p.outputs[0].name.clear();
-    assert!(p.request(s.document(), true).is_err());
-}
-#[test]
-fn stale_body_heads_and_foreign_documents_cannot_reuse_a_form() {
-    let (mut s, outputs, scene) = fixture();
-    let p = complete(&s, &outputs, &scene);
-    let r = p.request(s.document(), true).unwrap();
-    let boolean = model::BooleanRequest::new(
-        model::Operation::Join,
-        r.target.clone(),
-        vec![r.tool.clone()],
-    );
-    let edit = model::prepare_boolean(&s, s.revision(), actor(), &boolean).unwrap();
-    s.commit(edit.prepared).unwrap();
+    assert_eq!(session.document(), &before);
+    let absent = display(session.document(), session.revision(), &outputs, false);
+    assert!(SplitPanel::new(session.document(), session.revision(), &absent, &selected).is_err());
     assert!(
-        p.request(s.document(), true)
-            .unwrap_err()
-            .contains("changed")
-    );
-    let forged = display(s.document(), s.revision(), &outputs, true);
-    assert!(SplitPanel::new(s.document(), s.revision(), &forged, &BTreeSet::new()).is_err());
-    assert!(p.request(&Document::new("Foreign").unwrap(), true).is_err());
-    assert!(p.request(s.document(), false).is_err());
-}
-#[test]
-fn frame_changes_invalidate_preview_and_cancel_has_priority_without_source_writes() {
-    let (s, outputs, scene) = fixture();
-    let before = s.document().clone();
-    let mut p = complete(&s, &outputs, &scene);
-    let old = p.stamp();
-    p.keep_tools = true;
-    let Some(SplitEvent::Preview { stamp, request }) = p.finish_frame(
-        true,
-        Some(FormAction::Preview),
-        s.document(),
-        true,
-        PreviewState::Ready { stamp: old },
-    ) else {
-        panic!("Preview should carry current source-neutral inputs")
-    };
-    assert_ne!(stamp, old);
-    assert!(request.keep_tools);
-    assert!(
-        p.finish_frame(
-            false,
-            Some(FormAction::Apply),
-            s.document(),
-            true,
-            PreviewState::Ready { stamp: old }
+        SplitPanel::new(
+            session.document(),
+            session.revision() + 1,
+            &scene,
+            &selected
         )
-        .is_none()
+        .is_err()
     );
+}
+#[test]
+fn input_focus_clicks_and_enter_keep_target_and_cutter_roles_separate() {
+    let (session, outputs, scene) = fixture();
+    let mut panel = complete(&session, &outputs, &scene);
+    let ctx = context();
+    for _ in 0..2 {
+        paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Idle,
+            vec![],
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    let (out, _) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![],
+    );
+    let at = button(&out, "Splitting tool · 1 selected").center();
+    out.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Idle,
+            pointer(at, pressed),
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    assert_eq!(panel.field, SplitInputField::Tool);
+    panel
+        .select(session.document(), &BTreeSet::from([outputs[2].body]))
+        .unwrap();
+    assert_eq!(panel.targets, BTreeSet::from([outputs[0].body]));
+    assert_eq!(panel.tool, Some(outputs[2].body));
+    panel.focus(SplitInputField::Targets);
+    panel
+        .select(
+            session.document(),
+            &BTreeSet::from([outputs[0].body, outputs[1].body]),
+        )
+        .unwrap();
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![key_enter()],
+    );
+    out.drop_without_applying_deltas();
+    assert!(event.is_none());
+    assert_eq!(panel.field, SplitInputField::Tool);
+    let mut repeated = key_enter();
+    if let egui::Event::Key { repeat, .. } = &mut repeated {
+        *repeat = true;
+    }
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![repeated],
+    );
+    out.drop_without_applying_deltas();
+    assert!(event.is_none(), "held Enter must not execute on repetition");
+    let mut released = key_enter();
+    if let egui::Event::Key { pressed, .. } = &mut released {
+        *pressed = false;
+    }
+    paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![released],
+    )
+    .0
+    .drop_without_applying_deltas();
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![key_enter()],
+    );
+    out.drop_without_applying_deltas();
+    let Some(SplitEvent::Preview { stamp, request }) = event else {
+        panic!("valid Enter must request native validation")
+    };
+    assert_eq!(request.targets.len(), 2);
+    assert!(panel.auto_apply);
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Ready { stamp },
+        vec![],
+    );
+    out.drop_without_applying_deltas();
+    assert!(matches!(event, Some(SplitEvent::Apply)));
+}
+#[test]
+fn explicit_plane_choice_has_no_default_cut_and_names_and_ids_survive_role_changes() {
+    let (session, outputs, scene) = fixture();
+    let mut panel = complete(&session, &outputs, &scene);
+    let original = panel.request(session.document(), true).unwrap();
+    panel
+        .outputs
+        .get_mut(&(outputs[0].body, SplitSideV2::InsideTool))
+        .unwrap()
+        .name = "Named inside".into();
+    panel.tool_kind = ToolKind::Plane;
+    assert!(
+        panel
+            .request(session.document(), true)
+            .unwrap_err()
+            .contains("explicit plane")
+    );
+    panel.plane = Some(PlaneChoice::Datum(Datum::Xy));
+    panel.plane_offset.text = "2.5".into();
+    panel.ensure_outputs();
+    let request = panel.request(session.document(), true).unwrap();
+    assert_eq!(
+        request.targets[0].outputs[0].side,
+        SplitSideV2::PositivePlane
+    );
+    assert_ne!(
+        request.targets[0].outputs[0].body,
+        original.targets[0].outputs[0].body
+    );
+    panel.tool_kind = ToolKind::Model;
+    let restored = panel.request(session.document(), true).unwrap();
+    assert_eq!(
+        restored.targets[0].outputs[0].body,
+        original.targets[0].outputs[0].body
+    );
+    assert_eq!(restored.targets[0].outputs[0].name, "Named inside");
+}
+#[test]
+fn native_ready_does_not_beat_a_cancel_click_and_changed_fields_invalidate_execution() {
+    let (session, outputs, scene) = fixture();
+    let mut panel = complete(&session, &outputs, &scene);
+    let ctx = context();
+    let stamp = panel.stamp();
+    for _ in 0..2 {
+        paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Ready { stamp },
+            vec![],
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    let (out, _) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Ready { stamp },
+        vec![],
+    );
+    let cancel = button(&out, "Cancel").center();
+    out.drop_without_applying_deltas();
+    panel.auto_apply = true;
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Ready { stamp },
+        pointer(cancel, true),
+    );
+    out.drop_without_applying_deltas();
+    assert!(event.is_none(), "held Cancel must defer automatic Apply");
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Ready { stamp },
+        pointer(cancel, false),
+    );
+    out.drop_without_applying_deltas();
+    assert!(matches!(event, Some(SplitEvent::Cancel)));
+    panel.auto_apply = true;
     assert!(matches!(
-        p.finish_frame(
-            false,
-            Some(FormAction::Apply),
-            s.document(),
-            true,
-            PreviewState::Ready { stamp }
-        ),
-        Some(SplitEvent::Apply)
-    ));
-    p.outputs[1].name = "New outside name".into();
-    assert!(matches!(
-        p.finish_frame(
+        panel.finish_frame(
             true,
             None,
-            s.document(),
+            session.document(),
             true,
             PreviewState::Ready { stamp }
         ),
         Some(SplitEvent::Changed)
     ));
-    assert!(matches!(
-        p.finish_frame(
-            true,
-            Some(FormAction::Cancel),
-            s.document(),
-            true,
-            PreviewState::Ready { stamp }
-        ),
-        Some(SplitEvent::Cancel)
-    ));
-    assert_eq!(s.document(), &before);
-}
-fn paint(
-    context: &egui::Context,
-    panel: &mut SplitPanel,
-    document: &Document,
-    events: Vec<egui::Event>,
-) -> (Option<SplitEvent>, Option<egui::Pos2>) {
-    let mut event = None;
-    let output = context.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1200., 1000.),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ui| {
-            let inspector = egui::Panel::right("split-inspector")
-                .default_size(180.)
-                .min_size(0.)
-                .resizable(true)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        event = panel.show(ui, document, true, PreviewState::Idle);
-                    });
-                });
-            assert!(inspector.response.rect.width() <= 181.);
-        },
+    assert!(!panel.stamp().eq(&stamp));
+    assert!(
+        panel
+            .finish_frame(
+                false,
+                Some(FormAction::Apply),
+                session.document(),
+                true,
+                PreviewState::Ready { stamp }
+            )
+            .is_none()
     );
-    let preview = output.shapes.iter().find_map(|shape| match &shape.shape {
-        egui::epaint::Shape::Text(text) if text.galley.job.text == "Preview" => {
-            Some(text.pos + text.galley.size() * 0.5)
-        }
-        _ => None,
-    });
-    output.drop_without_applying_deltas();
-    (event, preview)
 }
 #[test]
-fn actual_preview_button_emits_pinned_request_in_a_narrow_inspector() {
-    let (s, outputs, scene) = fixture();
-    let before = s.document().clone();
-    let mut p = complete(&s, &outputs, &scene);
-    let original = p.request(s.document(), true).unwrap();
-    let context = egui::Context::default();
-    let (_, pos) = paint(&context, &mut p, s.document(), vec![]);
-    let pos = pos.expect("Preview button is visible");
-    paint(
-        &context,
-        &mut p,
-        s.document(),
-        vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-        ],
-    );
-    let (event, _) = paint(
-        &context,
-        &mut p,
-        s.document(),
-        vec![egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
+fn stale_heads_and_missing_history_are_errors_and_output_names_stay_within_the_inspector() {
+    let (mut session, outputs, scene) = fixture();
+    let mut panel = complete(&session, &outputs, &scene);
+    let before = session.document().clone();
+    for output in panel.outputs.values_mut() {
+        output.name = "Long named partition ".repeat(20);
+    }
+    let ctx = context();
+    for _ in 0..8 {
+        let (out, _) = paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Idle,
+            vec![],
+        );
+        out.drop_without_applying_deltas();
+    }
+    let request = model::BooleanRequest::new(
+        model::Operation::Cut,
+        model::BodyInput {
+            body: outputs[0].body,
+            producer: outputs[0].feature,
+        },
+        vec![model::BodyInput {
+            body: outputs[1].body,
+            producer: outputs[1].feature,
         }],
     );
-    let Some(SplitEvent::Preview { request, .. }) = event else {
-        panic!("Actual Preview click must emit the local Split request")
+    let prepared =
+        model::prepare_booleans(&session, session.revision(), actor(), &[request]).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    assert!(
+        panel
+            .request(session.document(), true)
+            .unwrap_err()
+            .contains("changed")
+    );
+    let valid = session.document().clone();
+    let mut broken = session.document().get(outputs[0].body).unwrap().clone();
+    let EntityData::Part { features, .. } = &mut broken.data else {
+        panic!()
     };
-    assert_eq!(*request, original);
-    assert_eq!(s.document(), &before);
-}
-#[test]
-fn long_output_names_never_grow_the_inspector_over_many_frames() {
-    let (s, outputs, scene) = fixture();
-    let before = s.document().clone();
-    let mut p = complete(&s, &outputs, &scene);
-    p.outputs[0].name = "Long intentionally entered name ".repeat(25);
-    p.outputs[1].name = "Outside tool".into();
-    let request = p.request(s.document(), true).unwrap();
-    let context = egui::Context::default();
-    for _ in 0..90 {
-        let (event, _) = paint(&context, &mut p, s.document(), vec![]);
-        assert!(event.is_none());
-    }
-    assert_eq!(p.request(s.document(), true).unwrap(), request);
-    assert_eq!(s.document(), &before);
-}
-#[test]
-fn missing_canonical_history_never_falls_back_to_a_previous_visible_producer() {
-    let (mut s, outputs, scene) = fixture();
-    let p = complete(&s, &outputs, &scene);
-    s.apply(multicad_core::commands::Request {
-        expected_revision: s.revision(),
-        actor: actor(),
-        label: "Remove dependency".into(),
-        edits: vec![Mutation::Remove(outputs[0].feature)],
-    })
-    .unwrap();
-    assert!(p.request(s.document(), true).is_err());
+    features.clear();
+    assert!(
+        session
+            .apply(multicad_core::commands::Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Broken history".into(),
+                edits: vec![Mutation::Replace(broken)]
+            })
+            .is_err()
+    );
+    assert_eq!(session.document(), &valid);
+    assert_ne!(session.document(), &before);
+    assert!(
+        panel
+            .request(&Document::new("Foreign").unwrap(), true)
+            .is_err()
+    );
 }

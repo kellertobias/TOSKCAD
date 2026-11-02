@@ -50,6 +50,7 @@ pub enum ModelRequest {
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
     Split(Box<model::SplitRequest>),
+    SplitOperation(Box<model::SplitOperationRequest>),
     ExtrudeGroupEdit(Box<model::ExtrudeGroupEdit>),
     GroupedExtrude(Box<model::GroupedExtrudeRequest>),
     Placement(Box<super::PlacementCommand>),
@@ -331,6 +332,9 @@ impl ModelRequest {
             Self::Split(request) => {
                 model::prepare_split(session, session.revision(), actor, request)
             }
+            Self::SplitOperation(request) => {
+                model::prepare_split_operation(session, session.revision(), actor, request)
+            }
             Self::GroupedExtrude(request) => {
                 model::prepare_grouped_extrude(session, session.revision(), actor, request)
             }
@@ -359,6 +363,17 @@ impl ModelRequest {
                 (&request.target, true),
                 (&request.tool, !request.keep_tools),
             ],
+            Self::SplitOperation(request) => {
+                let mut inputs: Vec<_> = request
+                    .targets
+                    .iter()
+                    .map(|target| (&target.input, true))
+                    .collect();
+                if let model::SplitTool::Body { input } = &request.tool {
+                    inputs.push((input, !request.keep_tools));
+                }
+                inputs
+            }
             _ => return Ok(vec![]),
         };
         let mut tools = std::collections::BTreeMap::new();
@@ -576,7 +591,7 @@ impl ModelForm {
                 .map(|request| ModelRequest::Booleans(vec![request])),
             Self::Split(panel) => panel
                 .request(document, capabilities.new_body)
-                .map(|request| ModelRequest::Split(Box::new(request))),
+                .map(|request| ModelRequest::SplitOperation(Box::new(request))),
             Self::ExtrudeGroup(panel) => panel
                 .request(document, capabilities)
                 .map(|request| ModelRequest::ExtrudeGroupEdit(Box::new(request))),
@@ -614,7 +629,7 @@ impl ModelForm {
                     SplitEvent::Changed => ModelEvent::Changed,
                     SplitEvent::Preview { stamp, request } => ModelEvent::Preview {
                         stamp,
-                        request: ModelRequest::Split(request),
+                        request: ModelRequest::SplitOperation(request),
                     },
                     SplitEvent::Apply => ModelEvent::Apply,
                     SplitEvent::Cancel => ModelEvent::Cancel,

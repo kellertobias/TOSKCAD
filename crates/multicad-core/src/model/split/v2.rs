@@ -18,7 +18,7 @@ pub const MAX_SPLIT_TARGETS: usize = 128;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SplitPlane {
-    Authored { frame: PrimitiveFrame },
+    Authored { frame: Box<PrimitiveFrame> },
     Existing { plane: EntityId, offset: Dimension },
 }
 impl SplitPlane {
@@ -179,15 +179,14 @@ pub fn read_split_v2(
         SplitTool::Body { input } => validate_body(document, input)?,
         SplitTool::Plane {
             source: SplitPlane::Existing { plane, .. },
-        } => {
-            if !matches!(
-                document.get(*plane).map(|e| &e.data),
-                Some(EntityData::Plane { .. })
-            ) {
-                return Err(invalid(
-                    "Split construction plane is missing or has the wrong kind",
-                ));
-            }
+        } if !matches!(
+            document.get(*plane).map(|e| &e.data),
+            Some(EntityData::Plane { .. })
+        ) =>
+        {
+            return Err(invalid(
+                "Split construction plane is missing or has the wrong kind",
+            ));
         }
         _ => {}
     }

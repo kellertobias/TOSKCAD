@@ -887,21 +887,14 @@ impl SketchEditor {
         &mut self,
         session: &Session,
         resources: &multicad_core::project_file::ProjectResources,
-        feed: &crate::viewport::SceneFeed,
+        _feed: &crate::viewport::SceneFeed,
         channel: Channel,
     ) -> Result<(), String> {
-        if !self.split_ready(session, feed) {
-            return Err("Wait for two current native bodies with source-bound evaluation metadata, and finish pending edits before splitting".into());
-        }
-        let scene = feed
-            .visible()
-            .cloned()
-            .ok_or("Wait for the current native model")?;
         let selected = self.tree_selection.clone();
         self.finish()?;
         self.model
-            .begin_split(session, resources, &scene, &selected, channel)?;
-        self.message = "Split · choose one target and tool, then Preview both new parts".into();
+            .begin_split_source(session, resources, &selected, channel)?;
+        self.message = "Split · Targets and Splitting tool are both visible; Enter changes field, then executes after native validation".into();
         Ok(())
     }
     pub fn begin_boolean(

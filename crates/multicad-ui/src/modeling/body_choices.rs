@@ -105,3 +105,55 @@ pub(super) fn choices(
     choices.sort_by(|a, b| a.label.cmp(&b.label).then(a.input.body.cmp(&b.input.body)));
     Ok(choices)
 }
+
+/// Source candidates let an explicit-input form open before display publication.
+/// They do not certify native geometry; the candidate gate must check every body.
+pub(super) fn source_choices(document: &Document) -> Result<Vec<BodyChoice>, String> {
+    let index = Index::new(document).map_err(|error| error.to_string())?;
+    let mut choices = vec![];
+    for entity in document.entities() {
+        let EntityData::Part { features, .. } = &entity.data else {
+            continue;
+        };
+        let Some(producer) = features.iter().rev().copied().find(|id| {
+            matches!(
+                document.get(*id).map(|entry| &entry.data),
+                Some(EntityData::Feature {
+                    suppressed: false,
+                    ..
+                })
+            )
+        }) else {
+            continue;
+        };
+        let input = BodyInput {
+            body: entity.id,
+            producer,
+        };
+        input
+            .resolve_producer(document)
+            .map_err(|error| error.to_string())?;
+        let parent = index.parent(entity.id).map_err(|error| error.to_string())?;
+        let path = crate::model_tree::container_path(document, &index, parent);
+        let visible = index
+            .effective_visibility(entity.id)
+            .map_err(|error| error.to_string())?;
+        choices.push(BodyChoice {
+            input,
+            label: format!(
+                "{} · {}{}",
+                entity.name,
+                path,
+                if visible { "" } else { " · hidden" }
+            ),
+            path,
+            producer: document
+                .get(producer)
+                .expect("resolved producer")
+                .name
+                .clone(),
+        });
+    }
+    choices.sort_by(|a, b| a.label.cmp(&b.label).then(a.input.body.cmp(&b.input.body)));
+    Ok(choices)
+}

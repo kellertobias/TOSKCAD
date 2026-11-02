@@ -70,10 +70,10 @@ fn fixture() -> Fixture {
 fn plane(z: f64) -> SplitTool {
     SplitTool::Plane {
         source: SplitPlane::Authored {
-            frame: PrimitiveFrame {
+            frame: Box::new(PrimitiveFrame {
                 origin: [length(0.), length(0.), length(z)],
                 ..Default::default()
-            },
+            }),
         },
     }
 }
@@ -193,11 +193,11 @@ fn one_invalid_target_rejects_the_complete_native_candidate_without_committing_a
         f.targets.clone(),
         SplitTool::Plane {
             source: SplitPlane::Authored {
-                frame: PrimitiveFrame {
+                frame: Box::new(PrimitiveFrame {
                     origin: [length(5.), length(0.), length(0.)],
                     u: [0., 1., 0.],
                     v: [0., 0., 1.],
-                },
+                }),
             },
         },
         false,
@@ -241,10 +241,10 @@ fn canonical_and_parameter_bound_planes_rebuild_saved_sides_without_swapping_out
     };
     let authored = SplitTool::Plane {
         source: SplitPlane::Authored {
-            frame: PrimitiveFrame {
+            frame: Box::new(PrimitiveFrame {
                 origin: [length(0.), length(0.), offset.clone()],
                 ..Default::default()
-            },
+            }),
         },
     };
     let construction = Entity::new(

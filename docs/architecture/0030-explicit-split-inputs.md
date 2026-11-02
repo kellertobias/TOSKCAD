@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | Accepted engineering design; implementation and native UI acceptance pending |
+| Status | Implemented canonical/native/UI paths; actual macOS interaction and human acceptance pending |
 | Date | 2026-11-02 |
 | Decider | Codex within CAD-222 implementation scope |
 
@@ -59,3 +59,34 @@ cannot hide the second required field or require two selected bodies for a plane
 General multi-fragment and open-surface splitting remain unsupported. That limit
 must be visible before mutation; arbitrary native fragment enumeration remains
 unsuitable for persistent Part identity.
+
+## Implementation and verification
+
+[Schema 2 and atomic preparation](../../crates/multicad-core/src/model/split/v2.rs)
+share the canonical Session with schema 1 and all application callers. The plane
+frame is boxed in memory; serialization retains the same typed frame payload.
+[Native plane clipping](../../crates/multicad-kernel/src/split.rs) uses OCCT
+half-spaces and names cap provenance by semantic side. The
+[model compiler](../../crates/multicad-model/src/split.rs) resolves authored and
+canonical planes against current parameters and reference reports.
+
+The [Split form](../../crates/multicad-ui/src/modeling/split.rs) opens from source
+without waiting for a native display receipt. This only exposes choices: it does
+not certify geometry. Preview compiles the complete candidate, and Apply requires
+a matching native receipt. Enter advances field focus, then requests validation
+and applies the unchanged candidate when ready. Field edits, stale source,
+validation failures and Cancel revoke execution. Pointer-held cancellation takes
+precedence over an arriving native receipt. Target and tool fields retain their
+counts, identities and role labels during preview; output names are grouped by
+target and semantic side.
+
+[Painted UI tests](../../crates/multicad-ui/src/modeling/split/tests.rs) cover
+simultaneous fields, focus, explicit planes, stable output IDs, stale producers,
+finite inspector layout and Cancel precedence. The
+[host interaction tests](../../crates/multicad-ui/src/model_target_selection.rs)
+exercise production editor input with the native backend, including no-display
+entry, two targets, validation failure, cancellation, one commit and Undo/Redo.
+[Native integration tests](../../crates/multicad-model/tests/split_explicit.rs)
+cover actual model boundaries, authored/construction planes, parameter changes,
+all-or-nothing failure and project round trips. These tests do not establish
+actual macOS window interaction, Windows/Linux runtime results or human acceptance.

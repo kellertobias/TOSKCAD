@@ -72,6 +72,7 @@ pub(crate) use panel_face::{seeded_message, selected_panels, with_opposite_sides
 pub use placement::{PlacementCommand, PlacementMode};
 pub use scale_gizmo::ScaleViewport;
 pub use scaling::ScaleCommand;
+pub(crate) use split::SplitInputField;
 pub use termination::TerminationViewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,7 +459,7 @@ impl ModelingTool {
                 "Usage: boolean (choose separate targets and tools in the Inspector, then Preview and Apply)"
             }
             Self::Split => {
-                "Usage: split (choose one target and one separate tool, name the inside/outside parts, then Preview and Apply)"
+                "Usage: split (select Targets and a separate model or plane in Splitting tool; Enter changes field, then executes after validation)"
             }
         }
     }
@@ -552,7 +553,7 @@ impl ModelingTool {
                 "Requires at least two current native bodies and no pending edits. Targets and tools are chosen explicitly."
             }
             Self::Split => {
-                "Requires at least two current native bodies with source-bound evaluation metadata and no pending edits. Each resulting side must remain connected."
+                "Choose one or more body targets and one separate plane or closed model. Finish pending edits first. Both resulting sides must be nonempty and connected."
             }
         }
     }

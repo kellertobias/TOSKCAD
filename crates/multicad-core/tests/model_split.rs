@@ -348,10 +348,10 @@ fn explicit_plane_split_prepares_all_targets_as_one_source_neutral_transaction_w
         vec![legacy.target.clone(), legacy.tool.clone()],
         SplitTool::Plane {
             source: SplitPlane::Authored {
-                frame: PrimitiveFrame {
+                frame: Box::new(PrimitiveFrame {
                     origin: [length(0.), length(0.), length(4.)],
                     ..Default::default()
-                },
+                }),
             },
         },
         false,
@@ -448,10 +448,10 @@ fn invalid_explicit_split_roles_duplicates_and_planes_never_prepare_a_partial_ta
     let mut r = valid.clone();
     r.tool = SplitTool::Plane {
         source: SplitPlane::Authored {
-            frame: PrimitiveFrame {
+            frame: Box::new(PrimitiveFrame {
                 u: [2., 0., 0.],
                 ..Default::default()
-            },
+            }),
         },
     };
     cases.push(r);

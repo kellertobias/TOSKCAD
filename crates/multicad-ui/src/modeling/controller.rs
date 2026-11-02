@@ -27,7 +27,7 @@ use crate::{
 use multicad_core::commands::Request;
 use multicad_core::{
     commands::{Actor, Channel, Prepared, Session, SessionStamp},
-    document::{EntityData, EntityId},
+    document::{Document, EntityData, EntityId},
     model::{
         self, CreatedBody, ExtrudeRequest, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest,
         RevolveRequest, length,
@@ -1253,7 +1253,7 @@ impl ModelToolController {
         revision: u64,
         scene: &Scene,
     ) -> bool {
-        SplitPanel::available(document, revision, scene).is_ok_and(|count| count >= 2)
+        SplitPanel::available(document, revision, scene).is_ok_and(|count| count >= 1)
     }
     pub fn begin_split(
         &mut self,
@@ -1270,6 +1270,53 @@ impl ModelToolController {
             channel,
             ModelForm::Split(Box::new(panel)),
         )
+    }
+    pub fn begin_split_source(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        selected: &std::collections::BTreeSet<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let panel = SplitPanel::from_source(session.document(), selected)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Split(Box::new(panel)),
+        )
+    }
+    pub(crate) fn split_selection(
+        &self,
+    ) -> Option<(
+        u64,
+        super::SplitInputField,
+        std::collections::BTreeSet<EntityId>,
+    )> {
+        match self.form.as_ref() {
+            Some(ModelForm::Split(panel)) => Some(panel.selection()),
+            _ => None,
+        }
+    }
+    pub(crate) fn retarget_split(
+        &mut self,
+        document: &Document,
+        selected: &std::collections::BTreeSet<EntityId>,
+    ) -> Result<(), String> {
+        let changed = match self.form.as_mut() {
+            Some(ModelForm::Split(panel)) => panel.select(document, selected)?,
+            _ => return Err("Split is not open".into()),
+        };
+        if changed {
+            self.invalidate();
+        }
+        Ok(())
+    }
+    pub(crate) fn confirm_split(&mut self, document: &Document) -> Result<(), String> {
+        match self.form.as_mut() {
+            Some(ModelForm::Split(panel)) => panel.confirm(document),
+            _ => Err("Split is not open".into()),
+        }
     }
     /// Operation the next Boolean form starts with; `None` restores Subtract.
     pub fn set_boolean_preset(&mut self, operation: Option<multicad_core::model::Operation>) {
@@ -1507,6 +1554,7 @@ impl ModelToolController {
                 request,
                 ModelRequest::ExtrudeBoolean(_)
                     | ModelRequest::Split(_)
+                    | ModelRequest::SplitOperation(_)
                     | ModelRequest::Placement(_)
                     | ModelRequest::Scale(_)
                     | ModelRequest::EdgeTreatment(_)
