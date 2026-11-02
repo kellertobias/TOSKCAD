@@ -278,6 +278,15 @@ impl SketchEditor {
             .find_map(|id| crate::modeling::ModelToolController::wall_of(session.document(), *id));
         self.finish()?;
         self.prepare_architecture_level(session)?;
+        if !self.architecture.enabled
+            && let Some(wall) = wall
+        {
+            self.model.set_architecture_level(
+                multicad_core::model::read_wall(document, wall)
+                    .map_err(|error| error.to_string())?
+                    .level,
+            );
+        }
         self.model
             .begin_opening(session, resources, tool, wall, channel)?;
         self.message = format!(
@@ -946,6 +955,92 @@ mod tests {
         self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length,
     };
     use std::time::{Duration, Instant};
+    #[test]
+    fn common_opening_preserves_selected_wall_while_architecture_uses_active_level() {
+        let (mut session, levels, _, _) = crate::architecture_view::tests::building();
+        let ty = model::NewType::new(
+            "Wall",
+            model::NewTypeKind::Wall(model::WallTypeDefinition {
+                thickness: length(200.),
+                height: length(2500.),
+                justification: model::Justification::Center,
+                material: None,
+            }),
+        );
+        let mut walls = Vec::new();
+        for level in levels {
+            let wall = model::WallRequest::new(
+                "Wall",
+                model::WallDefinition {
+                    output: model::BodyOutput {
+                        body: EntityId::new(),
+                    },
+                    wall_type: ty.id,
+                    layer_placement: None,
+                    path: vec![[length(0.), length(0.)], [length(6000.), length(0.)]],
+                    closed: false,
+                    level: Some(level),
+                    base_z: length(0.),
+                    thickness: None,
+                    height: None,
+                    justification: None,
+                    openings: vec![],
+                    cutouts: vec![],
+                },
+            );
+            let types = if walls.is_empty() {
+                vec![ty.clone()]
+            } else {
+                vec![]
+            };
+            let prepared = model::prepare_wall_change(
+                &session,
+                session.revision(),
+                Actor::local(Channel::Ui),
+                &types,
+                &model::WallChange::Create(&wall),
+            )
+            .unwrap();
+            session.commit(prepared.prepared).unwrap();
+            walls.push(wall);
+        }
+        let source = session.document().clone();
+        let resources = ProjectResources::default();
+        let mut editor = SketchEditor::default();
+        editor.set_model_backend(Box::new(NativeBackend::new()));
+        editor.restore_architecture_view(crate::architecture_view::Recall {
+            plan: false,
+            level: Some(levels[0]),
+        });
+        editor.tree_selection.insert(walls[1].body);
+        editor
+            .begin_room_opening(&session, &resources, ModelingTool::Door, Channel::Ui)
+            .unwrap();
+        let Some(crate::modeling::ModelRequest::Opening(command)) =
+            editor.model_request_for_tests(&session)
+        else {
+            panic!("opening request")
+        };
+        assert_eq!(command.anchor, walls[1].feature);
+        assert_eq!(
+            editor.architecture_recall().level,
+            Some(levels[0]),
+            "Common selection must not rewrite saved Architecture context"
+        );
+        editor.cancel_model();
+        editor.set_architecture_active(true, &session);
+        editor
+            .begin_room_opening(&session, &resources, ModelingTool::Door, Channel::Ui)
+            .unwrap();
+        let Some(crate::modeling::ModelRequest::Opening(command)) =
+            editor.model_request_for_tests(&session)
+        else {
+            panic!("opening request")
+        };
+        assert_eq!(command.anchor, walls[0].feature);
+        editor.cancel_model();
+        assert_eq!(session.document(), &source);
+    }
     fn fixture() -> (Session, SceneFeed, SketchEditor, [EntityId; 2]) {
         let mut session =
             Session::new(Document::new("Tool-first native objects").unwrap()).unwrap();

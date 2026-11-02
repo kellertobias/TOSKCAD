@@ -55,6 +55,7 @@ enum Execution {
 }
 struct Candidate {
     prepared: Prepared,
+    architecture_levels: std::sync::OnceLock<crate::architecture_view::Levels>,
     content: ContentHash,
     form: FormStamp,
     stamp: SceneStamp,
@@ -82,6 +83,7 @@ struct Handoff {
     revision: u64,
     resources: ProjectResources,
     scene: Arc<Scene>,
+    architecture_levels: std::sync::OnceLock<crate::architecture_view::Levels>,
 }
 #[derive(Default)]
 pub struct ModelToolController {
@@ -1619,6 +1621,7 @@ impl ModelToolController {
         };
         self.candidate = Some(Candidate {
             prepared: prepared.prepared,
+            architecture_levels: Default::default(),
             content,
             form,
             stamp,
@@ -1807,6 +1810,35 @@ impl ModelToolController {
             .map(|candidate| candidate.instances.clone())
             .unwrap_or_default()
     }
+    pub(crate) fn architecture_preview_levels(
+        &self,
+        session: &Session,
+        scene: &Arc<Scene>,
+    ) -> Option<&crate::architecture_view::Levels> {
+        if let Some(candidate) = self.candidate.as_ref()
+            && candidate
+                .scene
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, scene))
+        {
+            return Some(candidate.architecture_levels.get_or_init(|| {
+                crate::architecture_view::Levels::new(
+                    candidate.prepared.document(),
+                    candidate.stamp.revision,
+                )
+            }));
+        }
+        let handoff = self.handoff.as_ref()?;
+        if handoff.document != session.document().id()
+            || handoff.revision != session.revision()
+            || !Arc::ptr_eq(&handoff.scene, scene)
+        {
+            return None;
+        }
+        Some(handoff.architecture_levels.get_or_init(|| {
+            crate::architecture_view::Levels::new(session.document(), scene.stamp().revision)
+        }))
+    }
     pub fn apply(
         &mut self,
         session: &mut Session,
@@ -1859,6 +1891,7 @@ impl ModelToolController {
                 revision: session.revision(),
                 resources: resources.clone(),
                 scene,
+                architecture_levels: candidate.architecture_levels,
             });
             Ok(candidate.outputs)
         })();

@@ -7,6 +7,9 @@ use multicad_core::{
 use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
 use std::sync::Arc;
+#[cfg(test)]
+#[path = "modeling/architecture_authoring_tests.rs"]
+mod architecture_authoring_tests;
 #[path = "modeling/architecture_plan.rs"]
 mod architecture_plan;
 #[cfg(test)]

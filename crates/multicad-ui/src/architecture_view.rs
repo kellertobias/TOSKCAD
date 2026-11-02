@@ -214,6 +214,7 @@ pub struct Context {
     spatial_camera: Option<Camera>,
     plan_camera: Option<Camera>,
     filtered: Option<(Arc<Scene>, Option<EntityId>, Arc<Scene>)>,
+    preview_filtered: Option<(Arc<Scene>, Option<EntityId>, Arc<Scene>)>,
     rendered: Option<(Arc<Scene>, Arc<Scene>)>,
     plan_fit_pending: bool,
 }
@@ -353,6 +354,27 @@ impl Context {
     }
     pub fn take_plan_fit(&mut self) -> bool {
         std::mem::take(&mut self.plan_fit_pending)
+    }
+    pub(crate) fn preview_scene(
+        &mut self,
+        scene: &Arc<Scene>,
+        levels: &Levels,
+    ) -> Result<Arc<Scene>, String> {
+        if !self.planar() {
+            return Ok(scene.clone());
+        }
+        if let Some(Err(error)) = scene.architecture_plan() {
+            return Err(format!("Native plan unavailable: {error}"));
+        }
+        if let Some((source, level, view)) = &self.preview_filtered
+            && Arc::ptr_eq(source, scene)
+            && *level == self.recall.level
+        {
+            return Ok(view.clone());
+        }
+        let view = levels.plan_scene(scene, self.recall.level)?;
+        self.preview_filtered = Some((scene.clone(), self.recall.level, view.clone()));
+        Ok(view)
     }
     pub fn render_scene(&mut self, scene: &Arc<Scene>) -> Result<Arc<Scene>, String> {
         if !self.planar() {

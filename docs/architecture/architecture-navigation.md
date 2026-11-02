@@ -74,6 +74,13 @@ Physical face, edge and vertex picking belongs to the 3D representation. A saved
 plan projection produces a visible diagnostic in 2D and leaves valid 3D geometry
 available. Switching representations does not request another model rebuild.
 
+Pending modeling previews use level membership from their exact prepared
+document, cached separately from canonical sidebar facts. The same filter stays
+in effect after Apply while the canonical model rebuilds. Creating an opening
+from Common preserves an explicitly selected wall and its level without changing
+saved Architecture context. Inside Architecture, the selected active level
+remains authoritative for new opening forms.
+
 Finder and command entry use explicit family presets. The generic `equipment`
 command remains available. `stairs` opens Stairs; `slab` still opens Levels.
 `washer` retains its hardware meaning. Panel and Cabinet keep Wood as their

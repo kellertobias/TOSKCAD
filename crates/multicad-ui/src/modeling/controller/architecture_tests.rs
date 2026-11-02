@@ -179,3 +179,83 @@ fn active_level_seeds_new_wall_stair_slab_and_equipment_but_never_reassigns_save
         .unwrap();
     assert_eq!(session.document(), &before);
 }
+
+#[test]
+fn native_candidate_level_filter_uses_prepared_membership_and_keeps_canonical_context() {
+    let (mut session, levels, bodies, _) = crate::architecture_view::tests::building();
+    let source = session.document().clone();
+    let resources = ProjectResources::default();
+    let mut controller = ModelToolController::default();
+    controller.set_backend(Box::new(super::super::native_fixture::NativeBackend::new()));
+    controller.set_architecture_level(Some(levels[1]));
+    controller
+        .begin_wall(&session, &resources, Channel::Ui)
+        .unwrap();
+    controller
+        .preview(&session, &resources, Channel::Ui)
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !controller.can_apply(&session, &resources) && std::time::Instant::now() < deadline {
+        controller.poll(&session, &resources);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(controller.can_apply(&session, &resources));
+    let native = controller.display_scene(&session, &resources).unwrap();
+    let wall = controller.candidate.as_ref().unwrap().outputs[0].body;
+    let prepared = controller
+        .architecture_preview_levels(&session, &native)
+        .unwrap();
+    assert_eq!(prepared.level_for(wall), Some(Some(levels[1])));
+    let mut context = crate::architecture_view::Context::default();
+    context.sync(session.document(), session.revision());
+    let mut camera = crate::camera::Camera::default();
+    context.set_enabled(true, &mut camera);
+    context.set_plan(true, &mut camera);
+    let ground = context.preview_scene(&native, prepared).unwrap();
+    assert_eq!(
+        ground
+            .instances()
+            .iter()
+            .map(|instance| instance.id)
+            .collect::<Vec<_>>(),
+        vec![bodies[0]]
+    );
+    assert!(Arc::ptr_eq(
+        &ground,
+        &context.preview_scene(&native, prepared).unwrap()
+    ));
+    context.recall.level = Some(levels[1]);
+    let upper = context.preview_scene(&native, prepared).unwrap();
+    let visible: std::collections::BTreeSet<_> = upper
+        .instances()
+        .iter()
+        .map(|instance| instance.id)
+        .collect();
+    assert_eq!(visible, std::collections::BTreeSet::from([bodies[1], wall]));
+    assert!(
+        context.levels.as_ref().unwrap().level_for(wall).is_none(),
+        "preview facts must not replace canonical level ownership"
+    );
+    for (id, geometry) in native.geometries() {
+        assert!(Arc::ptr_eq(geometry, &upper.geometries()[id]));
+    }
+    assert_eq!(session.document(), &source);
+    controller.apply(&mut session, &resources).unwrap();
+    context.sync(session.document(), session.revision());
+    let handoff = controller.display_scene(&session, &resources).unwrap();
+    let levels = controller
+        .architecture_preview_levels(&session, &handoff)
+        .unwrap();
+    let view = context.preview_scene(&handoff, levels).unwrap();
+    assert_eq!(
+        view.instances()
+            .iter()
+            .map(|instance| instance.id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        visible
+    );
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(session.document(), &source);
+}

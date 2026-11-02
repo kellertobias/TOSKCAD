@@ -3430,6 +3430,18 @@ impl SketchEditor {
                 Err(error) => self.message = error,
             }
         }
+        if self.architecture.planar()
+            && let Some(candidate) = &scene
+            && let Some(levels) = self.model.architecture_preview_levels(session, candidate)
+        {
+            scene = match self.architecture.preview_scene(candidate, levels) {
+                Ok(view) => Some(view),
+                Err(error) => {
+                    self.message = error;
+                    None
+                }
+            };
+        }
         let model_bounds = scene.as_ref().and_then(|scene| scene.world_bounds());
         if self.architecture.planar()
             && model_bounds.is_some()
