@@ -188,6 +188,10 @@ schema is generated from the Rust argument types with schemars and returned by
 | `remove_wall_opening` | yes | Remove one door, window or vertical cutout by ID, including the cutout's slab holes |
 | `remove_vertical_cutout` | yes | Remove a vertical cutout from its wall and every slab |
 | `inspect_vertical_cutout` | no | What a cutout cuts (wall, slabs with level, span and hole corners), or every slab-cutting cutout |
+| `set_wood_box` | yes | Create/edit one canonical optional-face box and all panels after native preflight; see [wood boxes](cabinetry.md#wood-boxes) |
+| `preview_wood_box` | no | Native-check a proposed box without committing; returns stable identities and outside/inner/actual bounds |
+| `inspect_wood_box` | no | Read one recipe or list all with resolved dimensions and panel identities |
+| `remove_wood_box` | yes | Remove the complete recipe/panels atomically; referenced faces require repair |
 | `set_compound_cutout` | yes | Create/edit one box union and every explicit wall/slab receiver after complete native preflight; see [compound cutouts](compound-cutouts.md) |
 | `preview_compound_cutout` | no | Native-check the proposed complete source and all receivers without committing; returns proposed identities |
 | `inspect_compound_cutout` | no | Complete canonical box and receiver definitions, or all compound cutouts |

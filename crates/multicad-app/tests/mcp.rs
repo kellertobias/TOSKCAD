@@ -164,6 +164,10 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         "preview_fence",
         "set_fence",
         "inspect_fence",
+        "preview_wood_box",
+        "set_wood_box",
+        "inspect_wood_box",
+        "remove_wood_box",
         "preview_compound_cutout",
         "set_compound_cutout",
         "inspect_compound_cutout",
@@ -188,7 +192,7 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         // also guards its source revision without committing a transaction.
         if matches!(
             tool["name"].as_str(),
-            Some("preview_fence" | "preview_compound_cutout")
+            Some("preview_fence" | "preview_compound_cutout" | "preview_wood_box")
         ) {
             assert!(read_only);
             assert!(requires_revision);

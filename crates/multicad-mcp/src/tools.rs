@@ -38,6 +38,11 @@ use std::{
 
 mod architecture;
 mod cabinetry;
+mod wood_boxes;
+use wood_boxes::{
+    WoodBoxArgs, WoodBoxInspectArgs, WoodBoxRemoveArgs, inspect_wood_box, preview_wood_box,
+    remove_wood_box, set_wood_box,
+};
 mod compound_cutouts;
 use compound_cutouts::{
     CompoundCutoutArgs, CompoundCutoutInspectArgs, CompoundCutoutRemoveArgs,
@@ -432,6 +437,14 @@ tools! {
     "set_wall_opening" => WallOpeningArgs, "Place or edit door/window", false,
         "Add a door or window to one wall segment at an offset (from the segment start to the start jamb), or edit an existing one by ID, with an existing opening type or a new type committed in the same transaction and optional width/height/sill overrides. Misfitting, top-reaching or overlapping openings are refused with a reason; the wall is evaluated natively before the one transaction commits.",
         set_wall_opening;
+    "set_wood_box" => WoodBoxArgs, "Create or edit Wood Box", false,
+        "Create or edit one canonical six-face wood box. Shared panel stock supplies thickness/material; any nonempty face subset is supported. Preserve recipe and face identities. Every panel and downstream operation passes native preflight before atomic commit; removing referenced faces requires repair.", set_wood_box;
+    "preview_wood_box" => WoodBoxArgs, "Preview Wood Box", true,
+        "Validate the complete proposed wood box without committing. Returns proposed recipe/face identities, exact native panel volumes, outside and usable inner dimensions, and actual world bounds. Reuse returned identities on Apply.", preview_wood_box;
+    "inspect_wood_box" => WoodBoxInspectArgs, "Inspect Wood Box", true,
+        "Read canonical wood box recipes, stable panel identities, stock thickness, outside/inner dimensions and actual world bounds. Omit recipe to list all.", inspect_wood_box;
+    "remove_wood_box" => WoodBoxRemoveArgs, "Remove Wood Box", false,
+        "Remove the complete wood box atomically after native preflight. Referenced panels and downstream operations require explicit repair.", remove_wood_box;
     "set_compound_cutout" => CompoundCutoutArgs, "Create or edit compound Cutout", false,
         "Union editable boxes and cut explicit wall/slab receiver histories. All boxes and all receivers pass exact native preflight before one atomic commit. Retain cutout, box and frozen producer identities on edits. Missing, disconnected, off-target, overlapping existing holes, partial slab cuts and receiving-solid splits are refused.",
         set_compound_cutout;
@@ -972,7 +985,9 @@ fn finish(host: &dyn Host, request: &Request, read_only: bool, result: ToolResul
         return result;
     }
     let outcome = match (&result, request.tool) {
-        (Ok(_), "preview_fence" | "preview_compound_cutout") => AuditOutcome::Previewed,
+        (Ok(_), "preview_fence" | "preview_compound_cutout" | "preview_wood_box") => {
+            AuditOutcome::Previewed
+        }
         (Ok(_), _) if read_only => AuditOutcome::Inspected,
         (Ok(_), "undo") => AuditOutcome::Undone,
         (Ok(_), "redo") => AuditOutcome::Redone,
