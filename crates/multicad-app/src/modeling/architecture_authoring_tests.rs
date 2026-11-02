@@ -307,7 +307,7 @@ fn graphical_upper_level_wall_and_openings_use_real_native_preview_cancel_apply_
     .unwrap()
     .project;
     assert_eq!(reopened.document, after_move);
-    let reopened = Session::new(reopened.document).unwrap();
+    let mut reopened = Session::new(reopened.document).unwrap();
     let native = canonical_scene(&reopened);
     let bounds = native.instance_bounds(wall.body).unwrap();
     assert_eq!(bounds[0][2], 3000.);
@@ -321,4 +321,109 @@ fn graphical_upper_level_wall_and_openings_use_real_native_preview_cancel_apply_
             .source_hash,
         reopened.source_hash().unwrap()
     );
+    // A canonical drawing book consumes the same wall; changing its host level
+    // regenerates elevation vectors and revokes the older drawing receipt.
+    use multicad_core::drawings::{self, DrawingView, Scale, ViewEvaluation, ViewKind, ViewSource};
+    let view = DrawingView {
+        id: multicad_core::document::EntityId::new(),
+        name: "Wall elevation".into(),
+        source: ViewSource::Model {
+            entities: vec![wall.body],
+        },
+        frame: multicad_core::references::ReferenceFrame {
+            origin_mm: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 0., 1.],
+        },
+        kind: ViewKind::Projection,
+        position_mm: [20.; 2],
+        scale: Scale {
+            numerator: 1,
+            denominator: 50,
+        },
+        hidden_lines: false,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+        guide: None,
+        equipment_categories: None,
+    };
+    let view_id = view.id;
+    let mut page = drawings::Page::new("1");
+    let page_id = page.id;
+    page.views.push(view);
+    let (book, prepared) = drawings::prepare_create(
+        &reopened,
+        reopened.revision(),
+        Actor::local(Channel::Ui),
+        "Linked architecture",
+        Some(page),
+    )
+    .unwrap();
+    reopened.commit(prepared).unwrap();
+    let before_level_edit = reopened.document().clone();
+    let evaluate = |session: &Session| {
+        multicad_model::Compiler::default()
+            .compile(session.document(), session.revision())
+            .unwrap()
+            .drawings(
+                session.document(),
+                session.revision(),
+                &multicad_model::DrawingProviders::default(),
+            )
+            .unwrap()
+    };
+    let min_elevation = |drawing: &drawings::DrawingEvaluation| {
+        let ViewEvaluation::Ready { vectors, .. } = &drawing.views[&view_id] else {
+            panic!("linked elevation must resolve")
+        };
+        assert!(vectors.iter().all(|vector| vector.source == wall.body));
+        vectors
+            .iter()
+            .flat_map(|vector| &vector.preview_mm)
+            .map(|point| point[1])
+            .fold(f64::INFINITY, f64::min)
+    };
+    let initial_drawing = evaluate(&reopened);
+    assert!((min_elevation(&initial_drawing) - 3000.).abs() < 1e-6);
+    assert!(
+        initial_drawing
+            .checked_page(reopened.document(), reopened.revision(), book, page_id)
+            .is_ok()
+    );
+    let mut value = model::read_level(reopened.document(), level).unwrap();
+    value.elevation = length(3500.);
+    let prepared = model::prepare_level_edit(
+        &reopened,
+        reopened.revision(),
+        Actor::local(Channel::Ui),
+        level,
+        &value,
+    )
+    .unwrap();
+    reopened.commit(prepared).unwrap();
+    assert!(
+        initial_drawing
+            .checked_page(reopened.document(), reopened.revision(), book, page_id)
+            .is_err()
+    );
+    let updated = evaluate(&reopened);
+    assert!((min_elevation(&updated) - 3500.).abs() < 1e-6);
+    assert!(
+        updated
+            .checked_page(reopened.document(), reopened.revision(), book, page_id)
+            .is_ok()
+    );
+    let native = canonical_scene(&reopened);
+    assert_eq!(native.instance_bounds(wall.body).unwrap()[0][2], 3500.);
+    assert_eq!(
+        model::read_wall(reopened.document(), wall.feature)
+            .unwrap()
+            .level,
+        Some(level)
+    );
+    reopened
+        .undo(reopened.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(reopened.document(), &before_level_edit);
+    assert!((min_elevation(&evaluate(&reopened)) - 3000.).abs() < 1e-6);
 }

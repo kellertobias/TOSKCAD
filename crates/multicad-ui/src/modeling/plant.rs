@@ -42,6 +42,12 @@ pub(super) struct PlantPanel {
     placed: bool,
 }
 impl PlantPanel {
+    pub(super) fn existing(document: &Document, record: EntityId) -> Result<Self, String> {
+        let mut panel = Self::new(document)?;
+        panel.existing = Some(record);
+        panel.load(document)?;
+        Ok(panel)
+    }
     pub fn new(document: &Document) -> Result<Self, String> {
         let session = Session::new(document.clone()).map_err(|e| e.to_string())?;
         let seed = |kind, height, spread| {
@@ -402,9 +408,19 @@ mod tests {
             .unwrap();
         session.commit(prepared.prepared).unwrap();
         assert_eq!(session.revision(), 1);
-        let mut edit = PlantPanel::new(session.document()).unwrap();
-        edit.existing = Some(record);
-        edit.load(session.document()).unwrap();
+        let facts = crate::architecture_view::Levels::new(session.document(), session.revision());
+        assert_eq!(facts.level_for(instance), Some(None));
+        assert!(
+            facts
+                .rows
+                .iter()
+                .find(|row| row.id.is_none())
+                .unwrap()
+                .members
+                .iter()
+                .any(|member| member.id == instance && member.kind == "Plant")
+        );
+        let mut edit = PlantPanel::existing(session.document(), record).unwrap();
         assert_eq!(edit.position, [1000., 2000., 0.]);
         edit.spread = 4500.;
         edit.position = [3000., 4000., 200.];

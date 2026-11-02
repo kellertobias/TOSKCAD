@@ -81,6 +81,14 @@ from Common preserves an explicitly selected wall and its level without changing
 saved Architecture context. Inside Architecture, the selected active level
 remains authoritative for new opening forms.
 
+Fences use their existing optional canonical level attachment. A new run inherits
+the active level; reopening a run preserves its saved attachment. The level
+sidebar lists each run once and filters its native post and infill Parts through
+that run's ownership. Plants have World placement rather than a floor attachment.
+Starting Planting selects World explicitly; existing plants retain their saved
+pose. World plants and level-owned fence runs can be reopened from their sidebar
+entries through the existing forms.
+
 Finder and command entry use explicit family presets. The generic `equipment`
 command remains available. `stairs` opens Stairs; `slab` still opens Levels.
 `washer` retains its hardware meaning. Panel and Cabinet keep Wood as their

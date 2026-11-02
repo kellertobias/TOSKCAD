@@ -1140,6 +1140,7 @@ impl SketchEditor {
             return Err("Apply or cancel pending edits before drawing a fence".into());
         }
         self.finish()?;
+        self.prepare_architecture_level(session)?;
         self.model.begin_fence(session, resources, channel)?;
         self.message =
             "Fence · choose a construction, draw its run in the viewport, then Preview".into();
@@ -1444,6 +1445,12 @@ impl SketchEditor {
             return Err("Apply or cancel pending edits before placing plants".into());
         }
         self.finish()?;
+        if self.architecture.enabled {
+            self.architecture.recall.level = None;
+            if self.architecture.planar() {
+                self.architecture.constrain(&mut self.camera);
+            }
+        }
         self.model.begin_planting(session, resources, channel)?;
         if !session.document().entities().any(|e| {
             matches!(
@@ -1460,7 +1467,7 @@ impl SketchEditor {
             };
         }
         self.message =
-            "Planting · choose a tree or shrub and click in the garden view, then Preview".into();
+            "Planting · World plane · choose a tree or shrub and click in the garden view, then Preview".into();
         Ok(())
     }
     pub fn begin_equipment(

@@ -222,6 +222,9 @@ impl SketchEditor {
         feed: &crate::viewport::SceneFeed,
         id: EntityId,
     ) -> Result<(), String> {
+        if crate::modeling::ModelToolController::editable(session.document(), id) {
+            return self.begin_feature_edit(session, resources, feed, id, Channel::Ui);
+        }
         if let Some(EntityData::Part { features, .. }) = session.document().get(id).map(|e| &e.data)
             && let Some(feature) = features.iter().rev().find(|feature| {
                 crate::modeling::ModelToolController::editable(session.document(), **feature)
@@ -237,6 +240,16 @@ impl SketchEditor {
         }).ok_or("Select an editable Architecture object")?;
         if !self.primitive_ready() {
             return Err("Apply or cancel the active operation before editing equipment".into());
+        }
+        if multicad_core::plants::resolve(session.document(), session.parameters(), record)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            self.model
+                .begin_planting_existing(session, resources, record, Channel::Ui)?;
+            self.message =
+                "Planting · edit its saved controls or choose Place in view, then Preview".into();
+            return Ok(());
         }
         self.model
             .begin_equipment_existing(session, resources, record, Channel::Ui)?;

@@ -404,6 +404,11 @@ impl ArchitecturePanel {
         panel.kind = ArchitectureKind::Plant;
         Ok(panel)
     }
+    pub fn planting_existing(document: &Document, record: EntityId) -> Result<Self, String> {
+        let mut panel = Self::planting(document)?;
+        panel.plant = super::plant::PlantPanel::existing(document, record)?;
+        Ok(panel)
+    }
     pub fn stairs(document: &Document, name: String) -> Result<Self, String> {
         let mut panel = Self::new(document, name)?;
         panel.kind = ArchitectureKind::Stair;

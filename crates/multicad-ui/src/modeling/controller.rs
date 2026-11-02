@@ -1075,6 +1075,25 @@ impl ModelToolController {
             )?)),
         )
     }
+    pub fn begin_planting_existing(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        record: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(
+                super::architecture::ArchitecturePanel::planting_existing(
+                    session.document(),
+                    record,
+                )?,
+            )),
+        )
+    }
     pub fn begin_stairs(
         &mut self,
         session: &Session,
@@ -1222,6 +1241,7 @@ impl ModelToolController {
             match &mut form {
                 ModelForm::Wall(panel) => panel.seed_new_level(level),
                 ModelForm::Opening(panel) => panel.seed_new_level(session.document(), level),
+                ModelForm::Fence(panel) => panel.seed_new_level(level),
                 ModelForm::Architecture(panel) => panel.seed_new_level(session.document(), level),
                 _ => {}
             }

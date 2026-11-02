@@ -66,6 +66,11 @@ fn field(value: f64) -> DimensionField {
     DimensionField::from_dimension(&length(value), "mm").expect("Millimeters are length units")
 }
 impl FencePanel {
+    pub(super) fn seed_new_level(&mut self, level: Option<EntityId>) {
+        if !self.editing {
+            self.level = level;
+        }
+    }
     pub fn new(
         session: &Session,
         name: String,

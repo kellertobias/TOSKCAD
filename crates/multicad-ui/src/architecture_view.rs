@@ -105,6 +105,19 @@ impl Levels {
                 | EntityData::Extension { definition, .. } => definition.type_id.as_str(),
                 _ => continue,
             };
+            if source == model::FENCE_MEMBER_TYPE {
+                match model::read_fence_member(document, entity.id).and_then(|member| {
+                    model::read_fence_run(document, member.run)
+                        .map(|run| (member.output.body, run.level))
+                }) {
+                    Ok((body, level)) => {
+                        result.membership.insert(entity.id, level);
+                        result.membership.insert(body, level);
+                    }
+                    Err(error) => result.diagnostics.push(format!("{}: {error}", entity.name)),
+                }
+                continue;
+            }
             let membership = match source {
                 model::WALL_TYPE => model::read_wall(document, entity.id)
                     .map(|wall| (wall.output.body, wall.level, "Wall")),
@@ -122,6 +135,18 @@ impl Levels {
                     .map(|stair| (stair.output.body, Some(stair.level), "Stair")),
                 equipment::ATTACHMENT_TYPE => equipment::read_attachment(document, entity.id)
                     .map(|attachment| (attachment.owner, Some(attachment.floor), "Equipment")),
+                model::FENCE_RUN_KIND => model::read_fence_run(document, entity.id)
+                    .map(|run| (run.group, run.level, "Fence")),
+                multicad_core::plants::INSTANCE_TYPE => {
+                    let EntityData::Extension { definition, .. } = &entity.data else {
+                        unreachable!()
+                    };
+                    multicad_core::plants::PlantInstance::from_definition(definition)
+                        .and_then(|plant| {
+                            multicad_core::symbols::read_instance(document, plant.symbol_instance)
+                        })
+                        .map(|symbol| (symbol.instance, None, "Plant"))
+                }
                 _ => continue,
             };
             let membership = match membership {

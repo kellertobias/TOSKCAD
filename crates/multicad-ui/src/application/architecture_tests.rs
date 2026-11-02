@@ -64,7 +64,7 @@ fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_
         (egui::vec2(1360., 860.), 1.),
         (egui::vec2(1360., 860.), 2.),
     ] {
-        let (session, levels, _, _) = crate::architecture_view::tests::building();
+        let (session, levels, bodies, _) = crate::architecture_view::tests::building();
         let mut app = app();
         *app.current_mut() = Project::new(session.document().clone()).unwrap();
         app.tab = app
@@ -76,6 +76,21 @@ fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_
             .unwrap();
         let ctx = context(density);
         let before = app.current().session.document().clone();
+        app.set_scene_backends(std::sync::Arc::new(|| {
+            Box::new(crate::modeling::native_fixture::NativeBackend::new())
+        }));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !app.current().scene.is_current(
+            app.current().session.document().id(),
+            app.current().session.revision(),
+        ) {
+            paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native level scene timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         for _ in 0..3 {
             paint(&mut app, &ctx, size, vec![]);
         }
@@ -92,6 +107,13 @@ fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_
             );
             assert_eq!(app.current().sketch.camera.target[2], 3000.);
             assert!(!app.current().sketch.camera.perspective);
+            out = click(
+                &mut app,
+                &ctx,
+                size,
+                bounds(&out, "Floor slab · Upper floor").center(),
+            );
+            assert_eq!(app.current().sketch.selected_solid(), Some(bodies[1]));
             let position = bounds(&out, "3D model").center();
             out = click(&mut app, &ctx, size, position);
             assert!(!app.current().sketch.architecture_recall().plan);
@@ -99,9 +121,51 @@ fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_
                 app.current().sketch.architecture_recall().level,
                 Some(levels[1])
             );
+            assert_eq!(app.current().sketch.selected_solid(), Some(bodies[1]));
         }
         assert_eq!(app.current().session.document(), &before);
         assert_eq!(app.current().session.revision(), 0);
+    }
+}
+#[test]
+fn planting_entry_from_upper_plan_explicitly_selects_world_without_reassigning_source() {
+    for (size, density) in [(egui::vec2(1100., 700.), 1.), (egui::vec2(1360., 860.), 2.)] {
+        let (session, levels, _, _) = crate::architecture_view::tests::building();
+        let source = session.document().clone();
+        let mut app = app();
+        *app.current_mut() = Project::new(source.clone()).unwrap();
+        app.set_model_backends(std::sync::Arc::new(|| {
+            Box::new(crate::modeling::native_fixture::NativeBackend::new())
+        }));
+        app.tab = app
+            .registry
+            .workspace(Mode::Model)
+            .tabs
+            .iter()
+            .position(|tab| tab.title == "Architecture")
+            .unwrap();
+        app.current_mut()
+            .sketch
+            .restore_architecture_view(crate::architecture_view::Recall {
+                plan: true,
+                level: Some(levels[1]),
+            });
+        let ctx = context(density);
+        let out = paint(&mut app, &ctx, size, vec![]);
+        let out = click(&mut app, &ctx, size, bounds(&out, "Landscaping").center());
+        click(&mut app, &ctx, size, bounds(&out, "Planting").center())
+            .drop_without_applying_deltas();
+        assert_eq!(
+            app.current().sketch.architecture_recall(),
+            crate::architecture_view::Recall {
+                plan: true,
+                level: None
+            }
+        );
+        assert_eq!(app.current().sketch.camera.target[2], 0.);
+        assert!(app.current().sketch.model_active());
+        app.current_mut().sketch.cancel_model();
+        assert_eq!(app.current().session.document(), &source);
     }
 }
 struct Memory;
