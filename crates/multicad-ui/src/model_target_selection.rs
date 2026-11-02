@@ -277,16 +277,16 @@ impl SketchEditor {
             .iter()
             .find_map(|id| crate::modeling::ModelToolController::wall_of(session.document(), *id));
         self.finish()?;
-        self.prepare_architecture_level(session)?;
+        self.architecture.sync(document, session.revision());
         if !self.architecture.enabled
             && let Some(wall) = wall
         {
-            self.model.set_architecture_level(
-                multicad_core::model::read_wall(document, wall)
-                    .map_err(|error| error.to_string())?
-                    .level,
-            );
+            let level = multicad_core::model::read_wall(document, wall)
+                .map_err(|error| error.to_string())?
+                .level;
+            self.architecture.recall.level = level;
         }
+        self.prepare_architecture_level(session)?;
         self.model
             .begin_opening(session, resources, tool, wall, channel)?;
         self.message = format!(
@@ -956,7 +956,7 @@ mod tests {
     };
     use std::time::{Duration, Instant};
     #[test]
-    fn common_opening_preserves_selected_wall_while_architecture_uses_active_level() {
+    fn common_opening_tracks_selected_host_level_while_architecture_uses_active_level() {
         let (mut session, levels, _, _) = crate::architecture_view::tests::building();
         let ty = model::NewType::new(
             "Wall",
@@ -1009,7 +1009,7 @@ mod tests {
         let mut editor = SketchEditor::default();
         editor.set_model_backend(Box::new(NativeBackend::new()));
         editor.restore_architecture_view(crate::architecture_view::Recall {
-            plan: false,
+            plan: true,
             level: Some(levels[0]),
         });
         editor.tree_selection.insert(walls[1].body);
@@ -1024,11 +1024,17 @@ mod tests {
         assert_eq!(command.anchor, walls[1].feature);
         assert_eq!(
             editor.architecture_recall().level,
-            Some(levels[0]),
-            "Common selection must not rewrite saved Architecture context"
+            Some(levels[1]),
+            "Architecture must show the selected opening host's level on entry"
         );
-        editor.cancel_model();
         editor.set_architecture_active(true, &session);
+        assert_eq!(editor.camera.target[2], 3000.);
+        assert!(!editor.camera.perspective);
+        editor.cancel_model();
+        editor.restore_architecture_view(crate::architecture_view::Recall {
+            plan: true,
+            level: Some(levels[0]),
+        });
         editor
             .begin_room_opening(&session, &resources, ModelingTool::Door, Channel::Ui)
             .unwrap();
@@ -1038,6 +1044,22 @@ mod tests {
             panic!("opening request")
         };
         assert_eq!(command.anchor, walls[0].feature);
+        editor.cancel_model();
+        editor.set_architecture_active(false, &session);
+        editor.restore_architecture_view(crate::architecture_view::Recall {
+            plan: true,
+            level: Some(EntityId::new()),
+        });
+        editor
+            .begin_room_opening(&session, &resources, ModelingTool::Door, Channel::Ui)
+            .unwrap();
+        assert_eq!(
+            editor.architecture_recall().level,
+            Some(levels[1]),
+            "an explicit readable host overrides stale local floor recall"
+        );
+        editor.set_architecture_active(true, &session);
+        assert_eq!(editor.camera.target[2], 3000.);
         editor.cancel_model();
         assert_eq!(session.document(), &source);
     }

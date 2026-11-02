@@ -77,8 +77,9 @@ available. Switching representations does not request another model rebuild.
 Pending modeling previews use level membership from their exact prepared
 document, cached separately from canonical sidebar facts. The same filter stays
 in effect after Apply while the canonical model rebuilds. Creating an opening
-from Common preserves an explicitly selected wall and its level without changing
-saved Architecture context. Inside Architecture, the selected active level
+from Common preserves an explicitly selected wall and follows its level when
+entering Architecture, keeping the host visible in a recalled plan view. Inside
+Architecture, the selected active level
 remains authoritative for new opening forms.
 
 Saved doors and windows expose Pick location in viewport as well as their numeric
