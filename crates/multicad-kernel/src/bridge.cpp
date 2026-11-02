@@ -20,6 +20,7 @@
 #include <Bnd_Box.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <StepData_StepModel.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Ax3.hxx>
@@ -514,6 +515,54 @@ std::unique_ptr<Shape> boolean_shapes(const Shape &a, const Shape &b,
     record_history(*owned, a, 0, op);
     record_history(*owned, b, 1, op);
     return owned;
+  });
+}
+// Exact bounded target material on one side of an infinite authored plane.
+// The half-space is an operand only; no artificial cutting box enters a model.
+std::unique_ptr<Shape> clip_half_space(const Shape &target, const Frame3 &frame,
+                                      bool positive, double fuzzy) {
+  return guard([&]() -> std::unique_ptr<Shape> {
+    gp_Pln plane{gp_Ax3(axes(frame))};
+    BRepBuilderAPI_MakeFace boundary(plane);
+    if (!boundary.IsDone())
+      throw std::runtime_error("Split plane construction failed");
+    const auto point = plane.Location().Translated(
+        gp_Vec(plane.Axis().Direction()) * (positive ? 1. : -1.));
+    BRepPrimAPI_MakeHalfSpace half(boundary.Face(), point);
+    if (!half.IsDone())
+      throw std::runtime_error("Split half-space construction failed");
+    BRepAlgoAPI_Common operation;
+    TopTools_ListOfShape arguments, tools;
+    arguments.Append(target.value);
+    tools.Append(half.Solid());
+    operation.SetArguments(arguments);
+    operation.SetTools(tools);
+    operation.SetNonDestructive(true);
+    operation.SetRunParallel(false);
+    operation.SetFuzzyValue(fuzzy);
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors())
+      throw std::runtime_error("Exact plane split failed");
+    if (!TopExp_Explorer(operation.Shape(), TopAbs_SOLID).More())
+      return nullptr;
+    auto result = checked(operation.Shape());
+    record_history(*result, target, 0, operation);
+    const auto faces = topology_map(result->value, 0);
+    const auto sourceFaces = topology_map(half.Solid(), 0);
+    std::set<int> caps;
+    auto append = [&](const TopoDS_Shape &face) {
+      const auto index = faces.FindIndex(face);
+      if (index > 0) caps.insert(index);
+    };
+    for (int i = 1; i <= sourceFaces.Extent(); ++i) {
+      append(sourceFaces(i));
+      for (const auto &face : operation.Modified(sourceFaces(i))) append(face);
+      for (const auto &face : operation.Generated(sourceFaces(i))) append(face);
+    }
+    // This adapter has one seed family: the exact generated plane boundary.
+    for (int index : caps)
+      result->seeds.push_back(NativeSeed{static_cast<uint32_t>(index - 1), 0, 0});
+    return result;
   });
 }
 std::unique_ptr<Shape> transform_shape(const Shape &s,

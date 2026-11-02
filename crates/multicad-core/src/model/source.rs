@@ -712,7 +712,11 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                     super::read_boolean(document, entity.id)?;
                 }
                 super::SPLIT_TYPE => {
-                    super::read_split(document, entity.id)?;
+                    if definition.schema_version == super::SPLIT_V2_SCHEMA {
+                        super::read_split_v2(document, entity.id)?;
+                    } else {
+                        super::read_split(document, entity.id)?;
+                    }
                 }
                 super::ALIGN_TYPE => {
                     super::read_alignment(document, entity.id)?;

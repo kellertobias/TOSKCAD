@@ -173,3 +173,185 @@ fn accepted_near_tolerance_partitions_do_not_overlap_or_silently_change_membersh
         "The test must exercise accepted native partitions"
     );
 }
+
+#[test]
+fn authored_planes_conserve_volume_and_keep_positive_negative_sides_when_sizes_reverse() {
+    let target = cube([10.; 3], [20., 30., 40.]);
+    let bounds = target.bounds().unwrap();
+    for z in [44., 46.] {
+        let plane = PlaneFrame {
+            origin: [20., 30., z],
+            ..Default::default()
+        };
+        let pair = target.split_by_plane(plane, p()).unwrap();
+        near(pair.positive.volume_mm3().unwrap(), (50. - z) * 100.);
+        near(pair.negative.volume_mm3().unwrap(), (z - 40.) * 100.);
+        near(pair.positive.bounds().unwrap().min[2], z);
+        near(pair.negative.bounds().unwrap().max[2], z);
+        assert!(
+            pair.positive
+                .boolean(&pair.negative, BooleanOperation::Intersect, p())
+                .unwrap()
+                .is_none()
+        );
+        near(
+            pair.positive
+                .boolean(&pair.negative, BooleanOperation::Union, p())
+                .unwrap()
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+            1000.,
+        );
+    }
+    assert_eq!(target.bounds().unwrap(), bounds);
+    near(target.volume_mm3().unwrap(), 1000.);
+    let h = 0.5_f64.sqrt();
+    let diagonal = PlaneFrame {
+        origin: [25., 35., 40.],
+        u: [h, -h, 0.],
+        v: [0., 0., -1.],
+    };
+    let pair = target.split_by_plane(diagonal, p()).unwrap();
+    near(pair.positive.volume_mm3().unwrap(), 500.);
+    near(pair.negative.volume_mm3().unwrap(), 500.);
+}
+#[test]
+fn plane_split_refuses_missing_tangent_invalid_and_disconnected_partitions_without_mutating_input()
+{
+    let target = cube([10.; 3], [0.; 3]);
+    for z in [-1., 0., 10., 11.] {
+        assert!(
+            target
+                .split_by_plane(
+                    PlaneFrame {
+                        origin: [0., 0., z],
+                        ..Default::default()
+                    },
+                    p()
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        target
+            .split_by_plane(
+                PlaneFrame {
+                    u: [2., 0., 0.],
+                    ..Default::default()
+                },
+                p()
+            )
+            .is_err()
+    );
+    assert!(
+        target
+            .split_by_plane(
+                PlaneFrame {
+                    origin: [f64::NAN, 0., 0.],
+                    ..Default::default()
+                },
+                p()
+            )
+            .is_err()
+    );
+    let slot = cube([4., 12., 10.], [3., -1., 1.]);
+    let connected = target
+        .boolean(&slot, BooleanOperation::Subtract, p())
+        .unwrap()
+        .unwrap();
+    assert_eq!(connected.solid_count().unwrap(), 1);
+    let before = connected.volume_mm3().unwrap();
+    let error = connected
+        .split_by_plane(
+            PlaneFrame {
+                origin: [0., 0., 5.],
+                ..Default::default()
+            },
+            p(),
+        )
+        .err()
+        .unwrap();
+    assert!(error.message.contains("disconnected"), "{error}");
+    near(connected.volume_mm3().unwrap(), before);
+    near(target.volume_mm3().unwrap(), 1000.);
+}
+#[test]
+fn plane_split_cancellation_discards_both_native_outputs() {
+    let target = cube([10.; 3], [0.; 3]);
+    let checkpoints = Cell::new(0);
+    let stop = || {
+        let count = checkpoints.get() + 1;
+        checkpoints.set(count);
+        count >= 2
+    };
+    let error = target
+        .split_by_plane_interruptible(
+            PlaneFrame {
+                origin: [0., 0., 5.],
+                ..Default::default()
+            },
+            p(),
+            Some(&stop),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, GeometryErrorKind::Cancelled);
+    near(target.volume_mm3().unwrap(), 1000.);
+}
+#[test]
+fn named_plane_boundaries_have_semantic_cap_origins_and_preserve_exact_target_ancestry() {
+    use multicad_core::{
+        document::EntityId,
+        references::{Origin, TopologyKind},
+    };
+    let source = EntityId::new();
+    let feature = EntityId::new();
+    let target = Solid::box_named([10.; 3], source, Default::default()).unwrap();
+    for z in [4., 6.] {
+        let split = target
+            .split_by_plane_named(
+                PlaneFrame {
+                    origin: [0., 0., z],
+                    ..Default::default()
+                },
+                feature,
+                p(),
+                None,
+            )
+            .unwrap();
+        for (solid, role) in [
+            (&split.positive, "split/plane/positive"),
+            (&split.negative, "split/plane/negative"),
+        ] {
+            let snapshot = solid.topology_snapshot(feature, 3).unwrap();
+            let cap = Origin {
+                source: feature,
+                role: role.into(),
+            };
+            let faces: Vec<_> = snapshot
+                .elements
+                .iter()
+                .filter(|element| element.key.kind == TopologyKind::Face)
+                .collect();
+            assert_eq!(
+                faces
+                    .iter()
+                    .filter(|element| element.origins.contains(&cap))
+                    .count(),
+                1
+            );
+            assert!(
+                faces
+                    .iter()
+                    .any(|element| element.origins.iter().any(|origin| origin.source == source))
+            );
+            assert!(
+                faces
+                    .iter()
+                    .filter(|element| element.origins.contains(&cap))
+                    .all(|element| element.frames.iter().any(|frame| frame.origin == cap))
+            );
+        }
+    }
+}

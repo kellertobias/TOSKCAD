@@ -995,6 +995,27 @@ impl Compiler {
                         &captures,
                     )?
                 }
+                (model::SPLIT_TYPE, model::SPLIT_V2_SCHEMA) => {
+                    let source =
+                        model::read_split_v2(document, id).map_err(|e| error(Some(id), e))?;
+                    let solid = crate::split::ExplicitSplit {
+                        document,
+                        revision,
+                        parameters: context.parameters(),
+                        solids: &solids,
+                        topologies: &topologies,
+                        policy: self.policy,
+                        interrupt,
+                    }
+                    .build(id, &source)?;
+                    consumed_versions.extend(
+                        source
+                            .consumed_inputs()
+                            .iter()
+                            .map(|input| (input.body, input.producer)),
+                    );
+                    solid
+                }
                 (model::SPLIT_TYPE, model::SPLIT_SCHEMA) => {
                     let source = model::read_split(document, id).map_err(|e| error(Some(id), e))?;
                     let solid = crate::split::build(

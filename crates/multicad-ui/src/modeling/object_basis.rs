@@ -235,8 +235,16 @@ impl Resolver<'_> {
                 self.feature(source.target.producer, seen)
             }
             model::SPLIT_TYPE => {
-                let source = model::read_split(self.document, feature).map_err(error)?;
-                self.feature(source.target.producer, seen)
+                let target = if definition.schema_version == model::SPLIT_V2_SCHEMA {
+                    model::read_split_v2(self.document, feature)
+                        .map_err(error)?
+                        .target
+                } else {
+                    model::read_split(self.document, feature)
+                        .map_err(error)?
+                        .target
+                };
+                self.feature(target.producer, seen)
             }
             model::EXTRUDE_TYPE => {
                 let source = model::read_extrude(self.document, feature).map_err(error)?;

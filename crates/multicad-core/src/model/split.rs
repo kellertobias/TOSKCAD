@@ -13,6 +13,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+mod v2;
+pub use v2::*;
+
 pub const SPLIT_TYPE: &str = "model.split";
 pub const SPLIT_SCHEMA: u32 = 1;
 pub const SPLIT_CAPABILITY: &str = "model.split.1";

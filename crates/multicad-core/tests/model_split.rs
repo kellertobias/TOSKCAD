@@ -340,3 +340,130 @@ fn independent_peer_and_versioned_native_file_contract_do_not_invent_output_depe
         SplitSide::InsideTool
     );
 }
+
+#[test]
+fn explicit_plane_split_prepares_all_targets_as_one_source_neutral_transaction_with_semantic_ids() {
+    let (mut session, legacy) = fixture();
+    let request = SplitOperationRequest::new(
+        vec![legacy.target.clone(), legacy.tool.clone()],
+        SplitTool::Plane {
+            source: SplitPlane::Authored {
+                frame: PrimitiveFrame {
+                    origin: [length(0.), length(0.), length(4.)],
+                    ..Default::default()
+                },
+            },
+        },
+        false,
+    );
+    let before = session.document().clone();
+    let revision = session.revision();
+    let prepared = prepare_split_operation(&session, revision, actor(), &request).unwrap();
+    assert_eq!(prepared.outputs.len(), 4);
+    assert_eq!(session.document(), &before);
+    assert_eq!(
+        prepare_split_operation(&session, revision, actor(), &request)
+            .unwrap()
+            .prepared
+            .document(),
+        prepared.prepared.document()
+    );
+    for target in &request.targets {
+        for output in &target.outputs {
+            let source = read_split_v2(prepared.prepared.document(), output.feature).unwrap();
+            assert_eq!(source.target, target.input);
+            assert_eq!(source.side, output.side);
+            assert_eq!(source.tool, request.tool);
+            let mut expected = before.get(target.input.body).unwrap().data.clone();
+            let EntityData::Part { features, .. } = &mut expected else {
+                panic!()
+            };
+            *features = vec![output.feature];
+            assert_eq!(
+                &prepared.prepared.document().get(output.body).unwrap().data,
+                &expected
+            );
+        }
+    }
+    assert!(required_capabilities(prepared.prepared.document()).contains(SPLIT_V2_CAPABILITY));
+    session.commit(prepared.prepared).unwrap();
+    assert_eq!(session.revision(), revision + 1);
+    let committed = session.document().clone();
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &before);
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &committed);
+    let source = read_split_v2(session.document(), request.targets[0].outputs[0].feature).unwrap();
+    assert_eq!(
+        SplitDefinitionV2::from_definition(&source.definition().unwrap()).unwrap(),
+        source
+    );
+    assert!(
+        read_split(session.document(), request.targets[0].outputs[0].feature).is_err(),
+        "schema 1 must not reinterpret schema 2"
+    );
+}
+#[test]
+fn invalid_explicit_split_roles_duplicates_and_planes_never_prepare_a_partial_target_set() {
+    let (session, legacy) = fixture();
+    let before = session.document().clone();
+    let valid = SplitOperationRequest::new(
+        vec![legacy.target.clone(), legacy.tool.clone()],
+        SplitTool::Plane {
+            source: SplitPlane::Authored {
+                frame: Default::default(),
+            },
+        },
+        false,
+    );
+    let mut cases = vec![];
+    let mut r = valid.clone();
+    r.targets.push(r.targets[0].clone());
+    cases.push(r);
+    let mut r = valid.clone();
+    r.targets[1].outputs[1].body = r.targets[0].outputs[0].body;
+    cases.push(r);
+    let mut r = valid.clone();
+    r.targets[1].outputs[0].side = SplitSideV2::InsideTool;
+    cases.push(r);
+    let mut r = valid.clone();
+    r.targets[1].input.producer = EntityId::new();
+    cases.push(r);
+    let mut r = valid.clone();
+    r.keep_tools = true;
+    cases.push(r);
+    let mut r = valid.clone();
+    r.tool = SplitTool::Body {
+        input: legacy.target.clone(),
+    };
+    cases.push(r);
+    let mut r = valid.clone();
+    r.tool = SplitTool::Plane {
+        source: SplitPlane::Existing {
+            plane: legacy.target.body,
+            offset: length(0.),
+        },
+    };
+    cases.push(r);
+    let mut r = valid.clone();
+    r.tool = SplitTool::Plane {
+        source: SplitPlane::Authored {
+            frame: PrimitiveFrame {
+                u: [2., 0., 0.],
+                ..Default::default()
+            },
+        },
+    };
+    cases.push(r);
+    for request in cases {
+        assert!(prepare_split_operation(&session, session.revision(), actor(), &request).is_err());
+        assert_eq!(session.document(), &before);
+    }
+    assert_eq!(
+        prepare_split_operation(&session, session.revision() + 1, actor(), &valid)
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::StaleRevision
+    );
+}

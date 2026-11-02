@@ -519,6 +519,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::sketch_regions::FACE_SKETCH_REGIONS_CAPABILITY.into(),
         crate::model::BOOLEAN_CAPABILITY.into(),
         crate::model::SPLIT_CAPABILITY.into(),
+        crate::model::SPLIT_V2_CAPABILITY.into(),
         crate::model::TRANSFORM_CAPABILITY.into(),
         crate::model::SCALE_CAPABILITY.into(),
         crate::model::EDGE_TREATMENT_CAPABILITY.into(),

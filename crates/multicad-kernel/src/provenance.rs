@@ -1014,6 +1014,47 @@ impl Solid {
         }
         self.finish_provenance(elements, &nodes)
     }
+    /// Only the dedicated plane-clip adapter emits this one boundary seed family.
+    /// The cap identity follows its authored side, never a native face ordinal.
+    pub(crate) fn seed_split_plane(
+        &mut self,
+        feature: EntityId,
+        role: &str,
+        frame: PlaneFrame,
+    ) -> Result<(), GeometryError> {
+        let mut elements: BTreeMap<_, _> = self
+            .topology_snapshot(feature, 0)?
+            .elements
+            .into_iter()
+            .map(|element| (element.key, element))
+            .collect();
+        let origin = Origin {
+            source: feature,
+            role: role.into(),
+        };
+        let seeds = ffi::seeds(&self.native.0).map_err(failure)?;
+        if seeds.is_empty() {
+            return Err(failure("Plane Split lacks exact boundary-face ancestry"));
+        }
+        for seed in seeds {
+            if seed.role != 0 || seed.source_index != 0 {
+                return Err(failure("Unexpected plane Split boundary seed"));
+            }
+            let element = elements
+                .get_mut(&TopologyKey {
+                    kind: TopologyKind::Face,
+                    ordinal: seed.face,
+                })
+                .ok_or_else(|| failure("Plane Split boundary names an absent face"))?;
+            element.origins.insert(origin.clone());
+            element.frames.push(AnchoredFrame {
+                origin: origin.clone(),
+                frame: reference_frame(frame),
+            });
+        }
+        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        self.finish_provenance(elements, &nodes)
+    }
     fn finish_provenance(
         &mut self,
         mut elements: BTreeMap<TopologyKey, TopologyElement>,

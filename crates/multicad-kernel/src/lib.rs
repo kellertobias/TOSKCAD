@@ -345,6 +345,12 @@ mod ffi {
             operation: u8,
             fuzzy: f64,
         ) -> Result<UniquePtr<Shape>>;
+        fn clip_half_space(
+            shape: &Shape,
+            plane: &Frame3,
+            positive: bool,
+            fuzzy: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn inspection_union(shape: &Shape) -> Result<UniquePtr<Shape>>;
         fn share_shape(shape: &Shape) -> Result<UniquePtr<Shape>>;
         fn transform_shape(
@@ -499,7 +505,7 @@ mod taper;
 mod to_plane;
 pub use curves::*;
 pub use revolve::RevolutionAxis;
-pub use split::SolidSplit;
+pub use split::{PlaneSplit, SolidSplit};
 /// Content identity of the exact native source tree, including local patches.
 pub const fn source_identity() -> &'static str {
     env!("MULTICAD_OCCT_SOURCE_HASH")

@@ -79,3 +79,104 @@ impl Solid {
         Ok(SolidSplit { inside, outside })
     }
 }
+
+/// A plane's authored normal fixes side identity across dimensional edits.
+pub struct PlaneSplit {
+    pub positive: Solid,
+    pub negative: Solid,
+}
+impl Solid {
+    pub fn split_by_plane(
+        &self,
+        plane: crate::PlaneFrame,
+        policy: GeometryPolicy,
+    ) -> Result<PlaneSplit, GeometryError> {
+        self.split_by_plane_interruptible(plane, policy, None)
+    }
+    pub fn split_by_plane_interruptible(
+        &self,
+        plane: crate::PlaneFrame,
+        policy: GeometryPolicy,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PlaneSplit, GeometryError> {
+        policy.validate()?;
+        let frame = plane.checked(policy)?;
+        checkpoint(interrupt)?;
+        if self.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Plane Split requires one connected closed target solid",
+            ));
+        }
+        let clip = |positive| -> Result<Solid, GeometryError> {
+            let shape = crate::ffi::clip_half_space(
+                &self.native.0,
+                &frame,
+                positive,
+                policy.boolean_fuzzy_mm,
+            )
+            .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+            if shape.is_null() {
+                return Err(failure(
+                    GeometryErrorKind::InvalidResult,
+                    "Split plane must cross the target with positive-volume material on both sides",
+                ));
+            }
+            let mut solid = Self::adopt(shape, policy, "plane split")?;
+            solid.inherit_provenance(&[self], None)?;
+            Ok(solid)
+        };
+        let positive = clip(true)?;
+        checkpoint(interrupt)?;
+        let negative = clip(false)?;
+        for solid in [&positive, &negative] {
+            if solid.solid_count()? != 1 {
+                return Err(failure(
+                    GeometryErrorKind::InvalidResult,
+                    "Plane Split contains disconnected fragments on a side; choose a cut with one connected solid per side",
+                ));
+            }
+        }
+        let bounds = self.bounds()?;
+        let [x, y, z] = std::array::from_fn::<_, 3, _>(|i| bounds.max[i] - bounds.min[i]);
+        let original = self.volume_mm3()?;
+        let sum = positive.volume_mm3()? + negative.volume_mm3()?;
+        let tolerance =
+            (original * 1e-8).max(policy.linear_tolerance_mm * 2. * (x * y + y * z + z * x));
+        if !sum.is_finite() || (sum - original).abs() > tolerance {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Plane Split does not conserve the target volume within model tolerance",
+            ));
+        }
+        checkpoint(interrupt)?;
+        Ok(PlaneSplit { positive, negative })
+    }
+    pub fn split_by_plane_named(
+        &self,
+        plane: crate::PlaneFrame,
+        feature: multicad_core::document::EntityId,
+        policy: GeometryPolicy,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PlaneSplit, GeometryError> {
+        if feature.is_nil() {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Named plane Split requires a producing feature identity",
+            ));
+        }
+        let mut split = self.split_by_plane_interruptible(plane, policy, interrupt)?;
+        split.positive.seed_split_plane(
+            feature,
+            "split/plane/positive",
+            crate::PlaneFrame {
+                v: plane.v.map(|value| -value),
+                ..plane
+            },
+        )?;
+        split
+            .negative
+            .seed_split_plane(feature, "split/plane/negative", plane)?;
+        Ok(split)
+    }
+}
