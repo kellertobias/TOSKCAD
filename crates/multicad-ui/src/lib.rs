@@ -1,5 +1,6 @@
 pub mod application;
 pub mod architecture_navigation;
+pub mod architecture_view;
 pub mod artwork_import;
 pub mod assembly;
 pub mod camera;
