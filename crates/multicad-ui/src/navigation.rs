@@ -216,6 +216,16 @@ pub fn toolbar_with_tools(
     grid_controls: impl FnOnce(&mut egui::Ui),
     extra: impl FnOnce(&mut egui::Ui),
 ) -> CameraActions {
+    toolbar_for_model(ui, camera, style, false, grid_controls, extra)
+}
+pub fn toolbar_for_model(
+    ui: &mut egui::Ui,
+    camera: &mut Camera,
+    style: &mut DisplayStyle,
+    planar: bool,
+    grid_controls: impl FnOnce(&mut egui::Ui),
+    extra: impl FnOnce(&mut egui::Ui),
+) -> CameraActions {
     let mut actions = CameraActions::default();
     egui::Frame::new()
         .fill(Color32::from_rgb(31, 38, 48))
@@ -249,7 +259,14 @@ pub fn toolbar_with_tools(
                 } else {
                     "Orthographic · switch to perspective"
                 };
-                if icons::compact_button(ui, icon, label).clicked() {
+                if ui
+                    .add_enabled_ui(!planar, |ui| icons::compact_button(ui, icon, label))
+                    .inner
+                    .on_disabled_hover_text(
+                        "2D plans use orthographic projection. Switch to 3D model for perspective.",
+                    )
+                    .clicked()
+                {
                     camera.perspective = !camera.perspective;
                 }
                 let response = icons::compact_button(ui, style.icon(), "Visual style");

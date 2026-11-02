@@ -142,6 +142,11 @@ fn literal(d: &Dimension) -> String {
     }
 }
 impl WallPanel {
+    pub(super) fn seed_new_level(&mut self, level: Option<EntityId>) {
+        if !self.editing {
+            self.level = level;
+        }
+    }
     pub fn new(document: &Document, name: String) -> Result<Self, String> {
         let wall_type = model::wall_types(document).next().map(|e| e.id);
         let feature = EntityId::new();

@@ -22,7 +22,16 @@ pub(crate) fn feed_native(ctx: &egui::Context, orbit: NativeOrbit) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new("native-trackpad-frame"), orbit));
 }
 
+#[cfg(test)]
 pub(crate) fn navigate(ui: &egui::Ui, response: &egui::Response, camera: &mut Camera) {
+    navigate_with_plane(ui, response, camera, false);
+}
+pub(crate) fn navigate_with_plane(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    camera: &mut Camera,
+    planar: bool,
+) {
     let frame = ui.ctx().cumulative_frame_nr();
     let already_applied = ui.ctx().data_mut(|data| {
         let key = response.id.with("camera-input-frame");
@@ -51,20 +60,38 @@ pub(crate) fn navigate(ui: &egui::Ui, response: &egui::Response, camera: &mut Ca
         native.active && ownership.accepted
     });
     if eligible && response.dragged_by(egui::PointerButton::Secondary) {
-        camera.orbit(ui.input(|input| input.pointer.delta()));
+        let delta = ui.input(|input| input.pointer.delta());
+        if planar {
+            camera.pan(delta);
+        } else {
+            camera.orbit(delta);
+        }
     }
     if eligible && response.dragged_by(egui::PointerButton::Middle) {
         camera.pan(ui.input(|input| input.pointer.delta()));
     }
     if hovered {
         if owned && native.delta.is_finite() {
-            camera.orbit(native.delta);
+            if planar {
+                camera.pan(native.delta);
+            } else {
+                camera.orbit(native.delta);
+            }
         }
-        ui.input(|input| apply_events(camera, &input.events, native.active));
+        ui.input(|input| apply_events_with_plane(camera, &input.events, native.active, planar));
     }
 }
 
+#[cfg(test)]
 fn apply_events(camera: &mut Camera, events: &[Event], three_fingers: bool) {
+    apply_events_with_plane(camera, events, three_fingers, false);
+}
+fn apply_events_with_plane(
+    camera: &mut Camera,
+    events: &[Event],
+    three_fingers: bool,
+    planar: bool,
+) {
     let pinch = events
         .iter()
         .any(|event| matches!(event, Event::Zoom(factor) if factor.is_finite() && *factor > 0.));
@@ -82,7 +109,7 @@ fn apply_events(camera: &mut Camera, events: &[Event], three_fingers: bool) {
                 let delta = delta.clamp(Vec2::splat(-2000.), Vec2::splat(2000.));
                 match unit {
                     MouseWheelUnit::Point if three_fingers || pinch => {}
-                    MouseWheelUnit::Point if modifiers.alt => camera.orbit(delta),
+                    MouseWheelUnit::Point if modifiers.alt && !planar => camera.orbit(delta),
                     MouseWheelUnit::Point if !(modifiers.ctrl || modifiers.command) => {
                         camera.pan(delta);
                     }
@@ -99,6 +126,29 @@ fn apply_events(camera: &mut Camera, events: &[Event], three_fingers: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn planar_option_gesture_pans_and_pinch_zooms_without_orbiting() {
+        let mut camera = Camera {
+            yaw: 0.,
+            pitch: std::f32::consts::FRAC_PI_2,
+            perspective: false,
+            ..Default::default()
+        };
+        let before = camera;
+        let delta = Vec2::new(12., -8.);
+        apply_events_with_plane(
+            &mut camera,
+            &[wheel(MouseWheelUnit::Point, delta, egui::Modifiers::ALT)],
+            false,
+            true,
+        );
+        let mut expected = before;
+        expected.pan(delta);
+        assert_eq!(camera, expected);
+        apply_events_with_plane(&mut camera, &[Event::Zoom(1.2)], false, true);
+        assert!((camera.scale - expected.scale * 1.2).abs() < 1e-6);
+        assert_eq!((camera.yaw, camera.pitch), (before.yaw, before.pitch));
+    }
     fn wheel(unit: MouseWheelUnit, delta: Vec2, modifiers: egui::Modifiers) -> Event {
         Event::MouseWheel {
             unit,

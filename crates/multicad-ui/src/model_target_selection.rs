@@ -277,6 +277,7 @@ impl SketchEditor {
             .iter()
             .find_map(|id| crate::modeling::ModelToolController::wall_of(session.document(), *id));
         self.finish()?;
+        self.prepare_architecture_level(session)?;
         self.model
             .begin_opening(session, resources, tool, wall, channel)?;
         self.message = format!(

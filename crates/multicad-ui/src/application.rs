@@ -2472,7 +2472,11 @@ impl Application {
                         self.render_sidebar(ui);
                     }
                     let sketch_mode = self.mode == Mode::Sketch;
+                    let architecture = self.mode == Mode::Model
+                        && self.registry.workspace(Mode::Model).tabs[self.tab].title
+                            == "Architecture";
                     let p = self.current_mut();
+                    p.sketch.set_architecture_active(architecture, &p.session);
                     let before = p.session.revision();
                     p.sketch.set_measure_pin_allowed(
                         !p.editor.dirty() && !p.drawings.dirty() && !p.exchange.dirty(),

@@ -300,6 +300,31 @@ impl Context {
             camera.target[2] = elevation as f32;
         }
     }
+    pub fn home_plan(&self, bounds: Option<[[f64; 3]; 2]>, rect: crate::egui::Rect) -> Camera {
+        let mut camera = Camera {
+            target: [0.; 3],
+            scale: 0.05,
+            ..Default::default()
+        };
+        self.constrain(&mut camera);
+        let elevation = camera.target[2];
+        if let Some([low, high]) = bounds {
+            let corners: Vec<_> = (0..8)
+                .map(|corner| {
+                    std::array::from_fn(|axis| {
+                        if corner & (1 << axis) == 0 {
+                            low[axis] as f32
+                        } else {
+                            high[axis] as f32
+                        }
+                    })
+                })
+                .collect();
+            camera.fit(&corners, rect);
+            camera.target[2] = elevation;
+        }
+        camera
+    }
     pub fn scene(&mut self, scene: &Arc<Scene>) -> Result<Arc<Scene>, String> {
         if !self.planar() {
             return Ok(scene.clone());
@@ -321,7 +346,7 @@ impl Context {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::viewport::{Geometry, Instance, Ray, SceneStamp, Transform};
     use multicad_core::{
@@ -334,7 +359,7 @@ mod tests {
     fn actor() -> Actor {
         Actor::local(Channel::Ui)
     }
-    fn building() -> (Session, [EntityId; 2], [EntityId; 2], [EntityId; 2]) {
+    pub(crate) fn building() -> (Session, [EntityId; 2], [EntityId; 2], [EntityId; 2]) {
         let mut session = Session::new(Document::new("Two levels").unwrap()).unwrap();
         let mut levels = [EntityId::nil(); 2];
         let mut bodies = [EntityId::nil(); 2];

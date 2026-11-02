@@ -85,6 +85,7 @@ struct Handoff {
 }
 #[derive(Default)]
 pub struct ModelToolController {
+    architecture_level: Option<Option<EntityId>>,
     form: Option<ModelForm>,
     advanced_context: Option<advanced::AdvancedContext>,
     backend: Option<Box<dyn SceneBackend>>,
@@ -117,6 +118,9 @@ pub enum ModelToolOutcome {
     Cancelled,
 }
 impl ModelToolController {
+    pub fn set_architecture_level(&mut self, level: Option<EntityId>) {
+        self.architecture_level = Some(level);
+    }
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
         self.cancel();
         self.backend = Some(backend);
@@ -208,7 +212,7 @@ impl ModelToolController {
         {
             return true;
         }
-        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE|multicad_core::model::MACHINING_CUT_TYPE|multicad_core::model::LOOSE_TENON_TYPE|multicad_core::model::AID_TYPE|multicad_core::model::MEMBER_TYPE|multicad_core::model::SHEET_TYPE))
+        matches!(document.get(feature).map(|entity|&entity.data),Some(EntityData::Feature{definition,suppressed:false,..}) if matches!(definition.type_id.as_str(),multicad_core::model::EXTRUDE_TYPE|multicad_core::model::PRIMITIVE_TYPE|multicad_core::model::REVOLVE_TYPE|multicad_core::model::BOOLEAN_TYPE|multicad_core::model::WALL_TYPE|multicad_core::model::SLAB_TYPE|multicad_core::model::STAIR_TYPE|multicad_core::model::PANEL_TYPE|multicad_core::model::PANEL_JOINT_CUT_TYPE|multicad_core::model::MACHINING_CUT_TYPE|multicad_core::model::LOOSE_TENON_TYPE|multicad_core::model::AID_TYPE|multicad_core::model::MEMBER_TYPE|multicad_core::model::SHEET_TYPE))
     }
     pub fn begin_existing(
         &mut self,
@@ -1084,6 +1088,44 @@ impl ModelToolController {
             )?)),
         )
     }
+    pub fn begin_level(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        existing: Option<EntityId>,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Level", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(super::architecture::ArchitecturePanel::level(
+                session.document(),
+                name,
+                existing,
+            )?)),
+        )
+    }
+    pub fn begin_equipment_existing(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        record: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(
+                super::architecture::ArchitecturePanel::equipment_existing(
+                    session.document(),
+                    record,
+                )?,
+            )),
+        )
+    }
     pub fn begin_equipment_preset(
         &mut self,
         session: &Session,
@@ -1164,13 +1206,21 @@ impl ModelToolController {
         session: &Session,
         resources: &ProjectResources,
         _channel: Channel,
-        form: ModelForm,
+        mut form: ModelForm,
     ) -> Result<(), String> {
         if !self.has_backend() {
             return Err("The native modeling preview provider is unavailable".into());
         }
         if self.active() {
             return Err("Apply or cancel the active modeling tool first".into());
+        }
+        if let Some(level) = self.architecture_level {
+            match &mut form {
+                ModelForm::Wall(panel) => panel.seed_new_level(level),
+                ModelForm::Opening(panel) => panel.seed_new_level(session.document(), level),
+                ModelForm::Architecture(panel) => panel.seed_new_level(session.document(), level),
+                _ => {}
+            }
         }
         let scope = session.stamp();
         let source = session.source_hash()?;
@@ -1976,6 +2026,8 @@ mod placement_interaction;
 pub use operation_interaction::OperationViewport;
 mod scale_interaction;
 pub use placement_interaction::PlacementViewportResult;
+#[cfg(test)]
+mod architecture_tests;
 mod proof;
 mod sheet;
 mod termination;

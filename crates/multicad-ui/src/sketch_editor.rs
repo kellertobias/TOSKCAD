@@ -18,6 +18,8 @@ use std::collections::VecDeque;
 mod advanced_context_tests;
 #[path = "sketch_advanced_host.rs"]
 mod advanced_host;
+#[path = "sketch_architecture_host.rs"]
+mod architecture_host;
 #[path = "sketch_assembly_host.rs"]
 mod assembly_host;
 #[cfg(test)]
@@ -132,6 +134,7 @@ struct SplinePointer {
     clicked: bool,
 }
 pub struct SketchEditor {
+    architecture: crate::architecture_view::Context,
     pub selected: Option<EntityId>,
     pub editing: bool,
     pub picking: bool,
@@ -228,6 +231,7 @@ pub struct SketchEditor {
 impl Default for SketchEditor {
     fn default() -> Self {
         Self {
+            architecture: Default::default(),
             selected: None,
             editing: false,
             picking: false,
@@ -1154,6 +1158,7 @@ impl SketchEditor {
             );
         }
         self.finish()?;
+        self.prepare_architecture_level(session)?;
         self.model.begin_wall(session, resources, channel)?;
         self.message =
             "Wall · choose a type, draw the path in the viewport or enter corners and openings in the Inspector, then Preview"
@@ -1481,6 +1486,7 @@ impl SketchEditor {
             return Err("Apply or cancel pending edits before placing stairs".into());
         }
         self.finish()?;
+        self.prepare_architecture_level(session)?;
         self.model.begin_stairs(session, resources, channel)?;
         self.message = "Stairs · choose a level and dimensions, then Preview".into();
         Ok(())
@@ -1496,6 +1502,7 @@ impl SketchEditor {
             return Err("Apply or cancel pending edits before placing equipment".into());
         }
         self.finish()?;
+        self.prepare_architecture_level(session)?;
         self.model
             .begin_equipment_preset(session, resources, channel, kind)?;
         if !session.document().entities().any(|e| {
@@ -1530,6 +1537,7 @@ impl SketchEditor {
             );
         }
         self.finish()?;
+        self.prepare_architecture_level(session)?;
         self.model.begin_architecture(session, resources, channel)?;
         self.message =
             "Levels & stairs · define a level or place a slab, stair or envelope, then Preview"
@@ -1878,6 +1886,7 @@ impl SketchEditor {
         Ok(())
     }
     fn orient_to(&mut self, frame: Frame) {
+        self.architecture.set_enabled(false, &mut self.camera);
         self.camera.yaw = frame.n[0].atan2(frame.n[1]) as f32;
         self.camera.pitch = frame.n[2].clamp(-1., 1.).asin() as f32;
         self.camera.target = frame.origin.map(|v| v as f32);
@@ -1936,6 +1945,17 @@ impl SketchEditor {
             } else {
                 None
             };
+            if self.architecture.enabled
+                && !self.has_pending_edits()
+                && selection.len() == 1
+                && let Some(level) =
+                    self.architecture.levels.as_ref().and_then(|levels| {
+                        levels.level_for(*selection.first().expect("one selection"))
+                    })
+            {
+                self.architecture.recall.level = level;
+                self.model.set_architecture_level(level);
+            }
             self.tree_selection = selection;
             if sketch != self.selected || sketch.is_none() {
                 self.editing = false;
@@ -2743,6 +2763,10 @@ impl SketchEditor {
         feed: &mut crate::viewport::SceneFeed,
         resources: &multicad_core::project_file::ProjectResources,
     ) {
+        if self.architecture.enabled {
+            self.architecture
+                .sync(session.document(), session.revision());
+        }
         self.reconcile_acquisition(session);
         self.measurement.tick(session);
         if self.measurement.pending() {
@@ -2852,6 +2876,13 @@ impl SketchEditor {
                 }
             }
         });
+        scene = scene.and_then(|scene| match self.architecture.scene(&scene) {
+            Ok(view) => Some(view),
+            Err(error) => {
+                self.visibility_error = Some(error);
+                None
+            }
+        });
         self.tree_selection
             .retain(|id| *id == session.document().id() || session.document().get(*id).is_some());
         if let Some(current) = scene
@@ -2911,6 +2942,7 @@ impl SketchEditor {
             .default_size(225.)
             .resizable(true)
             .show(ui, |ui| {
+                self.architecture_panel(ui, session, resources, feed, scene.as_deref());
                 let options = crate::model_tree::TreeOptions {
                     enabled: (!self.has_pending_edits() || self.acquisition.is_some())
                         && !self.measurement.active(),
@@ -3398,11 +3430,16 @@ impl SketchEditor {
         }
         let model_bounds = scene.as_ref().and_then(|scene| scene.world_bounds());
         if std::mem::take(&mut self.home_requested) {
-            self.camera = crate::initial_fit::home(
-                self.camera,
-                model_bounds,
-                self.viewport_rect.unwrap_or(Rect::NOTHING),
-            );
+            self.camera = if self.architecture.planar() {
+                self.architecture
+                    .home_plan(model_bounds, self.viewport_rect.unwrap_or(Rect::NOTHING))
+            } else {
+                crate::initial_fit::home(
+                    self.camera,
+                    model_bounds,
+                    self.viewport_rect.unwrap_or(Rect::NOTHING),
+                )
+            };
             self.initial_fit.settle();
         }
         if !transfer_source_view
@@ -3416,6 +3453,9 @@ impl SketchEditor {
         {
             self.camera = camera;
             ui.ctx().request_repaint();
+        }
+        if self.architecture.planar() {
+            self.architecture.constrain(&mut self.camera);
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(21, 27, 35)))
@@ -3684,7 +3724,15 @@ impl SketchEditor {
         self.refresh_overlay_visibility(session);
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         self.viewport_rect = Some(rect);
-        crate::camera_gestures::navigate(ui, &response, &mut self.camera);
+        crate::camera_gestures::navigate_with_plane(
+            ui,
+            &response,
+            &mut self.camera,
+            self.architecture.planar(),
+        );
+        if self.architecture.planar() {
+            self.architecture.constrain(&mut self.camera);
+        }
         let painter = ui.painter().with_clip_rect(rect);
         if self.sketch_evaluation.hash_pending() {
             painter.text(
@@ -4690,13 +4738,15 @@ impl SketchEditor {
                 Color32::from_gray(175),
             );
         }
-        egui::Area::new(ui.id().with("orientation"))
-            .movable(false)
-            .pivot(Align2::RIGHT_TOP)
-            .fixed_pos(rect.right_top() - Vec2::new(8., -4.))
-            .show(ui.ctx(), |ui| {
-                navigation::orientation(ui, &mut self.camera);
-            });
+        if !self.architecture.planar() {
+            egui::Area::new(ui.id().with("orientation"))
+                .movable(false)
+                .pivot(Align2::RIGHT_TOP)
+                .fixed_pos(rect.right_top() - Vec2::new(8., -4.))
+                .show(ui.ctx(), |ui| {
+                    navigation::orientation(ui, &mut self.camera);
+                });
+        }
         let mut coordinates = self.coordinates;
         let mut moving = self.moving;
         let mut grid = self.grid;
@@ -4710,10 +4760,11 @@ impl SketchEditor {
             .pivot(Align2::RIGHT_BOTTOM)
             .fixed_pos(rect.right_bottom() - Vec2::splat(12.))
             .show(ui.ctx(), |ui| {
-                let actions = navigation::toolbar_with_tools(
+                let actions = navigation::toolbar_for_model(
                     ui,
                     &mut self.camera,
                     &mut self.style,
+                    self.architecture.planar(),
                     |ui| {
                         ui.checkbox(&mut grid, "XY grid");
                         ui.horizontal(|ui| {

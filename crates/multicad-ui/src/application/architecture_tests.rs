@@ -1,5 +1,53 @@
 use super::*;
 use crate::{architecture_navigation::Category, modeling::ModelingTool};
+
+#[test]
+fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_scales() {
+    for (size, density) in [
+        (egui::vec2(1100., 700.), 1.),
+        (egui::vec2(1360., 860.), 1.),
+        (egui::vec2(1360., 860.), 2.),
+    ] {
+        let (session, levels, _, _) = crate::architecture_view::tests::building();
+        let mut app = app();
+        *app.current_mut() = Project::new(session.document().clone()).unwrap();
+        app.tab = app
+            .registry
+            .workspace(Mode::Model)
+            .tabs
+            .iter()
+            .position(|tab| tab.title == "Architecture")
+            .unwrap();
+        let ctx = context(density);
+        let before = app.current().session.document().clone();
+        for _ in 0..3 {
+            paint(&mut app, &ctx, size, vec![]);
+        }
+        let mut out = paint(&mut app, &ctx, size, vec![]);
+        for _ in 0..3 {
+            let position = bounds(&out, "2D plan").center();
+            out = click(&mut app, &ctx, size, position);
+            assert!(app.current().sketch.architecture_recall().plan);
+            let position = bounds(&out, "Upper · 3000 mm").center();
+            out = click(&mut app, &ctx, size, position);
+            assert_eq!(
+                app.current().sketch.architecture_recall().level,
+                Some(levels[1])
+            );
+            assert_eq!(app.current().sketch.camera.target[2], 3000.);
+            assert!(!app.current().sketch.camera.perspective);
+            let position = bounds(&out, "3D model").center();
+            out = click(&mut app, &ctx, size, position);
+            assert!(!app.current().sketch.architecture_recall().plan);
+            assert_eq!(
+                app.current().sketch.architecture_recall().level,
+                Some(levels[1])
+            );
+        }
+        assert_eq!(app.current().session.document(), &before);
+        assert_eq!(app.current().session.revision(), 0);
+    }
+}
 struct Memory;
 impl DocumentStorage for Memory {
     fn save(&mut self, _: &std::path::Path, _: &Document) -> Result<(), String> {

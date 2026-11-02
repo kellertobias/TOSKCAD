@@ -169,6 +169,27 @@ pub(super) struct OpeningPanel {
     error: Option<String>,
 }
 impl OpeningPanel {
+    pub(super) fn seed_new_level(&mut self, document: &Document, level: Option<EntityId>) {
+        if self.editing.is_some() {
+            return;
+        }
+        self.from_level = level;
+        if self.wall.is_none_or(|wall| {
+            !model::read_wall(document, wall).is_ok_and(|wall| wall.level == level)
+        }) {
+            self.wall = model::walls(document)
+                .find(|wall| {
+                    model::read_wall(document, wall.id).is_ok_and(|wall| wall.level == level)
+                })
+                .map(|wall| wall.id);
+        }
+        self.cut_wall = self.wall.is_some();
+        if self.kind == RoomOpening::Cutout && !self.cut_wall {
+            self.cut_slabs = model::slabs(document).any(|slab| {
+                model::read_slab(document, slab.id).is_ok_and(|slab| Some(slab.level) == level)
+            });
+        }
+    }
     pub fn new(
         document: &Document,
         kind: RoomOpening,

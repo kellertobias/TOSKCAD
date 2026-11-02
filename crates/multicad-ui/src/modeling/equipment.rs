@@ -62,6 +62,22 @@ pub(super) struct EquipmentPanel {
     seed: RefCell<Option<equipment::EquipmentPlaceRequest>>,
 }
 impl EquipmentPanel {
+    pub(super) fn existing(document: &Document, record: EntityId) -> Result<Self, String> {
+        let mut panel = Self::new(document);
+        panel.existing = Some(record);
+        panel.load(document, record)?;
+        Ok(panel)
+    }
+    pub(super) fn seed_new_level(&mut self, document: &Document, level: Option<EntityId>) {
+        if self.existing.is_some() {
+            return;
+        }
+        self.floor = level;
+        self.wall = model::walls(document)
+            .find(|wall| model::read_wall(document, wall.id).is_ok_and(|wall| wall.level == level))
+            .map(|wall| wall.id);
+        *self.seed.borrow_mut() = None;
+    }
     pub fn new(document: &Document) -> Self {
         let kind = Kind::PowerOutletTypeF;
         let p = kind.preset();

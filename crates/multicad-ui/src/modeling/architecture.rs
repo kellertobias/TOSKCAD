@@ -290,6 +290,32 @@ const CLEARANCES: [(&str, &str); 5] = [
     ("Top", "Clearance above the target"),
 ];
 impl ArchitecturePanel {
+    pub(super) fn level(
+        document: &Document,
+        name: String,
+        existing: Option<EntityId>,
+    ) -> Result<Self, String> {
+        let mut panel = Self::new(document, name)?;
+        panel.kind = ArchitectureKind::Level;
+        panel.existing = existing;
+        panel.load_level(document)?;
+        Ok(panel)
+    }
+    pub(super) fn equipment_existing(
+        document: &Document,
+        record: EntityId,
+    ) -> Result<Self, String> {
+        let mut panel = Self::equipment(document)?;
+        panel.equipment = super::equipment::EquipmentPanel::existing(document, record)?;
+        Ok(panel)
+    }
+    pub(super) fn seed_new_level(&mut self, document: &Document, level: Option<EntityId>) {
+        if self.feature.is_some() || self.existing.is_some() {
+            return;
+        }
+        self.level = level;
+        self.equipment.seed_new_level(document, level);
+    }
     pub fn new(document: &Document, name: String) -> Result<Self, String> {
         let level = model::levels(document).next().map(|e| e.id);
         Ok(Self {
