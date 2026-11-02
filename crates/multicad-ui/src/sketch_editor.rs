@@ -1464,11 +1464,40 @@ impl SketchEditor {
         resources: &multicad_core::project_file::ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
-        if !self.primitive_ready() {
+        self.begin_equipment_preset(
+            session,
+            resources,
+            channel,
+            multicad_core::equipment::Kind::PowerOutletTypeF,
+        )
+    }
+    pub fn begin_stairs(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.modeling_available() || !self.primitive_ready() {
+            return Err("Apply or cancel pending edits before placing stairs".into());
+        }
+        self.finish()?;
+        self.model.begin_stairs(session, resources, channel)?;
+        self.message = "Stairs · choose a level and dimensions, then Preview".into();
+        Ok(())
+    }
+    pub fn begin_equipment_preset(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+        kind: multicad_core::equipment::Kind,
+    ) -> Result<(), String> {
+        if !self.modeling_available() || !self.primitive_ready() {
             return Err("Apply or cancel pending edits before placing equipment".into());
         }
         self.finish()?;
-        self.model.begin_equipment(session, resources, channel)?;
+        self.model
+            .begin_equipment_preset(session, resources, channel, kind)?;
         if !session.document().entities().any(|e| {
             matches!(
                 e.data,

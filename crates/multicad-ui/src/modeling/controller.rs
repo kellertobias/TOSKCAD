@@ -1067,6 +1067,39 @@ impl ModelToolController {
             )?)),
         )
     }
+    pub fn begin_stairs(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Stair", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(super::architecture::ArchitecturePanel::stairs(
+                session.document(),
+                name,
+            )?)),
+        )
+    }
+    pub fn begin_equipment_preset(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+        kind: multicad_core::equipment::Kind,
+    ) -> Result<(), String> {
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Architecture(Box::new(
+                super::architecture::ArchitecturePanel::equipment_preset(session.document(), kind)?,
+            )),
+        )
+    }
     pub fn begin_equipment(
         &mut self,
         session: &Session,

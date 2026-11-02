@@ -63,6 +63,9 @@ fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
     entries
 }
 pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
+    if mode == Mode::Model && tab.title == "Architecture" {
+        return crate::architecture_navigation::groups(None);
+    }
     if mode == Mode::Sketch && tab.title == "Common" {
         return vec![Group {
             label: "",
@@ -169,7 +172,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
     sections
 }
 fn implemented(command: Command) -> bool {
-    !matches!(command,Command::Extension(id) if !matches!(id,"materials"|"appearance"|"render-view"|"import-step"|"import-kicad"|"import-update"))
+    !matches!(command,Command::Extension(id) if !matches!(id,"library"|"materials"|"appearance"|"render-view"|"import-step"|"import-kicad"|"import-update"))
 }
 /// Session actions pinned at the right end of the ribbon while a sketch is
 /// open, on every Sketch tab and outside the horizontal scroll.
@@ -365,6 +368,22 @@ pub fn show_selectable(
     hint: impl Fn(Command, &str) -> String,
     selected: impl Fn(Command) -> bool,
 ) -> Option<Command> {
+    show_selectable_with_category(
+        ui, registry, mode, tab, editing, enabled, hint, selected, None,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn show_selectable_with_category(
+    ui: &mut egui::Ui,
+    registry: &Registry,
+    mode: Mode,
+    tab: &RibbonTab,
+    editing: bool,
+    enabled: impl Fn(Command) -> bool,
+    hint: impl Fn(Command, &str) -> String,
+    selected: impl Fn(Command) -> bool,
+    category: Option<crate::architecture_navigation::Category>,
+) -> Option<Command> {
     let pinned: Vec<&str> = if mode == Mode::Sketch && editing {
         SKETCH_SESSION
             .into_iter()
@@ -380,7 +399,11 @@ pub fn show_selectable(
                 && (mode != Mode::Sketch || editing)
         })
     };
-    let mut sections = groups(mode, tab);
+    let mut sections = if mode == Mode::Model && tab.title == "Architecture" {
+        crate::architecture_navigation::groups(category)
+    } else {
+        groups(mode, tab)
+    };
     for group in &mut sections {
         group.entries.retain_mut(|entry| match entry {
             Entry::Tool(id) => visible(id),

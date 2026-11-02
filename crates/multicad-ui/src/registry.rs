@@ -94,6 +94,9 @@ pub enum Command {
     SketchOperation(OperationTool),
     External(crate::external_references::ExternalTool),
     Modeling(ModelingTool),
+    EquipmentPreset(multicad_core::equipment::Kind),
+    ArchitectureCategory(crate::architecture_navigation::Category),
+    ArchitectureParent,
     /// Boolean form preset to Join, Subtract (Cut) or Intersect.
     BooleanOperation(multicad_core::model::Operation),
     Assembly(crate::assembly::AssemblyTool),
@@ -132,6 +135,28 @@ pub struct Workspace {
 pub struct Registry {
     pub tools: Vec<Tool>,
     pub workspaces: Vec<Workspace>,
+}
+fn command_home(command: Command) -> Option<(Mode, &'static str)> {
+    match command {
+        Command::Modeling(ModelingTool::Panel | ModelingTool::Cabinet) => {
+            Some((Mode::Model, "Wood"))
+        }
+        Command::EquipmentPreset(_)
+        | Command::ArchitectureCategory(_)
+        | Command::ArchitectureParent
+        | Command::Modeling(
+            ModelingTool::Wall
+            | ModelingTool::Fence
+            | ModelingTool::Door
+            | ModelingTool::Window
+            | ModelingTool::Cutout
+            | ModelingTool::Level
+            | ModelingTool::Stair
+            | ModelingTool::Plant
+            | ModelingTool::Equipment,
+        ) => Some((Mode::Model, "Architecture")),
+        _ => None,
+    }
 }
 impl Default for Registry {
     fn default() -> Self {
@@ -475,6 +500,9 @@ impl Default for Registry {
             tools: tools.to_vec(),
             requires_active_sketch: false,
         };
+        registry
+            .tools
+            .extend(crate::architecture_navigation::tools());
         registry.workspaces = vec![
             Workspace {
                 mode: Mode::Parameters,
@@ -562,19 +590,11 @@ impl Default for Registry {
                             .collect(),
                         requires_active_sketch: false,
                     },
-                    tab(
-                        "Architecture",
-                        &[
-                            "wall",
-                            "fence",
-                            "door",
-                            "window-tool",
-                            "vertical-cutout",
-                            "level",
-                            "plant",
-                            "equipment",
-                        ],
-                    ),
+                    RibbonTab {
+                        title: "Architecture",
+                        tools: crate::architecture_navigation::tab_tools(),
+                        requires_active_sketch: false,
+                    },
                     tab(
                         "Wood",
                         &[
@@ -787,6 +807,17 @@ impl Registry {
     }
     /// Workspace and ribbon tab that offer `command`, for finder context.
     pub fn location(&self, command: Command) -> Option<(Mode, &'static str)> {
+        if let Some((mode, title)) = command_home(command)
+            && self.workspace(mode).tabs.iter().any(|tab| {
+                tab.title == title
+                    && tab
+                        .tools
+                        .iter()
+                        .any(|id| self.tool(id).is_some_and(|tool| tool.action == command))
+            })
+        {
+            return Some((mode, title));
+        }
         self.workspaces.iter().find_map(|workspace| {
             workspace
                 .tabs
@@ -801,7 +832,7 @@ impl Registry {
     }
     /// Ribbon tab of `mode` that offers `command`: `current` when it does
     /// (a tool listed on several tabs stays where it was started), else the
-    /// first tab listing it (CAD-162).
+    /// canonical command home when declared, else the first tab listing it (CAD-162).
     pub fn workbench_tab(
         &self,
         mode: Mode,
@@ -816,6 +847,14 @@ impl Registry {
         };
         current
             .filter(|index| tabs.get(*index).is_some_and(offers))
+            .or_else(|| {
+                command_home(command)
+                    .filter(|(home, _)| *home == mode)
+                    .and_then(|(_, title)| {
+                        tabs.iter()
+                            .position(|tab| tab.title == title && offers(tab))
+                    })
+            })
             .or_else(|| tabs.iter().position(offers))
     }
     pub fn workspace(&self, mode: Mode) -> &Workspace {
@@ -938,7 +977,7 @@ mod tests {
         for t in &r.tools {
             assert!(ids.insert(t.id));
             for a in t.aliases {
-                assert!(aliases.insert(*a));
+                assert!(aliases.insert(*a), "Duplicate alias {a} on {}", t.id);
                 assert_eq!(r.resolve(a).unwrap().id, t.id);
             }
         }

@@ -367,6 +367,9 @@ impl SketchEditor {
         if tool == ModelingTool::Plant {
             return self.begin_planting(session, resources, channel);
         }
+        if tool == ModelingTool::Stair {
+            return self.begin_stairs(session, resources, channel);
+        }
         if tool == ModelingTool::Level {
             return self.begin_architecture(session, resources, channel);
         }

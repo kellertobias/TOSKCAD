@@ -1,5 +1,9 @@
 //! Native application composition over canonical sessions and declarative tools.
 pub use crate::storage::DocumentStorage;
+mod architecture;
+#[cfg(test)]
+#[path = "application/architecture_tests.rs"]
+mod architecture_tests;
 mod closing;
 mod closing_backdrop;
 mod document_open;
@@ -45,6 +49,7 @@ use std::{
     path::PathBuf,
 };
 pub struct Project {
+    architecture_category: Option<crate::architecture_navigation::Category>,
     view: crate::recent_projects::RecentView,
     view_restore_pending: bool,
     view_needs_record: bool,
@@ -75,6 +80,7 @@ impl Project {
         let session = Session::new(document).map_err(|e| e.to_string())?;
         let editor = ParameterEditor::new(&session);
         Ok(Self {
+            architecture_category: None,
             view: Default::default(),
             view_restore_pending: false,
             view_needs_record: false,
@@ -429,7 +435,7 @@ impl Application {
         self.assembly_queries = Some(factory);
     }
     /// Tab to show when `command` starts in `mode`: the originating
-    /// workbench when it offers the command, else the first tab offering
+    /// workbench when it offers the command, else its declared home or first tab offering
     /// it, else the current tab within the same mode (CAD-162).
     fn workbench_tab(&self, mode: Mode, command: Command) -> usize {
         let current = (self.mode == mode).then_some(self.tab);
@@ -442,7 +448,9 @@ impl Application {
     fn tool_active(&self, command: Command) -> bool {
         self.active_tool == Some((self.active, command))
             && match command {
-                Command::Modeling(_) => self.current().sketch.model_active(),
+                Command::Modeling(_) | Command::EquipmentPreset(_) => {
+                    self.current().sketch.model_active()
+                }
                 Command::Drawing(_) => {
                     let drawings = &self.current().drawings;
                     drawings.dirty() || drawings.placing()
@@ -545,9 +553,30 @@ impl Application {
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        if matches!(
+            command,
+            Command::ArchitectureCategory(_) | Command::ArchitectureParent
+        ) && !args.is_empty()
+        {
+            return Err("Architecture navigation does not accept arguments".into());
+        }
+        match command {
+            Command::ArchitectureCategory(category) => {
+                return self.navigate_architecture(Some(category));
+            }
+            Command::ArchitectureParent => return self.navigate_architecture(None),
+            _ => {}
+        }
+        let equipment_preset = match command {
+            Command::EquipmentPreset(kind) => Some(kind),
+            _ => None,
+        };
         // Boolean menu entries are the Boolean tool with a preset operation;
         // the plain Boolean command restores the default.
         let command = match command {
+            Command::EquipmentPreset(_) => {
+                Command::Modeling(crate::modeling::ModelingTool::Equipment)
+            }
             Command::BooleanOperation(operation) => {
                 self.current_mut()
                     .sketch
@@ -657,7 +686,12 @@ impl Application {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
-            Command::BooleanOperation(_) => unreachable!("normalized to the Boolean tool above"),
+            Command::BooleanOperation(_) | Command::EquipmentPreset(_) => {
+                unreachable!("normalized to a modeling tool above")
+            }
+            Command::ArchitectureCategory(_) | Command::ArchitectureParent => {
+                unreachable!("handled as source-neutral navigation above")
+            }
             Command::Measure => {
                 if self.current().sketch.measurement.active() {
                     self.close_measurement();
@@ -1247,16 +1281,27 @@ impl Application {
                     return Err("Open Sketch or Model before starting a modeling tool".into());
                 }
                 let project = self.current_mut();
-                project.sketch.activate_model_tool(
-                    &project.session,
-                    &project.resources,
-                    &project.scene,
-                    tool,
-                    channel,
-                )?;
-                self.tab = self.workbench_tab(Mode::Model, command);
+                if let Some(kind) = equipment_preset {
+                    project.sketch.begin_equipment_preset(
+                        &project.session,
+                        &project.resources,
+                        channel,
+                        kind,
+                    )?;
+                } else {
+                    project.sketch.activate_model_tool(
+                        &project.session,
+                        &project.resources,
+                        &project.scene,
+                        tool,
+                        channel,
+                    )?;
+                }
+                let origin = equipment_preset.map_or(command, Command::EquipmentPreset);
+                self.tab = self.workbench_tab(Mode::Model, origin);
                 self.mode = Mode::Model;
-                self.active_tool = Some((self.active, command));
+                self.route_architecture_tool(tool, equipment_preset);
+                self.active_tool = Some((self.active, origin));
                 self.message = format!(
                     "{} · choose controls in the Inspector, then Preview",
                     tool.label()
@@ -1344,6 +1389,15 @@ impl Application {
     }
     fn enabled(&self, command: Command) -> bool {
         let command = match command {
+            Command::EquipmentPreset(_) => {
+                Command::Modeling(crate::modeling::ModelingTool::Equipment)
+            }
+            Command::ArchitectureCategory(_) => return !self.welcome && self.mode == Mode::Model,
+            Command::ArchitectureParent => {
+                return !self.welcome
+                    && self.mode == Mode::Model
+                    && self.current().architecture_category.is_some();
+            }
             Command::BooleanOperation(_) => {
                 Command::Modeling(crate::modeling::ModelingTool::Boolean)
             }
@@ -1862,7 +1916,7 @@ impl Application {
                         );
                         let response = if hidden {
                             response.on_hover_text(
-                                "Hidden in Settings · shown while one of its tools is active",
+                                "Hidden in Settings · shown while this workbench is in use",
                             )
                         } else {
                             response
@@ -1885,10 +1939,19 @@ impl Application {
             })
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                let category = self.active_architecture_category();
+                if let Some(category) = category {
+                    action = crate::architecture_navigation::parent_cue(
+                        ui,
+                        &self.registry,
+                        category,
+                        |command| self.enabled(command),
+                    );
+                }
                 let context = ui.ctx().clone();
                 let sketch = &self.current().sketch;
                 let tool_active = |command| self.tool_active(command);
-                action = crate::ribbon_ui::show_selectable(
+                let chosen = crate::ribbon_ui::show_selectable_with_category(
                     ui,
                     &self.registry,
                     self.mode,
@@ -1901,7 +1964,11 @@ impl Application {
                         Command::Construction => sketch.editing && sketch.construction(),
                         command => tool_active(command),
                     },
+                    category,
                 );
+                if chosen.is_some() {
+                    action = chosen;
+                }
             });
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
@@ -2356,7 +2423,14 @@ impl Application {
         // labels never extend under the content panels (CAD-154).
         if self.mode != Mode::Parameters {
             egui::Panel::top("ribbon")
-                .exact_size(RIBBON_HEIGHT)
+                .exact_size(
+                    RIBBON_HEIGHT
+                        + if self.active_architecture_category().is_some() {
+                            crate::architecture_navigation::PARENT_CUE_HEIGHT
+                        } else {
+                            0.
+                        },
+                )
                 .frame(egui::Frame::new())
                 .show(ui, |ui| self.ribbon(ui));
         }

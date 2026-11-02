@@ -55,6 +55,8 @@ The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow
 
 Mechanical catalog work follows the [retained hardware dimensions decision](docs/architecture/0026-retained-hardware-dimensions.md). The shared Library includes [four curated bearing mounting envelopes](library/README.md) with editable dimensions and pinned definitions. Complete fastener catalog coverage and connection integration remain under development.
 
+[Architecture navigation](docs/architecture/architecture-navigation.md) groups placement commands under Water, Electrical, Heating, Furniture and Landscaping. Its compact parent controls and Back/Close preserve the active project and pending operation.
+
 [Planting](docs/architecture/plants.md) adds generic editable trees and shrubs under Architecture, with linked canopy footprints for scaled drawings and presets in the shared included Library.
 
 [Apartment equipment](docs/architecture/equipment.md) provides generic electrical, heating, sanitary and appliance families with explicit floor/wall/ceiling hosts, editable dimensions, linked plan symbols and presets in the same included Library.

@@ -67,12 +67,23 @@ impl Application {
         } else {
             view.mode.top_level()
         };
+        let architecture =
+            view.workspace == "Architecture" || view.workspace.starts_with("Architecture / ");
+        let workspace = if architecture {
+            "Architecture"
+        } else {
+            view.workspace.as_str()
+        };
+        if architecture && self.mode == Mode::Model {
+            self.current_mut().architecture_category =
+                crate::architecture_navigation::Category::from_workspace(&view.workspace);
+        }
         self.tab = self
             .registry
             .workspace(self.mode)
             .tabs
             .iter()
-            .position(|t| t.title == view.workspace)
+            .position(|t| t.title == workspace)
             .filter(|tab| self.preferences.is_visible(&self.registry, self.mode, *tab))
             .unwrap_or_else(|| self.first_visible_tab(self.mode));
         if self.registry.workspace(self.mode).tabs[self.tab].requires_active_sketch
@@ -96,7 +107,17 @@ impl Application {
         let tab = self.tab.min(workspace.tabs.len().saturating_sub(1));
         let view = RecentView {
             mode: self.mode,
-            workspace: workspace.tabs[tab].title.into(),
+            workspace: if self.mode == Mode::Model && workspace.tabs[tab].title == "Architecture" {
+                self.current()
+                    .architecture_category
+                    .map_or(
+                        "Architecture",
+                        crate::architecture_navigation::Category::workspace,
+                    )
+                    .into()
+            } else {
+                workspace.tabs[tab].title.into()
+            },
         };
         if self.current().view == view && !self.current().view_needs_record {
             return;

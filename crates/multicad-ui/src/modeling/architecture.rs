@@ -371,6 +371,19 @@ impl ArchitecturePanel {
         panel.kind = ArchitectureKind::Plant;
         Ok(panel)
     }
+    pub fn stairs(document: &Document, name: String) -> Result<Self, String> {
+        let mut panel = Self::new(document, name)?;
+        panel.kind = ArchitectureKind::Stair;
+        Ok(panel)
+    }
+    pub fn equipment_preset(
+        document: &Document,
+        kind: multicad_core::equipment::Kind,
+    ) -> Result<Self, String> {
+        let mut panel = Self::equipment(document)?;
+        panel.equipment.select(kind);
+        Ok(panel)
+    }
     pub fn equipment(document: &Document) -> Result<Self, String> {
         let mut panel = Self::new(document, "Equipment".into())?;
         panel.kind = ArchitectureKind::Equipment;

@@ -97,7 +97,7 @@ impl EquipmentPanel {
             seed: RefCell::new(None),
         }
     }
-    fn select(&mut self, kind: Kind) {
+    pub(super) fn select(&mut self, kind: Kind) {
         self.kind = kind;
         let p = kind.preset();
         self.category = p.category;

@@ -97,6 +97,7 @@ pub enum ModelingTool {
     Window,
     Cutout,
     Level,
+    Stair,
     Plant,
     Equipment,
     Cabinet,
@@ -113,7 +114,7 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
@@ -125,6 +126,7 @@ impl ModelingTool {
         Self::Window,
         Self::Cutout,
         Self::Level,
+        Self::Stair,
         Self::Plant,
         Self::Equipment,
         Self::Cabinet,
@@ -183,6 +185,7 @@ impl ModelingTool {
             Self::Window => "window-tool",
             Self::Cutout => "vertical-cutout",
             Self::Level => "level",
+            Self::Stair => "stairs",
             Self::Plant => "plant",
             Self::Equipment => "equipment",
             Self::Cabinet => "cabinet",
@@ -227,8 +230,9 @@ impl ModelingTool {
             Self::Fence => "Fence",
             Self::Door => "Door",
             Self::Window => "Window",
-            Self::Cutout => "Vertical cutout",
-            Self::Level => "Levels & stairs",
+            Self::Cutout => "Cutout",
+            Self::Level => "Levels",
+            Self::Stair => "Stairs",
             Self::Plant => "Planting",
             Self::Equipment => "Equipment",
             Self::Cabinet => "Add Cabinet",
@@ -274,6 +278,7 @@ impl ModelingTool {
             Self::Door | Self::Window => crate::icons::Icon::Box,
             Self::Cutout => crate::icons::Icon::Cut,
             Self::Level => crate::icons::Icon::Edge,
+            Self::Stair => crate::icons::Icon::Stairs,
             Self::Plant => crate::icons::Icon::Cylinder,
             Self::Equipment => crate::icons::Icon::Box,
             Self::Panel | Self::Cabinet => crate::icons::Icon::Box,
@@ -316,19 +321,10 @@ impl ModelingTool {
             Self::Door => &["place-door", "wall-door"],
             Self::Window => &["place-window", "wall-window"],
             Self::Cutout => &["wall-cutout", "chase", "wall-chase"],
-            Self::Level => &["levels", "stairs", "slab", "pedestal", "service-envelope"],
+            Self::Level => &["levels", "slab", "pedestal", "service-envelope"],
+            Self::Stair => &["stair", "staircase"],
             Self::Plant => &["tree", "shrub", "landscape", "garden"],
-            Self::Equipment => &[
-                "outlet",
-                "switch",
-                "radiator",
-                "sanitary",
-                "appliance",
-                "sink",
-                "toilet",
-                "fridge",
-                "light",
-            ],
+            Self::Equipment => &["sanitary", "appliance"],
             Self::Cabinet => &["carcass", "shelf", "add cabinet", "cabinet generator"],
             Self::Panel => &["board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
@@ -384,6 +380,9 @@ impl ModelingTool {
             }
             Self::Plant => {
                 "Usage: plant (choose tree or shrub, click the garden plane, configure height/spread, Preview and Apply)"
+            }
+            Self::Stair => {
+                "Usage: stairs (choose a level, rise, run, width and risers; Preview and Apply)"
             }
             Self::Level => {
                 "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
@@ -486,7 +485,7 @@ impl ModelingTool {
             Self::Plant => {
                 "Requires native modeling and no pending edits. Place a generic tree or shrub graphically, using one retained source for 3D context and authored plan footprints."
             }
-            Self::Level => {
+            Self::Level | Self::Stair => {
                 "Requires native modeling and no pending edits. Slabs and stairs are placed on an existing level; editing a level rebuilds everything on it. Stair figures are geometric notes, not code approval."
             }
             Self::Machining => {
