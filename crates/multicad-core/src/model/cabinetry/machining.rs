@@ -568,6 +568,12 @@ pub fn resolve_machining_face(
         .map(|f| read_panel(document, f))
         .transpose()?;
     let toward = match source.map(|p| p.source) {
+        Some(PanelSource::WoodBox { recipe, .. }) => {
+            let layout = resolve_wood_box(document, parameters, &read_wood_box(document, recipe)?)?;
+            std::array::from_fn(|axis| {
+                (layout.envelope_corners[0][axis] + layout.envelope_corners[7][axis]) / 2.
+            })
+        }
         Some(PanelSource::Carcass { carcass, .. }) => {
             let c = resolve_carcass(document, parameters, &read_carcass(document, carcass)?)?;
             let [w, h, d] = c.size_mm;

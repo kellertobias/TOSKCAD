@@ -813,6 +813,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::LEVEL_KIND,
                     super::ENVELOPE_KIND,
                     super::CARCASS_KIND,
+                    super::WOOD_BOX_KIND,
                     super::STACK_KIND,
                     super::PANEL_JOINT_KIND,
                     super::MACHINING_KIND,

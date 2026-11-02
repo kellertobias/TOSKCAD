@@ -786,7 +786,7 @@ impl Compiler {
                 (model::STAIR_TYPE, 1) => {
                     crate::levels::build_stair(document, context.parameters(), id, self.policy)?
                 }
-                (model::PANEL_TYPE, model::PANEL_SCHEMA) => {
+                (model::PANEL_TYPE, model::PANEL_SCHEMA | model::RECIPE_PANEL_SCHEMA) => {
                     let (solid, frame) = crate::cabinetry::build(
                         document,
                         context.parameters(),

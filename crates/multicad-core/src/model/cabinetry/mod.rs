@@ -18,6 +18,7 @@ mod machining;
 mod prepare;
 mod resolve;
 mod tenon;
+mod wood_box;
 pub use cabinet::*;
 pub use collision::check_cabinet_connections;
 pub use dowel::*;
@@ -26,6 +27,7 @@ pub use machining::*;
 pub use prepare::*;
 pub use resolve::*;
 pub use tenon::*;
+pub use wood_box::*;
 
 use super::{
     common::parameter_links,
@@ -155,6 +157,8 @@ pub enum PanelSource {
     },
     /// One panel of a carcass. Stock, grain and banding follow the carcass.
     Carcass { carcass: EntityId, role: PanelRole },
+    /// An attributable face of a six-face Wood Box recipe.
+    WoodBox { recipe: EntityId, face: WoodBoxFace },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -318,6 +322,11 @@ impl PanelDefinition {
                     ));
                 }
             }
+            PanelSource::WoodBox { recipe, .. } => {
+                if recipe.is_nil() {
+                    return Err(invalid("A Wood Box panel needs its recipe"));
+                }
+            }
             PanelSource::Rectangle { .. } => {}
         }
         for d in self.dimensions() {
@@ -345,11 +354,29 @@ impl PanelDefinition {
     }
     pub fn definition(&self) -> Result<Definition, DocumentError> {
         self.validate()?;
-        definition(PANEL_TYPE, self)
+        let mut definition = definition(PANEL_TYPE, self)?;
+        if matches!(self.source, PanelSource::WoodBox { .. }) {
+            definition.schema_version = RECIPE_PANEL_SCHEMA;
+        }
+        Ok(definition)
     }
     pub fn from_definition(d: &Definition) -> Result<Self, DocumentError> {
-        let value: Self = parse(d, PANEL_TYPE)?;
+        if d.type_id != PANEL_TYPE
+            || ![PANEL_SCHEMA, RECIPE_PANEL_SCHEMA].contains(&d.schema_version)
+        {
+            return Err(invalid("Unsupported panel source/schema"));
+        }
+        let value: Self =
+            serde_json::from_value(d.data.clone()).map_err(|e| invalid(e.to_string()))?;
         value.validate()?;
+        let expected = if matches!(value.source, PanelSource::WoodBox { .. }) {
+            RECIPE_PANEL_SCHEMA
+        } else {
+            PANEL_SCHEMA
+        };
+        if d.schema_version != expected {
+            return Err(invalid("Panel source does not match its schema version"));
+        }
         Ok(value)
     }
     pub fn inputs(&self) -> Vec<Link> {
@@ -361,6 +388,7 @@ impl PanelDefinition {
                 links.push(Link::new(profile.sketch, "profile"));
             }
             PanelSource::Carcass { carcass, .. } => links.push(Link::new(*carcass, "carcass")),
+            PanelSource::WoodBox { recipe, .. } => links.push(Link::new(*recipe, "wood_box")),
         }
         links
     }
@@ -611,6 +639,25 @@ pub fn carcass_panels(
     Ok(out)
 }
 pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError> {
+    let mut box_ids = BTreeSet::new();
+    for entity in wood_boxes(document) {
+        let source = read_wood_box(document, entity.id)?;
+        for id in std::iter::once(entity.id)
+            .chain(std::iter::once(source.group))
+            .chain(
+                source
+                    .panels
+                    .values()
+                    .flat_map(|panel| [panel.body, panel.feature]),
+            )
+        {
+            if !box_ids.insert(id) {
+                return Err(invalid(
+                    "Wood Box recipes claim the same generated identity; repair their ownership",
+                ));
+            }
+        }
+    }
     for e in carcasses(document) {
         read_carcass(document, e.id)?;
     }

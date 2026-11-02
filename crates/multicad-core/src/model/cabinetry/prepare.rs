@@ -21,7 +21,7 @@ fn check_name(name: &str, what: &str) -> Result<(), CommandError> {
 }
 /// Feature, Part and manufacturing properties of one new panel. The Part
 /// takes the stock's material and records the stock assignment.
-fn panel_entities(
+pub(super) fn panel_entities(
     document: &Document,
     output: &CreatedBody,
     name: &str,
@@ -68,7 +68,7 @@ fn panel_entities(
 }
 /// Point an existing panel Part at new stock: its material and stock
 /// assignment follow, other properties are kept.
-fn restock(
+pub(super) fn restock(
     document: &Document,
     part: EntityId,
     stock: EntityId,
@@ -97,7 +97,7 @@ fn restock(
     }
     Ok(edits)
 }
-fn remove_panel(
+pub(super) fn remove_panel(
     document: &Document,
     feature: EntityId,
     body: EntityId,
@@ -406,12 +406,15 @@ impl PanelRequest {
         }
     }
 }
-fn panel_stock(panel: &PanelDefinition) -> Result<EntityId, CommandError> {
+fn panel_stock(document: &Document, panel: &PanelDefinition) -> Result<EntityId, CommandError> {
     match &panel.source {
         PanelSource::Rectangle { stock, .. } | PanelSource::Profile { stock, .. } => Ok(*stock),
         PanelSource::Carcass { .. } => Err(error(
             "Carcass panels are created and changed through their carcass",
         )),
+        PanelSource::WoodBox { recipe, .. } => {
+            Ok(read_wood_box_definition(document, *recipe)?.stock)
+        }
     }
 }
 /// Create a rectangle or sketch-region panel Part from panel stock.
@@ -426,8 +429,11 @@ pub fn prepare_panel(
     if request.panel.output.body != request.body {
         return Err(error("Panel output must name the requested Part"));
     }
-    let stock = panel_stock(&request.panel)?;
     let document = session.document();
+    if matches!(request.panel.source, PanelSource::WoodBox { .. }) {
+        return Err(error("Create generated Wood Box panels through the recipe"));
+    }
+    let stock = panel_stock(document, &request.panel)?;
     resolve_panel(document, session.parameters(), &request.panel)?;
     let output = CreatedBody {
         feature: request.feature,
@@ -460,8 +466,13 @@ pub fn prepare_panel_edit(
     if previous.output != panel.output {
         return Err(error("A panel edit keeps its output Part"));
     }
-    panel_stock(&previous)?;
-    let stock = panel_stock(panel)?;
+    if matches!(previous.source, PanelSource::WoodBox { .. }) && previous.source != panel.source {
+        return Err(error(
+            "A generated Wood Box panel must retain its recipe and face; repair ownership explicitly",
+        ));
+    }
+    panel_stock(document, &previous)?;
+    let stock = panel_stock(document, panel)?;
     resolve_panel(document, session.parameters(), panel)?;
     let mut entity = document
         .get(feature)
@@ -473,7 +484,7 @@ pub fn prepare_panel_edit(
         suppressed: false,
     };
     let mut edits = vec![Mutation::Replace(entity)];
-    if panel_stock(&previous)? != stock {
+    if panel_stock(document, &previous)? != stock {
         edits.extend(restock(document, panel.output.body, stock)?);
     }
     let prepared = session.prepare(Request {

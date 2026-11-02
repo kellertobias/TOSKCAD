@@ -363,6 +363,9 @@ impl CabinetPanel {
                     form.oversize = of(o, "mm")?;
                 }
             }
+            PanelSource::WoodBox { .. } => {
+                return Err("Open the Wood Box recipe to edit this generated face".into());
+            }
             PanelSource::Profile { .. } => {
                 return Err("Sketch-region panels are edited through the MCP API for now".into());
             }

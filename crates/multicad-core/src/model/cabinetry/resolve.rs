@@ -174,6 +174,22 @@ pub fn resolve_panel(
                 rp.grain,
             )
         }
+        PanelSource::WoodBox { recipe, face } => {
+            let source = read_wood_box(document, *recipe)?;
+            let layout = resolve_wood_box(document, parameters, &source)?;
+            let member = layout
+                .panels
+                .into_iter()
+                .find(|panel| panel.face == *face)
+                .ok_or_else(|| {
+                    invalid("The Wood Box no longer contains this face; repair its source")
+                })?;
+            (
+                PanelShape::Box(member.panel),
+                (source.stock, read_panel_stock(document, source.stock)?),
+                panel.grain,
+            )
+        }
     };
     Ok(ResolvedPanel {
         shape,
