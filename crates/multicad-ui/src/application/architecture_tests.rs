@@ -192,6 +192,76 @@ fn planting_entry_from_upper_plan_explicitly_selects_world_without_reassigning_s
     }
 }
 struct Memory;
+#[test]
+fn pending_model_keeps_its_level_when_the_user_views_another_floor() {
+    let (session, levels, _, _) = crate::architecture_view::tests::building();
+    let source = session.document().clone();
+    let mut app = app();
+    *app.current_mut() = Project::new(source.clone()).unwrap();
+    app.set_model_backends(std::sync::Arc::new(|| {
+        Box::new(crate::modeling::native_fixture::NativeBackend::new())
+    }));
+    app.tab = app
+        .registry
+        .workspace(Mode::Model)
+        .tabs
+        .iter()
+        .position(|tab| tab.title == "Architecture")
+        .unwrap();
+    app.current_mut()
+        .sketch
+        .restore_architecture_view(crate::architecture_view::Recall {
+            plan: true,
+            level: Some(levels[0]),
+        });
+    let ctx = context(1.);
+    let size = egui::vec2(1100., 700.);
+    paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+    app.invoke(Command::Modeling(ModelingTool::Wall), &[], Channel::Ui)
+        .unwrap();
+    let out = paint(&mut app, &ctx, size, vec![]);
+    click(
+        &mut app,
+        &ctx,
+        size,
+        bounds(&out, "Upper · 3000 mm").center(),
+    )
+    .drop_without_applying_deltas();
+    assert_eq!(
+        app.current().sketch.architecture_recall().level,
+        Some(levels[1])
+    );
+    assert_eq!(app.current().sketch.camera.target[2], 3000.);
+    assert!(app.current().sketch.model_active());
+    assert_eq!(app.current().session.document(), &source);
+    app.invoke(Command::Preview, &[], Channel::Ui).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !app
+        .current()
+        .sketch
+        .model_can_apply(&app.current().session, &app.current().resources)
+    {
+        paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native wall preview timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(app.current().session.document(), &source);
+    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    let wall = multicad_core::model::walls(app.current().session.document())
+        .next()
+        .unwrap();
+    assert_eq!(
+        multicad_core::model::read_wall(app.current().session.document(), wall.id)
+            .unwrap()
+            .level,
+        Some(levels[0])
+    );
+    app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
+    assert_eq!(app.current().session.document(), &source);
+}
 impl DocumentStorage for Memory {
     fn save(&mut self, _: &std::path::Path, _: &Document) -> Result<(), String> {
         Err("read-only test".into())

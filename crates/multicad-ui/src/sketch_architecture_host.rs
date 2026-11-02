@@ -92,6 +92,8 @@ impl SketchEditor {
             ui.label(format!("Object · {}", member.kind));
         }
         let can_change = !self.has_pending_edits() && !self.measurement.active();
+        let can_view =
+            (!self.has_pending_edits() || self.model.active()) && !self.measurement.active();
         let mut active = self.architecture.recall.level;
         let mut selected = None;
         let mut edit = false;
@@ -126,7 +128,7 @@ impl SketchEditor {
                             |value| format!("{value:.0} mm"),
                         );
                         let response = ui.add_enabled(
-                            can_change,
+                            can_view,
                             egui::Button::selectable(
                                 active == level.id,
                                 format!("{} · {elevation}", level.name),

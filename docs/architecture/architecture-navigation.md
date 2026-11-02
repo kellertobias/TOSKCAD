@@ -82,6 +82,11 @@ entering Architecture, keeping the host visible in a recalled plan view. Inside
 Architecture, the selected active level
 remains authoritative for new opening forms.
 
+Level buttons remain available while a modeling form is open. They change the
+visible floor without reassigning that form or any saved objects; the form's
+level field remains its placement authority. New/Edit level and member selection
+stay guarded until the pending operation is applied or canceled.
+
 Saved doors and windows expose Pick location in viewport as well as their numeric
 controls. A graphical move retains the opening identity and type within its
 existing wall. Picks on another wall are refused; removal mode disables picking.
