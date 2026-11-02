@@ -179,6 +179,9 @@ impl ModelToolController {
         matches.next().is_none().then_some(first)
     }
     pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
+        if multicad_core::model::wood_box_owner(document, feature).is_some() {
+            return true;
+        }
         if multicad_core::model::compound_cutout_source(document, feature).is_some() {
             return true;
         }
@@ -231,6 +234,15 @@ impl ModelToolController {
         if !Self::editable(document, feature) {
             return Err(
                 "Choose a supported, unsuppressed applied feature or owned placement driver".into(),
+            );
+        }
+        if let Some(source) = model::wood_box_owner(document, feature) {
+            let panel = super::wood_box::WoodBoxPanel::existing(document, source)?;
+            return self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::WoodBox(Box::new(panel)),
             );
         }
         if let Some(source) = model::compound_cutout_source(document, feature) {
@@ -829,7 +841,12 @@ impl ModelToolController {
     /// A wall or slab outline is shown and edited on the plan.
     pub fn outline_active(&self) -> bool {
         match &self.form {
-            Some(ModelForm::Wall(_) | ModelForm::Fence(_) | ModelForm::CompoundCutout(_)) => true,
+            Some(
+                ModelForm::Wall(_)
+                | ModelForm::Fence(_)
+                | ModelForm::CompoundCutout(_)
+                | ModelForm::WoodBox(_),
+            ) => true,
             Some(ModelForm::Architecture(panel)) => panel.outlines(),
             _ => false,
         }
@@ -846,6 +863,7 @@ impl ModelToolController {
                 panel.viewport(document, revision, view)
             }
             Some(ModelForm::Fence(panel)) => panel.viewport(session, view),
+            Some(ModelForm::WoodBox(panel)) => panel.viewport(session, view),
             Some(ModelForm::CompoundCutout(panel)) => {
                 panel.viewport(document, session.parameters(), view)
             }
@@ -966,6 +984,23 @@ impl ModelToolController {
                 session.document(),
                 name,
             ))),
+        )
+    }
+    pub fn begin_wood_box(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let name = GeneratedNames::new(session.document()).numbered("Wood Box", "");
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::WoodBox(Box::new(super::wood_box::WoodBoxPanel::new(
+                session.document(),
+                name,
+            )?)),
         )
     }
     pub fn begin_panel(
@@ -1593,6 +1628,18 @@ impl ModelToolController {
             Execution::Create => {
                 let prepared = request.prepare(session, Actor::local(channel))?;
                 let proof = match request {
+                    ModelRequest::WoodBox(_) => {
+                        let removed = session
+                            .document()
+                            .entities()
+                            .filter_map(|entity| {
+                                (matches!(entity.data, EntityData::Part { .. })
+                                    && prepared.prepared.document().get(entity.id).is_none())
+                                .then_some(entity.id)
+                            })
+                            .collect();
+                        SceneProof::edited(prepared.outputs.clone(), &[], removed)
+                    }
                     ModelRequest::CompoundCutout(_) => {
                         SceneProof::edited(prepared.outputs.clone(), &[], vec![])
                     }
@@ -1690,6 +1737,7 @@ impl ModelToolController {
                     | ModelRequest::GearPair(_)
                     | ModelRequest::MechanicalPart(_)
                     | ModelRequest::CompoundCutout(_)
+                    | ModelRequest::WoodBox(_)
             ) || !matches!(execution, Execution::Create),
             aid: match request {
                 ModelRequest::FdmAid(command) => Some(command.request.feature),
@@ -2043,6 +2091,9 @@ impl ModelToolController {
         if let Some(ModelForm::Wall(panel)) = self.form.as_mut() {
             panel.sync_source(session);
         }
+        if let Some(ModelForm::WoodBox(panel)) = self.form.as_mut() {
+            panel.sync_source(session);
+        }
         if let Some(ModelForm::CompoundCutout(panel)) = self.form.as_mut() {
             panel.sync_source(session);
         }
@@ -2120,6 +2171,8 @@ mod sheet;
 mod termination;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wood_box_tests;
 
 #[cfg(test)]
 mod placement_tests;

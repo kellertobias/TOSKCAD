@@ -51,7 +51,7 @@ impl Application {
             )
         } else {
             match tool {
-                ModelingTool::Cabinet | ModelingTool::Panel => {
+                ModelingTool::Cabinet | ModelingTool::Panel | ModelingTool::WoodBox => {
                     if self.registry.workspace(Mode::Model).tabs[self.tab].title != "Architecture" {
                         return;
                     }

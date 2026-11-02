@@ -63,6 +63,7 @@ pub enum ModelRequest {
     SymbolConstruction(Box<crate::symbols::ArchitecturalSymbolCommand>),
     Opening(Box<OpeningCommand>),
     CompoundCutout(Box<model::CompoundCutoutChange>),
+    WoodBox(Box<model::WoodBoxChange>),
     Architecture(Box<ArchitectureCommand>),
     Cabinet(Box<CabinetCommand>),
     Joint(Box<JointCommand>),
@@ -275,6 +276,11 @@ impl ModelRequest {
                     .map_err(|e| e.to_string());
             }
             Self::Opening(command) => return command.prepare(session, actor),
+            Self::WoodBox(change) => {
+                return model::prepare_wood_box(session, session.revision(), actor, change)
+                    .map(|p| p.model)
+                    .map_err(|e| e.to_string());
+            }
             Self::CompoundCutout(change) => {
                 return model::prepare_compound_cutout(session, session.revision(), actor, change)
                     .map_err(|e| e.to_string());
@@ -448,6 +454,7 @@ pub(super) enum ModelForm {
     Fence(Box<FencePanel>),
     Opening(Box<OpeningPanel>),
     CompoundCutout(Box<super::compound_cutout::CompoundCutoutPanel>),
+    WoodBox(Box<super::wood_box::WoodBoxPanel>),
     Architecture(Box<ArchitecturePanel>),
     Cabinet(Box<CabinetPanel>),
     Joint(Box<JointPanel>),
@@ -480,6 +487,7 @@ impl ModelForm {
             Self::Fence(panel) => panel.stamp(),
             Self::Opening(panel) => panel.stamp(),
             Self::CompoundCutout(panel) => panel.stamp(),
+            Self::WoodBox(panel) => panel.stamp(),
             Self::Architecture(panel) => panel.stamp(),
             Self::Cabinet(panel) => panel.stamp(),
             Self::Joint(panel) => panel.stamp(),
@@ -512,6 +520,7 @@ impl ModelForm {
             Self::Fence(panel) => panel.label(),
             Self::Opening(panel) => panel.label(),
             Self::CompoundCutout(panel) => panel.label(),
+            Self::WoodBox(panel) => panel.label(),
             Self::Architecture(panel) => panel.label(),
             Self::Cabinet(panel) => panel.label(),
             Self::Joint(panel) => panel.label(),
@@ -543,6 +552,9 @@ impl ModelForm {
             Self::Opening(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Opening(Box::new(command))),
+            Self::WoodBox(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|change| ModelRequest::WoodBox(Box::new(change))),
             Self::CompoundCutout(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|change| ModelRequest::CompoundCutout(Box::new(change))),
@@ -656,6 +668,7 @@ impl ModelForm {
             Self::Fence(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Opening(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::CompoundCutout(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::WoodBox(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Joint(panel) => panel.show(ui, document, capabilities.new_body, preview),

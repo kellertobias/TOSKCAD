@@ -672,6 +672,16 @@ impl SketchEditor {
             .collect();
         (pairs.len() == 1).then(|| *pairs.first().expect("one pair"))
     }
+    fn selected_wood_box(&self, document: &Document) -> Option<EntityId> {
+        let recipes: std::collections::BTreeSet<_> = self
+            .tree_selection
+            .iter()
+            .copied()
+            .chain(self.solid.selected_ids())
+            .filter_map(|id| multicad_core::model::wood_box_owner(document, id))
+            .collect();
+        (recipes.len() == 1).then(|| *recipes.first().expect("one recipe"))
+    }
     fn selected_applied_feature(&self, document: &Document) -> Option<(EntityId, bool)> {
         if self.tree_selection.len() != 1 {
             return None;
@@ -1288,6 +1298,23 @@ impl SketchEditor {
             &refused,
             "click panel A and panel B in the viewport or choose the pairs in the Inspector",
         );
+        Ok(())
+    }
+    pub fn begin_wood_box(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Install native modeling and apply or cancel pending edits before adding a wood box".into());
+        }
+        self.finish()?;
+        self.model.begin_wood_box(session, resources, channel)?;
+        self.fit_requested = true;
+        self.message =
+            "Wood Box · choose stock, outside dimensions and individual faces; Preview and Apply"
+                .into();
         Ok(())
     }
     pub fn begin_cabinet(
@@ -3086,6 +3113,12 @@ impl SketchEditor {
                         if self.editing && let Some(id)=self.selected {
                             self.external_inspector(ui,session,id,resources);
                             if self.external.active(){return;}
+                        }
+                        if let Some(recipe)=self.selected_wood_box(session.document()) {
+                            let ready=self.feature_edit_ready(session,feed,recipe);
+                            if ui.add_enabled(ready,egui::Button::new("Edit wood box")).on_hover_text("Reopen the shared box recipe, dimensions, stock and optional faces").clicked()
+                                && let Err(error)=self.begin_feature_edit(session,resources,feed,recipe,Channel::Ui) {self.message=error;}
+                            if self.model_active() {return;}
                         }
                         if let Some(target)=self.selected_carcass(session.document()) {
                             let ready=self.feature_edit_ready(session,feed,target.feature);

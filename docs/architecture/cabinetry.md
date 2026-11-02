@@ -29,7 +29,7 @@ assignment then shows the changed-content review diagnostic from
 
 A **panel** is a `cabinetry.panel` feature with one output Part. A new panel
 Part gets the stock's Material and a manufacturing-properties record of its
-stock. The panel has one of three sources:
+stock. The panel has one of four sources:
 
 - **Rectangle.** A length (u) and width (v) on the XY, XZ or YZ plane, with
   its minimum corner at a world origin. The thickness runs along u × v: up,
@@ -37,6 +37,7 @@ stock. The panel has one of three sources:
 - **Sketch region.** A solved sketch region, extruded by the stock thickness
   along the sketch normal.
 - **Carcass role.** One panel of a carcass, described below.
+- **Wood Box face.** One of six optional faces of a canonical box recipe.
 
 Each panel also records these values. Every dimension can be a parameter
 expression.
@@ -45,7 +46,7 @@ expression.
   the grain. A free grain lets either orientation be cut.
 - **Edge banding.** Each of the four rectangle edges can carry a band, with
   a thickness and an allowance. Banding is supported on rectangle and
-  carcass panels only.
+  carcass and Wood Box panels only.
 - **Oversize.** Extra core material added to both cut dimensions.
 
 The four edge faces of a rectangular panel carry the provenance roles
@@ -70,6 +71,54 @@ Its core is 800 × 401 mm.
 A core fits the stock when it fits on one sheet. When both the panel grain
 and the stock grain are set, the along-grain size must run along the stock
 grain.
+
+## Wood boxes
+
+Model → Wood → Box opens a six-face assistant, initially an open-top five-panel
+box. Choose shared panel stock (including its thickness and material), outside
+width/depth/height and any nonempty subset of Left, Right, Front, Back, Bottom
+and Top. The labeled projection resolves the same recipe used by native Preview.
+Apply requires that exact successful preview; Cancel leaves the source unchanged.
+
+Outside dimensions are the design envelope. Usable inner dimensions subtract
+stock thickness for each present opposing face. Actual world bounds are the
+bounds of the generated panels; a single bottom panel has only stock thickness
+in Z even when the envelope is taller. The inspector and MCP distinguish these.
+Sides span full depth/height, front/back fit between sides, and top/bottom fit
+between the vertical faces. This butt policy avoids overlapping corner material.
+
+The `cabinetry.wood_box` extension stores dimensions, placement, shared stock,
+face presence, a group and reserved feature/Part identities for all six faces.
+Generated ordinary panels use schema 2 with `PanelSource::WoodBox`; existing
+rectangle/profile/carcass panels keep schema 1. Files require the
+`cabinetry.wood_box.1` and `cabinetry.panel.2` capabilities. See
+[ADR-0032](0032-editable-wood-box-panels.md) for the ownership contract.
+
+Reopening a recipe, its group or a generated panel returns to the box assistant.
+Retained faces keep their identities and downstream history. Dimension and stock
+changes rebuild that history. Omission of a referenced face, or a resize that
+invalidates a downstream operation, requires repair and leaves the document
+unchanged. Grain, edge banding and oversize remain ordinary panel data.
+
+The typed MCP tools are `preview_wood_box`, `set_wood_box`, `inspect_wood_box`
+and `remove_wood_box`. Preview and Set require `expected_revision`, `name`,
+`stock`, unit-bearing `width`, `depth`, `height`, and a nonempty `faces` list
+using lowercase face names. Optional `origin` is three unit-bearing lengths;
+`rotation` is an angle. An existing `recipe` retains omitted placement fields.
+For new creation, reuse Preview's `recipe` and `box.identities` on Set to keep
+the exact proposed UUIDs. Identities contain a `group` and six `panels` records
+with `face`, `feature` and `part`; missing, duplicate or changed reserved IDs
+are refused. Inspect accepts an optional recipe; omission lists all recipes.
+Remove requires the recipe and expected revision.
+
+Preview/Set return `revision`, `committed`, `recipe`, `box`, `panels` and
+`native_geometry_checked`. The box includes its canonical `definition`,
+`identities`, `outside_mm`, `usable_inner_mm`, `clear_origin_mm`,
+`actual_world_bounds_mm`, `thickness_mm` and corner policy. Panel records include
+face, identities, native final volume and solid count, including downstream cuts.
+Removal returns a null box and no panels. Preview is audited as previewed and
+has no committed revision. Stale revisions, cancellation, invalid stock/sizes,
+empty or duplicate faces and dependency conflicts commit nothing.
 
 ## Carcasses
 

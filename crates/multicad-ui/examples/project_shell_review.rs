@@ -75,11 +75,18 @@ enum Review {
     Architecture(Option<Category>),
     ArchitecturePlan,
     CompoundCutout(bool),
+    WoodBox(bool),
 }
 impl Review {
     fn name(self) -> String {
         match self {
             Self::Project => "project".into(),
+            Self::WoodBox(omitted) => if omitted {
+                "wood-box-omitted-side"
+            } else {
+                "wood-box-open-top"
+            }
+            .into(),
             Self::Architecture(None) => "architecture-root".into(),
             Self::ArchitecturePlan => "architecture-plan".into(),
             Self::CompoundCutout(plan) => if plan {
@@ -153,7 +160,10 @@ fn render(
     app.set_library_store(Box::new(ReadOnly));
     let architecture = matches!(
         review,
-        Review::Architecture(_) | Review::ArchitecturePlan | Review::CompoundCutout(_)
+        Review::Architecture(_)
+            | Review::ArchitecturePlan
+            | Review::CompoundCutout(_)
+            | Review::WoodBox(_)
     );
     if architecture {
         app.mode = Mode::Model;
@@ -163,6 +173,7 @@ fn render(
     let source_hash = project_file::ContentHash::document(app.current().session.document())?;
     let mut routes: std::collections::VecDeque<_> = match review {
         Review::Project => [].into_iter().collect(),
+        Review::WoodBox(_) => ["Wood"].into_iter().collect(),
         Review::Architecture(None) => ["Architecture"].into_iter().collect(),
         Review::ArchitecturePlan | Review::CompoundCutout(true) => {
             ["Architecture", "2D plan"].into_iter().collect()
@@ -178,8 +189,9 @@ fn render(
     let mut fitted_at = None;
     let mut stable = 0;
     let mut initial_scene = None;
-    let mut compound_opened = false;
-    let mut compound_preview_requested = false;
+    let mut wood_face_omitted = false;
+    let mut tool_opened = false;
+    let mut tool_preview_requested = false;
     let started = Instant::now();
     let context = egui::Context::default();
     multicad_ui::theme::configure(&context);
@@ -248,7 +260,7 @@ fn render(
             .expect("root viewport")
             .native_pixels_per_point = Some(density);
         let mut output = context.run_ui(input, |ui| app.show(ui));
-        if compound_opened && stable >= 2 {
+        if tool_opened && matches!(review, Review::CompoundCutout(_)) && stable >= 2 {
             let check = || -> Result<(), Error> {
                 let (callback_index, viewport) = output
                     .shapes
@@ -315,6 +327,81 @@ fn render(
                 return Err(error);
             }
         }
+        if tool_opened && matches!(review, Review::WoodBox(_)) && stable >= 2 {
+            for label in [
+                "Left", "Right", "Front", "Back", "Bottom", "Top", "Preview", "Apply", "Cancel",
+            ] {
+                let visible = output.shapes.iter().any(|shape| {
+                    if let egui::epaint::Shape::Text(text) = &shape.shape {
+                        let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                        text.galley.job.text == label
+                            && shape.clip_rect.contains(bounds.min)
+                            && shape.clip_rect.contains(bounds.max)
+                    } else {
+                        false
+                    }
+                });
+                if !visible {
+                    output.textures_delta.clear();
+                    return Err(format!("Wood Box control clipped: {label}").into());
+                }
+            }
+        }
+        if tool_opened && matches!(review, Review::WoodBox(_)) && stable >= 2 {
+            let check = || -> Result<(), Error> {
+                let (callback_index, viewport) = output
+                    .shapes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, shape)| {
+                        if let egui::epaint::Shape::Callback(callback) = &shape.shape {
+                            Some((i, callback.rect))
+                        } else {
+                            None
+                        }
+                    })
+                    .max_by(|a, b| a.1.area().total_cmp(&b.1.area()))
+                    .ok_or("Missing Wood Box native callback")?;
+                let mut occupied: Vec<egui::Rect> = vec![];
+                let left = if matches!(review, Review::WoodBox(true)) {
+                    "Left (off)"
+                } else {
+                    "Left"
+                };
+                for label in [left, "Right", "Front", "Back", "Bottom", "Top (off)"] {
+                    let (index, bounds) = output
+                        .shapes
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, shape)| {
+                            if let egui::epaint::Shape::Text(text) = &shape.shape {
+                                (text.galley.job.text == label && viewport.contains(text.pos)).then(
+                                    || (i, egui::Rect::from_min_size(text.pos, text.galley.size())),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or_else(|| format!("Missing native Wood Box label {label}"))?;
+                    if index <= callback_index
+                        || !viewport.contains(bounds.min)
+                        || !viewport.contains(bounds.max)
+                        || occupied.iter().any(|other| other.intersects(bounds))
+                    {
+                        return Err(format!(
+                            "Clipped, overlapping or obscured Wood Box label {label}"
+                        )
+                        .into());
+                    }
+                    occupied.push(bounds);
+                }
+                Ok(())
+            };
+            if let Err(error) = check() {
+                output.textures_delta.clear();
+                return Err(error);
+            }
+        }
         let ready = !architecture
             || app.current().scene.is_current(
                 app.current().session.document().id(),
@@ -345,11 +432,20 @@ fn render(
                 };
                 events = pointer(pos, true);
                 release = Some(pos);
-            } else if matches!(review, Review::CompoundCutout(_)) && !compound_opened {
-                let source = multicad_core::model::compound_cutouts(&file.document)
-                    .next()
-                    .ok_or("Project has no compound Cutout")?
-                    .id;
+            } else if matches!(review, Review::CompoundCutout(_) | Review::WoodBox(_))
+                && !tool_opened
+            {
+                let source = if matches!(review, Review::WoodBox(_)) {
+                    multicad_core::model::wood_boxes(&file.document)
+                        .next()
+                        .ok_or("Project has no Wood Box")?
+                        .id
+                } else {
+                    multicad_core::model::compound_cutouts(&file.document)
+                        .next()
+                        .ok_or("Project has no compound Cutout")?
+                        .id
+                };
                 let active = app.current_mut();
                 active.sketch.begin_feature_edit(
                     &active.session,
@@ -359,18 +455,25 @@ fn render(
                     multicad_core::commands::Channel::Ui,
                 )?;
                 active.sketch.request_fit();
-                compound_opened = true;
+                tool_opened = true;
                 fitted_at = Some(Instant::now());
-            } else if matches!(review, Review::CompoundCutout(_)) && !compound_preview_requested {
+            } else if matches!(review, Review::WoodBox(true)) && !wood_face_omitted {
+                let pos = control(&output, "Left")?;
+                events = pointer(pos, true);
+                release = Some(pos);
+                wood_face_omitted = true;
+            } else if matches!(review, Review::CompoundCutout(_) | Review::WoodBox(_))
+                && !tool_preview_requested
+            {
                 let pos = control(&output, "Preview")?;
                 events = pointer(pos, true);
                 release = Some(pos);
-                compound_preview_requested = true;
+                tool_preview_requested = true;
             } else {
                 if stable == 0 {
                     events = vec![egui::Event::PointerGone];
                 }
-                if !matches!(review, Review::CompoundCutout(_))
+                if !matches!(review, Review::CompoundCutout(_) | Review::WoodBox(_))
                     || app
                         .current()
                         .sketch
@@ -501,9 +604,10 @@ fn main() -> Result<(), Error> {
         Some(arg) if arg == "--architecture" => 1,
         Some(arg) if arg == "--architecture-views" => 2,
         Some(arg) if arg == "--compound-cutout" => 3,
+        Some(arg) if arg == "--wood-box" => 4,
         _ => {
             return Err(
-                "Expected optional --architecture, --architecture-views or --compound-cutout"
+                "Expected optional --architecture, --architecture-views, --compound-cutout or --wood-box"
                     .into(),
             );
         }
@@ -530,6 +634,8 @@ fn main() -> Result<(), Error> {
         vec![Review::Architecture(None), Review::ArchitecturePlan]
     } else if review_mode == 3 {
         vec![Review::CompoundCutout(false), Review::CompoundCutout(true)]
+    } else if review_mode == 4 {
+        vec![Review::WoodBox(false), Review::WoodBox(true)]
     } else {
         vec![Review::Project]
     };

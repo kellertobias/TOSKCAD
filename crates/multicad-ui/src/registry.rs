@@ -138,7 +138,7 @@ pub struct Registry {
 }
 fn command_home(command: Command) -> Option<(Mode, &'static str)> {
     match command {
-        Command::Modeling(ModelingTool::Panel | ModelingTool::Cabinet) => {
+        Command::Modeling(ModelingTool::Panel | ModelingTool::Cabinet | ModelingTool::WoodBox) => {
             Some((Mode::Model, "Wood"))
         }
         Command::EquipmentPreset(_)
@@ -574,6 +574,7 @@ impl Default for Registry {
                                         | ModelingTool::Equipment
                                         | ModelingTool::Panel
                                         | ModelingTool::Cabinet
+                                        | ModelingTool::WoodBox
                                         | ModelingTool::Joint
                                         | ModelingTool::Machining
                                         | ModelingTool::ShelfPins
@@ -599,7 +600,8 @@ impl Default for Registry {
                     tab(
                         "Wood",
                         &[
-                            "cabinet", "panel", "drill", "system32", "joint", "domino", "cut-list",
+                            "wood-box", "cabinet", "panel", "drill", "system32", "joint", "domino",
+                            "cut-list",
                         ],
                     ),
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
@@ -1142,6 +1144,7 @@ mod tests {
                         | ModelingTool::Equipment
                         | ModelingTool::Panel
                         | ModelingTool::Cabinet
+                        | ModelingTool::WoodBox
                         | ModelingTool::Joint
                         | ModelingTool::Machining
                         | ModelingTool::ShelfPins
@@ -1205,6 +1208,7 @@ mod tests {
                 tool,
                 ModelingTool::Panel
                     | ModelingTool::Cabinet
+                    | ModelingTool::WoodBox
                     | ModelingTool::Joint
                     | ModelingTool::Machining
                     | ModelingTool::ShelfPins

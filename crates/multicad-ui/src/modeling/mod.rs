@@ -17,6 +17,7 @@ mod extrude;
 mod extrude_operation;
 mod fdm_aid;
 mod fence;
+mod wood_box;
 pub(crate) use fence::fence_target;
 mod form;
 mod gear;
@@ -102,6 +103,7 @@ pub enum ModelingTool {
     Plant,
     Equipment,
     Cabinet,
+    WoodBox,
     Panel,
     Joint,
     Machining,
@@ -115,7 +117,7 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
@@ -131,6 +133,7 @@ impl ModelingTool {
         Self::Plant,
         Self::Equipment,
         Self::Cabinet,
+        Self::WoodBox,
         Self::Panel,
         Self::Joint,
         Self::Machining,
@@ -189,6 +192,7 @@ impl ModelingTool {
             Self::Stair => "stairs",
             Self::Plant => "plant",
             Self::Equipment => "equipment",
+            Self::WoodBox => "wood-box",
             Self::Cabinet => "cabinet",
             Self::Panel => "panel",
             Self::Joint => "joint",
@@ -236,6 +240,7 @@ impl ModelingTool {
             Self::Stair => "Stairs",
             Self::Plant => "Planting",
             Self::Equipment => "Equipment",
+            Self::WoodBox => "Box",
             Self::Cabinet => "Add Cabinet",
             Self::Panel => "Panel",
             Self::Joint => "Panel joint",
@@ -282,7 +287,7 @@ impl ModelingTool {
             Self::Stair => crate::icons::Icon::Stairs,
             Self::Plant => crate::icons::Icon::Plant,
             Self::Equipment => crate::icons::Icon::Box,
-            Self::Panel | Self::Cabinet => crate::icons::Icon::Box,
+            Self::Panel | Self::Cabinet | Self::WoodBox => crate::icons::Icon::Box,
             Self::Joint | Self::LooseTenon => crate::icons::Icon::Link,
             Self::Machining | Self::ShelfPins => crate::icons::Icon::Cut,
             Self::FdmAid => crate::icons::Icon::Edge,
@@ -326,6 +331,7 @@ impl ModelingTool {
             Self::Stair => &["stair", "staircase"],
             Self::Plant => &["tree", "shrub", "landscape", "garden"],
             Self::Equipment => &["sanitary", "appliance"],
+            Self::WoodBox => &["wood box", "drawer box", "six-face box"],
             Self::Cabinet => &["carcass", "shelf", "add cabinet", "cabinet generator"],
             Self::Panel => &["board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
@@ -414,6 +420,9 @@ impl ModelingTool {
             }
             Self::Panel => {
                 "Usage: panel (build a carcass from an envelope or place a rectangular panel from panel stock in the Inspector, then Preview and Apply)"
+            }
+            Self::WoodBox => {
+                "Usage: wood-box (choose panel stock, outside dimensions and individual faces; Preview and Apply)"
             }
             Self::Cabinet => {
                 "Usage: cabinet (set outside width, floor-to-top height, depth and toe clearance, then add individual shelves and choose fixed joinery or System 32 support; Preview and Apply)"
@@ -513,7 +522,7 @@ impl ModelingTool {
             Self::Member => {
                 "Requires native modeling, profile stock defined in Model → Materials and no pending edits. Members follow straight sketch lines or point pairs."
             }
-            Self::Panel | Self::Cabinet => {
+            Self::Panel | Self::Cabinet | Self::WoodBox => {
                 "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."
             }
             Self::Sheet => {
