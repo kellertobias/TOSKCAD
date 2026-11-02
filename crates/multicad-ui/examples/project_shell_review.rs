@@ -76,11 +76,13 @@ enum Review {
     ArchitecturePlan,
     CompoundCutout(bool),
     WoodBox(bool),
+    FdmAid,
 }
 impl Review {
     fn name(self) -> String {
         match self {
             Self::Project => "project".into(),
+            Self::FdmAid => "fdm-aid".into(),
             Self::WoodBox(omitted) => if omitted {
                 "wood-box-omitted-side"
             } else {
@@ -164,6 +166,7 @@ fn render(
             | Review::ArchitecturePlan
             | Review::CompoundCutout(_)
             | Review::WoodBox(_)
+            | Review::FdmAid
     );
     if architecture {
         app.mode = Mode::Model;
@@ -174,6 +177,7 @@ fn render(
     let mut routes: std::collections::VecDeque<_> = match review {
         Review::Project => [].into_iter().collect(),
         Review::WoodBox(_) => ["Wood"].into_iter().collect(),
+        Review::FdmAid => ["Other"].into_iter().collect(),
         Review::Architecture(None) => ["Architecture"].into_iter().collect(),
         Review::ArchitecturePlan | Review::CompoundCutout(true) => {
             ["Architecture", "2D plan"].into_iter().collect()
@@ -402,6 +406,65 @@ fn render(
                 return Err(error);
             }
         }
+        if tool_opened && matches!(review, Review::FdmAid) && stable >= 2 {
+            let check = || -> Result<(), Error> {
+                let (callback_index, viewport) = output
+                    .shapes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, shape)| {
+                        if let egui::epaint::Shape::Callback(callback) = &shape.shape {
+                            Some((index, callback.rect))
+                        } else {
+                            None
+                        }
+                    })
+                    .max_by(|a, b| a.1.area().total_cmp(&b.1.area()))
+                    .ok_or("Missing FDM native callback")?;
+                for prefix in ["Tab ·", "Bridge ·", "Support ·", "Native bounds:"] {
+                    let expected = prefix == "Native bounds:"
+                        || file.document.entities().any(|entity| {
+                            multicad_core::model::read_aid(&file.document, entity.id).is_ok_and(
+                                |aid| match aid.shape.kind() {
+                                    multicad_core::model::AidKind::Tab => prefix == "Tab ·",
+                                    multicad_core::model::AidKind::Bridge => prefix == "Bridge ·",
+                                    multicad_core::model::AidKind::Support => prefix == "Support ·",
+                                },
+                            )
+                        });
+                    if !expected {
+                        continue;
+                    }
+                    let found = output.shapes.iter().enumerate().any(|(index, shape)| {
+                        if let egui::epaint::Shape::Text(text) = &shape.shape {
+                            let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                            index > callback_index
+                                && text.galley.job.text.starts_with(prefix)
+                                && viewport.contains(bounds.min)
+                                && viewport.contains(bounds.max)
+                        } else {
+                            false
+                        }
+                    });
+                    if !found {
+                        return Err(
+                            format!("Missing, clipped or obscured FDM guide {prefix}").into()
+                        );
+                    }
+                }
+                for label in ["Tab", "Bridge", "Support", "Preview", "Apply", "Cancel"] {
+                    let center = control(&output, label)?;
+                    if center.y >= size[1] as f32 || center.y < 0. {
+                        return Err(format!("Clipped FDM control {label}").into());
+                    }
+                }
+                Ok(())
+            };
+            if let Err(error) = check() {
+                output.textures_delta.clear();
+                return Err(error);
+            }
+        }
         let ready = !architecture
             || app.current().scene.is_current(
                 app.current().session.document().id(),
@@ -432,10 +495,20 @@ fn render(
                 };
                 events = pointer(pos, true);
                 release = Some(pos);
-            } else if matches!(review, Review::CompoundCutout(_) | Review::WoodBox(_))
-                && !tool_opened
+            } else if matches!(
+                review,
+                Review::CompoundCutout(_) | Review::WoodBox(_) | Review::FdmAid
+            ) && !tool_opened
             {
-                let source = if matches!(review, Review::WoodBox(_)) {
+                let source = if matches!(review, Review::FdmAid) {
+                    file.document
+                        .entities()
+                        .find(|entity| {
+                            multicad_core::model::read_aid(&file.document, entity.id).is_ok()
+                        })
+                        .ok_or("Project has no FDM aid")?
+                        .id
+                } else if matches!(review, Review::WoodBox(_)) {
                     multicad_core::model::wood_boxes(&file.document)
                         .next()
                         .ok_or("Project has no Wood Box")?
@@ -462,8 +535,10 @@ fn render(
                 events = pointer(pos, true);
                 release = Some(pos);
                 wood_face_omitted = true;
-            } else if matches!(review, Review::CompoundCutout(_) | Review::WoodBox(_))
-                && !tool_preview_requested
+            } else if matches!(
+                review,
+                Review::CompoundCutout(_) | Review::WoodBox(_) | Review::FdmAid
+            ) && !tool_preview_requested
             {
                 let pos = control(&output, "Preview")?;
                 events = pointer(pos, true);
@@ -473,11 +548,13 @@ fn render(
                 if stable == 0 {
                     events = vec![egui::Event::PointerGone];
                 }
-                if !matches!(review, Review::CompoundCutout(_) | Review::WoodBox(_))
-                    || app
-                        .current()
-                        .sketch
-                        .model_can_apply(&app.current().session, &app.current().resources)
+                if !matches!(
+                    review,
+                    Review::CompoundCutout(_) | Review::WoodBox(_) | Review::FdmAid
+                ) || app
+                    .current()
+                    .sketch
+                    .model_can_apply(&app.current().session, &app.current().resources)
                 {
                     stable += 1;
                 } else {
@@ -605,9 +682,10 @@ fn main() -> Result<(), Error> {
         Some(arg) if arg == "--architecture-views" => 2,
         Some(arg) if arg == "--compound-cutout" => 3,
         Some(arg) if arg == "--wood-box" => 4,
+        Some(arg) if arg == "--fdm-aid" => 5,
         _ => {
             return Err(
-                "Expected optional --architecture, --architecture-views, --compound-cutout or --wood-box"
+                "Expected optional --architecture, --architecture-views, --compound-cutout, --wood-box or --fdm-aid"
                     .into(),
             );
         }
@@ -636,6 +714,8 @@ fn main() -> Result<(), Error> {
         vec![Review::CompoundCutout(false), Review::CompoundCutout(true)]
     } else if review_mode == 4 {
         vec![Review::WoodBox(false), Review::WoodBox(true)]
+    } else if review_mode == 5 {
+        vec![Review::FdmAid]
     } else {
         vec![Review::Project]
     };
