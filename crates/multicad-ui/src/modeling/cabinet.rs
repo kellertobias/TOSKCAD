@@ -1,6 +1,6 @@
 //! Cabinet inspector: build or edit a parametric carcass from an envelope, or
 //! place a rectangular panel from panel stock with grain, banding and
-//! oversize. Panel stock is defined in Model → Materials.
+//! oversize. Panel stock is defined in Project → Materials.
 use super::{
     FormStamp, PreviewState,
     cabinet_edit::{self, CabinetGuide},
@@ -397,7 +397,7 @@ impl CabinetPanel {
         }
         let stock = self
             .stock
-            .ok_or("Choose panel stock; define it in Model → Materials")?;
+            .ok_or("Choose panel stock; define it in Project → Materials")?;
         let origin = [
             self.origin[0].resolve(document)?,
             self.origin[1].resolve(document)?,
@@ -542,7 +542,7 @@ impl CabinetPanel {
         if stocks.is_empty() {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,
-                "No panel stock yet. Define panel stock in Model → Materials.",
+                "No panel stock yet. Define panel stock in Project → Materials.",
             );
         }
         ui.label(match self.kind {

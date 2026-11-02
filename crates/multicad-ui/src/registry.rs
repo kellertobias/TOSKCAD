@@ -140,12 +140,15 @@ pub struct Registry {
 pub fn canonical_workbench_title(mode: Mode, title: &str) -> &str {
     if mode == Mode::Model && matches!(title, "FDM" | "FDM aids") {
         "Other"
+    } else if mode == Mode::Parameters && title == "Parameters" {
+        "Common"
     } else {
         title
     }
 }
 fn command_home(command: Command) -> Option<(Mode, &'static str)> {
     match command {
+        Command::Extension("materials") => Some((Mode::Parameters, "Materials")),
         Command::Modeling(ModelingTool::Panel | ModelingTool::Cabinet | ModelingTool::WoodBox) => {
             Some((Mode::Model, "Wood"))
         }
@@ -514,7 +517,10 @@ impl Default for Registry {
         registry.workspaces = vec![
             Workspace {
                 mode: Mode::Parameters,
-                tabs: vec![tab("Common", &PROJECT_ACTIONS)],
+                tabs: vec![
+                    tab("Common", &PROJECT_ACTIONS),
+                    tab("Materials", &["materials"]),
+                ],
             },
             Workspace {
                 mode: Mode::Sketch,
@@ -637,7 +643,6 @@ impl Default for Registry {
                             "place-component",
                         ],
                     ),
-                    tab("Materials", &["materials"]),
                 ],
             },
             Workspace {

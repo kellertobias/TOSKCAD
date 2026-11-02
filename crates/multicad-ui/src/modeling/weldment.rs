@@ -1,6 +1,6 @@
 //! Weldment inspector: create tube and profile members from the solid lines
 //! of a sketch or from a point pair, or edit one member in place. Profile
-//! stock is defined in Model → Materials.
+//! stock is defined in Project → Materials.
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -299,7 +299,7 @@ impl WeldmentPanel {
         }
         let stock = self
             .stock
-            .ok_or("Choose profile stock; define it in Model → Materials")?;
+            .ok_or("Choose profile stock; define it in Project → Materials")?;
         let points = || -> Result<MemberPath, String> {
             let p = |f: &[DimensionField; 3]| -> Result<[Dimension; 3], String> {
                 Ok([
@@ -390,7 +390,7 @@ impl WeldmentPanel {
         if stocks.is_empty() {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,
-                "No profile stock yet. Define tube, bar or angle stock in Model → Materials.",
+                "No profile stock yet. Define tube, bar or angle stock in Project → Materials.",
             );
         }
         ui.label("Profile stock");

@@ -330,6 +330,7 @@ impl Application {
     pub fn set_model_backends(&mut self, factory: crate::viewport::BackendFactory) {
         for project in &mut self.projects {
             project.sketch.set_model_backend(factory());
+            project.sketch.material_library_mut().set_backend(factory());
             project.sketch.set_assembly_backend(factory());
             project.sketch.set_transfer_backend(factory());
             project.sketch.set_external_backend(factory());
@@ -650,6 +651,14 @@ impl Application {
         }
         let project = self.current_mut();
         project.editor.sync_clean_session(&project.session);
+        if project.sketch.material_library().dirty()
+            && matches!(command, Command::Mode(_) | Command::Parameter)
+        {
+            return Err(
+                "Apply or discard material and stock edits before changing workspace or parameters"
+                    .into(),
+            );
+        }
         if let Command::SketchOperation(tool) = command
             && !args.is_empty()
         {
@@ -855,6 +864,15 @@ impl Application {
                 self.tab = 0;
             }
             Command::Apply => {
+                if self.current().sketch.material_library().dirty() {
+                    let p = self.current_mut();
+                    p.sketch
+                        .material_library_mut()
+                        .apply(&mut p.session, &p.resources, channel)?;
+                    p.editor.reload(&p.session);
+                    self.message = "Shared material/stock definition applied · one undoable native-checked edit".into();
+                    return Ok(());
+                }
                 if self.current().sketch.external_pending() {
                     let p = self.current_mut();
                     p.sketch.apply_external(&mut p.session)?;
@@ -893,6 +911,12 @@ impl Application {
                 );
             }
             Command::Discard => {
+                if self.current().sketch.material_library().dirty() {
+                    let p = self.current_mut();
+                    p.sketch.material_library_mut().discard(&p.session);
+                    self.message = "Material/stock draft discarded · document unchanged".into();
+                    return Ok(());
+                }
                 if self.current().sketch.external_pending()
                     || self.current().sketch.external_active()
                 {
@@ -926,6 +950,17 @@ impl Application {
                 self.message = "Unapplied parameter edits discarded".into();
             }
             Command::Preview => {
+                if self.current().sketch.material_library().dirty() {
+                    let p = self.current_mut();
+                    p.sketch.material_library_mut().refresh_preview(
+                        &p.session,
+                        &p.resources,
+                        channel,
+                    )?;
+                    self.message =
+                        "Checking affected material/stock geometry · document unchanged".into();
+                    return Ok(());
+                }
                 if self.current().sketch.external_pending() {
                     return Err("Apply or discard the checked reference preview first".into());
                 }
@@ -1068,9 +1103,10 @@ impl Application {
                     return Err("Apply or discard parameter edits before opening materials".into());
                 }
                 p.sketch.open_materials(&p.session)?;
-                self.mode = Mode::Model;
+                self.mode = Mode::Parameters;
+                self.tab = 1;
                 self.message =
-                    "Materials and stock library · changes apply through one undoable transaction"
+                    "Project Materials · shared definitions apply through one native-checked transaction"
                         .into();
             }
             Command::Extension("symbol" | "library") => {
@@ -1496,6 +1532,22 @@ impl Application {
             }
             Command::Apply | Command::Discard if self.mode == Mode::Drawings => {
                 self.current().drawings.dirty()
+            }
+            Command::Apply if self.current().sketch.material_library().dirty() => self
+                .current()
+                .sketch
+                .material_library()
+                .can_apply(&self.current().session, &self.current().resources),
+            Command::Discard if self.current().sketch.material_library().dirty() => true,
+            Command::Preview if self.current().sketch.material_library().dirty() => self
+                .current()
+                .sketch
+                .material_library()
+                .can_preview(&self.current().session),
+            Command::Mode(_) | Command::Parameter
+                if self.current().sketch.material_library().dirty() =>
+            {
+                false
             }
             Command::Apply => self.current().editor.can_apply(&self.current().session),
             Command::Discard | Command::Preview => self.current().editor.dirty(),
@@ -2362,6 +2414,9 @@ impl Application {
             for project in &mut self.projects {
                 if !project.sketch.has_model_backend() {
                     project.sketch.set_model_backend(factory());
+                }
+                if !project.sketch.material_library().has_backend() {
+                    project.sketch.material_library_mut().set_backend(factory());
                 }
                 if !project.sketch.has_assembly_backend() {
                     project.sketch.set_assembly_backend(factory());
@@ -3910,10 +3965,11 @@ mod tests {
         assert!(app.current().sketch.has_assembly_backend());
         assert!(app.current().sketch.has_transfer_backend());
         assert!(app.current().sketch.has_symbol_backend());
+        assert!(app.current().sketch.material_library().has_backend());
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            6,
-            "Canonical display, modeling, assembly, transfer, symbol candidates and reference recovery need separate workers"
+            7,
+            "Canonical display, modeling, materials, assembly, transfer, symbol candidates and reference recovery need separate workers"
         );
         app.mode = Mode::Model;
         for command in [
@@ -3971,7 +4027,7 @@ mod tests {
         assert!(app.projects[0].scene.has_backend());
         assert!(app.current().scene.has_backend());
         assert!(app.current().sketch.has_symbol_backend());
-        assert_eq!(calls.load(Ordering::SeqCst), 12);
+        assert_eq!(calls.load(Ordering::SeqCst), 14);
     }
     #[test]
     fn primitive_starts_without_sketch_and_inspector_cancel_updates_status_without_editing_source()

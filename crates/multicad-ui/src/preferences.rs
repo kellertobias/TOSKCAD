@@ -333,7 +333,7 @@ mod tests {
         let mut preferences = Preferences::defaults(&registry);
         preferences.set_visible(Mode::Model, "Wood", false).unwrap();
         preferences
-            .move_workbench(Mode::Model, "Materials", -1)
+            .move_workbench(Mode::Model, "Other", -1)
             .unwrap();
         preferences
             .move_workbench(Mode::Model, "Sheet metal", -3)
@@ -341,8 +341,8 @@ mod tests {
         let model = titles(&preferences, &registry, Mode::Model);
         assert!(!model.contains(&"Wood"));
         assert_eq!(&model[..3], ["Sheet metal", "Common", "Architecture"]);
-        let materials = model.iter().position(|t| *t == "Materials").unwrap();
-        assert_eq!(model[materials + 1], "Mechanical");
+        let other = model.iter().position(|t| *t == "Other").unwrap();
+        assert_eq!(model[other + 1], "Weld");
         // Other modes are untouched; showing it again restores it in place.
         assert_eq!(
             titles(&preferences, &registry, Mode::Export),

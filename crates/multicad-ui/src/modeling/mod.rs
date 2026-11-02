@@ -541,13 +541,13 @@ impl ModelingTool {
                 "Requires native modeling, two weldment members and no pending edits. Cuts are derived from both members; unsupported joints are refused with a reason."
             }
             Self::Member => {
-                "Requires native modeling, profile stock defined in Model → Materials and no pending edits. Members follow straight sketch lines or point pairs."
+                "Requires native modeling, profile stock defined in Project → Materials and no pending edits. Members follow straight sketch lines or point pairs."
             }
             Self::Panel | Self::Cabinet | Self::WoodBox => {
-                "Requires native modeling, panel stock defined in Model → Materials and no pending edits. Carcass panels are edited through their carcass."
+                "Requires native modeling, panel stock defined in Project → Materials and no pending edits. Carcass panels are edited through their carcass."
             }
             Self::Sheet => {
-                "Requires native modeling, sheet stock defined in Model → Materials and no pending edits. Sketch-region bases and solid conversion are available through MCP."
+                "Requires native modeling, sheet stock defined in Project → Materials and no pending edits. Sketch-region bases and solid conversion are available through MCP."
             }
             Self::Fence => {
                 "Requires native modeling, project materials and no pending edits. Draw a flat open or closed run; Preview checks each post and infill member."

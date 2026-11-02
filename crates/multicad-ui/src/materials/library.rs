@@ -1,9 +1,10 @@
 use eframe::egui::{self, Color32};
 use multicad_core::{
-    commands::{Actor, Channel, Session},
+    commands::{Actor, Channel, Prepared, Session, SessionStamp},
     document::{Entity, EntityData, EntityId},
     materials::*,
 };
+mod preview;
 #[derive(Clone, PartialEq)]
 struct Draft {
     entity: Entity,
@@ -14,26 +15,55 @@ struct Draft {
 }
 #[derive(Default)]
 pub struct LibraryEditor {
-    open: bool,
     draft: Option<Draft>,
     original: Option<Draft>,
     revision: u64,
     document: Option<EntityId>,
     error: Option<String>,
     diagnostics: Option<(EntityId, u64, Vec<Diagnostic>)>,
+    guard: Option<SessionStamp>,
+    preview: preview::Lane,
 }
 impl LibraryEditor {
+    pub fn cancel(&mut self) {
+        self.preview.clear();
+        self.preview.show_model = false;
+        self.draft = None;
+        self.original = None;
+        self.error = None;
+        self.guard = None;
+        self.document = None;
+        self.diagnostics = None;
+    }
     pub fn dirty(&self) -> bool {
         self.draft != self.original
     }
     pub fn open(&mut self, s: &Session) {
-        self.open = true;
-        if !self.dirty() {
+        if !self.dirty()
+            && self
+                .guard
+                .as_ref()
+                .is_none_or(|guard| s.validate_stamp(guard).is_err())
+        {
+            let selected = self
+                .draft
+                .as_ref()
+                .and_then(|d| s.document().get(d.entity.id))
+                .cloned();
+            self.draft = None;
+            self.original = None;
+            self.preview.clear();
             self.document = Some(s.document().id());
             self.revision = s.revision();
+            self.guard = Some(s.stamp());
+            if let Some(entity) = selected {
+                self.select(s, entity);
+            }
         }
     }
     fn select(&mut self, s: &Session, entity: Entity) {
+        self.preview.clear();
+        self.preview.show_model = false;
         let style = if matches!(entity.data, EntityData::Material { .. }) {
             material_style(s.document(), entity.id).ok().flatten()
         } else {
@@ -47,9 +77,12 @@ impl LibraryEditor {
         self.original = self.draft.clone();
         self.revision = s.revision();
         self.document = Some(s.document().id());
+        self.guard = Some(s.stamp());
         self.error = None;
     }
     fn create(&mut self, s: &Session, kind: usize) {
+        self.preview.clear();
+        self.preview.show_model = false;
         let id = EntityId::new();
         let mut companion = None;
         let entity = match kind {
@@ -90,15 +123,19 @@ impl LibraryEditor {
         self.original = None;
         self.document = Some(s.document().id());
         self.revision = s.revision();
+        self.guard = Some(s.stamp());
         self.error = None;
     }
-    fn apply(&mut self, s: &mut Session) -> Result<(), String> {
+    fn prepare(&self, s: &Session, channel: Channel) -> Result<Prepared, String> {
+        s.validate_stamp(self.guard.as_ref().ok_or("Open Project Materials first")?)
+            .map_err(|e| e.to_string())?;
         if self.document != Some(s.document().id()) {
             return Err("Library draft belongs to another document".into());
         }
-        let Some(d) = self.draft.as_ref() else {
-            return Ok(());
-        };
+        let d = self
+            .draft
+            .as_ref()
+            .ok_or("Choose or create a definition first")?;
         if let Some(problem) = missing_prerequisite(d, s.document()) {
             return Err(problem);
         }
@@ -118,15 +155,84 @@ impl LibraryEditor {
                     .map_err(|e| e.to_string())?,
             );
         }
-        let p = prepare_library(s, self.revision, Actor::local(Channel::Ui), &entities)
-            .map_err(|e| e.to_string())?;
-        s.commit(p).map_err(|e| e.to_string())?;
-        self.select(s, d.entity.clone());
-        Ok(())
+        prepare_library(s, self.revision, Actor::local(channel), &entities)
+            .map_err(|e| e.to_string())
     }
-    pub fn show(&mut self, ctx: &egui::Context, s: &mut Session) {
-        if !self.open {
-            return;
+    fn create_stock(&mut self, s: &Session, kind: usize) {
+        self.create(s, 1);
+        let draft = self.draft.as_mut().expect("created stock");
+        let material = stock_material(&draft.entity).expect("stock material");
+        if let EntityData::Extension { definition, inputs } = &mut draft.entity.data {
+            let stock = LibraryDefinition::Stock(Stock {
+                material,
+                specification: stock_default(kind),
+            });
+            definition.data = serde_json::to_value(&stock).expect("stock draft");
+            *inputs = stock.links();
+        }
+        draft.entity.name =
+            ["New panel stock", "New sheet stock", "New profile stock"][kind].into();
+    }
+    pub fn show_inline(
+        &mut self,
+        ui: &mut egui::Ui,
+        s: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        editable: bool,
+    ) {
+        self.open(s);
+        self.poll(s, resources);
+        ui.strong("Materials and stock");
+        ui.small("Shared Project definitions · Model tools select and assign these same entries.");
+        ui.horizontal_wrapped(|ui| {
+            for (label, kind) in [
+                ("New material", 0),
+                ("New panel stock", 1),
+                ("New sheet stock", 2),
+                ("New profile stock", 3),
+                ("New appearance", 4),
+                ("New hatch", 5),
+            ] {
+                if ui
+                    .add_enabled(
+                        editable && !self.dirty(),
+                        egui::Button::new(label).min_size(egui::vec2(0., 30.)),
+                    )
+                    .on_hover_text("Create one reusable definition in this project")
+                    .clicked()
+                {
+                    match kind {
+                        1..=3 => self.create_stock(s, kind - 1),
+                        4 => self.create(s, 2),
+                        5 => self.create(s, 3),
+                        _ => self.create(s, 0),
+                    }
+                }
+            }
+        });
+        if !editable {
+            ui.colored_label(
+                Color32::LIGHT_YELLOW,
+                "Apply or discard file-information or parameter edits before editing definitions.",
+            );
+        }
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.preview.show_model, false, "Definitions");
+            ui.selectable_value(&mut self.preview.show_model, true, "Affected model");
+        });
+        self.preview_status(ui);
+        if let Some(error) = &self.error {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        if self
+            .guard
+            .as_ref()
+            .is_none_or(|g| s.validate_stamp(g).is_err())
+        {
+            ui.colored_label(
+                Color32::LIGHT_YELLOW,
+                "Source changed. Discard and reopen the definition before applying.",
+            );
         }
         if self
             .diagnostics
@@ -139,77 +245,84 @@ impl LibraryEditor {
                 diagnostics(s.document()).unwrap_or_default(),
             ));
         }
-        let mut close = false;
-        egui::Window::new("Materials and stock")
-            .id(egui::Id::new("material-library"))
-            .default_width(660.)
-            .default_height(500.)
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.label("Manufacturing definitions, appearance and paper section styles are independent.");
-                ui.horizontal_wrapped(|ui| {
-                    for (i, label) in ["New material", "New stock", "New appearance", "New hatch"].into_iter().enumerate() {
-                        if ui.add_enabled(!self.dirty(), egui::Button::new(label))
-                            .on_hover_text("Create a reusable document library definition").clicked() {
-                            self.create(s, i);
-                        }
-                    }
-                });
-                ui.separator();
-                egui::ScrollArea::vertical().max_height(480.).show(ui, |ui| {
+        if let Some((_, _, issues)) = &self.diagnostics
+            && !issues.is_empty()
+        {
+            ui.collapsing(format!("Definition diagnostics ({})", issues.len()), |ui| {
+                for issue in issues {
+                    ui.colored_label(
+                        Color32::LIGHT_YELLOW,
+                        format!("{}: {}", issue.role, issue.message),
+                    );
+                }
+            });
+        }
+        let blocked = self
+            .draft
+            .as_ref()
+            .and_then(|d| missing_prerequisite(d, s.document()));
+        if let Some(problem) = &blocked {
+            ui.colored_label(Color32::LIGHT_RED, problem);
+            if ui
+                .button("Create a material first")
+                .on_hover_text("Discard this stock draft and start a manufacturing material")
+                .clicked()
+            {
+                self.create(s, 0);
+            }
+        }
+        ui.separator();
+        if self.preview.show_model {
+            self.show_model(ui);
+        } else {
+            egui::ScrollArea::vertical()
+                .id_salt("project-material-definitions")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
                     ui.columns(2, |columns| {
-                        let entries: Vec<_> = s.document().entities().filter(|e| {
-                            matches!(e.data, EntityData::Material { .. }) || matches!(read(e), Ok(Some(LibraryDefinition::Stock(_) | LibraryDefinition::Appearance(_) | LibraryDefinition::Hatch(_))))
-                        }).cloned().collect();
+                        let mut entries: Vec<_> = s
+                            .document()
+                            .entities()
+                            .filter(|e| {
+                                matches!(e.data, EntityData::Material { .. })
+                                    || matches!(
+                                        read(e),
+                                        Ok(Some(
+                                            LibraryDefinition::Stock(_)
+                                                | LibraryDefinition::Appearance(_)
+                                                | LibraryDefinition::Hatch(_)
+                                        ))
+                                    )
+                            })
+                            .cloned()
+                            .collect();
+                        entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+                        columns[0].small(format!("{} shared definitions", entries.len()));
                         for e in entries {
                             let selected = self.draft.as_ref().is_some_and(|d| d.entity.id == e.id);
-                            if columns[0].add_enabled(!self.dirty(), egui::Button::selectable(selected, &e.name))
-                                .on_hover_text(format!("Edit {}", e.name)).clicked() {
+                            if columns[0]
+                                .add_enabled(
+                                    editable && !self.dirty(),
+                                    egui::Button::selectable(selected, &e.name),
+                                )
+                                .on_hover_text(format!(
+                                    "Edit {} · stable identity {}",
+                                    e.name, e.id
+                                ))
+                                .clicked()
+                            {
                                 self.select(s, e);
                             }
                         }
-                        if let Some(draft) = &mut self.draft {
-                            edit_draft(&mut columns[1], s, draft);
-                        } else {
-                            columns[1].label("Choose or create a reusable definition.");
-                        }
+                        columns[1].add_enabled_ui(editable, |ui| {
+                            if let Some(draft) = &mut self.draft {
+                                edit_draft(ui, s, draft);
+                            } else {
+                                ui.label("Choose or create a reusable definition.");
+                            }
+                        });
                     });
                 });
-                if self.document != Some(s.document().id()) || self.revision != s.revision() {
-                    ui.colored_label(Color32::LIGHT_YELLOW, "Source changed. Discard and reopen the definition before applying.");
-                }
-                if let Some((_, _, diagnostics)) = &self.diagnostics && !diagnostics.is_empty() {
-                    ui.collapsing(format!("Definition diagnostics ({})", diagnostics.len()), |ui| {
-                        for diagnostic in diagnostics {
-                            ui.colored_label(Color32::LIGHT_YELLOW, format!("{}: {}", diagnostic.role, diagnostic.message));
-                        }
-                    });
-                }
-                if let Some(error) = &self.error { ui.colored_label(Color32::LIGHT_RED, error); }
-                let blocked = self.draft.as_ref().and_then(|d| missing_prerequisite(d, s.document()));
-                if let Some(problem) = &blocked {
-                    ui.colored_label(Color32::LIGHT_RED, problem);
-                    if ui.button("Create a material first").on_hover_text("Discard this stock draft and start a new manufacturing material").clicked() {
-                        self.create(s, 0);
-                    }
-                }
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(self.dirty() && blocked.is_none(), egui::Button::new("Apply library edits"))
-                        .on_hover_text("Commit one undoable source transaction").clicked() {
-                        self.error = self.apply(s).err();
-                    }
-                    if ui.button("Discard library edits").on_hover_text("Drop the draft; document remains unchanged").clicked() {
-                        self.draft = None;
-                        self.original = None;
-                        self.error = None;
-                        self.revision = s.revision();
-                        self.document = Some(s.document().id());
-                    }
-                    if ui.add_enabled(!self.dirty(), egui::Button::new("Close library")).clicked() { close = true; }
-                });
-            });
-        if close {
-            self.open = false;
         }
     }
 }
@@ -328,7 +441,7 @@ fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft) {
                     stock.specification = stock_default(kind);
                 }
                 stock_controls(ui, &mut stock.specification);
-                ui.small("Stock metadata does not resize geometry or certify manufacturability.");
+                ui.small("Tools that use this stock read its live thickness or section. Preview checks affected geometry; a metadata assignment alone does not resize a Part.");
             }
             _ => {}
         }
@@ -539,246 +652,4 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use multicad_core::document::Document;
-    fn text_rect(shapes: &[egui::epaint::ClippedShape], text: &str) -> Option<egui::Rect> {
-        fn one(shape: &egui::epaint::Shape, text: &str) -> Option<egui::Rect> {
-            match shape {
-                egui::epaint::Shape::Text(t) if t.galley.text() == text => {
-                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
-                }
-                egui::epaint::Shape::Vec(v) => v.iter().find_map(|s| one(s, text)),
-                _ => None,
-            }
-        }
-        shapes.iter().find_map(|s| one(&s.shape, text))
-    }
-    fn frame(
-        ctx: &egui::Context,
-        editor: &mut LibraryEditor,
-        s: &mut Session,
-        events: Vec<egui::Event>,
-    ) -> Option<egui::Rect> {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1000., 800.),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| editor.show(ui.ctx(), s),
-        );
-        let rect = text_rect(&output.shapes, "Apply library edits");
-        output.textures_delta.clear();
-        rect
-    }
-    #[test]
-    fn actual_apply_button_commits_catalog_draft_once_and_undo_restores() {
-        let mut s = Session::new(Document::new("Library UI").unwrap()).unwrap();
-        let before = s.document().clone();
-        let mut editor = LibraryEditor::default();
-        editor.open(&s);
-        editor.create(&s, 0);
-        let id = editor.draft.as_ref().unwrap().entity.id;
-        editor.draft.as_mut().unwrap().entity.name = "Reusable oak".into();
-        let ctx = egui::Context::default();
-        let mut rect = None;
-        for _ in 0..3 {
-            rect = frame(&ctx, &mut editor, &mut s, vec![]);
-        }
-        assert!(editor.dirty());
-        assert_eq!(s.document(), &before);
-        let pos = rect.expect("Apply is rendered").center();
-        let events = vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ];
-        frame(&ctx, &mut editor, &mut s, events);
-        assert_eq!(s.revision(), 1);
-        assert_eq!(s.document().get(id).unwrap().name, "Reusable oak");
-        assert!(!editor.dirty());
-        assert_eq!(s.activity().last().unwrap().actor.channel, Channel::Ui);
-        s.undo(1, Actor::local(Channel::Ui)).unwrap();
-        assert_eq!(s.document(), &before);
-    }
-    fn set_stock(editor: &mut LibraryEditor, f: impl FnOnce(&mut Stock)) {
-        let d = editor.draft.as_mut().unwrap();
-        let EntityData::Extension { definition, inputs } = &mut d.entity.data else {
-            panic!("stock draft")
-        };
-        let Ok(LibraryDefinition::Stock(mut stock)) =
-            serde_json::from_value::<LibraryDefinition>(definition.data.clone())
-        else {
-            panic!("stock draft")
-        };
-        f(&mut stock);
-        let definition_value = LibraryDefinition::Stock(stock);
-        definition.data = serde_json::to_value(&definition_value).unwrap();
-        *inputs = definition_value.links();
-    }
-    #[test]
-    fn new_stock_in_empty_library_drafts_a_companion_material_and_applies_once() {
-        let mut s = Session::new(Document::new("Empty stock").unwrap()).unwrap();
-        let before = s.document().clone();
-        let mut editor = LibraryEditor::default();
-        editor.open(&s);
-        editor.create(&s, 1);
-        let d = editor.draft.as_ref().unwrap();
-        let stock_id = d.entity.id;
-        let material = d.companion.clone().expect("companion material drafted");
-        assert_eq!(stock_material(&d.entity), Some(material.id));
-        assert_ne!(material.id, stock_id, "stock must never reference itself");
-        assert!(missing_prerequisite(d, s.document()).is_none());
-        // The real Apply button is enabled and commits both in one revision.
-        let ctx = egui::Context::default();
-        let mut rect = None;
-        for _ in 0..3 {
-            rect = frame(&ctx, &mut editor, &mut s, vec![]);
-        }
-        let pos = rect.expect("Apply is rendered").center();
-        frame(
-            &ctx,
-            &mut editor,
-            &mut s,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: Default::default(),
-                },
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
-        assert_eq!(editor.error, None);
-        assert_eq!(s.revision(), 1);
-        assert!(matches!(
-            s.document().get(material.id).unwrap().data,
-            EntityData::Material { .. }
-        ));
-        assert!(matches!(
-            read(s.document().get(stock_id).unwrap()),
-            Ok(Some(LibraryDefinition::Stock(_)))
-        ));
-        assert!(diagnostics(s.document()).unwrap().is_empty());
-        s.undo(1, Actor::local(Channel::Ui)).unwrap();
-        assert_eq!(s.document(), &before);
-    }
-    #[test]
-    fn stock_with_missing_material_is_blocked_by_name_and_preserves_source() {
-        let mut s = Session::new(Document::new("Missing stock material").unwrap()).unwrap();
-        let mut editor = LibraryEditor::default();
-        editor.open(&s);
-        editor.create(&s, 1);
-        let stock_id = editor.draft.as_ref().unwrap().entity.id;
-        editor.draft.as_mut().unwrap().entity.name = "Birch ply".into();
-        editor.draft.as_mut().unwrap().companion = None;
-        set_stock(&mut editor, |stock| stock.material = stock_id);
-        let before = s.document().clone();
-        let problem = missing_prerequisite(editor.draft.as_ref().unwrap(), s.document()).unwrap();
-        assert!(
-            problem.contains("Stock 'Birch ply'") && problem.contains("manufacturing material")
-        );
-        let error = editor.apply(&mut s).unwrap_err();
-        assert!(!error.contains("cycle"), "{error}");
-        assert_eq!(s.document(), &before);
-        assert_eq!(s.revision(), 0);
-        // Apply is disabled and the explicit route to a material is offered.
-        let ctx = egui::Context::default();
-        let mut output: Option<egui::FullOutput> = None;
-        for _ in 0..2 {
-            if let Some(o) = output.as_mut() {
-                o.textures_delta.clear();
-            }
-            output = Some(ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1000., 800.),
-                    )),
-                    ..Default::default()
-                },
-                |ui| editor.show(ui.ctx(), &mut s),
-            ));
-        }
-        let mut output = output.unwrap();
-        output.textures_delta.clear();
-        let shapes = output.shapes;
-        assert!(text_rect(&shapes, "Create a material first").is_some());
-        assert!(text_rect(&shapes, &problem).is_some());
-    }
-    #[test]
-    fn material_first_sequence_creates_panel_sheet_and_profile_stock() {
-        let mut s = Session::new(Document::new("Material first").unwrap()).unwrap();
-        let mut editor = LibraryEditor::default();
-        editor.open(&s);
-        editor.create(&s, 0);
-        let material = editor.draft.as_ref().unwrap().entity.id;
-        editor.apply(&mut s).unwrap();
-        for kind in 0..3 {
-            editor.draft = None;
-            editor.original = None;
-            editor.create(&s, 1);
-            assert!(editor.draft.as_ref().unwrap().companion.is_none());
-            set_stock(&mut editor, |stock| {
-                stock.specification = stock_default(kind)
-            });
-            let id = editor.draft.as_ref().unwrap().entity.id;
-            editor.apply(&mut s).unwrap();
-            let Ok(Some(LibraryDefinition::Stock(stock))) = read(s.document().get(id).unwrap())
-            else {
-                panic!("stock committed")
-            };
-            assert_eq!(stock.material, material);
-            assert_eq!(stock_index(&stock.specification), kind);
-        }
-        assert_eq!(s.revision(), 4);
-        assert!(diagnostics(s.document()).unwrap().is_empty());
-    }
-    #[test]
-    fn invalid_and_stale_catalog_drafts_reject_without_source_edits() {
-        let mut s = Session::new(Document::new("Invalid library UI").unwrap()).unwrap();
-        let mut editor = LibraryEditor::default();
-        editor.create(&s, 0);
-        if let EntityData::Material { density_kg_m3, .. } =
-            &mut editor.draft.as_mut().unwrap().entity.data
-        {
-            *density_kg_m3 = Some(-10.);
-        }
-        let before = s.document().clone();
-        assert!(editor.apply(&mut s).is_err());
-        assert_eq!(s.document(), &before);
-        editor.create(&s, 0);
-        s.apply(multicad_core::commands::Request {
-            expected_revision: 0,
-            actor: Actor::local(Channel::Ui),
-            label: "Rename".into(),
-            edits: vec![multicad_core::document::Mutation::RenameDocument(
-                "New revision".into(),
-            )],
-        })
-        .unwrap();
-        assert!(editor.apply(&mut s).unwrap_err().contains("Stale"));
-        assert!(s.document().entities().next().is_none());
-    }
-}
+mod tests;

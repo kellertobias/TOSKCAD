@@ -103,7 +103,7 @@ impl WoodBoxPanel {
         let mut request = self.source.clone();
         request.definition.stock = self
             .stock
-            .ok_or("Define panel stock in Model → Materials, then choose it here")?;
+            .ok_or("Define panel stock in Project → Materials, then choose it here")?;
         request.definition.width = self.size[0].resolve(document)?;
         request.definition.depth = self.size[1].resolve(document)?;
         request.definition.height = self.size[2].resolve(document)?;
@@ -180,7 +180,7 @@ impl WoodBoxPanel {
                         .changed();
                 }
             });
-        ui.small("Shared stock is defined in Model → Materials.");
+        ui.small("Shared stock is defined in Project → Materials.");
         ui.horizontal(|ui| {
             if ui.button("Open top").clicked() {
                 self.source.definition.faces = WoodBoxFace::ALL

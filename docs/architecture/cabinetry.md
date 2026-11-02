@@ -13,7 +13,7 @@ The window and the MCP server use the same core API.
 ## Panel stock
 
 Panels use stock library entries with a panel specification. The stock is
-defined in Model → Materials or with `create_panel_stock`, and holds:
+defined in Project → Materials or with `create_panel_stock`, and holds:
 
 - the thickness;
 - the sheet length and width;

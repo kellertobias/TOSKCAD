@@ -1,7 +1,7 @@
 //! Sheet-metal inspector: place a rectangular base sheet from sheet stock,
 //! or edit an applied sheet part. Thickness comes from the stock; the inside
 //! radius and K-factor come from the stock unless overridden here. Sheet
-//! stock is defined in Model → Materials.
+//! stock is defined in Project → Materials.
 mod edges;
 
 use super::{
@@ -386,7 +386,7 @@ impl SheetPanel {
     fn definition(&self, document: &Document) -> Result<SheetDefinition, String> {
         let stock = self
             .stock
-            .ok_or("Choose sheet stock; define it in Model → Materials")?;
+            .ok_or("Choose sheet stock; define it in Project → Materials")?;
         let base = match &self.kept_base {
             Some(base) => base.clone(),
             None => SheetBase::Rectangle {
@@ -468,7 +468,7 @@ impl SheetPanel {
         if stocks.is_empty() {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,
-                "No sheet stock yet. Define sheet stock in Model → Materials.",
+                "No sheet stock yet. Define sheet stock in Project → Materials.",
             );
         }
         ui.label("Sheet stock");

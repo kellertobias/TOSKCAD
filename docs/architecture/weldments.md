@@ -16,7 +16,7 @@ The window and the MCP server use the same core API.
 ## Profile stock
 
 Members use stock library entries with a profile specification. The stock
-is defined in Model → Materials or with `create_profile_stock`, and holds:
+is defined in Project → Materials or with `create_profile_stock`, and holds:
 
 - the designation, for example "SHS 40×40×2";
 - the section shape:

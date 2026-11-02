@@ -15,7 +15,7 @@ The window and the MCP server use the same core API.
 ## Sheet stock
 
 Sheet parts use stock library entries with a sheet specification. The
-stock is defined in Model → Materials or with `create_sheet_stock`, and
+stock is defined in Project → Materials or with `create_sheet_stock`, and
 holds:
 
 - the thickness;

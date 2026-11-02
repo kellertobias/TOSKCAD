@@ -7,6 +7,20 @@ mod tests;
 impl Application {
     fn project_action_help(&self, command: Command, label: &str, ctx: &egui::Context) -> String {
         let hint = self.command_help(command, label, ctx);
+        if self.current().sketch.material_library().dirty() {
+            return format!(
+                "{hint}\n{}",
+                match command {
+                    Command::Apply =>
+                        "Apply the current shared definition after a matching native preview.",
+                    Command::Discard =>
+                        "Discard the material/stock draft; the document stays unchanged.",
+                    Command::Preview =>
+                        "Check the draft and all dependent geometry with the native kernel.",
+                    _ => "Apply or discard the definition draft before using history.",
+                }
+            );
+        }
         let explanation = if self.enabled(command) {
             match command {
                 Command::Apply => "Apply parameter and file-information edits together.",
@@ -43,7 +57,10 @@ impl Application {
                     .fill(crate::theme::PANEL)
                     .inner_margin(12),
             )
-            .show(ui, |ui| self.parameters_sidebar(ui));
+            .show(ui, |ui| {
+                let enabled = !self.current().sketch.material_library().dirty();
+                ui.add_enabled_ui(enabled, |ui| self.parameters_sidebar(ui));
+            });
         let mut action = None;
         egui::Panel::left("project-actions")
             .exact_size(ACTION_WIDTH)
@@ -80,11 +97,36 @@ impl Application {
                                 action = Some(tool.action);
                             }
                         }
+                        ui.add_space(8.);
+                        for (index, label) in ["Parameters", "Materials"].into_iter().enumerate() {
+                            let can_switch = if index == 0 {
+                                !self.current().sketch.material_library().dirty()
+                            } else {
+                                !self.current().editor.dirty()
+                            };
+                            if ui
+                                .add_enabled(
+                                    can_switch,
+                                    egui::Button::selectable(self.tab == index, label)
+                                        .min_size(egui::vec2(ui.available_width(), 34.)),
+                                )
+                                .clicked()
+                                && self.tab != index
+                            {
+                                action = Some(if index == 0 {
+                                    Command::Parameter
+                                } else {
+                                    Command::Extension("materials")
+                                });
+                            }
+                        }
+                        ui.separator();
                     });
             });
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
         }
+        let materials = self.tab == 1;
         let project = self.current_mut();
         egui::Frame::new()
             .inner_margin(egui::Margin {
@@ -97,9 +139,19 @@ impl Application {
                 // At the native 1100px minimum: 184 actions + 300 metadata +
                 // remaining table viewport. Scroll the table locally at 760px;
                 // neither sidebar nor the application grows with its columns.
-                project
-                    .editor
-                    .show_with_min_table_width(ui, &project.session, TABLE_MIN_WIDTH);
+                if materials {
+                    let editable = !project.editor.dirty();
+                    project.sketch.material_library_mut().show_inline(
+                        ui,
+                        &project.session,
+                        &project.resources,
+                        editable,
+                    );
+                } else {
+                    project
+                        .editor
+                        .show_with_min_table_width(ui, &project.session, TABLE_MIN_WIDTH);
+                }
             });
     }
 }

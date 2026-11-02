@@ -369,6 +369,12 @@ impl SketchEditor {
         self.materials.open(session);
         Ok(())
     }
+    pub fn material_library(&self) -> &crate::materials::LibraryEditor {
+        &self.materials.library
+    }
+    pub fn material_library_mut(&mut self) -> &mut crate::materials::LibraryEditor {
+        &mut self.materials.library
+    }
     /// Preparation/solve status exposed to hosts without granting access to
     /// retained display-only geometry or worker queues.
     pub fn sketch_evaluation_status(&self) -> crate::sketch_evaluation::EvaluationStatus {
@@ -2985,9 +2991,6 @@ impl SketchEditor {
                 self.moving = false;
                 self.tool = None;
             }
-        }
-        if !self.measurement.active() {
-            self.materials.show(ui.ctx(), session);
         }
         self.poll_profile_pick(session.document(), session.revision());
         if self.pending_profile_pick.is_some() || !self.queued_profile_clicks.is_empty() {

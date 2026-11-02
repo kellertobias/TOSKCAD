@@ -3,6 +3,7 @@ use super::*;
 #[allow(dead_code)]
 mod workflow;
 use multicad_model::Compiler;
+mod materials;
 struct Storage;
 impl DocumentStorage for Storage {
     fn save(&mut self, _: &std::path::Path, _: &Document) -> Result<(), String> {

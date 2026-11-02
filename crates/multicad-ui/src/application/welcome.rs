@@ -82,6 +82,9 @@ impl Application {
         } else {
             view.mode.top_level()
         };
+        if self.mode == Mode::Model && view.workspace == "Materials" {
+            self.mode = Mode::Parameters;
+        }
         let architecture =
             view.workspace == "Architecture" || view.workspace.starts_with("Architecture / ");
         let workspace = if architecture {

@@ -13,16 +13,14 @@ pub struct MaterialsEditor {
 }
 impl MaterialsEditor {
     pub fn cancel(&mut self) {
-        *self = Self::default();
+        self.library.cancel();
+        self.parts = Default::default();
     }
     pub fn pending(&self) -> bool {
         self.library.dirty() || self.parts.dirty()
     }
     pub fn open(&mut self, session: &Session) {
         self.library.open(session);
-    }
-    pub fn show(&mut self, ctx: &egui::Context, session: &mut Session) {
-        self.library.show(ctx, session);
     }
     pub fn inspector(
         &mut self,
