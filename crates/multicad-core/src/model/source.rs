@@ -693,6 +693,12 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     for entity in document.entities() {
         if let EntityData::Feature { definition, .. } = &entity.data {
             match definition.type_id.as_str() {
+                super::COMPOUND_CUTOUT_TYPE => {
+                    super::read_compound_cutout(document, entity.id)?;
+                }
+                super::COMPOUND_CUTOUT_RECEIVER_TYPE => {
+                    super::read_compound_cutout_receiver(document, entity.id)?;
+                }
                 EXTRUDE_TYPE => {
                     read_extrude(document, entity.id)?;
                 }
@@ -766,6 +772,8 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::TRANSFER_TYPE,
                     super::ALIGN_TYPE,
                     super::WALL_TYPE,
+                    super::COMPOUND_CUTOUT_TYPE,
+                    super::COMPOUND_CUTOUT_RECEIVER_TYPE,
                     super::FENCE_MEMBER_TYPE,
                     super::SLAB_TYPE,
                     super::STAIR_TYPE,

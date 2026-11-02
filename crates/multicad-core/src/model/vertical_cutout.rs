@@ -25,7 +25,8 @@ use crate::{
 
 /// A plan rectangle for slab holes: center in world X/Y, width along the
 /// direction `rotation_deg` from +X, depth across it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanRectangle {
     pub center: [Dimension; 2],
     pub width: Dimension,

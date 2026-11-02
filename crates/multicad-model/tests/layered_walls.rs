@@ -115,6 +115,95 @@ fn native(session: &Session) -> Model {
         .compile(session.document(), session.revision())
         .unwrap()
 }
+#[test]
+fn compound_cutout_retains_every_wall_layers_material_on_new_cut_faces() {
+    let (mut session, value) = fixture(WallLayerReference::Outside);
+    let ty = NewType::new("Layered receiver", NewTypeKind::LayeredWall(value));
+    let wall = request(ty.id, &[[0., 0.], [4000., 0.]], false);
+    let prepared = model::prepare_wall_change(
+        &session,
+        session.revision(),
+        actor(),
+        &[ty],
+        &WallChange::Create(&wall),
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let before = native(&session);
+    let old = before.solid(wall.feature).unwrap();
+    let receiver = model::CompoundCutoutReceiver::new(model::BodyInput {
+        body: wall.body,
+        producer: wall.feature,
+    });
+    let source = model::CompoundCutoutRequest::new(
+        "Compound penetration",
+        model::CompoundCutoutDefinition {
+            boxes: [2000., 1900.]
+                .into_iter()
+                .map(|x| {
+                    model::CompoundCutoutBox::new(model::PlanRectangle {
+                        center: [length(x), length(0.)],
+                        width: length(600.),
+                        depth: length(2000.),
+                        rotation_deg: 0.,
+                    })
+                })
+                .collect(),
+            receivers: vec![receiver.clone()],
+            extent: model::CompoundCutoutExtent::Fixed(model::CutoutZRange {
+                bottom: length(500.),
+                top: length(1800.),
+            }),
+            levels: None,
+        },
+    );
+    let prepared = model::prepare_compound_cutout(
+        &session,
+        session.revision(),
+        actor(),
+        &model::CompoundCutoutChange::Set(Box::new(source)),
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let after = native(&session);
+    let solid = after.solid(receiver.feature).unwrap();
+    assert_eq!(solid.solid_count().unwrap(), 5);
+    near(
+        solid.volume_mm3().unwrap(),
+        old.volume_mm3().unwrap() - (80. + 120. + 40. + 100. + 12.5) * 700. * 1300.,
+        1e-3,
+    );
+    let topology = solid
+        .topology_snapshot(receiver.feature, session.revision())
+        .unwrap();
+    let materials = model::wall_face_materials(session.document(), &topology).unwrap();
+    assert_eq!(
+        materials.len(),
+        topology
+            .elements
+            .iter()
+            .filter(|face| face.key.kind == multicad_core::references::TopologyKind::Face)
+            .count()
+    );
+    assert_eq!(
+        materials
+            .values()
+            .map(|face| face.layer)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        5
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("compound-layered-wall.step");
+    solid.write_step(&path).unwrap();
+    let readback = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+    assert_eq!(readback.solid_count().unwrap(), 5);
+    near(
+        readback.volume_mm3().unwrap(),
+        solid.volume_mm3().unwrap(),
+        1e-3,
+    );
+}
 fn members(solid: &Solid, owner: EntityId) -> BTreeMap<EntityId, Solid> {
     let mut result = BTreeMap::new();
     for member in solid.solid_components(GeometryPolicy::default()).unwrap() {

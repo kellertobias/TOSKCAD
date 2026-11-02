@@ -499,6 +499,7 @@ impl Compiler {
         let mut weld_paths = crate::weldment::Paths::new(&context);
         let mut sheet_layouts = BTreeMap::new();
         let mut fences = crate::fences::Context::new(document, context.parameters());
+        let mut compound_cutouts = crate::compound_cutouts::Context::default();
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
@@ -755,6 +756,18 @@ impl Compiler {
                 }
                 (model::SLAB_TYPE, 1) => {
                     crate::levels::build_slab(document, context.parameters(), id, self.policy)?
+                }
+                (model::COMPOUND_CUTOUT_TYPE, model::COMPOUND_CUTOUT_SCHEMA) => compound_cutouts
+                    .build(
+                        document,
+                        context.parameters(),
+                        id,
+                        &solids,
+                        self.policy,
+                        interrupt,
+                    )?,
+                (model::COMPOUND_CUTOUT_RECEIVER_TYPE, model::COMPOUND_CUTOUT_SCHEMA) => {
+                    compound_cutouts.take(id)?
                 }
                 (model::THREAD_TYPE, model::THREAD_SCHEMA) => {
                     let source =

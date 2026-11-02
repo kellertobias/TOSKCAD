@@ -254,7 +254,7 @@ fn extrude_region(
     )
     .map_err(|e| error(Some(id), e))
 }
-fn cut_tools(
+pub(crate) fn cut_tools(
     wall: &model::ResolvedWall,
     plan: &model::WallPlan,
     id: EntityId,
