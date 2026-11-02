@@ -62,15 +62,19 @@ impl Application {
     }
     pub(super) fn restore_current_view(&mut self) {
         let view = self.current().view.clone();
-        self.mode = view.mode;
+        self.mode = if view.mode == Mode::Sketch && self.current().sketch.editing {
+            Mode::Sketch
+        } else {
+            view.mode.top_level()
+        };
         self.tab = self
             .registry
-            .workspace(view.mode)
+            .workspace(self.mode)
             .tabs
             .iter()
             .position(|t| t.title == view.workspace)
-            .filter(|tab| self.preferences.is_visible(&self.registry, view.mode, *tab))
-            .unwrap_or_else(|| self.first_visible_tab(view.mode));
+            .filter(|tab| self.preferences.is_visible(&self.registry, self.mode, *tab))
+            .unwrap_or_else(|| self.first_visible_tab(self.mode));
         if self.registry.workspace(self.mode).tabs[self.tab].requires_active_sketch
             && !self.current().sketch.editing
         {

@@ -359,10 +359,10 @@ impl ShortcutMap {
             true,
         );
         add(
-            Scope::Mode(Mode::Sketch),
+            Scope::Global,
             Chord::plain(Key::Q),
             Command(crate::registry::Command::NewSketch),
-            "New sketch",
+            "Add Sketch",
             false,
         );
         for (key, command, label) in [

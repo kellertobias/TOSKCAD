@@ -200,15 +200,15 @@ fn reviewed_model_ribbon_ends_below_two_line_labels_and_captions() {
             .find(|t| t.text == label && t.clip.max.y <= painted.ribbon.max.y + 0.5)
             .unwrap_or_else(|| panic!("{label} missing"))
     };
-    let engraving = find("Create engraving");
-    assert_eq!(engraving.lines, 2, "representative two-line label");
-    let caption = find("Create");
-    assert!(engraving.rect.max.y < caption.rect.min.y);
+    let treatment = find("Fillet / Chamfer");
+    assert_eq!(treatment.lines, 2, "representative two-line label");
+    let caption = find("Modify");
+    assert!(treatment.rect.max.y < caption.rect.min.y);
     assert!(caption.rect.max.y < painted.ribbon.max.y);
     let content = painted
         .texts
         .iter()
-        .find(|t| t.text == "Choose New Sketch, or open a sketch from the document.")
+        .find(|t| t.text == "Choose Add Sketch, or open a sketch from the document.")
         .expect("content guidance");
     assert!(content.clip.min.y >= painted.ribbon.max.y);
 }

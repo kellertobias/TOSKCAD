@@ -9,22 +9,48 @@ pub enum Mode {
     Parameters,
     Sketch,
     Model,
+    Motion,
     Drawings,
     Export,
 }
 impl Mode {
     pub const ALL: [Self; 5] = [
         Self::Parameters,
-        Self::Sketch,
         Self::Model,
+        Self::Motion,
         Self::Drawings,
         Self::Export,
     ];
+    /// Internal Sketch is the contextual Model editor, never a top-level tab.
+    pub const WORKSPACES: [Self; 6] = [
+        Self::Parameters,
+        Self::Sketch,
+        Self::Model,
+        Self::Motion,
+        Self::Drawings,
+        Self::Export,
+    ];
+    pub fn top_level(self) -> Self {
+        if self == Self::Sketch {
+            Self::Model
+        } else {
+            self
+        }
+    }
+    pub fn from_stored_name(name: &str) -> Option<Self> {
+        if name == "Parameters" {
+            return Some(Self::Parameters);
+        }
+        Self::WORKSPACES
+            .into_iter()
+            .find(|mode| mode.title() == name)
+    }
     pub fn title(self) -> &'static str {
         match self {
             Self::Parameters => "Project",
             Self::Sketch => "Sketch",
             Self::Model => "Model",
+            Self::Motion => "Motion",
             Self::Drawings => "Drawings",
             Self::Export => "Export",
         }
@@ -34,6 +60,7 @@ impl Mode {
             Self::Parameters => Color32::from_rgb(108, 73, 160),
             Self::Sketch => Color32::from_rgb(28, 113, 119),
             Self::Model => Color32::from_rgb(34, 98, 171),
+            Self::Motion => Color32::from_rgb(28, 113, 119),
             Self::Drawings => Color32::from_rgb(172, 91, 18),
             Self::Export => Color32::from_rgb(53, 114, 65),
         }
@@ -51,6 +78,7 @@ pub enum Command {
     Redo,
     Save,
     SaveAs,
+    Import,
     ImportSource,
     ImportArtwork,
     RecoverProjects,
@@ -183,7 +211,7 @@ impl Default for Registry {
                 label: "Import source snapshot",
                 icon: Icon::Page,
                 action: Command::ImportSource,
-                aliases: &["import"],
+                aliases: &["import-snapshot"],
             },
             Tool {
                 id: "recover-projects",
@@ -229,17 +257,17 @@ impl Default for Registry {
             },
             Tool {
                 id: "new-sketch",
-                label: "New sketch",
+                label: "Add Sketch",
                 icon: Icon::Sketch,
                 action: Command::NewSketch,
-                aliases: &["start", "new-sketch"],
+                aliases: &["start", "new-sketch", "add-sketch", "sketch"],
             },
             Tool {
-                id: "engraving",
-                label: "Create engraving",
-                icon: Icon::Sketch,
-                action: Command::Engraving,
-                aliases: &["engraving", "engrave"],
+                id: "import",
+                label: "Import",
+                icon: Icon::Page,
+                action: Command::Import,
+                aliases: &["import-file"],
             },
             Tool {
                 id: "import-artwork",
@@ -369,7 +397,8 @@ impl Default for Registry {
                 action: Command::Mode(mode),
                 aliases: match mode {
                     Mode::Parameters => &["project-mode", "parameters", "params"],
-                    Mode::Sketch => &["sketch"],
+                    Mode::Sketch => unreachable!("contextual Model editor"),
+                    Mode::Motion => &["motion-mode"],
                     Mode::Model => &["model"],
                     Mode::Drawings => &["drawings"],
                     Mode::Export => &["export"],
@@ -457,8 +486,6 @@ impl Default for Registry {
                     tab(
                         "Common",
                         &[
-                            "new-sketch",
-                            "import-artwork",
                             "rectangle",
                             "line",
                             "circle",
@@ -531,7 +558,7 @@ impl Default for Registry {
                             })
                             .map(ModelingTool::id)
                             .chain(BOOLEAN_OPERATIONS.map(|(id, ..)| id))
-                            .chain(["new-sketch", "engraving", "symbol"])
+                            .chain(["symbol"])
                             .collect(),
                         requires_active_sketch: false,
                     },
@@ -561,6 +588,7 @@ impl Default for Registry {
                         title: "Relationships",
                         tools: crate::assembly::AssemblyTool::ALL
                             .into_iter()
+                            .filter(|tool| !tool.motion_workspace())
                             .map(|tool| tool.id())
                             .chain(["align", "transfer"])
                             .collect(),
@@ -574,15 +602,22 @@ impl Default for Registry {
                             "mechanical-part",
                             "library",
                             "place-component",
-                            "relationship",
-                            "joint-motion",
-                            "interference",
-                            "motion-range",
                         ],
                     ),
                     tab("Materials", &["materials"]),
-                    tab("Import", &["import-step", "import-kicad", "import-update"]),
                 ],
+            },
+            Workspace {
+                mode: Mode::Motion,
+                tabs: vec![RibbonTab {
+                    title: "Common",
+                    tools: crate::assembly::AssemblyTool::ALL
+                        .into_iter()
+                        .filter(|tool| tool.motion_workspace())
+                        .map(|tool| tool.id())
+                        .collect(),
+                    requires_active_sketch: false,
+                }],
             },
             Workspace {
                 mode: Mode::Drawings,
@@ -834,7 +869,7 @@ mod tests {
         let registry = Registry::default();
         assert_eq!(
             Mode::ALL.map(Mode::title),
-            ["Project", "Sketch", "Model", "Drawings", "Export"]
+            ["Project", "Model", "Motion", "Drawings", "Export"]
         );
         let model = registry.workspace(Mode::Model);
         let mechanical = model

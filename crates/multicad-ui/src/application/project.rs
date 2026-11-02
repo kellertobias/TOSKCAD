@@ -80,49 +80,6 @@ impl Application {
                                 action = Some(tool.action);
                             }
                         }
-                        ui.add_space(12.);
-                        ui.separator();
-                        ui.add_space(8.);
-                        if ui
-                            .add_enabled_ui(self.enabled(Command::Extension("library")), |ui| {
-                                icons::labeled_button_sized(
-                                    ui,
-                                    Icon::Library,
-                                    "Library",
-                                    egui::vec2(ui.available_width(), 34.),
-                                )
-                            })
-                            .inner
-                            .on_hover_text("Browse pinned symbols and saved Library projects")
-                            .clicked()
-                        {
-                            action = Some(Command::Extension("library"));
-                        }
-                        if ui
-                            .add_enabled_ui(self.enabled(Command::Measure), |ui| {
-                                icons::labeled_button_sized(
-                                    ui,
-                                    Icon::Measure,
-                                    "Measure",
-                                    egui::vec2(ui.available_width(), 34.),
-                                )
-                            })
-                            .inner
-                            .on_hover_text("Inspect current native faces, edges or points")
-                            .clicked()
-                        {
-                            action = Some(Command::Measure);
-                        }
-                        if icons::labeled_button_sized(
-                            ui,
-                            Icon::Link,
-                            "MCP history",
-                            egui::vec2(ui.available_width(), 34.),
-                        )
-                        .clicked()
-                        {
-                            self.history_open = true;
-                        }
                     });
             });
         if let Some(action) = action {

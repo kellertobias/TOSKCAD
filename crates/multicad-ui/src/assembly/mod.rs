@@ -34,6 +34,9 @@ impl AssemblyTool {
         Self::MotionRange,
         Self::Explode,
     ];
+    pub fn motion_workspace(self) -> bool {
+        !matches!(self, Self::Place | Self::CreateAssembly)
+    }
     pub fn id(self) -> &'static str {
         match self {
             Self::Place => "place-component",

@@ -38,7 +38,7 @@ fn action(app: &Application, id: &str) -> Command {
     app.registry.tool(id).unwrap().action
 }
 #[test]
-fn mechanical_assembly_tools_keep_their_workbench_and_cancel_without_edits() {
+fn placement_keeps_mechanical_while_motion_tools_route_to_motion_without_edits() {
     for id in [
         "place-component",
         "relationship",
@@ -52,11 +52,16 @@ fn mechanical_assembly_tools_keep_their_workbench_and_cancel_without_edits() {
         app.tab = mechanical;
         let before = app.current().session.document().clone();
         app.invoke(action(&app, id), &[], Channel::Ui).unwrap();
-        assert_eq!((app.mode, app.tab), (Mode::Model, mechanical), "{id}");
+        let destination = if id == "place-component" {
+            (Mode::Model, mechanical)
+        } else {
+            (Mode::Motion, 0)
+        };
+        assert_eq!((app.mode, app.tab), destination, "{id}");
         app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
         assert_eq!(app.current().session.document(), &before, "{id}");
         assert_eq!(app.current().session.revision(), 0, "{id}");
-        assert_eq!(app.tab, mechanical, "{id}");
+        assert_eq!((app.mode, app.tab), destination, "{id}");
     }
 }
 /// Window/Door additionally need an applied wall; they share this path.

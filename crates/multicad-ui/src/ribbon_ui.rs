@@ -79,8 +79,6 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
         Group {
             label: "Create",
             entries: vec![
-                Entry::Tool("new-sketch"),
-                Entry::Tool("engraving"),
                 Entry::Menu {
                     label: "Add Primitive",
                     icon: Icon::Box,
@@ -367,11 +365,7 @@ pub fn show_selectable(
         registry.tool(id).is_some_and(|tool| {
             implemented(tool.action)
                 && !SKETCH_SESSION.contains(id)
-                && if *id == "new-sketch" {
-                    !editing
-                } else {
-                    mode != Mode::Sketch || editing
-                }
+                && (mode != Mode::Sketch || editing)
         })
     };
     let mut sections = groups(mode, tab);
@@ -397,8 +391,8 @@ pub fn show_selectable(
         ui.allocate_ui(egui::vec2(width, TOOLS_HEIGHT), |ui| {
             ui.set_width(width);
             if sections.is_empty() {
-                let message = if mode == Mode::Sketch && !editing && tab.requires_active_sketch {
-                    "Create or open a sketch to see its tools."
+                let message = if mode == Mode::Sketch && !editing {
+                    "Choose a plane in the viewer, or open an existing sketch, to see its tools."
                 } else if mode == Mode::Sketch && editing {
                     "No further tools on this tab."
                 } else {
@@ -916,22 +910,16 @@ mod tests {
         chosen
     }
     #[test]
-    fn model_common_starts_a_new_sketch_from_the_create_group() {
+    fn sketch_creation_is_global_instead_of_duplicated_in_the_model_ribbon() {
         let registry = Registry::default();
         let tab = &registry.workspace(Mode::Model).tabs[0];
-        let create = groups(Mode::Model, tab);
-        assert!(matches!(
-            create[0].entries.first(),
-            Some(Entry::Tool("new-sketch"))
-        ));
-        assert!(matches!(
-            create[0].entries.get(1),
-            Some(Entry::Tool("engraving"))
-        ));
+        assert!(!tab.tools.contains(&"new-sketch"));
+        assert!(!tab.tools.contains(&"engraving"));
         assert_eq!(
-            click(&registry, Mode::Model, tab, false, 1200., "New sketch"),
-            Some(Command::NewSketch)
+            registry.resolve("sketch").unwrap().action,
+            Command::NewSketch
         );
+        assert!(registry.tool("engraving").is_none());
     }
     #[test]
     fn active_sketch_pins_finish_and_abort_at_the_right_and_hides_new_sketch() {
@@ -974,13 +962,13 @@ mod tests {
                 Some(Command::FinishSketch)
             );
         }
-        // Before a plane is chosen only New sketch is offered.
+        // Before a plane is chosen no sketch-editing or duplicate creation controls appear.
         let common = &registry.workspace(Mode::Sketch).tabs[0];
         let ctx = egui::Context::default();
         let (output, _) = ribbon(&registry, Mode::Sketch, common, false, 1200., vec![], &ctx);
         let labels = positioned_labels(&output);
         output.drop_without_applying_deltas();
-        assert!(labels.iter().any(|(l, _)| l == "New sketch"));
+        assert!(!labels.iter().any(|(l, _)| l == "Add Sketch"));
         assert!(
             !labels
                 .iter()

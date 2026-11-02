@@ -263,7 +263,7 @@ impl Default for SketchEditor {
             delta: [0.; 3],
             preview: None,
             drag: None,
-            message: "Choose New Sketch, or open a sketch from the document.".into(),
+            message: "Choose Add Sketch, or open a sketch from the document.".into(),
             revision: 0,
             fit_requested: false,
             constraints: Default::default(),
@@ -1628,12 +1628,7 @@ impl SketchEditor {
             .filter(|hit| hit.key.kind == multicad_core::references::TopologyKind::Face)
             .cloned()
     }
-    fn create_on_selected_face(
-        &mut self,
-        session: &mut Session,
-        prefix: &str,
-        channel: Channel,
-    ) -> Result<(), String> {
+    fn selected_face_preview(&self, session: &Session) -> Result<PlanePreview, String> {
         let hit = self
             .selected_face_hit()
             .ok_or("Select a planar face in the 3D view first")?;
@@ -1646,8 +1641,47 @@ impl SketchEditor {
             occurrence: Some(hit.instance),
             section: self.solid.section.plane(),
         };
-        let preview = crate::sketch_plane::selected_face(context, &hit)?;
+        crate::sketch_plane::selected_face(context, &hit)
+    }
+    fn create_on_selected_face(
+        &mut self,
+        session: &mut Session,
+        prefix: &str,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let preview = self.selected_face_preview(session)?;
         self.create_named(session, preview, prefix, channel)
+    }
+    /// Global Add Sketch uses a current valid face or explicitly asks for a plane.
+    /// Failed face inspection is read-only; creation still revalidates at commit.
+    pub(crate) fn begin_model_sketch(
+        &mut self,
+        session: &mut Session,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if self.has_pending_edits() || self.editing {
+            return Err("Finish the open sketch and apply or cancel pending edits before adding another sketch".into());
+        }
+        let face: Result<Option<PlanePreview>, String> =
+            self.ensure_single_selected_face().and_then(|()| {
+                if self.selected_face_hit().is_some() {
+                    self.selected_face_preview(session).map(Some)
+                } else {
+                    Ok(None)
+                }
+            });
+        match face {
+            Ok(Some(preview)) => self.create_named(session, preview, "Sketch", channel),
+            other => {
+                self.begin();
+                if let Err(error) = other {
+                    self.message = format!(
+                        "The selected face cannot be used: {error}. Choose a sketch plane in the viewer."
+                    );
+                }
+                Ok(())
+            }
+        }
     }
     /// Create Engraving: a sketch attached to the planar face selected in the
     /// 3D view. Unlike New sketch there is no plane-picking fallback, and it
@@ -5782,6 +5816,47 @@ mod tests {
                     .contains("stale")
             );
             assert_eq!(stale.document(), &stale_source);
+            if !engraving {
+                let mut fallback = SketchEditor {
+                    display_scene: Some(scene(0, 1)),
+                    camera: direct.camera,
+                    ..Default::default()
+                };
+                let fallback_ctx = egui::Context::default();
+                for events in [
+                    vec![],
+                    vec![],
+                    vec![
+                        egui::Event::PointerMoved(point),
+                        egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    vec![egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    }],
+                ] {
+                    fallback_ctx
+                        .run_ui(input(events), |ui| {
+                            fallback.canvas(ui, &mut direct_session, false, Some(scene(0, 1)), true)
+                        })
+                        .drop_without_applying_deltas();
+                }
+                assert!(fallback.solid.selected_hit().is_some());
+                fallback
+                    .begin_model_sketch(&mut stale, Channel::Ui)
+                    .unwrap();
+                assert!(fallback.picking && !fallback.editing);
+                assert!(fallback.message.contains("stale"));
+                assert_eq!(stale.document(), &stale_source);
+                assert_eq!(stale.revision(), 1);
+            }
             enter(&mut direct, &mut direct_session).unwrap();
             let expected = if engraving { "Engraving 1" } else { "Sketch 1" };
             assert!(

@@ -46,7 +46,7 @@ impl Preferences {
     /// and the Common workbench is forced visible.
     pub fn normalize(&mut self, registry: &Registry) {
         let stored = std::mem::take(&mut self.workbenches);
-        for mode in Mode::ALL {
+        for mode in Mode::WORKSPACES {
             let installed: Vec<&str> = registry
                 .workspace(mode)
                 .tabs
@@ -264,7 +264,7 @@ mod tests {
         let registry = Registry::default();
         let preferences = Preferences::defaults(&registry);
         assert_eq!(preferences.length_unit, LengthUnit::Millimeter);
-        for mode in Mode::ALL {
+        for mode in Mode::WORKSPACES {
             let tabs = &registry.workspace(mode).tabs;
             assert_eq!(tabs[0].title, ALWAYS_VISIBLE, "{mode:?}");
             assert_eq!(
@@ -361,7 +361,7 @@ mod tests {
     fn common_cannot_be_hidden_so_navigation_never_becomes_empty() {
         let registry = Registry::default();
         let mut preferences = Preferences::defaults(&registry);
-        for mode in Mode::ALL {
+        for mode in Mode::WORKSPACES {
             for (index, _) in preferences.order(&registry, mode) {
                 let title = registry.workspace(mode).tabs[index].title;
                 let result = preferences.set_visible(mode, title, false);

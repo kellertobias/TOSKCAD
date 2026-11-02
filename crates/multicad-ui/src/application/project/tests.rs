@@ -95,7 +95,7 @@ fn project_has_left_actions_readable_table_and_one_metadata_sidebar_without_a_ri
         }
         let out = frame(&ctx, &mut app, size, vec![]);
         assert!(egui::PanelState::load(&ctx, egui::Id::new("ribbon")).is_none());
-        let header = egui::PanelState::load(&ctx, egui::Id::new("header"))
+        let header = egui::PanelState::load(&ctx, egui::Id::new("global-actions"))
             .unwrap()
             .outer_rect;
         let left = egui::PanelState::load(&ctx, egui::Id::new("project-actions"))

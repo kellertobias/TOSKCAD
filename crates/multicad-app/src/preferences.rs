@@ -72,9 +72,7 @@ fn decode(bytes: &[u8]) -> Result<Preferences, String> {
         .ok_or_else(|| invalid("workbenches must be an object"))?;
     let mut workbenches = BTreeMap::new();
     for (name, entries) in modes {
-        let mode = Mode::ALL
-            .into_iter()
-            .find(|mode| mode.title() == name)
+        let mode = Mode::from_stored_name(name)
             .ok_or_else(|| invalid(format!("unknown mode {name:?}")))?;
         let entries = entries
             .as_array()
@@ -203,6 +201,27 @@ impl PreferenceStore for PreferenceFileStore {
 mod tests {
     use super::*;
     use multicad_ui::registry::Registry;
+    #[test]
+    fn legacy_project_and_contextual_sketch_preferences_survive_the_navigation_revision() {
+        let registry = Registry::default();
+        let mut expected = Preferences::defaults(&registry);
+        expected.set_visible(Mode::Sketch, "Edit", false).unwrap();
+        let mut old: Value = serde_json::from_slice(&encode(&expected).unwrap()).unwrap();
+        let modes = old["workbenches"].as_object_mut().unwrap();
+        let project = modes.remove("Project").unwrap();
+        modes.insert("Parameters".into(), project);
+        let mut loaded = decode(&serde_json::to_vec(&old).unwrap()).unwrap();
+        loaded.normalize(&registry);
+        assert_eq!(loaded, expected);
+        assert!(
+            !loaded.workbenches[&Mode::Sketch]
+                .iter()
+                .find(|entry| entry.title == "Edit")
+                .unwrap()
+                .visible
+        );
+        assert!(loaded.workbenches.contains_key(&Mode::Motion));
+    }
     #[test]
     fn preferences_survive_restart_through_the_file_store() {
         let root = tempfile::tempdir().unwrap();

@@ -78,9 +78,8 @@ fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
                 let mode = project["view"]["mode"]
                     .as_str()
                     .and_then(|name| {
-                        multicad_ui::registry::Mode::ALL
-                            .into_iter()
-                            .find(|m| m.title() == name)
+                        multicad_ui::registry::Mode::from_stored_name(name)
+                            .map(|mode| mode.top_level())
                     })
                     .ok_or_else(|| invalid("unknown workspace mode"))?;
                 let workspace = project["view"]["workspace"]
@@ -117,7 +116,7 @@ fn encode(entries: &[RecentProject]) -> Result<Vec<u8>, String> {
         let view = entry
             .view
             .as_ref()
-            .map(|v| json!({"mode":v.mode.title(),"workspace":v.workspace}));
+            .map(|v| json!({"mode":v.mode.top_level().title(),"workspace":v.workspace}));
         projects.push(json!({"path":path,"title":entry.title,"last_opened_unix_ms":entry.last_opened_unix_ms,"view":view}));
     }
     let bytes = serde_json::to_vec_pretty(
@@ -447,6 +446,30 @@ mod tests {
                 format!("Canonical project {index}")
             );
         }
+    }
+    #[test]
+    fn old_sketch_and_parameters_visits_migrate_and_motion_roundtrips_without_losing_paths() {
+        use multicad_ui::registry::Mode;
+        let root = tempfile::tempdir().unwrap();
+        let mut visit = entry(root.path(), 0, 1);
+        visit.view = Some(RecentView {
+            mode: Mode::Motion,
+            workspace: "Common".into(),
+        });
+        assert_eq!(
+            decode(&encode(&[visit.clone()]).unwrap()).unwrap(),
+            vec![visit.clone()]
+        );
+        let mut value: Value = serde_json::from_slice(&encode(&[visit.clone()]).unwrap()).unwrap();
+        for (old, expected) in [("Sketch", Mode::Model), ("Parameters", Mode::Parameters)] {
+            value["projects"][0]["view"]["mode"] = json!(old);
+            let loaded = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(loaded[0].path, visit.path);
+            assert_eq!(loaded[0].view.as_ref().unwrap().mode, expected);
+        }
+        visit.view.as_mut().unwrap().mode = Mode::Sketch;
+        let saved: Value = serde_json::from_slice(&encode(&[visit]).unwrap()).unwrap();
+        assert_eq!(saved["projects"][0]["view"]["mode"], json!("Model"));
     }
     #[test]
     fn workspace_metadata_roundtrips_and_legacy_history_migrates_without_losing_visits() {

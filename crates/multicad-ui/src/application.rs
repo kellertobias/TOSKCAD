@@ -10,6 +10,7 @@ pub mod external_control;
 #[path = "external_reference_app_tests.rs"]
 mod external_reference_tests;
 mod files;
+mod global_actions;
 mod library;
 mod mechanical_imports;
 mod native_picker;
@@ -175,6 +176,7 @@ pub struct Application {
     find: String,
     find_index: usize,
     history_open: bool,
+    import_open: bool,
     close_confirm: bool,
     close_allowed: bool,
     close_after_recents: bool,
@@ -249,6 +251,7 @@ impl Application {
             find: String::new(),
             find_index: 0,
             history_open: false,
+            import_open: false,
             close_confirm: false,
             close_allowed: false,
             close_after_recents: false,
@@ -794,7 +797,7 @@ impl Application {
             }
             Command::Mode(mode) => {
                 self.current_mut().sketch.close_symbol_browser();
-                if !matches!(mode, Mode::Sketch | Mode::Model)
+                if !matches!(mode, Mode::Sketch | Mode::Model | Mode::Motion)
                     && self.current().sketch.measurement.active()
                 {
                     self.current_mut().sketch.measurement.close();
@@ -979,6 +982,13 @@ impl Application {
                     self.replacement = None;
                 }
             }
+            Command::Import => {
+                if self.current().pending_edits() || self.file_busy() || self.file_action.is_some()
+                {
+                    return Err("Apply or cancel pending edits and finish the current file operation before importing".into());
+                }
+                self.import_open = true;
+            }
             Command::ImportArtwork => {
                 if self.current().pending_edits() {
                     return Err("Apply or discard pending edits before importing artwork".into());
@@ -986,7 +996,6 @@ impl Application {
                 if self.file_busy() || self.file_action.is_some() {
                     return Err("Complete the current file operation first".into());
                 }
-                self.mode = Mode::Sketch;
                 self.file_action = Some(FileAction::Artwork);
                 self.file_document = Some(self.current().local_id);
                 self.file_path.clear();
@@ -1122,7 +1131,7 @@ impl Application {
                 }
                 if args.is_empty() {
                     let p = self.current_mut();
-                    p.sketch.begin_from_selection(&mut p.session, channel)?;
+                    p.sketch.begin_model_sketch(&mut p.session, channel)?;
                 } else {
                     if args.len() != 1 {
                         return Err("Usage: start [xy|xz|yz]".into());
@@ -1259,8 +1268,8 @@ impl Application {
                         "Apply or discard parameter edits before working with assemblies".into(),
                     );
                 }
-                if !matches!(self.mode, Mode::Sketch | Mode::Model) {
-                    return Err("Open Model before starting an assembly tool".into());
+                if !matches!(self.mode, Mode::Sketch | Mode::Model | Mode::Motion) {
+                    return Err("Open Model or Motion before starting an assembly tool".into());
                 }
                 let project = self.current_mut();
                 project.sketch.begin_assembly_tool(
@@ -1270,8 +1279,12 @@ impl Application {
                     tool,
                     channel,
                 )?;
-                self.mode = Mode::Model;
-                self.tab = self.workbench_tab(Mode::Model, command);
+                self.mode = if tool.motion_workspace() {
+                    Mode::Motion
+                } else {
+                    Mode::Model
+                };
+                self.tab = self.workbench_tab(self.mode, command);
                 self.message = format!("{} · choose controls in the Inspector", tool.label());
             }
             Command::Transfer => {
@@ -1433,7 +1446,7 @@ impl Application {
                     && self.current().sketch.modeling_available()
             }
             Command::Assembly(_) => {
-                matches!(self.mode, Mode::Sketch | Mode::Model)
+                matches!(self.mode, Mode::Sketch | Mode::Model | Mode::Motion)
                     && !self.current().editor.dirty()
                     && self.current().sketch.modeling_available()
             }
@@ -1444,7 +1457,7 @@ impl Application {
                     && self.current().sketch.modeling_available()
             }
             Command::Mode(mode) if self.current().sketch.model_interaction_active() => {
-                mode == Mode::Model
+                matches!(mode, Mode::Model | Mode::Motion)
             }
             Command::Parameter if self.current().sketch.model_interaction_active() => false,
             Command::Undo => self.current().session.can_undo() && !pending(),
@@ -1453,7 +1466,8 @@ impl Application {
                 !pending() && !self.file_busy()
             }
             Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
-            Command::NewSketch => !pending(),
+            Command::NewSketch => !pending() && !self.current().sketch.editing && !self.file_busy(),
+            Command::Import => !pending() && !self.file_busy() && self.file_action.is_none(),
             Command::Engraving => !pending() && !self.current().sketch.editing,
             Command::AbortSketch => {
                 self.mode == Mode::Sketch
@@ -1795,7 +1809,7 @@ impl Application {
                         if controls::tab(
                             ui,
                             mode.title(),
-                            self.mode == mode,
+                            self.mode.top_level() == mode,
                             TabColors {
                                 text: color,
                                 background: Color32::TRANSPARENT,
@@ -1847,22 +1861,17 @@ impl Application {
                             },
                         );
                         let response = if hidden {
-                            response.on_hover_text("Hidden in Settings · shown while one of its tools is active")
+                            response.on_hover_text(
+                                "Hidden in Settings · shown while one of its tools is active",
+                            )
                         } else {
                             response
                         };
                         if response.clicked() {
                             self.tab = index;
-                            self.current_mut().view_restore_pending=false;
+                            self.current_mut().view_restore_pending = false;
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::labeled_button(ui, Icon::Link, "MCP history").clicked() {
-                            self.history_open = true;
-                        }
-                        if icons::labeled_button(ui,Icon::Measure,"Measure").on_hover_text("Inspect exact current faces, edges or points; click again to close Measure").clicked(){self.execute(Command::Measure,&[],Channel::Ui);}
-                        if ui.add_enabled_ui(self.enabled(Command::Extension("library")),|ui|icons::labeled_button(ui,Icon::Library,"Library")).inner.on_hover_text("Browse pinned symbols, place copies or review an explicit library update").clicked(){self.execute(Command::Extension("library"),&[],Channel::Ui);}
-                    });
                 });
             });
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -2024,6 +2033,7 @@ impl Application {
                 || self.find_open
                 || self.close_confirm
                 || self.history_open
+                || self.import_open
                 || self.settings_open
                 || self.shortcut_help
                 || egui::Popup::is_any_open(ctx),
@@ -2048,6 +2058,7 @@ impl Application {
             || self.replacement.is_some()
             || self.shortcut_help
             || self.history_open
+            || self.import_open
             || self.settings_open
             || self.close_confirm;
         // egui clears keyboard focus for Escape before this application pass.
@@ -2074,6 +2085,8 @@ impl Application {
                 self.find_open = false;
             } else if self.shortcut_help {
                 self.shortcut_help = false;
+            } else if self.import_open {
+                self.import_open = false;
             } else if self.history_open {
                 self.history_open = false;
             } else if self.settings_open {
@@ -2199,7 +2212,10 @@ impl Application {
         self.handle_close_request(&ctx);
         controls::block_modal_background(
             ui,
-            self.close_confirm || self.file_action.is_some() || self.replacement.is_some(),
+            self.close_confirm
+                || self.import_open
+                || self.file_action.is_some()
+                || self.replacement.is_some(),
         );
         if self.welcome {
             self.show_welcome(ui);
@@ -2213,7 +2229,7 @@ impl Application {
             }
         }
         let active = self.active;
-        let viewport = matches!(self.mode, Mode::Sketch | Mode::Model);
+        let viewport = matches!(self.mode, Mode::Sketch | Mode::Model | Mode::Motion);
         for (index, p) in self.projects.iter_mut().enumerate() {
             if index != active || !viewport {
                 p.sketch.measurement.suspend();
@@ -2335,6 +2351,7 @@ impl Application {
                     .inner_margin(egui::Margin::symmetric(8, 2)),
             )
             .show(ui, |ui| self.header(ui));
+        self.global_actions(ui);
         // Tab strip plus the tool strip with its labels and captions, so tool
         // labels never extend under the content panels (CAD-154).
         if self.mode != Mode::Parameters {
@@ -2427,6 +2444,7 @@ impl Application {
                 });
             self.history_open = open;
         }
+        self.import_window(&ctx);
         self.settings_window(&ctx);
         if self.shortcut_help {
             egui::Window::new("Keyboard shortcuts").open(&mut self.shortcut_help).show(&ctx,|ui|{
@@ -3233,9 +3251,14 @@ mod tests {
         assert!(app.enabled(Command::Save));
         assert!(app.enabled(Command::Undo));
         assert!(app.enabled(Command::Redo));
-        assert!(app.enabled(Command::NewSketch));
+        assert!(
+            !app.enabled(Command::NewSketch),
+            "finish the open editor before creating another sketch"
+        );
         assert!(app.enabled(Command::FinishSketch));
         assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::FinishSketch, &[], Channel::Ui).unwrap();
+        assert!(app.enabled(Command::NewSketch));
     }
     #[test]
     fn centered_search_accepts_input_without_dragging_or_changing_modes() {
@@ -3831,6 +3854,8 @@ mod tests {
             app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
             assert_eq!(app.current().session.document(), &before);
         }
+        app.invoke(Command::Mode(Mode::Model), &[], Channel::Ui)
+            .unwrap();
         assert!(
             app.enabled(Command::Transfer),
             "Transfer is available before selecting its source or targets"

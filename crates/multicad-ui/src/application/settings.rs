@@ -273,12 +273,12 @@ mod tests {
         changed
             .move_workbench(Mode::Model, "Mechanical", -1)
             .unwrap();
-        let import = changed.workbenches[&Mode::Model]
+        let wood = changed.workbenches[&Mode::Model]
             .iter()
-            .position(|entry| entry.title == "Import")
+            .position(|entry| entry.title == "Wood")
             .unwrap();
         changed
-            .move_workbench(Mode::Model, "Import", -(import as isize))
+            .move_workbench(Mode::Model, "Wood", -(wood as isize))
             .unwrap();
         first.apply_preferences(changed.clone());
         wait_saved(&mut first);
@@ -290,7 +290,7 @@ mod tests {
         assert!(!crate::preferences::title_logo_default());
         second.mode = Mode::Model;
         let model = titles(&second);
-        assert_eq!(model[0], "Import");
+        assert_eq!(model[0], "Wood");
         assert!(!model.contains(&"Weld"));
         assert!(!model.contains(&"Mechanical"));
         // Restore defaults is persisted the same way.
@@ -366,7 +366,7 @@ mod tests {
         app: &mut Application,
         ctx: &egui::Context,
         events: Vec<egui::Event>,
-    ) -> Vec<(String, egui::Pos2, bool)> {
+    ) -> Vec<(String, egui::Pos2, bool, egui::accesskit::Role)> {
         let output = ctx.run_ui(
             egui::RawInput {
                 focused: true,
@@ -394,6 +394,7 @@ mod tests {
                             label,
                             egui::pos2(((b.x0 + b.x1) * 0.5) as f32, ((b.y0 + b.y1) * 0.5) as f32),
                             node.is_disabled(),
+                            node.role(),
                         ))
                     })
                     .collect()
@@ -419,11 +420,15 @@ mod tests {
             );
         }
     }
-    fn find(nodes: &[(String, egui::Pos2, bool)], label: &str) -> (egui::Pos2, bool) {
+    fn find(
+        nodes: &[(String, egui::Pos2, bool, egui::accesskit::Role)],
+        label: &str,
+    ) -> (egui::Pos2, bool) {
         nodes
             .iter()
-            .find(|(l, ..)| l == label)
-            .map(|(_, at, disabled)| (*at, *disabled))
+            .filter(|(l, ..)| l == label)
+            .max_by_key(|(_, _, _, role)| *role == egui::accesskit::Role::CheckBox)
+            .map(|(_, at, disabled, _)| (*at, *disabled))
             .unwrap_or_else(|| panic!("{label} not rendered"))
     }
     #[test]
@@ -456,7 +461,7 @@ mod tests {
         assert!(
             nodes
                 .iter()
-                .any(|(l, _, disabled)| l == "Common" && *disabled)
+                .any(|(l, _, disabled, _)| l == "Common" && *disabled)
         );
         assert!(find(&nodes, "Move Common earlier in Model").1);
         let (inches, _) = find(&nodes, "Inches (in)");
@@ -466,13 +471,13 @@ mod tests {
         let (wood, _) = find(&nodes, "Wood");
         click(&mut app, &ctx, wood);
         let nodes = frame(&mut app, &ctx, vec![]);
-        let (earlier, _) = find(&nodes, "Move Import earlier in Model");
+        let (earlier, _) = find(&nodes, "Move Mechanical earlier in Model");
         click(&mut app, &ctx, earlier);
         app.mode = Mode::Model;
         let ribbon = titles(&app);
         assert!(!ribbon.contains(&"Wood"));
-        let import = ribbon.iter().position(|t| *t == "Import").unwrap();
-        assert_eq!(ribbon[import + 1], "Materials");
+        let mechanical = ribbon.iter().position(|t| *t == "Mechanical").unwrap();
+        assert_eq!(ribbon[mechanical + 1], "Relationships");
         let nodes = frame(&mut app, &ctx, vec![]);
         let (restore, _) = find(&nodes, "Restore defaults");
         click(&mut app, &ctx, restore);

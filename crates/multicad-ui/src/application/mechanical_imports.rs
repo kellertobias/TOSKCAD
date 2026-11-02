@@ -1,4 +1,4 @@
-//! Model → Import commands: STEP files and KiCad boards through the native
+//! Global Import commands: STEP files and KiCad boards through the native
 //! file dialog, read and checked off the window thread, and applied from the
 //! Inspector as one undoable transaction.
 use super::*;
@@ -45,7 +45,6 @@ impl Application {
                 (kind, Some(target))
             }
         };
-        self.mode = Mode::Model;
         self.file_action = Some(FileAction::Mechanical(kind, target));
         self.file_document = Some(self.current().local_id);
         self.file_path.clear();
@@ -148,15 +147,18 @@ mod tests {
     }
 
     #[test]
-    fn import_commands_live_in_model_import_and_need_the_native_reader() {
+    fn global_import_routes_keep_registered_native_readers_without_an_import_workbench() {
         let registry = crate::registry::Registry::default();
-        let tab = registry
-            .workspace(Mode::Model)
-            .tabs
-            .iter()
-            .find(|t| t.title == "Import")
-            .expect("Model → Import tab");
-        assert_eq!(tab.tools, [IMPORT_STEP, IMPORT_KICAD, IMPORT_UPDATE]);
+        assert!(
+            !registry
+                .workspace(Mode::Model)
+                .tabs
+                .iter()
+                .any(|tab| tab.title == "Import")
+        );
+        for id in [IMPORT_STEP, IMPORT_KICAD, IMPORT_UPDATE] {
+            assert_eq!(registry.tool(id).unwrap().action, Command::Extension(id));
+        }
         let (mut app, _) = app();
         assert!(!app.enabled(Command::Extension(IMPORT_STEP)), "no reader");
         assert!(
