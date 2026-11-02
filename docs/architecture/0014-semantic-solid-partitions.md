@@ -6,6 +6,9 @@
 | Date | 2026-10-28 |
 | Decider | Codex, using delegated architecture authority |
 
+CAD-222 extends explicit inputs and plane/multi-target splitting in
+[ADR-0030](0030-explicit-split-inputs.md); this schema 1 membership contract remains.
+
 ## Context
 
 Split needs persistent independent Parts that survive dimensional edits.
