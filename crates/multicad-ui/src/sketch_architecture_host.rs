@@ -8,6 +8,9 @@ impl SketchEditor {
     pub fn architecture_recall(&self) -> architecture_view::Recall {
         self.architecture.recall
     }
+    pub fn saved_architecture_view(&self) -> Option<architecture_view::Recall> {
+        self.architecture.saved()
+    }
     pub fn restore_architecture_view(&mut self, recall: architecture_view::Recall) {
         self.architecture.restore(recall, &mut self.camera);
     }

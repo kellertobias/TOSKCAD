@@ -38,8 +38,24 @@ Category state belongs to each open project. The existing recent-view workspace
 string stores a subpath such as `Architecture / Electrical`; it is not added to
 the canonical document or Undo. Existing `Architecture` records restore the root.
 An unknown Architecture child restores its parent without executing a command.
-Other workspace modes and the existing recent-file JSON fields are unchanged.
-See [view recall](../../crates/multicad-ui/src/application/welcome.rs).
+CAD-246 adds a separate optional Architecture context to version 3 local recent
+metadata: `architecture` is null before that context is initialized, or holds
+`plan` (boolean) and `level` (UUID or null for World). The store reads version 1
+visits and version 2 mode/workspace records and writes version 3. Other workspace
+routes keep their existing meanings. See
+[view recall](../../crates/multicad-ui/src/application/welcome.rs) and the
+[recent-file store](../../crates/multicad-app/src/recent_projects.rs).
+
+The representation and active level survive a local reopen; camera positions
+remain session state and reopen uses automatic framing. A recalled level that
+has been removed keeps its identity and produces a repair message. It never
+silently becomes the first floor. An explicit World context stays World.
+Malformed fields and nil level identities are refused without overwriting the
+existing navigation file. Navigation persistence never writes to the `.tcd`
+container or changes the canonical source or Undo history.
+Changing modes before history loads preserves an unvisited Architecture context
+without restoring the older mode. An explicitly chosen World context replaces
+the previous floor, including when pending visits are coalesced.
 
 Finder and command entry use explicit family presets. The generic `equipment`
 command remains available. `stairs` opens Stairs; `slab` still opens Levels.

@@ -38,6 +38,16 @@ impl Application {
                                     p.view = view;
                                     restore_active |= index == self.active;
                                 }
+                            } else if p.sketch.saved_architecture_view().is_none()
+                                && let Some(context) = entries
+                                    .iter()
+                                    .find(|e| Some(&e.path) == p.path.as_ref())
+                                    .and_then(|e| e.view.as_ref())
+                                    .and_then(|view| view.architecture)
+                            {
+                                p.sketch.restore_architecture_view(context);
+                                p.view.architecture = Some(context);
+                                ctx.request_repaint();
                             }
                         }
                         self.recents = entries;
@@ -62,6 +72,11 @@ impl Application {
     }
     pub(super) fn restore_current_view(&mut self) {
         let view = self.current().view.clone();
+        if let Some(architecture) = view.architecture {
+            self.current_mut()
+                .sketch
+                .restore_architecture_view(architecture);
+        }
         self.mode = if view.mode == Mode::Sketch && self.current().sketch.editing {
             Mode::Sketch
         } else {
@@ -107,6 +122,7 @@ impl Application {
         let tab = self.tab.min(workspace.tabs.len().saturating_sub(1));
         let view = RecentView {
             mode: self.mode,
+            architecture: self.current().sketch.saved_architecture_view(),
             workspace: if self.mode == Mode::Model && workspace.tabs[tab].title == "Architecture" {
                 self.current()
                     .architecture_category
@@ -324,12 +340,12 @@ mod tests {
         fn record(&mut self, entry: &RecentProject) -> Result<Vec<RecentProject>, String> {
             let mut entries = self.0.lock().unwrap();
             let mut entry = entry.clone();
-            if entry.view.is_none() {
-                entry.view = entries
+            entry.inherit_view(
+                entries
                     .iter()
                     .find(|old| old.path == entry.path)
-                    .and_then(|old| old.view.clone());
-            }
+                    .and_then(|old| old.view.as_ref()),
+            );
             entries.retain(|old| old.path != entry.path);
             entries.push(entry);
             Ok(entries.clone())
@@ -482,6 +498,7 @@ mod tests {
                 view: Some(RecentView {
                     mode: Mode::Model,
                     workspace: "Wood".into(),
+                    ..Default::default()
                 }),
             },
             RecentProject {
@@ -491,6 +508,7 @@ mod tests {
                 view: Some(RecentView {
                     mode: Mode::Export,
                     workspace: "Render".into(),
+                    ..Default::default()
                 }),
             },
         ]));
@@ -554,6 +572,7 @@ mod tests {
             view: Some(RecentView {
                 mode: Mode::Model,
                 workspace: "Removed extension".into(),
+                ..Default::default()
             }),
         });
         app.load_path(PathBuf::from("/private/tmp/old-workspace.multicad"))
@@ -580,6 +599,11 @@ mod tests {
             }
         }
         let path = PathBuf::from("/private/tmp/slow-history.multicad");
+        let (session, levels, _, _) = crate::architecture_view::tests::building();
+        let saved_context = crate::architecture_view::Recall {
+            plan: true,
+            level: Some(levels[1]),
+        };
         let entries = Arc::new(Mutex::new(vec![RecentProject {
             path: path.clone(),
             title: "Slow history".into(),
@@ -587,10 +611,11 @@ mod tests {
             view: Some(RecentView {
                 mode: Mode::Model,
                 workspace: "Wood".into(),
+                architecture: Some(saved_context),
             }),
         }]));
         let (release, gate) = mpsc::channel();
-        let source = Document::new("User chose Parameters").unwrap();
+        let source = session.document().clone();
         let mut app = Application::welcome(Box::new(Storage {
             document: source.clone(),
             fail: false,
@@ -619,6 +644,10 @@ mod tests {
         assert_eq!(app.tab, 0);
         assert_eq!(app.current().session.document(), &source);
         assert_eq!(app.current().session.revision(), 0);
+        assert_eq!(
+            app.current().sketch.saved_architecture_view(),
+            Some(saved_context)
+        );
         assert_eq!(
             entries
                 .lock()

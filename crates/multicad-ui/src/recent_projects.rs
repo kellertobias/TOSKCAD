@@ -10,17 +10,25 @@ pub const MAX_RECENTS: usize = 20;
 pub struct RecentView {
     pub mode: crate::registry::Mode,
     pub workspace: String,
+    pub architecture: Option<crate::architecture_view::Recall>,
 }
 impl Default for RecentView {
     fn default() -> Self {
         Self {
             mode: crate::registry::Mode::Parameters,
             workspace: "Common".into(),
+            architecture: None,
         }
     }
 }
 impl RecentView {
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .architecture
+            .is_some_and(|view| view.level.is_some_and(|id| id.is_nil()))
+        {
+            return Err("Invalid Architecture level identity".into());
+        }
         if self.workspace.trim().is_empty()
             || self.workspace.chars().count() > 80
             || self.workspace.chars().any(char::is_control)
@@ -38,6 +46,19 @@ pub struct RecentProject {
     pub view: Option<RecentView>,
 }
 impl RecentProject {
+    /// Missing view/context means unvisited, while an explicit World context
+    /// is `Some(Recall { level: None, .. })` and replaces the previous floor.
+    pub fn inherit_view(&mut self, previous: Option<&RecentView>) {
+        if let Some(previous) = previous {
+            if let Some(current) = &mut self.view {
+                if current.architecture.is_none() {
+                    current.architecture = previous.architecture;
+                }
+            } else {
+                self.view = Some(previous.clone());
+            }
+        }
+    }
     pub fn validate(&self) -> Result<(), String> {
         if let Some(view) = &self.view {
             view.validate()?;
@@ -74,6 +95,9 @@ pub trait RecentStore: Send + 'static {
     fn load(&mut self) -> Result<Vec<RecentProject>, String>;
     /// Merge atomically with other application instances, preserving unrelated entries.
     /// A visit with no view preserves that path's previously recorded navigation.
+    /// An uninitialized Architecture context inherits the earlier context;
+    /// an explicit World context replaces it. `RecentProject::inherit_view`
+    /// supplies these merge semantics for file stores and queued visits.
     fn record(&mut self, entry: &RecentProject) -> Result<Vec<RecentProject>, String>;
 }
 enum Job {
@@ -120,11 +144,11 @@ impl RecentWorker {
     }
     pub fn record(&mut self, mut entry: RecentProject) -> Result<(), String> {
         entry.validate()?;
-        if let Some(previous) = self.deferred.get(&entry.path)
-            && entry.view.is_none()
-        {
-            entry.view = previous.view.clone();
-        }
+        entry.inherit_view(
+            self.deferred
+                .get(&entry.path)
+                .and_then(|previous| previous.view.as_ref()),
+        );
         self.deferred.insert(entry.path.clone(), entry);
         // Keep only the same bounded history the persistent store can retain.
         if self.deferred.len() > MAX_RECENTS {
@@ -306,11 +330,16 @@ mod backpressure_tests {
         };
         worker.record(entry.clone()).unwrap();
         started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let saved_context = crate::architecture_view::Recall {
+            plan: true,
+            level: Some(multicad_core::document::EntityId::new()),
+        };
         for index in 2..102 {
             entry.last_opened_unix_ms = index;
             entry.view = Some(RecentView {
                 mode: crate::registry::Mode::Model,
                 workspace: format!("Workspace {index}"),
+                architecture: (index == 50).then_some(saved_context),
             });
             worker.record(entry.clone()).unwrap();
         }
@@ -326,6 +355,7 @@ mod backpressure_tests {
             assert!(Instant::now() < until);
             std::thread::yield_now();
         }
+        entry.view.as_mut().unwrap().architecture = Some(saved_context);
         assert_eq!(last.lock().unwrap().as_ref(), Some(&entry));
         assert!(!worker.writing());
     }

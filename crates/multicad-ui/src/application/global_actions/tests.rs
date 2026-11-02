@@ -182,6 +182,7 @@ fn legacy_sketch_recall_enters_model_without_stale_editing_tools_and_motion_reus
     app.current_mut().view = crate::recent_projects::RecentView {
         mode: Mode::Sketch,
         workspace: "Edit".into(),
+        ..Default::default()
     };
     app.restore_current_view();
     assert_eq!(app.mode, Mode::Model);
@@ -191,6 +192,7 @@ fn legacy_sketch_recall_enters_model_without_stale_editing_tools_and_motion_reus
     app.current_mut().view = crate::recent_projects::RecentView {
         mode: Mode::Sketch,
         workspace: "Edit".into(),
+        ..Default::default()
     };
     app.restore_current_view();
     assert_eq!(

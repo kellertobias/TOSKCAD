@@ -216,6 +216,9 @@ pub struct Context {
     filtered: Option<(Arc<Scene>, Option<EntityId>, Arc<Scene>)>,
 }
 impl Context {
+    pub fn saved(&self) -> Option<Recall> {
+        self.initialized.then_some(self.recall)
+    }
     pub fn sync(&mut self, document: &Document, revision: u64) {
         if self
             .levels

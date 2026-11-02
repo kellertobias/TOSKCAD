@@ -1,6 +1,10 @@
 //! User-local launch metadata. The persistent lock inode is separate from the
 //! atomically replaced JSON file, so independent instances share one lock.
-use multicad_ui::recent_projects::{RecentProject, RecentStore, RecentView, normalize};
+use multicad_core::document::EntityId;
+use multicad_ui::{
+    architecture_view::Recall,
+    recent_projects::{RecentProject, RecentStore, RecentView, normalize},
+};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File, OpenOptions},
@@ -55,7 +59,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
     let value: Value = serde_json::from_slice(bytes).map_err(invalid)?;
     fields(&value, &["application", "version", "projects"])?;
     let version = value["version"].as_u64();
-    if value["application"].as_str() != Some(APPLICATION) || !matches!(version, Some(1 | 2)) {
+    if value["application"].as_str() != Some(APPLICATION) || !matches!(version, Some(1..=3)) {
         return Err(invalid("foreign application or unsupported version"));
     }
     let projects = value["projects"]
@@ -74,7 +78,30 @@ fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
             if project["view"].is_null() {
                 None
             } else {
-                fields(&project["view"], &["mode", "workspace"])?;
+                if version == Some(2) {
+                    fields(&project["view"], &["mode", "workspace"])?;
+                } else {
+                    fields(&project["view"], &["mode", "workspace", "architecture"])?;
+                }
+                let architecture =
+                    if version == Some(2) || project["view"]["architecture"].is_null() {
+                        None
+                    } else {
+                        let context = &project["view"]["architecture"];
+                        fields(context, &["plan", "level"])?;
+                        let plan = context["plan"]
+                            .as_bool()
+                            .ok_or_else(|| invalid("Architecture plan must be a boolean"))?;
+                        let level = if context["level"].is_null() {
+                            None
+                        } else {
+                            let value = context["level"].as_str().ok_or_else(|| {
+                                invalid("Architecture level must be a UUID or null")
+                            })?;
+                            Some(EntityId::parse(value).map_err(invalid)?)
+                        };
+                        Some(Recall { plan, level })
+                    };
                 let mode = project["view"]["mode"]
                     .as_str()
                     .and_then(|name| {
@@ -86,7 +113,11 @@ fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
                     .as_str()
                     .ok_or_else(|| invalid("workspace must be a string"))?
                     .into();
-                Some(RecentView { mode, workspace })
+                Some(RecentView {
+                    mode,
+                    workspace,
+                    architecture,
+                })
             }
         };
         let entry = RecentProject {
@@ -116,11 +147,12 @@ fn encode(entries: &[RecentProject]) -> Result<Vec<u8>, String> {
         let view = entry
             .view
             .as_ref()
-            .map(|v| json!({"mode":v.mode.top_level().title(),"workspace":v.workspace}));
+            .map(|v| json!({"mode":v.mode.top_level().title(),"workspace":v.workspace,
+                "architecture":v.architecture.map(|context|json!({"plan":context.plan,"level":context.level.map(|id|id.to_string())}))}));
         projects.push(json!({"path":path,"title":entry.title,"last_opened_unix_ms":entry.last_opened_unix_ms,"view":view}));
     }
     let bytes = serde_json::to_vec_pretty(
-        &json!({"application":APPLICATION,"version":2,"projects":projects}),
+        &json!({"application":APPLICATION,"version":3,"projects":projects}),
     )
     .map_err(invalid)?;
     if bytes.len() > MAX_BYTES {
@@ -197,12 +229,12 @@ impl RecentStore for RecentFileStore {
             return Ok(entries);
         }
         let mut entry = entry.clone();
-        if entry.view.is_none() {
-            entry.view = entries
+        entry.inherit_view(
+            entries
                 .iter()
                 .find(|old| old.path == entry.path)
-                .and_then(|old| old.view.clone());
-        }
+                .and_then(|old| old.view.as_ref()),
+        );
         entries.retain(|old| old.path != entry.path);
         entries.push(entry);
         let entries = normalize(entries)?;
@@ -227,6 +259,169 @@ impl RecentStore for RecentFileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mode_changes_preserve_an_unvisited_context_and_explicit_world_replaces_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = RecentFileStore::new(root.path().join("recent.json"));
+        let mut visit = entry(root.path(), 0, 1);
+        let saved = Recall {
+            plan: true,
+            level: Some(EntityId::new()),
+        };
+        visit.view = Some(RecentView {
+            mode: multicad_ui::registry::Mode::Model,
+            workspace: "Architecture".into(),
+            architecture: Some(saved),
+        });
+        store.record(&visit).unwrap();
+        visit.last_opened_unix_ms = 2;
+        visit.view = Some(RecentView {
+            mode: multicad_ui::registry::Mode::Motion,
+            workspace: "Common".into(),
+            architecture: None,
+        });
+        let entries = store.record(&visit).unwrap();
+        let view = entries[0].view.as_ref().unwrap();
+        assert_eq!(view.mode, multicad_ui::registry::Mode::Motion);
+        assert_eq!(view.architecture, Some(saved));
+        visit.last_opened_unix_ms = 3;
+        let world = Recall {
+            plan: false,
+            level: None,
+        };
+        visit.view.as_mut().unwrap().architecture = Some(world);
+        assert_eq!(
+            store.record(&visit).unwrap()[0]
+                .view
+                .as_ref()
+                .unwrap()
+                .architecture,
+            Some(world)
+        );
+    }
+    #[test]
+    fn architecture_context_survives_native_project_reopen_and_v2_metadata_migration() {
+        use multicad_core::{
+            commands::{Actor, Channel, Session},
+            document::Document,
+            model::{self, LevelDefinition, length},
+            project_file::ProjectFile,
+        };
+        use multicad_ui::storage::{DocumentStorage, SaveMode};
+        let root = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Document::new("Saved level context").unwrap()).unwrap();
+        let (level, prepared) = model::prepare_level(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            "Upper",
+            &LevelDefinition {
+                elevation: length(3000.),
+                height: length(2800.),
+                slab_thickness: length(200.),
+            },
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let path = root.path().join("building.tcd");
+        let mut projects = crate::files::ProjectStore::new(root.path().join("recovery"));
+        projects
+            .save_project(
+                &path,
+                &ProjectFile::new(session.document().clone()).unwrap(),
+                SaveMode::Create,
+            )
+            .unwrap();
+        let source_bytes = fs::read(&path).unwrap();
+        let visit = RecentProject {
+            path: path.clone(),
+            title: "Saved level context".into(),
+            last_opened_unix_ms: 1,
+            view: Some(RecentView {
+                mode: multicad_ui::registry::Mode::Model,
+                workspace: "Architecture / Electrical".into(),
+                architecture: Some(Recall {
+                    plan: true,
+                    level: Some(level),
+                }),
+            }),
+        };
+        let metadata_path = root.path().join("recent.json");
+        RecentFileStore::new(metadata_path.clone())
+            .record(&visit)
+            .unwrap();
+        let mut restarted = RecentFileStore::new(metadata_path.clone());
+        assert_eq!(restarted.load().unwrap(), vec![visit.clone()]);
+        let reopened = projects.open_project(&path).unwrap();
+        assert_eq!(
+            model::levels(&reopened.file.document).next().unwrap().id,
+            level
+        );
+        assert_eq!(fs::read(&path).unwrap(), source_bytes);
+        let mut legacy: Value = serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+        legacy["version"] = json!(2);
+        legacy["projects"][0]["view"]
+            .as_object_mut()
+            .unwrap()
+            .remove("architecture");
+        fs::write(&metadata_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let migrated = restarted.load().unwrap();
+        assert_eq!(migrated[0].path, visit.path);
+        assert_eq!(
+            migrated[0].view.as_ref().unwrap().workspace,
+            "Architecture / Electrical"
+        );
+        assert_eq!(migrated[0].view.as_ref().unwrap().architecture, None);
+        restarted.record(&visit).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+        assert_eq!(saved["version"], json!(3));
+        assert_eq!(restarted.load().unwrap(), vec![visit]);
+        assert_eq!(fs::read(path).unwrap(), source_bytes);
+    }
+    #[test]
+    fn invalid_architecture_metadata_never_overwrites_existing_navigation_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let mut visit = entry(root.path(), 0, 1);
+        visit.view = Some(RecentView {
+            mode: multicad_ui::registry::Mode::Model,
+            workspace: "Architecture".into(),
+            architecture: Some(Recall {
+                plan: true,
+                level: Some(EntityId::new()),
+            }),
+        });
+        let valid: Value = serde_json::from_slice(&encode(&[visit.clone()]).unwrap()).unwrap();
+        let mut cases = vec![];
+        for value in [
+            json!(0),
+            json!("invalid"),
+            json!(EntityId::nil().to_string()),
+        ] {
+            let mut bad = valid.clone();
+            bad["projects"][0]["view"]["architecture"]["level"] = value;
+            cases.push(bad);
+        }
+        let mut bad = valid.clone();
+        bad["projects"][0]["view"]["architecture"]["plan"] = json!("true");
+        cases.push(bad);
+        let mut bad = valid.clone();
+        bad["projects"][0]["view"]["architecture"]["extra"] = json!(true);
+        cases.push(bad);
+        let mut bad = valid;
+        bad["projects"][0]["view"]["architecture"]
+            .as_object_mut()
+            .unwrap()
+            .remove("level");
+        cases.push(bad);
+        let mut store = RecentFileStore::new(root.path().join("recent.json"));
+        for value in cases {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(&store.path, &bytes).unwrap();
+            assert!(store.load().is_err());
+            assert!(store.record(&visit).is_err());
+            assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        }
+    }
     use std::{
         process::{Command, Stdio},
         time::{Duration, Instant},
@@ -455,6 +650,7 @@ mod tests {
         visit.view = Some(RecentView {
             mode: Mode::Motion,
             workspace: "Common".into(),
+            ..Default::default()
         });
         assert_eq!(
             decode(&encode(&[visit.clone()]).unwrap()).unwrap(),
@@ -479,6 +675,7 @@ mod tests {
         first.view = Some(RecentView {
             mode: multicad_ui::registry::Mode::Model,
             workspace: "Sheet metal".into(),
+            ..Default::default()
         });
         store.record(&first).unwrap();
         assert_eq!(store.load().unwrap(), vec![first.clone()]);
@@ -501,7 +698,7 @@ mod tests {
         first.last_opened_unix_ms = 3;
         store.record(&first).unwrap();
         let migrated = serde_json::from_slice::<Value>(&fs::read(&store.path).unwrap()).unwrap();
-        assert_eq!(migrated["version"], json!(2));
+        assert_eq!(migrated["version"], json!(3));
         assert_eq!(store.load().unwrap()[0], first);
         let mut invalid = migrated;
         invalid["projects"][0]["view"]["mode"] = json!("Unknown");

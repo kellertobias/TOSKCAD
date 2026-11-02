@@ -1,5 +1,61 @@
 use super::*;
 use crate::{architecture_navigation::Category, modeling::ModelingTool};
+#[test]
+fn saved_architecture_views_restore_known_world_and_missing_levels_without_changing_source() {
+    use crate::{architecture_view::Recall, recent_projects::RecentView};
+    let (session, levels, _, _) = crate::architecture_view::tests::building();
+    let source = session.document().clone();
+    for level in [Some(levels[1]), None, Some(EntityId::new())] {
+        let mut app = app();
+        *app.current_mut() = Project::new(source.clone()).unwrap();
+        app.current_mut()
+            .sketch
+            .restore_architecture_view(Recall { plan: true, level });
+        app.tab = app
+            .registry
+            .workspace(Mode::Model)
+            .tabs
+            .iter()
+            .position(|tab| tab.title == "Architecture")
+            .unwrap();
+        app.current_mut().architecture_category = Some(Category::Electrical);
+        app.remember_current_view();
+        let saved = app.current().view.clone();
+        assert_eq!(saved.architecture, Some(Recall { plan: true, level }));
+        *app.current_mut() = Project::new(source.clone()).unwrap();
+        app.current_mut().view = saved;
+        app.restore_current_view();
+        let ctx = context(1.);
+        paint(&mut app, &ctx, egui::vec2(1360., 860.), vec![]);
+        assert_eq!(
+            app.current().sketch.architecture_recall(),
+            Recall { plan: true, level }
+        );
+        assert_eq!(
+            app.active_architecture_category(),
+            Some(Category::Electrical)
+        );
+        assert_eq!(app.current().session.document(), &source);
+        assert_eq!(app.current().session.revision(), 0);
+    }
+    let mut app = app();
+    *app.current_mut() = Project::new(source.clone()).unwrap();
+    app.current_mut().view = RecentView {
+        mode: Mode::Model,
+        workspace: "Architecture".into(),
+        architecture: None,
+    };
+    app.restore_current_view();
+    paint(&mut app, &context(1.), egui::vec2(1360., 860.), vec![]);
+    assert_eq!(
+        app.current().sketch.architecture_recall(),
+        Recall {
+            plan: false,
+            level: Some(levels[0])
+        }
+    );
+    assert_eq!(app.current().session.document(), &source);
+}
 
 #[test]
 fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_scales() {
@@ -241,6 +297,7 @@ fn category_context_is_per_project_and_saved_subpaths_restore_without_running_to
         app.current_mut().view = crate::recent_projects::RecentView {
             mode: Mode::Model,
             workspace: category.workspace().into(),
+            ..Default::default()
         };
         app.restore_current_view();
         assert_eq!(app.active_architecture_category(), Some(category));
