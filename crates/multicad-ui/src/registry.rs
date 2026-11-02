@@ -136,6 +136,14 @@ pub struct Registry {
     pub tools: Vec<Tool>,
     pub workspaces: Vec<Workspace>,
 }
+/// Canonical title for persisted Model navigation before sparse-tool consolidation.
+pub fn canonical_workbench_title(mode: Mode, title: &str) -> &str {
+    if mode == Mode::Model && matches!(title, "FDM" | "FDM aids") {
+        "Other"
+    } else {
+        title
+    }
+}
 fn command_home(command: Command) -> Option<(Mode, &'static str)> {
     match command {
         Command::Modeling(ModelingTool::Panel | ModelingTool::Cabinet | ModelingTool::WoodBox) => {
@@ -580,6 +588,8 @@ impl Default for Registry {
                                         | ModelingTool::ShelfPins
                                         | ModelingTool::LooseTenon
                                         | ModelingTool::FdmAid
+                                        | ModelingTool::FdmBridge
+                                        | ModelingTool::FdmSupport
                                         | ModelingTool::Member
                                         | ModelingTool::Connection
                                         | ModelingTool::Weld
@@ -606,7 +616,7 @@ impl Default for Registry {
                     ),
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
-                    tab("FDM", &["fdm-aid"]),
+                    tab("Other", &["fdm-aid", "fdm-bridge", "fdm-support"]),
                     RibbonTab {
                         title: "Relationships",
                         tools: crate::assembly::AssemblyTool::ALL
@@ -1150,6 +1160,8 @@ mod tests {
                         | ModelingTool::ShelfPins
                         | ModelingTool::LooseTenon
                         | ModelingTool::FdmAid
+                        | ModelingTool::FdmBridge
+                        | ModelingTool::FdmSupport
                         | ModelingTool::Member
                         | ModelingTool::Connection
                         | ModelingTool::Weld
@@ -1195,14 +1207,14 @@ mod tests {
                     .find(|t| t.title == "Sheet metal");
                 assert!(tab.unwrap().tools.contains(&tool.id()));
             }
-            if tool == ModelingTool::FdmAid {
+            if tool.fdm_kind().is_some() {
                 let fdm = registry
                     .workspace(Mode::Model)
                     .tabs
                     .iter()
-                    .find(|t| t.title == "FDM");
+                    .find(|t| t.title == "Other");
                 assert!(fdm.unwrap().tools.contains(&tool.id()));
-                assert_eq!(registry.resolve("support").unwrap().id, tool.id());
+                assert_eq!(registry.resolve(tool.aliases()[0]).unwrap().id, tool.id());
             }
             if matches!(
                 tool,

@@ -175,6 +175,38 @@ pub(super) struct FdmAidPanel {
     review: Option<Review>,
 }
 impl FdmAidPanel {
+    pub fn use_coordinates(&mut self) -> bool {
+        if self.picking.take().is_none() {
+            return false;
+        }
+        self.hover = None;
+        self.error = None;
+        self.stamp.changed();
+        true
+    }
+    pub fn kind(&self) -> AidKind {
+        self.kind
+    }
+    pub fn choose_kind(&mut self, kind: AidKind) -> Result<bool, String> {
+        if self.kind == kind {
+            return Ok(false);
+        }
+        if self.existing.is_some() {
+            return Err(
+                "An existing aid keeps its saved type; create a separate aid to use another type"
+                    .into(),
+            );
+        }
+        self.kind = kind;
+        self.other = None;
+        self.picking = Some(PickRole::Contact);
+        self.hover = None;
+        self.review = None;
+        self.error = None;
+        self.stamp.changed();
+        Ok(true)
+    }
+
     pub fn new(document: &Document, name: String) -> Self {
         Self::with_selection(document, name, &[])
     }
@@ -216,6 +248,7 @@ impl FdmAidPanel {
         let aid = model::read_aid(document, feature).map_err(|e| e.to_string())?;
         let mut form = Self::new(document, String::new());
         form.existing = Some(feature);
+        form.seed_note = None;
         form.feature = feature;
         form.picking = None;
         form.body = aid.output.body;
@@ -285,6 +318,12 @@ impl FdmAidPanel {
         }
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<FdmAidCommand, String> {
+        if self.picking.is_some() {
+            return Err("Finish the viewer pick, or choose Use coordinates before Preview".into());
+        }
+        self.draft_request(document, enabled)
+    }
+    fn draft_request(&self, document: &Document, enabled: bool) -> Result<FdmAidCommand, String> {
         if !enabled {
             return Err("The native modeling preview provider is unavailable".into());
         }
@@ -362,28 +401,37 @@ impl FdmAidPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         let mut changed = false;
-        if self.existing.is_none() {
-            ui.horizontal(|ui| {
-                for (kind, label) in [
-                    (AidKind::Tab, "Tab"),
-                    (AidKind::Bridge, "Bridge"),
-                    (AidKind::Support, "Support"),
-                ] {
-                    if ui.radio_value(&mut self.kind, kind, label).changed() {
-                        changed = true;
-                        self.picking = Some(PickRole::Contact);
-                        self.hover = None;
-                    }
+        ui.horizontal_wrapped(|ui| {
+            for (kind, label, icon) in [
+                (AidKind::Tab, "Tab", crate::icons::Icon::Thickness),
+                (AidKind::Bridge, "Bridge", crate::icons::Icon::Link),
+                (AidKind::Support, "Support", crate::icons::Icon::ArrowUp),
+            ] {
+                let response = ui
+                    .add_enabled_ui(self.existing.is_none(), |ui| {
+                        crate::icons::labeled_button(ui, icon, label)
+                    })
+                    .inner;
+                if self.kind == kind {
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        4.,
+                        ui.visuals().selection.stroke,
+                        egui::StrokeKind::Inside,
+                    );
                 }
-            });
-        }
+                if response.clicked() {
+                    changed |= self.choose_kind(kind).unwrap_or(false);
+                }
+            }
+        });
         ui.strong(self.label());
         ui.small(match self.kind {
-            AidKind::Tab => "A flat pad from the contact point outward, overlapping under the part. Its own Part; export recipes can exclude it.",
-            AidKind::Bridge => "A thin bar between two points, tying the part to itself or to a second Part. Its own Part; export recipes can exclude it.",
-            AidKind::Support => "A flat-topped block from the base up to the gap below the lowest part surface over its footprint. The height follows the part.",
+            AidKind::Tab => "Horizontal pad at a base edge. Overlap attaches it to the finished Part; break it away after printing.",
+            AidKind::Bridge => "Thin bar between two surface anchors on one or two Parts. Cut the connecting bar away after printing.",
+            AidKind::Support => "Vertical block from the plate to the underside. Height follows the Part; the top gap allows removal.",
         });
-        ui.small("+Z is the build direction; keep this orientation in the print recipe.");
+        ui.small("+Z build direction · each aid stays a separate editable Part.");
         ui.label("Name");
         changed |= ui
             .add(egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()))
@@ -404,74 +452,110 @@ impl FdmAidPanel {
         if let Some(note) = &self.seed_note {
             ui.colored_label(egui::Color32::LIGHT_RED, note);
         }
-        ui.label("Process allowances");
-        changed |= combo(
-            ui,
-            "fdm-aid-process",
-            &processes(document),
-            &mut self.process,
-            "None · contact checks only",
-        );
+        if self.kind == AidKind::Bridge {
+            ui.label("Second Part");
+            let others: Vec<_> = parts
+                .iter()
+                .filter(|(part, _)| Some(*part) != self.target)
+                .cloned()
+                .collect();
+            changed |= combo(
+                ui,
+                "fdm-aid-other",
+                &others,
+                &mut self.other,
+                "None · same Part",
+            );
+        }
+        ui.collapsing("Process allowances", |ui| {
+            changed |= combo(
+                ui,
+                "fdm-aid-process",
+                &processes(document),
+                &mut self.process,
+                "None · contact checks only",
+            );
+        });
         ui.separator();
         changed |= self.show_placement(ui, document);
+        let row = |ui: &mut egui::Ui, field: &mut DimensionField, label: &str, hint: &str| {
+            ui.horizontal(|ui| field.show(ui, label, hint)).inner
+        };
         match self.kind {
             AidKind::Tab => {
                 for (axis, f) in ["X", "Y", "Z"].iter().zip(&mut self.origin) {
-                    changed |= f.show(
+                    changed |= row(
                         ui,
+                        f,
                         &format!("Contact {axis}"),
-                        "World point on the part outline",
+                        "World contact point at the base edge",
                     );
                 }
-                changed |= self
-                    .angle
-                    .show(ui, "Direction", "Outward direction about +Z");
-                changed |= self
-                    .length
-                    .show(ui, "Length", "Outward from the contact point");
-                changed |= self.overlap.show(ui, "Overlap", "Back under the part");
-                changed |= self.width.show(ui, "Width", "Across the tab");
-                changed |= self
-                    .thickness
-                    .show(ui, "Thickness", "Up from the contact point");
+                changed |= row(ui, &mut self.angle, "Direction", "Outward about +Z");
+                changed |= row(ui, &mut self.length, "Reach", "Outward from the contact");
+                changed |= row(
+                    ui,
+                    &mut self.overlap,
+                    "Overlap",
+                    "Back under the finished Part",
+                );
+                changed |= row(ui, &mut self.width, "Width", "Across the pad");
+                changed |= row(
+                    ui,
+                    &mut self.thickness,
+                    "Thickness",
+                    "Pad height above contact",
+                );
             }
             AidKind::Bridge => {
                 for (axis, f) in ["X", "Y", "Z"].iter().zip(&mut self.origin) {
-                    changed |= f.show(ui, &format!("Start {axis}"), "Centreline start");
+                    changed |= row(ui, f, &format!("Start {axis}"), "First surface anchor");
                 }
                 for (axis, f) in ["X", "Y", "Z"].iter().zip(&mut self.end) {
-                    changed |= f.show(ui, &format!("End {axis}"), "Centreline end");
+                    changed |= row(ui, f, &format!("End {axis}"), "Second surface anchor");
                 }
-                changed |= self.width.show(ui, "Width", "Horizontal, across the bar");
-                changed |= self
-                    .thickness
-                    .show(ui, "Thickness", "Across the bar and width");
-                ui.label("Second Part");
-                let others: Vec<_> = parts
-                    .iter()
-                    .filter(|(p, _)| Some(*p) != self.target)
-                    .cloned()
-                    .collect();
-                changed |= combo(
+                changed |= row(ui, &mut self.width, "Width", "Horizontal bar width");
+                changed |= row(
                     ui,
-                    "fdm-aid-other",
-                    &others,
-                    &mut self.other,
-                    "None · same Part",
+                    &mut self.thickness,
+                    "Thickness",
+                    "Bar cross-section thickness",
                 );
             }
             AidKind::Support => {
-                changed |= self.origin[0].show(ui, "Footprint X", "Footprint corner");
-                changed |= self.origin[1].show(ui, "Footprint Y", "Footprint corner");
-                changed |= self
-                    .angle
-                    .show(ui, "Direction", "Footprint length direction");
-                changed |= self.length.show(ui, "Length", "Along the direction");
-                changed |= self.width.show(ui, "Width", "Across the direction");
-                changed |= self
-                    .base
-                    .show(ui, "Base", "Bottom height, usually the plate");
-                changed |= self.gap.show(ui, "Gap", "Below the lowest part surface");
+                changed |= row(
+                    ui,
+                    &mut self.origin[0],
+                    "Corner X",
+                    "Support footprint corner",
+                );
+                changed |= row(
+                    ui,
+                    &mut self.origin[1],
+                    "Corner Y",
+                    "Support footprint corner",
+                );
+                changed |= row(
+                    ui,
+                    &mut self.angle,
+                    "Direction",
+                    "Footprint orientation about +Z",
+                );
+                changed |= row(ui, &mut self.length, "Length", "Footprint length");
+                changed |= row(ui, &mut self.width, "Width", "Footprint width");
+                changed |= row(
+                    ui,
+                    &mut self.base,
+                    "Base",
+                    "Bottom height, usually the plate",
+                );
+                changed |= row(
+                    ui,
+                    &mut self.gap,
+                    "Top gap",
+                    "Distance below the lowest target surface",
+                );
+                ui.small("Height is derived from the underside during native Preview.");
             }
         }
         ui.separator();
@@ -554,6 +638,7 @@ mod tests {
         form.origin[1] = field(5., "mm");
         form.length = field(30., "mm");
         form.width = field(10., "mm");
+        form.use_coordinates();
         let command = form.request(s.document(), true).unwrap();
         assert_eq!(command.edit_id(), None);
         let prepared = command.prepare(&s, Actor::local(Channel::Ui)).unwrap();
@@ -583,6 +668,7 @@ mod tests {
         assert_eq!(prepared.outputs[0].body, body);
         // A tab without a thickness is refused before Preview.
         let mut bad = FdmAidPanel::new(s.document(), "Tab".into());
+        bad.use_coordinates();
         bad.thickness = field(0., "mm");
         let error = bad
             .request(s.document(), true)
@@ -590,6 +676,41 @@ mod tests {
             .prepare(&s, Actor::local(Channel::Ui))
             .unwrap_err();
         assert!(error.contains("thickness"), "{error}");
+    }
+
+    #[test]
+    fn choice_switch_requires_a_new_contact_or_explicit_coordinates_and_keeps_source_neutral() {
+        let (session, target) = session();
+        let before = session.document().clone();
+        let mut form = FdmAidPanel::new(&before, "Choice".into());
+        assert!(
+            form.request(&before, true)
+                .unwrap_err()
+                .contains("Use coordinates")
+        );
+        form.use_coordinates();
+        let first = form.request(&before, true).unwrap();
+        assert!(matches!(first.request.aid.shape, AidShape::Tab { .. }));
+        let stamp = form.stamp();
+        form.other = Some(EntityId::new());
+        form.choose_kind(AidKind::Bridge).unwrap();
+        assert_ne!(form.stamp(), stamp);
+        assert_eq!(form.other, None);
+        assert_eq!(form.target(), Some(target));
+        assert!(form.request(&before, true).is_err());
+        form.use_coordinates();
+        assert!(matches!(
+            form.request(&before, true).unwrap().request.aid.shape,
+            AidShape::Bridge { .. }
+        ));
+        form.choose_kind(AidKind::Support).unwrap();
+        assert!(form.request(&before, true).is_err());
+        form.use_coordinates();
+        assert!(matches!(
+            form.request(&before, true).unwrap().request.aid.shape,
+            AidShape::Support { .. }
+        ));
+        assert_eq!(session.document(), &before);
     }
 
     fn surface(
@@ -748,6 +869,32 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn inch_display_picks_keep_world_millimeters_and_degree_directions() {
+        struct Restore(crate::preferences::LengthUnit);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::preferences::set_length_unit(self.0);
+            }
+        }
+        let _restore = Restore(crate::preferences::length_unit());
+        crate::preferences::set_length_unit(crate::preferences::LengthUnit::Inch);
+        let (session, block) = session();
+        let mut form = FdmAidPanel::new(session.document(), "Inch contact".into());
+        form.pick_surface(
+            session.document(),
+            block,
+            surface([12.7, 0., 20.], [0., -1., 0.], true),
+            Some(15.),
+        )
+        .unwrap();
+        let origin = form.origin_mm(session.document()).unwrap();
+        for (actual, expected) in origin.into_iter().zip([12.7, 0., 15.]) {
+            assert!((actual - expected).abs() < 1e-4, "{actual} != {expected}");
+        }
+        assert_eq!(form.angle_text(), "-90");
+        assert!(form.request(session.document(), true).is_ok());
+    }
     #[test]
     fn typed_inspector_values_drive_the_marker_and_direction_handle() {
         let (s, block) = session();

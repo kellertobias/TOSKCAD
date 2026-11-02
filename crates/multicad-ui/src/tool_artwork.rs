@@ -79,6 +79,8 @@ pub static SOURCES: &[(&str, &str)] = artwork![
     "page-setup",
     "model-dimension",
     "wood-panel",
+    "fdm-tab",
+    "fdm-bridge",
     "fdm-support",
 ];
 
@@ -144,7 +146,9 @@ pub fn artwork_id(mode: Mode, tool: &str) -> Option<&'static str> {
         (_, "drawing-dimension") => "model-dimension",
         (_, "panel") => "wood-panel",
         (_, "engraving") => "engraving",
-        (_, "fdm-aid") => "fdm-support",
+        (_, "fdm-aid") => "fdm-tab",
+        (_, "fdm-bridge") => "fdm-bridge",
+        (_, "fdm-support") => "fdm-support",
         _ => return None,
     })
 }

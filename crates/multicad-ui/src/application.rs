@@ -446,6 +446,11 @@ impl Application {
     }
     /// Ribbon highlight for the specialized tool whose form is open.
     fn tool_active(&self, command: Command) -> bool {
+        if let Command::Modeling(tool) = command
+            && let Some(kind) = tool.fdm_kind()
+        {
+            return self.current().sketch.fdm_aid_kind() == Some(kind);
+        }
         self.active_tool == Some((self.active, command))
             && match command {
                 Command::Modeling(_) | Command::EquipmentPreset(_) => {

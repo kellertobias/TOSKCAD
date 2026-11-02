@@ -72,6 +72,24 @@ impl DimensionField {
         };
         self.text = super::value_entry::format_number(value * scale);
     }
+    /// Keep an exact authored pick while displaying it in this field's unit.
+    /// Unedited rounded display text resolves to the original canonical value,
+    /// just as it does when reopening a stored literal.
+    pub fn set_exact_literal(&mut self, value: f64, unit: &str) {
+        let (Some(from), Some(to)) = (Unit::parse(unit), Unit::parse(&self.unit)) else {
+            return;
+        };
+        if from.dimension() != to.dimension() {
+            return;
+        }
+        self.text = trimmed(value * from.scale() / to.scale());
+        self.original_text = self.text.clone();
+        self.original = Dimension::Literal {
+            value,
+            unit: unit.into(),
+        };
+        self.previous = None;
+    }
     pub fn show(&mut self, ui: &mut egui::Ui, label: &str, help: &str) -> bool {
         ui.label(format!("{label} ({})", self.unit));
         ui.add(

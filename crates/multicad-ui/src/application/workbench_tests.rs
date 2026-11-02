@@ -65,7 +65,7 @@ fn placement_keeps_mechanical_while_motion_tools_route_to_motion_without_edits()
     }
 }
 /// Window/Door additionally need an applied wall; they share this path.
-const SPECIALIZED: [(&str, &str); 11] = [
+const SPECIALIZED: [(&str, &str); 13] = [
     ("Architecture", "wall"),
     ("Architecture", "level"),
     ("Architecture", "plant"),
@@ -76,7 +76,9 @@ const SPECIALIZED: [(&str, &str); 11] = [
     ("Weld", "tube"),
     ("Mechanical", "thread"),
     ("Mechanical", "gear"),
-    ("FDM", "fdm-aid"),
+    ("Other", "fdm-aid"),
+    ("Other", "fdm-bridge"),
+    ("Other", "fdm-support"),
 ];
 #[test]
 fn specialized_model_tools_keep_their_workbench_through_cancel_and_restart() {
@@ -193,4 +195,35 @@ fn finish_sketch_still_moves_to_model_common_and_drafts_still_guard_tools() {
     assert!(app.current().editor.dirty());
     assert!(app.invoke(action(&app, "panel"), &[], Channel::Ui).is_err());
     assert_eq!(app.tab, tab_index(&app, Mode::Model, "Wood"));
+}
+
+#[test]
+fn legacy_fdm_recall_and_type_specific_aliases_route_to_other_without_source_edits() {
+    for title in ["FDM", "FDM aids", "Other"] {
+        let mut app = app();
+        let before = app.current().session.document().clone();
+        app.current_mut().view = crate::recent_projects::RecentView {
+            mode: Mode::Model,
+            workspace: title.into(),
+            ..Default::default()
+        };
+        app.restore_current_view();
+        assert_eq!(app.tab, tab_index(&app, Mode::Model, "Other"));
+        assert_eq!(app.current().session.document(), &before);
+    }
+    for (alias, kind) in [
+        ("tab", multicad_core::model::AidKind::Tab),
+        ("bridge", multicad_core::model::AidKind::Bridge),
+        ("support", multicad_core::model::AidKind::Support),
+    ] {
+        let mut app = app();
+        app.mode = Mode::Model;
+        let before = app.current().session.document().clone();
+        let command = app.registry.resolve(alias).unwrap().action;
+        app.invoke(command, &[], Channel::CommandLine).unwrap();
+        assert_eq!(app.tab, tab_index(&app, Mode::Model, "Other"));
+        assert_eq!(app.current().sketch.fdm_aid_kind(), Some(kind));
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert_eq!(app.current().session.document(), &before);
+    }
 }

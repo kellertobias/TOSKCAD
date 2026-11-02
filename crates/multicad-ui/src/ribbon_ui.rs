@@ -63,6 +63,15 @@ fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
     entries
 }
 pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
+    if mode == Mode::Model && tab.title == "Other" {
+        return vec![Group {
+            label: "FDM design aids",
+            entries: ["fdm-aid", "fdm-bridge", "fdm-support"]
+                .into_iter()
+                .map(Entry::Tool)
+                .collect(),
+        }];
+    }
     if mode == Mode::Model && tab.title == "Architecture" {
         return crate::architecture_navigation::groups(None);
     }

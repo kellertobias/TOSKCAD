@@ -71,7 +71,10 @@ fn exact(v: f64) -> f64 {
     if r == 0. { 0. } else { r }
 }
 fn set(field: &mut crate::modeling::dimension::DimensionField, value: f64) {
-    field.text = format!("{}", exact(value));
+    field.set_exact_literal(exact(value), "mm");
+}
+fn set_angle(field: &mut crate::modeling::dimension::DimensionField, value: f64) {
+    field.set_exact_literal(exact(value), "deg");
 }
 /// A point in the build plane at `z` under the pointer ray.
 fn on_plane(view: &TerminationViewport<'_>, pointer: egui::Pos2, z: f64) -> Option<[f64; 3]> {
@@ -97,7 +100,7 @@ impl FdmAidPanel {
     }
     fn resolved(&self, document: &Document) -> Option<ResolvedAid> {
         let parameters = multicad_core::parameters::evaluate(document).ok()?;
-        self.request(document, true)
+        self.draft_request(document, true)
             .ok()?
             .request
             .aid
@@ -175,7 +178,7 @@ impl FdmAidPanel {
                 set(&mut self.origin[0], p[0]);
                 set(&mut self.origin[1], p[1]);
                 set(&mut self.origin[2], z);
-                set(&mut self.angle, n[1].atan2(n[0]).to_degrees());
+                set_angle(&mut self.angle, n[1].atan2(n[0]).to_degrees());
                 self.target = Some(part);
                 self.picking = None;
                 format!("Tab contact picked {how}, at the part's base; outward along the face")
@@ -223,7 +226,7 @@ impl FdmAidPanel {
         if dx.hypot(dy) < 1e-6 {
             return Err("Aim away from the contact point".into());
         }
-        set(&mut self.angle, dy.atan2(dx).to_degrees().round());
+        set_angle(&mut self.angle, dy.atan2(dx).to_degrees().round());
         self.picking = None;
         self.placed();
         Ok("Direction aimed in the build plane (whole degrees)".into())
@@ -259,7 +262,7 @@ impl FdmAidPanel {
         for i in 0..3 {
             set(&mut self.origin[i], contact.point_mm[i]);
         }
-        set(&mut self.angle, contact.angle_deg);
+        set_angle(&mut self.angle, contact.angle_deg);
         self.placed();
         true
     }
@@ -381,6 +384,51 @@ impl FdmAidPanel {
         let marker = |p: [f64; 3], color: egui::Color32| {
             painter.circle_stroke(screen(p), 5., egui::Stroke::new(2., color));
         };
+        let resolved = self.resolved(document);
+        if view.rect.width() > 300. && view.rect.height() > 160. {
+            let title = match self.kind {
+                AidKind::Tab => "Tab · overlapping base pad",
+                AidKind::Bridge => "Bridge · two surface anchors",
+                AidKind::Support => "Support · height follows underside",
+            };
+            let mut lines = vec![title.to_owned()];
+            if let Some(aid) = resolved.as_ref() {
+                lines.push(match aid {
+                    ResolvedAid::Tab { length_mm, width_mm, thickness_mm, overlap_mm, .. } => format!("Reach {length_mm:.2} · overlap {overlap_mm:.2} · width {width_mm:.2} · thickness {thickness_mm:.2} mm"),
+                    ResolvedAid::Bridge { start, end, width_mm, thickness_mm, .. } => {
+                        let span = (end[0]-start[0]).hypot(end[1]-start[1]).hypot(end[2]-start[2]);
+                        format!("Span {span:.2} · width {width_mm:.2} · thickness {thickness_mm:.2} mm")
+                    }
+                    ResolvedAid::Support { length_mm, width_mm, base_mm, gap_mm, .. } => format!("Footprint {length_mm:.2} × {width_mm:.2} · base {base_mm:.2} · gap {gap_mm:.2} mm"),
+                });
+                if self.kind == AidKind::Bridge {
+                    lines.push(format!(
+                        "Other anchor: {}",
+                        self.other
+                            .and_then(|id| document.get(id))
+                            .map_or("same finished Part", |entity| entity.name.as_str())
+                    ));
+                }
+            }
+            if let Some(Ok(review)) = self.current_review().map(|review| &review.result) {
+                let size: [f64; 3] = std::array::from_fn(|axis| {
+                    review.bounds_mm[1][axis] - review.bounds_mm[0][axis]
+                });
+                lines.push(format!(
+                    "Native bounds: {:.2} × {:.2} × {:.2} mm",
+                    size[0], size[1], size[2]
+                ));
+            }
+            for (index, text) in lines.into_iter().enumerate() {
+                let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.), MARKER);
+                let rect = egui::Rect::from_min_size(
+                    view.rect.left_top() + egui::vec2(14., 42. + index as f32 * 20.),
+                    galley.size(),
+                );
+                painter.rect_filled(rect.expand(3.), 2., egui::Color32::from_rgb(25, 30, 37));
+                painter.galley(rect.min, galley, MARKER);
+            }
+        }
         let review = self.current_review();
         let bad_contact = review.is_some_and(|r| {
             r.result
@@ -388,7 +436,7 @@ impl FdmAidPanel {
                 .map_or(true, |r| !r.contact_issues.is_empty())
         });
         let color = if bad_contact { BAD } else { MARKER };
-        if let Some(aid) = self.resolved(document) {
+        if let Some(aid) = resolved {
             let rect = |o: [f64; 3], a: f64, from: f64, to: f64, w: f64| {
                 let (c, s) = (a.cos(), a.sin());
                 let at = |u: f64, v: f64| [o[0] + c * u - s * v, o[1] + s * u + c * v, o[2]];
@@ -571,22 +619,33 @@ impl FdmAidPanel {
                     } else {
                         Some(role)
                     };
+                    true
+                } else {
+                    false
                 }
             };
         ui.horizontal_wrapped(|ui| match self.kind {
             AidKind::Tab => {
-                toggle(ui, &mut self.picking, PickRole::Contact, "Pick contact", "Click a side face of the finished part; the contact sits at the part's base and points outward");
-                toggle(ui, &mut self.picking, PickRole::Direction, "Aim direction", "Click in the build plane to point the tab");
+                changed |= toggle(ui, &mut self.picking, PickRole::Contact, "Pick contact", "Click a side face of the finished part; the contact sits at the part's base and points outward");
+                changed |= toggle(ui, &mut self.picking, PickRole::Direction, "Aim direction", "Click in the build plane to point the tab");
             }
             AidKind::Bridge => {
-                toggle(ui, &mut self.picking, PickRole::Contact, "Pick start", "Click the finished part where the bar starts");
-                toggle(ui, &mut self.picking, PickRole::End, "Pick end", "Click where the bar ends; a different Part becomes the second Part");
+                changed |= toggle(ui, &mut self.picking, PickRole::Contact, "Pick start", "Click the finished part where the bar starts");
+                changed |= toggle(ui, &mut self.picking, PickRole::End, "Pick end", "Click where the bar ends; a different Part becomes the second Part");
             }
             AidKind::Support => {
-                toggle(ui, &mut self.picking, PickRole::Contact, "Pick footprint", "Click the part's underside to centre the footprint there");
-                toggle(ui, &mut self.picking, PickRole::Direction, "Aim direction", "Click in the base plane to set the footprint length direction");
+                changed |= toggle(ui, &mut self.picking, PickRole::Contact, "Pick footprint", "Click the part's underside to centre the footprint there");
+                changed |= toggle(ui, &mut self.picking, PickRole::Direction, "Aim direction", "Click in the base plane to set the footprint length direction");
             }
         });
+        if self.picking.is_some()
+            && ui
+                .button("Use coordinates")
+                .on_hover_text("Use the coordinate fields instead of continuing the viewer pick")
+                .clicked()
+        {
+            changed |= self.use_coordinates();
+        }
         if let Some(role) = self.picking {
             ui.small(match (self.kind, role) {
                 (AidKind::Tab, PickRole::Contact) => {
@@ -629,7 +688,12 @@ impl FdmAidPanel {
                 let target = document
                     .get(r.target)
                     .map_or("the part", |e| e.name.as_str());
-                if r.touches_target {
+                if self.kind == AidKind::Support && r.contact_issues.is_empty() {
+                    ui.colored_label(
+                        GOOD,
+                        format!("Support gap to {target}: {:.3} mm", r.target_distance_mm),
+                    );
+                } else if r.touches_target {
                     ui.colored_label(GOOD, format!("Touches {target}"));
                 } else {
                     ui.colored_label(BAD, format!("{:.3} mm from {target}", r.target_distance_mm));

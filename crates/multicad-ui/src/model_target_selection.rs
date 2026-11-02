@@ -368,8 +368,14 @@ impl SketchEditor {
         if tool == ModelingTool::LooseTenon {
             return self.begin_loose_tenon(session, resources, channel);
         }
-        if tool == ModelingTool::FdmAid {
-            return self.begin_fdm_aid(session, resources, channel);
+        if let Some(kind) = tool.fdm_kind() {
+            self.begin_fdm_aid(session, resources, channel)?;
+            self.model.choose_fdm_aid_kind(kind)?;
+            self.message = format!(
+                "{} · pick the contact in the viewer or enter coordinates, then Preview",
+                tool.label()
+            );
+            return Ok(());
         }
         if tool == ModelingTool::Sheet {
             return self.begin_sheet(session, resources, channel);

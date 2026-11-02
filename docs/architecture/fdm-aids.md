@@ -9,7 +9,7 @@ The window and the MCP server use the same core API.
 | `crates/multicad-core/src/model/fdm.rs` | Aid and process source types, classification and transactions |
 | `crates/multicad-model/src/fdm.rs` | Native aid solids, derived support height and the aid inspection |
 | `crates/multicad-model/src/export/mod.rs` | Removable-aid exclusion in STEP, planar DXF and mesh recipes |
-| `crates/multicad-ui/src/modeling/fdm_aid.rs` | The window's Tab / bridge / support form |
+| `crates/multicad-ui/src/modeling/fdm_aid.rs` | The window's distinct Tab / Bridge / Support choices |
 | `crates/multicad-ui/src/modeling/fdm_aid/placement.rs` | Viewer picking, contact marker, direction handle and review overlay |
 | `crates/multicad-mcp/src/tools/fdm.rs` | MCP tools |
 
@@ -162,10 +162,34 @@ that keeps model coordinates and shows the process records and inspection
 findings of the aids serving the chosen Parts. A chosen placed copy brings its
 aids at the copy placement.
 
+## Choice clarity and local navigation
+
+The three choices keep their distinct canonical `AidShape` variants. A new form
+can switch choices; switching clears the old partner/contact review and requests
+a new contact. An applied aid keeps its saved type. Finish the viewer pick or
+choose **Use coordinates** before Preview. Picked and snapped coordinates retain
+their exact canonical value while their displayed text follows the chosen length
+unit. Degree directions remain angles.
+
+The inspector explains each shape, its required contacts and removal intent.
+Bridge exposes its second Part beside the finished-Part choice. The live viewer
+shows the aid type, authored dimensions, exact native bounds and contact/direction
+guides. These guides paint after the native solid callback. A valid intentional
+support gap is shown as a successful gap check rather than a failed touch.
+
+User-local navigation migrates the old `FDM` and `FDM aids` titles to `Other`.
+Visibility and order are reconciled with the installed workbenches; recent-view
+recall and command search resolve the same category. This changes UI organization,
+not document geometry, Undo history or Export aid inclusion/exclusion. The
+separately authorized Project material/stock authoring move belongs to CAD-224.
+
 ## Access
 
-- **Window.** Model → FDM aids → **Tab / bridge / support**. The form
-  places a tab, bridge or support for a finished Part. Preview builds the
+- **Window.** Model → Other → **Breakaway tab**, **Thin bridge** or
+  **Removable support**. Each entry opens its own typed choice and icon.
+  Search/command aliases `tab`, `bridge` and `support` open those same choices;
+  the existing `fdm-aid` identifier opens Tab. The form
+  places the selected aid for a finished Part. Preview builds the
   native solid and Apply commits it. Opening an applied aid edits it in
   place, keeping its Part. A new aid takes its finished Part from the
   selection: one selected finished Part (or a feature of it). With nothing

@@ -4,6 +4,25 @@ use super::{ModelForm, ModelToolController};
 use multicad_core::commands::Session;
 
 impl ModelToolController {
+    pub fn fdm_aid_kind(&self) -> Option<multicad_core::model::AidKind> {
+        match self.form.as_ref() {
+            Some(ModelForm::FdmAid(panel)) => Some(panel.kind()),
+            _ => None,
+        }
+    }
+    pub fn choose_fdm_aid_kind(
+        &mut self,
+        kind: multicad_core::model::AidKind,
+    ) -> Result<(), String> {
+        let Some(ModelForm::FdmAid(panel)) = self.form.as_mut() else {
+            return Err("Open an FDM design aid first".into());
+        };
+        if panel.choose_kind(kind)? {
+            self.invalidate();
+        }
+        Ok(())
+    }
+
     pub fn fdm_aid_active(&self) -> bool {
         matches!(&self.form, Some(ModelForm::FdmAid(_)))
     }

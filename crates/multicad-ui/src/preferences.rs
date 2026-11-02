@@ -60,13 +60,15 @@ impl Preferences {
                     .is_some_and(|entries| entries.iter().any(|entry| entry.title == "FDM aids"));
             for stored_entry in stored.get(&mode).into_iter().flatten() {
                 let mut entry = stored_entry.clone();
-                if mode == Mode::Model && entry.title == "FDM aids" {
-                    entry.title = "FDM".into();
-                }
-                if installed.contains(&entry.title.as_str())
-                    && !entries.iter().any(|e| e.title == entry.title)
-                {
-                    entries.push(entry.clone());
+                entry.title = crate::registry::canonical_workbench_title(mode, &entry.title).into();
+                if installed.contains(&entry.title.as_str()) {
+                    if let Some(previous) = entries.iter_mut().find(|e| e.title == entry.title) {
+                        if entry.title == "Other" {
+                            previous.visible |= entry.visible;
+                        }
+                    } else {
+                        entries.push(entry);
+                    }
                 }
             }
             for title in installed {
@@ -77,7 +79,8 @@ impl Preferences {
                     });
                 }
             }
-            if legacy_fdm && let Some(index) = entries.iter().position(|entry| entry.title == "FDM")
+            if legacy_fdm
+                && let Some(index) = entries.iter().position(|entry| entry.title == "Other")
             {
                 let fdm = entries.remove(index);
                 let before = entries
@@ -300,7 +303,7 @@ mod tests {
         let entries = preferences.workbenches.get_mut(&Mode::Model).unwrap();
         let index = entries
             .iter()
-            .position(|entry| entry.title == "FDM")
+            .position(|entry| entry.title == "Other")
             .unwrap();
         let mut fdm = entries.remove(index);
         fdm.title = "FDM aids".into();
@@ -315,7 +318,7 @@ mod tests {
         let entries = &preferences.workbenches[&Mode::Model];
         let fdm = entries
             .iter()
-            .position(|entry| entry.title == "FDM")
+            .position(|entry| entry.title == "Other")
             .unwrap();
         assert!(!entries[fdm].visible);
         assert_eq!(entries[fdm + 1].title, "Relationships");

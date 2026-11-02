@@ -110,6 +110,8 @@ pub enum ModelingTool {
     ShelfPins,
     LooseTenon,
     FdmAid,
+    FdmBridge,
+    FdmSupport,
     Member,
     Connection,
     Weld,
@@ -117,7 +119,16 @@ pub enum ModelingTool {
     Advanced(AdvancedKind),
 }
 impl ModelingTool {
-    pub const ALL: [Self; 42] = [
+    pub fn fdm_kind(self) -> Option<multicad_core::model::AidKind> {
+        use multicad_core::model::AidKind;
+        match self {
+            Self::FdmAid => Some(AidKind::Tab),
+            Self::FdmBridge => Some(AidKind::Bridge),
+            Self::FdmSupport => Some(AidKind::Support),
+            _ => None,
+        }
+    }
+    pub const ALL: [Self; 44] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
@@ -140,6 +151,8 @@ impl ModelingTool {
         Self::ShelfPins,
         Self::LooseTenon,
         Self::FdmAid,
+        Self::FdmBridge,
+        Self::FdmSupport,
         Self::Member,
         Self::Connection,
         Self::Weld,
@@ -200,6 +213,8 @@ impl ModelingTool {
             Self::ShelfPins => "system32",
             Self::LooseTenon => "domino",
             Self::FdmAid => "fdm-aid",
+            Self::FdmBridge => "fdm-bridge",
+            Self::FdmSupport => "fdm-support",
             Self::Member => "tube",
             Self::Connection => "cope",
             Self::Weld => "weld-joint",
@@ -247,7 +262,9 @@ impl ModelingTool {
             Self::Machining => "Drill / pocket",
             Self::ShelfPins => "System 32 shelf pins",
             Self::LooseTenon => "Domino joint",
-            Self::FdmAid => "Tab / bridge / support",
+            Self::FdmAid => "Breakaway tab",
+            Self::FdmBridge => "Thin bridge",
+            Self::FdmSupport => "Removable support",
             Self::Member => "Tube / profile",
             Self::Connection => "Miter / cope",
             Self::Weld => "Weld joint",
@@ -290,7 +307,9 @@ impl ModelingTool {
             Self::Panel | Self::Cabinet | Self::WoodBox => crate::icons::Icon::Box,
             Self::Joint | Self::LooseTenon => crate::icons::Icon::Link,
             Self::Machining | Self::ShelfPins => crate::icons::Icon::Cut,
-            Self::FdmAid => crate::icons::Icon::Edge,
+            Self::FdmAid => crate::icons::Icon::Thickness,
+            Self::FdmBridge => crate::icons::Icon::Link,
+            Self::FdmSupport => crate::icons::Icon::ArrowUp,
             Self::Member => crate::icons::Icon::Box,
             Self::Connection => crate::icons::Icon::Cut,
             Self::Weld => crate::icons::Icon::Link,
@@ -338,13 +357,9 @@ impl ModelingTool {
             Self::Machining => &["groove", "dado", "rabbet", "pocket", "hardware-holes"],
             Self::ShelfPins => &["shelf-pins", "shelf-pin-holes", "system-32", "line-boring"],
             Self::LooseTenon => &["loose-tenon", "domino-joint", "floating-tenon", "mortise"],
-            Self::FdmAid => &[
-                "support",
-                "tab",
-                "breakaway-tab",
-                "sacrificial-bridge",
-                "fdm",
-            ],
+            Self::FdmAid => &["tab", "breakaway-tab", "fdm-tab", "fdm"],
+            Self::FdmBridge => &["bridge", "sacrificial-bridge", "thin-bridge"],
+            Self::FdmSupport => &["support", "removable-support", "print-support"],
             Self::Member => &["member", "profile", "frame-member", "structural-member"],
             Self::Connection => &["miter", "member-butt", "notch", "end-cut"],
             Self::Weld => &["weld-definition", "weld-mark", "weld-order"],
@@ -407,7 +422,13 @@ impl ModelingTool {
                 "Usage: joint (choose panel pairs that overlap at a corner and a butt, miter or finger joint in the Inspector, then Preview and Apply)"
             }
             Self::FdmAid => {
-                "Usage: fdm-aid (choose tab, bridge or support, pick its contact and direction on the finished Part in the viewer or enter them in the Inspector, then Preview and Apply)"
+                "Usage: fdm-aid (pick a base-edge contact and outward direction; set reach, overlap, width and thickness; Preview and Apply)"
+            }
+            Self::FdmBridge => {
+                "Usage: fdm-bridge (pick two surface anchors on one or two Parts; set bar width and thickness; Preview and Apply)"
+            }
+            Self::FdmSupport => {
+                "Usage: fdm-support (pick an underside footprint; set footprint size, base and top gap; Preview derives height before Apply)"
             }
             Self::Weld => {
                 "Usage: weld (attach a weld to a member connection with mark, symbol, size, process and notes, or order the weld sequence, in the Inspector; Preview and Apply)"
@@ -510,7 +531,7 @@ impl ModelingTool {
             Self::Joint => {
                 "Requires rectangular panels that overlap at a right-angle corner, one full thickness of each, and no pending edits."
             }
-            Self::FdmAid => {
+            Self::FdmAid | Self::FdmBridge | Self::FdmSupport => {
                 "Requires native modeling, a finished Part and no pending edits. Each aid is its own Part; the finished Part is not changed. No slicer, support generation or G-code."
             }
             Self::Weld => {

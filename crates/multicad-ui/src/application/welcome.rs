@@ -87,7 +87,7 @@ impl Application {
         let workspace = if architecture {
             "Architecture"
         } else {
-            view.workspace.as_str()
+            crate::registry::canonical_workbench_title(self.mode, &view.workspace)
         };
         if architecture && self.mode == Mode::Model {
             self.current_mut().architecture_category =
