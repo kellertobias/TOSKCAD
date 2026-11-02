@@ -1,6 +1,9 @@
 use super::*;
 use multicad_core::{document::Document, project_file::ProjectResources};
 use std::time::{Duration, Instant};
+#[allow(dead_code)]
+#[path = "../../../../multicad-app/examples/shared_materials_review.rs"]
+mod shared_fixture;
 
 fn editor(s: &Session) -> LibraryEditor {
     let mut editor = LibraryEditor::default();
@@ -281,4 +284,156 @@ fn a_display_scene_without_native_source_metadata_cannot_authorize_apply() {
     assert!(error.contains("source-bound"), "{error}");
     assert!(!editor.can_apply(&s, &Default::default()));
     assert_eq!(s.revision(), 0);
+}
+
+#[test]
+fn project_definition_edits_drive_wood_sheet_and_profile_geometry_and_shared_drawing_hatches() {
+    let mut fixture = shared_fixture::fixture().unwrap();
+    let original = fixture.session.document().clone();
+    let count = original.entities().count();
+    shared_fixture::check(&fixture.session, &fixture, false).unwrap();
+    let mut editor = editor(&fixture.session);
+    for id in fixture.stocks.into_iter().chain([fixture.hatch]) {
+        let entity = fixture.session.document().get(id).unwrap().clone();
+        editor.select(&fixture.session, entity);
+        editor.draft.as_mut().unwrap().entity =
+            shared_fixture::changed_definition(&fixture.session, id).unwrap();
+        let source = fixture.session.document().clone();
+        preview(&mut editor, &fixture.session).unwrap();
+        assert_eq!(fixture.session.document(), &source);
+        editor
+            .apply(&mut fixture.session, &Default::default(), Channel::Ui)
+            .unwrap();
+        assert_eq!(fixture.session.document().entities().count(), count);
+    }
+    shared_fixture::check(&fixture.session, &fixture, true).unwrap();
+    for _ in 0..4 {
+        fixture
+            .session
+            .undo(fixture.session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+    }
+    assert_eq!(fixture.session.document(), &original);
+    shared_fixture::check(&fixture.session, &fixture, false).unwrap();
+    for _ in 0..4 {
+        fixture
+            .session
+            .redo(fixture.session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+    }
+    shared_fixture::check(&fixture.session, &fixture, true).unwrap();
+}
+
+#[test]
+fn changing_a_used_stocks_material_reports_the_dependent_assignment_instead_of_breaking_it() {
+    let fixture = shared_fixture::fixture().unwrap();
+    let original = fixture.session.document().clone();
+    let mut editor = editor(&fixture.session);
+    let stock = fixture
+        .session
+        .document()
+        .get(fixture.stocks[0])
+        .unwrap()
+        .clone();
+    editor.select(&fixture.session, stock);
+    let Some(LibraryDefinition::Stock(other)) =
+        read(fixture.session.document().get(fixture.stocks[1]).unwrap()).unwrap()
+    else {
+        panic!("sheet stock")
+    };
+    set_stock(&mut editor, |stock| stock.material = other.material);
+    let error = preview(&mut editor, &fixture.session).unwrap_err();
+    assert!(error.contains("material"), "{error}");
+    assert!(!editor.can_apply(&fixture.session, &Default::default()));
+    assert_eq!(fixture.session.document(), &original);
+}
+
+#[test]
+fn hollow_section_widget_can_author_a_real_solid_bar_without_replacing_stock_or_part() {
+    let mut fixture = shared_fixture::fixture().unwrap();
+    let mut editor = editor(&fixture.session);
+    editor.select(
+        &fixture.session,
+        fixture
+            .session
+            .document()
+            .get(fixture.stocks[2])
+            .unwrap()
+            .clone(),
+    );
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    let frame = |editor: &mut LibraryEditor, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000., 800.),
+                )),
+                events,
+                focused: true,
+                ..Default::default()
+            },
+            |ui| editor.show_inline(ui, &fixture.session, &Default::default(), true),
+        )
+    };
+    for _ in 0..3 {
+        frame(&mut editor, vec![]).drop_without_applying_deltas();
+    }
+    let output = frame(&mut editor, vec![]);
+    let bounds = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| {
+            (node.label() == Some("Hollow section"))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .max_by(|a, b| (a.y1 - a.y0).total_cmp(&(b.y1 - b.y0)))
+        .expect("hollow checkbox");
+    let pos = egui::pos2(
+        ((bounds.x0 + bounds.x1) / 2.) as f32,
+        ((bounds.y0 + bounds.y1) / 2.) as f32,
+    );
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        frame(
+            &mut editor,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    let Some(LibraryDefinition::Stock(stock)) =
+        read(&editor.draft.as_ref().unwrap().entity).unwrap()
+    else {
+        panic!("profile")
+    };
+    assert!(matches!(
+        stock.specification,
+        StockKind::Profile { wall_mm: None, .. }
+    ));
+    apply(&mut editor, &mut fixture.session).unwrap();
+    let native = multicad_model::Compiler::default()
+        .compile(fixture.session.document(), fixture.session.revision())
+        .unwrap();
+    let volume = native
+        .solid(fixture.parts[2])
+        .unwrap()
+        .volume_mm3()
+        .unwrap();
+    assert!((volume - 120000.).abs() < 1e-5);
+    assert!(fixture.session.document().get(fixture.stocks[2]).is_some());
 }

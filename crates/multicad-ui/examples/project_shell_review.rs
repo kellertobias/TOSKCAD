@@ -77,12 +77,16 @@ enum Review {
     CompoundCutout(bool),
     WoodBox(bool),
     FdmAid,
+    Materials(u8),
 }
 impl Review {
     fn name(self) -> String {
         match self {
             Self::Project => "project".into(),
             Self::FdmAid => "fdm-aid".into(),
+            Self::Materials(kind) => {
+                ["materials-sheet", "materials-profile", "materials-preview"][kind as usize].into()
+            }
             Self::WoodBox(omitted) => if omitted {
                 "wood-box-omitted-side"
             } else {
@@ -168,14 +172,20 @@ fn render(
             | Review::WoodBox(_)
             | Review::FdmAid
     );
-    if architecture {
-        app.mode = Mode::Model;
+    let materials = matches!(review, Review::Materials(_));
+    if architecture || materials {
+        if architecture {
+            app.mode = Mode::Model;
+        }
         app.set_scene_backends(Arc::new(|| Box::new(modeling::Backend::new())));
         app.set_model_backends(Arc::new(|| Box::new(modeling::Backend::new())));
     }
     let source_hash = project_file::ContentHash::document(app.current().session.document())?;
     let mut routes: std::collections::VecDeque<_> = match review {
         Review::Project => [].into_iter().collect(),
+        Review::Materials(0) => ["Materials", "Steel sheet 2"].into_iter().collect(),
+        Review::Materials(1) => ["Materials", "Steel tube 30x20x2"].into_iter().collect(),
+        Review::Materials(_) => ["Materials", "New material"].into_iter().collect(),
         Review::WoodBox(_) => ["Wood"].into_iter().collect(),
         Review::FdmAid => ["Other"].into_iter().collect(),
         Review::Architecture(None) => ["Architecture"].into_iter().collect(),
@@ -196,6 +206,7 @@ fn render(
     let mut wood_face_omitted = false;
     let mut tool_opened = false;
     let mut tool_preview_requested = false;
+    let mut material_preview_frame = None;
     let started = Instant::now();
     let context = egui::Context::default();
     multicad_ui::theme::configure(&context);
@@ -209,7 +220,7 @@ fn render(
             ..Default::default()
         },
     );
-    if architecture {
+    if architecture || materials {
         multicad_ui::viewport::install_renderer(device, format, &mut renderer.callback_resources);
     }
     let pixels = [
@@ -246,7 +257,8 @@ fn render(
     let mut index = 0;
     loop {
         if started.elapsed() > Duration::from_secs(120) {
-            return Err("Native offscreen view did not become ready".into());
+            let library = app.current().sketch.material_library();
+            return Err(format!("Native offscreen view did not become ready: material draft={}, pending={}, error={:?}", library.dirty(), library.pending(), library.error()).into());
         }
         let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -264,6 +276,80 @@ fn render(
             .expect("root viewport")
             .native_pixels_per_point = Some(density);
         let mut output = context.run_ui(input, |ui| app.show(ui));
+        if material_preview_frame.is_some_and(|frame| index == frame + 4) {
+            let library = app.current().sketch.material_library();
+            eprintln!(
+                "Material capture state: draft={}, pending={}, can_preview={}, can_apply={}, error={:?}",
+                library.dirty(),
+                library.pending(),
+                library.can_preview(&app.current().session),
+                library.can_apply(&app.current().session, &app.current().resources),
+                library.error()
+            );
+        }
+        if matches!(review, Review::Materials(2))
+            && tool_preview_requested
+            && let Some(error) = app.current().sketch.material_library().error()
+        {
+            let error = format!("Native material preview: {error}");
+            output.textures_delta.clear();
+            return Err(error.into());
+        }
+        if materials && stable >= 2 {
+            let check = || -> Result<(), Error> {
+                if egui::PanelState::load(&context, egui::Id::new("ribbon")).is_some() {
+                    return Err("Project Materials restored a ribbon".into());
+                }
+                let metadata =
+                    egui::PanelState::load(&context, egui::Id::new("parameters-metadata"))
+                        .ok_or("Missing metadata sidebar")?
+                        .outer_rect;
+                for label in [
+                    "Apply and Rebuild",
+                    "Discard Edit",
+                    "Preview",
+                    "Undo",
+                    "Redo",
+                    "Parameters",
+                    "Materials",
+                ] {
+                    let center = control(&output, label)?;
+                    if center.y >= size[1] as f32 || center.x >= metadata.left() {
+                        return Err(format!("Clipped or misplaced Project control {label}").into());
+                    }
+                }
+                if matches!(review, Review::Materials(2)) {
+                    let library = app.current().sketch.material_library();
+                    if !library.can_apply(&app.current().session, &app.current().resources) {
+                        return Err("Native material preview did not authorize Apply".into());
+                    }
+                    let scene = library
+                        .preview_scene(&app.current().session, &app.current().resources)
+                        .ok_or("Missing material preview scene")?;
+                    if scene.instances().len() != 3 {
+                        return Err("Material preview lost a fixture Part".into());
+                    }
+                    if !output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Callback(callback) if callback.rect.height() > 160. && callback.rect.right() <= metadata.left())) {
+                        return Err("Native material preview is missing or crosses the metadata sidebar".into());
+                    }
+                } else {
+                    for label in if matches!(review, Review::Materials(0)) {
+                        ["Thickness", "K factor"]
+                    } else {
+                        ["Stock length", "Wall"]
+                    } {
+                        if !output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label && shape.clip_rect.contains_rect(egui::Rect::from_min_size(text.pos, text.galley.size())))) {
+                            return Err(format!("Clipped stock definition input {label}").into());
+                        }
+                    }
+                }
+                Ok(())
+            };
+            if let Err(error) = check() {
+                output.textures_delta.clear();
+                return Err(error);
+            }
+        }
         if tool_opened && matches!(review, Review::CompoundCutout(_)) && stable >= 2 {
             let check = || -> Result<(), Error> {
                 let (callback_index, viewport) = output
@@ -495,6 +581,27 @@ fn render(
                 };
                 events = pointer(pos, true);
                 release = Some(pos);
+            } else if matches!(review, Review::Materials(2)) && !tool_preview_requested {
+                // New material is created after the left actions were painted.
+                // Wait for their enabled state before queuing a pointer press.
+                let enabled = output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .is_some_and(|update| {
+                        update.nodes.iter().any(|(_, node)| {
+                            node.label() == Some("Preview")
+                                && !node.is_disabled()
+                                && node.bounds().is_some_and(|b| b.y1 - b.y0 >= 30.)
+                        })
+                    });
+                if enabled {
+                    let pos = control(&output, "Preview")?;
+                    events = pointer(pos, true);
+                    release = Some(pos);
+                    tool_preview_requested = true;
+                    material_preview_frame = Some(index);
+                }
             } else if matches!(
                 review,
                 Review::CompoundCutout(_) | Review::WoodBox(_) | Review::FdmAid
@@ -548,7 +655,18 @@ fn render(
                 if stable == 0 {
                     events = vec![egui::Event::PointerGone];
                 }
-                if !matches!(
+                if matches!(review, Review::Materials(2)) {
+                    if app
+                        .current()
+                        .sketch
+                        .material_library()
+                        .can_apply(&app.current().session, &app.current().resources)
+                    {
+                        stable += 1;
+                    } else {
+                        stable = 0;
+                    }
+                } else if !matches!(
                     review,
                     Review::CompoundCutout(_) | Review::WoodBox(_) | Review::FdmAid
                 ) || app
@@ -683,9 +801,10 @@ fn main() -> Result<(), Error> {
         Some(arg) if arg == "--compound-cutout" => 3,
         Some(arg) if arg == "--wood-box" => 4,
         Some(arg) if arg == "--fdm-aid" => 5,
+        Some(arg) if arg == "--materials" => 6,
         _ => {
             return Err(
-                "Expected optional --architecture, --architecture-views, --compound-cutout, --wood-box or --fdm-aid"
+                "Expected optional --architecture, --architecture-views, --compound-cutout, --wood-box, --fdm-aid or --materials"
                     .into(),
             );
         }
@@ -716,6 +835,12 @@ fn main() -> Result<(), Error> {
         vec![Review::WoodBox(false), Review::WoodBox(true)]
     } else if review_mode == 5 {
         vec![Review::FdmAid]
+    } else if review_mode == 6 {
+        vec![
+            Review::Materials(0),
+            Review::Materials(1),
+            Review::Materials(2),
+        ]
     } else {
         vec![Review::Project]
     };
