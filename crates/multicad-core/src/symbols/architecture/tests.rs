@@ -1419,3 +1419,53 @@ fn a_pinned_wall_and_new_receiving_opening_type_are_created_in_one_transaction()
     assert!(prepared.prepared.document().get(opening_type).is_some());
     assert_eq!(host.document(), &after);
 }
+
+#[test]
+fn graphical_interface_and_immutable_pin_author_as_one_cancelable_source_transaction() {
+    let (mut session, interface, width, _) = fence();
+    let before = session.document().clone();
+    let root = EntityId::new();
+    let symbol = SymbolAuthorRequest::new(
+        "Reusable fence",
+        root,
+        SymbolKind::Dynamic,
+        vec![width],
+        None,
+    );
+    let request = ArchitectureAuthorRequest {
+        blueprint: root,
+        interface: interface.clone(),
+        symbol,
+    };
+    let cancelled =
+        prepare_architecture_author(&session, session.revision(), actor(), &request).unwrap();
+    assert!(cancelled.prepared.document().get(root).is_some());
+    assert_eq!(session.document(), &before);
+    drop(cancelled);
+    let prepared =
+        prepare_architecture_author(&session, session.revision(), actor(), &request).unwrap();
+    let definition = read_definition(prepared.prepared.document(), prepared.definition).unwrap();
+    assert_eq!(definition.root, root);
+    assert_eq!(definition.template.id(), before.id());
+    assert!(fence_runs(&definition.template).next().is_none());
+    assert_eq!(
+        read_blueprint(prepared.prepared.document(), root)
+            .unwrap()
+            .construction,
+        interface.construction
+    );
+    assert_eq!(
+        read_fence_type(prepared.prepared.document(), interface.construction).unwrap(),
+        read_fence_type(&before, interface.construction).unwrap()
+    );
+    session.commit(prepared.prepared).unwrap();
+    let after = session.document().clone();
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &before);
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &after);
+    let mut alias = request.clone();
+    alias.blueprint = interface.construction;
+    assert!(prepare_architecture_author(&session, session.revision(), actor(), &alias).is_err());
+    assert_eq!(session.document(), &after);
+}

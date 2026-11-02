@@ -1,4 +1,5 @@
 //! Reusable, pinned source definitions with native-checked transactional edits.
+pub(crate) mod architecture;
 mod controller;
 mod fields;
 mod forms;
@@ -7,6 +8,7 @@ mod installed;
 mod proof;
 #[cfg(test)]
 mod tests;
+pub use architecture::Command as ArchitecturalSymbolCommand;
 pub use controller::SymbolController;
 use multicad_core::document::EntityId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +38,10 @@ pub struct SymbolSelection {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SymbolAction {
+    DrawConstruction {
+        definition: EntityId,
+        role: multicad_core::symbols::architecture::ArchitectureRole,
+    },
     ImportLibrary,
     OpenInstalled(std::path::PathBuf),
     SaveDefinition(EntityId),

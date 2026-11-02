@@ -104,6 +104,7 @@ impl OpeningRow {
 
 pub(super) struct WallPanel {
     stamp: FormStamp,
+    symbol: crate::symbols::architecture::Binding,
     feature: EntityId,
     body: EntityId,
     editing: bool,
@@ -127,6 +128,7 @@ pub(super) struct WallPanel {
     /// Snap targets from other walls and slabs, cached per document revision.
     targets: Option<(u64, Vec<[f64; 2]>)>,
     level: Option<EntityId>,
+    levels: Vec<(EntityId, String)>,
     base_z: DimensionField,
     openings: Vec<OpeningRow>,
     /// Vertical cutouts are edited with their Room tool; a wall edit keeps them.
@@ -142,10 +144,17 @@ fn literal(d: &Dimension) -> String {
 impl WallPanel {
     pub fn new(document: &Document, name: String) -> Result<Self, String> {
         let wall_type = model::wall_types(document).next().map(|e| e.id);
+        let feature = EntityId::new();
+        let body = EntityId::new();
+        let symbol = crate::symbols::architecture::Binding::new(
+            document,
+            multicad_core::symbols::architecture::ArchitectureOutput::Wall { feature, body },
+        )?;
         let mut panel = Self {
             stamp: FormStamp::new(),
-            feature: EntityId::new(),
-            body: EntityId::new(),
+            symbol,
+            feature,
+            body,
             editing: false,
             name,
             wall_type,
@@ -168,12 +177,25 @@ impl WallPanel {
             outline: OutlineEditor::from_mm(OutlineKind::WallPath, &[[0., 0.], [4000., 0.]], false),
             targets: None,
             level: model::levels(document).next().map(|e| e.id),
+            levels: model::levels(document)
+                .map(|e| (e.id, e.name.clone()))
+                .collect(),
             base_z: DimensionField::from_dimension(&length(0.), "mm")?,
             openings: vec![],
             cutouts: vec![],
             error: None,
         };
+        let owned = multicad_core::symbols::owned_entities(document).map_err(|e| e.to_string())?;
+        panel.types.retain(|(id, _)| !owned.contains(id));
+        if panel.wall_type.is_some_and(|id| owned.contains(&id)) {
+            panel.wall_type = panel.types.first().map(|(id, _)| *id);
+        }
         panel.load_type(document)?;
+        if panel.wall_type.is_none()
+            && let Some(id) = panel.symbol.first()
+        {
+            panel.symbol.select(document, Some(id))?;
+        }
         Ok(panel)
     }
     fn load_type(&mut self, document: &Document) -> Result<(), String> {
@@ -210,7 +232,21 @@ impl WallPanel {
         }
         Ok(())
     }
+    pub fn select_definition(
+        &mut self,
+        document: &Document,
+        definition: EntityId,
+    ) -> Result<(), String> {
+        self.symbol.select(document, Some(definition))?;
+        self.override_size = false;
+        self.shared_edit = false;
+        self.layer_placement.reference = None;
+        self.stamp.changed();
+        self.error = None;
+        Ok(())
+    }
     pub fn sync_source(&mut self, session: &Session) {
+        self.symbol.sync_source(session);
         self.outline.sync_source(session);
         self.junction_editor.sync_source(session, self.feature);
         if self
@@ -218,7 +254,13 @@ impl WallPanel {
             .as_ref()
             .is_none_or(|s| s.session().stamp() != session.stamp())
         {
+            let owned =
+                multicad_core::symbols::owned_entities_in_session(session).unwrap_or_default();
             self.types = model::wall_types(session.document())
+                .filter(|e| !owned.contains(&e.id))
+                .map(|e| (e.id, e.name.clone()))
+                .collect();
+            self.levels = model::levels(session.document())
                 .map(|e| (e.id, e.name.clone()))
                 .collect();
             self.source = Some(session.preparation_snapshot());
@@ -236,6 +278,9 @@ impl WallPanel {
         panel.editing = true;
         panel.feature = feature;
         panel.body = wall.output.body;
+        if let Some(binding) = crate::symbols::architecture::Binding::existing(document, feature)? {
+            panel.symbol = binding;
+        }
         panel.wall_type = Some(wall.wall_type);
         panel.load_type(document)?;
         panel.override_size = wall.thickness.is_some() || wall.height.is_some();
@@ -348,36 +393,41 @@ impl WallPanel {
             return Err("Enter a wall name with 1–1000 bytes".into());
         }
         let mut new_types = vec![];
-        let wall_type = match self.wall_type {
-            Some(id) => id,
-            None => {
-                new_types.push(NewType {
-                    id: self.new_type,
-                    name: self.type_name.clone(),
-                    kind: if let Some(editor) = &self.layers {
-                        NewTypeKind::LayeredWall(model::LayeredWallTypeDefinition {
-                            layers: editor.stack(document)?,
-                            height: self.type_height.resolve(document)?,
-                            reference: editor.reference,
-                        })
-                    } else {
-                        NewTypeKind::Wall(WallTypeDefinition {
-                            thickness: self.thickness.resolve(document)?,
-                            height: self.height.resolve(document)?,
-                            justification: self.justification,
-                            material: None,
-                        })
-                    },
-                });
-                self.new_type
+        let wall_type = if let Some(construction) = self.symbol.construction() {
+            construction
+        } else {
+            match self.wall_type {
+                Some(id) => id,
+                None => {
+                    new_types.push(NewType {
+                        id: self.new_type,
+                        name: self.type_name.clone(),
+                        kind: if let Some(editor) = &self.layers {
+                            NewTypeKind::LayeredWall(model::LayeredWallTypeDefinition {
+                                layers: editor.stack(document)?,
+                                height: self.type_height.resolve(document)?,
+                                reference: editor.reference,
+                            })
+                        } else {
+                            NewTypeKind::Wall(WallTypeDefinition {
+                                thickness: self.thickness.resolve(document)?,
+                                height: self.height.resolve(document)?,
+                                justification: self.justification,
+                                material: None,
+                            })
+                        },
+                    });
+                    self.new_type
+                }
             }
         };
-        let layered = self.layers.is_some();
+        let layered = self.symbol.active() || self.layers.is_some();
         if !layered && !self.layer_placement.junctions.is_empty() {
             return Err("Remove joined ends explicitly before using a uniform construction".into());
         }
-        let overrides = self.override_size && (self.wall_type.is_some() || layered);
-        let construction = if self.shared_edit {
+        let overrides =
+            !self.symbol.active() && self.override_size && (self.wall_type.is_some() || layered);
+        let construction = if self.shared_edit && !self.symbol.active() {
             let editor = self
                 .layers
                 .as_ref()
@@ -464,6 +514,48 @@ impl WallPanel {
                 cutouts: self.cutouts.clone(),
             },
         })
+    }
+    pub fn model_request(
+        &self,
+        document: &Document,
+        enabled: bool,
+    ) -> Result<ModelRequest, String> {
+        let command = self.request(document, enabled)?;
+        if !self.symbol.active() {
+            return Ok(ModelRequest::Wall(Box::new(command)));
+        }
+        let new_opening_types = command
+            .new_types
+            .iter()
+            .filter_map(|ty| match &ty.kind {
+                NewTypeKind::Opening(value) => Some(
+                    multicad_core::symbols::architecture::ArchitectureOpeningTypeRequest {
+                        id: ty.id,
+                        name: ty.name.clone(),
+                        value: value.clone(),
+                    },
+                ),
+                _ => None,
+            })
+            .collect();
+        let context = multicad_core::symbols::architecture::ArchitectureContext::Wall {
+            path: command.wall.path,
+            closed: command.wall.closed,
+            level: command.wall.level,
+            base_z: command.wall.base_z,
+            flipped: self.layer_placement.flipped,
+            details: Some(
+                multicad_core::symbols::architecture::ArchitectureWallDetails {
+                    openings: Some(command.wall.openings),
+                    cutouts: Some(command.wall.cutouts),
+                    junctions: Some(self.layer_placement.junctions.clone()),
+                    new_opening_types,
+                },
+            ),
+        };
+        self.symbol
+            .command(document, &self.name, context)
+            .map(|command| ModelRequest::SymbolConstruction(Box::new(command)))
     }
     fn construction_controls(&mut self, ui: &mut egui::Ui, document: &Document) -> bool {
         let mut changed = false;
@@ -659,7 +751,7 @@ impl WallPanel {
         let (changed, align) = self.junction_editor.show(
             ui,
             &mut self.layer_placement.junctions,
-            self.layers.is_some(),
+            self.symbol.active() || self.layers.is_some(),
             self.outline.closed(),
         );
         if let Some(index) = align {
@@ -710,35 +802,66 @@ impl WallPanel {
             )
             .changed();
         ui.separator();
-        ui.label("Wall type");
-        let types = &self.types;
-        let previous_type = self.wall_type;
-        let selected = self
-            .wall_type
-            .and_then(|id| types.iter().find(|(t, _)| *t == id).map(|(_, n)| n.clone()))
-            .unwrap_or_else(|| "New type…".into());
-        ui.add_enabled_ui(!self.shared_edit, |ui| {
-            controls::inspector_combo(ui, "wall-type")
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    for (id, name) in types {
-                        changed |= ui
-                            .selectable_value(&mut self.wall_type, Some(*id), name)
-                            .changed();
-                    }
-                    changed |= ui
-                        .selectable_value(&mut self.wall_type, None, "New type…")
-                        .changed();
-                });
-        });
-        if previous_type != self.wall_type {
-            if let Err(error) = self.load_type(document) {
-                self.error = Some(error);
-            }
-            self.override_size = false;
+        match self.symbol.show_choice(ui, document) {
+            Ok(value) => changed |= value,
+            Err(error) => self.error = Some(error),
         }
-        changed |= self.construction_controls(ui, document);
+        if self.symbol.active() {
+            changed |= self.symbol.show_fields(ui);
+            changed |= ui
+                .checkbox(
+                    &mut self.layer_placement.flipped,
+                    "Flip construction across path",
+                )
+                .changed();
+        } else {
+            ui.label("Wall type");
+            let types = &self.types;
+            let previous_type = self.wall_type;
+            let selected = self
+                .wall_type
+                .and_then(|id| types.iter().find(|(t, _)| *t == id).map(|(_, n)| n.clone()))
+                .unwrap_or_else(|| "New type…".into());
+            ui.add_enabled_ui(!self.shared_edit, |ui| {
+                controls::inspector_combo(ui, "wall-type")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        for (id, name) in types {
+                            changed |= ui
+                                .selectable_value(&mut self.wall_type, Some(*id), name)
+                                .changed();
+                        }
+                        changed |= ui
+                            .selectable_value(&mut self.wall_type, None, "New type…")
+                            .changed();
+                    });
+            });
+            if previous_type != self.wall_type {
+                if let Err(error) = self.load_type(document) {
+                    self.error = Some(error);
+                }
+                self.override_size = false;
+            }
+            changed |= self.construction_controls(ui, document);
+        }
         ui.separator();
+        ui.label("Hosting level");
+        controls::inspector_combo(ui, "wall-level")
+            .selected_text(
+                self.level
+                    .and_then(|id| self.levels.iter().find(|(key, _)| *key == id))
+                    .map_or("World plane", |(_, name)| name.as_str()),
+            )
+            .show_ui(ui, |ui| {
+                changed |= ui
+                    .selectable_value(&mut self.level, None, "World plane")
+                    .changed();
+                for (id, name) in &self.levels {
+                    changed |= ui
+                        .selectable_value(&mut self.level, Some(*id), name)
+                        .changed();
+                }
+            });
         changed |= self.base_z.show(
             ui,
             "Base elevation",
@@ -867,7 +990,7 @@ impl WallPanel {
         }
         ui.separator();
         form::preview_status(ui, self.stamp, preview);
-        let validation = self.request(document, enabled);
+        let validation = self.model_request(document, enabled);
         if let Err(error) = &validation {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
@@ -886,10 +1009,10 @@ impl WallPanel {
             }
         }
         match action {
-            Some(FormAction::Preview) => match self.request(document, enabled) {
+            Some(FormAction::Preview) => match self.model_request(document, enabled) {
                 Ok(request) => Some(ModelEvent::Preview {
                     stamp: self.stamp,
-                    request: ModelRequest::Wall(Box::new(request)),
+                    request,
                 }),
                 Err(error) => {
                     self.error = Some(error);
@@ -897,7 +1020,7 @@ impl WallPanel {
                 }
             },
             Some(FormAction::Apply)
-                if preview.ready(self.stamp) && self.request(document, enabled).is_ok() =>
+                if preview.ready(self.stamp) && self.model_request(document, enabled).is_ok() =>
             {
                 Some(ModelEvent::Apply)
             }
@@ -1405,5 +1528,62 @@ mod tests {
             assert_eq!(panel.outline.dimensions(document).unwrap(), before);
             assert!(panel.outline.closed());
         }
+    }
+    #[test]
+    fn pinned_wall_inspector_combines_window_context_and_reopens_without_private_editing() {
+        use crate::symbols::architecture::test_support;
+        use multicad_core::symbols::architecture::ArchitectureRole;
+        let actor = || Actor::local(Channel::Ui);
+        let (definition, _) = test_support::definition(ArchitectureRole::Wall);
+        let (mut session, _) = test_support::consumer(&definition);
+        let mut panel = WallPanel::new(session.document(), "Pinned wall".into()).unwrap();
+        panel.sync_source(&session);
+        assert!(panel.symbol.active());
+        assert!(panel.types.is_empty());
+        let mut opening = OpeningRow::new(true).unwrap();
+        opening.width = DimensionField::from_dimension(&length(600.), "mm").unwrap();
+        opening.height = DimensionField::from_dimension(&length(800.), "mm").unwrap();
+        opening.sill = DimensionField::from_dimension(&length(900.), "mm").unwrap();
+        panel.openings.push(opening);
+        let ModelRequest::SymbolConstruction(command) =
+            panel.model_request(session.document(), true).unwrap()
+        else {
+            panic!("A pinned wall cannot become a local type")
+        };
+        let before = session.document().clone();
+        let prepared = command.prepare(&session, actor()).unwrap();
+        let native = Compiler::default()
+            .compile(prepared.prepared.document(), session.revision())
+            .unwrap();
+        let volume = native.solid(panel.body).unwrap().volume_mm3().unwrap();
+        assert!((volume - 1_238_400_000.).abs() < 0.01, "{volume}");
+        assert_eq!(session.document(), &before);
+        session.commit(prepared.prepared).unwrap();
+        let mut reopened =
+            WallPanel::existing(session.document(), panel.feature, "Pinned wall".into()).unwrap();
+        reopened.sync_source(&session);
+        assert!(reopened.symbol.active());
+        assert!(reopened.types.is_empty());
+        assert_eq!(reopened.openings.len(), 1);
+        let ModelRequest::SymbolConstruction(command) =
+            reopened.model_request(session.document(), true).unwrap()
+        else {
+            panic!("A reopened wall must keep the architectural pin")
+        };
+        assert_eq!(command.edit_id(), Some(panel.feature));
+        let prepared = command.prepare(&session, actor()).unwrap();
+        assert_eq!(
+            multicad_core::model::read_wall(prepared.prepared.document(), panel.feature)
+                .unwrap()
+                .openings
+                .len(),
+            1
+        );
+        assert!(
+            prepared
+                .outputs
+                .iter()
+                .any(|output| output.body == panel.body)
+        );
     }
 }

@@ -887,3 +887,117 @@ fn actual_native_geometry_without_physical_occurrence_receipt_cannot_authorize_s
     assert!(!c.pending());
     assert_eq!(s.document(), &baseline);
 }
+
+#[test]
+fn graphical_architectural_authoring_keeps_live_construction_and_public_slot_ids_across_revisions()
+{
+    use super::architecture::test_support;
+    use multicad_core::symbols::architecture::*;
+    let (original, interface) = test_support::definition(ArchitectureRole::Fence);
+    // The authoring document keeps its live canonical graph. The exported
+    // fixture's closed template has that same graph and document identity.
+    let mut session = Session::new(original.template.clone()).unwrap();
+    let imported = symbols::prepare_import(&session, 0, actor(), &original).unwrap();
+    session.commit(imported.prepared).unwrap();
+    let mut form = forms::Form::new(
+        SymbolTool::Create,
+        session.document(),
+        SymbolSelection::default(),
+    )
+    .unwrap();
+    form.author_construction(session.document(), interface.construction)
+        .unwrap();
+    let forms::Operation::ArchitecturalAuthor { request, .. } = &form.operation else {
+        panic!("Expected the graphical interface author")
+    };
+    assert_eq!(request.blueprint, original.root);
+    assert_eq!(request.interface, interface);
+    assert_eq!(request.symbol.symbol, original.symbol);
+    assert_ne!(request.symbol.revision, original.revision);
+    let before = session.document().clone();
+    let prepared = form.prepare(&session, actor()).unwrap();
+    let incoming =
+        symbols::read_definition(prepared.prepared.document(), prepared.definition).unwrap();
+    assert_eq!(
+        blueprint_for_definition(&incoming).unwrap().unwrap(),
+        interface
+    );
+    assert_eq!(incoming.root, original.root);
+    assert_eq!(incoming.symbol, original.symbol);
+    assert_eq!(session.document(), &before);
+    session.commit(prepared.prepared).unwrap();
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn painted_architectural_exposure_toggles_only_the_interface_and_native_apply_is_atomic() {
+    use super::architecture::test_support;
+    use multicad_core::symbols::architecture::*;
+    let (definition, interface) = test_support::definition(ArchitectureRole::Fence);
+    let mut session = Session::new(definition.template.clone()).unwrap();
+    let before = session.document().clone();
+    let mut controller = controller();
+    begin(
+        &mut controller,
+        &session,
+        SymbolTool::Create,
+        SymbolSelection {
+            component: Some(interface.construction),
+            ..Default::default()
+        },
+    );
+    let context = egui::Context::default();
+    let (output, _) = frame(&context, &mut controller, &mut session, vec![], 1600.);
+    let height = point(&output, "Height");
+    click(&context, &mut controller, &mut session, height, 1600.);
+    let Operation::ArchitecturalAuthor { request, .. } =
+        &controller.form.as_ref().unwrap().operation
+    else {
+        panic!("Expected construction interface controls")
+    };
+    assert!(
+        !request
+            .interface
+            .dimensions
+            .iter()
+            .any(|slot| slot.target == ArchitectureDimensionTarget::FenceHeight)
+    );
+    assert_eq!(session.document(), &before);
+    controller
+        .preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    wait(&mut controller, &session, &Default::default());
+    assert!(
+        controller.can_apply(&session, &Default::default()),
+        "{:?}",
+        controller.error
+    );
+    let (output, _) = frame(&context, &mut controller, &mut session, vec![], 1600.);
+    let outcome = click(
+        &context,
+        &mut controller,
+        &mut session,
+        point(&output, "Apply"),
+        1600.,
+    )
+    .unwrap();
+    let SymbolOutcome::Applied { selected, .. } = outcome else {
+        panic!("Expected one atomic authoring application")
+    };
+    let published = symbols::read_definition(session.document(), selected[0]).unwrap();
+    assert!(
+        !blueprint_for_definition(&published)
+            .unwrap()
+            .unwrap()
+            .dimensions
+            .iter()
+            .any(|slot| slot.target == ArchitectureDimensionTarget::FenceHeight)
+    );
+    assert_eq!(
+        model::read_fence_type(session.document(), interface.construction).unwrap(),
+        model::read_fence_type(&before, interface.construction).unwrap()
+    );
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &before);
+}

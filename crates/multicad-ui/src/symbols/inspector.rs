@@ -17,6 +17,7 @@ enum Next {
     Update(EntityId),
     Replacement(Box<SymbolDefinition>),
     Edit(EntityId),
+    AuthorConstruction(EntityId),
 }
 pub(super) struct Catalogue<'a> {
     pub embedded: &'a [(EntityId, SymbolDefinition)],
@@ -57,7 +58,10 @@ pub(super) fn show(
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
-                    if ui.button("Place").on_hover_text("Place this pinned definition; dynamic symbols ask only for exposed values").clicked(){next=Some(Next::Place(*id));}
+                    if let Some(role)=super::architecture::role(definition) {
+                        let label=match role { symbols::architecture::ArchitectureRole::Wall=>"Draw wall", symbols::architecture::ArchitectureRole::Fence=>"Draw fence" };
+                        if ui.button(label).clicked(){action=Some(SymbolAction::DrawConstruction{definition:*id,role});}
+                    } else if ui.button("Place").on_hover_text("Place this pinned definition; dynamic symbols ask only for exposed values").clicked(){next=Some(Next::Place(*id));}
                     ui.horizontal_wrapped(|ui|{
                         if ui.small_button("Save definition…").clicked(){action=Some(SymbolAction::SaveDefinition(*id));}
                         if ui.small_button("Compare update").on_hover_text("Choose a revision explicitly; this never upgrades instances automatically").clicked(){next=Some(Next::Update(*id));}
@@ -79,7 +83,7 @@ pub(super) fn show(
             if shown==0{ui.label("No matching library symbols loaded");}
         }
         Operation::ChooseEdit{selected}=>{
-            let entries=definitions.iter().flat_map(|(id,_)|symbols::instances(document,*id).unwrap_or_default()).map(|(_,instance)|(instance.instance,entity_label(document,instance.instance))).collect::<Vec<_>>();
+            let entries=definitions.iter().flat_map(|(id,_)|symbols::instances(document,*id).unwrap_or_default().into_iter().map(|(_,instance)|instance.instance).chain(symbols::architecture::architecture_instances(document,*id).unwrap_or_default().into_iter().map(|(_,instance)|instance.output.anchors()[1]))).map(|id|(id,entity_label(document,id))).collect::<Vec<_>>();
             if entity_choice(ui,"symbol-edit-instance","Symbol instance",selected,&entries,false)&&let Some(id)=selected{next=Some(Next::Edit(*id));}
         }
         Operation::Author(request)=>{
@@ -93,9 +97,10 @@ pub(super) fn show(
                 changed=true;
             }
             ui.small("None creates a new symbol. Choose an existing identity to author a new revision from the selected source.");
-            let roots=document.entities().filter(|e|matches!(e.data,EntityData::Part{..}|EntityData::Assembly{..})).map(|e|(e.id,entity_label(document,e.id))).collect::<Vec<_>>();
+            let owned=symbols::owned_entities_in_session(session).unwrap_or_default();
+            let roots=document.entities().filter(|e|!owned.contains(&e.id) && (matches!(e.data,EntityData::Part{..}|EntityData::Assembly{..}) || super::architecture::author::construction_role(document,e.id).is_some())).map(|e|(e.id,entity_label(document,e.id))).collect::<Vec<_>>();
             let mut root=document.get(request.root).map(|e|e.id);
-            if entity_choice(ui,"symbol-create-root","Source Part or assembly",&mut root,&roots,false)&&let Some(root)=root{request.root=root;changed=true;}
+            if entity_choice(ui,"symbol-create-root","Authored source",&mut root,&roots,false)&&let Some(root)=root{if super::architecture::author::construction_role(document,root).is_some(){next=Some(Next::AuthorConstruction(root));}else{request.root=root;changed=true;}}
             changed|=fields::text(ui,"Symbol name",&mut request.name,"Library display name; identity and saved instance pins remain stable");
             changed|=fields::text(ui,"Revision",&mut request.revision,"Explicit revision label. Different contents cannot claim the same symbol and revision");
             ui.horizontal(|ui|{
@@ -119,12 +124,34 @@ pub(super) fn show(
             if entity_choice(ui,"symbol-create-plan","Optional simplified 2D sketch",&mut plan,&sketches,true){request.plan=plan.map(|sketch|SymbolPlan{sketch});changed=true;}
             ui.small("The chosen source and plan are embedded together. Parameter exposure does not change the source project's inputs.");
         }
+        Operation::ArchitecturalAuthor{request,editor}=>{
+            ui.strong(match request.interface.role { symbols::architecture::ArchitectureRole::Wall=>"Reusable layered wall", symbols::architecture::ArchitectureRole::Fence=>"Reusable fence" });
+            ui.label(format!("Source: {}",document.get(request.interface.construction).map_or("Missing construction",|e|e.name.as_str())));
+            changed|=fields::text(ui,"Symbol name",&mut request.symbol.name,"Name shown in the existing Library");
+            changed|=fields::text(ui,"Revision",&mut request.symbol.revision,"Publish changes as an explicit revision");
+            let identities=definitions.iter().filter(|(_,d)|super::architecture::role(d)==Some(request.interface.role) && d.root==request.blueprint && d.template.id()==document.id()).map(|(_,d)|(d.symbol,d.name.clone())).collect::<BTreeMap<_,_>>().into_iter().collect::<Vec<_>>();
+            let mut identity=identities.iter().find(|(id,_)|*id==request.symbol.symbol).map(|(id,_)|*id);
+            if entity_choice(ui,"architectural-author-identity","Definition identity",&mut identity,&identities,true){
+                if let Some(id)=identity { request.symbol.symbol=id;if let Some((_,old))=definitions.iter().find(|(_,d)|d.symbol==id){request.symbol.revision=format!("{}.next",old.revision);} }
+                else{request.symbol.symbol=EntityId::new();request.symbol.revision="1".into();}
+                changed=true;
+            }
+            changed|=editor.show(ui,&mut request.interface);
+            if let Ok(dependencies)=request.interface.dependencies(document){
+                ui.strong("Numeric parameters");
+                for entity in document.entities().filter(|e|dependencies.contains(&e.id)&&matches!(e.data,EntityData::Parameter{..})){
+                    let mut exposed=request.symbol.exposed.contains(&entity.id);
+                    if ui.checkbox(&mut exposed,&entity.name).changed(){if exposed{request.symbol.exposed.push(entity.id);}else{request.symbol.exposed.retain(|id|*id!=entity.id);}changed=true;}
+                }
+            }
+            ui.small("Preview and Apply create the reusable definition. Save the project, set its name/description/preview in file metadata, then Add to Library.");
+        }
         Operation::Import(definition)=>{
             summary(ui,definition);
             ui.label("Preview and Apply to embed this immutable revision. Then use Library to place it.");
         }
         Operation::Place{definition,name,values,pose,..}=>{
-            let entries=definitions.iter().map(|(id,def)|(*id,format!("{} · revision {}",def.name,def.revision))).collect::<Vec<_>>();
+            let entries=definitions.iter().filter(|(_,def)|super::architecture::role(def).is_none()).map(|(id,def)|(*id,format!("{} · revision {}",def.name,def.revision))).collect::<Vec<_>>();
             if entity_choice(ui,"symbol-place-definition","Embedded definition",definition,&entries,false)&&let Some(id)=definition{next=Some(Next::Place(*id));}
             if let Some((_,source))=definitions.iter().find(|(id,_)|Some(*id)==*definition){
                 summary(ui,source);
@@ -133,13 +160,18 @@ pub(super) fn show(
                 changed|=pose.show(ui);
             }else{ui.small("Choose an embedded definition. Import a library file through Library first.");}
         }
+        Operation::ArchitecturalEdit{values,..}=>{
+            ui.label("Pinned architectural construction");
+            changed|=values.show(ui);
+            ui.small("Path, level, openings and placement are available in the Wall or Fence inspector.");
+        }
         Operation::Edit{request,definition,values}=>{
             summary(ui,definition);ui.small(format!("Instance: {}",instance_label(document,request.record)));
             if let Ok(instance)=symbols::read_instance(document,request.record)&&let Ok(Some((_,source)))=symbols::project_source_of(document,instance.definition){ui.small(format!("Referenced project: {} · pinned revision {}",source.path,definition.revision));}
             changed|=values.show(ui,definition);
             ui.small("Only this instance's exposed inputs change. Move changes its shared 2D/3D placement.");
         }
-        Operation::Update{definition,replacement,request,values,report}=>{
+        Operation::Update{definition,replacement,request,values,architecture_values,report}=>{
             let entries=definitions.iter().map(|(id,def)|(*id,format!("{} · revision {}",def.name,def.revision))).collect::<Vec<_>>();
             if entity_choice(ui,"symbol-update-definition","Embedded definition to replace",definition,&entries,false){*replacement=None;*request=None;values.clear();*report=None;changed=true;}
             if let Some((old_id,old))=definitions.iter().find(|(id,_)|Some(*id)==*definition){
@@ -173,6 +205,17 @@ pub(super) fn show(
                 for (record,fields) in values {
                     ui.group(|ui|{ui.strong(instance_label(document,*record));changed|=fields.show(ui,replacement);});
                 }
+                for change in &report.architecture_changes {
+                    ui.group(|ui| {
+                        ui.strong(instance_label(document,change.output.anchors()[1]));
+                        for layer in &change.removed_layers { ui.label(format!("Removed layer: {}",layer.name)); }
+                        for recipe in &change.changed_recipes { ui.label(format!("Replaced infill: {}",recipe.name)); }
+                        if !change.removed_members.is_empty() { ui.label(format!("{} physical members will be removed",change.removed_members.len())); }
+                        if let Some(fields)=architecture_values.get_mut(&change.record) { changed|=fields.show(ui); }
+                    });
+                }
+                if let Some(error)=&report.architecture_error { ui.colored_label(egui::Color32::LIGHT_YELLOW,error); }
+
                 ui.small("Compatible overrides are retained. Uncheck removed or incompatible values explicitly. Preview validates the resolved inputs and exact geometry; Apply updates all listed instances in one undoable action.");
             }
         }
@@ -183,6 +226,7 @@ pub(super) fn show(
     if let Some(next) = next {
         let result = match next {
             Next::Place(id) => form.place(document, id),
+            Next::AuthorConstruction(id) => form.author_construction(document, id),
             Next::Import(definition) => {
                 form.import(*definition);
                 Ok(())
@@ -194,6 +238,7 @@ pub(super) fn show(
                     replacement: None,
                     request: None,
                     values: BTreeMap::new(),
+                    architecture_values: BTreeMap::new(),
                     report: None,
                 };
                 form.changed();

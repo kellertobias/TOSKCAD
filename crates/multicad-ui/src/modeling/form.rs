@@ -59,6 +59,7 @@ pub enum ModelRequest {
     Alignment(Box<super::AlignmentCommand>),
     Wall(Box<WallCommand>),
     Fence(Box<model::FenceChange>),
+    SymbolConstruction(Box<crate::symbols::ArchitecturalSymbolCommand>),
     Opening(Box<OpeningCommand>),
     Architecture(Box<ArchitectureCommand>),
     Cabinet(Box<CabinetCommand>),
@@ -80,6 +81,12 @@ impl ModelRequest {
         feature: multicad_core::document::EntityId,
     ) -> Result<ModelPrepared, String> {
         match self {
+            Self::SymbolConstruction(command) => {
+                if command.edit_id() != Some(feature) {
+                    return Err("Architectural edit changed its producer identity".into());
+                }
+                return command.prepare(session, actor);
+            }
             Self::Fence(_) => {
                 return Err("Reopen the complete fence run to edit generated members".into());
             }
@@ -259,6 +266,7 @@ impl ModelRequest {
                 }
                 return command.prepare(session, actor);
             }
+            Self::SymbolConstruction(command) => return command.prepare(session, actor),
             Self::Fence(change) => {
                 return model::prepare_fence_change(session, session.revision(), actor, change)
                     .map(|p| p.model)
@@ -506,12 +514,8 @@ impl ModelForm {
             Self::Alignment(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Alignment(Box::new(command))),
-            Self::Fence(panel) => panel
-                .request(document, capabilities.new_body)
-                .map(|command| ModelRequest::Fence(Box::new(command))),
-            Self::Wall(panel) => panel
-                .request(document, capabilities.new_body)
-                .map(|command| ModelRequest::Wall(Box::new(command))),
+            Self::Fence(panel) => panel.model_request(document, capabilities.new_body),
+            Self::Wall(panel) => panel.model_request(document, capabilities.new_body),
             Self::Opening(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Opening(Box::new(command))),

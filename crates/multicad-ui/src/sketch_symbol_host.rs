@@ -3,12 +3,46 @@ use super::*;
 use crate::symbols::{SymbolAction, SymbolOutcome, SymbolSelection, SymbolTool};
 use multicad_core::project_file::ProjectResources;
 
+pub(super) struct ArchitectureSelectionCache {
+    stamp: multicad_core::commands::SessionStamp,
+    selected: EntityId,
+    instance: Option<(EntityId, EntityId, multicad_core::project_file::ContentHash)>,
+}
+
 impl SketchEditor {
     pub fn set_installed_symbol_library(
         &mut self,
         entries: std::sync::Arc<Vec<crate::library::LibraryEntry>>,
     ) {
         self.symbols.set_installed_library(entries);
+    }
+    pub fn begin_architectural_symbol(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        definition: EntityId,
+        role: multicad_core::symbols::architecture::ArchitectureRole,
+        channel: Channel,
+    ) -> Result<(), String> {
+        self.close_symbol_browser();
+        if self.has_pending_edits() || self.symbols.active() || self.measurement.active() {
+            return Err(
+                "Apply or cancel the active tool before drawing a reusable construction".into(),
+            );
+        }
+        self.finish()?;
+        match role {
+            multicad_core::symbols::architecture::ArchitectureRole::Wall => {
+                self.model.begin_wall(session, resources, channel)?
+            }
+            multicad_core::symbols::architecture::ArchitectureRole::Fence => {
+                self.model.begin_fence(session, resources, channel)?
+            }
+        }
+        self.model
+            .select_architectural_definition(session, definition)?;
+        self.message = "Draw the construction path in the viewer, then Preview".into();
+        Ok(())
     }
     pub fn set_symbol_backend(&mut self, backend: Box<dyn crate::viewport::SceneBackend>) {
         self.symbols.set_backend(backend);
@@ -51,6 +85,17 @@ impl SketchEditor {
                 session.document().get(*id).map(|e| &e.data),
                 Some(EntityData::Instance { .. })
             )
+        });
+        let instance = instance.or_else(|| {
+            selected.iter().find_map(|id| {
+                multicad_core::symbols::architecture::architecture_instance_for_output(
+                    session.document(),
+                    *id,
+                )
+                .ok()
+                .flatten()
+                .map(|(record, _)| record)
+            })
         });
         let component =
             selected
@@ -111,6 +156,58 @@ impl SketchEditor {
             return;
         }
         let id = *self.tree_selection.first().expect("one selected");
+        if self
+            .architectural_symbol_context
+            .as_ref()
+            .is_none_or(|cache| cache.stamp != session.stamp() || cache.selected != id)
+        {
+            let value = multicad_core::symbols::architecture::architecture_instance_for_output(
+                session.document(),
+                id,
+            )
+            .ok()
+            .flatten()
+            .map(|(record, value)| (record, value.definition, value.pin));
+            self.architectural_symbol_context = Some(ArchitectureSelectionCache {
+                stamp: session.stamp(),
+                selected: id,
+                instance: value,
+            });
+        }
+        if let Some((record, definition, pin)) = self
+            .architectural_symbol_context
+            .as_ref()
+            .and_then(|cache| cache.instance)
+        {
+            if let Some(multicad_core::document::Entity {
+                data: EntityData::Extension { definition, .. },
+                ..
+            }) = session.document().get(definition)
+                && let Some(name) = definition.data.get("name").and_then(|v| v.as_str())
+            {
+                ui.label(format!("Architectural symbol · {name}"));
+            }
+            ui.small(format!("Pinned {pin}"));
+            if ui.button("Edit exposed construction inputs").clicked()
+                && let Err(error) = self.symbols.begin_existing(
+                    session,
+                    resources,
+                    feed.visible()
+                        .filter(|_| feed.is_current(session.document().id(), session.revision())),
+                    record,
+                    Channel::Ui,
+                )
+            {
+                self.message = error;
+            }
+            if ui.button("Review definition update").clicked()
+                && let Err(error) =
+                    self.begin_symbol(SymbolTool::Update, session, resources, feed, Channel::Ui)
+            {
+                self.message = error;
+            }
+            return;
+        }
         let Ok(instance) = multicad_core::symbols::read_instance(session.document(), id) else {
             return;
         };

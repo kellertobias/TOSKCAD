@@ -681,6 +681,19 @@ impl ModelToolController {
             ModelForm::Fence(Box::new(panel)),
         )
     }
+    pub fn select_architectural_definition(
+        &mut self,
+        session: &Session,
+        definition: EntityId,
+    ) -> Result<(), String> {
+        match self.form.as_mut() {
+            Some(ModelForm::Wall(panel)) => panel.select_definition(session.document(), definition),
+            Some(ModelForm::Fence(panel)) => {
+                panel.select_definition(session.document(), definition)
+            }
+            _ => Err("Open Draw Wall or Draw Fence before choosing its definition".into()),
+        }
+    }
     pub fn begin_wall(
         &mut self,
         session: &Session,

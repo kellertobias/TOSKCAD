@@ -1,6 +1,8 @@
 //! Source-only architectural symbol roots. A blueprint owns an interface to a
 //! canonical construction; receiving paths and generated physical members are
 //! placement inputs and never part of this reusable source.
+mod author;
+pub use author::{ArchitectureAuthorRequest, prepare_architecture_author};
 mod edit;
 mod inputs;
 mod instances;

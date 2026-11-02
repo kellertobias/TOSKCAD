@@ -344,3 +344,94 @@ fn painted_shared_and_duplicate_controls_keep_update_scope_explicit() {
     );
     assert_eq!(s.document(), &before);
 }
+
+#[test]
+fn embedded_fence_definition_opens_without_local_materials_and_uses_real_typed_placement() {
+    use crate::symbols::architecture::test_support;
+    use multicad_core::symbols::architecture::{
+        ArchitectureOutput, ArchitectureRole, read_architecture_instance,
+    };
+    let actor = || Actor::local(Channel::Ui);
+    let (definition, _) = test_support::definition(ArchitectureRole::Fence);
+    let (mut session, _) = test_support::consumer(&definition);
+    assert!(
+        !session
+            .document()
+            .entities()
+            .any(|e| matches!(e.data, EntityData::Material { .. }))
+    );
+    let mut panel = FencePanel::new(&session, "Pinned boundary".into(), None).unwrap();
+    assert!(panel.symbol.active());
+    assert!(panel.types.is_empty());
+    let first = panel.draft(session.document());
+    let second = panel.draft(session.document());
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "idle frames reuse the resolved interface/layout"
+    );
+    assert_eq!(first.layout.as_ref().unwrap().posts.len(), 3);
+    let request = panel.model_request(session.document(), true).unwrap();
+    let ModelRequest::SymbolConstruction(command) = request else {
+        panic!("Pinned source must not become an independently edited fence type")
+    };
+    let before = session.document().clone();
+    let prepared = command.prepare(&session, actor()).unwrap();
+    assert_eq!(prepared.outputs.len(), 5);
+    let native = Compiler::default()
+        .compile(prepared.prepared.document(), session.revision())
+        .unwrap();
+    assert_eq!(native.snapshot().bodies.len(), 5);
+    assert_eq!(session.document(), &before);
+    let run = panel.run;
+    session.commit(prepared.prepared).unwrap();
+    let mut reopened = FencePanel::existing(&session, run).unwrap();
+    assert!(reopened.symbol.active());
+    assert!(
+        reopened.types.is_empty(),
+        "private construction is absent from the local picker"
+    );
+    let request = reopened.model_request(session.document(), true).unwrap();
+    let ModelRequest::SymbolConstruction(command) = request else {
+        panic!("Reopening must retain the pin")
+    };
+    assert_eq!(command.edit_id(), Some(run));
+    let prepared = command.prepare(&session, actor()).unwrap();
+    let (record, _) = multicad_core::symbols::architecture::architecture_instance_for_output(
+        prepared.prepared.document(),
+        panel.group,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        read_architecture_instance(prepared.prepared.document(), record)
+            .unwrap()
+            .output,
+        ArchitectureOutput::Fence {
+            run,
+            group: panel.group
+        }
+    );
+    let unrelated = Entity::new(
+        "Unrelated project material",
+        EntityData::Material {
+            density_kg_m3: None,
+            color_rgba: [1, 2, 3, 255],
+            section_hatch: None,
+        },
+    );
+    let prepared = session
+        .prepare(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "External source change".into(),
+            edits: vec![Mutation::Insert(unrelated)],
+        })
+        .unwrap();
+    session.commit(prepared).unwrap();
+    reopened.sync_source(&session);
+    assert!(
+        reopened.model_request(session.document(), true).is_err(),
+        "a stale inspector cannot overwrite concurrent source"
+    );
+    panel.sync_source(&session);
+}

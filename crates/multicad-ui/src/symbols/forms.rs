@@ -17,6 +17,10 @@ pub(super) enum Operation {
         selected: Option<EntityId>,
     },
     Author(SymbolAuthorRequest),
+    ArchitecturalAuthor {
+        request: symbols::architecture::ArchitectureAuthorRequest,
+        editor: super::architecture::author::Interface,
+    },
     Import(SymbolDefinition),
     Place {
         definition: Option<EntityId>,
@@ -24,6 +28,12 @@ pub(super) enum Operation {
         request: Option<Box<SymbolPlaceRequest>>,
         values: Overrides,
         pose: PoseInputs,
+    },
+    ArchitecturalEdit {
+        record: EntityId,
+        output: symbols::architecture::ArchitectureOutput,
+        definition: EntityId,
+        values: super::architecture::Fields,
     },
     Edit {
         request: SymbolEditRequest,
@@ -35,6 +45,7 @@ pub(super) enum Operation {
         replacement: Option<SymbolDefinition>,
         request: Option<Box<SymbolUpdateRequest>>,
         values: BTreeMap<EntityId, Overrides>,
+        architecture_values: BTreeMap<EntityId, super::architecture::Fields>,
         report: Option<SymbolUpgradeReport>,
     },
 }
@@ -99,24 +110,156 @@ impl Form {
                     symbols::read_instance(document, id)
                         .ok()
                         .map(|i| i.definition)
+                        .or_else(|| {
+                            symbols::architecture::architecture_instance_for_output(document, id)
+                                .ok()
+                                .flatten()
+                                .map(|(_, i)| i.definition)
+                        })
                 });
                 Operation::Update {
                     definition,
                     replacement: None,
                     request: None,
                     values: BTreeMap::new(),
+                    architecture_values: BTreeMap::new(),
                     report: None,
                 }
             }
         };
-        Ok(Self {
+        let mut form = Self {
             tool,
             operation,
             version: 0,
             filter: String::new(),
-        })
+        };
+        if tool == SymbolTool::Create {
+            let constructor = selection.component.and_then(|id| {
+                if let Some(EntityData::Part { features, .. }) = document.get(id).map(|e| &e.data) {
+                    for feature in features {
+                        if let Ok(wall) = multicad_core::model::read_wall(document, *feature) {
+                            return Some(wall.wall_type);
+                        }
+                        if let Ok(member) =
+                            multicad_core::model::read_fence_member(document, *feature)
+                        {
+                            return multicad_core::model::read_fence_run(document, member.run)
+                                .ok()
+                                .map(|run| run.fence_type);
+                        }
+                    }
+                }
+                super::architecture::author::construction_role(document, id).map(|_| id)
+            });
+            if let Some(construction) = constructor
+                && !symbols::owned_entities(document)
+                    .map_err(|e| e.to_string())?
+                    .contains(&construction)
+                && super::architecture::author::construction_role(document, construction).is_some()
+            {
+                form.author_construction(document, construction)?;
+            }
+        }
+        Ok(form)
+    }
+    pub fn author_construction(
+        &mut self,
+        document: &Document,
+        construction: EntityId,
+    ) -> Result<(), String> {
+        let (mut editor, mut interface) =
+            super::architecture::author::Interface::new(document, construction)?;
+        let mut root = EntityId::new();
+        for entity in document.entities() {
+            if let Ok(stored) = symbols::architecture::read_blueprint(document, entity.id)
+                && stored.construction == construction
+                && stored.role == interface.role
+            {
+                root = entity.id;
+                interface = stored;
+                editor.restore(&interface);
+                break;
+            }
+        }
+        let dependencies = interface
+            .dependencies(document)
+            .map_err(|e| e.to_string())?;
+        let exposed = document
+            .entities()
+            .filter(|e| {
+                dependencies.contains(&e.id)
+                    && matches!(e.data, EntityData::Parameter { exposed: true, .. })
+            })
+            .map(|e| e.id)
+            .collect();
+        let name = document
+            .get(construction)
+            .map_or("Architectural construction", |e| e.name.as_str());
+        let mut symbol = SymbolAuthorRequest::new(name, root, SymbolKind::Dynamic, exposed, None);
+        let definitions = symbols::definitions(document).map_err(|e| e.to_string())?;
+        if let Some((_, prior)) = definitions
+            .iter()
+            .find(|(_, d)| d.root == root && d.template.id() == document.id())
+        {
+            symbol.symbol = prior.symbol;
+            symbol.exposed = prior
+                .exposed
+                .iter()
+                .filter(|id| dependencies.contains(id))
+                .copied()
+                .collect();
+            let mut next = definitions
+                .iter()
+                .filter(|(_, d)| d.symbol == prior.symbol)
+                .count()
+                + 1;
+            while definitions
+                .iter()
+                .any(|(_, d)| d.symbol == prior.symbol && d.revision == next.to_string())
+            {
+                next += 1;
+            }
+            symbol.revision = next.to_string();
+            symbol.name = document
+                .get(root)
+                .map_or_else(|| name.to_string(), |e| e.name.clone());
+        }
+        self.tool = SymbolTool::Create;
+        self.operation = Operation::ArchitecturalAuthor {
+            request: symbols::architecture::ArchitectureAuthorRequest {
+                blueprint: root,
+                interface,
+                symbol,
+            },
+            editor,
+        };
+        self.changed();
+        Ok(())
     }
     pub fn existing(document: &Document, id: EntityId) -> Result<Self, String> {
+        if let Some((record, instance)) =
+            symbols::architecture::architecture_instance_for_output(document, id)
+                .map_err(|e| e.to_string())?
+        {
+            let definition = symbols::read_definition(document, instance.definition)
+                .map_err(|e| e.to_string())?;
+            return Ok(Self {
+                tool: SymbolTool::Edit,
+                operation: Operation::ArchitecturalEdit {
+                    record,
+                    output: instance.output,
+                    definition: instance.definition,
+                    values: super::architecture::Fields::new(
+                        &definition,
+                        &instance.inputs,
+                        document,
+                        None,
+                    )?,
+                },
+                version: 0,
+                filter: String::new(),
+            });
+        }
         let instance = symbols::read_instance(document, id).map_err(|e| e.to_string())?;
         let record = id;
         let definition =
@@ -170,6 +313,7 @@ impl Form {
             replacement: stored,
             request,
             values,
+            architecture_values,
             report,
         } = &mut self.operation
         else {
@@ -186,6 +330,16 @@ impl Form {
                 Overrides::new(&replacement, overrides).map(|fields| (*id, fields))
             })
             .collect::<Result<_, _>>()?;
+        let old = symbols::read_definition(document, *id).map_err(|e| e.to_string())?;
+        let architecture = prepared
+            .architecture_inputs
+            .iter()
+            .map(|(id, inputs)| {
+                super::architecture::Fields::new(&replacement, inputs, document, Some(&old))
+                    .map(|fields| (*id, fields))
+            })
+            .collect::<Result<_, _>>()?;
+        *architecture_values = architecture;
         *stored = Some(replacement);
         *request = Some(Box::new(prepared));
         *values = inputs;
@@ -202,6 +356,12 @@ impl Form {
             }
             Operation::Author(request) => {
                 symbols::prepare_author(session, revision, actor, request)
+            }
+            Operation::ArchitecturalAuthor { request, editor } => {
+                editor.write(&mut request.interface);
+                symbols::architecture::prepare_architecture_author(
+                    session, revision, actor, request,
+                )
             }
             Operation::Import(definition) => {
                 symbols::prepare_import(session, revision, actor, definition)
@@ -241,6 +401,29 @@ impl Form {
                     request.as_ref().expect("allocated placement"),
                 )
             }
+            Operation::ArchitecturalEdit {
+                record,
+                output,
+                definition,
+                values,
+            } => {
+                let result = symbols::architecture::prepare_architecture_edit(
+                    session,
+                    revision,
+                    actor,
+                    &symbols::architecture::ArchitectureEditRequest {
+                        record: *record,
+                        inputs: values.resolve(session.document())?,
+                        context: None,
+                    },
+                );
+                result.map(|result| SymbolPrepared {
+                    prepared: result.prepared,
+                    definition: *definition,
+                    instances: vec![output.anchors()[1]],
+                    plans: BTreeMap::new(),
+                })
+            }
             Operation::Edit {
                 request,
                 definition,
@@ -253,6 +436,8 @@ impl Form {
                 request,
                 replacement,
                 values,
+                architecture_values,
+                report,
                 ..
             } => {
                 let request = request
@@ -263,6 +448,18 @@ impl Form {
                     .iter()
                     .map(|(id, value)| value.resolve(replacement).map(|v| (*id, v)))
                     .collect::<Result<_, _>>()?;
+                request.architecture_inputs = architecture_values
+                    .iter()
+                    .map(|(id, fields)| {
+                        fields
+                            .resolve(session.document())
+                            .map(|inputs| (*id, inputs))
+                    })
+                    .collect::<Result<_, _>>()?;
+                *report = Some(
+                    symbols::compare_update_request(session.document(), request)
+                        .map_err(|e| e.to_string())?,
+                );
                 symbols::prepare_update(session, revision, actor, request)
             }
         };

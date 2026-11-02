@@ -17,6 +17,28 @@ impl Application {
             self.message_error = true;
             return;
         }
+        if let SymbolAction::DrawConstruction { definition, role } = action {
+            let p = self.current_mut();
+            let result = p.sketch.begin_architectural_symbol(
+                &p.session,
+                &p.resources,
+                definition,
+                role,
+                Channel::Ui,
+            );
+            match result {
+                Ok(()) => {
+                    self.mode = Mode::Model;
+                    self.message = "Draw the reusable construction's path, then Preview".into();
+                    self.message_error = false;
+                }
+                Err(error) => {
+                    self.message = error;
+                    self.message_error = true;
+                }
+            }
+            return;
+        }
         if let SymbolAction::OpenInstalled(path) = action {
             if let Err(error) = self.load_symbol_library(path) {
                 self.message = error;
@@ -27,7 +49,9 @@ impl Application {
         self.file_action = Some(match action {
             SymbolAction::ImportLibrary => FileAction::SymbolOpen,
             SymbolAction::SaveDefinition(id) => FileAction::SymbolSave(id),
-            SymbolAction::OpenInstalled(_) => unreachable!("handled above"),
+            SymbolAction::OpenInstalled(_) | SymbolAction::DrawConstruction { .. } => {
+                unreachable!("handled above")
+            }
         });
         self.file_document = Some(self.current().local_id);
         self.file_path.clear();

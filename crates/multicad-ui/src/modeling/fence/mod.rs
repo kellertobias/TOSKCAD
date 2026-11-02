@@ -22,13 +22,19 @@ struct PositionRow {
     post: FencePostKey,
     offset: DimensionField,
 }
+#[derive(Clone)]
+enum Intent {
+    Local(Box<FenceChange>),
+    Symbol(crate::symbols::architecture::Command),
+}
 struct Draft {
-    command: Result<FenceChange, String>,
+    command: Result<Intent, String>,
     layout: Result<Arc<FenceLayout>, String>,
     automatic: Result<Arc<FencePostPlan>, String>,
 }
 type DraftCache = Option<(SessionStamp, FormStamp, Arc<Draft>)>;
 pub(super) struct FencePanel {
+    symbol: crate::symbols::architecture::Binding,
     run: EntityId,
     group: EntityId,
     name: String,
@@ -66,22 +72,53 @@ impl FencePanel {
         preferred: Option<EntityId>,
     ) -> Result<Self, String> {
         let document = session.document();
+        let owned = multicad_core::symbols::owned_entities_in_session(session)
+            .map_err(|e| e.to_string())?;
         let selected = preferred
             .filter(|id| read_fence_type(document, *id).is_ok())
-            .or_else(|| fence_types(document).next().map(|e| e.id));
+            .or_else(|| {
+                fence_types(document)
+                    .find(|e| !owned.contains(&e.id))
+                    .map(|e| e.id)
+            });
+        let run = EntityId::new();
+        let group = EntityId::new();
+        let mut symbol = crate::symbols::architecture::Binding::new(
+            document,
+            multicad_core::symbols::architecture::ArchitectureOutput::Fence { run, group },
+        )?;
+        if selected.is_none()
+            && let Some(id) = symbol.first()
+        {
+            symbol.select(document, Some(id))?;
+        }
         let construction = match selected {
             Some(id) => ConstructionEditor::existing(
                 document,
                 &read_fence_type(document, id).map_err(|e| e.to_string())?,
             )?,
-            None => ConstructionEditor::new(document)?,
+            None => {
+                if let Some(definition) = symbol.snapshot() {
+                    let blueprint =
+                        multicad_core::symbols::architecture::blueprint_for_definition(definition)
+                            .map_err(|e| e.to_string())?
+                            .ok_or("Fence interface is missing")?;
+                    let construction =
+                        read_fence_type(&definition.template, blueprint.construction)
+                            .map_err(|e| e.to_string())?;
+                    ConstructionEditor::existing(&definition.template, &construction)?
+                } else {
+                    ConstructionEditor::new(document)?
+                }
+            }
         };
         let type_name = selected
             .and_then(|id| document.get(id))
             .map_or("Fence construction".into(), |e| e.name.clone());
         let mut panel = Self {
-            run: EntityId::new(),
-            group: EntityId::new(),
+            symbol,
+            run,
+            group,
             name,
             editing: false,
             selected_type: selected,
@@ -129,6 +166,10 @@ impl FencePanel {
         panel.run = run;
         panel.group = source.group;
         panel.editing = true;
+        if let Some(binding) = crate::symbols::architecture::Binding::existing(document, run)? {
+            panel.symbol = binding;
+        }
+        panel.symbol.sync_source(session);
         panel.outline = OutlineEditor::new(
             OutlineKind::FencePath,
             &source
@@ -188,6 +229,18 @@ impl FencePanel {
             _ => None,
         }
     }
+    pub fn select_definition(
+        &mut self,
+        document: &Document,
+        definition: EntityId,
+    ) -> Result<(), String> {
+        self.symbol.select(document, Some(definition))?;
+        self.height_override = false;
+        self.spacing_override = false;
+        self.shared = false;
+        self.invalidate();
+        Ok(())
+    }
     pub fn preferred_type(&self) -> EntityId {
         self.selected_type.unwrap_or(self.new_type)
     }
@@ -203,6 +256,7 @@ impl FencePanel {
         self.error = None;
     }
     pub fn sync_source(&mut self, session: &Session) {
+        self.symbol.sync_source(session);
         if self
             .source
             .as_ref()
@@ -213,7 +267,9 @@ impl FencePanel {
         let document = session.document();
         self.source = Some(session.preparation_snapshot());
         self.outline.sync_source(session);
+        let owned = multicad_core::symbols::owned_entities_in_session(session).unwrap_or_default();
         self.types = fence_types(document)
+            .filter(|e| !owned.contains(&e.id))
             .map(|e| (e.id, e.name.clone()))
             .collect();
         self.levels = levels(document).map(|e| (e.id, e.name.clone())).collect();
@@ -329,6 +385,30 @@ impl FencePanel {
         Ok((command, construction, source))
     }
     fn build_draft(&self, document: &Document, parameters: &EvaluatedParameters) -> Draft {
+        if self.symbol.active() {
+            return match self.symbol_context(document) {
+                Ok(context) => match (
+                    self.symbol.command(document, &self.name, context.clone()),
+                    self.symbol.fence_plan(document, context),
+                ) {
+                    (Ok(command), Ok(plan)) => Draft {
+                        command: Ok(Intent::Symbol(command)),
+                        layout: plan.layout.map(Arc::new),
+                        automatic: plan.automatic.map(Arc::new),
+                    },
+                    (Err(error), _) | (_, Err(error)) => Draft {
+                        command: Err(error.clone()),
+                        layout: Err(error.clone()),
+                        automatic: Err(error),
+                    },
+                },
+                Err(error) => Draft {
+                    command: Err(error.clone()),
+                    layout: Err(error.clone()),
+                    automatic: Err(error),
+                },
+            };
+        }
         match self.source_command(document) {
             Ok((command, construction, source)) => {
                 let layout = plan_fence_instance(document, parameters, &construction, &source)
@@ -341,7 +421,7 @@ impl FencePanel {
                         .map(Arc::new)
                         .map_err(|e| e.to_string());
                 Draft {
-                    command: Ok(command),
+                    command: Ok(Intent::Local(Box::new(command))),
                     layout,
                     automatic,
                 }
@@ -382,13 +462,68 @@ impl FencePanel {
             }
         }
     }
+    #[cfg(test)]
     pub fn request(&self, document: &Document, enabled: bool) -> Result<FenceChange, String> {
         if !enabled {
             return Err("Native modeling is unavailable".into());
         }
         let draft = self.draft(document);
         draft.layout.as_ref().map_err(Clone::clone)?;
-        draft.command.clone()
+        match draft.command.clone()? {
+            Intent::Local(command) => Ok(*command),
+            Intent::Symbol(_) => Err("Use the complete pinned construction transaction".into()),
+        }
+    }
+    pub fn model_request(
+        &self,
+        document: &Document,
+        enabled: bool,
+    ) -> Result<ModelRequest, String> {
+        if !enabled {
+            return Err("Native modeling is unavailable".into());
+        }
+        let draft = self.draft(document);
+        draft.layout.as_ref().map_err(Clone::clone)?;
+        match draft.command.clone()? {
+            Intent::Local(command) => Ok(ModelRequest::Fence(command)),
+            Intent::Symbol(command) => Ok(ModelRequest::SymbolConstruction(Box::new(command))),
+        }
+    }
+    fn symbol_context(
+        &self,
+        document: &Document,
+    ) -> Result<multicad_core::symbols::architecture::ArchitectureContext, String> {
+        let ids = self.outline.vertex_ids();
+        let points = self.outline.dimensions(document)?;
+        if ids.len() != points.len() {
+            return Err("Path identities do not match its corners".into());
+        }
+        Ok(
+            multicad_core::symbols::architecture::ArchitectureContext::Fence {
+                path: FencePath {
+                    vertices: points
+                        .into_iter()
+                        .zip(ids)
+                        .map(|(point, id)| FenceVertex { id: *id, point })
+                        .collect(),
+                    closed: self.outline.closed(),
+                    base_z: self.base_z.resolve(document)?,
+                },
+                level: self.level,
+                post_positions: self
+                    .positions
+                    .iter()
+                    .map(|row| {
+                        row.offset
+                            .resolve(document)
+                            .map(|offset| FencePostPosition {
+                                post: row.post,
+                                offset,
+                            })
+                    })
+                    .collect::<Result<_, _>>()?,
+            },
+        )
     }
     fn plane_z(&self) -> f64 {
         let Some(source) = &self.source else {
@@ -505,86 +640,95 @@ impl FencePanel {
             "Draw fence"
         });
         let mut changed = ui.text_edit_singleline(&mut self.name).changed();
-        let mut selected = self.selected_type;
-        egui::ComboBox::from_id_salt("fence-type")
-            .selected_text(
-                self.selected_type
-                    .and_then(|id| self.types.iter().find(|(key, _)| *key == id))
-                    .map_or("New construction", |(_, name)| name.as_str()),
-            )
-            .width(controls::inspector_width(ui))
-            .show_ui(ui, |ui| {
-                for (id, name) in &self.types {
-                    ui.selectable_value(&mut selected, Some(*id), name);
-                }
-            });
-        if selected != self.selected_type
-            && let Some(id) = selected
-        {
-            match self.choose_type(document, id) {
-                Ok(()) => changed = true,
-                Err(error) => self.error = Some(error),
-            }
+        match self.symbol.show_choice(ui, document) {
+            Ok(value) => changed |= value,
+            Err(error) => self.error = Some(error),
         }
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("New construction").clicked() {
-                match ConstructionEditor::new(document) {
-                    Ok(mut editor) => {
-                        if let Some(source) = &self.source {
-                            editor.sync_source(source.session());
-                        }
-                        self.construction = editor;
-                        self.selected_type = None;
-                        self.new_type = EntityId::new();
-                        self.type_name = "Fence construction".into();
-                        self.shared = false;
-                        changed = true;
+        if self.symbol.active() {
+            changed |= self.symbol.show_fields(ui);
+        } else {
+            let mut selected = self.selected_type;
+            egui::ComboBox::from_id_salt("fence-type")
+                .selected_text(
+                    self.selected_type
+                        .and_then(|id| self.types.iter().find(|(key, _)| *key == id))
+                        .map_or("New construction", |(_, name)| name.as_str()),
+                )
+                .width(controls::inspector_width(ui))
+                .show_ui(ui, |ui| {
+                    for (id, name) in &self.types {
+                        ui.selectable_value(&mut selected, Some(*id), name);
                     }
+                });
+            if selected != self.selected_type
+                && let Some(id) = selected
+            {
+                match self.choose_type(document, id) {
+                    Ok(()) => changed = true,
                     Err(error) => self.error = Some(error),
                 }
             }
-            if self.selected_type.is_some() && ui.button("Duplicate as separate type").clicked() {
-                self.selected_type = None;
-                self.new_type = EntityId::new();
-                self.type_name.push_str(" copy");
-                self.shared = false;
-                changed = true;
-            }
-        });
-        if let Some(id) = self.selected_type {
-            if !self.shared && ui.button("Edit shared construction").clicked() {
-                self.shared = true;
-                changed = true;
-            }
-            if self.shared {
-                ui.small(format!(
-                    "Changes also affect {} existing run(s)",
-                    self.users.len()
-                ));
-                for name in &self.users {
-                    ui.small(name);
-                }
-                if ui.button("Discard construction edits").clicked() {
-                    match self.choose_type(document, id) {
-                        Ok(()) => changed = true,
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("New construction").clicked() {
+                    match ConstructionEditor::new(document) {
+                        Ok(mut editor) => {
+                            if let Some(source) = &self.source {
+                                editor.sync_source(source.session());
+                            }
+                            self.construction = editor;
+                            self.selected_type = None;
+                            self.new_type = EntityId::new();
+                            self.type_name = "Fence construction".into();
+                            self.shared = false;
+                            changed = true;
+                        }
                         Err(error) => self.error = Some(error),
                     }
                 }
-            }
-        }
-        if self.selected_type.is_none() || self.shared {
-            ui.label("Construction name");
-            changed |= ui.text_edit_singleline(&mut self.type_name).changed();
-        }
-        egui::CollapsingHeader::new("Construction and representative bay")
-            .default_open(true)
-            .show(ui, |ui| {
-                changed |= self.construction.show(
-                    ui,
-                    document,
-                    self.selected_type.is_none() || self.shared,
-                );
+                if self.selected_type.is_some() && ui.button("Duplicate as separate type").clicked()
+                {
+                    self.selected_type = None;
+                    self.new_type = EntityId::new();
+                    self.type_name.push_str(" copy");
+                    self.shared = false;
+                    changed = true;
+                }
             });
+            if let Some(id) = self.selected_type {
+                if !self.shared && ui.button("Edit shared construction").clicked() {
+                    self.shared = true;
+                    changed = true;
+                }
+                if self.shared {
+                    ui.small(format!(
+                        "Changes also affect {} existing run(s)",
+                        self.users.len()
+                    ));
+                    for name in &self.users {
+                        ui.small(name);
+                    }
+                    if ui.button("Discard construction edits").clicked() {
+                        match self.choose_type(document, id) {
+                            Ok(()) => changed = true,
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
+                }
+            }
+            if self.selected_type.is_none() || self.shared {
+                ui.label("Construction name");
+                changed |= ui.text_edit_singleline(&mut self.type_name).changed();
+            }
+            egui::CollapsingHeader::new("Construction and representative bay")
+                .default_open(true)
+                .show(ui, |ui| {
+                    changed |= self.construction.show(
+                        ui,
+                        document,
+                        self.selected_type.is_none() || self.shared,
+                    );
+                });
+        }
         ui.separator();
         ui.label("Run placement");
         egui::ComboBox::from_id_salt("fence-level")
@@ -611,38 +755,40 @@ impl FencePanel {
                         .show(ui, "Base above level", "World Z when no level is selected");
                 ui.end_row();
             });
-        changed |= ui
-            .checkbox(
-                &mut self.height_override,
-                "Override post height for this run",
-            )
-            .changed();
-        if self.height_override {
-            egui::Grid::new("fence-height-override")
-                .num_columns(2)
-                .show(ui, |ui| {
-                    changed |= self.height.show(
-                        ui,
-                        "Post height",
-                        "Infill keeps its construction dimensions",
-                    );
-                    ui.end_row();
-                });
-        }
-        changed |= ui
-            .checkbox(&mut self.spacing_override, "Override spacing for this run")
-            .changed();
-        if self.spacing_override {
-            egui::Grid::new("fence-spacing-override")
-                .num_columns(2)
-                .show(ui, |ui| {
-                    changed |= self.spacing.show(
-                        ui,
-                        "Post spacing",
-                        "Center pitch before explicit post adjustments",
-                    );
-                    ui.end_row();
-                });
+        if !self.symbol.active() {
+            changed |= ui
+                .checkbox(
+                    &mut self.height_override,
+                    "Override post height for this run",
+                )
+                .changed();
+            if self.height_override {
+                egui::Grid::new("fence-height-override")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        changed |= self.height.show(
+                            ui,
+                            "Post height",
+                            "Infill keeps its construction dimensions",
+                        );
+                        ui.end_row();
+                    });
+            }
+            changed |= ui
+                .checkbox(&mut self.spacing_override, "Override spacing for this run")
+                .changed();
+            if self.spacing_override {
+                egui::Grid::new("fence-spacing-override")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        changed |= self.spacing.show(
+                            ui,
+                            "Post spacing",
+                            "Center pitch before explicit post adjustments",
+                        );
+                        ui.end_row();
+                    });
+            }
         }
         changed |= self.outline.show(ui, document, "Horizontal fence plane");
         if changed {
@@ -690,10 +836,10 @@ impl FencePanel {
             }
         }
         match action {
-            Some(FormAction::Preview) => match self.request(document, enabled) {
+            Some(FormAction::Preview) => match self.model_request(document, enabled) {
                 Ok(request) => Some(ModelEvent::Preview {
                     stamp: self.stamp,
-                    request: ModelRequest::Fence(Box::new(request)),
+                    request,
                 }),
                 Err(error) => {
                     self.error = Some(error);
