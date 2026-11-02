@@ -40,19 +40,11 @@ impl WoodBoxFace {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WoodBoxPanelIds {
     pub feature: EntityId,
     pub body: EntityId,
-}
-impl Default for WoodBoxPanelIds {
-    fn default() -> Self {
-        Self {
-            feature: EntityId::new(),
-            body: EntityId::new(),
-        }
-    }
 }
 /// Face identities remain reserved while disabled. Presence controls entities,
 /// rather than discarding the identity when a checkbox is temporarily off.

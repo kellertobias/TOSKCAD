@@ -112,9 +112,13 @@ fn closed_open_top_omitted_side_and_multiple_omissions_produce_separate_nonoverl
                 },
             );
             let bounds = solid.bounds().unwrap();
-            for axis in 0..3 {
-                near(bounds.min[axis], expected[0][axis]);
-                near(bounds.max[axis], expected[1][axis]);
+            for (actual, expected) in bounds
+                .min
+                .into_iter()
+                .chain(bounds.max)
+                .zip(expected.into_iter().flatten())
+            {
+                near(actual, expected);
             }
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("face.step");
@@ -142,15 +146,19 @@ fn closed_open_top_omitted_side_and_multiple_omissions_produce_separate_nonoverl
         let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
         for id in ids {
             let b = native.solid(id).unwrap().bounds().unwrap();
-            for axis in 0..3 {
-                bounds[0][axis] = bounds[0][axis].min(b.min[axis]);
-                bounds[1][axis] = bounds[1][axis].max(b.max[axis]);
+            for (value, coordinate) in bounds[0].iter_mut().zip(b.min) {
+                *value = value.min(coordinate);
+            }
+            for (value, coordinate) in bounds[1].iter_mut().zip(b.max) {
+                *value = value.max(coordinate);
             }
         }
-        for side in 0..2 {
-            for axis in 0..3 {
-                near(bounds[side][axis], layout.actual_bounds[side][axis]);
-            }
+        for (actual, expected) in bounds
+            .into_iter()
+            .flatten()
+            .zip(layout.actual_bounds.into_iter().flatten())
+        {
+            near(actual, expected);
         }
     }
 }
