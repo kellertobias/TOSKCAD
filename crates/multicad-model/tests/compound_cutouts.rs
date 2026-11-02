@@ -174,6 +174,50 @@ fn wall_only_slab_only_and_combined_cut_exactly_the_explicit_parts() {
     }
 }
 #[test]
+fn explicit_floor_range_cuts_only_the_selected_upper_slab_and_refuses_out_of_range_receivers() {
+    let (session, mut request) = fixture();
+    let ground = request.definition.receivers.remove(0);
+    let upper = &request.definition.receivers[0];
+    let level = read_slab(session.document(), upper.target.producer)
+        .unwrap()
+        .level;
+    request.definition.levels = Some(CutoutLevelRange {
+        from: level,
+        to: None,
+    });
+    let change = prepared(&session, &request);
+    let native = Compiler::default()
+        .compile(change.prepared.document(), session.revision() + 1)
+        .unwrap();
+    near(
+        native
+            .solid(ground.target.body)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        6000. * 4000. * 200.,
+    );
+    near(
+        native
+            .solid(upper.target.body)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        6000. * 4000. * 200. - (1000. * 400. + 400. * 1000. - 400. * 400.) * 200.,
+    );
+    request.definition.receivers.push(ground);
+    let before = session.document().clone();
+    let error = prepare_compound_cutout(
+        &session,
+        session.revision(),
+        actor(),
+        &CompoundCutoutChange::Set(Box::new(request)),
+    )
+    .expect_err("Explicit floor range must reject the ground receiver");
+    assert!(error.to_string().contains("outside"));
+    assert_eq!(session.document(), &before);
+}
+#[test]
 fn chained_cutouts_rebuild_downstream_when_a_constituent_changes_and_restore_history_on_removal() {
     let (mut session, mut first) = fixture();
     let change = prepared(&session, &first);
