@@ -179,13 +179,21 @@ presets!(
         ["junction-box"]
     ),
 );
+fn equipment_icon(kind: Kind) -> Icon {
+    match kind {
+        Kind::CeilingLuminaire | Kind::WallLuminaire | Kind::LampHolderE27 => Icon::Light,
+        Kind::JunctionBox => Icon::Box,
+        _ if kind.preset().category == EquipmentCategory::Appliances => Icon::Appliance,
+        _ => Category::for_equipment(kind).icon(),
+    }
+}
 pub fn tools() -> Vec<Tool> {
     let mut tools: Vec<_> = PRESETS
         .iter()
         .map(|p| Tool {
             id: p.id,
             label: p.label,
-            icon: Category::for_equipment(p.kind).icon(),
+            icon: equipment_icon(p.kind),
             action: Command::EquipmentPreset(p.kind),
             aliases: p.aliases,
         })

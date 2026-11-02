@@ -279,7 +279,7 @@ impl ModelingTool {
             Self::Cutout => crate::icons::Icon::Cut,
             Self::Level => crate::icons::Icon::Edge,
             Self::Stair => crate::icons::Icon::Stairs,
-            Self::Plant => crate::icons::Icon::Cylinder,
+            Self::Plant => crate::icons::Icon::Plant,
             Self::Equipment => crate::icons::Icon::Box,
             Self::Panel | Self::Cabinet => crate::icons::Icon::Box,
             Self::Joint | Self::LooseTenon => crate::icons::Icon::Link,

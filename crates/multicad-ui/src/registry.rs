@@ -569,6 +569,7 @@ impl Default for Registry {
                                         | ModelingTool::Window
                                         | ModelingTool::Cutout
                                         | ModelingTool::Level
+                                        | ModelingTool::Stair
                                         | ModelingTool::Plant
                                         | ModelingTool::Equipment
                                         | ModelingTool::Panel
@@ -1136,6 +1137,7 @@ mod tests {
                         | ModelingTool::Window
                         | ModelingTool::Cutout
                         | ModelingTool::Level
+                        | ModelingTool::Stair
                         | ModelingTool::Plant
                         | ModelingTool::Equipment
                         | ModelingTool::Panel
@@ -1171,6 +1173,7 @@ mod tests {
                     | ModelingTool::Window
                     | ModelingTool::Cutout
                     | ModelingTool::Level
+                    | ModelingTool::Stair
                     | ModelingTool::Plant
                     | ModelingTool::Equipment
             ) {

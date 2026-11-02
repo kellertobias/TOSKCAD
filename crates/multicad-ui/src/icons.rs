@@ -53,6 +53,8 @@ pub enum Icon {
     Stairs,
     Water,
     Electrical,
+    Appliance,
+    Light,
     Heating,
     Furniture,
     Plant,
@@ -889,6 +891,18 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
                 [13., 9.],
                 [13., 2.],
             ]);
+        }
+        Icon::Appliance => {
+            rect(4., 3., 16., 18.);
+            line([4., 8.], [20., 8.]);
+            circle(12., 14., 4.5);
+            circle(7., 5.5, 0.7);
+            line([14., 5.5], [17., 5.5]);
+        }
+        Icon::Light => {
+            circle(12., 8., 5.5);
+            path(&[[9., 13.], [9., 17.], [15., 17.], [15., 13.]]);
+            line([9., 20.], [15., 20.]);
         }
         Icon::Heating => {
             rect(4., 7., 16., 14.);
