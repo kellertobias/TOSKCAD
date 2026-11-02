@@ -128,6 +128,7 @@ impl Application {
         }
         let materials = self.tab == 1;
         let project = self.current_mut();
+        let was_pending = project.sketch.material_library().pending();
         egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 16,
@@ -153,5 +154,25 @@ impl Application {
                         .show_with_min_table_width(ui, &project.session, TABLE_MIN_WIDTH);
                 }
             });
+        let library = project.sketch.material_library();
+        let completed = if materials && was_pending && !library.pending() {
+            if let Some(error) = library.error() {
+                Some((error.to_owned(), true))
+            } else if library.can_apply(&project.session, &project.resources) {
+                Some((
+                    "Material/stock preview ready · source unchanged".into(),
+                    false,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some((message, error)) = completed {
+            self.message = message;
+            self.message_error = error;
+            ui.ctx().request_repaint();
+        }
     }
 }

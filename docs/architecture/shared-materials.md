@@ -14,6 +14,10 @@ initialize the appropriate stock specification; edits retain the existing
 entity ID. An empty project can draft a companion manufacturing material with
 its first stock entry and commit both in one transaction.
 
+Rectangular and round profiles expose hollow or solid sections. Round stock
+uses one outside diameter; angle stock exposes leg thickness. These controls
+author the existing canonical profile fields and use the same native validation.
+
 `prepare_library` is the shared typed source transaction used by UI and MCP.
 The Project UI evaluates that prepared document in a separate native worker
 before enabling Apply. Its candidate retains the originating session preview,
@@ -29,6 +33,7 @@ edits block workspace/parameter changes, history and saving, and temporarily
 disable file-metadata editing. Apply commits one undoable source transaction.
 Clean selected definitions refresh from the current source after Undo/Redo.
 Cancelling unrelated tools preserves the idle material worker.
+The status bar reports completion or the native failure when evaluation ends.
 
 Panel, sheet-metal and weld features already reference stock by identity and
 read its live thickness or section. A stock assignment to an arbitrary Part is

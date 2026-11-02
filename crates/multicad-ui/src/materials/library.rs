@@ -38,6 +38,9 @@ impl LibraryEditor {
     pub fn dirty(&self) -> bool {
         self.draft != self.original
     }
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
     pub fn open(&mut self, s: &Session) {
         if !self.dirty()
             && self
@@ -327,11 +330,13 @@ impl LibraryEditor {
     }
 }
 fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft) {
-    ui.label("Name");
+    let name = ui.label("Name");
     ui.text_edit_singleline(&mut d.entity.name)
+        .labelled_by(name.id)
         .on_hover_text("Library display name; assignments retain the stable ID");
-    ui.label("Description");
-    ui.text_edit_multiline(&mut d.entity.description);
+    let description = ui.label("Description");
+    ui.text_edit_multiline(&mut d.entity.description)
+        .labelled_by(description.id);
     if let EntityData::Material {
         density_kg_m3,
         color_rgba,
@@ -535,8 +540,9 @@ pub(super) fn choice(
 }
 fn number(ui: &mut egui::Ui, label: &str, value: &mut f64, suffix: &str) {
     ui.horizontal_wrapped(|ui| {
-        ui.label(label);
+        let label_response = ui.label(label);
         ui.add(egui::DragValue::new(value).speed(0.1).suffix(suffix))
+            .labelled_by(label_response.id)
             .on_hover_text(label);
     });
 }
@@ -618,7 +624,10 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
             wall_mm,
             shape,
         } => {
-            ui.text_edit_singleline(designation);
+            let designation_label = ui.label("Designation");
+            ui.text_edit_singleline(designation)
+                .labelled_by(designation_label.id);
+            let previous_shape = *shape;
             egui::ComboBox::from_id_salt("profile-shape")
                 .selected_text(format!("{shape:?}"))
                 .show_ui(ui, |ui| {
@@ -630,11 +639,42 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
                         ui.selectable_value(shape, s, format!("{s:?}"));
                     }
                 });
+            if previous_shape != *shape {
+                if *shape == ProfileShape::Round {
+                    *height_mm = *width_mm;
+                }
+                if *shape == ProfileShape::Angle && wall_mm.is_none() {
+                    *wall_mm = Some(2.);
+                }
+            }
             number(ui, "Stock length", length_mm, " mm");
-            number(ui, "Width", width_mm, " mm");
-            number(ui, "Height", height_mm, " mm");
+            if *shape == ProfileShape::Round {
+                let previous_diameter = *width_mm;
+                number(ui, "Outside diameter", width_mm, " mm");
+                if previous_diameter != *width_mm {
+                    *height_mm = *width_mm;
+                }
+            } else {
+                number(ui, "Width", width_mm, " mm");
+                number(ui, "Height", height_mm, " mm");
+            }
+            if *shape != ProfileShape::Angle {
+                let mut hollow = wall_mm.is_some();
+                if ui.checkbox(&mut hollow, "Hollow section").changed() {
+                    *wall_mm = if hollow { Some(2.) } else { None };
+                }
+            }
             if let Some(v) = wall_mm {
-                number(ui, "Wall", v, " mm");
+                number(
+                    ui,
+                    if *shape == ProfileShape::Angle {
+                        "Leg thickness"
+                    } else {
+                        "Wall"
+                    },
+                    v,
+                    " mm",
+                );
             }
         }
         StockKind::Print {

@@ -38,6 +38,11 @@ fn preview_and_apply(ctx: &egui::Context, app: &mut Application, size: egui::Vec
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(app.current().session.document(), &before);
+    assert!(
+        app.message.contains("preview ready"),
+        "Completion status stayed busy: {}",
+        app.message
+    );
     click(ctx, app, size, "Apply and Rebuild");
     assert!(!app.current().sketch.material_library().dirty());
 }
