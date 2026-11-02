@@ -247,7 +247,7 @@ fn main() -> Result<(), Error> {
             .write_all(&bytes)?;
         entries.push(serde_json::json!({"file":name,"document":project.document.id(),"sha256":project_file::ContentHash::of(&bytes).to_string()}));
     }
-    let manifest = serde_json::json!({"format":"toskcad.bundled-library","version":1,"revision":"3","entries":entries,"requires":["curation.json","sources/bolts/bearings.blt","sources/bolts/COPYING.LESSER","README.md"]});
+    let manifest = serde_json::json!({"format":"toskcad.bundled-library","version":1,"revision":"4","entries":entries,"requires":["curation.json","sources/bolts/bearings.blt","sources/bolts/COPYING.LESSER","README.md"]});
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

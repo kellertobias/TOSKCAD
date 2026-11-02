@@ -49,6 +49,7 @@ pub enum Kind {
     Dryer,
     Refrigerator,
     Dishwasher,
+    JunctionBox,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,6 +103,7 @@ impl Kind {
             Self::DataOutletRj45 => "ethernet lan network data rj45 socket outlet",
             Self::TvAntennaOutlet => "television tv antenna coax socket outlet",
             Self::Switch => "electrical light switch",
+            Self::JunctionBox => "electrical junction box connection enclosure fitting",
             Self::CeilingLuminaire => "ceiling light lamp luminaire",
             Self::WallLuminaire => "wall light sconce luminaire",
             Self::LampHolderE27 => "bulb light socket lamp holder e27",
@@ -119,7 +121,8 @@ impl Kind {
             Self::Dishwasher => "dishwasher dishes kitchen",
         }
     }
-    pub const ALL: [Self; 21] = [
+    // Append only: published generic definition and Library identities use these slots.
+    pub const ALL: [Self; 22] = [
         Self::PowerOutletTypeF,
         Self::DoublePowerOutletTypeF,
         Self::TriplePowerOutletTypeF,
@@ -141,6 +144,7 @@ impl Kind {
         Self::Dryer,
         Self::Refrigerator,
         Self::Dishwasher,
+        Self::JunctionBox,
     ];
     pub fn preset(self) -> Preset {
         use Category::*;
@@ -180,6 +184,13 @@ impl Kind {
                 [80., 35., 80.],
                 WallCenter,
                 300.,
+            ),
+            Self::JunctionBox => (
+                "Junction box, generic",
+                ElectricalLighting,
+                [80., 40., 80.],
+                WallCenter,
+                2000.,
             ),
             Self::Switch => (
                 "Wall switch, generic",

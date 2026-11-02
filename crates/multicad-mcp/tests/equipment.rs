@@ -104,3 +104,26 @@ fn cancelled_stale_wrong_units_or_mount_and_invalid_dimensions_leave_source_unch
     assert!(dispatch(&h, &call(true), "set_equipment", base).is_err());
     assert_eq!(h.document(), before);
 }
+
+#[test]
+fn junction_box_uses_the_shared_wall_host_and_applies_in_one_native_transaction() {
+    let (h, floor) = host();
+    let wall_type = run(&h, "create_wall_type", json!({"expected_revision":0,"name":"Generic wall","thickness":mm(200.),"height":mm(2800.)}))["wall_type"].clone();
+    let wall = run(&h, "create_wall", json!({"expected_revision":1,"name":"Wall","wall_type":wall_type,"path_mm":[[0,0],[4000,0]]}))["wall"].clone();
+    let before = h.document();
+    let args = json!({"expected_revision":2,"family":"junction_box","floor":floor,"host":{"kind":"wall","wall":wall,"segment":0,"left_face":true,"along":mm(1000.),"height":mm(2000.)},"label":"JB1"});
+    assert!(dispatch(&h, &call(true), "set_equipment", args.clone()).is_err());
+    assert_eq!(h.document(), before);
+    let created = run(&h, "set_equipment", args);
+    assert_eq!(created["revision"], 3);
+    let record = created["record"].clone();
+    let inspected = run(&h, "inspect_equipment", json!({"record":record}));
+    assert_eq!(inspected["family"], "junction_box");
+    assert_eq!(inspected["size_mm"], json!([80., 40., 80.]));
+    assert!(inspected["host_error"].is_null());
+    let after = h.document();
+    run(&h, "undo", json!({"expected_revision":3}));
+    assert_eq!(h.document(), before);
+    run(&h, "redo", json!({"expected_revision":4}));
+    assert_eq!(h.document(), after);
+}

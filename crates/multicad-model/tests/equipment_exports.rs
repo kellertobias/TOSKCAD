@@ -80,7 +80,7 @@ fn all_families_export_scaled_footprints_fixed_paper_marks_and_category_visibili
         else {
             panic!("not ready")
         };
-        assert_eq!(labels.len(), if index == 2 { 9 } else { 21 });
+        assert_eq!(labels.len(), if index == 2 { 10 } else { 22 });
         let tub = apartment
             .equipment
             .iter()

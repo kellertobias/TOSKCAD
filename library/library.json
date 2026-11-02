@@ -134,6 +134,11 @@
       "document": "cad20300-0000-4000-8000-000000033451",
       "file": "equipment-dishwasher.tcd",
       "sha256": "f59f65068acf956d4389ae93177d112dd838418b0c5402625ab7e6622e2ce448"
+    },
+    {
+      "document": "cad20300-0000-4000-8000-000000035b61",
+      "file": "equipment-junction-box.tcd",
+      "sha256": "fb9a5942161c9626f5afbfa0739747de05474c08b4cf19543635576553a15308"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -143,6 +148,6 @@
     "sources/bolts/COPYING.LESSER",
     "README.md"
   ],
-  "revision": "3",
+  "revision": "4",
   "version": 1
 }

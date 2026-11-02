@@ -39,7 +39,8 @@ families!(
     WashingMachine,
     Dryer,
     Refrigerator,
-    Dishwasher
+    Dishwasher,
+    JunctionBox
 );
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

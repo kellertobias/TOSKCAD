@@ -248,6 +248,20 @@ impl Builder {
     fn geometry(&mut self) -> Result<(), CommandError> {
         let radius = "$width * $depth / ($width + $depth) * 0.45";
         match self.kind {
+            Kind::JunctionBox => {
+                self.box_z(
+                    "Junction box enclosure",
+                    ["$width", "$depth * 0.88", "$height"],
+                    ["-$width / 2", "-$depth * 0.88"],
+                    "0",
+                )?;
+                self.box_z(
+                    "Junction box cover",
+                    ["$width", "$depth * 0.12", "$height"],
+                    ["-$width / 2", "-$depth"],
+                    "0",
+                )?;
+            }
             Kind::PowerOutletTypeF
             | Kind::DoublePowerOutletTypeF
             | Kind::TriplePowerOutletTypeF
@@ -727,6 +741,7 @@ impl Builder {
             Kind::DataOutletRj45 => "RJ",
             Kind::TvAntennaOutlet => "TV",
             Kind::Switch => "S",
+            Kind::JunctionBox => "JB",
             Kind::CeilingLuminaire | Kind::WallLuminaire => "L",
             Kind::LampHolderE27 => "LH",
             Kind::WashingMachine => "WM",

@@ -214,7 +214,7 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 27);
+        assert_eq!(entries.len(), 28);
         let mut bearings = 0;
         let mut plants = 0;
         let mut equipment = std::collections::BTreeSet::new();
