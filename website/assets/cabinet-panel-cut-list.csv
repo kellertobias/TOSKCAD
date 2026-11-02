@@ -1,0 +1,30 @@
+# MultiCAD panel_cut_list schedule
+# revision 0
+# source a43939bf5728af66a7bb106464f3b28cc4726220f0e028df629457c3095a8157
+# Millimeters; length runs along the grain (the longer side when grain is free)
+# Core = finished - band thickness + band allowance per banded edge + oversize
+Panel,Role,Stock,T,Finished L,Finished W,Core L,Core W,Grain,Bands,Fits sheet,Stack,Issues
+Cabinet top,top,Birch ply 18,18,764,500,764,500,fixed,,yes,,
+"Adjustable shelf, open shelving 2",,Birch ply 18,18,762,460,762,460,fixed,,yes,,
+Drawer 2 box right side,,Birch ply 12,12,450,150,450,150,fixed,,yes,,
+Drawer 2 box bottom,,Birch ply 6,6,725.6,437,725.6,437,fixed,,yes,,
+Drawer 1 box front,,Birch ply 12,12,738.6,150,738.6,150,fixed,,yes,,
+Drawer 1 box bottom,,Birch ply 6,6,725.6,437,725.6,437,fixed,,yes,,
+Cabinet right side,right side,Birch ply 18,18,2000,500,2000,500,fixed,,yes,,
+Drawer 1 front,,Birch ply 18,18,796,206,796,206,fixed,,yes,,
+Drawer 2 front,,Birch ply 18,18,796,206,796,206,fixed,,yes,,
+Cabinet bottom,bottom,Birch ply 18,18,764,500,764,500,fixed,,yes,,
+Cabinet shelf 1,shelf 1,Birch ply 18,18,764,482,764,482,fixed,,yes,,
+Drawer 1 box back,,Birch ply 12,12,738.6,150,738.6,150,fixed,,yes,,
+Drawer 2 box back,,Birch ply 12,12,738.6,150,738.6,150,fixed,,yes,,
+Cabinet back,back,HDF 8,8,1964,764,1964,764,fixed,,yes,,
+Drawer 1 box right side,,Birch ply 12,12,450,150,450,150,fixed,,yes,,
+"Adjustable shelf, open shelving 1",,Birch ply 18,18,762,460,762,460,fixed,,yes,,
+Drawer 2 box left side,,Birch ply 12,12,450,150,450,150,fixed,,yes,,
+Cabinet shelf 2,shelf 2,Birch ply 18,18,764,482,764,482,fixed,,yes,,
+Right door,,Birch ply 18,18,823.5,396.5,823.5,396.5,fixed,,yes,,
+Left door,,Birch ply 18,18,823.5,396.5,823.5,396.5,fixed,,yes,,
+Drawer 1 box left side,,Birch ply 12,12,450,150,450,150,fixed,,yes,,
+Cabinet left side,left side,Birch ply 18,18,2000,500,2000,500,fixed,,yes,,
+"Adjustable shelf, door compartment",,Birch ply 18,18,762,460,762,460,fixed,,yes,,
+Drawer 2 box front,,Birch ply 12,12,738.6,150,738.6,150,fixed,,yes,,

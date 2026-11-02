@@ -1,0 +1,39 @@
+# MultiCAD bom schedule
+# revision 0
+# source d845639b932d79105428ff7f56116bfb6156ca43013d245d6ddd56e9ccdf0aaa
+# Quantities count physical Part occurrences; assemblies are not rows
+# Stack layers are listed individually with their stack
+# 0 Parts excluded by inclusion rules
+Item,Part,Qty,Material,Stock,Supply,Stack
+1,Foot plate 1,1,S235 steel,Flat bar 80×8,manufactured,
+2,Foot plate 2,1,S235 steel,Flat bar 80×8,manufactured,
+3,Foot plate 3,1,S235 steel,Flat bar 80×8,manufactured,
+4,Foot plate 4,1,S235 steel,Flat bar 80×8,manufactured,
+5,Leg 1,1,S235 steel,RHS 60×40×3,manufactured,
+6,Leg 2,1,S235 steel,RHS 60×40×3,manufactured,
+7,Leg 3,1,S235 steel,RHS 60×40×3,manufactured,
+8,Leg 4,1,S235 steel,RHS 60×40×3,manufactured,
+9,Long stretcher,1,S235 steel,RHS 60×40×3,manufactured,
+10,Mounting tab 1,1,S235 steel,Flat bar 40×5,manufactured,
+11,Mounting tab 2,1,S235 steel,Flat bar 40×5,manufactured,
+12,Mounting tab 3,1,S235 steel,Flat bar 40×5,manufactured,
+13,Mounting tab 4,1,S235 steel,Flat bar 40×5,manufactured,
+14,Side stretcher L,1,S235 steel,RHS 60×40×3,manufactured,
+15,Side stretcher R,1,S235 steel,RHS 60×40×3,manufactured,
+16,Top rail 1,1,S235 steel,RHS 60×40×3,manufactured,
+17,Top rail 2,1,S235 steel,RHS 60×40×3,manufactured,
+18,Top rail 3,1,S235 steel,RHS 60×40×3,manufactured,
+19,Top rail 4,1,S235 steel,RHS 60×40×3,manufactured,
+20,Vise fixed jaw,1,Beech,Beech block 40,manufactured,
+21,Vise guide housing,1,S235 steel,,manufactured,
+22,Vise lead screw (simplified),1,S235 steel,,manufactured,
+23,Vise left guide rod,1,S235 steel,,manufactured,
+24,Vise left mounting post,1,S235 steel,,manufactured,
+25,Vise lower handle knob,1,Beech,,manufactured,
+26,Vise moving jaw,1,Beech,Beech block 40,manufactured,
+27,Vise right guide rod,1,S235 steel,,manufactured,
+28,Vise right mounting post,1,S235 steel,,manufactured,
+29,Vise sliding handle,1,S235 steel,,manufactured,
+30,Vise underside mounting plate,1,S235 steel,,manufactured,
+31,Vise upper handle knob,1,Beech,,manufactured,
+32,Worktop,1,Beech,Beech block 40,manufactured,

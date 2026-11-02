@@ -1,0 +1,11 @@
+# MultiCAD machining schedule
+# revision 0
+# source d845639b932d79105428ff7f56116bfb6156ca43013d245d6ddd56e9ccdf0aaa
+# Millimeters; modeled features, not CNC toolpaths
+Panel,Operation,Kind,Size,Depth,Count
+Vise moving jaw,Vise moving jaw lead screw bore,holes,Ø22,through,1
+Vise fixed jaw,Vise fixed jaw lead screw bore,holes,Ø22,through,1
+Worktop,Tab screw pilots,holes,Ø4,25,4
+Vise fixed jaw,Vise fixed jaw guide rod bores,holes,Ø17,through,2
+Vise moving jaw,Vise moving jaw guide rod bores,holes,Ø17,through,2
+Worktop,Hole grid 10 × 10,holes,Ø20,through,100

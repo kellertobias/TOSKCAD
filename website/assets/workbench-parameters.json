@@ -1,0 +1,125 @@
+{
+  "parameters": [
+    {
+      "description": "Floor to the stretcher centerlines",
+      "exposed": true,
+      "expression": "150",
+      "id": "002a8865-fe8e-496f-a2ed-ad3b1bcb3916",
+      "name": "stretcher_height",
+      "role": "driving",
+      "unit": "mm",
+      "value": 150
+    },
+    {
+      "description": "Width of the two beech vise jaws",
+      "exposed": true,
+      "expression": "240",
+      "id": "07012b8e-0271-4de7-be9b-f02e409d8ed9",
+      "name": "vise_jaw_width",
+      "role": "driving",
+      "unit": "mm",
+      "value": 240
+    },
+    {
+      "description": "Worktop grid hole diameter",
+      "exposed": true,
+      "expression": "20",
+      "id": "2f827509-72b7-4627-ada2-ac691f72749d",
+      "name": "hole_diameter",
+      "role": "driving",
+      "unit": "mm",
+      "value": 20
+    },
+    {
+      "description": "Worktop left edge to the first grid column; centered by default",
+      "exposed": true,
+      "expression": "=($top_length - 9 * $hole_pitch) / 2",
+      "id": "423ee09d-564c-4a2d-b6c4-5a003bb4e54d",
+      "name": "hole_edge_x",
+      "role": "derived",
+      "unit": "mm",
+      "value": 390
+    },
+    {
+      "description": "Worktop depth along Y",
+      "exposed": true,
+      "expression": "1000",
+      "id": "8fe5248f-1dc5-4bdb-adfa-0ed7ff013d59",
+      "name": "top_depth",
+      "role": "driving",
+      "unit": "mm",
+      "value": 1000
+    },
+    {
+      "description": "Center distance of the worktop grid, both directions",
+      "exposed": true,
+      "expression": "80",
+      "id": "930de773-6125-415c-ad18-8635862f177f",
+      "name": "hole_pitch",
+      "role": "driving",
+      "unit": "mm",
+      "value": 80
+    },
+    {
+      "description": "Clear distance between the vise jaws",
+      "exposed": true,
+      "expression": "80",
+      "id": "b1ea487a-2816-459f-8a3d-c93564daa0d4",
+      "name": "vise_opening",
+      "role": "driving",
+      "unit": "mm",
+      "value": 80
+    },
+    {
+      "description": "Floor to the top of the steel frame (the worktop underside)",
+      "exposed": true,
+      "expression": "860",
+      "id": "b49193d8-4d88-4794-8747-9532bedb4744",
+      "name": "frame_height",
+      "role": "driving",
+      "unit": "mm",
+      "value": 860
+    },
+    {
+      "description": "Worktop edge to the outside of the steel frame, all round",
+      "exposed": true,
+      "expression": "50",
+      "id": "b9daad3c-1e77-4ba9-91bf-ccc89a4e9bbc",
+      "name": "top_overhang",
+      "role": "driving",
+      "unit": "mm",
+      "value": 50
+    },
+    {
+      "description": "Worktop front edge to the first grid row; centered by default",
+      "exposed": true,
+      "expression": "=($top_depth - 9 * $hole_pitch) / 2",
+      "id": "c0823a92-986f-4362-96b1-1db7c5c2450d",
+      "name": "hole_edge_y",
+      "role": "derived",
+      "unit": "mm",
+      "value": 140
+    },
+    {
+      "description": "Vise center along the front edge",
+      "exposed": true,
+      "expression": "=$top_length / 5",
+      "id": "d087d34c-0eb0-41c4-be65-cfda56ca4558",
+      "name": "vise_center_x",
+      "role": "derived",
+      "unit": "mm",
+      "value": 300
+    },
+    {
+      "description": "Worktop length along X",
+      "exposed": true,
+      "expression": "1500",
+      "id": "f9cb0841-4d3f-4a8b-bc6f-8e1e705f53bf",
+      "name": "top_length",
+      "role": "driving",
+      "unit": "mm",
+      "value": 1500
+    }
+  ],
+  "revision": 0
+}

@@ -30,11 +30,21 @@ The print package preserves model coordinates, including the guide fence below Z
 The SVG sheets are evaluated native drawing exports:
 
 - `workbench-weld-plan.svg`: canonical portrait sheet with 22 numbered weld callouts and a compact weld schedule.
+- `workbench-assembly-plan.svg`, `workbench-top-plan.svg`, `workbench-frame-cut-list.svg`: WB-101, WB-103 and WB-104, including the drilled top, machining schedule, member cuts and BOM. The top is a drawing sheet, not a CNC contour file.
 - `cabinet-connector-plan.svg`: panel views with shelf-pin rows, hinge cups and runner screw positions.
+- `cabinet-cut-list.svg`, `cabinet-assembly-plan.svg`: C-107 panel cutting list and C-101 assembly views.
 - `drill-guide-plan.svg`: top and front views with associative overall dimensions.
 - `apartment-plan.svg`: floor plan with wall cuts, door swings and evaluated dimensions. It is generated from the model, rather than authored as a separate constrained sketch.
 
-Regenerate a sheet with `cargo run -p multicad-app --example website_plan --locked -- examples/welded-workbench.tcd WB-102 website/assets/workbench-weld-plan.svg`. The command also accepts cabinet page `C-103`, drill-guide page `DG-101` and apartment page `AP-101`. The exporter refuses unresolved views or detached dimensions and leaves the input unchanged.
+Regenerate a sheet with `cargo run -p multicad-app --example website_plan --locked -- examples/welded-workbench.tcd WB-102 website/assets/workbench-weld-plan.svg`. The command accepts any page number in the project, including cabinet pages `C-101`, `C-103` and `C-107`, drill-guide page `DG-101` and apartment page `AP-101`. The exporter refuses unresolved views or detached dimensions and leaves the input unchanged.
+
+The workbench and cabinet CSVs come from the native MCP `schedule` tool, opened with `multicad --mcp --project FILE.tcd --export-dir DIRECTORY --read-only`. Workbench schedule kinds are `weld_schedule`, `member_cut_list`, `panel_cut_list`, `machining` and `bom`. The weld schedule has 22 rows with explicit steps 1 through 22 in the authored sequence. Cabinet kinds are `panel_cut_list`, `bom` and `machining`.
+
+WB-103 also carries explicit grid callouts from the evaluated `list_parameters` output in `workbench-parameters.json`: 20 mm through holes, 80 mm pitch and 390/140 mm edge offsets. After regenerating the native sheet, run `node tools/website-bench-plan.mjs website/assets/workbench-top-plan.svg website/assets/workbench-parameters.json website/assets/workbench-top-plan.svg`. It adds readable parameter values in the sheet's unused area without changing the exported geometry.
+
+The front-panel drawing uses a different route because this release has no flat-pattern producer in Drawings. `front-panel-flat-pattern.json` is the native `unfold_sheet` result for the actual sheet Part in `examples/front-panel.tcd`; `front-panel-developed.dxf` comes from `export_sheet_dxf` for that same Part. `front-panel-flat-plan.svg` presents those developed contours on a dimensioned sheet. It is a website drawing of native geometry, not a screenshot or evidence of an implemented flat-pattern drawing tool. It preserves the display opening, fourteen circular holes and two bend lines. Bend IDs follow model feature order, not a press-brake sequence.
+
+Regenerate that presentation with `node tools/website-flat-plan.mjs website/assets/front-panel-flat-pattern.json website/assets/front-panel-flat-plan.svg`. The developer-only renderer accepts closed straight contours and full circles, and rejects unsupported or inconsistent input. `node --test tools/website-flat-plan.test.mjs` checks the actual blank against independent bend-allowance and area calculations, and checks failure cases. No Node.js runtime is added to the application.
 
 All imagery belongs to this project. No stock images, synthetic application screenshots or substituted geometry are used. Keep captions and provenance current when replacing captures.
 
