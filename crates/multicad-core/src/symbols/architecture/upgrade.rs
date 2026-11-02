@@ -268,6 +268,7 @@ pub(in crate::symbols) fn update_edits(
         entity.data = value.entity_data()?;
         edits.push(Mutation::Replace(entity));
         let mut output = if let Some(context) = request.architecture_contexts.get(&record) {
+            edits.extend(super::wall_details::mutations(document, context)?);
             super::edit::context_entity(document, &value, context)?
         } else {
             document

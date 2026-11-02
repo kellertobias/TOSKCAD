@@ -8,6 +8,7 @@ mod placement;
 mod remap;
 mod targets;
 mod upgrade;
+mod wall_details;
 pub use edit::{ArchitectureEditRequest, prepare_architecture_edit};
 pub use inputs::{ArchitectureInputs, ArchitectureMaterialValue, configured_source};
 pub use instances::{
@@ -22,6 +23,7 @@ pub use upgrade::{ArchitectureSourceChange, ArchitectureUpgradeChange};
 pub(super) use upgrade::{
     changes as upgrade_changes, compatible_roles, planned_removals, update_edits as upgrade_edits,
 };
+pub use wall_details::{ArchitectureOpeningTypeRequest, ArchitectureWallDetails};
 #[cfg(test)]
 mod tests;
 use super::{source::invalid, *};

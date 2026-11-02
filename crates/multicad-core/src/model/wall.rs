@@ -1346,7 +1346,7 @@ impl NewType {
             kind,
         }
     }
-    pub(super) fn entity(&self) -> Result<Entity, CommandError> {
+    pub(crate) fn entity(&self) -> Result<Entity, CommandError> {
         if self.name.trim().is_empty() || self.name.len() > 256 {
             return Err(error("Type name must contain 1–256 bytes"));
         }

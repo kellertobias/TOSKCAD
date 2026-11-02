@@ -14,6 +14,8 @@ pub enum ArchitectureContext {
         level: Option<EntityId>,
         base_z: Dimension,
         flipped: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<ArchitectureWallDetails>,
     },
     Fence {
         path: FencePath,
@@ -98,9 +100,10 @@ fn output_entities(
                 level,
                 base_z,
                 flipped,
+                details,
             },
         ) => {
-            let wall = WallDefinition {
+            let mut wall = WallDefinition {
                 output: BodyOutput { body: *body },
                 wall_type: construction,
                 layer_placement: Some(WallLayerPlacement {
@@ -118,6 +121,7 @@ fn output_entities(
                 openings: vec![],
                 cutouts: vec![],
             };
+            super::wall_details::apply(&mut wall, details);
             Ok(vec![
                 entity(
                     *feature,
@@ -203,6 +207,7 @@ pub fn prepare_architecture_place(
         output: request.output.clone(),
     };
     let mut edits: Vec<_> = graph.into_values().map(Mutation::Insert).collect();
+    edits.extend(super::wall_details::mutations(document, &request.context)?);
     edits.extend(
         output_entities(request, request.ids[&blueprint.construction])?
             .into_iter()

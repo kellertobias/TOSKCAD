@@ -897,6 +897,7 @@ fn wall_context(end: f64) -> ArchitectureContext {
         level: None,
         base_z: length(0.),
         flipped: false,
+        details: None,
     }
 }
 #[test]
@@ -1329,3 +1330,92 @@ fn layout_input_and_post_position_repair_are_one_complete_context_transaction() 
 
 #[path = "upgrade_tests.rs"]
 mod upgrades;
+
+#[test]
+fn a_pinned_wall_and_new_receiving_opening_type_are_created_in_one_transaction() {
+    let (mut authoring, blueprint, _) = wall();
+    let definition = author(&mut authoring, &blueprint, vec![]);
+    let (mut host, id) = consumer(&definition);
+    let before = host.document().clone();
+    let opening_type = EntityId::new();
+    let opening = Opening {
+        id: EntityId::new(),
+        opening_type,
+        segment: 0,
+        offset: length(500.),
+        width: None,
+        height: None,
+        sill: None,
+    };
+    let mut context = wall_context(3000.);
+    let ArchitectureContext::Wall { details, .. } = &mut context else {
+        unreachable!()
+    };
+    *details = Some(ArchitectureWallDetails {
+        openings: Some(vec![opening.clone()]),
+        new_opening_types: vec![ArchitectureOpeningTypeRequest {
+            id: opening_type,
+            name: "Receiving window".into(),
+            value: OpeningTypeDefinition {
+                kind: OpeningKind::Window,
+                width: length(600.),
+                height: length(800.),
+                sill: length(900.),
+            },
+        }],
+        ..Default::default()
+    });
+    let request = ArchitecturePlaceRequest::new(
+        host.document(),
+        id,
+        "Wall with window",
+        ArchitectureInputs::default(),
+        context,
+    )
+    .unwrap();
+    let prepared = prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+    let ArchitectureOutput::Wall { feature, .. } = request.output else {
+        unreachable!()
+    };
+    assert!(prepared.prepared.document().get(opening_type).is_some());
+    assert_eq!(
+        read_wall(prepared.prepared.document(), feature)
+            .unwrap()
+            .openings,
+        vec![opening]
+    );
+    assert_eq!(host.document(), &before);
+    host.commit(prepared.prepared).unwrap();
+    let after = host.document().clone();
+    host.undo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &before);
+    host.redo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &after);
+    let mut edit = ArchitectureEditRequest {
+        record: request.record,
+        inputs: ArchitectureInputs::default(),
+        context: Some(request.context.clone()),
+    };
+    assert!(
+        prepare_architecture_edit(&host, host.revision(), actor(), &edit).is_err(),
+        "existing type cannot be inserted again"
+    );
+    let Some(ArchitectureContext::Wall {
+        details: Some(details),
+        ..
+    }) = &mut edit.context
+    else {
+        unreachable!()
+    };
+    details.new_opening_types.clear();
+    details.openings = Some(vec![]);
+    let prepared = prepare_architecture_edit(&host, host.revision(), actor(), &edit).unwrap();
+    assert!(
+        read_wall(prepared.prepared.document(), feature)
+            .unwrap()
+            .openings
+            .is_empty()
+    );
+    assert!(prepared.prepared.document().get(opening_type).is_some());
+    assert_eq!(host.document(), &after);
+}

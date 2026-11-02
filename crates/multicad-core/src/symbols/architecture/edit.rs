@@ -38,6 +38,7 @@ pub fn prepare_architecture_edit(
         edits.push(Mutation::Replace(record));
     }
     if let Some(context) = &request.context {
+        edits.extend(super::wall_details::mutations(document, context)?);
         let entity = context_entity(document, &value, context)?;
         if document.get(entity.id) != Some(&entity) {
             edits.push(Mutation::Replace(entity));
@@ -70,6 +71,7 @@ pub(super) fn context_entity(
                 level,
                 base_z,
                 flipped,
+                details,
             },
         ) => {
             let mut wall = model::read_wall(document, *feature)?;
@@ -80,6 +82,7 @@ pub(super) fn context_entity(
             wall.layer_placement
                 .get_or_insert_with(Default::default)
                 .flipped = *flipped;
+            super::wall_details::apply(&mut wall, details);
             let mut entity = document.get(*feature).expect("checked wall").clone();
             let EntityData::Feature {
                 definition, inputs, ..

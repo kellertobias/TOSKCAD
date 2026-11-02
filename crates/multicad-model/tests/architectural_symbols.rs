@@ -158,6 +158,7 @@ fn context(role: ArchitectureRole, end: f64) -> ArchitectureContext {
             level: None,
             base_z: length(0.),
             flipped: false,
+            details: None,
         },
         ArchitectureRole::Fence => ArchitectureContext::Fence {
             path: FencePath {
@@ -509,6 +510,7 @@ fn pinned_wall_openings_survive_path_base_and_flip_context_edits() {
         level: None,
         base_z: length(150.),
         flipped: true,
+        details: None,
     };
     let prepared = prepare_architecture_edit(
         &host,
@@ -729,4 +731,66 @@ fn explicit_pin_updates_rebuild_native_roles_keep_overrides_and_reopen_with_comp
         );
         assert_eq!(reopened.project.document, after);
     }
+}
+
+#[test]
+fn drawing_a_pinned_wall_with_a_new_window_preflights_and_undoes_the_complete_native_change() {
+    let (definition, _) = authored(ArchitectureRole::Wall);
+    let mut host = Session::new(Document::new("Atomic receiving wall").unwrap()).unwrap();
+    let imported = symbols::prepare_import(&host, 0, actor(), &definition).unwrap();
+    let id = imported.definition;
+    host.commit(imported.prepared).unwrap();
+    let before = host.document().clone();
+    let opening_type = EntityId::new();
+    let mut context = context(ArchitectureRole::Wall, 3000.);
+    let ArchitectureContext::Wall { details, .. } = &mut context else {
+        unreachable!()
+    };
+    *details = Some(ArchitectureWallDetails {
+        openings: Some(vec![Opening {
+            id: EntityId::new(),
+            opening_type,
+            segment: 0,
+            offset: length(500.),
+            width: None,
+            height: None,
+            sill: None,
+        }]),
+        new_opening_types: vec![ArchitectureOpeningTypeRequest {
+            id: opening_type,
+            name: "New window".into(),
+            value: OpeningTypeDefinition {
+                kind: OpeningKind::Window,
+                width: length(600.),
+                height: length(800.),
+                sill: length(900.),
+            },
+        }],
+        ..Default::default()
+    });
+    let request = ArchitecturePlaceRequest::new(
+        host.document(),
+        id,
+        "Wall and window",
+        ArchitectureInputs::default(),
+        context,
+    )
+    .unwrap();
+    let prepared = prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+    let ArchitectureOutput::Wall { body, .. } = request.output else {
+        unreachable!()
+    };
+    let model = Compiler::default()
+        .compile(prepared.prepared.document(), host.revision())
+        .unwrap();
+    near(
+        model.solid(body).unwrap().volume_mm3().unwrap(),
+        914_400_000.,
+    );
+    assert_eq!(host.document(), &before);
+    host.commit(prepared.prepared).unwrap();
+    assert!(host.document().get(opening_type).is_some());
+    host.undo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &before);
+    assert!(host.document().get(opening_type).is_none());
 }
