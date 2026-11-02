@@ -71,26 +71,28 @@ pub fn show(
             ui.add_enabled_ui(locked.is_none(), |ui| {
                 ui.label("Name");
                 changed |= ui
-                    .add(
-                        egui::TextEdit::singleline(&mut editor.info.name)
-                            .char_limit(info::MAX_NAME_CHARS)
-                            .desired_width(f32::INFINITY),
-                    )
+                    .add(egui::TextEdit::singleline(&mut editor.info.name)
+                        .char_limit(info::MAX_NAME_CHARS)
+                        .desired_width(f32::INFINITY))
                     .on_hover_text("Shown on the home screen and in the library")
                     .changed();
                 if let Err(error) = info::validate_name(&editor.info.name) {
                     ui.colored_label(Color32::LIGHT_RED, error);
                 }
                 ui.label("Description");
-                changed |= ui
-                    .add(
-                        egui::TextEdit::multiline(&mut editor.info.description)
-                            .char_limit(info::MAX_DESCRIPTION_CHARS)
-                            .desired_rows(4)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("What is this part or project for?"),
-                    )
-                    .changed();
+                changed |= ui.scope(|ui| {
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                    egui::ScrollArea::vertical()
+                        .id_salt("project-file-description")
+                        .max_height(104.)
+                        .show(ui, |ui| ui.add(
+                            egui::TextEdit::multiline(&mut editor.info.description)
+                                .char_limit(info::MAX_DESCRIPTION_CHARS)
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("What is this part or project for?")
+                        ).changed()).inner
+                }).inner;
                 ui.label("Preview image");
                 textures.show(
                     ui,

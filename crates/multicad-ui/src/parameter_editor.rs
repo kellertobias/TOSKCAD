@@ -353,6 +353,14 @@ impl ParameterEditor {
         Ok(())
     }
     pub fn show(&mut self, ui: &mut egui::Ui, session: &Session) {
+        self.show_with_min_table_width(ui, session, 0.);
+    }
+    pub(crate) fn show_with_min_table_width(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &Session,
+        minimum: f32,
+    ) {
         if let Err(error) = session.validate_stamp(&self.guard) {
             if self.dirty() {
                 self.preview = None;
@@ -376,6 +384,22 @@ impl ParameterEditor {
             .on_hover_text("Filter rows by parameter name or description");
         });
         ui.label("Enter a value or a formula such as =600 - $height. Comparisons return 1 or 0 (ratio). Complete a row to add another.");
+        if ui.available_width() < minimum {
+            ui.scope(|ui| {
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                egui::ScrollArea::horizontal()
+                    .id_salt("project-table-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(minimum);
+                        self.show_table(ui, session);
+                    });
+            });
+        } else {
+            self.show_table(ui, session);
+        }
+    }
+    fn show_table(&mut self, ui: &mut egui::Ui, session: &Session) {
         let width = ui.available_width();
         let columns = [0.14, 0.22, 0.23, 0.07, 0.13, 0.07, 0.14].map(|f| f * width);
         let headers = [

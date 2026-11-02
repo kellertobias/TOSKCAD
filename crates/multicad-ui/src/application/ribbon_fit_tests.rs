@@ -53,6 +53,9 @@ fn frame(app: &mut Application, ctx: &egui::Context, size: egui::Vec2) -> Frame 
 fn surfaces(app: &Application) -> Vec<(Mode, usize, bool)> {
     let mut all = vec![];
     for workspace in &app.registry.workspaces {
+        if workspace.mode == Mode::Parameters {
+            continue;
+        }
         for (index, tab) in workspace.tabs.iter().enumerate() {
             for editing in [false, true] {
                 if workspace.mode != Mode::Sketch && editing {

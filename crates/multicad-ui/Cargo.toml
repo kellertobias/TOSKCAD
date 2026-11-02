@@ -27,6 +27,7 @@ winit = { version = "=0.30.13", default-features = false }
 cxx-build = "=1.0.205"
 
 [dev-dependencies]
+tempfile = "=3.27.0"
 multicad-model.workspace = true
 multicad-kernel.workspace = true
 naga = { version = "=30.0.1", features = ["wgsl-in"] }

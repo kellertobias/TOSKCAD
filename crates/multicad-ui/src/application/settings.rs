@@ -126,7 +126,7 @@ impl Application {
                 ui.heading("Workbenches");
                 ui.small(format!("Show, hide and reorder each mode's workbenches. {ALWAYS_VISIBLE} always stays visible; tools of hidden workbenches stay available from Find tool and the command line."));
                 egui::ScrollArea::vertical().max_height(360.).show(ui, |ui| {
-                    for mode in Mode::ALL {
+                    for mode in Mode::ALL.into_iter().filter(|mode| *mode != Mode::Parameters) {
                         egui::CollapsingHeader::new(mode.title())
                             .default_open(mode == self.mode)
                             .show(ui, |ui| {

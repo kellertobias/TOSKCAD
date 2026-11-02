@@ -1,4 +1,4 @@
-//! Browse the same included/original-file Library used by Parameters.
+//! Browse the same included/original-file Library used by Project.
 use super::SymbolAction;
 use crate::{
     egui,
@@ -71,7 +71,7 @@ impl Installed {
             }));
         }
         if shown == 0 {
-            ui.small("No matching listed files. Save a file with reusable symbols and choose Add to Library in Parameters.");
+            ui.small("No matching listed files. Save a file with reusable symbols and choose Add to Library in Project.");
         }
         action
     }

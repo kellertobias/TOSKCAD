@@ -14,6 +14,7 @@ mod library;
 mod mechanical_imports;
 mod native_picker;
 mod print;
+mod project;
 mod render;
 mod save_preview;
 mod schedule_files;
@@ -2336,10 +2337,12 @@ impl Application {
             .show(ui, |ui| self.header(ui));
         // Tab strip plus the tool strip with its labels and captions, so tool
         // labels never extend under the content panels (CAD-154).
-        egui::Panel::top("ribbon")
-            .exact_size(RIBBON_HEIGHT)
-            .frame(egui::Frame::new())
-            .show(ui, |ui| self.ribbon(ui));
+        if self.mode != Mode::Parameters {
+            egui::Panel::top("ribbon")
+                .exact_size(RIBBON_HEIGHT)
+                .frame(egui::Frame::new())
+                .show(ui, |ui| self.ribbon(ui));
+        }
         egui::Panel::bottom("command-entry")
             .frame(
                 egui::Frame::new()
@@ -2351,23 +2354,7 @@ impl Application {
             .frame(egui::Frame::new().fill(crate::theme::PANEL))
             .show(ui, |ui| {
                 if self.mode == Mode::Parameters {
-                    egui::Panel::right("parameters-metadata")
-                        .exact_size(crate::metadata_sidebar::WIDTH)
-                        .frame(
-                            egui::Frame::new()
-                                .fill(crate::theme::PANEL)
-                                .inner_margin(egui::Margin::same(12)),
-                        )
-                        .show(ui, |ui| self.parameters_sidebar(ui));
-                    let p = self.current_mut();
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: 16,
-                            right: 16,
-                            top: 12,
-                            bottom: 8,
-                        })
-                        .show(ui, |ui| p.editor.show(ui, &p.session));
+                    self.project_workspace(ui);
                 } else if self.mode == Mode::Export && self.print_tab() {
                     self.show_print(ui);
                 } else if self.mode == Mode::Export && !self.render_tab() {

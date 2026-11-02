@@ -2221,6 +2221,7 @@ dependencies = [
  "png",
  "raw-window-handle",
  "serde_json",
+ "tempfile",
  "windows-sys 0.61.2",
  "winit",
 ]

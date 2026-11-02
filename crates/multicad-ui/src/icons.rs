@@ -95,18 +95,36 @@ pub fn compact_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Respo
     icon_button(ui, icon, label, 24.0)
 }
 pub fn labeled_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
+    labeled_button_sized(ui, icon, label, Vec2::ZERO)
+}
+/// Shared icon-and-label action with a stable hit area for vertical action lists.
+/// The icon/text inset matches Library, Measure and MCP utility buttons.
+pub fn labeled_button_sized(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    minimum: Vec2,
+) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(
         label.into(),
         egui::FontId::proportional(12.0),
         Color32::WHITE,
     );
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(16.0 + 6.0 + galley.size().x + 12.0, 26.0),
+        Vec2::new(16.0 + 6.0 + galley.size().x + 12.0, 26.0).max(minimum),
         egui::Sense::click(),
     );
     if response.hovered() {
         ui.painter()
             .rect_filled(rect, 4, Color32::from_white_alpha(30));
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(1.),
+            4,
+            egui::Stroke::new(1., Color32::WHITE),
+            egui::StrokeKind::Inside,
+        );
     }
     paint_sized(
         ui,

@@ -331,7 +331,7 @@ impl ShortcutMap {
             false,
         );
         for (key, command, label) in [
-            (Key::E, crate::registry::Command::Apply, "Apply and rebuild"),
+            (Key::E, crate::registry::Command::Apply, "Apply and Rebuild"),
             (
                 Key::Q,
                 crate::registry::Command::Discard,

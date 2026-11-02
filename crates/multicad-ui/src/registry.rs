@@ -3,6 +3,7 @@ use crate::{
     icons::Icon, modeling::ModelingTool, sketch_editor::DrawTool, sketch_operations::OperationTool,
 };
 use eframe::egui::Color32;
+pub(crate) const PROJECT_ACTIONS: [&str; 5] = ["apply", "discard", "preview", "undo", "redo"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     Parameters,
@@ -21,7 +22,7 @@ impl Mode {
     ];
     pub fn title(self) -> &'static str {
         match self {
-            Self::Parameters => "Parameters",
+            Self::Parameters => "Project",
             Self::Sketch => "Sketch",
             Self::Model => "Model",
             Self::Drawings => "Drawings",
@@ -130,14 +131,14 @@ impl Default for Registry {
             },
             Tool {
                 id: "apply",
-                label: "Apply and rebuild",
+                label: "Apply and Rebuild",
                 icon: Icon::Save,
                 action: Command::Apply,
                 aliases: &["apply", "rebuild"],
             },
             Tool {
                 id: "discard",
-                label: "Discard edits",
+                label: "Discard Edit",
                 icon: Icon::Undo,
                 action: Command::Discard,
                 aliases: &["discard", "cancel"],
@@ -357,12 +358,17 @@ impl Default for Registry {
         });
         for mode in Mode::ALL {
             registry.tools.push(Tool {
-                id: mode.title(),
+                // Keep saved command identifiers and old command-line aliases.
+                id: if mode == Mode::Parameters {
+                    "Parameters"
+                } else {
+                    mode.title()
+                },
                 label: mode.title(),
                 icon: Icon::Page,
                 action: Command::Mode(mode),
                 aliases: match mode {
-                    Mode::Parameters => &["parameters", "params"],
+                    Mode::Parameters => &["project-mode", "parameters", "params"],
                     Mode::Sketch => &["sketch"],
                     Mode::Model => &["model"],
                     Mode::Drawings => &["drawings"],
@@ -443,10 +449,7 @@ impl Default for Registry {
         registry.workspaces = vec![
             Workspace {
                 mode: Mode::Parameters,
-                tabs: vec![tab(
-                    "Common",
-                    &["apply", "discard", "preview", "undo", "redo"],
-                )],
+                tabs: vec![tab("Common", &PROJECT_ACTIONS)],
             },
             Workspace {
                 mode: Mode::Sketch,
@@ -743,6 +746,8 @@ impl Registry {
                 }
             }
         }
+        // Prefer the visible name when a legacy command alias has the same word.
+        found.sort_by_key(|tool| !tool.label.eq_ignore_ascii_case(&query));
         found
     }
     /// Workspace and ribbon tab that offer `command`, for finder context.
@@ -798,11 +803,38 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     #[test]
+    fn project_mode_keeps_legacy_commands_while_search_and_labels_use_project() {
+        let registry = Registry::default();
+        for name in ["project-mode", "Parameters", "parameters", "params"] {
+            let tool = registry
+                .resolve(name)
+                .expect("Project command or retained alias");
+            assert_eq!(tool.action, Command::Mode(Mode::Parameters));
+            assert_eq!(tool.label, "Project");
+        }
+        assert!(
+            registry
+                .search("project")
+                .iter()
+                .any(|tool| tool.label == "Project")
+        );
+        assert_eq!(
+            registry.search("project")[0].action,
+            Command::Mode(Mode::Parameters)
+        );
+        assert_eq!(registry.tool("Parameters").unwrap().label, "Project");
+        assert_eq!(
+            registry.resolve("project").unwrap().action,
+            Command::External(crate::external_references::ExternalTool::Project),
+            "the existing project-reference command remains compatible"
+        );
+    }
+    #[test]
     fn mechanical_reuses_global_library_and_assembly_commands_without_new_modes() {
         let registry = Registry::default();
         assert_eq!(
             Mode::ALL.map(Mode::title),
-            ["Parameters", "Sketch", "Model", "Drawings", "Export"]
+            ["Project", "Sketch", "Model", "Drawings", "Export"]
         );
         let model = registry.workspace(Mode::Model);
         let mechanical = model
