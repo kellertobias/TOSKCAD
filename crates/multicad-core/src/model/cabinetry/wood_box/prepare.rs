@@ -217,6 +217,20 @@ pub fn prepare_wood_box(
             let source = previous
                 .as_ref()
                 .ok_or_else(|| error("Choose an existing Wood Box recipe to remove"))?;
+            let owned: std::collections::BTreeSet<_> = source
+                .panels
+                .values()
+                .flat_map(|ids| [ids.feature, ids.body])
+                .collect();
+            if hierarchy
+                .members
+                .get(&source.group)
+                .is_some_and(|members| members.iter().any(|member| !owned.contains(member)))
+            {
+                return Err(error(
+                    "Move unrelated members out of the Wood Box group before removing the recipe",
+                ));
+            }
             for face in &source.faces {
                 edits.extend(removal(document, &source.panels[face])?);
                 removed_parts.push(source.panels[face].body);
@@ -247,6 +261,7 @@ pub fn prepare_wood_box(
     for id in &removed {
         hierarchy.members.remove(id);
     }
+    hierarchy.hidden.retain(|id| !removed.contains(id));
     if hierarchy != *document.hierarchy() {
         edits.push(Mutation::SetHierarchy(hierarchy));
     }

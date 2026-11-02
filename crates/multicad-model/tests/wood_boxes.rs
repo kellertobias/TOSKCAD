@@ -67,13 +67,20 @@ fn near(a: f64, b: f64) {
 #[test]
 fn closed_open_top_omitted_side_and_multiple_omissions_produce_separate_nonoverlapping_native_panels()
  {
-    for absent in [
+    for (index, absent) in [
         vec![],
         vec![WoodBoxFace::Top],
         vec![WoodBoxFace::Left],
         vec![WoodBoxFace::Left, WoodBoxFace::Top, WoodBoxFace::Front],
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let (mut session, mut request) = fixture();
+        if index == 3 {
+            request.definition.origin = [length(100.), length(-250.), length(40.)];
+            request.definition.rotation = angle(30.);
+        }
         for face in absent {
             request.definition.faces.remove(&face);
         }
@@ -140,7 +147,11 @@ fn closed_open_top_omitted_side_and_multiple_omissions_produce_separate_nonoverl
                 bounds[1][axis] = bounds[1][axis].max(b.max[axis]);
             }
         }
-        assert_eq!(bounds, layout.actual_bounds);
+        for side in 0..2 {
+            for axis in 0..3 {
+                near(bounds[side][axis], layout.actual_bounds[side][axis]);
+            }
+        }
     }
 }
 #[test]
@@ -212,6 +223,22 @@ fn downstream_inside_pocket_follows_recipe_dimensions_and_reopens_without_stale_
         664. * 364. * 18. - 40. * 30. * 5.,
     );
     let before = session.document().clone();
+    let mut too_small = request.clone();
+    too_small.definition.width = length(100.);
+    let prepared = prepare_wood_box(
+        &session,
+        session.revision(),
+        actor(),
+        &WoodBoxChange::Set(Box::new(too_small)),
+    )
+    .unwrap();
+    assert!(
+        Compiler::default()
+            .compile(prepared.model.prepared.document(), session.revision() + 1)
+            .is_err(),
+        "Resize must diagnose the pocket outside the smaller panel"
+    );
+    assert_eq!(session.document(), &before);
     request.definition.faces.remove(&WoodBoxFace::Bottom);
     assert!(
         prepare_wood_box(

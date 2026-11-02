@@ -271,3 +271,51 @@ fn downstream_operations_block_face_omission_without_orphaning_other_panels() {
     assert!(error.to_string().contains("downstream"));
     assert_eq!(session.document(), &before);
 }
+
+#[test]
+fn hidden_face_omission_cleans_visibility_and_complete_removal_preserves_unrelated_group_members() {
+    let (mut session, stocks) = fixture();
+    let mut request = request(stocks[0]);
+    apply(&mut session, &request);
+    let left = request.definition.panels[&WoodBoxFace::Left].body;
+    let mut hierarchy = session.document().hierarchy().clone();
+    hierarchy.hidden.insert(left);
+    let p = session
+        .prepare(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Hide left".into(),
+            edits: vec![Mutation::SetHierarchy(hierarchy)],
+        })
+        .unwrap();
+    session.commit(p).unwrap();
+    request.definition.faces.remove(&WoodBoxFace::Left);
+    apply(&mut session, &request);
+    assert!(!session.document().hierarchy().hidden.contains(&left));
+    let extra = Entity::new("Unrelated group", EntityData::Group {});
+    let mut hierarchy = session.document().hierarchy().clone();
+    hierarchy
+        .members
+        .entry(request.definition.group)
+        .or_default()
+        .push(extra.id);
+    let p = session
+        .prepare(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Add unrelated group".into(),
+            edits: vec![Mutation::Insert(extra), Mutation::SetHierarchy(hierarchy)],
+        })
+        .unwrap();
+    session.commit(p).unwrap();
+    let before = session.document().clone();
+    let error = prepare_wood_box(
+        &session,
+        session.revision(),
+        actor(),
+        &WoodBoxChange::Remove(request.id),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("unrelated"));
+    assert_eq!(session.document(), &before);
+}
