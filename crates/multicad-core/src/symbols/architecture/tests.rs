@@ -865,3 +865,337 @@ fn configured_wall_layers_retain_private_air_and_map_authored_boundary_choices()
         Some(&length(120.))
     );
 }
+
+fn consumer(definition: &SymbolDefinition) -> (Session, EntityId) {
+    let mut host = Session::new(Document::new("Consumer").unwrap()).unwrap();
+    let prepared = super::super::prepare_import(&host, 0, actor(), definition).unwrap();
+    let id = prepared.definition;
+    host.commit(prepared.prepared).unwrap();
+    (host, id)
+}
+fn fence_context(end: f64) -> ArchitectureContext {
+    ArchitectureContext::Fence {
+        path: FencePath {
+            vertices: [[0., 0.], [end, 0.]]
+                .into_iter()
+                .map(|point| FenceVertex {
+                    id: EntityId::new(),
+                    point: point.map(length),
+                })
+                .collect(),
+            closed: false,
+            base_z: length(0.),
+        },
+        level: None,
+        post_positions: vec![],
+    }
+}
+fn wall_context(end: f64) -> ArchitectureContext {
+    ArchitectureContext::Wall {
+        path: vec![[length(0.), length(0.)], [length(end), length(0.)]],
+        closed: false,
+        level: None,
+        base_z: length(0.),
+        flipped: false,
+    }
+}
+#[test]
+fn two_architectural_fences_have_real_independent_runs_private_sources_and_offline_pins() {
+    let (mut authoring, blueprint, width, _) = fence();
+    let definition = author(&mut authoring, &blueprint, vec![width]);
+    let pin = definition.pin().unwrap();
+    let (mut host, id) = consumer(&definition);
+    let mut requests = vec![];
+    for (length, height, count) in [(4500., 2000., 7), (6500., 2200., 9)] {
+        let mut inputs = ArchitectureInputs::default();
+        inputs
+            .dimensions
+            .insert(blueprint.dimensions[0].id, model::length(height));
+        let request = ArchitecturePlaceRequest::new(
+            host.document(),
+            id,
+            "Boundary",
+            inputs,
+            fence_context(length),
+        )
+        .unwrap();
+        let before = host.document().clone();
+        let cancelled =
+            prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+        assert_eq!(host.document(), &before);
+        drop(cancelled);
+        let prepared =
+            prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+        let ArchitectureOutput::Fence { run, group } = request.output else {
+            unreachable!()
+        };
+        assert_eq!(
+            fence_members(prepared.prepared.document(), run)
+                .unwrap()
+                .len(),
+            count
+        );
+        host.commit(prepared.prepared).unwrap();
+        let record = read_architecture_instance(host.document(), request.record).unwrap();
+        assert_eq!(record.pin, pin);
+        let run = read_fence_run(host.document(), run).unwrap();
+        assert_eq!(run.group, group);
+        assert_eq!(run.fence_type, request.ids[&blueprint.construction]);
+        let layout = resolve_fence_run(host.document(), host.parameters(), &run).unwrap();
+        assert_eq!(layout.construction.height_mm, height);
+        assert!(
+            super::super::owned_entities_in_session(&host)
+                .unwrap()
+                .contains(&request.ids[&width])
+        );
+        assert!(
+            !super::super::owned_entities_in_session(&host)
+                .unwrap()
+                .contains(&group)
+        );
+        requests.push(request);
+    }
+    assert!(
+        requests[0]
+            .ids
+            .values()
+            .all(|id| !requests[1].ids.values().any(|other| id == other))
+    );
+    let saved = host.document().clone();
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(saved.clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    drop(authoring);
+    drop(definition);
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let reopened = Session::new(reopened.project.document).unwrap();
+    assert_eq!(reopened.document(), &saved);
+    assert_eq!(
+        architecture_instances(reopened.document(), id)
+            .unwrap()
+            .len(),
+        2
+    );
+    let mut private = host
+        .document()
+        .get(requests[0].ids[&blueprint.construction])
+        .unwrap()
+        .clone();
+    if let EntityData::Extension { definition, .. } = &mut private.data {
+        definition.data["height"] = serde_json::to_value(length(9999.)).unwrap();
+    }
+    assert!(
+        host.document()
+            .edited(&[Mutation::Replace(private)])
+            .is_err()
+    );
+    host.undo(host.revision(), actor()).unwrap();
+    assert_eq!(
+        architecture_instances(host.document(), id).unwrap().len(),
+        1
+    );
+    host.redo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &saved);
+}
+#[test]
+fn real_layered_wall_context_can_change_while_private_construction_stays_protected() {
+    let (mut authoring, mut blueprint, _) = wall();
+    let height = EntityId::new();
+    blueprint.dimensions.push(ArchitectureDimensionSlot {
+        id: height,
+        name: "Height".into(),
+        target: ArchitectureDimensionTarget::WallHeight,
+    });
+    let definition = author(&mut authoring, &blueprint, vec![]);
+    let (mut host, id) = consumer(&definition);
+    let mut requests = vec![];
+    for (end, high) in [(3000., 2500.), (6000., 3100.)] {
+        let mut inputs = ArchitectureInputs::default();
+        inputs.dimensions.insert(height, length(high));
+        let request = ArchitecturePlaceRequest::new(
+            host.document(),
+            id,
+            "Layered wall",
+            inputs,
+            wall_context(end),
+        )
+        .unwrap();
+        let prepared =
+            prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+        host.commit(prepared.prepared).unwrap();
+        let ArchitectureOutput::Wall { feature, body } = request.output else {
+            unreachable!()
+        };
+        let wall = read_wall(host.document(), feature).unwrap();
+        assert_eq!(wall.output.body, body);
+        let construction = read_wall_construction(host.document(), wall.wall_type).unwrap();
+        let WallTypeConstruction::Layered(construction) = construction else {
+            unreachable!()
+        };
+        assert_eq!(construction.height, length(high));
+        assert_eq!(
+            construction.layers.layers[0].construction,
+            WallLayerKind::Solid {
+                thickness: length(120.),
+                material: request.ids[&definition
+                    .template
+                    .entities()
+                    .find(|e| matches!(e.data, EntityData::Material { .. }) && e.name == "Brick")
+                    .unwrap()
+                    .id]
+            }
+        );
+        let mut context = wall.clone();
+        context.path[1][0] = length(end + 500.);
+        context.base_z = length(150.);
+        let prepared =
+            prepare_wall_edit(&host, host.revision(), actor(), feature, &context).unwrap();
+        host.commit(prepared.prepared).unwrap();
+        assert_eq!(read_wall(host.document(), feature).unwrap(), context);
+        context.height = Some(length(9000.));
+        assert!(prepare_wall_edit(&host, host.revision(), actor(), feature, &context).is_err());
+        requests.push(request);
+    }
+    assert_eq!(
+        architecture_instances(host.document(), id).unwrap().len(),
+        2
+    );
+    let mut invalid = ArchitecturePlaceRequest::new(
+        host.document(),
+        id,
+        "Wall",
+        ArchitectureInputs::default(),
+        wall_context(3000.),
+    )
+    .unwrap();
+    invalid.ids = requests[0].ids.clone();
+    assert!(prepare_architecture_place(&host, host.revision(), actor(), &invalid).is_err());
+    assert!(
+        ArchitecturePlaceRequest::new(
+            host.document(),
+            id,
+            "Wrong role",
+            ArchitectureInputs::default(),
+            fence_context(3000.)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn architectural_pin_never_hides_physical_sample_geometry_from_native_validation() {
+    let (mut session, blueprint, width, _) = fence();
+    let mut definition = author(&mut session, &blueprint, vec![width]);
+    let extra = Entity::new(
+        "Stray sample",
+        EntityData::Part {
+            features: vec![],
+            material: None,
+            tags: Default::default(),
+        },
+    );
+    definition.template = definition
+        .template
+        .edited(&[Mutation::Insert(extra)])
+        .unwrap();
+    assert!(
+        definition
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("canonical construction source")
+    );
+}
+
+#[test]
+fn exposed_architectural_edits_reconcile_members_preserve_context_and_cancel_atomically() {
+    let (mut authoring, mut blueprint, width, _) = fence();
+    let spacing = EntityId::new();
+    blueprint.dimensions.push(ArchitectureDimensionSlot {
+        id: spacing,
+        name: "Spacing".into(),
+        target: ArchitectureDimensionTarget::FenceSpacing,
+    });
+    let definition = author(&mut authoring, &blueprint, vec![width]);
+    let (mut host, id) = consumer(&definition);
+    let request = ArchitecturePlaceRequest::new(
+        host.document(),
+        id,
+        "Boundary",
+        ArchitectureInputs::default(),
+        fence_context(4500.),
+    )
+    .unwrap();
+    let placed = prepare_architecture_place(&host, host.revision(), actor(), &request).unwrap();
+    host.commit(placed.prepared).unwrap();
+    let ArchitectureOutput::Fence { run, .. } = request.output else {
+        unreachable!()
+    };
+    let before = host.document().clone();
+    let previous = read_fence_run(&before, run).unwrap();
+    let old: BTreeMap<_, _> = fence_members(&before, run)
+        .unwrap()
+        .into_iter()
+        .map(|(k, f, b)| (k, (f, b)))
+        .collect();
+    let mut inputs = ArchitectureInputs::default();
+    inputs.dimensions.insert(spacing, length(1000.));
+    inputs
+        .dimensions
+        .insert(blueprint.dimensions[0].id, length(2400.));
+    let edit = ArchitectureEditRequest {
+        record: request.record,
+        inputs,
+    };
+    let cancelled = prepare_architecture_edit(&host, host.revision(), actor(), &edit).unwrap();
+    assert_eq!(
+        fence_members(cancelled.prepared.document(), run)
+            .unwrap()
+            .len(),
+        11
+    );
+    assert_eq!(host.document(), &before);
+    drop(cancelled);
+    let changed = prepare_architecture_edit(&host, host.revision(), actor(), &edit).unwrap();
+    assert_eq!(
+        read_fence_run(changed.prepared.document(), run).unwrap(),
+        previous
+    );
+    let record = read_architecture_instance(changed.prepared.document(), request.record).unwrap();
+    assert_eq!(record.ids, request.ids);
+    assert_eq!(record.pin, definition.pin().unwrap());
+    let members = fence_members(changed.prepared.document(), run).unwrap();
+    for (key, feature, body) in &members {
+        if let Some(old) = old.get(key) {
+            assert_eq!((*feature, *body), *old);
+        }
+    }
+    host.commit(changed.prepared).unwrap();
+    let after = host.document().clone();
+    host.undo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &before);
+    host.redo(host.revision(), actor()).unwrap();
+    assert_eq!(host.document(), &after);
+    let mut invalid = edit.clone();
+    invalid
+        .inputs
+        .dimensions
+        .insert(EntityId::new(), length(1000.));
+    assert!(prepare_architecture_edit(&host, host.revision(), actor(), &invalid).is_err());
+    assert!(prepare_architecture_edit(&host, 0, actor(), &edit).is_err());
+    assert_eq!(host.document(), &after);
+    let mut raw = host.document().get(run).unwrap().clone();
+    let mut source = read_fence_run(host.document(), run).unwrap();
+    source.overrides.post_height = Some(length(9999.));
+    raw.data = source.entity_data().unwrap();
+    assert!(host.document().edited(&[Mutation::Replace(raw)]).is_err());
+}

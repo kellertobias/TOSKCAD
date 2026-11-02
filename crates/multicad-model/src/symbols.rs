@@ -41,6 +41,16 @@ pub(crate) fn validate_definitions(
         if !checked.insert(pin) {
             continue;
         }
+        if symbols::architecture::blueprint_for_definition(&definition)
+            .map_err(|e| error(Some(id), e))?
+            .is_some()
+        {
+            // Core validates a construction-only template and its real role.
+            // Its exact solids depend on a receiving path/context. The ordinary
+            // wall/fence providers preflight every placed member below; an
+            // unplaced construction pin carries no native geometry receipt.
+            continue;
+        }
         // Core rejects nested symbol providers. This recursive call therefore
         // evaluates a bounded ordinary source graph, not another symbol graph.
         let native = compiler

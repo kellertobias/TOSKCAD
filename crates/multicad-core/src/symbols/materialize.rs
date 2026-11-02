@@ -115,7 +115,7 @@ pub(super) fn record_entity(
     ))
 }
 pub fn owned_entities(doc: &Document) -> Result<BTreeSet<EntityId>, DocumentError> {
-    let mut ids = BTreeSet::new();
+    let mut ids = super::architecture::private_entities(doc)?;
     for (definition, _) in definitions(doc)? {
         for (_, record) in instances(doc, definition)? {
             let def = read_definition(doc, definition)?;
@@ -140,7 +140,7 @@ pub fn owned_entities_in_session(
     session: &crate::commands::Session,
 ) -> Result<BTreeSet<EntityId>, DocumentError> {
     let document = session.document();
-    let mut owned = BTreeSet::new();
+    let mut owned = super::architecture::private_entities(document)?;
     for entity in document.entities() {
         if matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == INSTANCE_TYPE)
         {
@@ -165,6 +165,7 @@ pub fn validate(doc: &Document) -> Result<(), DocumentError> {
     let mut outers = BTreeSet::new();
     let mut namespaced = BTreeSet::new();
     let mut count = 0;
+    super::architecture::validate_instances(doc, &mut namespaced, &mut owned, &mut count)?;
     for (id, def) in &defs {
         if !revisions.insert((def.symbol, def.revision.clone())) {
             return Err(invalid(

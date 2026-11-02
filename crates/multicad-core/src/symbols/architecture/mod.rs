@@ -1,10 +1,22 @@
 //! Source-only architectural symbol roots. A blueprint owns an interface to a
 //! canonical construction; receiving paths and generated physical members are
 //! placement inputs and never part of this reusable source.
+mod edit;
 mod inputs;
+mod instances;
+mod placement;
 mod remap;
 mod targets;
+pub use edit::{ArchitectureEditRequest, prepare_architecture_edit};
 pub use inputs::{ArchitectureInputs, ArchitectureMaterialValue, configured_source};
+pub use instances::{
+    ArchitectureInstance, ArchitectureOutput, PLACEMENT_TYPE, architecture_instances,
+    read_architecture_instance,
+};
+pub(super) use instances::{private_entities, validate_instances};
+pub use placement::{
+    ArchitectureContext, ArchitecturePlaceRequest, ArchitecturePrepared, prepare_architecture_place,
+};
 #[cfg(test)]
 mod tests;
 use super::{source::invalid, *};
@@ -392,5 +404,5 @@ pub fn blueprint_for_definition(
     }
 }
 pub fn required_capability(document: &Document) -> bool {
-    document.entities().any(|e|is_blueprint(document,e.id) || matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==DEFINITION_TYPE && serde_json::from_value::<SymbolDefinition>(definition.data.clone()).is_ok_and(|value|is_blueprint(&value.template,value.root))))
+    document.entities().any(|e|matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==PLACEMENT_TYPE) || is_blueprint(document,e.id) || matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==DEFINITION_TYPE && serde_json::from_value::<SymbolDefinition>(definition.data.clone()).is_ok_and(|value|is_blueprint(&value.template,value.root))))
 }

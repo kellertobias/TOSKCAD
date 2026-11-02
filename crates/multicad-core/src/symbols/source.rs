@@ -74,6 +74,18 @@ impl SymbolDefinition {
             ));
         }
         if let Some(blueprint) = &blueprint {
+            if self.template.entities().any(|entity| {
+                !matches!(
+                    entity.data,
+                    EntityData::Parameter { .. }
+                        | EntityData::Material { .. }
+                        | EntityData::Extension { .. }
+                )
+            }) {
+                return Err(invalid(
+                    "Architectural pins contain canonical construction source; receiving paths and physical sample objects must stay outside the template",
+                ));
+            }
             if self.kind != SymbolKind::Dynamic
                 || self.plan.is_some()
                 || self.exposed.len() + blueprint.input_count() > MAX_SYMBOL_PARAMETERS
