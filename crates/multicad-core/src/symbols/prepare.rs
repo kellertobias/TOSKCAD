@@ -57,6 +57,11 @@ impl SymbolPlaceRequest {
         placement: Placement,
     ) -> Result<Self, DocumentError> {
         let def = read_definition(doc, definition)?;
+        if super::architecture::blueprint_for_definition(&def)?.is_some() {
+            return Err(invalid(
+                "Draw a wall or fence to supply the architectural symbol's path and placement context",
+            ));
+        }
         Ok(Self {
             record: EntityId::new(),
             definition,

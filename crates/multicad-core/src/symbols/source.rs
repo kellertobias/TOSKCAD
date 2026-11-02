@@ -62,13 +62,32 @@ impl SymbolDefinition {
         {
             return Err(invalid("Symbol source/exposure exceeds its budget"));
         }
-        if !matches!(
-            self.template.get(self.root).map(|e| &e.data),
-            Some(EntityData::Part { .. } | EntityData::Assembly { .. })
-        ) {
+        let blueprint = super::architecture::blueprint_for_definition(self)?;
+        if blueprint.is_none()
+            && !matches!(
+                self.template.get(self.root).map(|e| &e.data),
+                Some(EntityData::Part { .. } | EntityData::Assembly { .. })
+            )
+        {
             return Err(invalid(
-                "A symbol root must be an authored Part or Assembly",
+                "A symbol root must be an authored Part, Assembly or supported architectural blueprint",
             ));
+        }
+        if let Some(blueprint) = &blueprint {
+            if self.kind != SymbolKind::Dynamic
+                || self.plan.is_some()
+                || self.exposed.len() + blueprint.input_count() > MAX_SYMBOL_PARAMETERS
+            {
+                return Err(invalid(
+                    "Architectural blueprints require a dynamic definition, bounded exposed inputs and path-derived drawing geometry instead of a fixed symbol plan",
+                ));
+            }
+            let dependencies = blueprint.dependencies(&self.template)?;
+            if self.exposed.iter().any(|id| !dependencies.contains(id)) {
+                return Err(invalid(
+                    "Expose only numeric parameters used by the architectural construction",
+                ));
+            }
         }
         if self.exposed.iter().collect::<BTreeSet<_>>().len() != self.exposed.len() {
             return Err(invalid("Exposed symbol parameters must be unique"));
@@ -113,7 +132,31 @@ impl SymbolDefinition {
                 "Symbol definition has missing or incompatible source references",
             ));
         }
-        parameters::evaluate(&self.template).map_err(|e| invalid(e.to_string()))?;
+        let parameters =
+            parameters::evaluate(&self.template).map_err(|e| invalid(e.to_string()))?;
+        if let Some(blueprint) = blueprint {
+            match super::architecture::ArchitectureConstruction::read(
+                &self.template,
+                blueprint.role,
+                blueprint.construction,
+            )? {
+                super::architecture::ArchitectureConstruction::Wall(value) => {
+                    value.resolve_layers(&self.template, &parameters, &Default::default())?;
+                    let height = value
+                        .height
+                        .value_in(crate::parameters::Unit::Millimeter, Some(&parameters))
+                        .map_err(invalid)?;
+                    if !height.is_finite() || height <= 0. || height > 1e9 {
+                        return Err(invalid(
+                            "Architectural wall height must be positive and bounded",
+                        ));
+                    }
+                }
+                super::architecture::ArchitectureConstruction::Fence(value) => {
+                    value.resolve(&self.template, &parameters)?;
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -135,7 +178,9 @@ pub fn read_definition(doc: &Document, id: EntityId) -> Result<SymbolDefinition,
         && values.values().any(|e| {
             e.pointer("/data/definition/type_id")
                 .and_then(|v| v.as_str())
-                .is_some_and(|s| s.starts_with("symbols."))
+                .is_some_and(|s| {
+                    s.starts_with("symbols.") && s != super::architecture::BLUEPRINT_TYPE
+                })
         })
     {
         return Err(invalid(

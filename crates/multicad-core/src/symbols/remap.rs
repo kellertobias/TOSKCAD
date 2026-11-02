@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 // Each accepted opaque Definition first passes its real schema decoder. The
 // value walk below therefore sees only these audited ID-bearing schemas.
 fn provider(d: &Definition) -> Result<(), DocumentError> {
+    if super::architecture::validate_provider(d)? {
+        return Ok(());
+    }
     match d.type_id.as_str() {
         crate::equipment::ATTACHMENT_TYPE => {
             crate::equipment::Attachment::from_definition(d)?;
@@ -185,6 +188,11 @@ pub(super) fn identities(def: &SymbolDefinition) -> Result<BTreeSet<EntityId>, D
     for entity in def.template.entities() {
         validate_entity(entity)?;
         out.insert(entity.id);
+        if let Some(local) = super::architecture::local_identities(entity)? {
+            out.extend(local);
+            out.extend(entity.references().iter().map(|link| link.target));
+            continue;
+        }
         // Exclude author labels/descriptions: UUID-looking prose is never identity.
         match &entity.data {
             EntityData::Part {
@@ -246,45 +254,49 @@ pub(super) fn remap(
     map: &BTreeMap<EntityId, EntityId>,
 ) -> Result<Entity, DocumentError> {
     validate_entity(e)?;
-    let data = match &e.data {
-        EntityData::Part {
-            features,
-            material,
-            tags,
-        } => EntityData::Part {
-            features: features
-                .iter()
-                .map(|id| {
-                    map.get(id)
-                        .copied()
-                        .ok_or_else(|| invalid("Missing mapped Part feature"))
-                })
-                .collect::<Result<_, _>>()?,
-            material: material
-                .map(|id| {
-                    map.get(&id)
-                        .copied()
-                        .ok_or_else(|| invalid("Missing mapped Part material"))
-                })
-                .transpose()?,
-            tags: tags.clone(),
-        },
-        EntityData::Material { .. } => e.data.clone(),
-        _ => {
-            let provenance = match &e.data {
-                EntityData::Feature { definition, .. }
-                    if definition.type_id == model::MECHANICAL_PART_TYPE =>
-                {
-                    definition.data.get("provenance").cloned()
+    let data = if let Some(data) = super::architecture::remap_data(e, map)? {
+        data
+    } else {
+        match &e.data {
+            EntityData::Part {
+                features,
+                material,
+                tags,
+            } => EntityData::Part {
+                features: features
+                    .iter()
+                    .map(|id| {
+                        map.get(id)
+                            .copied()
+                            .ok_or_else(|| invalid("Missing mapped Part feature"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                material: material
+                    .map(|id| {
+                        map.get(&id)
+                            .copied()
+                            .ok_or_else(|| invalid("Missing mapped Part material"))
+                    })
+                    .transpose()?,
+                tags: tags.clone(),
+            },
+            EntityData::Material { .. } => e.data.clone(),
+            _ => {
+                let provenance = match &e.data {
+                    EntityData::Feature { definition, .. }
+                        if definition.type_id == model::MECHANICAL_PART_TYPE =>
+                    {
+                        definition.data.get("provenance").cloned()
+                    }
+                    _ => None,
+                };
+                let mut data = identity_data(e)?;
+                rewrite(&mut data, map);
+                if let Some(provenance) = provenance {
+                    data["definition"]["data"]["provenance"] = provenance;
                 }
-                _ => None,
-            };
-            let mut data = identity_data(e)?;
-            rewrite(&mut data, map);
-            if let Some(provenance) = provenance {
-                data["definition"]["data"]["provenance"] = provenance;
+                serde_json::from_value(data).map_err(|e| invalid(e.to_string()))?
             }
-            serde_json::from_value(data).map_err(|e| invalid(e.to_string()))?
         }
     };
     let mut result = e.clone();

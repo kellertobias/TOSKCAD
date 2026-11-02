@@ -12,6 +12,11 @@ pub(super) fn generated(
     value: &SymbolInstance,
 ) -> Result<BTreeMap<EntityId, Entity>, DocumentError> {
     def.validate()?;
+    if super::architecture::blueprint_for_definition(def)?.is_some() {
+        return Err(invalid(
+            "Draw a wall or fence to supply the architectural symbol's path and placement context",
+        ));
+    }
     let keys = super::remap::identities(def)?;
     if keys != value.ids.keys().copied().collect()
         || value.ids.values().collect::<BTreeSet<_>>().len() != value.ids.len()
@@ -145,6 +150,7 @@ pub fn owned_entities_in_session(
     Ok(owned)
 }
 pub fn validate(doc: &Document) -> Result<(), DocumentError> {
+    super::architecture::validate_blueprints(doc)?;
     let defs = definitions(doc)?;
     let mut revisions = BTreeSet::new();
     let mut owned = BTreeSet::new();

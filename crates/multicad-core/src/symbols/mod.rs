@@ -1,4 +1,5 @@
 //! Pinned reusable source definitions and transaction-owned canonical variants.
+pub mod architecture;
 mod remap;
 mod source;
 mod types;
