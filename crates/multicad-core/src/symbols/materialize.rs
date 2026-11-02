@@ -7,31 +7,27 @@ use crate::{
     model::AssemblyDefinition,
 };
 use std::collections::{BTreeMap, BTreeSet};
-pub(super) fn generated(
+pub(super) fn mapped_source(
     def: &SymbolDefinition,
-    value: &SymbolInstance,
+    ids: &BTreeMap<EntityId, EntityId>,
+    overrides: &BTreeMap<EntityId, SymbolValue>,
 ) -> Result<BTreeMap<EntityId, Entity>, DocumentError> {
     def.validate()?;
-    if super::architecture::blueprint_for_definition(def)?.is_some() {
-        return Err(invalid(
-            "Draw a wall or fence to supply the architectural symbol's path and placement context",
-        ));
-    }
     let keys = super::remap::identities(def)?;
-    if keys != value.ids.keys().copied().collect()
-        || value.ids.values().collect::<BTreeSet<_>>().len() != value.ids.len()
-        || value.ids.values().any(EntityId::is_nil)
+    if keys != ids.keys().copied().collect()
+        || ids.values().collect::<BTreeSet<_>>().len() != ids.len()
+        || ids.values().any(EntityId::is_nil)
     {
         return Err(invalid(
             "Symbol identity map is incomplete, duplicated or malformed",
         ));
     }
-    if let Some((_, reason)) = override_errors(def, &value.overrides).into_iter().next() {
+    if let Some((_, reason)) = override_errors(def, overrides).into_iter().next() {
         return Err(invalid(reason));
     }
     let mut result = BTreeMap::new();
     for source in def.template.entities() {
-        let mut mapped = super::remap::remap(source, &value.ids)?;
+        let mut mapped = super::remap::remap(source, ids)?;
         if let EntityData::Parameter {
             expression,
             inputs,
@@ -40,12 +36,24 @@ pub(super) fn generated(
         } = &mut mapped.data
         {
             *exposed = false;
-            if let Some(v) = value.overrides.get(&source.id) {
+            if let Some(v) = overrides.get(&source.id) {
                 *expression = format!("{} {}", v.value, v.unit);
                 inputs.clear();
             }
         }
         result.insert(mapped.id, mapped);
+    }
+    Ok(result)
+}
+pub(super) fn generated(
+    def: &SymbolDefinition,
+    value: &SymbolInstance,
+) -> Result<BTreeMap<EntityId, Entity>, DocumentError> {
+    let mut result = mapped_source(def, &value.ids, &value.overrides)?;
+    if super::architecture::blueprint_for_definition(def)?.is_some() {
+        return Err(invalid(
+            "Draw a wall or fence to supply the architectural symbol's path and placement context",
+        ));
     }
     let source_root = value.ids[&def.root];
     let parts = def

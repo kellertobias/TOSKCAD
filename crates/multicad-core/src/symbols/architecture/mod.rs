@@ -1,8 +1,10 @@
 //! Source-only architectural symbol roots. A blueprint owns an interface to a
 //! canonical construction; receiving paths and generated physical members are
 //! placement inputs and never part of this reusable source.
+mod inputs;
 mod remap;
 mod targets;
+pub use inputs::{ArchitectureInputs, ArchitectureMaterialValue, configured_source};
 #[cfg(test)]
 mod tests;
 use super::{source::invalid, *};
@@ -34,6 +36,49 @@ pub enum ArchitectureConstruction {
     Fence(Box<FenceConstruction>),
 }
 impl ArchitectureConstruction {
+    pub(super) fn decoded(
+        role: ArchitectureRole,
+        definition: &Definition,
+    ) -> Result<Self, DocumentError> {
+        match role {
+            ArchitectureRole::Wall
+                if definition.type_id == model::WALL_TYPE_KIND
+                    && definition.schema_version == model::LAYERED_WALL_TYPE_SCHEMA =>
+            {
+                serde_json::from_value(definition.data.clone())
+                    .map(|v| Self::Wall(Box::new(v)))
+                    .map_err(|e| invalid(e.to_string()))
+            }
+            ArchitectureRole::Fence
+                if definition.type_id == model::FENCE_TYPE_KIND
+                    && definition.schema_version == model::FENCE_SCHEMA =>
+            {
+                serde_json::from_value(definition.data.clone())
+                    .map(|v| Self::Fence(Box::new(v)))
+                    .map_err(|e| invalid(e.to_string()))
+            }
+            _ => Err(invalid(
+                "Architectural role and construction provider disagree",
+            )),
+        }
+    }
+    pub(super) fn entity_data(&self) -> Result<EntityData, DocumentError> {
+        let (definition, inputs) = match self {
+            Self::Wall(w) => (w.definition()?, w.inputs()),
+            Self::Fence(f) => {
+                f.validate()?;
+                (
+                    Definition {
+                        type_id: model::FENCE_TYPE_KIND.into(),
+                        schema_version: model::FENCE_SCHEMA,
+                        data: serde_json::to_value(f).map_err(|e| invalid(e.to_string()))?,
+                    },
+                    f.inputs(),
+                )
+            }
+        };
+        Ok(EntityData::Extension { definition, inputs })
+    }
     pub fn role(&self) -> ArchitectureRole {
         match self {
             Self::Wall(_) => ArchitectureRole::Wall,

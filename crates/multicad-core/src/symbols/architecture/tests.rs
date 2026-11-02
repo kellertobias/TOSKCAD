@@ -570,3 +570,298 @@ fn blueprint_exception_never_accepts_nested_symbols_or_opaque_recursive_payloads
         .unwrap_err();
     assert!(error.to_string().contains("unknown field"), "{error}");
 }
+
+fn private_map(definition: &SymbolDefinition) -> BTreeMap<EntityId, EntityId> {
+    super::super::remap::identities(definition)
+        .unwrap()
+        .into_iter()
+        .map(|id| (id, EntityId::new()))
+        .collect()
+}
+fn configured_document(
+    definition: &SymbolDefinition,
+    ids: &BTreeMap<EntityId, EntityId>,
+    values: &ArchitectureInputs,
+    receiving: &Document,
+) -> Document {
+    let entities = configured_source(definition, ids, values, receiving).unwrap();
+    receiving
+        .edited(
+            &entities
+                .into_values()
+                .map(Mutation::Insert)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+}
+#[test]
+fn exposed_inputs_change_only_declared_private_fields_and_preserve_the_pin() {
+    let (mut session, blueprint, width, _) = fence();
+    let definition = author(&mut session, &blueprint, vec![width]);
+    let pin = definition.pin().unwrap();
+    let ids = private_map(&definition);
+    let mut values = ArchitectureInputs::default();
+    values.parameters.insert(
+        width,
+        SymbolValue {
+            value: 10.,
+            unit: "cm".into(),
+        },
+    );
+    values.dimensions.insert(
+        blueprint.dimensions[0].id,
+        Dimension::Literal {
+            value: 2.,
+            unit: "m".into(),
+        },
+    );
+    values.materials.insert(
+        blueprint.materials[0].id,
+        ArchitectureMaterialValue::Preset {
+            material: blueprint.materials[0].choices[0],
+        },
+    );
+    values.options.insert(
+        blueprint.options[0].id,
+        ArchitectureOptionValue::FenceLayout {
+            layout: FenceBayLayout::Equal,
+        },
+    );
+    let document = configured_document(&definition, &ids, &values, session.document());
+    let construction = read_fence_type(&document, ids[&blueprint.construction]).unwrap();
+    let parameters = crate::parameters::evaluate(&document).unwrap();
+    let resolved = construction.resolve(&document, &parameters).unwrap();
+    assert_eq!(resolved.height_mm, 2000.);
+    assert_eq!(resolved.layout, FenceBayLayout::Equal);
+    assert_eq!(
+        resolved.post,
+        ResolvedFencePostProfile::Rectangular {
+            width_mm: 100.,
+            depth_mm: 90.
+        }
+    );
+    assert_eq!(
+        construction.post_material,
+        ids[&blueprint.materials[0].choices[0]]
+    );
+    assert_eq!(construction.infills[0].height, length(1600.));
+    let original = read_fence_type(&definition.template, blueprint.construction).unwrap();
+    assert_eq!(
+        construction.infills[0].material,
+        ids[&original.infills[0].material]
+    );
+    assert!(matches!(
+        &document.get(ids[&width]).unwrap().data,
+        EntityData::Parameter { exposed: false, .. }
+    ));
+    assert_eq!(definition.pin().unwrap(), pin);
+    assert_eq!(
+        read_fence_type(session.document(), blueprint.construction).unwrap(),
+        original
+    );
+}
+#[test]
+fn receiving_formulas_and_materials_keep_receiving_identities_and_disjoint_private_maps() {
+    let (mut session, blueprint, width, _) = fence();
+    let definition = author(&mut session, &blueprint, vec![width]);
+    let height = parameter("receiving_height", "2100");
+    let paint = material("Receiving blue", [30, 90, 180, 255]);
+    let receiving = Document::new("Receiving project")
+        .unwrap()
+        .edited(&[
+            Mutation::Insert(height.clone()),
+            Mutation::Insert(paint.clone()),
+        ])
+        .unwrap();
+    let mut values = ArchitectureInputs::default();
+    values.dimensions.insert(
+        blueprint.dimensions[0].id,
+        Dimension::Expression {
+            expression: BoundExpression::bind(&receiving, "=$receiving_height", "mm", None)
+                .unwrap(),
+        },
+    );
+    values.materials.insert(
+        blueprint.materials[0].id,
+        ArchitectureMaterialValue::Project { material: paint.id },
+    );
+    let one = private_map(&definition);
+    let two = private_map(&definition);
+    assert!(
+        one.values()
+            .all(|id| !two.values().any(|other| other == id))
+    );
+    let document = configured_document(&definition, &one, &values, &receiving);
+    let document =
+        configured_document(&definition, &two, &ArchitectureInputs::default(), &document);
+    let parameters = crate::parameters::evaluate(&document).unwrap();
+    let a = read_fence_type(&document, one[&blueprint.construction]).unwrap();
+    let b = read_fence_type(&document, two[&blueprint.construction]).unwrap();
+    assert_eq!(a.resolve(&document, &parameters).unwrap().height_mm, 2100.);
+    assert_eq!(b.resolve(&document, &parameters).unwrap().height_mm, 1800.);
+    assert_eq!(a.post_material, paint.id);
+    assert_ne!(b.post_material, paint.id);
+    assert_eq!(a.height.expression().unwrap().bindings[0].target, height.id);
+    assert!(a.inputs().iter().any(|l| l.target == height.id));
+    assert!(a.inputs().iter().any(|l| l.target == paint.id));
+    assert_eq!(receiving.get(paint.id).unwrap(), &paint);
+}
+#[test]
+fn private_unknown_wrong_unit_and_unapproved_input_values_are_refused() {
+    let (mut session, blueprint, width, _) = fence();
+    let definition = author(&mut session, &blueprint, vec![width]);
+    let ids = private_map(&definition);
+    let before = session.document().clone();
+    let pin = definition.pin().unwrap();
+    let mut cases = vec![];
+    let mut value = ArchitectureInputs::default();
+    value.parameters.insert(
+        EntityId::new(),
+        SymbolValue {
+            value: 2.,
+            unit: "mm".into(),
+        },
+    );
+    cases.push(value);
+    let mut value = ArchitectureInputs::default();
+    value.parameters.insert(
+        width,
+        SymbolValue {
+            value: 2.,
+            unit: "deg".into(),
+        },
+    );
+    cases.push(value);
+    let mut value = ArchitectureInputs::default();
+    value.dimensions.insert(EntityId::new(), length(2000.));
+    cases.push(value);
+    let mut value = ArchitectureInputs::default();
+    value.dimensions.insert(
+        blueprint.dimensions[0].id,
+        Dimension::Literal {
+            value: 2.,
+            unit: "deg".into(),
+        },
+    );
+    cases.push(value);
+    let mut value = ArchitectureInputs::default();
+    value.materials.insert(
+        blueprint.materials[0].id,
+        ArchitectureMaterialValue::Preset { material: width },
+    );
+    cases.push(value);
+    let mut value = ArchitectureInputs::default();
+    value.materials.insert(
+        blueprint.materials[0].id,
+        ArchitectureMaterialValue::Project { material: width },
+    );
+    cases.push(value);
+    let mut value = ArchitectureInputs::default();
+    value.options.insert(
+        blueprint.options[0].id,
+        ArchitectureOptionValue::WallReference {
+            reference: WallLayerReference::Center,
+        },
+    );
+    cases.push(value);
+    for values in cases {
+        assert!(configured_source(&definition, &ids, &values, session.document()).is_err());
+        assert_eq!(session.document(), &before);
+        assert_eq!(definition.pin().unwrap(), pin);
+    }
+    let mut malformed = ids.clone();
+    let keys = malformed.keys().copied().take(2).collect::<Vec<_>>();
+    malformed.insert(keys[0], malformed[&keys[1]]);
+    assert!(
+        configured_source(
+            &definition,
+            &malformed,
+            &Default::default(),
+            session.document()
+        )
+        .is_err()
+    );
+    let mut restricted = definition.clone();
+    let mut root = restricted.template.get(definition.root).unwrap().clone();
+    let mut restricted_blueprint = blueprint.clone();
+    restricted_blueprint.materials[0].allow_project_materials = false;
+    root.data = EntityData::Extension {
+        definition: restricted_blueprint.definition().unwrap(),
+        inputs: restricted_blueprint.inputs(),
+    };
+    restricted.template = restricted
+        .template
+        .edited(&[Mutation::Replace(root)])
+        .unwrap();
+    let original = read_fence_type(session.document(), blueprint.construction).unwrap();
+    let mut values = ArchitectureInputs::default();
+    values.materials.insert(
+        blueprint.materials[0].id,
+        ArchitectureMaterialValue::Project {
+            material: original.post_material,
+        },
+    );
+    assert!(
+        configured_source(&restricted, &ids, &values, session.document())
+            .unwrap_err()
+            .to_string()
+            .contains("private")
+    );
+}
+#[test]
+fn configured_wall_layers_retain_private_air_and_map_authored_boundary_choices() {
+    let (mut session, blueprint, layers) = wall();
+    let definition = author(&mut session, &blueprint, vec![]);
+    let ids = private_map(&definition);
+    let mut values = ArchitectureInputs::default();
+    values
+        .dimensions
+        .insert(blueprint.dimensions[0].id, length(250.));
+    values.materials.insert(
+        blueprint.materials[0].id,
+        ArchitectureMaterialValue::Preset {
+            material: blueprint.materials[0].choices[0],
+        },
+    );
+    values.options.insert(
+        blueprint.options[0].id,
+        blueprint.options[0].choices[1].clone(),
+    );
+    let document = configured_document(&definition, &ids, &values, session.document());
+    let WallTypeConstruction::Layered(value) =
+        read_wall_construction(&document, ids[&blueprint.construction]).unwrap()
+    else {
+        unreachable!()
+    };
+    let parameters = crate::parameters::evaluate(&document).unwrap();
+    let resolved = value
+        .resolve_layers(&document, &parameters, &Default::default())
+        .unwrap();
+    assert_eq!(resolved.stack.thickness_mm, 290.);
+    assert_eq!(
+        value.layers.layers[1].construction,
+        WallLayerKind::Cavity {
+            thickness: length(40.)
+        }
+    );
+    assert_eq!(
+        value.reference,
+        WallLayerReference::Boundary {
+            layer: ids[&layers[0]],
+            side: WallLayerSide::Inside
+        }
+    );
+    assert_eq!(
+        value.layers.layers[2].construction.material(),
+        Some(ids[&blueprint.materials[0].choices[0]])
+    );
+    let WallTypeConstruction::Layered(original) =
+        read_wall_construction(session.document(), blueprint.construction).unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        original.layers.layers[0].construction.thickness(),
+        Some(&length(120.))
+    );
+}
