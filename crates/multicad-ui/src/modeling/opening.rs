@@ -345,7 +345,7 @@ impl OpeningPanel {
         self.kind.title()
     }
     pub fn picking(&self) -> bool {
-        self.picking && self.editing.is_none()
+        self.picking && !self.remove
     }
     fn changed(&mut self) {
         self.stamp.changed();
@@ -683,6 +683,10 @@ impl OpeningPanel {
             ));
             return false;
         };
+        if self.editing.is_some() && self.wall != Some(hover.wall) {
+            self.error = Some("Pick the existing opening's wall to reposition it".into());
+            return false;
+        }
         self.wall = Some(hover.wall);
         self.segment = hover.segment + 1;
         self.offset.set_literal(hover.offset_mm, "mm");
@@ -969,7 +973,7 @@ impl OpeningPanel {
                 changed = true;
             }
         }
-        if self.editing.is_none() {
+        if !self.remove {
             let label = if self.picking {
                 "Picking: click a wall face in the viewport"
             } else {
@@ -978,7 +982,8 @@ impl OpeningPanel {
             if ui.selectable_label(self.picking, label).clicked() {
                 self.picking = !self.picking;
             }
-        } else {
+        }
+        if self.editing.is_some() {
             changed |= ui
                 .checkbox(
                     &mut self.remove,
@@ -1397,6 +1402,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn saved_opening_graphical_move_rejects_a_different_wall_and_removal_mode() {
+        let (mut session, wall, body) = wall_session();
+        let mut panel =
+            OpeningPanel::new(session.document(), RoomOpening::Door, Some(wall)).unwrap();
+        assert!(panel.pick(session.document(), body, [2000., 100., 1000.]));
+        let prepared = panel
+            .request(session.document(), true)
+            .unwrap()
+            .prepare(&session, Actor::local(Channel::Ui))
+            .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let value = model::read_wall(session.document(), wall).unwrap();
+        let opening = value.openings[0].id;
+        let other = WallRequest::new(
+            "Other wall",
+            WallDefinition {
+                output: BodyOutput {
+                    body: EntityId::new(),
+                },
+                openings: vec![],
+                ..value
+            },
+        );
+        let prepared = model::prepare_wall_change(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            &[],
+            &WallChange::Create(&other),
+        )
+        .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let source = session.document().clone();
+        let mut edit = OpeningPanel::existing(session.document(), wall, opening).unwrap();
+        edit.picking = true;
+        assert!(edit.picking());
+        assert!(!edit.pick(session.document(), other.body, [2000., 100., 1000.]));
+        assert_eq!(edit.wall, Some(wall));
+        assert_eq!(edit.editing, Some(opening));
+        assert!(
+            edit.error
+                .as_ref()
+                .unwrap()
+                .contains("existing opening's wall")
+        );
+        assert!(edit.pick(session.document(), body, [3000., 100., 1000.]));
+        assert_eq!(
+            edit.offset.resolve(session.document()).unwrap(),
+            length(2550.)
+        );
+        assert!(
+            matches!(edit.request(session.document(),true).unwrap().change,WallOpeningChange::ReplaceOpening(ref value)if value.id==opening)
+        );
+        edit.remove = true;
+        assert!(!edit.picking());
+        assert_eq!(session.document(), &source);
+    }
     #[test]
     fn misfits_are_diagnosed_live_and_never_reach_the_document() {
         let (session, _, body) = wall_session();

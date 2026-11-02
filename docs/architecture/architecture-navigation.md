@@ -81,6 +81,11 @@ from Common preserves an explicitly selected wall and its level without changing
 saved Architecture context. Inside Architecture, the selected active level
 remains authoritative for new opening forms.
 
+Saved doors and windows expose Pick location in viewport as well as their numeric
+controls. A graphical move retains the opening identity and type within its
+existing wall. Picks on another wall are refused; removal mode disables picking.
+The move still requires native Preview before Apply and remains cancellable.
+
 Fences use their existing optional canonical level attachment. A new run inherits
 the active level; reopening a run preserves its saved attachment. The level
 sidebar lists each run once and filters its native post and infill Parts through

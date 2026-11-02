@@ -51,7 +51,7 @@ fn click_control(
         .nodes
         .iter()
         .find_map(|(_, node)| {
-            (node.label() == Some(label))
+            (node.label() == Some(label) || node.value() == Some(label))
                 .then(|| node.bounds())
                 .flatten()
         })
@@ -245,6 +245,78 @@ fn graphical_upper_level_wall_and_openings_use_real_native_preview_cancel_apply_
     assert_eq!(definition.openings.len(), 2);
     assert_eq!(definition.openings[0].offset, length(1050.));
     assert_eq!(definition.openings[1].offset, length(3400.));
+    let identities: Vec<_> = definition
+        .openings
+        .iter()
+        .map(|opening| opening.id)
+        .collect();
+    for (tool, new_label, saved_label, x, offset) in [
+        (
+            ModelingTool::Door,
+            "New door",
+            "Door · segment 1 · 1050 mm",
+            2000.,
+            1550.,
+        ),
+        (
+            ModelingTool::Window,
+            "New window",
+            "Window · segment 1 · 3400 mm",
+            4500.,
+            3900.,
+        ),
+    ] {
+        let before = session.document().clone();
+        for cancel in [true, false] {
+            let scene = canonical_scene(&session);
+            controller
+                .begin_opening(&session, &resources, tool, Some(wall.feature), Channel::Ui)
+                .unwrap();
+            click_control(&ctx, &mut controller, &mut session, new_label);
+            click_control(&ctx, &mut controller, &mut session, saved_label);
+            assert!(!controller.opening_picking());
+            click_control(
+                &ctx,
+                &mut controller,
+                &mut session,
+                "Pick location in viewport",
+            );
+            assert!(controller.opening_picking());
+            plan_click(
+                &ctx,
+                &mut controller,
+                &session,
+                Some(&scene),
+                [x, 0., 3000.],
+                true,
+            );
+            preview(&mut controller, &session);
+            assert_eq!(session.document(), &before);
+            if cancel {
+                controller.cancel();
+                assert_eq!(session.document(), &before);
+            } else {
+                controller.apply(&mut session, &resources).unwrap();
+            }
+        }
+        let updated = model::read_wall(session.document(), wall.feature).unwrap();
+        assert_eq!(
+            updated
+                .openings
+                .iter()
+                .map(|opening| opening.id)
+                .collect::<Vec<_>>(),
+            identities
+        );
+        let index = if tool == ModelingTool::Door { 0 } else { 1 };
+        assert_eq!(updated.openings[index].offset, length(offset));
+        let after = session.document().clone();
+        session.undo(session.revision(), actor.clone()).unwrap();
+        assert_eq!(session.document(), &before);
+        session.redo(session.revision(), actor.clone()).unwrap();
+        assert_eq!(session.document(), &after);
+    }
+    let definition = model::read_wall(session.document(), wall.feature).unwrap();
     let native = canonical_scene(&session);
     assert_eq!(native.reference_instances()[0].id, wall.body);
     assert!(
