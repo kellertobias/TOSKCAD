@@ -46,6 +46,8 @@ The front-panel drawing uses a different route because this release has no flat-
 
 Regenerate that presentation with `node tools/website-flat-plan.mjs website/assets/front-panel-flat-pattern.json website/assets/front-panel-flat-plan.svg`. The developer-only renderer accepts closed straight contours and full circles, and rejects unsupported or inconsistent input. `node --test tools/website-flat-plan.test.mjs` checks the actual blank against independent bend-allowance and area calculations, and checks failure cases. No Node.js runtime is added to the application.
 
+Website drawing sheets use the Blueprint palette: white ink on #143e70 paper. After regenerating a sheet and its parameter callouts, run `node tools/website-blueprint.mjs PATH.svg`. This adds an idempotent SVG presentation block; the model geometry, annotations, line weights and embedded logo source stay intact. The same sheet opens in the preview and downloads through Save. `node --test tools/website-blueprint.test.mjs` checks all ten published sheets and rejects invalid paper extents.
+
 All imagery belongs to this project. No stock images, synthetic application screenshots or substituted geometry are used. Keep captions and provenance current when replacing captures.
 
 ## Preview and verification

@@ -1,4 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 420 297">
+<!-- blueprint-presentation:start -->
+<defs><filter id="blueprint-logo" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 -0.2126 -0.7152 -0.0722 0 1"/><feComposite in2="SourceAlpha" operator="in"/></filter></defs>
+<style>
+text { fill: #ffffff; }
+[stroke]:not([stroke="none"]) { stroke: #ffffff; }
+[fill]:not([fill="none"]) { fill: #ffffff; }
+svg > rect[width][height] { fill: #143e70; }
+image { filter: url(#blueprint-logo); }
+</style>
+<rect class="blueprint-paper" width="420" height="297" fill="#143e70"/>
+<!-- blueprint-presentation:end -->
 <polygon class="border" fill="none" stroke="black" stroke-width="0.5" points="10.0000,10.0000 410.0000,10.0000 410.0000,287.0000 10.0000,287.0000"/>
 <polygon class="title" fill="none" stroke="black" stroke-width="0.25" points="230.0000,259.9250 410.0000,259.9250 410.0000,269.8500 230.0000,269.8500"/>
 <polygon class="title" fill="none" stroke="black" stroke-width="0.25" points="230.0000,244.9250 365.0000,244.9250 365.0000,259.9250 230.0000,259.9250"/>
