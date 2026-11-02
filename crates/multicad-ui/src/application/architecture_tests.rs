@@ -129,7 +129,13 @@ fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_
 }
 #[test]
 fn planting_entry_from_upper_plan_explicitly_selects_world_without_reassigning_source() {
-    for (size, density) in [(egui::vec2(1100., 700.), 1.), (egui::vec2(1360., 860.), 2.)] {
+    for (size, density, entry) in [
+        (egui::vec2(1100., 700.), 1., 0),
+        (egui::vec2(1360., 860.), 2., 0),
+        (egui::vec2(1100., 700.), 1., 1),
+        (egui::vec2(1360., 860.), 2., 1),
+        (egui::vec2(1100., 700.), 1., 2),
+    ] {
         let (session, levels, _, _) = crate::architecture_view::tests::building();
         let source = session.document().clone();
         let mut app = app();
@@ -137,32 +143,49 @@ fn planting_entry_from_upper_plan_explicitly_selects_world_without_reassigning_s
         app.set_model_backends(std::sync::Arc::new(|| {
             Box::new(crate::modeling::native_fixture::NativeBackend::new())
         }));
-        app.tab = app
-            .registry
-            .workspace(Mode::Model)
-            .tabs
-            .iter()
-            .position(|tab| tab.title == "Architecture")
-            .unwrap();
-        app.current_mut()
-            .sketch
-            .restore_architecture_view(crate::architecture_view::Recall {
-                plan: true,
-                level: Some(levels[1]),
-            });
+        if entry == 0 {
+            app.tab = app
+                .registry
+                .workspace(Mode::Model)
+                .tabs
+                .iter()
+                .position(|tab| tab.title == "Architecture")
+                .unwrap();
+        }
+        if entry != 2 {
+            app.current_mut()
+                .sketch
+                .restore_architecture_view(crate::architecture_view::Recall {
+                    plan: true,
+                    level: Some(levels[1]),
+                });
+        }
         let ctx = context(density);
-        let out = paint(&mut app, &ctx, size, vec![]);
-        let out = click(&mut app, &ctx, size, bounds(&out, "Landscaping").center());
-        click(&mut app, &ctx, size, bounds(&out, "Planting").center())
-            .drop_without_applying_deltas();
+        if entry == 0 {
+            let out = paint(&mut app, &ctx, size, vec![]);
+            let out = click(&mut app, &ctx, size, bounds(&out, "Landscaping").center());
+            click(&mut app, &ctx, size, bounds(&out, "Planting").center())
+                .drop_without_applying_deltas();
+        } else {
+            paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+            assert_eq!(
+                app.registry.workspace(Mode::Model).tabs[app.tab].title,
+                "Common"
+            );
+            app.invoke(Command::Modeling(ModelingTool::Plant), &[], Channel::Ui)
+                .unwrap();
+            paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+        }
         assert_eq!(
             app.current().sketch.architecture_recall(),
             crate::architecture_view::Recall {
-                plan: true,
+                plan: entry != 2,
                 level: None
             }
         );
-        assert_eq!(app.current().sketch.camera.target[2], 0.);
+        if entry != 2 {
+            assert_eq!(app.current().sketch.camera.target[2], 0.);
+        }
         assert!(app.current().sketch.model_active());
         app.current_mut().sketch.cancel_model();
         assert_eq!(app.current().session.document(), &source);

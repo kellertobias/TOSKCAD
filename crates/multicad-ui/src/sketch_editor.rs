@@ -1445,11 +1445,11 @@ impl SketchEditor {
             return Err("Apply or cancel pending edits before placing plants".into());
         }
         self.finish()?;
-        if self.architecture.enabled {
-            self.architecture.recall.level = None;
-            if self.architecture.planar() {
-                self.architecture.constrain(&mut self.camera);
-            }
+        self.architecture
+            .sync(session.document(), session.revision());
+        self.architecture.recall.level = None;
+        if self.architecture.planar() {
+            self.architecture.constrain(&mut self.camera);
         }
         self.model.begin_planting(session, resources, channel)?;
         if !session.document().entities().any(|e| {
