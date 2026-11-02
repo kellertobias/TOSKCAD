@@ -1,9 +1,0 @@
-# MultiCAD panel_cut_list schedule
-# revision 0
-# source d845639b932d79105428ff7f56116bfb6156ca43013d245d6ddd56e9ccdf0aaa
-# Millimeters; length runs along the grain (the longer side when grain is free)
-# Core = finished - band thickness + band allowance per banded edge + oversize
-Panel,Role,Stock,T,Finished L,Finished W,Core L,Core W,Grain,Bands,Fits sheet,Stack,Issues
-Vise fixed jaw,,Beech block 40,40,240,140,240,140,fixed,,yes,,
-Vise moving jaw,,Beech block 40,40,240,140,240,140,fixed,,yes,,
-Worktop,,Beech block 40,40,1500,1000,1500,1000,fixed,,yes,,

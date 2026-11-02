@@ -38,7 +38,7 @@ The SVG sheets are evaluated native drawing exports:
 
 Regenerate a sheet with `cargo run -p multicad-app --example website_plan --locked -- examples/welded-workbench.tcd WB-102 website/assets/workbench-weld-plan.svg`. The command accepts any page number in the project, including cabinet pages `C-101`, `C-103` and `C-107`, drill-guide page `DG-101` and apartment page `AP-101`. The exporter refuses unresolved views or detached dimensions and leaves the input unchanged.
 
-The workbench and cabinet CSVs come from the native MCP `schedule` tool, opened with `multicad --mcp --project FILE.tcd --export-dir DIRECTORY --read-only`. Workbench schedule kinds are `weld_schedule`, `member_cut_list`, `panel_cut_list`, `machining` and `bom`. The weld schedule has 22 rows with explicit steps 1 through 22 in the authored sequence. Cabinet kinds are `panel_cut_list`, `bom` and `machining`.
+The workbench and cabinet schedules are shown in the drawing sheets above. The weld plan includes 22 numbered welds in the authored sequence. Keep these examples visual; CSV files are not published on the website.
 
 WB-103 also carries explicit grid callouts from the evaluated `list_parameters` output in `workbench-parameters.json`: 20 mm through holes, 80 mm pitch and 390/140 mm edge offsets. After regenerating the native sheet, run `node tools/website-bench-plan.mjs website/assets/workbench-top-plan.svg website/assets/workbench-parameters.json website/assets/workbench-top-plan.svg`. It adds readable parameter values in the sheet's unused area without changing the exported geometry.
 
