@@ -109,7 +109,10 @@ impl<T: Send + 'static> Runtime<T> {
             publish(document, model, tag)
         })
     }
-    fn with_model_and_snapshot(
+    /// Publish native derived geometry together with the evaluated snapshot for
+    /// this job. Per-request query/probe results belong to `snapshot`; they are
+    /// not part of the retained native model's source snapshot.
+    pub fn with_model_and_snapshot(
         compiler: Compiler,
         publish: impl Fn(&Document, &Model, &ModelSnapshot, u64) -> Result<T, ModelError>
         + Send

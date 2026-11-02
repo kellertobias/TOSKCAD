@@ -23,10 +23,10 @@ pub struct Backend {
 impl Backend {
     pub fn new() -> Self {
         Self {
-            runtime: Runtime::with_model_publisher(
+            runtime: Runtime::with_model_and_snapshot(
                 Compiler::default(),
-                |document, model, generation| {
-                    let mut published = scene(document, model.snapshot(), generation)?;
+                |document, model, snapshot, generation| {
+                    let mut published = scene(document, snapshot, generation)?;
                     if published.is_full_model() {
                         let plan = architecture_plan::build(document, model);
                         Arc::get_mut(&mut published)

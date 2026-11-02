@@ -231,8 +231,33 @@ fn native_architecture_plan_exposes_real_opening_gaps_symbols_and_source_bound_p
         revision: session.revision(),
         generation: 1,
     };
-    backend.request(session.document(), stamp).unwrap();
+    let probe = EntityId::new();
+    backend
+        .request_evaluation(
+            session.document(),
+            &ProjectResources::default(),
+            stamp,
+            &EvaluationOptions {
+                cut_targets: vec![CutTargetProbe {
+                    id: probe,
+                    query: CutTargetQuery {
+                        tools: vec![EntityId::new()],
+                        component: None,
+                        include: vec![],
+                        exclude: vec![],
+                    },
+                }],
+            },
+        )
+        .unwrap();
     let native = receive(&mut backend).result.unwrap();
+    let queries = &native.model_evaluation().unwrap().cut_targets;
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].id, probe);
+    assert!(
+        queries[0].result.is_err(),
+        "plan graphics must preserve per-request probe diagnostics"
+    );
     let plan = native
         .architecture_plan()
         .expect("native plan receipt")
