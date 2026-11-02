@@ -1488,7 +1488,9 @@ impl SketchEditor {
         self.finish()?;
         self.prepare_architecture_level(session)?;
         self.model.begin_stairs(session, resources, channel)?;
-        self.message = "Stairs · choose a level and dimensions, then Preview".into();
+        self.message =
+            "Stairs · choose a level, click the first riser and walking direction, then Preview"
+                .into();
         Ok(())
     }
     pub fn begin_equipment_preset(

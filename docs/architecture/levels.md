@@ -101,13 +101,24 @@ the clearances. It moves and rotates with the target's placement.
 
 ## Access
 
-- **Window.** Model → Architecture → **Levels & stairs**. The Room tab
-  entry opens the same tool. The Inspector chooses Level, Floor slab,
+- **Window.** Model → Architecture → **Levels** or **Stairs**. The Architecture
+  side panel switches between 2D plan and 3D model and selects the active level
+  with its elevation and ownership. New/Edit level opens the existing level
+  transactions. View/level recall is [local navigation metadata](architecture-navigation.md#navigation-state-and-routing).
+  The Inspector chooses Level, Floor slab,
   Pedestal, Stair, Service envelope or Drawing guide.
   - An existing level or envelope can be chosen to edit it.
   - Applied slabs and stairs reopen from the model tree as feature edits
     that keep their Part.
   - The stair form shows its geometric check live.
+  - **Stair placement.** A new Stairs tool starts **Place in view**: click the
+    first riser on the base-level plane, then click the walking direction.
+    Placement optionally snaps to 10 mm. Clicking the first point twice does
+    not finish the direction. Plan cues use the canonical stair resolver's
+    pieces and walking line; native Preview validates the solid. Reopened stairs
+    retain their position until Place in view is chosen again. Turning off the
+    placement mode permits the existing numeric controls. Draft movement is
+    source-neutral until Apply; editing keeps the stair's feature and Part.
   - **Slab outlines** use the same plan outline editor as wall paths (see
     [walls](walls.md#access)): draw on the level floor plane with snapping,
     rectangle by dimensions, corner and segment adjustment with live

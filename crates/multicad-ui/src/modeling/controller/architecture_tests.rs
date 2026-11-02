@@ -51,6 +51,37 @@ fn active_level_seeds_new_wall_stair_slab_and_equipment_but_never_reassigns_save
     controller
         .begin_stairs(&session, &resources, Channel::Ui)
         .unwrap();
+    let ctx = crate::egui::Context::default();
+    for point in [[1000., 500., 3000.], [2000., 500., 3000.]] {
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let camera = crate::camera::Camera {
+                yaw: 0.,
+                pitch: std::f32::consts::FRAC_PI_2,
+                target: [0., 0., 3000.],
+                scale: 0.1,
+                perspective: false,
+            };
+            let rect = crate::egui::Rect::from_min_size(
+                crate::egui::Pos2::ZERO,
+                crate::egui::vec2(800., 600.),
+            );
+            let p = camera.project(point, rect);
+            assert!(controller.outline_viewport(
+                &session,
+                super::super::TerminationViewport {
+                    scene: None,
+                    report: None,
+                    camera,
+                    rect,
+                    pointer: Some(crate::egui::pos2(p[0], p[1])),
+                    clicked: true,
+                    painter: ui.painter(),
+                    section: None,
+                }
+            ));
+        });
+        output.textures_delta.clear();
+    }
     let Some(ModelForm::Architecture(panel)) = &controller.form else {
         panic!("stair form")
     };

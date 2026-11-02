@@ -9,6 +9,7 @@ use super::{
     outline::{OutlineEditor, OutlineKind, plan_targets},
 };
 use crate::{controls, egui};
+mod stair_placement;
 use multicad_core::{
     commands::{Actor, Session},
     constraint_sketch::Dimension,
@@ -258,6 +259,9 @@ pub(super) struct ArchitecturePanel {
     form: StairForm,
     start: [f64; 2],
     direction_deg: f64,
+    stair_placing: bool,
+    stair_anchor: Option<[f64; 2]>,
+    stair_snap: bool,
     width: DimensionField,
     risers: u32,
     going: DimensionField,
@@ -350,6 +354,9 @@ impl ArchitecturePanel {
             form: StairForm::Straight,
             start: [0., 0.],
             direction_deg: 0.,
+            stair_placing: false,
+            stair_anchor: None,
+            stair_snap: true,
             width: mm(1000.)?,
             risers: 16,
             going: mm(270.)?,
@@ -400,6 +407,7 @@ impl ArchitecturePanel {
     pub fn stairs(document: &Document, name: String) -> Result<Self, String> {
         let mut panel = Self::new(document, name)?;
         panel.kind = ArchitectureKind::Stair;
+        panel.stair_placing = true;
         Ok(panel)
     }
     pub fn equipment_preset(
@@ -477,7 +485,7 @@ impl ArchitecturePanel {
             })
             .map_or(0., |l| l.elevation_mm)
     }
-    /// True while the slab or pedestal outline is shown on the plan.
+    /// True while an architecture outline or placement gesture uses the plan.
     pub fn outlines(&self) -> bool {
         matches!(
             self.kind,
@@ -485,6 +493,7 @@ impl ArchitecturePanel {
                 | ArchitectureKind::Pedestal
                 | ArchitectureKind::Plant
                 | ArchitectureKind::Equipment
+                | ArchitectureKind::Stair
         )
     }
     /// Draw and edit the outline on the plan; returns whether inputs changed.
@@ -492,8 +501,12 @@ impl ArchitecturePanel {
         &mut self,
         document: &Document,
         revision: u64,
+        parameters: &multicad_core::parameters::EvaluatedParameters,
         view: TerminationViewport<'_>,
     ) -> bool {
+        if self.kind == ArchitectureKind::Stair {
+            return self.stair_viewport(document, parameters, view);
+        }
         if self.kind == ArchitectureKind::Equipment {
             let changed = self.equipment.viewport(document, view);
             if changed {
@@ -586,6 +599,10 @@ impl ArchitecturePanel {
     ) -> Result<ArchitectureCommand, String> {
         if !enabled {
             return Err("The native modeling preview provider is unavailable".into());
+        }
+        if self.kind == ArchitectureKind::Stair && self.stair_placing {
+            self.level.ok_or("Choose the stair's base level")?;
+            return Err("Click the first riser and walking direction, or turn off Place in view to use the current position".into());
         }
         if self.kind == ArchitectureKind::Plant {
             return self.plant.request(document).map(ArchitectureCommand::Plant);
@@ -711,6 +728,8 @@ impl ArchitecturePanel {
                         .changed()
                     {
                         self.existing = None;
+                        self.stair_placing = kind == ArchitectureKind::Stair;
+                        self.stair_anchor = None;
                         changed = true;
                     }
                 }
@@ -841,6 +860,24 @@ impl ArchitecturePanel {
                 }
             }
             ArchitectureKind::Stair => {
+                if ui
+                    .selectable_label(self.stair_placing, "Place in view")
+                    .clicked()
+                {
+                    self.stair_placing = !self.stair_placing;
+                    self.stair_anchor = None;
+                    changed = true;
+                }
+                ui.small(if self.stair_placing {
+                    if self.stair_anchor.is_some() {
+                        "Click the walking direction from the first riser."
+                    } else {
+                        "Click the first riser on the base level, then the walking direction."
+                    }
+                } else {
+                    "Use Place in view to reposition the stair graphically."
+                });
+                ui.checkbox(&mut self.stair_snap, "Snap placement to 10 mm");
                 ui.label("From level");
                 changed |= Self::level_combo(ui, "stair-level", &levels, &mut self.level, None);
                 ui.label("To level");
@@ -1003,6 +1040,148 @@ mod tests {
             .compile(prepared.prepared.document(), session.revision())
             .unwrap();
         prepared
+    }
+    #[test]
+    fn graphical_stair_placement_uses_the_level_plane_and_survives_native_edit_history_and_reopen()
+    {
+        use multicad_core::project_file::{self, ProjectFile};
+        let (mut session, levels, _, _) = crate::architecture_view::tests::building();
+        let mut panel =
+            ArchitecturePanel::stairs(session.document(), "Upper stair".into()).unwrap();
+        panel.seed_new_level(session.document(), Some(levels[1]));
+        assert!(
+            panel
+                .request(session.document(), true)
+                .unwrap_err()
+                .contains("first riser")
+        );
+        let before = session.document().clone();
+        let ctx = egui::Context::default();
+        let camera = crate::camera::Camera {
+            yaw: 0.,
+            pitch: std::f32::consts::FRAC_PI_2,
+            target: [0., 0., 3000.],
+            scale: 0.1,
+            perspective: false,
+        };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+        let click = |panel: &mut ArchitecturePanel, point: [f64; 2]| {
+            let p = camera.project([point[0] as f32, point[1] as f32, 3000.], rect);
+            let mut changed = false;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                changed = panel.viewport(
+                    session.document(),
+                    session.revision(),
+                    session.parameters(),
+                    TerminationViewport {
+                        scene: None,
+                        report: None,
+                        camera,
+                        rect,
+                        pointer: Some(egui::pos2(p[0], p[1])),
+                        clicked: true,
+                        painter: ui.painter(),
+                        section: None,
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            changed
+        };
+        assert!(click(&mut panel, [1003., 504.]));
+        assert_eq!(panel.start, [1000., 500.]);
+        assert!(!click(&mut panel, [1003., 504.]));
+        assert!(panel.error.as_ref().unwrap().contains("direction away"));
+        assert!(panel.request(session.document(), true).is_err());
+        assert!(click(&mut panel, [1003., 1504.]));
+        assert!(!panel.stair_placing);
+        assert!((panel.direction_deg - 90.).abs() < 1e-9);
+        assert_eq!(session.document(), &before);
+        let prepared = apply(&mut session, &panel);
+        let feature = prepared.outputs[0].feature;
+        let body = prepared.outputs[0].body;
+        session.commit(prepared.prepared).unwrap();
+        let compiled = Compiler::default()
+            .compile(session.document(), session.revision())
+            .unwrap();
+        let native = compiled.snapshot();
+        let shape = &native.shapes[&feature];
+        assert_eq!(shape.solid_count, 1);
+        for (actual, expected) in shape.bounds.min.iter().zip([500., 500., 3000.]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in shape.bounds.max.iter().zip([1500., 4820., 6000.]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        let placed = session.document().clone();
+        let mut edit =
+            ArchitecturePanel::existing(session.document(), feature, "Upper stair".into()).unwrap();
+        assert!(!edit.stair_placing);
+        edit.stair_placing = true;
+        // Move through the same real camera/plane hit path without changing identities.
+        let move_click = |panel: &mut ArchitecturePanel, point: [f64; 2]| {
+            let p = camera.project([point[0] as f32, point[1] as f32, 3000.], rect);
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                assert!(panel.viewport(
+                    session.document(),
+                    session.revision(),
+                    session.parameters(),
+                    TerminationViewport {
+                        scene: None,
+                        report: None,
+                        camera,
+                        rect,
+                        pointer: Some(egui::pos2(p[0], p[1])),
+                        clicked: true,
+                        painter: ui.painter(),
+                        section: None,
+                    }
+                ));
+            });
+            output.textures_delta.clear();
+        };
+        move_click(&mut edit, [2503., 504.]);
+        move_click(&mut edit, [3503., 504.]);
+        assert_eq!(
+            session.document(),
+            &placed,
+            "a draft move is cancellable and source-neutral"
+        );
+        let prepared = apply(&mut session, &edit);
+        assert_eq!(
+            (prepared.outputs[0].feature, prepared.outputs[0].body),
+            (feature, body)
+        );
+        session.commit(prepared.prepared).unwrap();
+        let edited = session.document().clone();
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &placed);
+        session
+            .redo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &edited);
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(edited.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let reopened = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let stair = model::read_stair(&reopened.document, feature).unwrap();
+        assert_eq!(stair.output.body, body);
+        assert_eq!(stair.level, levels[1]);
+        assert_eq!(stair.start, [length(2500.), length(500.)]);
+        assert_eq!(stair.direction_deg, 0.);
+        Compiler::default().compile(&reopened.document, 0).unwrap();
     }
 
     #[test]
@@ -1229,7 +1408,12 @@ mod tests {
                 painter: &painter,
                 section: None,
             };
-            assert!(!floor.viewport(session.document(), session.revision(), view));
+            assert!(!floor.viewport(
+                session.document(),
+                session.revision(),
+                session.parameters(),
+                view
+            ));
         })
         .drop_without_applying_deltas();
         let missing = room_boundary(session.document(), EntityId::new(), RoomBoundary::Inside);

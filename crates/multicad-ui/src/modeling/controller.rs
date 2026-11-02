@@ -832,7 +832,9 @@ impl ModelToolController {
                 panel.viewport(document, revision, view)
             }
             Some(ModelForm::Fence(panel)) => panel.viewport(session, view),
-            Some(ModelForm::Architecture(panel)) => panel.viewport(document, revision, view),
+            Some(ModelForm::Architecture(panel)) => {
+                panel.viewport(document, revision, session.parameters(), view)
+            }
             _ => false,
         };
         if changed {
