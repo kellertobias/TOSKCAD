@@ -20,6 +20,7 @@ const gallery = [...new Map(imageLinks.map(link => [link.href, link])).values()]
 const previewImage = preview.querySelector('img');
 const caption = preview.querySelector('#preview-caption');
 const zoom = preview.querySelector('[data-preview="zoom"]');
+const download = preview.querySelector('[data-preview="download"]');
 let imageIndex = 0;
 let opener;
 function showImage(index) {
@@ -28,7 +29,9 @@ function showImage(index) {
   const image = link.querySelector('img');
   previewImage.src = link.href;
   previewImage.alt = image.alt;
-  caption.textContent = (link.querySelector('span')?.textContent || link.closest('figure')?.querySelector('h3')?.textContent || image.alt).replace(/ ↗$/, '');
+  download.href = link.href;
+  download.download = new URL(link.href).pathname.split('/').pop();
+  caption.textContent = (link.querySelector('span')?.textContent || link.closest('figure')?.querySelector('.project-name')?.textContent || link.closest('figure')?.querySelector('h3')?.textContent || image.alt).replace(/ ↗$/, '');
   preview.classList.toggle('is-drawing', new URL(link.href).pathname.endsWith('.svg'));
   preview.classList.remove('is-zoomed');
   zoom.setAttribute('aria-pressed', 'false');
