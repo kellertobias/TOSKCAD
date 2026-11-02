@@ -972,7 +972,7 @@ fn finish(host: &dyn Host, request: &Request, read_only: bool, result: ToolResul
         return result;
     }
     let outcome = match (&result, request.tool) {
-        (Ok(_), "preview_fence") => AuditOutcome::Previewed,
+        (Ok(_), "preview_fence" | "preview_compound_cutout") => AuditOutcome::Previewed,
         (Ok(_), _) if read_only => AuditOutcome::Inspected,
         (Ok(_), "undo") => AuditOutcome::Undone,
         (Ok(_), "redo") => AuditOutcome::Redone,

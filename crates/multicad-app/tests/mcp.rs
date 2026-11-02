@@ -164,6 +164,10 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         "preview_fence",
         "set_fence",
         "inspect_fence",
+        "preview_compound_cutout",
+        "set_compound_cutout",
+        "inspect_compound_cutout",
+        "remove_compound_cutout",
         "inspect_architectural_symbol",
         "author_architectural_symbol",
         "import_architectural_symbol",
@@ -182,7 +186,10 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
             .is_some_and(|r| r.contains(&json!("expected_revision")));
         // Every mutation needs its base revision. A read-only native preview
         // also guards its source revision without committing a transaction.
-        if tool["name"] == "preview_fence" {
+        if matches!(
+            tool["name"].as_str(),
+            Some("preview_fence" | "preview_compound_cutout")
+        ) {
             assert!(read_only);
             assert!(requires_revision);
         } else {

@@ -80,6 +80,15 @@ fn mcp_preview_apply_edit_inspect_remove_share_source_ids_and_prove_every_receiv
     let preview = dispatch(&host, &call(), "preview_compound_cutout", args.clone()).unwrap();
     assert_eq!(preview["committed"], false);
     assert_eq!(host.document(), before);
+    let activity = dispatch(&host, &call(), "activity", json!({"limit":20})).unwrap();
+    let entry = activity["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["tool"] == "preview_compound_cutout")
+        .unwrap();
+    assert_eq!(entry["outcome"], "previewed");
+    assert!(entry["revision"].is_null());
     args["cutout"] = preview["cutout"].clone();
     for i in 0..2 {
         args["boxes"][i]["id"] = preview["definition"]["boxes"][i]["id"].clone();
