@@ -74,6 +74,7 @@ enum Review {
     Project,
     Architecture(Option<Category>),
     ArchitecturePlan,
+    CompoundCutout(bool),
 }
 impl Review {
     fn name(self) -> String {
@@ -81,6 +82,12 @@ impl Review {
             Self::Project => "project".into(),
             Self::Architecture(None) => "architecture-root".into(),
             Self::ArchitecturePlan => "architecture-plan".into(),
+            Self::CompoundCutout(plan) => if plan {
+                "compound-cutout-plan"
+            } else {
+                "compound-cutout-3d"
+            }
+            .into(),
             Self::Architecture(Some(category)) => {
                 format!("architecture-{}", category.label().to_ascii_lowercase())
             }
@@ -144,7 +151,10 @@ fn render(
     app.current_mut().resources = file.resources.clone();
     app.current_mut().path = Some(source.to_path_buf());
     app.set_library_store(Box::new(ReadOnly));
-    let architecture = matches!(review, Review::Architecture(_) | Review::ArchitecturePlan);
+    let architecture = matches!(
+        review,
+        Review::Architecture(_) | Review::ArchitecturePlan | Review::CompoundCutout(_)
+    );
     if architecture {
         app.mode = Mode::Model;
         app.set_scene_backends(Arc::new(|| Box::new(modeling::Backend::new())));
@@ -154,7 +164,10 @@ fn render(
     let mut routes: std::collections::VecDeque<_> = match review {
         Review::Project => [].into_iter().collect(),
         Review::Architecture(None) => ["Architecture"].into_iter().collect(),
-        Review::ArchitecturePlan => ["Architecture", "2D plan"].into_iter().collect(),
+        Review::ArchitecturePlan | Review::CompoundCutout(true) => {
+            ["Architecture", "2D plan"].into_iter().collect()
+        }
+        Review::CompoundCutout(false) => ["Architecture"].into_iter().collect(),
         Review::Architecture(Some(category)) => {
             ["Architecture", category.label()].into_iter().collect()
         }
@@ -165,6 +178,7 @@ fn render(
     let mut fitted_at = None;
     let mut stable = 0;
     let mut initial_scene = None;
+    let mut compound_opened = false;
     let started = Instant::now();
     let context = egui::Context::default();
     multicad_ui::theme::configure(&context);
@@ -263,6 +277,22 @@ fn render(
                 };
                 events = pointer(pos, true);
                 release = Some(pos);
+            } else if matches!(review, Review::CompoundCutout(_)) && !compound_opened {
+                let source = multicad_core::model::compound_cutouts(&file.document)
+                    .next()
+                    .ok_or("Project has no compound Cutout")?
+                    .id;
+                let active = app.current_mut();
+                active.sketch.begin_feature_edit(
+                    &active.session,
+                    &active.resources,
+                    &active.scene,
+                    source,
+                    multicad_core::commands::Channel::Ui,
+                )?;
+                active.sketch.request_fit();
+                compound_opened = true;
+                fitted_at = Some(Instant::now());
             } else {
                 if stable == 0 {
                     events = vec![egui::Event::PointerGone];
@@ -388,7 +418,13 @@ fn main() -> Result<(), Error> {
         None => 0,
         Some(arg) if arg == "--architecture" => 1,
         Some(arg) if arg == "--architecture-views" => 2,
-        _ => return Err("Expected optional --architecture or --architecture-views".into()),
+        Some(arg) if arg == "--compound-cutout" => 3,
+        _ => {
+            return Err(
+                "Expected optional --architecture, --architecture-views or --compound-cutout"
+                    .into(),
+            );
+        }
     };
     if args.next().is_some() {
         return Err("Unexpected argument".into());
@@ -410,6 +446,8 @@ fn main() -> Result<(), Error> {
             .collect()
     } else if review_mode == 2 {
         vec![Review::Architecture(None), Review::ArchitecturePlan]
+    } else if review_mode == 3 {
+        vec![Review::CompoundCutout(false), Review::CompoundCutout(true)]
     } else {
         vec![Review::Project]
     };

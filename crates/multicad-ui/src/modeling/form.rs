@@ -62,6 +62,7 @@ pub enum ModelRequest {
     Fence(Box<model::FenceChange>),
     SymbolConstruction(Box<crate::symbols::ArchitecturalSymbolCommand>),
     Opening(Box<OpeningCommand>),
+    CompoundCutout(Box<model::CompoundCutoutChange>),
     Architecture(Box<ArchitectureCommand>),
     Cabinet(Box<CabinetCommand>),
     Joint(Box<JointCommand>),
@@ -274,6 +275,10 @@ impl ModelRequest {
                     .map_err(|e| e.to_string());
             }
             Self::Opening(command) => return command.prepare(session, actor),
+            Self::CompoundCutout(change) => {
+                return model::prepare_compound_cutout(session, session.revision(), actor, change)
+                    .map_err(|e| e.to_string());
+            }
             Self::Architecture(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved slab or stair before editing it".into());
@@ -414,6 +419,7 @@ impl ModelRequest {
     }
 }
 pub(super) enum ModelEvent {
+    CompoundCutout,
     Changed,
     Preview {
         stamp: FormStamp,
@@ -441,6 +447,7 @@ pub(super) enum ModelForm {
     Wall(Box<WallPanel>),
     Fence(Box<FencePanel>),
     Opening(Box<OpeningPanel>),
+    CompoundCutout(Box<super::compound_cutout::CompoundCutoutPanel>),
     Architecture(Box<ArchitecturePanel>),
     Cabinet(Box<CabinetPanel>),
     Joint(Box<JointPanel>),
@@ -472,6 +479,7 @@ impl ModelForm {
             Self::Wall(panel) => panel.stamp(),
             Self::Fence(panel) => panel.stamp(),
             Self::Opening(panel) => panel.stamp(),
+            Self::CompoundCutout(panel) => panel.stamp(),
             Self::Architecture(panel) => panel.stamp(),
             Self::Cabinet(panel) => panel.stamp(),
             Self::Joint(panel) => panel.stamp(),
@@ -503,6 +511,7 @@ impl ModelForm {
             Self::Wall(panel) => panel.label(),
             Self::Fence(panel) => panel.label(),
             Self::Opening(panel) => panel.label(),
+            Self::CompoundCutout(panel) => panel.label(),
             Self::Architecture(panel) => panel.label(),
             Self::Cabinet(panel) => panel.label(),
             Self::Joint(panel) => panel.label(),
@@ -534,6 +543,9 @@ impl ModelForm {
             Self::Opening(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Opening(Box::new(command))),
+            Self::CompoundCutout(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|change| ModelRequest::CompoundCutout(Box::new(change))),
             Self::Architecture(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Architecture(Box::new(command))),
@@ -643,6 +655,7 @@ impl ModelForm {
             Self::Wall(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Fence(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Opening(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::CompoundCutout(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Architecture(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Cabinet(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Joint(panel) => panel.show(ui, document, capabilities.new_body, preview),

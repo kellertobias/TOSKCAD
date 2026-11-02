@@ -8,6 +8,7 @@ mod boolean;
 mod boolean_edit;
 mod cabinet;
 pub mod cabinet_edit;
+mod compound_cutout;
 mod controller;
 pub(crate) mod dimension;
 mod edge_treatment;

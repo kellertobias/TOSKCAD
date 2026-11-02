@@ -179,6 +179,9 @@ impl ModelToolController {
         matches.next().is_none().then_some(first)
     }
     pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
+        if multicad_core::model::compound_cutout_source(document, feature).is_some() {
+            return true;
+        }
         if !matches!(
             document.get(feature).map(|e| &e.data),
             Some(EntityData::Feature {
@@ -228,6 +231,15 @@ impl ModelToolController {
         if !Self::editable(document, feature) {
             return Err(
                 "Choose a supported, unsuppressed applied feature or owned placement driver".into(),
+            );
+        }
+        if let Some(source) = model::compound_cutout_source(document, feature) {
+            let panel = super::compound_cutout::CompoundCutoutPanel::existing(document, source)?;
+            return self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::CompoundCutout(Box::new(panel)),
             );
         }
         if let Some(run) = super::fence::FencePanel::target(document, feature) {
@@ -817,7 +829,7 @@ impl ModelToolController {
     /// A wall or slab outline is shown and edited on the plan.
     pub fn outline_active(&self) -> bool {
         match &self.form {
-            Some(ModelForm::Wall(_) | ModelForm::Fence(_)) => true,
+            Some(ModelForm::Wall(_) | ModelForm::Fence(_) | ModelForm::CompoundCutout(_)) => true,
             Some(ModelForm::Architecture(panel)) => panel.outlines(),
             _ => false,
         }
@@ -834,6 +846,9 @@ impl ModelToolController {
                 panel.viewport(document, revision, view)
             }
             Some(ModelForm::Fence(panel)) => panel.viewport(session, view),
+            Some(ModelForm::CompoundCutout(panel)) => {
+                panel.viewport(document, session.parameters(), view)
+            }
             Some(ModelForm::Architecture(panel)) => {
                 panel.viewport(document, revision, session.parameters(), view)
             }
@@ -1575,16 +1590,20 @@ impl ModelToolController {
             _ => self.scope.as_ref().expect("current scope").execution,
         };
         let (prepared, proof) = match execution {
-            Execution::Create => (
-                request.prepare(session, Actor::local(channel))?,
-                match request {
+            Execution::Create => {
+                let prepared = request.prepare(session, Actor::local(channel))?;
+                let proof = match request {
+                    ModelRequest::CompoundCutout(_) => {
+                        SceneProof::edited(prepared.outputs.clone(), &[], vec![])
+                    }
                     ModelRequest::GearPair(command) => SceneProof::GearPair {
                         pair: command.pair(),
                         occurrence: command.occurrence(),
                     },
                     _ => SceneProof::Create,
-                },
-            ),
+                };
+                (prepared, proof)
+            }
             Execution::Edit { feature } => {
                 let prepared = request.prepare_edit(session, Actor::local(channel), feature)?;
                 if prepared
@@ -1670,6 +1689,7 @@ impl ModelToolController {
                     | ModelRequest::Alignment(_)
                     | ModelRequest::GearPair(_)
                     | ModelRequest::MechanicalPart(_)
+                    | ModelRequest::CompoundCutout(_)
             ) || !matches!(execution, Execution::Create),
             aid: match request {
                 ModelRequest::FdmAid(command) => Some(command.request.feature),
@@ -2023,6 +2043,9 @@ impl ModelToolController {
         if let Some(ModelForm::Wall(panel)) = self.form.as_mut() {
             panel.sync_source(session);
         }
+        if let Some(ModelForm::CompoundCutout(panel)) = self.form.as_mut() {
+            panel.sync_source(session);
+        }
         if let Some(ModelForm::Fence(panel)) = self.form.as_mut() {
             panel.sync_source(session);
             self.fence_type = Some(panel.preferred_type());
@@ -2033,6 +2056,13 @@ impl ModelToolController {
             .ok_or("Start a modeling tool first")?
             .show(ui, session.document(), capabilities, preview);
         let result = match event {
+            Some(ModelEvent::CompoundCutout) => {
+                self.invalidate();
+                self.form = Some(ModelForm::CompoundCutout(Box::new(
+                    super::compound_cutout::CompoundCutoutPanel::new(session.document())?,
+                )));
+                Ok(None)
+            }
             Some(ModelEvent::Changed) => {
                 self.invalidate();
                 Ok(None)
@@ -2083,6 +2113,8 @@ mod scale_interaction;
 pub use placement_interaction::PlacementViewportResult;
 #[cfg(test)]
 mod architecture_tests;
+#[cfg(test)]
+mod compound_cutout_tests;
 mod proof;
 mod sheet;
 mod termination;

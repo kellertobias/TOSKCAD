@@ -848,6 +848,17 @@ impl OpeningPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.kind.title());
+        if self.kind == RoomOpening::Cutout
+            && self.editing.is_none()
+            && ui
+                .button("Use multiple boxes")
+                .on_hover_text(
+                    "Compose one cutout from editable boxes with explicit wall/slab receivers",
+                )
+                .clicked()
+        {
+            return Some(ModelEvent::CompoundCutout);
+        }
         ui.small(match self.kind {
             RoomOpening::Cutout => {
                 "Choose what the cutout cuts: a full-height cutout in the wall (through it, or a chase from one face), the floor slabs under it on a range of levels (a shaft or floor penetration), or both."
