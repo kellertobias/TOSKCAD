@@ -73,12 +73,14 @@ fn wait<T>(future: impl Future<Output = T>) -> T {
 enum Review {
     Project,
     Architecture(Option<Category>),
+    ArchitecturePlan,
 }
 impl Review {
     fn name(self) -> String {
         match self {
             Self::Project => "project".into(),
             Self::Architecture(None) => "architecture-root".into(),
+            Self::ArchitecturePlan => "architecture-plan".into(),
             Self::Architecture(Some(category)) => {
                 format!("architecture-{}", category.label().to_ascii_lowercase())
             }
@@ -142,7 +144,7 @@ fn render(
     app.current_mut().resources = file.resources.clone();
     app.current_mut().path = Some(source.to_path_buf());
     app.set_library_store(Box::new(ReadOnly));
-    let architecture = matches!(review, Review::Architecture(_));
+    let architecture = matches!(review, Review::Architecture(_) | Review::ArchitecturePlan);
     if architecture {
         app.mode = Mode::Model;
         app.set_scene_backends(Arc::new(|| Box::new(modeling::Backend::new())));
@@ -152,6 +154,7 @@ fn render(
     let mut routes: std::collections::VecDeque<_> = match review {
         Review::Project => [].into_iter().collect(),
         Review::Architecture(None) => ["Architecture"].into_iter().collect(),
+        Review::ArchitecturePlan => ["Architecture", "2D plan"].into_iter().collect(),
         Review::Architecture(Some(category)) => {
             ["Architecture", category.label()].into_iter().collect()
         }
@@ -381,10 +384,11 @@ fn main() -> Result<(), Error> {
     )
     .canonicalize()?;
     let output = PathBuf::from(args.next().ok_or("Missing output directory")?);
-    let architecture = match args.next() {
-        None => false,
-        Some(arg) if arg == "--architecture" => true,
-        _ => return Err("Expected optional --architecture".into()),
+    let review_mode = match args.next() {
+        None => 0,
+        Some(arg) if arg == "--architecture" => 1,
+        Some(arg) if arg == "--architecture-views" => 2,
+        _ => return Err("Expected optional --architecture or --architecture-views".into()),
     };
     if args.next().is_some() {
         return Err("Unexpected argument".into());
@@ -400,10 +404,12 @@ fn main() -> Result<(), Error> {
     let adapter = wait(instance.request_adapter(&Default::default()))?;
     let (device, queue) = wait(adapter.request_device(&Default::default()))?;
     let mut images = vec![];
-    let reviews: Vec<_> = if architecture {
+    let reviews: Vec<_> = if review_mode == 1 {
         std::iter::once(Review::Architecture(None))
             .chain(Category::ALL.map(|c| Review::Architecture(Some(c))))
             .collect()
+    } else if review_mode == 2 {
+        vec![Review::Architecture(None), Review::ArchitecturePlan]
     } else {
         vec![Review::Project]
     };

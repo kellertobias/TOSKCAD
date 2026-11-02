@@ -214,6 +214,8 @@ pub struct Context {
     spatial_camera: Option<Camera>,
     plan_camera: Option<Camera>,
     filtered: Option<(Arc<Scene>, Option<EntityId>, Arc<Scene>)>,
+    rendered: Option<(Arc<Scene>, Arc<Scene>)>,
+    plan_fit_pending: bool,
 }
 impl Context {
     pub fn saved(&self) -> Option<Recall> {
@@ -283,6 +285,7 @@ impl Context {
         }
     }
     fn enter_plan(&mut self, camera: &mut Camera) {
+        self.plan_fit_pending |= self.plan_camera.is_none();
         self.spatial_camera = Some(*camera);
         if let Some(plan) = self.plan_camera {
             *camera = plan;
@@ -310,27 +313,29 @@ impl Context {
             ..Default::default()
         };
         self.constrain(&mut camera);
-        let elevation = camera.target[2];
-        if let Some([low, high]) = bounds {
-            let corners: Vec<_> = (0..8)
-                .map(|corner| {
-                    std::array::from_fn(|axis| {
-                        if corner & (1 << axis) == 0 {
-                            low[axis] as f32
-                        } else {
-                            high[axis] as f32
-                        }
-                    })
-                })
-                .collect();
-            camera.fit(&corners, rect);
-            camera.target[2] = elevation;
+        if let Some([low, high]) = bounds
+            && low.iter().chain(&high).all(|v| v.is_finite())
+            && rect.is_finite()
+            && rect.width() > 64.
+            && rect.height() > 64.
+        {
+            for axis in 0..2 {
+                camera.target[axis] = ((low[axis] + high[axis]) * 0.5) as f32;
+            }
+            let width = (high[0] - low[0]).max(1.) as f32;
+            let height = (high[1] - low[1]).max(1.) as f32;
+            camera.scale = ((rect.width() - 64.) / width)
+                .min((rect.height() - 96.).max(32.) / height)
+                .clamp(0.02, 100.);
         }
         camera
     }
     pub fn scene(&mut self, scene: &Arc<Scene>) -> Result<Arc<Scene>, String> {
         if !self.planar() {
             return Ok(scene.clone());
+        }
+        if let Some(Err(error)) = scene.architecture_plan() {
+            return Err(format!("Native plan unavailable: {error}"));
         }
         if let Some((source, level, view)) = &self.filtered
             && Arc::ptr_eq(source, scene)
@@ -344,6 +349,26 @@ impl Context {
             .ok_or("Architecture levels are not ready")?
             .plan_scene(scene, self.recall.level)?;
         self.filtered = Some((scene.clone(), self.recall.level, view.clone()));
+        Ok(view)
+    }
+    pub fn take_plan_fit(&mut self) -> bool {
+        std::mem::take(&mut self.plan_fit_pending)
+    }
+    pub fn render_scene(&mut self, scene: &Arc<Scene>) -> Result<Arc<Scene>, String> {
+        if !self.planar() {
+            return Ok(scene.clone());
+        }
+        if let Some((source, view)) = &self.rendered
+            && Arc::ptr_eq(source, scene)
+        {
+            return Ok(view.clone());
+        }
+        let view = match scene.architecture_plan() {
+            Some(Ok(plan)) => plan.surface_scene(scene)?,
+            Some(Err(error)) => return Err(format!("Native plan unavailable: {error}")),
+            None => scene.clone(),
+        };
+        self.rendered = Some((scene.clone(), view.clone()));
         Ok(view)
     }
 }
@@ -582,6 +607,25 @@ pub(crate) mod tests {
         );
         assert_eq!(camera, spatial);
         assert_eq!(session.document(), &before);
+    }
+    #[test]
+    fn plan_fit_uses_xy_extents_and_keeps_the_selected_level_elevation() {
+        let (session, levels, _, _) = building();
+        let mut context = Context::default();
+        context.sync(session.document(), session.revision());
+        context.recall.level = Some(levels[1]);
+        let rect = crate::egui::Rect::from_min_size(
+            crate::egui::pos2(240., 100.),
+            crate::egui::vec2(625., 500.),
+        );
+        let camera = context.home_plan(Some([[0., 0., -200.], [10000., 8000., 30000.]]), rect);
+        assert_eq!(camera.target, [5000., 4000., 3000.]);
+        let a = camera.project([0., 0., 3000.], rect);
+        let b = camera.project([10000., 8000., 3000.], rect);
+        assert!(rect.contains(crate::egui::pos2(a[0], a[1])));
+        assert!(rect.contains(crate::egui::pos2(b[0], b[1])));
+        assert!((b[0] - a[0]).abs() > rect.width() * 0.8);
+        assert!(!camera.perspective);
     }
     #[test]
     fn missing_recalled_level_reports_repair_instead_of_silently_using_the_first_level() {

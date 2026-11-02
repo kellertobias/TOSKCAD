@@ -57,6 +57,23 @@ Changing modes before history loads preserves an unvisited Architecture context
 without restoring the older mode. An explicitly chosen World context replaces
 the previous floor, including when pending visits are coalesced.
 
+The Model workspace offers linked 2D plan and 3D model representations. The
+geometry worker derives wall cuts, hatching, door swings, window panes and stair
+graphics through the existing native drawing evaluator. The temporary projection
+does not create a drawing book or another building document. Wall cuts use the
+evaluator's default plane, 1000 mm above each wall's base. Other objects retain
+their native top-view geometry. The initial plan fit uses the visible X/Y extents
+and retains the selected level elevation.
+
+The detached plan graphics carry the evaluated source hash and canonical Part
+identities. Level and visibility filters apply to both representations. In 2D,
+wall and stair plan graphics replace their occluding mesh surfaces for painting;
+the original native geometry remains the object-picking and reference source.
+Physical face, edge and vertex picking belongs to the 3D representation. A saved
+3D section plane is preserved while the plan uses its native wall cuts. A failed
+plan projection produces a visible diagnostic in 2D and leaves valid 3D geometry
+available. Switching representations does not request another model rebuild.
+
 Finder and command entry use explicit family presets. The generic `equipment`
 command remains available. `stairs` opens Stairs; `slab` still opens Levels.
 `washer` retains its hardware meaning. Panel and Cabinet keep Wood as their

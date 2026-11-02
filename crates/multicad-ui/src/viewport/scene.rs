@@ -544,6 +544,7 @@ pub struct Scene {
     model_evaluation: Option<Arc<multicad_core::model::ModelEvaluationInfo>>,
     native_references: Option<Arc<NativeReferences>>,
     assembly_evaluation: Option<Arc<multicad_core::model::AssemblyEvaluationInfo>>,
+    architecture_plan: Option<Arc<Result<super::ArchitecturePlan, String>>>,
     transfer_evaluation: Option<Arc<multicad_core::model::TransferEvaluationInfo>>,
     native_bounds: Option<Arc<NativeBounds>>,
     envelope_boxes: Arc<BTreeMap<EntityId, [Point; 8]>>,
@@ -570,6 +571,34 @@ pub struct Hit {
     pub stamp: SceneStamp,
 }
 impl Scene {
+    pub fn set_architecture_plan(
+        &mut self,
+        plan: Result<super::ArchitecturePlan, String>,
+    ) -> Result<(), String> {
+        let source = self
+            .model_evaluation
+            .as_ref()
+            .filter(|_| self.is_full_model())
+            .ok_or("Native plan needs a complete current model receipt")?
+            .source_hash;
+        if let Ok(plan) = &plan {
+            plan.validate(
+                source,
+                &self
+                    .reference_instances
+                    .iter()
+                    .map(|instance| instance.id)
+                    .collect(),
+            )?;
+        }
+        self.architecture_plan = Some(Arc::new(plan));
+        Ok(())
+    }
+    pub fn architecture_plan(&self) -> Option<&Result<super::ArchitecturePlan, String>> {
+        self.is_full_model()
+            .then_some(self.architecture_plan.as_deref())
+            .flatten()
+    }
     pub fn new(
         stamp: SceneStamp,
         geometries: Vec<Arc<Geometry>>,
@@ -622,6 +651,7 @@ impl Scene {
             model_evaluation: None,
             native_references: None,
             assembly_evaluation: None,
+            architecture_plan: None,
             transfer_evaluation: None,
             native_bounds: None,
             envelope_boxes: Arc::new(BTreeMap::new()),
@@ -1066,6 +1096,7 @@ impl Scene {
         view.model_evaluation = self.model_evaluation.clone();
         view.native_references = self.native_references.clone();
         view.assembly_evaluation = self.assembly_evaluation.clone();
+        view.architecture_plan = self.architecture_plan.clone();
         view.transfer_evaluation = self.transfer_evaluation.clone();
         view.native_bounds = self.native_bounds.clone();
         view.scope = self.scope.clone();

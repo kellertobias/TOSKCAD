@@ -5,6 +5,13 @@ use multicad_core::project_file::ProjectResources;
 use std::collections::BTreeSet;
 
 impl SketchEditor {
+    pub(super) fn modeling_section(&self) -> Option<crate::viewport::SectionPlane> {
+        if self.architecture.planar() {
+            None
+        } else {
+            self.solid.section.plane()
+        }
+    }
     pub fn architecture_recall(&self) -> architecture_view::Recall {
         self.architecture.recall
     }

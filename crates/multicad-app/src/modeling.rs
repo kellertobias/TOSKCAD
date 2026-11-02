@@ -7,6 +7,8 @@ use multicad_core::{
 use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
 use std::sync::Arc;
+#[path = "modeling/architecture_plan.rs"]
+mod architecture_plan;
 #[cfg(test)]
 #[path = "modeling/tests.rs"]
 mod tests;
@@ -18,7 +20,23 @@ pub struct Backend {
 impl Backend {
     pub fn new() -> Self {
         Self {
-            runtime: Runtime::with_publisher(Compiler::default(), scene),
+            runtime: Runtime::with_model_publisher(
+                Compiler::default(),
+                |document, model, generation| {
+                    let mut published = scene(document, model.snapshot(), generation)?;
+                    if published.is_full_model() {
+                        let plan = architecture_plan::build(document, model);
+                        Arc::get_mut(&mut published)
+                            .expect("publication is not shared before return")
+                            .set_architecture_plan(plan)
+                            .map_err(|message| ModelError {
+                                entity: None,
+                                message,
+                            })?;
+                    }
+                    Ok(published)
+                },
+            ),
             expected: None,
         }
     }

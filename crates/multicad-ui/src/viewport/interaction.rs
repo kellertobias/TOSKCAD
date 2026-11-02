@@ -29,6 +29,7 @@ pub struct Interaction {
     pub section: SectionView,
     reference_highlight: Option<Selection>,
     last_stamp: Option<SceneStamp>,
+    display_scene: Option<Arc<Scene>>,
     last_query: Option<(
         Pos2,
         Rect,
@@ -39,6 +40,11 @@ pub struct Interaction {
     )>,
 }
 impl Interaction {
+    /// A derived paint surface keeps the original native scene for hit/reference
+    /// queries. A stale or foreign surface is never used by show().
+    pub fn set_display_scene(&mut self, scene: Option<Arc<Scene>>) {
+        self.display_scene = scene;
+    }
     pub fn highlight_reference(&mut self, selection: Option<Selection>) {
         self.reference_highlight = selection;
     }
@@ -492,6 +498,20 @@ impl Interaction {
         style: DisplayStyle,
         enabled: bool,
     ) {
+        let derived = self
+            .display_scene
+            .as_ref()
+            .filter(|display| {
+                display.stamp() == scene.stamp()
+                    && display.model_evaluation().map(|info| info.source_hash)
+                        == scene.model_evaluation().map(|info| info.source_hash)
+            })
+            .cloned();
+        let section = if derived.is_some() {
+            None
+        } else {
+            self.section.plane()
+        };
         if self.last_stamp != Some(scene.stamp()) {
             if self.last_stamp.is_some_and(|old| {
                 old.document == scene.stamp().document && old.revision == scene.stamp().revision
@@ -534,14 +554,7 @@ impl Interaction {
             && response.hovered()
             && let Some(pointer) = response.hover_pos()
         {
-            let query = (
-                pointer,
-                response.rect,
-                camera,
-                style,
-                self.filter,
-                self.section.plane(),
-            );
+            let query = (pointer, response.rect, camera, style, self.filter, section);
             if self.last_query != Some(query) {
                 self.hovered = scene.pick_screen_with(
                     camera,
@@ -553,7 +566,7 @@ impl Interaction {
                             style,
                             DisplayStyle::Wire | DisplayStyle::AllEdges
                         ),
-                        section: self.section.plane(),
+                        section,
                     },
                 );
                 self.last_query = Some(query);
@@ -627,23 +640,23 @@ impl Interaction {
                 Some(Selection::Parts(self.parts.clone()))
             };
         let bounds = scene.world_bounds();
+        let display = derived.clone().unwrap_or_else(|| scene.clone());
         paint_scene_section(
             ui.painter(),
             response.rect,
-            scene,
+            display,
             camera,
             self.reference_highlight.clone().or(selection),
             style,
-            self.section.plane(),
+            section,
         );
-        self.section
-            .overlay(ui.painter(), camera, response.rect, bounds);
+        if derived.is_none() {
+            self.section
+                .overlay(ui.painter(), camera, response.rect, bounds);
+        }
         if let Some(hit) = hit
             && hit.key.kind == TopologyKind::Vertex
-            && self
-                .section
-                .plane()
-                .is_none_or(|s| s.contains(hit.point_mm))
+            && section.is_none_or(|s| s.contains(hit.point_mm))
         {
             let p = camera.project(hit.point_mm.map(|v| v as f32), response.rect);
             ui.painter().circle_stroke(

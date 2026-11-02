@@ -1671,7 +1671,7 @@ impl SketchEditor {
             scene: scene.as_deref(),
             report: self.evaluated.as_ref(),
             occurrence: Some(hit.instance),
-            section: self.solid.section.plane(),
+            section: self.modeling_section(),
         };
         crate::sketch_plane::selected_face(context, &hit)
     }
@@ -1799,7 +1799,7 @@ impl SketchEditor {
             scene: scene.as_deref(),
             report: self.evaluated.as_ref(),
             occurrence: self.occurrence,
-            section: self.solid.section.plane(),
+            section: self.modeling_section(),
         };
         // Revalidate even Inspector acceptance against the current scene, not a
         // pointer hit retained from a previous revision or placement.
@@ -3105,7 +3105,7 @@ impl SketchEditor {
                         }
                         if self.picking && sketch_mode {
                             let scene = self.display_scene.clone();
-                            let context = PlaneContext { document: session.document(), revision: session.revision(), scene: scene.as_deref().filter(|s| s.stamp().revision == session.revision()), report: self.evaluated.as_ref(), occurrence: self.occurrence, section: self.solid.section.plane() };
+                            let context = PlaneContext { document: session.document(), revision: session.revision(), scene: scene.as_deref().filter(|s| s.stamp().revision == session.revision()), report: self.evaluated.as_ref(), occurrence: self.occurrence, section: self.modeling_section() };
                             let chosen = self.plane_picker.show_inspector(ui,context);
                             if self.plane_picker.take_cancel_requested() { self.cancel(); }
                             if let Some(preview) = chosen && let Err(error) = self.create_on_plane(session,preview,Channel::Ui) {self.message=error;}
@@ -3431,6 +3431,18 @@ impl SketchEditor {
             }
         }
         let model_bounds = scene.as_ref().and_then(|scene| scene.world_bounds());
+        if self.architecture.planar()
+            && model_bounds.is_some()
+            && self
+                .viewport_rect
+                .is_some_and(|rect| rect.is_finite() && rect.width() > 64. && rect.height() > 64.)
+            && self.architecture.take_plan_fit()
+        {
+            self.camera = self
+                .architecture
+                .home_plan(model_bounds, self.viewport_rect.unwrap_or(Rect::NOTHING));
+            self.initial_fit.settle();
+        }
         if std::mem::take(&mut self.home_requested) {
             self.camera = if self.architecture.planar() {
                 self.architecture
@@ -3774,7 +3786,7 @@ impl SketchEditor {
                     rect,
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             );
             self.solid.highlight_reference(
@@ -3794,7 +3806,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             );
             self.solid
@@ -3815,7 +3827,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             ) {
                 self.message =
@@ -3837,7 +3849,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             )
         {
@@ -3856,7 +3868,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             )
         {
@@ -3874,7 +3886,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             )
         {
@@ -3894,7 +3906,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             )
         {
@@ -3914,7 +3926,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             )
         {
@@ -3928,7 +3940,7 @@ impl SketchEditor {
                 rect,
                 position: response.hover_pos(),
                 clicked: response.clicked(),
-                section: self.solid.section.plane(),
+                section: self.modeling_section(),
                 session,
             }) {
                 self.message = "Exact source selected · Preview the reference in Inspector".into();
@@ -3969,6 +3981,22 @@ impl SketchEditor {
                 && !self.moving
                 && !self.model.sheet_edge_picking()
                 && !self.has_pending_edits();
+            let display = if self.architecture.planar() {
+                match self.architecture.render_scene(scene) {
+                    Ok(display) => Some(display),
+                    Err(error) => {
+                        self.visibility_error = Some(error);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            self.solid.set_display_scene(display);
+            let filter = self.solid.filter;
+            if self.architecture.planar() {
+                self.solid.filter = crate::viewport::PickFilter::Parts;
+            }
             self.solid.show(
                 ui,
                 &response,
@@ -3977,6 +4005,19 @@ impl SketchEditor {
                 self.style,
                 selectable,
             );
+            self.solid.filter = filter;
+            if self.architecture.planar()
+                && let Some(Ok(plan)) = scene.architecture_plan()
+            {
+                plan.paint(
+                    &painter,
+                    scene,
+                    self.camera,
+                    rect,
+                    &self.solid.selected_ids(),
+                    self.solid.hovered_instance(),
+                );
+            }
             if response.clicked() && selectable {
                 self.tree_selection = self.solid.selected_ids();
                 if let Some(instance) = self
@@ -4014,7 +4055,7 @@ impl SketchEditor {
                     pointer: response.hover_pos(),
                     clicked: response.clicked(),
                     painter: &painter,
-                    section: self.solid.section.plane(),
+                    section: self.modeling_section(),
                 },
             )
         {
@@ -4144,7 +4185,7 @@ impl SketchEditor {
             self.camera,
             session,
             scene.as_ref(),
-            self.solid.section.plane(),
+            self.modeling_section(),
         );
         self.assembly_clearance_paint(&painter, rect, session, scene.as_ref());
         if !self.measurement.active()
@@ -4165,7 +4206,7 @@ impl SketchEditor {
                 scene: scene.as_deref().filter(|_| current),
                 report: self.evaluated.as_ref(),
                 occurrence: self.occurrence,
-                section: self.solid.section.plane(),
+                section: self.modeling_section(),
             };
             self.plane_picker
                 .update_hover(response.hover_pos(), self.camera, rect, context);
@@ -4779,10 +4820,11 @@ impl SketchEditor {
                         ui.checkbox(&mut guides, "Drawing guides");
                     },
                     |ui| {
-                        self.solid.filter_control(ui);
-                        self.solid
-                            .section
-                            .control(ui, scene.as_ref().and_then(|s| s.world_bounds()));
+                        if self.architecture.planar() {ui.label("Plan object picking").on_hover_text("Switch to 3D model to pick physical faces, edges or vertices.");}
+                        else {self.solid.filter_control(ui);}
+                        ui.add_enabled_ui(!self.architecture.planar(),|ui| {
+                            self.solid.section.control(ui,scene.as_ref().and_then(|s|s.world_bounds()));
+                        }).response.on_disabled_hover_text("2D plans use native wall plan cuts. Switch to 3D model for section planes.");
                         let transform = ui.add_enabled_ui((self.model.placement_active() || self.model.scaling_active() || (self.selected.is_some() && !self.model.active() && self.acquisition.is_none())) && !self.measurement.active(),|ui|icons::compact_button(
                             ui,
                             Icon::Transform,

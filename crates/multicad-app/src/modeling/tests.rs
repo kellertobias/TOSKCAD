@@ -139,6 +139,205 @@ fn receive(backend: &mut Backend) -> SceneReply {
     }
 }
 #[test]
+fn native_architecture_plan_exposes_real_opening_gaps_symbols_and_source_bound_picking() {
+    use multicad_core::{
+        document::EntityId,
+        drawings::{VectorCurve, VectorRole},
+        model::*,
+    };
+    let mut session = Session::new(Document::new("Native authoring plan").unwrap()).unwrap();
+    let actor = Actor::local(Channel::Ui);
+    let wall_type = NewType::new(
+        "Wall 200",
+        NewTypeKind::Wall(WallTypeDefinition {
+            thickness: length(200.),
+            height: length(2500.),
+            justification: Justification::Center,
+            material: None,
+        }),
+    );
+    let door = NewType::new(
+        "Door",
+        NewTypeKind::Opening(OpeningTypeDefinition {
+            kind: OpeningKind::Door {
+                hinge: Hinge::Start,
+                swing: Swing::Left,
+            },
+            width: length(900.),
+            height: length(2100.),
+            sill: length(0.),
+        }),
+    );
+    let window = NewType::new(
+        "Window",
+        NewTypeKind::Opening(OpeningTypeDefinition {
+            kind: OpeningKind::Window,
+            width: length(1200.),
+            height: length(1200.),
+            sill: length(900.),
+        }),
+    );
+    let request = WallRequest::new(
+        "Wall with openings",
+        WallDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            wall_type: wall_type.id,
+            layer_placement: None,
+            path: vec![[length(0.), length(0.)], [length(4000.), length(0.)]],
+            closed: false,
+            level: None,
+            base_z: length(0.),
+            thickness: None,
+            height: None,
+            justification: None,
+            cutouts: vec![],
+            openings: vec![
+                Opening {
+                    id: EntityId::new(),
+                    opening_type: door.id,
+                    segment: 0,
+                    offset: length(500.),
+                    width: None,
+                    height: None,
+                    sill: None,
+                },
+                Opening {
+                    id: EntityId::new(),
+                    opening_type: window.id,
+                    segment: 0,
+                    offset: length(2200.),
+                    width: None,
+                    height: None,
+                    sill: None,
+                },
+            ],
+        },
+    );
+    let prepared = prepare_wall_change(
+        &session,
+        session.revision(),
+        actor,
+        &[wall_type, door, window],
+        &WallChange::Create(&request),
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let before = session.document().clone();
+    let mut backend = Backend::new();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 1,
+    };
+    backend.request(session.document(), stamp).unwrap();
+    let native = receive(&mut backend).result.unwrap();
+    let plan = native
+        .architecture_plan()
+        .expect("native plan receipt")
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        plan.sources,
+        std::collections::BTreeSet::from([request.body])
+    );
+    assert_eq!(plan.source_hash, session.source_hash().unwrap());
+    assert!(
+        plan.vectors
+            .iter()
+            .any(|vector| vector.role == VectorRole::Section)
+    );
+    assert!(
+        plan.vectors
+            .iter()
+            .any(|vector| vector.role == VectorRole::Hatch)
+    );
+    assert!(plan.vectors.iter().any(|vector|matches!(vector.curve,VectorCurve::Ellipse {major_mm,..} if (major_mm-900.).abs()<1e-6)));
+    assert!(
+        plan.vectors
+            .iter()
+            .any(|vector| matches!(vector.curve,VectorCurve::Line {a,b}
+        if (a[0].min(b[0])-2200.).abs()<1e-6 && (a[0].max(b[0])-3400.).abs()<1e-6
+            && (a[1].abs()-200./6.).abs()<1e-6 && (a[1]-b[1]).abs()<1e-6))
+    );
+    for vector in plan
+        .vectors
+        .iter()
+        .filter(|vector| vector.role == VectorRole::Section)
+    {
+        for segment in vector.preview_mm.windows(2) {
+            if (segment[0][1].abs() - 100.).abs() < 1e-6
+                && (segment[0][1] - segment[1][1]).abs() < 1e-6
+            {
+                let (low, high) = (
+                    segment[0][0].min(segment[1][0]),
+                    segment[0][0].max(segment[1][0]),
+                );
+                for (a, b) in [(500., 1400.), (2200., 3400.)] {
+                    assert!(
+                        high.min(b) - low.max(a) < 1e-6,
+                        "section incorrectly bridges an opening"
+                    );
+                }
+            }
+        }
+    }
+    let surface = plan.surface_scene(&native).unwrap();
+    assert!(surface.instances().is_empty());
+    assert_eq!(surface.reference_instances().len(), 1);
+    assert!(surface.topology_snapshot(request.body).is_some());
+    let hit = native
+        .pick_face(viewport::Ray::new([950., 0., 5000.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    assert_eq!(
+        hit.instance, request.body,
+        "the canonical wall remains the authoring target"
+    );
+    for (id, geometry) in native.geometries() {
+        assert!(Arc::ptr_eq(geometry, &surface.geometries()[id]));
+    }
+    let mut copy = viewport::Scene::new(
+        stamp,
+        native.geometries().values().cloned().collect(),
+        native.instances().to_vec(),
+    )
+    .unwrap()
+    .with_model_evaluation(native.model_evaluation().unwrap().clone())
+    .unwrap();
+    assert!(
+        copy.set_architecture_plan(Ok(viewport::ArchitecturePlan {
+            source_hash: multicad_core::project_file::ContentHash::of(b"foreign source"),
+            sources: plan.sources.clone(),
+            vectors: plan.vectors.clone(),
+        }))
+        .is_err()
+    );
+    copy.set_architecture_plan(Err("Projection unavailable".into()))
+        .unwrap();
+    assert_eq!(
+        copy.instances().len(),
+        native.instances().len(),
+        "optional plan failure preserves 3D geometry"
+    );
+    let copy = Arc::new(copy);
+    let mut context = multicad_ui::architecture_view::Context::default();
+    let mut camera = multicad_ui::camera::Camera::default();
+    context.sync(session.document(), session.revision());
+    context.set_enabled(true, &mut camera);
+    context.set_plan(true, &mut camera);
+    assert!(
+        context
+            .scene(&copy)
+            .err()
+            .unwrap()
+            .contains("Projection unavailable")
+    );
+    context.set_plan(false, &mut camera);
+    assert!(Arc::ptr_eq(&context.scene(&copy).unwrap(), &copy));
+    assert_eq!(session.document(), &before);
+}
+#[test]
 fn native_backend_publishes_only_latest_exact_candidate_at_the_same_base_revision() {
     let (session, request) = box_session();
     let mut backend = Backend::new();

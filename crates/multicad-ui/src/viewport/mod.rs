@@ -1,6 +1,8 @@
 //! Immutable display scenes. Native geometry ownership stays with the evaluator.
 mod scene;
 pub use scene::*;
+mod architecture_plan;
+pub use architecture_plan::ArchitecturePlan;
 mod gpu;
 pub(crate) use gpu::install;
 mod picking;
