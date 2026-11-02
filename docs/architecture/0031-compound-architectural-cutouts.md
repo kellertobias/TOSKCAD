@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | Chosen implementation contract; native/UI verification pending |
+| Status | Implemented; automated verification complete, native-window acceptance pending |
 | Date | 2026-11-02 |
 | Decider | Codex within CAD-247 implementation scope |
 
@@ -68,3 +68,6 @@ Undo/Redo, UI/MCP parity and container reopen. Native volume checks, independent
 export readbacks and linked plan/section views must prove the receiving geometry.
 Required Rust checks and actual macOS window interaction remain separate evidence;
 this decision record establishes neither runtime correctness nor human acceptance.
+
+Implementation evidence and remaining acceptance are recorded in the
+[CAD-247 verification report](../verification/compound-cutouts-2026-11-02.md).

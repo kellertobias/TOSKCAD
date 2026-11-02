@@ -57,7 +57,8 @@ automatically retains its generated ID; a conflicting supplied ID is refused.
 
 Both calls return `revision`, `committed`, `cutout`, the canonical `definition`,
 changed receiver outputs with exact volumes/counts, and `native_geometry_checked`.
-Preview returns `committed: false` and leaves revision unchanged. The canonical
+Preview returns `committed: false` and leaves revision unchanged. Its activity
+outcome is `previewed`, with no committed revision. The canonical
 definition contains stored dimensions and links; it is not a copy of the MCP
 Quantity input schema. Invalid native geometry or stale revisions do not commit.
 
