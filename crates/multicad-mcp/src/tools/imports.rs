@@ -43,7 +43,11 @@ pub struct KicadImportArgs {
     pub default_height_mm: Option<f64>,
 }
 
-fn scoped(host: &dyn Host, name: &str, extensions: &[&str]) -> Result<PathBuf, ToolError> {
+pub(super) fn scoped(
+    host: &dyn Host,
+    name: &str,
+    extensions: &[&str],
+) -> Result<PathBuf, ToolError> {
     let directory = host.scope().export_directory.ok_or_else(|| {
         ToolError::new(
             "out_of_scope",

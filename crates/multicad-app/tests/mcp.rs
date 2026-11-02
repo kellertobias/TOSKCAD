@@ -164,6 +164,13 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         "preview_fence",
         "set_fence",
         "inspect_fence",
+        "inspect_architectural_symbol",
+        "author_architectural_symbol",
+        "import_architectural_symbol",
+        "draw_architectural_symbol",
+        "edit_architectural_symbol",
+        "compare_architectural_symbol_update",
+        "update_architectural_symbol",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }

@@ -794,3 +794,237 @@ fn drawing_a_pinned_wall_with_a_new_window_preflights_and_undoes_the_complete_na
     assert_eq!(host.document(), &before);
     assert!(host.document().get(opening_type).is_none());
 }
+#[test]
+fn pinned_walls_keep_real_join_faces_material_hatches_and_attached_equipment() {
+    use multicad_core::{
+        drawings::*,
+        equipment::{self, EquipmentPlaceRequest, HostPlacement, WallSide},
+        materials::{HatchPattern, HatchStyle},
+        references::ReferenceFrame,
+    };
+    let (mut definition, height) = authored(ArchitectureRole::Wall);
+    let material = definition
+        .template
+        .entities()
+        .find(|e| matches!(e.data, EntityData::Material { .. }))
+        .unwrap()
+        .clone();
+    let mut styled = material;
+    let EntityData::Material { section_hatch, .. } = &mut styled.data else {
+        unreachable!()
+    };
+    *section_hatch = Some(multicad_core::document::Definition {
+        type_id: "materials.hatch.inline".into(),
+        schema_version: 1,
+        data: serde_json::to_value(HatchStyle {
+            pattern: HatchPattern::Lines,
+            angle_deg: 45.,
+            spacing_mm: 0.8,
+            line_width_mm: 0.13,
+        })
+        .unwrap(),
+    });
+    definition.template = definition
+        .template
+        .edited(&[Mutation::Replace(styled)])
+        .unwrap();
+    definition.validate().unwrap();
+    let mut session = Session::new(Document::new("Receiving pinned walls").unwrap()).unwrap();
+    let (floor, prepared) = prepare_level(
+        &session,
+        0,
+        actor(),
+        "Ground",
+        &LevelDefinition {
+            elevation: length(100.),
+            height: length(3000.),
+            slab_thickness: length(200.),
+        },
+    )
+    .unwrap();
+    session.commit(prepared).unwrap();
+    let imported =
+        symbols::prepare_import(&session, session.revision(), actor(), &definition).unwrap();
+    let pin = imported.definition;
+    session.commit(imported.prepared).unwrap();
+    let host = ArchitecturePlaceRequest::new(
+        session.document(),
+        pin,
+        "Host",
+        ArchitectureInputs::default(),
+        ArchitectureContext::Wall {
+            path: vec![[length(0.), length(0.)], [length(4000.), length(0.)]],
+            closed: false,
+            level: Some(floor),
+            base_z: length(0.),
+            flipped: false,
+            details: None,
+        },
+    )
+    .unwrap();
+    let ArchitectureOutput::Wall {
+        feature: host_feature,
+        body: host_body,
+    } = host.output
+    else {
+        panic!()
+    };
+    let prepared =
+        prepare_architecture_place(&session, session.revision(), actor(), &host).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let branch = ArchitecturePlaceRequest::new(
+        session.document(),
+        pin,
+        "Joined branch",
+        ArchitectureInputs::default(),
+        ArchitectureContext::Wall {
+            path: vec![[length(2000.), length(3000.)], [length(2000.), length(0.)]],
+            closed: false,
+            level: Some(floor),
+            base_z: length(0.),
+            flipped: false,
+            details: Some(ArchitectureWallDetails {
+                junctions: Some(vec![WallJunction {
+                    end: WallEnd::End,
+                    host_wall: host_feature,
+                    host_segment: 0,
+                    host_point_count: 2,
+                    host_closed: false,
+                    style: WallJunctionStyle::FlushButt,
+                }]),
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let ArchitectureOutput::Wall {
+        body: branch_body, ..
+    } = branch.output
+    else {
+        panic!()
+    };
+    let prepared =
+        prepare_architecture_place(&session, session.revision(), actor(), &branch).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let kind = equipment::Kind::PowerOutletTypeF;
+    let request = EquipmentPlaceRequest::new(
+        &session,
+        equipment::generic_definition(kind).unwrap(),
+        "Outlet".into(),
+        kind.preset().size_mm,
+        floor,
+        HostPlacement::Wall {
+            wall: host_feature,
+            segment: 0,
+            point_count: 2,
+            closed: false,
+            side: WallSide::Left,
+            along: length(1000.),
+            standoff: length(0.),
+            height: length(300.),
+            rotation: angle(0.),
+        },
+    )
+    .unwrap();
+    let outlet = request.placement.instance;
+    let prepared =
+        equipment::prepare_place(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared).unwrap();
+    let compiled = Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let host_solid = compiled.solid(host_body).unwrap();
+    let branch_solid = compiled.solid(branch_body).unwrap();
+    let host_bounds = host_solid.bounds().unwrap();
+    let branch_bounds = branch_solid.bounds().unwrap();
+    near(host_solid.volume_mm3().unwrap(), 4000. * 120. * 2700.);
+    near(branch_bounds.min[1], host_bounds.max[1]);
+    near(
+        branch_solid.volume_mm3().unwrap(),
+        (3000. - host_bounds.max[1]) * 120. * 2700.,
+    );
+    let pose = resolve_instance_pose(session.document(), outlet, session.parameters()).unwrap();
+    near(pose.translation_mm[0], 1000.);
+    near(pose.translation_mm[1], host_bounds.max[1]);
+    near(pose.translation_mm[2], 400.);
+    let view = DrawingView {
+        id: EntityId::new(),
+        name: "Pinned material section".into(),
+        source: ViewSource::Model {
+            entities: vec![host_body],
+        },
+        frame: ReferenceFrame {
+            origin_mm: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+        },
+        kind: ViewKind::Section {
+            offset_mm: 1100.,
+            range: SectionRange::SectionOnly,
+            window: SectionWindow::default(),
+        },
+        position_mm: [10., 100.],
+        scale: Scale {
+            numerator: 1,
+            denominator: 50,
+        },
+        hidden_lines: false,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+        guide: None,
+        equipment_categories: None,
+    };
+    let evaluated = compiled
+        .drawing_view(
+            session.document(),
+            session.revision(),
+            &view,
+            &Default::default(),
+        )
+        .unwrap();
+    let ViewEvaluation::Ready { vectors, .. } = evaluated else {
+        panic!("Pinned wall section must be ready")
+    };
+    assert!(vectors.iter().any(|v| v.role == VectorRole::Hatch));
+    let before = session.document().clone();
+    let old_members = architecture_instances(&before, pin).unwrap();
+    let inputs = ArchitectureInputs {
+        dimensions: std::collections::BTreeMap::from([(height, length(3100.))]),
+        ..Default::default()
+    };
+    let prepared = prepare_architecture_edit(
+        &session,
+        session.revision(),
+        actor(),
+        &ArchitectureEditRequest {
+            record: host.record,
+            inputs,
+            context: None,
+        },
+    )
+    .unwrap();
+    let changed = Compiler::default()
+        .compile(prepared.prepared.document(), session.revision())
+        .unwrap();
+    near(
+        changed.solid(host_body).unwrap().volume_mm3().unwrap(),
+        4000. * 120. * 3100.,
+    );
+    session.commit(prepared.prepared).unwrap();
+    assert_eq!(
+        architecture_instances(session.document(), pin)
+            .unwrap()
+            .iter()
+            .map(|(id, v)| (*id, v.output.clone()))
+            .collect::<Vec<_>>(),
+        old_members
+            .iter()
+            .map(|(id, v)| (*id, v.output.clone()))
+            .collect::<Vec<_>>()
+    );
+    let pose_after =
+        resolve_instance_pose(session.document(), outlet, session.parameters()).unwrap();
+    assert_eq!(pose_after, pose);
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &before);
+}

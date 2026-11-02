@@ -36,6 +36,7 @@ use std::{
     },
 };
 
+mod architecture;
 mod cabinetry;
 mod engraving;
 mod fdm;
@@ -360,6 +361,27 @@ tools! {
     "set_drawing_guide" => GuideArgs, "Create or edit drawing guide", false,
         "Create or edit a floor plan (cut height and view depth above each listed level), section (plan line, optional depth, limited to the levels' extent) or elevation (plan direction) guide, and optionally generate or update its linked drawing views in the same transaction. Rerunning updates the views it made before; views whose level left the guide are reported as stale. Generated views are evaluated natively before commit.",
         set_drawing_guide;
+    "inspect_architectural_symbol" => architecture::InspectArgs, "Inspect architectural symbols", true,
+        "List embedded wall/fence definitions or inspect a definition/output, public defaults, overrides and receiving context. Source inspection does not certify native geometry.",
+        architecture::inspect;
+    "author_architectural_symbol" => architecture::AuthorArgs, "Author architectural symbol interface", false,
+        "Publish selected typed dimensions, material choices, options and numeric parameters from a live canonical layered-wall or fence construction. Sample paths are excluded. Retain symbol, blueprint and slot IDs across explicit authored revisions.",
+        architecture::author;
+    "import_architectural_symbol" => architecture::ImportArgs, "Import pinned architectural symbol", false,
+        "Embed an architectural definition from a .tcd library in the configured exchange folder. No geometry is placed; the embedded pin works after the library is unavailable.",
+        architecture::import;
+    "draw_architectural_symbol" => architecture::PlaceArgs, "Draw architectural symbol", false,
+        "Draw a real wall or fence from an embedded compatible pin, public inputs and receiving path/context. Native preflight precedes one attributable transaction; private construction values cannot be overridden.",
+        architecture::place;
+    "edit_architectural_symbol" => architecture::EditArgs, "Edit architectural symbol inputs", false,
+        "Replace public overrides and optionally receiving context in one native-preflighted transaction. Omitted context preserves the path, wall openings and joins. Omitted override entries inherit the pin; preserve returned fence vertex IDs on path edits.",
+        architecture::edit;
+    "compare_architectural_symbol_update" => architecture::CompareArgs, "Compare architectural symbol revision", true,
+        "Compare an explicit .tcd library revision and optional per-record input/context repairs. Reports affected instances, removed layers/members and conflicts without changing pins or certifying native geometry.",
+        architecture::compare;
+    "update_architectural_symbol" => architecture::UpdateArgs, "Apply architectural symbol revision", false,
+        "Explicitly replace one embedded pin and all its instances, composing selected public-input/context repairs. Compatible identities remain stable. Full native preflight precedes one undoable commit; failure leaves the previous pin and instances intact.",
+        architecture::update;
     "set_fence_type" => FenceTypeArgs, "Create or edit fence construction", false,
         "Create a canonical named fence construction, or explicitly edit every run of fence_type. Retain recipe IDs on edits. Unused definitions are source-only; affected runs receive exact native preflight before one attributable commit. No cross-project Library update is implied.",
         set_fence_type;

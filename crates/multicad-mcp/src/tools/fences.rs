@@ -142,7 +142,7 @@ pub struct FenceInspectArgs {
     pub fence: String,
 }
 
-fn dimension(
+pub(super) fn dimension(
     q: &Quantity,
     previous: Option<&Dimension>,
     doc: &Document,
@@ -308,7 +308,7 @@ impl ConstructionArg {
 }
 /// Replace canonical dimension objects with the public unit-bearing Quantity shape.
 /// All semantic IDs are retained, including recipe and path vertex identities.
-fn quantities(value: Value) -> Value {
+pub(super) fn quantities(value: Value) -> Value {
     match value {
         Value::Object(map) => {
             if map.contains_key("value") && map.contains_key("unit") {
