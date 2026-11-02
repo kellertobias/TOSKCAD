@@ -43,7 +43,7 @@ The [product plan](https://plans.tokenet.de/CAD/48) is maintained in PLAINER. [C
 
 Windows uses `./build.ps1`. The wrapper acquires the pinned native/Cargo dependencies, builds every shipped component and assembles the host application. Archives include a native runtime layout, notices and matching corresponding source. `./build archive install` is the explicit macOS install action; it is not run automatically. See [BUILDING.md](docs/BUILDING.md) for prerequisites, output paths and validation limits.
 
-The native application includes Project, constrained Sketch and initial modeling tools. The [canonical document](docs/architecture/0004-canonical-document.md) provides stable identities, typed units, transactional commands and a dependency graph. The [native model evaluator](docs/architecture/0012-native-model-evaluation.md) owns exact OCCT solids on a bounded worker; the UI uses a separate candidate lane for checked Preview, Apply and Cancel. [Native project containers](docs/architecture/project-files.md) (`.tcd`; existing `.multicad` projects still open) preserve source and provider payloads, with atomic saves, migrations and explicit recovery copies.
+The native application includes Project, contextual sketch editing in Model, Motion, Drawings and Export. The [canonical document](docs/architecture/0004-canonical-document.md) provides stable identities, typed units, transactional commands and a dependency graph. The [native model evaluator](docs/architecture/0012-native-model-evaluation.md) owns exact OCCT solids on a bounded worker; the UI uses a separate candidate lane for checked Preview, Apply and Cancel. [Native project containers](docs/architecture/project-files.md) (`.tcd`; existing `.multicad` projects still open) preserve source and provider payloads, with atomic saves, migrations and explicit recovery copies.
 
 The [native modeling checkpoint](docs/verification/native-modeling-2026-10-28.md) records shared-sketch extrusion, Undo/Redo, saved-project regeneration and the remaining limits. Advanced modeling controls, manufacturing exports and specialized workspaces remain under development. The [local MCP server](docs/architecture/mcp-server.md) (`multicad --mcp`) controls a headless project or the open window through the same transaction API. The foundation laboratory is a separate reference.
 
@@ -81,7 +81,7 @@ Open [mockup/index.html](mockup/index.html) directly, or run `node mockup/serve.
 
 The prototype illustrates **Parameters, Sketch, Model, Drawings, Render, Export**, contextual ribbons, and global Measure/Library/MCP controls. Use **Explore workflows** for examples. CAD geometry and outputs are simulated.
 
-The [current native layout](docs/architecture/0005-native-editing.md) has five modes, a Project parameter table with left-side actions and one file-metadata sidebar, and rendering under Export. Sketch tools appear after creating or opening a sketch; Model has no Face Sketch command. The prototype remains an illustrative reference and retains its earlier layout.
+The [current native layout](docs/architecture/0005-native-editing.md) has five modes, a Project parameter table with left-side actions and one file-metadata sidebar, and rendering under Export. Add Sketch and Import are global right-side actions. Sketch editing belongs to Model and its tools appear after creating or opening a sketch; Model has no Face Sketch command. The prototype remains an illustrative reference and retains its earlier layout.
 
 See the [workflow guide and prototype boundaries](mockup/README.md).
 

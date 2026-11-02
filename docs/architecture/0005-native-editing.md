@@ -5,12 +5,14 @@ The canonical entity model remains described in [0004](0004-canonical-document.m
 
 ## Product decision, revised 2026-11-01
 
-The native modes are Project, Sketch, Model, Drawings and Export. CAD-220
+The native modes are Project, Model, Motion, Drawings and Export (CAD-221). Sketch
+editing is contextual within Model. CAD-220
 renames Parameters to Project and replaces its action ribbon with left-side
 icon-and-label actions: Apply and Rebuild, Discard Edit, Preview, Undo and Redo.
 Project has no ribbon or reserved ribbon band. The canonical parameter table
 remains the primary content, with one 300 px file-metadata sidebar on the right.
-The left actions also retain Library, Measure and MCP history access.
+A separate global action row places Add Sketch, Import, Library, Measure and
+MCP history on the right in every mode. It does not restore a Project ribbon.
 Export contains Common, Print and Render. Materials belong to Model.
 These choices supersede the corresponding layout rules in
 [0001](0001-project-boundaries.md).
@@ -23,6 +25,29 @@ The finder presents Project first for its exact name; `params` and `parameters`
 remain aliases, and `project-mode` is explicit because `project` already names
 the retained project-reference command. A parameter Preview validates the draft;
 it does not replace the file preview image.
+
+CAD-221 removes the top-level Sketch tab and duplicate creation commands from
+ribbons. Add Sketch uses a current valid planar face, otherwise requests a plane
+in the viewer with a reason when the selection is unsuitable. Drawing tools
+appear only after a sketch opens. The single sketch can feed supported extrusion,
+revolve and other operations; there is no separate Create Engraving UI entry.
+The strict legacy engraving API remains for existing external clients.
+
+Motion reuses the same canonical assembly, scene, selection and native controls
+for relationships, poses, limits and interference. Placement and assembly creation
+stay in Model. CAD-240 owns the detailed clearance/result review. Import opens a
+format selector for existing STEP, KiCad, SVG/DXF and canonical JSON routes;
+selecting a format and cancelling the OS picker leaves the workspace and source
+unchanged. It is a global action, without an Import workbench.
+
+An internal Sketch state remains for live editing and its shortcut scopes;
+returning to an open editor preserves it under the selected Model top tab. Old
+saved Sketch visits reopen Model without stale editing tools. Legacy Parameters
+preference/visit names remain readable, and contextual Sketch preferences survive.
+The exact finder labels select Project and Motion; their explicit mode aliases
+are `project-mode` and `motion-mode`, preserving existing project-reference and
+joint-motion command aliases. `sketch` now selects Add Sketch. `import-source`
+retains the explicit canonical snapshot route, while `import` opens the selector.
 
 Why: the parameter table needs explicit draft actions without losing its editing
 space. Rendering belongs with output preparation, while materials affect model
@@ -39,7 +64,7 @@ coordinate systems remain future work.
 [`Session`](../../crates/multicad-core/src/commands.rs) owns revision checks,
 attributable previews, atomic commits and Undo/Redo. UI and command-line actions
 submit the same source mutations. The typed interface supports an external MCP
-adapter; server transport, authentication and remote previews remain unimplemented.
+adapter; the [local MCP server](mcp-server.md) provides attributable external control.
 
 [`parameters`](../../crates/multicad-core/src/parameters/mod.rs) evaluates typed
 expressions, resolves dependency names to stable entity links and rejects invalid
@@ -47,7 +72,8 @@ units, duplicate names and cycles. [`ParameterEditor`](../../crates/multicad-ui/
 keeps unapplied rows outside the committed document. Completing a row adds a
 trailing blank row. Apply commits the draft as one transaction; validation failures
 retain it and the last valid source. Exposed values are available in evaluated
-parameter queries. Dynamic symbol authoring remains future work.
+parameter queries. [Architectural symbols](architectural-symbols.md) describe the
+current project-authored wall and fence providers.
 
 Parameter drafts are bound to their original Session and revision. Filtering uses
 the visible row list before virtualization, while new rows and a matched row being
@@ -162,7 +188,7 @@ unavailable modeling modules remain disabled. Tooltips reflect active bindings.
 | Tab / Shift+Tab | Outside text entry and dialogs | Next / previous ribbon workspace, wrapping |
 | E / Q / R | Project, outside text entry | Apply and rebuild / discard / preview |
 | Cmd/Ctrl+Enter | Project, including text entry | Apply and rebuild |
-| Q | Sketch entry / editing | New sketch / finish sketch |
+| Q | Outside text entry and dialogs | Add Sketch; Project overrides with Discard, and an open sketch overrides with Finish sketch |
 | E / R | Sketch editing | Line / rectangle |
 | Delete | Sketch editing | Delete selected geometry |
 | E / R | Model | Extrude / revolve when their modules are available |

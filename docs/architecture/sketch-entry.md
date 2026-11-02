@@ -2,14 +2,17 @@
 
 | Command | Where | Effect |
 | --- | --- | --- |
-| **New sketch** | Model → Common → Create, Sketch → Common | With a planar face selected in the 3D view, creates a sketch attached to that face. Otherwise the user picks a datum, construction plane or planar face; Esc or **Abort** cancels without changing the document. |
-| **Create engraving** | Model → Common → Create | Creates a sketch named "Engraving N" attached to the selected planar face. There is no plane-picking fallback: no selection, a stale selection or a curved face is refused with a message and nothing changes. |
-| **Finish sketch** | Pinned right of the Sketch ribbon | Leaves sketch editing; refuses while sketch controls are unapplied. |
-| **Abort** | Pinned right of the Sketch ribbon | Leaves sketch editing or plane picking and discards only what is not yet in the document: the active tool, previews, unapplied constraint values and pending repair or trim work. Sketch edits already applied stay, and Undo removes them. |
+| **Add Sketch** | Global right-side action row in every mode | Uses a current valid planar face for attachment; otherwise requests a datum, construction plane or planar face in the Model viewer. An unsuitable face explains why and falls back to plane selection without a source edit. Esc or **Abort** cancels the picker. |
+| **Finish sketch** | Pinned right of the contextual Model sketch ribbon | Leaves sketch editing; refuses while sketch controls are unapplied. |
+| **Abort** | Pinned right of the contextual Model sketch ribbon | Leaves editing or plane selection and discards only unapplied controls, previews and pending repair/trim work. Already committed edits remain; Undo removes them. |
 
-While a sketch is open, **New sketch** is hidden and **Finish sketch** and
-**Abort** sit together in a "Sketch" group at the right end of every Sketch
-tab, outside the horizontal scroll, so they stay visible in narrow windows.
+CAD-221 removes the top-level Sketch mode and the separate Create Engraving
+entry. Add Sketch is the single UI creation action, disabled while a sketch is
+open. Finish sketch and Abort stay together outside the horizontal ribbon scroll.
+The sketch's later use determines extrusion, revolve or other supported behavior.
+Selecting Model while editing finishes the sketch through the same pending-edit
+guards. Returning to an editor through an open project tab preserves its state;
+reopening old saved Sketch workspace metadata enters Model safely.
 
 All face-attached sketches use `multicad_core::sketch::prepare_new` with
 `CreationPlane::Face`: the sketch plane stores a persistent face reference
@@ -55,7 +58,5 @@ ambiguous faces are refused as `invalid_request`, an old revision as
 
 - Engraving defines only the sketch. Depth, material removal, CNC
   toolpaths and engraving on curved surfaces are not specified.
-- The Create engraving and Abort buttons use placeholder icons until the
-  reviewed artwork is integrated (CAD-137).
 - Not checked in the running window. Drawing-tool guidance is covered by
   headless Inspector and canvas tests only.

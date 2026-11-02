@@ -14,6 +14,21 @@ features build on their Parts like any other.
 | `crates/multicad-ui/src/mechanical_import/` | Window import Inspector |
 | `crates/multicad-app/src/mechanical_imports.rs` | Native reader for the window |
 
+## Global Import entry
+
+CAD-221 exposes Import beside Add Sketch, Library, Measure and MCP history in
+all modes. The format selector routes STEP and KiCad to the native mechanical
+reader, SVG/DXF to the existing [artwork importer](sketch-import.md), and canonical
+JSON snapshots to a separate unsaved project. Format limitations remain those of
+each existing reader; selecting a format does not imply full source compatibility.
+There is no Model Import workbench. STEP/KiCad commands remain unavailable when
+the native reader is absent. Update-import commands remain available through the
+finder and existing selected-import workflow.
+
+Cancelling the format selector or OS picker changes neither workspace nor source.
+Only an accepted file enters its existing preview/Apply workflow. Import does not
+save or overwrite the current project as part of file selection.
+
 ## STEP
 
 Reading a STEP file splits it into its solids. Each solid keeps:
