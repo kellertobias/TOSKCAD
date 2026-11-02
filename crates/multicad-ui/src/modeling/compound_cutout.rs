@@ -287,86 +287,119 @@ impl CompoundCutoutPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.label());
-        ui.small("One editable cutting volume. Choose receiving walls/slabs, then place overlapping boxes in the viewport.");
+        ui.small("One cutout from overlapping boxes.");
         let mut changed = ui.text_edit_singleline(&mut self.name).changed();
         ui.separator();
-        ui.strong("Receiving parts");
-        for kind in [CompoundReceiverKind::Wall, CompoundReceiverKind::Slab] {
-            ui.label(if kind == CompoundReceiverKind::Wall {
-                "Walls"
-            } else {
-                "Slabs and pedestals"
-            });
-            for (name, receiver, receiver_kind) in &self.choices {
-                if *receiver_kind != kind {
-                    continue;
-                }
-                let mut selected = self
-                    .receivers
-                    .iter()
-                    .any(|old| old.target.body == receiver.target.body);
-                if ui
-                    .push_id(receiver.target.body, |ui| ui.checkbox(&mut selected, name))
-                    .inner
-                    .changed()
-                {
-                    self.receivers
-                        .retain(|old| old.target.body != receiver.target.body);
-                    if selected {
-                        self.receivers.push(receiver.clone());
+        let receiving =
+            egui::CollapsingHeader::new(format!("Receiving parts ({})", self.receivers.len()))
+                .id_salt("compound_receiver_options")
+                .default_open(document.get(self.id).is_none() || self.receivers.is_empty())
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("compound_receivers")
+                        .max_height(100.)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for kind in [CompoundReceiverKind::Wall, CompoundReceiverKind::Slab] {
+                                for (name, receiver, receiver_kind) in &self.choices {
+                                    if *receiver_kind != kind {
+                                        continue;
+                                    }
+                                    let mut selected = self
+                                        .receivers
+                                        .iter()
+                                        .any(|old| old.target.body == receiver.target.body);
+                                    if ui
+                                        .push_id(receiver.target.body, |ui| {
+                                            ui.checkbox(&mut selected, name)
+                                        })
+                                        .inner
+                                        .changed()
+                                    {
+                                        self.receivers
+                                            .retain(|old| old.target.body != receiver.target.body);
+                                        if selected {
+                                            self.receivers.push(receiver.clone());
+                                        }
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        });
+                    if self.choices.is_empty() {
+                        ui.label("Create a receiving wall or slab first.");
                     }
-                    changed = true;
-                }
-            }
-        }
-        if self.choices.is_empty() {
-            ui.label("Create a receiving wall or slab first.");
-        }
-        let levels: Vec<_> = model::levels(document)
-            .map(|entity| (entity.id, entity.name.clone()))
-            .collect();
-        let mut ranged = self.levels.is_some();
-        if ui
-            .checkbox(&mut ranged, "Constrain floor slabs to level range")
-            .changed()
-        {
-            self.levels = if ranged {
-                levels.first().map(|(id, _)| CutoutLevelRange {
-                    from: *id,
-                    to: None,
-                })
-            } else {
-                None
-            };
-            changed = true;
-        }
-        if let Some(range) = &mut self.levels {
-            let mut from = range.from;
-            let mut to = range.to.unwrap_or(from);
-            let mut range_changed = false;
-            for (label, value) in [("From level", &mut from), ("To level", &mut to)] {
-                let old = *value;
-                ui.label(label);
-                egui::ComboBox::from_id_salt(label)
-                    .selected_text(
-                        levels
-                            .iter()
-                            .find(|(id, _)| *id == *value)
-                            .map_or("Missing level", |(_, name)| name.as_str()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (id, name) in &levels {
-                            ui.selectable_value(value, *id, name);
+                    let levels: Vec<_> = model::levels(document)
+                        .map(|entity| (entity.id, entity.name.clone()))
+                        .collect();
+                    let mut ranged = self.levels.is_some();
+                    if ui.checkbox(&mut ranged, "Floor level range").changed() {
+                        self.levels = if ranged {
+                            levels.first().map(|(id, _)| CutoutLevelRange {
+                                from: *id,
+                                to: None,
+                            })
+                        } else {
+                            None
+                        };
+                        changed = true;
+                    }
+                    if let Some(range) = &mut self.levels {
+                        let mut from = range.from;
+                        let mut to = range.to.unwrap_or(from);
+                        let mut range_changed = false;
+                        for (label, value) in [("From level", &mut from), ("To level", &mut to)] {
+                            let old = *value;
+                            ui.label(label);
+                            egui::ComboBox::from_id_salt(label)
+                                .selected_text(
+                                    levels
+                                        .iter()
+                                        .find(|(id, _)| *id == *value)
+                                        .map_or("Missing level", |(_, name)| name.as_str()),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in &levels {
+                                        ui.selectable_value(value, *id, name);
+                                    }
+                                });
+                            range_changed |= old != *value;
                         }
-                    });
-                range_changed |= old != *value;
+                        if range_changed {
+                            range.from = from;
+                            range.to = Some(to);
+                            changed = true;
+                        }
+                        ui.small("Receivers remain explicit. Uncheck slabs outside this range.");
+                    }
+                });
+        if receiving.body_response.is_none() {
+            let names = self
+                .receivers
+                .iter()
+                .map(|receiver| {
+                    document
+                        .get(receiver.target.body)
+                        .map_or("Missing part", |entity| entity.name.as_str())
+                })
+                .collect::<Vec<_>>();
+            ui.small(if names.is_empty() {
+                "No receivers selected".into()
+            } else {
+                names.join(" · ")
+            });
+            if let Some(range) = &self.levels {
+                let name = |id| {
+                    document
+                        .get(id)
+                        .map_or("Missing level", |entity| entity.name.as_str())
+                };
+                ui.small(format!(
+                    "Levels: {} … {}",
+                    name(range.from),
+                    name(range.to.unwrap_or(range.from))
+                ));
             }
-            if range_changed {
-                range.from = from;
-                range.to = Some(to);
-                changed = true;
-            }
-            ui.small("Receivers remain explicit. Uncheck slabs outside this range.");
         }
         ui.separator();
         ui.strong("Vertical extent");
@@ -378,6 +411,27 @@ impl CompoundCutoutPanel {
             changed |= self.top.show(ui, "Top", "World Z");
         } else {
             ui.small("Through the complete height of the selected receivers.");
+        }
+        if self
+            .diagnostic
+            .as_ref()
+            .is_none_or(|(stamp, _)| *stamp != self.stamp)
+            || changed
+        {
+            self.diagnostic = Some((
+                self.stamp,
+                self.diagnose(document).map(|(_, resolved)| resolved),
+            ));
+        }
+        if let Some((stamp, Ok(Some(resolved)))) = &self.diagnostic
+            && *stamp == self.stamp
+        {
+            ui.small(format!(
+                "Shared Z: {:.1} … {:.1} mm",
+                resolved.shared_z_mm[0], resolved.shared_z_mm[1]
+            ));
+        } else {
+            ui.small("Shared Z: waiting for valid inputs");
         }
         ui.separator();
         ui.strong("Boxes");
@@ -455,54 +509,27 @@ impl CompoundCutoutPanel {
             self.anchor = None;
             changed = true;
         }
-        if let Some(item) = self.boxes.get_mut(self.selected) {
-            changed |= item.center[0].show(ui, "Center X", "World X");
-            changed |= item.center[1].show(ui, "Center Y", "World Y");
-            changed |= item.width.show(ui, "Width", "Local box X");
-            changed |= item.depth.show(ui, "Depth", "Local box Y");
-            ui.horizontal(|ui| {
-                ui.label("Rotation (°)");
-                changed |= ui.add(egui::DragValue::new(&mut item.rotation)).changed();
-            });
-            changed |= ui
-                .checkbox(&mut item.vertical, "Override this box's vertical extent")
-                .changed();
-            if item.vertical {
-                changed |= item.bottom.show(ui, "Box bottom", "World Z");
-                changed |= item.top.show(ui, "Box top", "World Z");
+        ui.collapsing("Box dimensions", |ui| {
+            if let Some(item) = self.boxes.get_mut(self.selected) {
+                changed |= item.center[0].show(ui, "Center X", "World X");
+                changed |= item.center[1].show(ui, "Center Y", "World Y");
+                changed |= item.width.show(ui, "Width", "Local box X");
+                changed |= item.depth.show(ui, "Depth", "Local box Y");
+                ui.horizontal(|ui| {
+                    ui.label("Rotation (°)");
+                    changed |= ui.add(egui::DragValue::new(&mut item.rotation)).changed();
+                });
+                changed |= ui
+                    .checkbox(&mut item.vertical, "Override this box's vertical extent")
+                    .changed();
+                if item.vertical {
+                    changed |= item.bottom.show(ui, "Box bottom", "World Z");
+                    changed |= item.top.show(ui, "Box top", "World Z");
+                }
             }
-        }
-        if self
-            .diagnostic
-            .as_ref()
-            .is_none_or(|(stamp, _)| *stamp != self.stamp)
-        {
-            self.diagnostic = Some((
-                self.stamp,
-                self.diagnose(document).map(|(_, resolved)| resolved),
-            ));
-        }
+        });
         let diagnostic = &self.diagnostic.as_ref().expect("diagnosed").1;
         let valid = diagnostic.is_ok() && enabled;
-        if let Ok(Some(resolved)) = diagnostic {
-            ui.small(format!(
-                "{} boxes · {} receiving parts · Z {:.1} … {:.1} mm",
-                resolved.boxes.len(),
-                resolved.receivers.len(),
-                resolved.shared_z_mm[0],
-                resolved.shared_z_mm[1]
-            ));
-            for receiver in &resolved.receivers {
-                ui.small(format!(
-                    "{} · Z {:.1} … {:.1} mm",
-                    document
-                        .get(receiver.receiver.target.body)
-                        .map_or("Missing part", |entity| entity.name.as_str()),
-                    receiver.bottom_mm,
-                    receiver.top_mm
-                ));
-            }
-        }
         if let Err(error) = diagnostic {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
@@ -621,6 +648,7 @@ impl CompoundCutoutPanel {
             .ok()
             .and_then(|source| model::compound_cutout_layout(document, parameters, &source).ok());
         if let Some(resolved) = resolved {
+            let mut label_bounds: Vec<egui::Rect> = vec![];
             for (index, item) in resolved.boxes.iter().enumerate() {
                 let points = item.corners().map(|point| {
                     let p = view.camera.project(point.map(|v| v as f32), view.rect);
@@ -637,13 +665,39 @@ impl CompoundCutoutPanel {
                             .line_segment([points[a], points[b]], egui::Stroke::new(1.5, color));
                     }
                 }
-                view.painter.text(
-                    points[4],
-                    egui::Align2::LEFT_BOTTOM,
+                let center = view.camera.project(
+                    [
+                        item.rectangle.center[0] as f32,
+                        item.rectangle.center[1] as f32,
+                        item.top_mm as f32,
+                    ],
+                    view.rect,
+                );
+                let galley = view.painter.layout_no_wrap(
                     format!("Box {}", index + 1),
                     egui::FontId::proportional(12.),
                     color,
                 );
+                let mut bounds = egui::Rect::from_min_size(
+                    egui::pos2(center[0] + 4., center[1] - galley.size().y - 4.),
+                    galley.size(),
+                );
+                for _ in 0..=label_bounds.len() {
+                    if !label_bounds
+                        .iter()
+                        .any(|other| other.expand(2.).intersects(bounds))
+                    {
+                        break;
+                    }
+                    bounds = bounds.translate(egui::vec2(0., -galley.size().y - 4.));
+                }
+                view.painter.rect_filled(
+                    bounds.expand(2.),
+                    2.,
+                    egui::Color32::from_black_alpha(190),
+                );
+                view.painter.galley(bounds.min, galley, color);
+                label_bounds.push(bounds);
             }
         }
         if let Some(start) = self.anchor {

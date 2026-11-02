@@ -3893,25 +3893,6 @@ impl SketchEditor {
         {
             self.message = message;
         }
-        if !self.measurement.active()
-            && self.model.outline_active()
-            && self.model.outline_viewport(
-                session,
-                crate::modeling::TerminationViewport {
-                    scene: self.display_scene.as_deref(),
-                    report: self.evaluated.as_ref(),
-                    camera: self.camera,
-                    rect,
-                    pointer: response.hover_pos(),
-                    clicked: response.clicked(),
-                    painter: &painter,
-                    section: self.modeling_section(),
-                },
-            )
-        {
-            self.message =
-                "Outline changed · check the dimensions in the Inspector, then Preview".into();
-        }
         let cabinet_guide = self.model.cabinet_guide(session);
         if !self.measurement.active()
             && self.model.machining_picking()
@@ -4050,6 +4031,25 @@ impl SketchEditor {
             if self.solid.selected_id().is_some() && !self.editing {
                 self.selected = None;
             }
+        }
+        if !self.measurement.active()
+            && self.model.outline_active()
+            && self.model.outline_viewport(
+                session,
+                crate::modeling::TerminationViewport {
+                    scene: self.display_scene.as_deref(),
+                    report: self.evaluated.as_ref(),
+                    camera: self.camera,
+                    rect,
+                    pointer: response.hover_pos(),
+                    clicked: response.clicked(),
+                    painter: &painter,
+                    section: self.modeling_section(),
+                },
+            )
+        {
+            self.message =
+                "Outline changed · check the dimensions in the Inspector, then Preview".into();
         }
         if let Some(scene) = &scene {
             if self.envelopes {
