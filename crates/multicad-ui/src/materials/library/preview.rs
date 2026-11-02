@@ -83,7 +83,7 @@ impl LibraryEditor {
         self.preview.clear();
         self.error = None;
         let result: Result<(), String> = (|| {
-            let prepared = self.prepare(s, channel.clone())?;
+            let prepared = self.prepare(s, channel)?;
             let previous = diagnostics(s.document()).map_err(|e| e.to_string())?;
             let issues = diagnostics(prepared.document()).map_err(|e| e.to_string())?;
             if let Some(issue) = issues.iter().find(|issue| {
