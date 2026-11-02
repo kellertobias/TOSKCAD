@@ -3,14 +3,26 @@
 This document owns the native editor contract and its implementation limits.
 The canonical entity model remains described in [0004](0004-canonical-document.md).
 
-## Product decision, 2026-10-27
+## Product decision, revised 2026-11-01
 
-The product owner requested five top-level modes: Parameters, Sketch, Model,
-Drawings and Export. Parameters uses a full-width table without sidebars, with
-an action ribbon for Apply and Rebuild, Discard and preview/history actions.
+The native modes are Project, Sketch, Model, Drawings and Export. CAD-220
+renames Parameters to Project and replaces its action ribbon with left-side
+icon-and-label actions: Apply and Rebuild, Discard Edit, Preview, Undo and Redo.
+Project has no ribbon or reserved ribbon band. The canonical parameter table
+remains the primary content, with one 300 px file-metadata sidebar on the right.
+The left actions also retain Library, Measure and MCP history access.
 Export contains Common, Print and Render. Materials belong to Model.
 These choices supersede the corresponding layout rules in
 [0001](0001-project-boundaries.md).
+
+The 2026-11-01 product-owner revision supersedes the 2026-10-27 Parameters
+action-ribbon requirement. Draft actions stay visible beside the table; a
+locally scrollable table preserves editable columns at the 1100 × 700 native
+minimum. The same existing transactional handlers and shortcut scopes remain.
+The finder presents Project first for its exact name; `params` and `parameters`
+remain aliases, and `project-mode` is explicit because `project` already names
+the retained project-reference command. A parameter Preview validates the draft;
+it does not replace the file preview image.
 
 Why: the parameter table needs explicit draft actions without losing its editing
 space. Rendering belongs with output preparation, while materials affect model
@@ -148,8 +160,8 @@ unavailable modeling modules remain disabled. Tooltips reflect active bindings.
 | --- | --- | --- |
 | W, A, S, D | Viewport, outside text entry | Pan up, left, down, right |
 | Tab / Shift+Tab | Outside text entry and dialogs | Next / previous ribbon workspace, wrapping |
-| E / Q / R | Parameters, outside text entry | Apply and rebuild / discard / preview |
-| Cmd/Ctrl+Enter | Parameters, including text entry | Apply and rebuild |
+| E / Q / R | Project, outside text entry | Apply and rebuild / discard / preview |
+| Cmd/Ctrl+Enter | Project, including text entry | Apply and rebuild |
 | Q | Sketch entry / editing | New sketch / finish sketch |
 | E / R | Sketch editing | Line / rectangle |
 | Delete | Sketch editing | Delete selected geometry |

@@ -26,16 +26,16 @@ Each Save or Save As captures the visible 3D view and stores it as the file's pr
 Details:
 
 - **No Undo entry:** the preview counts as presentation state. `replace_file_preview` writes it into the current source and into every Undo/Redo snapshot. Undo and Redo therefore never bring back an older picture, never dirty the file and need no extra history step. The revision advances so open previews and editors revalidate. The activity log records "Capture file preview".
-- **No visible 3D view** (Parameters, Drawings or Export mode, or a headless or MCP save with no window): the previous preview is kept and the save receipt is the ordinary one.
+- **No visible 3D view** (Project, Drawings or Export mode, or a headless or MCP save with no window): the previous preview is kept and the save receipt is the ordinary one.
 - **Capture failures never block saving.** If no screenshot arrives within 120 frames, the crop is off-screen, or encoding fails, the save still runs and the receipt reports "preview not updated (…)".
-- **Manual override:** *Choose image…* is still available. It sets the chosen PNG as the draft preview and turns *Capture the 3D view on save* off, so that image is kept. The checkbox turns capture back on. Both are part of the Parameters draft (Apply/Rebuild).
+- **Manual override:** *Choose image…* is still available. It sets the chosen PNG as the draft preview and turns *Capture the 3D view on save* off, so that image is kept. The checkbox turns capture back on. Both are part of the Project draft (Apply/Rebuild).
 - **Tests run without a GPU:** they inject the captured image through `finish_capture`, and the crop, downscale and encode helpers work on a plain `ColorImage`.
 
-## Parameters sidebar
+## Project sidebar
 
-Parameters keeps its full parameter table and the Apply/Rebuild and Discard ribbon. A fixed 300 px right sidebar has two sections:
+Project keeps its parameter table and left-side Apply and Rebuild, Discard Edit, Preview, Undo and Redo actions, with no ribbon (CAD-220). A fixed 300 px right sidebar has two sections:
 
-- **File:** name, description, the preview, *Choose image…*, *Remove image* and *Capture the 3D view on save*. These fields are part of the Parameters draft. Apply/Rebuild commits them together with the table as one undoable transaction. Discard reverts them, and unapplied drafts block Save and Undo just like table edits.
+- **File:** name, description, the preview, *Choose image…*, *Remove image* and *Capture the 3D view on save*. These fields are part of the Project draft. Apply/Rebuild commits them together with the table as one undoable transaction. Discard reverts them, and unapplied drafts block Save and Undo just like table edits.
 - **Library:** *Add to Library*, then the listing status:
   - *Listed in the library · <path>* when the file is listed here;
   - *Listed from another location: <path>* when the same document is listed at a different path;
@@ -43,7 +43,7 @@ Parameters keeps its full parameter table and the Apply/Rebuild and Discard ribb
 
   Below that come the latest result (green on success, red on failure, also shown in the status bar) and all library entries.
 
-This revises the earlier rule that Parameters has no sidebar, for this metadata sidebar only. No modeling inspectors or parts sidebars appear in Parameters.
+CAD-141 introduced this metadata sidebar; CAD-220 replaces the earlier Parameters action ribbon with the Project action column. No modeling inspectors or parts sidebars appear in Project. The description editor scrolls within a bounded height so the real preview and Library controls remain visible with long descriptions.
 
 ## Installation library: listing original files
 
