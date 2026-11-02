@@ -62,9 +62,10 @@ an intact opposite face remains usable. This is anchor validation, not a claim
 of complete equipment footprint/clearance certification.
 
 The existing native wall form now authors uniform and layered constructions.
-Explicit perpendicular T joins are supported below. Project-authored dynamic-symbol
-integration under CAD-206 remains in progress. Actual macOS editor interaction and human acceptance
-are separate from source, native geometry and painted-widget checks.
+Explicit perpendicular T joins are supported below. Project-authored constructions
+can expose selected settings through [pinned architectural symbols](architectural-symbols.md)
+and Draw Wall. Actual macOS editor interaction and human acceptance remain separate
+from source, native geometry and painted-widget checks.
 
 Finite layer faces publish their source-owned material through the exact
 `component/<layer UUID>` provenance. Unknown, missing or ambiguous ownership

@@ -139,6 +139,11 @@ Component tests exercise painted recipe selection, shared/duplicate controls,
 viewport path clicks, native Preview/Cancel/Apply, history and TCD reopen. These
 checks do not establish actual macOS window interaction.
 
+Project-authored fence constructions can also expose selected typed settings
+through [pinned architectural symbols](architectural-symbols.md). The existing
+Library opens Draw Fence for these definitions; each receiving run owns its path
+while generated members follow the canonical fence rules.
+
 ### External control
 
 `set_fence_type` creates a named construction when `fence_type` is omitted.

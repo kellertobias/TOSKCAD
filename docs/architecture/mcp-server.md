@@ -173,6 +173,12 @@ schema is generated from the Rust argument types with schemars and returned by
 | `preview_fence` | no | Exact native create/edit preview with temporary member IDs, post positions and actual bay widths; no commit |
 | `set_fence` | yes | Atomic run create/edit and optional explicit shared construction update, checked natively before commit or review |
 | `inspect_fence` | no | Canonical run/context, source-resolved layout and named physical member IDs; see [fences](fences.md) |
+| `inspect_architectural_symbol` | no | Embedded wall/fence definitions, public defaults, instance overrides and receiving context |
+| `author_architectural_symbol` | yes | Capture a live canonical construction with selected typed public inputs; sample paths are excluded |
+| `import_architectural_symbol` | yes | Embed a construction pin from a `.tcd` Library in the configured exchange folder |
+| `draw_architectural_symbol`, `edit_architectural_symbol` | yes | Native-preflighted real wall/fence placement or public-input/context editing |
+| `compare_architectural_symbol_update` | no | Explicit Library revision comparison and per-record repairs without changing the pin |
+| `update_architectural_symbol` | yes | Atomic pin and instance replacement with repairs; see [architectural symbols](architectural-symbols.md) |
 | `create_wall_type`, `edit_wall_type` | yes | Reusable wall types; a type edit rebuilds every wall that does not override the value (see [walls](walls.md)) |
 | `create_opening_type` | yes | Reusable door (hinge, swing) or window type with width, height and sill |
 | `create_wall`, `edit_wall` | yes | Wall along a path or closed loop with overrides and openings, evaluated natively before commit; an edit keeps vertical cutouts |
