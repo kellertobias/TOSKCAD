@@ -188,6 +188,10 @@ schema is generated from the Rust argument types with schemars and returned by
 | `remove_wall_opening` | yes | Remove one door, window or vertical cutout by ID, including the cutout's slab holes |
 | `remove_vertical_cutout` | yes | Remove a vertical cutout from its wall and every slab |
 | `inspect_vertical_cutout` | no | What a cutout cuts (wall, slabs with level, span and hole corners), or every slab-cutting cutout |
+| `set_compound_cutout` | yes | Create/edit one box union and every explicit wall/slab receiver after complete native preflight; see [compound cutouts](compound-cutouts.md) |
+| `preview_compound_cutout` | no | Native-check the proposed complete source and all receivers without committing; returns proposed identities |
+| `inspect_compound_cutout` | no | Complete canonical box and receiver definitions, or all compound cutouts |
+| `remove_compound_cutout` | yes | Remove the source and generated receiver cuts atomically, refusing downstream dependencies that need repair |
 | `create_panel_stock` | yes | Panel stock (thickness, sheet size, grain) on an existing or new Material (see [cabinetry](cabinetry.md)) |
 | `set_carcass` | yes | Create or edit a parametric carcass; every panel is evaluated natively before commit |
 | `create_panel` | yes | Rectangular panel from panel stock with grain, per-edge banding and oversize |

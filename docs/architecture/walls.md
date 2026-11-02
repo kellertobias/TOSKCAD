@@ -388,6 +388,10 @@ through the shared page render.
 
 ## Limits
 
+Compound box cutouts use the same Cutout command with a separate retained source
+and native receiver-history operations. Their explicit wall/slab targets, box
+editing and external tools are described in [compound cutouts](compound-cutouts.md).
+
 - **Joints and shapes.**
   - Walls are straight-segment polylines; there are no arc walls.
   - Separate walls only join through the explicit perpendicular flush-butt T

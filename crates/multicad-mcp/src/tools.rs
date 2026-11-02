@@ -38,6 +38,11 @@ use std::{
 
 mod architecture;
 mod cabinetry;
+mod compound_cutouts;
+use compound_cutouts::{
+    CompoundCutoutArgs, CompoundCutoutInspectArgs, CompoundCutoutRemoveArgs,
+    inspect_compound_cutout, preview_compound_cutout, remove_compound_cutout, set_compound_cutout,
+};
 mod engraving;
 mod fdm;
 mod gear_pairs;
@@ -427,6 +432,18 @@ tools! {
     "set_wall_opening" => WallOpeningArgs, "Place or edit door/window", false,
         "Add a door or window to one wall segment at an offset (from the segment start to the start jamb), or edit an existing one by ID, with an existing opening type or a new type committed in the same transaction and optional width/height/sill overrides. Misfitting, top-reaching or overlapping openings are refused with a reason; the wall is evaluated natively before the one transaction commits.",
         set_wall_opening;
+    "set_compound_cutout" => CompoundCutoutArgs, "Create or edit compound Cutout", false,
+        "Union editable boxes and cut explicit wall/slab receiver histories. All boxes and all receivers pass exact native preflight before one atomic commit. Retain cutout, box and frozen producer identities on edits. Missing, disconnected, off-target, overlapping existing holes, partial slab cuts and receiving-solid splits are refused.",
+        set_compound_cutout;
+    "preview_compound_cutout" => CompoundCutoutArgs, "Preview compound Cutout", true,
+        "Evaluate the complete proposed compound Cutout and every receiver without committing. Returns the proposed source, stable box/member identities and exact volumes.",
+        preview_compound_cutout;
+    "inspect_compound_cutout" => CompoundCutoutInspectArgs, "Inspect compound Cutout", true,
+        "Read complete canonical compound Cutout definitions and generated receiver identities, or list all when cutout is omitted.",
+        inspect_compound_cutout;
+    "remove_compound_cutout" => CompoundCutoutRemoveArgs, "Remove compound Cutout", false,
+        "Remove the source and all generated receiver cuts atomically after exact native preflight. Downstream dependencies require explicit repair.",
+        remove_compound_cutout;
     "set_vertical_cutout" => VerticalCutoutArgs, "Place or edit vertical cutout", false,
         "Add or edit (by ID) a vertical cutout and choose what it cuts: a wall, floor slabs, or both. With `wall` (plus segment, offset, width) it is a full-height rectangular cutout in one wall segment, through the thickness when depth is omitted, otherwise a chase of that depth from the left or right face. With `slabs` (IDs) or `from_level`/`to_level` (every floor slab under the cutout on those levels: a shaft) it also cuts a hole through each slab, using `plan` (center, width, depth, rotation) or else the wall cutout's footprint; a slab-only cutout needs `plan`. Cutouts that do not fit, overlap an opening or another hole, cross or touch a slab edge, exceed the wall thickness or would split the wall are refused with no change. One transaction for the wall and every slab, evaluated natively before commit.",
         set_vertical_cutout;
