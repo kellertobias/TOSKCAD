@@ -224,3 +224,36 @@ fn legacy_sketch_recall_enters_model_without_stale_editing_tools_and_motion_reus
             .any(|tab| tab.title == "Import")
     );
 }
+
+#[test]
+fn an_existing_sketch_opens_from_model_into_contextual_editing_without_source_or_history_changes() {
+    let mut app = app();
+    app.invoke(Command::NewSketch, &["xy"], Channel::Ui)
+        .unwrap();
+    app.invoke(
+        Command::Draw(crate::sketch_editor::DrawTool::Rectangle),
+        &["0", "0", "40", "20"],
+        Channel::Ui,
+    )
+    .unwrap();
+    let id = app.current().sketch.selected.unwrap();
+    app.invoke(Command::FinishSketch, &[], Channel::Ui).unwrap();
+    assert_eq!(app.mode, Mode::Model);
+    let source = app.current().session.document().clone();
+    let revision = app.current().session.revision();
+    let ctx = context();
+    for _ in 0..3 {
+        frame(&ctx, &mut app, vec![]).drop_without_applying_deltas();
+    }
+    click(&ctx, &mut app, "Open selected sketch");
+    assert_eq!(app.mode, Mode::Sketch);
+    assert_eq!(app.mode.top_level(), Mode::Model);
+    assert!(app.current().sketch.editing);
+    assert_eq!(app.current().sketch.selected, Some(id));
+    assert_eq!(app.current().session.document(), &source);
+    assert_eq!(app.current().session.revision(), revision);
+    let out = frame(&ctx, &mut app, vec![]);
+    button(&out, "Finish sketch");
+    button(&out, "Abort");
+    out.drop_without_applying_deltas();
+}

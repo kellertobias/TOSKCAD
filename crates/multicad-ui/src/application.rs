@@ -2414,6 +2414,7 @@ impl Application {
                     if let Some(delay) = p.scene.quality_wakeup(ctx.input(|i| i.time)) {
                         ctx.request_repaint_after(delay);
                     }
+                    let sketch_opened = !sketch_mode && p.sketch.editing;
                     let modeling_cancelled = modeling_before
                         && !p.sketch.model_active()
                         && p.session.revision() == before;
@@ -2430,6 +2431,11 @@ impl Application {
                     } else if modeling_cancelled {
                         self.message = "Modeling cancelled · document unchanged".into();
                         self.message_error = false;
+                    }
+                    if sketch_opened {
+                        self.mode = Mode::Sketch;
+                        self.tab = 0;
+                        ctx.request_repaint();
                     }
                 }
             });

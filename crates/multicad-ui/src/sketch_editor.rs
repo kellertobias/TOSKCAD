@@ -2892,7 +2892,7 @@ impl SketchEditor {
                 let options = crate::model_tree::TreeOptions {
                     enabled: (!self.has_pending_edits() || self.acquisition.is_some())
                         && !self.measurement.active(),
-                    allow_open_sketch: sketch_mode && self.acquisition.is_none(),
+                    allow_open_sketch: self.acquisition.is_none(),
                 };
                 let events = if self.acquisition.is_some() {
                     self.tree
@@ -2904,8 +2904,7 @@ impl SketchEditor {
                 if !self.measurement.active() {
                     self.advance_model_targets(session, resources, feed, false);
                 }
-                if sketch_mode
-                    && self.selected.is_some()
+                if self.selected.is_some()
                     && !self.editing
                     && ui
                         .add_enabled(
@@ -2993,7 +2992,7 @@ impl SketchEditor {
                         if let Some(error)=&self.visibility_error {ui.colored_label(Color32::LIGHT_YELLOW,error);}
                         let hierarchy_tool=self.tree.tool_active();
                         if self.tree.tool_active() || !self.editing {
-                            let options=crate::model_tree::TreeOptions{enabled:self.preview.is_none() && !self.constraints.dirty() && !self.repair.has_pending(),allow_open_sketch:sketch_mode};
+                            let options=crate::model_tree::TreeOptions{enabled:self.preview.is_none() && !self.constraints.dirty() && !self.repair.has_pending(),allow_open_sketch:true};
                             let events=self.tree.inspector(ui,session,&self.tree_selection,options);
                             self.handle_tree_events(session,scene.as_deref(),events);
                         }
