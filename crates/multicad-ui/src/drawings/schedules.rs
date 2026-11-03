@@ -47,6 +47,11 @@ impl Default for ScheduleState {
         }
     }
 }
+impl ScheduleState {
+    pub(super) fn placing(&self) -> bool {
+        self.place.is_some()
+    }
+}
 
 impl DrawingEditor {
     /// Schedules the current page and the chooser need.

@@ -63,10 +63,16 @@ pub const FORMAT_ROUTES: &[FormatRoute] = &[
     FormatRoute {
         format: "PDF",
         aliases: &[],
-        tools: &[(
-            EXPORT_SET,
-            "Export set · add a PDF recipe; it needs at least one drawing page",
-        )],
+        tools: &[
+            (
+                EXPORT_SET,
+                "Export set · add a PDF recipe; it needs at least one drawing page",
+            ),
+            (
+                "drawing-pdf",
+                "Drawings · export the current sheet, drawing or project sheets to one PDF",
+            ),
+        ],
     },
     FormatRoute {
         format: "DXF",

@@ -6,6 +6,7 @@ mod inspector;
 mod loading;
 mod placement;
 mod schedules;
+mod sidebar;
 mod views;
 pub use evaluation::{DrawingBackend, DrawingBackendFactory, DrawingReply};
 pub use placement::Placement;
@@ -193,6 +194,8 @@ impl DrawingTool {
 }
 #[derive(Default)]
 pub struct DrawingEditor {
+    sidebar: sidebar::State,
+    pdf_requested: bool,
     book: Option<EntityId>,
     selected: Option<EntityId>,
     draft: Option<Page>,
@@ -290,8 +293,8 @@ impl DrawingEditor {
             DrawingTool::Projection | DrawingTool::Section | DrawingTool::Detail => {
                 self.selected.is_some() && self.has_backend_factory()
             }
-            DrawingTool::AddPage | DrawingTool::NewDocument => !self.dirty(),
-            _ => self.selected.is_some() && !self.dirty(),
+            DrawingTool::AddPage | DrawingTool::NewDocument => self.navigation_ready(),
+            _ => self.selected.is_some() && self.navigation_ready(),
         }
     }
     pub fn invoke(
@@ -300,6 +303,20 @@ impl DrawingEditor {
         tool: DrawingTool,
         channel: Channel,
     ) -> Result<(), String> {
+        if !self.navigation_ready()
+            && !self.dirty()
+            && matches!(
+                tool,
+                DrawingTool::NewDocument
+                    | DrawingTool::AddPage
+                    | DrawingTool::Duplicate
+                    | DrawingTool::Remove
+                    | DrawingTool::MoveEarlier
+                    | DrawingTool::MoveLater
+            )
+        {
+            return Err("Finish or cancel the current sheet placement first".into());
+        }
         if tool == DrawingTool::Discard {
             self.cancel_placement();
             self.draft = self.original.clone();
@@ -316,6 +333,7 @@ impl DrawingEditor {
             return Ok(());
         }
         let book = self.sync(session)?;
+        let previous_selection = (self.book, self.selected);
         let actor = Actor::local(channel);
         if tool == DrawingTool::Settings {
             self.selected_view = None;
@@ -403,7 +421,7 @@ impl DrawingEditor {
                 session,
                 session.revision(),
                 actor,
-                "Drawing document",
+                &sidebar::new_book_name(session),
                 Some(page),
             )
             .map_err(|e| e.to_string())?;
@@ -464,19 +482,37 @@ impl DrawingEditor {
         }
         self.revision = None;
         self.sync(session)?;
+        if previous_selection != (self.book, self.selected) {
+            self.feed.clear();
+            self.preview_input = None;
+            self.selected_view = None;
+            self.selected_annotation = None;
+            self.section_pick = None;
+            self.last_paper = None;
+            self.schedules = Default::default();
+        }
         self.error = None;
         Ok(())
     }
+    #[cfg(test)]
     fn select(&mut self, session: &Session, id: EntityId) -> Result<(), String> {
-        if self.dirty() {
-            return Err("Apply or discard page edits before switching pages".into());
-        }
-        self.selected = Some(id);
-        self.revision = None;
-        self.sync(session)?;
-        Ok(())
+        self.select_sheet(
+            session,
+            self.book.ok_or("Create a drawing first")?,
+            Some(id),
+        )
     }
     pub fn show(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+        self.sync(session).ok();
+        if let Some(action) = self.sidebar(ui, session) {
+            let result = match action {
+                sidebar::Action::Select { book, page } => self.select_sheet(session, book, page),
+                sidebar::Action::New => self.invoke(session, DrawingTool::NewDocument, Channel::Ui),
+            };
+            if let Err(error) = result {
+                self.error = Some(error);
+            }
+        }
         let book = match self.sync(session) {
             Ok(book) => book,
             Err(error) => {
@@ -484,37 +520,6 @@ impl DrawingEditor {
                 return;
             }
         };
-        let mut event = None;
-        egui::Panel::bottom("drawing-page-strip")
-            .default_size(38.)
-            .show(ui, |ui| {
-                egui::ScrollArea::horizontal().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for (index, page) in book.pages.iter().enumerate() {
-                            if ui
-                                .add_enabled(
-                                    !self.dirty(),
-                                    egui::Button::new(format!("{} · {}", index + 1, page.number))
-                                        .selected(self.selected == Some(page.id)),
-                                )
-                                .on_hover_text(if page.info.title.is_empty() {
-                                    "Untitled page"
-                                } else {
-                                    &page.info.title
-                                })
-                                .clicked()
-                            {
-                                event = Some(page.id);
-                            }
-                        }
-                    });
-                });
-            });
-        if let Some(id) = event
-            && let Err(error) = self.select(session, id)
-        {
-            self.error = Some(error);
-        }
         egui::Panel::right("drawing-inspector")
             .default_size(270.)
             .min_size(190.)

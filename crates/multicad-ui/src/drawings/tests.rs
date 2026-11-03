@@ -156,7 +156,7 @@ fn source_deleted_during_draft_keeps_it_until_explicit_discard() {
 }
 
 #[test]
-fn actual_page_strip_switches_without_writing_over_many_frames() {
+fn actual_sheet_sidebar_switches_without_writing_over_many_frames() {
     let mut session = session();
     let mut editor = DrawingEditor::default();
     for _ in 0..2 {
@@ -186,14 +186,14 @@ fn actual_page_strip_switches_without_writing_over_many_frames() {
         );
         for shape in &output.shapes {
             if let egui::Shape::Text(text) = &shape.shape
-                && text.galley.text() == "1 · 1"
+                && text.galley.text() == "1 · Untitled sheet"
             {
                 button = Some(text.pos + text.galley.size() * 0.5);
             }
         }
         output.drop_without_applying_deltas();
     }
-    let point = button.expect("Saved page button appears in the bottom strip");
+    let point = button.expect("Saved sheet button appears in the left sidebar");
     for pressed in [true, false] {
         ctx.run_ui(
             egui::RawInput {

@@ -5,28 +5,11 @@ impl DrawingEditor {
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui, session: &mut Session) {
         controls::inspector_layout(ui);
         ui.heading("Drawing Inspector");
-        let mut chosen = self.book;
-        controls::inspector_combo(ui, "drawing-book")
-            .selected_text(
-                self.book
-                    .and_then(|id| session.document().get(id))
-                    .map_or("No drawing", |entity| entity.name.as_str()),
-            )
-            .show_ui(ui, |ui| {
-                for id in drawings::books(session.document()) {
-                    if let Some(entity) = session.document().get(id) {
-                        ui.add_enabled_ui(!self.dirty(), |ui| {
-                            ui.selectable_value(&mut chosen, Some(id), &entity.name);
-                        });
-                    }
-                }
-            });
-        if chosen != self.book {
-            self.book = chosen;
-            self.selected = None;
-            self.revision = None;
-            self.sync(session).ok();
-        }
+        ui.label(
+            self.book
+                .and_then(|id| session.document().get(id))
+                .map_or("No drawing", |entity| entity.name.as_str()),
+        );
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }

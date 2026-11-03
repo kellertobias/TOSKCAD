@@ -149,6 +149,7 @@ pub fn canonical_workbench_title(mode: Mode, title: &str) -> &str {
 fn command_home(command: Command) -> Option<(Mode, &'static str)> {
     match command {
         Command::Extension("materials") => Some((Mode::Parameters, "Materials")),
+        Command::Extension("drawing-pdf") => Some((Mode::Drawings, "Common")),
         Command::Modeling(ModelingTool::Panel | ModelingTool::Cabinet | ModelingTool::WoodBox) => {
             Some((Mode::Model, "Wood"))
         }
@@ -490,6 +491,7 @@ impl Default for Registry {
             ("bend-list", "Bend schedule", Icon::Page),
             ("weld-list", "Weld sequence", Icon::Page),
             ("materials", "Materials", Icon::Library),
+            ("drawing-pdf", "Export as PDF", Icon::Export),
             ("text", "Text / leader", Icon::Sketch),
             ("appearance", "Capture render view", Icon::Box),
             ("render-view", "Show render view", Icon::Box),
@@ -503,7 +505,11 @@ impl Default for Registry {
                 label,
                 icon,
                 action: Command::Extension(id),
-                aliases: &[],
+                aliases: if id == "drawing-pdf" {
+                    &["drawingpdf", "export-drawing-pdf"]
+                } else {
+                    &[]
+                },
             });
         }
         let tab = |title, tools: &[&'static str]| RibbonTab {
@@ -664,6 +670,7 @@ impl Default for Registry {
                         "Common",
                         &[
                             "drawing-new",
+                            "drawing-pdf",
                             "sheet-page",
                             "page-duplicate",
                             "page-remove",
@@ -820,7 +827,18 @@ impl Registry {
             }
         }
         // Prefer the visible name when a legacy command alias has the same word.
-        found.sort_by_key(|tool| !tool.label.eq_ignore_ascii_case(&query));
+        let format_order: Vec<_> = crate::tool_search::routes(&query)
+            .flat_map(|route| route.tools.iter().map(|(id, _)| *id))
+            .collect();
+        found.sort_by_key(|tool| {
+            (
+                !tool.label.eq_ignore_ascii_case(&query),
+                format_order
+                    .iter()
+                    .position(|id| *id == tool.id)
+                    .unwrap_or(usize::MAX),
+            )
+        });
         found
     }
     /// Workspace and ribbon tab that offer `command`, for finder context.

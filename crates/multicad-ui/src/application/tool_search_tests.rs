@@ -144,7 +144,9 @@ fn every_named_format_routes_to_an_implemented_export_workflow_with_context() {
         );
         for tool in &results {
             assert!(
-                !matches!(tool.action, Command::Extension(_)) || tool.id.starts_with("import-"),
+                !matches!(tool.action, Command::Extension(_))
+                    || tool.id.starts_with("import-")
+                    || tool.id == "drawing-pdf",
                 "{format} offers placeholder {}",
                 tool.id
             );
@@ -155,6 +157,12 @@ fn every_named_format_routes_to_an_implemented_export_workflow_with_context() {
                 || matches!(format, "stp" | "gltf")
         );
     }
+    assert_eq!(app.registry.search("PDF")[0].id, "export-set");
+    assert_eq!(app.registry.search("Export as PDF")[0].id, "drawing-pdf");
+    assert_eq!(
+        app.registry.location(Command::Extension("drawing-pdf")),
+        Some((Mode::Drawings, "Common"))
+    );
     assert_eq!(
         app.registry
             .location(Command::Export(crate::exchange::ExportTool::NewSet)),

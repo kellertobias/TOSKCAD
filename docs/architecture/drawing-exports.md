@@ -28,6 +28,24 @@ refreshed ([schedules](schedules.md#drawing-tables)). A preview made before a
 source edit cannot run; it reports Stale. Nothing old is ever presented as
 current.
 
+## Direct PDF from Drawings
+
+Drawings lists every drawing book and sheet in a scrolling left sidebar. Sheet
+selection leaves canonical source unchanged, retains completed preview cache
+entries and clears obsolete selection/request state. Pending page edits or
+placements must be applied, discarded, finished or cancelled before navigation.
+
+Export as PDF opens a scope dialog for the current sheet, its drawing or all
+project sheets. It lists the selected sheets and shares Export's destination
+and native folder picker. The controller prepares an output-set overlay without
+committing it, then uses the existing native export backend for preview and
+publication. It validates the originating session, source, actor, page scope and
+destination before starting the write, and checks the publication receipt
+against the accepted preview. The result reports the PDF path in the dialog
+and shared output history. Cancellation retains drawing drafts; publication
+that finishes before cancellation is reported explicitly. PDF recipes also
+remain available in saved Export sets.
+
 ## PDF
 
 [`pdf::render_pdf`](../../crates/multicad-core/src/drawings/pdf.rs) writes one

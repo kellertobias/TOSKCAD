@@ -7,6 +7,7 @@ mod architecture_tests;
 mod closing;
 mod closing_backdrop;
 mod document_open;
+mod drawing_pdf;
 mod examples_gallery;
 mod export_folder;
 pub mod external_control;
@@ -1109,6 +1110,7 @@ impl Application {
                     "Project Materials · shared definitions apply through one native-checked transaction"
                         .into();
             }
+            Command::Extension("drawing-pdf") => self.open_drawing_pdf()?,
             Command::Extension("symbol" | "library") => {
                 if command == Command::Extension("library")
                     && self.current().sketch.symbol_active()
@@ -1599,6 +1601,11 @@ impl Application {
                 self.mode == Mode::Sketch && self.current().sketch.editing && !pending()
             }
             Command::Extension("materials") => !pending(),
+            Command::Extension("drawing-pdf") => {
+                !self.file_busy()
+                    && !self.current().editor.dirty()
+                    && !self.current().sketch.has_pending_edits()
+            }
             Command::Extension("appearance") => {
                 self.mode == Mode::Export
                     && !pending()
@@ -2160,6 +2167,7 @@ impl Application {
                 || self.import_open
                 || self.settings_open
                 || self.shortcut_help
+                || self.current().exchange.drawing_pdf_open()
                 || egui::Popup::is_any_open(ctx),
         }
     }
@@ -2185,6 +2193,7 @@ impl Application {
             || self.import_open
             || self.settings_open
             || self.close_confirm;
+        let shell_interaction = shell_interaction || self.current().exchange.drawing_pdf_open();
         // egui clears keyboard focus for Escape before this application pass.
         // Remember text ownership so that same key cannot also cancel a tool.
         if (shell_interaction || ctx.text_edit_focused() || self.text_input_was_focused)
@@ -2205,6 +2214,8 @@ impl Application {
                 if !self.file_busy() {
                     self.recovery_open = false;
                 }
+            } else if self.current().exchange.drawing_pdf_open() {
+                self.current_mut().exchange.cancel_drawing_pdf();
             } else if self.find_open {
                 self.find_open = false;
             } else if self.shortcut_help {
@@ -2527,6 +2538,7 @@ impl Application {
                         self.message_error = false;
                         ctx.request_repaint();
                     }
+                    self.handle_drawing_pdf_request();
                 } else {
                     if self.render_tab() {
                         self.render_sidebar(ui);
@@ -2578,6 +2590,7 @@ impl Application {
                 }
             });
         self.poll_symbol_actions();
+        self.drawing_pdf_dialog(&ctx);
         self.file_windows(&ctx);
         if self.history_open {
             let mut open = self.history_open;

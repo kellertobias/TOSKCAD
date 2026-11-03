@@ -1,6 +1,8 @@
 //! Saved output sets and nonblocking, attributable export jobs.
 mod backend;
 mod destination;
+mod drawing_pdf;
+pub use drawing_pdf::DrawingPdfScope;
 mod form;
 mod schedule_csv;
 use crate::{egui, icons::Icon};
@@ -99,6 +101,7 @@ struct JobSummary {
 }
 #[derive(Default)]
 pub struct ExportWorkspace {
+    drawing_pdf: drawing_pdf::State,
     backend: Option<Box<dyn ExportBackend>>,
     selected: Option<EntityId>,
     draft: Option<Draft>,
@@ -164,10 +167,14 @@ impl ExportWorkspace {
         self.draft != self.original
     }
     pub fn writing(&self) -> bool {
-        self.pending.values().any(|p| p.run) || self.writing_schedule()
+        self.pending.values().any(|p| p.run)
+            || self.writing_schedule()
+            || self.drawing_pdf.writing()
     }
     pub fn pending(&self) -> bool {
-        !self.pending.is_empty() || self.backend.as_ref().is_some_and(|b| b.pending())
+        !self.pending.is_empty()
+            || self.drawing_pdf.pending()
+            || self.backend.as_ref().is_some_and(|b| b.pending())
     }
     pub fn take_notice(&mut self) -> Option<(String, bool)> {
         self.notice.take()
@@ -413,6 +420,7 @@ impl ExportWorkspace {
             }
             ExportTool::ScheduleCsv => self.schedule_csv(s, path, channel),
             ExportTool::Cancel => {
+                self.cancel_drawing_pdf();
                 if let Some(b) = self.backend.as_mut() {
                     for id in self.pending.keys().chain(self.schedule.jobs.keys()) {
                         b.cancel(*id);
@@ -441,6 +449,10 @@ impl ExportWorkspace {
             }
         }
         for reply in replies {
+            if self.drawing_pdf.owns(reply.id) {
+                self.receive_drawing_pdf(reply, s);
+                continue;
+            }
             if let Some(job) = self.schedule.jobs.remove(&reply.id) {
                 self.accept_schedule(job, reply, s);
                 continue;

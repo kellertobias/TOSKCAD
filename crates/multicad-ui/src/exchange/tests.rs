@@ -6,10 +6,10 @@ use multicad_core::{
 };
 use std::{cell::RefCell, rc::Rc};
 #[derive(Default)]
-struct State {
-    requests: Vec<(EntityId, Document, u64, EntityId, Actor, bool)>,
-    replies: VecDeque<ExportReply>,
-    cancelled: Vec<EntityId>,
+pub(super) struct State {
+    pub(super) requests: Vec<(EntityId, Document, u64, EntityId, Actor, bool)>,
+    pub(super) replies: VecDeque<ExportReply>,
+    pub(super) cancelled: Vec<EntityId>,
     catalogs: Vec<(EntityId, Document, u64, Scope, Actor)>,
 }
 struct Backend(Rc<RefCell<State>>);
@@ -110,7 +110,7 @@ fn face_catalog_is_source_scoped_read_only_and_rejects_stale_foreign_or_wrong_sc
         assert!(!w.pending());
     }
 }
-fn fixture() -> (Session, ExportWorkspace, Rc<RefCell<State>>, EntityId) {
+pub(super) fn fixture() -> (Session, ExportWorkspace, Rc<RefCell<State>>, EntityId) {
     let mut d = Document::new("Shop project").unwrap();
     let part = Entity::new(
         "Panel",
@@ -135,7 +135,7 @@ fn fixture() -> (Session, ExportWorkspace, Rc<RefCell<State>>, EntityId) {
     w.directory = std::env::temp_dir().display().to_string();
     (s, w, state, part)
 }
-fn preview(state: &Rc<RefCell<State>>, index: usize) -> ExportReply {
+pub(super) fn preview(state: &Rc<RefCell<State>>, index: usize) -> ExportReply {
     let b = state.borrow();
     let (id, d, r, set, a, _) = &b.requests[index];
     let selection = resolve(d, *r, *set).unwrap();
