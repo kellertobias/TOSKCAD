@@ -5,6 +5,7 @@
 *.pdf binary
 *.step binary
 *.stp binary
+*.brep binary
 *.3mf binary
 *.glb binary
 *.ttf binary

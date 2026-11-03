@@ -56,7 +56,7 @@ impl HelicalThread {
     pub fn lead_mm(self) -> f64 {
         self.pitch_mm * f64::from(self.starts)
     }
-    fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
+    pub(crate) fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
         policy.validate()?;
         for length in [
             self.major_radius_mm,
@@ -203,7 +203,51 @@ impl Solid {
             ));
         }
         let data = spec.checked(policy)?;
-        let native = ffi::helical_thread(&data)
+        // Record one request, preserving the existing owner-thread factory hit
+        // before attempting any compiled prototype reads or measurements.
+        let cached = ffi::cached_helical_thread(&data)
+            .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+        let (native, from_prototype) = if !cached.is_null() {
+            (cached, false)
+        } else if let Some(native) = crate::thread_prototypes::load(&data, policy)? {
+            (native, true)
+        } else {
+            (
+                ffi::helical_thread_after_miss(&data)
+                    .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?,
+                false,
+            )
+        };
+        let mut solid = Self::adopt(native, policy, "thread")?;
+        if solid.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Thread must remain one connected solid",
+            ));
+        }
+        solid.name_thread(feature, spec.starts)?;
+        if from_prototype {
+            let _ = ffi::remember_thread_prototype(&solid.native.0, &data);
+        } else {
+            let _ = ffi::remember_validated_thread(&solid.native.0);
+        }
+        Ok(solid)
+    }
+    /// Developer derivation path: rebuild every native thread and bypass all
+    /// compiled prototypes and factory retention while keeping normal guards.
+    pub fn helical_thread_named_fresh(
+        spec: HelicalThread,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Thread feature identity must not be nil",
+            ));
+        }
+        let data = spec.checked(policy)?;
+        let native = ffi::helical_thread_fresh(&data)
             .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
         let mut solid = Self::adopt(native, policy, "thread")?;
         if solid.solid_count()? != 1 {
@@ -213,7 +257,6 @@ impl Solid {
             ));
         }
         solid.name_thread(feature, spec.starts)?;
-        let _ = ffi::remember_validated_thread(&solid.native.0);
         Ok(solid)
     }
 }
@@ -293,7 +336,11 @@ mod factory_tests {
         };
         let first_id = EntityId::new();
         let second_id = EntityId::new();
-        let first = build(spec, first_id);
+        // Exercise actual native construction and retention independently of
+        // any compiled default-M3 asset registration.
+        let first =
+            Solid::helical_thread_named_fresh(spec, first_id, GeometryPolicy::default()).unwrap();
+        assert!(ffi::remember_validated_thread(&first.native.0).unwrap());
         let face_integrations = ffi::face_integration_count(&first.native.0).unwrap();
         assert!(face_integrations > 0);
         let before = thread_factory_stats().unwrap();

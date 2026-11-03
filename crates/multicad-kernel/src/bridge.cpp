@@ -1,5 +1,6 @@
 #include "bridge.hpp"
 #include "measure.hpp"
+#include <tuple>
 #include "multicad-kernel/src/lib.rs.h"
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -466,6 +467,28 @@ std::unique_ptr<Shape> shape_from_brep(rust::Str text) {
     if (shape.IsNull())
       throw std::runtime_error("BRep text holds no shape");
     return checked(shape);
+  });
+}
+std::unique_ptr<Shape> shape_from_thread_prototype(rust::Str text,rust::Slice<const Seed> seeds) {
+  return guard([&] {
+    auto result=shape_from_brep(text);
+    const auto map=topology_map(result->value,0);
+    if(map.IsEmpty()||seeds.empty())throw std::runtime_error("Thread prototype has no face ancestry");
+    std::vector<bool> covered(map.Extent(),false);
+    std::set<std::tuple<uint32_t,uint32_t,uint8_t>> unique;
+    for(const auto &seed:seeds) {
+      const bool role=(seed.role<=1&&seed.source_index==0)||
+          (seed.role==2&&seed.source_index/4<8&&seed.source_index%4<3)||
+          (seed.role==3&&seed.source_index==0)||(seed.role==4&&seed.source_index<2);
+      if(seed.face>=static_cast<uint32_t>(map.Extent())||!role||
+          !unique.emplace(seed.face,seed.source_index,seed.role).second)
+        throw std::runtime_error("Thread prototype has invalid or duplicate face ancestry");
+      covered[seed.face]=true;
+      result->seeds.push_back({seed.face,seed.source_index,seed.role});
+    }
+    if(std::find(covered.begin(),covered.end(),false)!=covered.end())
+      throw std::runtime_error("Thread prototype face ancestry is incomplete");
+    return result;
   });
 }
 static gp_Pnt point(const Point3 &p) { return gp_Pnt(p.x, p.y, p.z); }

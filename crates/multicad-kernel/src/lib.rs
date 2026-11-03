@@ -272,6 +272,9 @@ mod ffi {
         include!("sketch_references.hpp");
         include!("threads.hpp");
         fn helical_thread(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
+        fn helical_thread_fresh(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
+        fn cached_helical_thread(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
+        fn helical_thread_after_miss(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
         include!("gears.hpp");
         fn involute_gear(spec: &GearData) -> Result<UniquePtr<Shape>>;
         fn sketch_reference_geometry(
@@ -353,6 +356,7 @@ mod ffi {
         fn face_cache_concurrent_probe(shape: &Shape) -> Result<bool>;
         fn thread_factory_stats() -> Result<ThreadFactoryStats>;
         fn remember_validated_thread(shape: &Shape) -> Result<bool>;
+        fn remember_thread_prototype(shape: &Shape, spec: &ThreadData) -> Result<bool>;
         #[allow(dead_code)] // Private bounded factory lifetime/invalidation tests.
         fn reset_thread_factory_cache() -> Result<()>;
         #[allow(dead_code)]
@@ -365,6 +369,7 @@ mod ffi {
         fn step_solids(path: &str) -> Result<Vec<StepSolidData>>;
         fn shape_to_brep(shape: &Shape) -> Result<String>;
         fn shape_from_brep(text: &str) -> Result<UniquePtr<Shape>>;
+        fn shape_from_thread_prototype(text: &str, seeds: &[Seed]) -> Result<UniquePtr<Shape>>;
         fn route_native_output_to_stderr();
         fn cylinder(frame: &Frame3, radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn profile_extrude(
@@ -521,6 +526,7 @@ mod advanced;
 pub use advanced::TreatmentFace;
 mod advanced_operations;
 mod advanced_profiles;
+pub mod thread_prototypes;
 mod threads;
 pub use threads::{HelicalThread, RoundedHelicalThread, ThreadFactoryStats, thread_factory_stats};
 mod gears;

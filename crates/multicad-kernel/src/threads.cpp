@@ -352,11 +352,11 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   throw std::runtime_error(e.GetMessageString()?e.GetMessageString():"Native thread operation failed");
  }
 }
-std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
+static std::unique_ptr<Shape> helical_thread_impl(const ThreadData &s,bool useCache,bool request=true) {
   auto &cache=thread_cache();
-  ++cache.stats.requests;
+  if(request)++cache.stats.requests;
   const auto key=thread_key(s);
-  if(auto found=cache.entries.find(key);found!=cache.entries.end()) {
+  if(auto found=cache.entries.find(key);useCache&&found!=cache.entries.end()) {
     ++cache.stats.hits;
     found->second.used=++cache.clock;
     return thread_wrapper(*found->second.shape);
@@ -405,6 +405,19 @@ std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
   trace.stage("volume_guard",measured);
   return completed(std::move(result));
 }
+std::unique_ptr<Shape> helical_thread(const ThreadData &s) {return helical_thread_impl(s,true);}
+std::unique_ptr<Shape> helical_thread_fresh(const ThreadData &s) {return helical_thread_impl(s,false);}
+std::unique_ptr<Shape> cached_helical_thread(const ThreadData &s) {
+  auto &cache=thread_cache();++cache.stats.requests;
+  if(auto found=cache.entries.find(thread_key(s));found!=cache.entries.end()) {
+    ++cache.stats.hits;found->second.used=++cache.clock;
+    return thread_wrapper(*found->second.shape);
+  }
+  return nullptr;
+}
+// The constructor has already recorded its request through the cache lookup.
+// Asset restoration is not a native construction or a continuous/bounded try.
+std::unique_ptr<Shape> helical_thread_after_miss(const ThreadData &s) {return helical_thread_impl(s,false,false);}
 ThreadFactoryStats thread_factory_stats() {
   const auto &cache=thread_cache();
   auto stats=cache.stats;
@@ -433,6 +446,14 @@ bool remember_validated_thread(const Shape &shape) {
   cache.entries.emplace(tag->key,ThreadEntry{std::move(neutral),bytes,++cache.clock});
   cache.bytes+=bytes;
   return true;
+}
+bool remember_thread_prototype(const Shape &shape,const ThreadData &s) {
+  // Only the private Rust compiled-asset path invokes this after exact digest,
+  // source/policy, geometry/role receipt, adoption and new-owner naming checks.
+  // The original wrapper remains untouched; project/import APIs never call it.
+  auto neutral=thread_wrapper(shape);
+  neutral->thread_factory_tag=std::make_shared<ThreadFactoryTag>(ThreadFactoryTag{thread_key(s),shape.value});
+  return remember_validated_thread(*neutral);
 }
 void reset_thread_factory_cache() {thread_cache()=ThreadCache{};}
 void thread_factory_test_limits(uint32_t entries,uint64_t bytes) {
