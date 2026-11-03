@@ -19,7 +19,7 @@ fn registered_entry(
 ) -> Option<&'static Registration> {
     // This derived table is typed to legacy HelicalThread inputs only. New
     // axial-flat/stock-clipped construction must never reuse those receipts.
-    if data.axial_flat || data.crest_limit.to_bits() != 0 {
+    if data.axial_flat || data.crest_limit.to_bits() != 0 || data.root_rounding.to_bits() != 0 {
         return None;
     }
     REGISTRY.iter().find(|entry| {
@@ -362,6 +362,9 @@ mod tests {
         assert!(load(&changed, policy).unwrap().is_none());
         let mut changed = data;
         changed.crest_limit = 1.5;
+        assert!(load(&changed, policy).unwrap().is_none());
+        let mut changed = data;
+        changed.root_rounding = 0.1;
         assert!(load(&changed, policy).unwrap().is_none());
     }
     #[test]

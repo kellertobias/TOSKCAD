@@ -49,7 +49,7 @@
 #include <tuple>
 
 namespace multicad::kernel {
-using ThreadKey=std::tuple<std::array<uint64_t,12>,uint32_t,bool,bool>;
+using ThreadKey=std::tuple<std::array<uint64_t,13>,uint32_t,bool,bool>;
 struct ThreadFactoryTag {
   ThreadKey key;
   TopoDS_Shape original;
@@ -66,7 +66,7 @@ ThreadKey thread_key(const ThreadData &s) {
   return {{exact_bits(s.radius),exact_bits(s.pitch),exact_bits(s.height),
       exact_bits(s.depth),exact_bits(s.crest_width),exact_bits(s.rounding),
       exact_bits(s.lower_slope),exact_bits(s.upper_slope),exact_bits(s.taper),
-      exact_bits(s.overlap),exact_bits(s.tolerance),exact_bits(s.crest_limit)},s.starts,s.left,s.axial_flat};
+      exact_bits(s.overlap),exact_bits(s.tolerance),exact_bits(s.crest_limit),exact_bits(s.root_rounding)},s.starts,s.left,s.axial_flat};
 }
 struct ThreadEntry {
   std::unique_ptr<Shape> shape;
@@ -335,6 +335,18 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   auto measured=trace.mark();
   const double pi=std::acos(-1.),lead=s.pitch*s.starts;
   const double root=s.radius-s.depth,z0=-2*lead,z1=s.height+2*lead;
+  double rootCenterZ=0,rootCenterRadius=0;
+  const double lowerAngle=std::atan(s.lower_slope),upperAngle=std::atan(s.upper_slope);
+  if(s.root_rounding>0) {
+    if(s.rounding!=0||s.taper!=0||s.starts!=1||s.axial_flat||s.crest_limit!=0)
+      throw std::runtime_error("Root-only rounding requires an unclipped parallel single-start flat-crest helix");
+    const double intersection=(s.pitch-s.crest_width)/(s.lower_slope+s.upper_slope);
+    const double half=(lowerAngle+upperAngle)/2,tilt=(upperAngle-lowerAngle)/2;
+    rootCenterZ=s.crest_width/2+intersection*s.upper_slope-s.root_rounding*std::sin(tilt)/std::sin(half);
+    rootCenterRadius=s.radius-intersection+s.root_rounding*std::cos(tilt)/std::sin(half);
+    if(std::abs(rootCenterRadius-s.root_rounding-root)>s.tolerance*16)
+      throw std::runtime_error("Root circle and core must share the same exact minimum radius");
+  }
   if(s.starts<1||s.starts>8||!std::isfinite(lead)||lead<=0||s.height<s.pitch||
       s.height/s.pitch+2*s.starts>128||root+s.taper*z0<=0||root+s.taper*z1<=0)
     throw std::runtime_error("Thread exceeds the validated radius, length or start budget");
@@ -358,12 +370,13 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,z/c),gp_Dir2d(sign*2*pi,lead/c));
     const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
     // Keep the exact authored helix, extent and phase. New rounded sweeps use
-    // half-turn parallel and quarter-turn tapered domains. Wider trimmed
+    // half-turn parallel and quarter-turn tapered domains. Root-only asymmetric
+    // sectors use quarter-turn domains to keep fused face wires valid. Wider trimmed
     // circular faces can fail native classification and Booleans despite
     // correct surfaces and volume. Flat profiles preserve
     // their established continuous representation and per-turn fallback.
     BRepBuilderAPI_MakeWire spineBuilder;
-    const double turn=segmented?std::hypot(2*pi,lead/c)*(s.axial_flat?.25:s.rounding>0?(s.taper==0?.5:.25):1.):end;
+    const double turn=segmented?std::hypot(2*pi,lead/c)*((s.axial_flat||s.root_rounding>0)?.25:s.rounding>0?(s.taper==0?.5:.25):1.):end;
     for(uint32_t span=0;;++span) {
       const double begin=span*turn;
       if(begin>=end)break;
@@ -383,7 +396,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       const double r=radius+s.taper*(z+dz);
       return gp_Pnt(r*std::cos(phase),r*std::sin(phase),z+dz);
     };
-    const auto sweep=[&](const std::vector<TopoDS_Edge> &source,int rootHalf) {
+    const auto sweep=[&](const std::vector<TopoDS_Edge> &source,int rootHalf,int rootSector=-1) {
       auto measured=trace.mark();
       BRepBuilderAPI_MakeWire profile;std::vector<TopoDS_Edge> edges;
       for(const auto &edge:source){profile.Add(edge);edges.push_back(profile.Edge());}
@@ -410,7 +423,15 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       measured=trace.mark();
       for(uint32_t i=0;i<edges.size();++i)for(const auto &face:generated[i])
         if(face.ShapeType()==TopAbs_FACE) {
-          if(rootHalf>=0&&i==0)ancestry.push_back({face,static_cast<uint32_t>(rootHalf),4});
+          if(rootSector>=0) {
+            if((rootSector==0&&i==2)||(rootSector==1&&i==1))ancestry.push_back({face,static_cast<uint32_t>(rootSector),4});
+            else if(rootSector==0&&i==1)ancestry.push_back({face,start*4+2,2});
+            else if(rootSector==1&&i==2)ancestry.push_back({face,start*4,2});
+            // Closure edges must be buried. A surviving closure keeps an
+            // unnameable source so Rust refuses it instead of calling it root.
+            else ancestry.push_back({face,start*4+3,2});
+          }
+          else if(rootHalf>=0&&i==0)ancestry.push_back({face,static_cast<uint32_t>(rootHalf),4});
           else ancestry.push_back({face,start*4+(rootHalf>=0?3:i),2});
         }
       BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,ridge);
@@ -433,6 +454,21 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       std::vector<TopoDS_Edge> edges;
       for(uint32_t i=0;i<4;++i)edges.push_back(edge(points[i],points[(i+1)%4]));
       sweep(edges,-1);
+      if(s.root_rounding>0) {
+        const double left=-(pi/2-upperAngle),right=pi/2-lowerAngle;
+        const auto circle=[&](double angle) {
+          return point(rootCenterRadius-s.root_rounding*std::cos(angle),rootCenterZ+s.root_rounding*std::sin(angle));
+        };
+        const auto a=circle(left),b=circle(0),d=circle(right);
+        const double az=rootCenterZ+s.root_rounding*std::sin(left),dz=rootCenterZ+s.root_rounding*std::sin(right);
+        const double extend=std::min({s.pitch*.02,(az-s.crest_width/2)*.25,(s.pitch-s.crest_width/2-dz)*.25});
+        const auto before=point(rootCenterRadius-s.root_rounding*std::sin(upperAngle)+extend/s.upper_slope,az-extend);
+        const auto after=point(rootCenterRadius-s.root_rounding*std::sin(lowerAngle)+extend/s.lower_slope,dz+extend);
+        const auto belowA=point(root-s.overlap,az-extend),belowD=point(root-s.overlap,dz+extend);
+        const auto belowB=point(root-s.overlap,rootCenterZ);
+        sweep({edge(belowA,before),edge(before,a),arc(a,circle(left/2),b),edge(b,belowB),edge(belowB,belowA)},-1,0);
+        sweep({edge(belowB,b),arc(b,circle(right/2),d),edge(d,after),edge(after,belowD),edge(belowD,belowB)},-1,1);
+      }
     } else if(s.taper==0) {
       // Full-period closed profiles self-contact at their valley seam. Sweep
       // three narrower exact profiles instead: the crest/flanks and the two
@@ -502,7 +538,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   const double bound=s.radius+std::abs(s.taper)*(s.height+3*lead)+s.pitch;
   measured=trace.mark();
   const auto limit=BRepPrimAPI_MakeBox(gp_Pnt(-bound,-bound,0),2*bound,2*bound,s.height).Shape();
-  if(s.rounding>0||s.axial_flat) {
+  if(s.rounding>0||s.root_rounding>0||s.axial_flat) {
     int count=0;for(TopExp_Explorer it(solid,TopAbs_SOLID);it.More();it.Next())++count;
     if(count!=1||!BRepCheck_Analyzer(solid).IsValid())
       throw std::runtime_error("Untrimmed rounded thread is not one valid solid");
@@ -552,6 +588,20 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
               trace.probe(valley?"root_circle":"crest_circle",sampleZ,phase,boundary,circleInside,circleOutside);
               throw ThreadRidgeLoss();
             }
+          }
+        }
+      }
+      if(s.root_rounding>0) {
+        const double epsilon=std::max(s.tolerance*16,s.root_rounding*.01);
+        for(double arcAngle:{-.65*(pi/2-upperAngle),.65*(pi/2-lowerAngle)}) {
+          const double relativeZ=rootCenterZ+s.root_rounding*std::sin(arcAngle);
+          const double boundary=rootCenterRadius-s.root_rounding*std::cos(arcAngle);
+          const double phase=sign*2*pi*(sampleZ-relativeZ)/lead;
+          const auto material=[&](double r){classifier.Perform(gp_Pnt(r*std::cos(phase),r*std::sin(phase),sampleZ),s.tolerance*4);return classifier.State();};
+          const auto circleInside=material(boundary-epsilon),circleOutside=material(boundary+epsilon);
+          if(circleInside!=TopAbs_IN||circleOutside!=TopAbs_OUT) {
+            trace.probe("asymmetric_root_circle",sampleZ,phase,boundary,circleInside,circleOutside);
+            throw ThreadRidgeLoss();
           }
         }
       }
@@ -608,7 +658,7 @@ static std::unique_ptr<Shape> helical_thread_impl(const ThreadData &s,bool useCa
   // outset, avoiding invalid continuous unions and false trimmed-solid native
   // classification. Flat profiles retain their established representation and
   // narrowly typed reconstruction rules below.
-  if(s.rounding>0||s.axial_flat) {
+  if(s.rounding>0||s.root_rounding>0||s.axial_flat) {
     ++cache.stats.bounded_attempts;
     auto result=build_helical_thread(s,true,trace);
     const auto measured=trace.mark();

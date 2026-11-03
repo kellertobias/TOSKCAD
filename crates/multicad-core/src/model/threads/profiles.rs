@@ -70,6 +70,7 @@ impl ThreadFamily {
                 | Self::Npt
                 | Self::Trapezoidal
                 | Self::Acme
+                | Self::Buttress
                 | Self::Custom
         )
     }
@@ -93,6 +94,7 @@ impl ThreadFamily {
             Self::Npt => NPT_THREAD_SOURCE,
             Self::Trapezoidal => TRAPEZOIDAL_THREAD_SOURCE,
             Self::Acme => ACME_THREAD_SOURCE,
+            Self::Buttress => BUTTRESS_THREAD_SOURCE,
             _ => "Not implemented; no sourced geometry or tolerance coverage claimed",
         }
     }

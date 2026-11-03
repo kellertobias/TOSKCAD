@@ -423,12 +423,31 @@ static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_
     // cannot modify a cached modeling operand or its manufacturing geometry.
     BRepBuilderAPI_Copy copy(s.value, true, false);
     auto display = copy.Shape();
-    BRepMesh_IncrementalMesh mesher(display, tolerance, false, angle, false);
-    if (!mesher.IsDone())
-      throw std::runtime_error("Tessellation failed");
+    auto exactFaces = topology_map(s.value, 0);
+    // A valid curved face can have an open discretized wire at a coarse
+    // deflection. Retry a bounded finer mesh on this detached copy; every
+    // exact face must still contribute triangles. The requested tolerances
+    // remain upper bounds, and the same triangle/index budget applies.
+    bool complete=false;
+    double meshTolerance=tolerance,meshAngle=angle;
+    for(int attempt=0;attempt<3;++attempt) {
+      if(attempt)BRepTools::Clean(display);
+      BRepMesh_IncrementalMesh mesher(display,meshTolerance,false,meshAngle,false);
+      if(!mesher.IsDone())throw std::runtime_error("Tessellation failed");
+      complete=true;uint64_t count=0;
+      for(int i=1;i<=exactFaces.Extent();++i) {
+        auto face=TopoDS::Face(copy.ModifiedShape(exactFaces(i)));
+        TopLoc_Location location;auto triangulation=BRep_Tool::Triangulation(face,location);
+        if(triangulation.IsNull()||triangulation->NbTriangles()==0)complete=false;
+        else count+=triangulation->NbTriangles();
+      }
+      if(count>limit)throw std::runtime_error("Display mesh exceeds triangle/index budget");
+      if(complete)break;
+      meshTolerance*=.25;meshAngle*=.5;
+    }
+    if(!complete)throw std::runtime_error("Face missing triangulation after bounded mesh refinement");
     Mesh out;
     uint64_t triangles = 0;
-    auto exactFaces = topology_map(s.value, 0);
     for (int faceIndex = 1; faceIndex <= exactFaces.Extent(); ++faceIndex) {
       auto face = TopoDS::Face(copy.ModifiedShape(exactFaces(faceIndex)));
       // The copy's modified sub-shape need not carry the orientation the face

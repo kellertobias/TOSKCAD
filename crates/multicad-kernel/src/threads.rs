@@ -55,6 +55,13 @@ pub struct AxialFlatHelicalThread {
     /// changes the nominal cone or its pitch diameter.
     pub crest_radius_limit_mm: Option<f64>,
 }
+/// Parallel 3/30-degree axial flanks with a flat crest and tangent circular
+/// valley. The external source family and load direction belong to core.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RootRoundedHelicalThread {
+    pub profile: HelicalThread,
+    pub root_radius_mm: f64,
+}
 fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError {
     GeometryError {
         operation: "thread",
@@ -130,10 +137,50 @@ impl HelicalThread {
             overlap,
             tolerance: policy.linear_tolerance_mm,
             crest_limit: 0.,
+            root_rounding: 0.,
             starts: self.starts,
             left: self.left_hand,
             axial_flat: false,
         })
+    }
+}
+impl RootRoundedHelicalThread {
+    fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
+        let p = self.profile;
+        let mut data = p.checked(policy)?;
+        policy.length(self.root_radius_mm)?;
+        if p.starts != 1
+            || p.radial_taper != 0.
+            || ![(3., 30.), (30., 3.)].contains(&(p.lower_flank_deg, p.upper_flank_deg))
+        {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Root-rounded construction requires a parallel single-start 3/30-degree profile",
+            ));
+        }
+        let lower = p.lower_flank_deg.to_radians();
+        let upper = p.upper_flank_deg.to_radians();
+        let intersection = (p.pitch_mm - p.crest_width_mm) / (lower.tan() + upper.tan());
+        let half = (lower + upper) / 2.;
+        let tilt = (upper - lower) / 2.;
+        let center_z = p.crest_width_mm / 2. + intersection * upper.tan()
+            - self.root_radius_mm * tilt.sin() / half.sin();
+        let center_r =
+            p.major_radius_mm - intersection + self.root_radius_mm * tilt.cos() / half.sin();
+        let depth = p.major_radius_mm - center_r + self.root_radius_mm;
+        let lo = center_z - self.root_radius_mm * upper.cos();
+        let hi = center_z + self.root_radius_mm * lower.cos();
+        if (depth - p.depth_mm).abs() > p.depth_mm.abs() * 1e-12
+            || lo <= p.crest_width_mm / 2. + policy.minimum_feature_mm
+            || hi >= p.pitch_mm - p.crest_width_mm / 2. - policy.minimum_feature_mm
+        {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Root circle must be tangent to both flanks and preserve their straight sections",
+            ));
+        }
+        data.root_rounding = self.root_radius_mm;
+        Ok(data)
     }
 }
 impl AxialFlatHelicalThread {
@@ -235,6 +282,30 @@ impl RoundedHelicalThread {
     }
 }
 impl Solid {
+    pub fn root_rounded_helical_thread_named(
+        spec: RootRoundedHelicalThread,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Thread feature identity must not be nil",
+            ));
+        }
+        let native = ffi::helical_thread(&spec.checked(policy)?)
+            .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+        let mut solid = Self::adopt(native, policy, "root-rounded thread")?;
+        if solid.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Thread must remain one connected solid",
+            ));
+        }
+        solid.name_thread(feature, 1)?;
+        let _ = ffi::remember_validated_thread(&solid.native.0);
+        Ok(solid)
+    }
     pub fn axial_flat_helical_thread_named(
         spec: AxialFlatHelicalThread,
         feature: EntityId,
@@ -566,6 +637,7 @@ mod factory_tests {
         changed!(overlap);
         changed!(tolerance);
         changed!(crest_limit);
+        changed!(root_rounding);
         let mut candidate = original;
         candidate.starts += 1;
         assert!(!ffi::thread_factory_contains(&candidate).unwrap());

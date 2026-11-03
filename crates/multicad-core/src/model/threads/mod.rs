@@ -1,5 +1,6 @@
 //! Versioned thread intent and transactions. Native receipts must still prove
 //! receiving geometry and manufactured solids before the UI enables Apply.
+mod buttress;
 mod lead_screw;
 mod npt;
 mod pipe;
@@ -20,6 +21,7 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     sketch::Frame,
 };
+pub use buttress::*;
 pub use lead_screw::*;
 pub use npt::*;
 pub use pipe::*;
@@ -103,6 +105,8 @@ pub struct ThreadParameters {
     pub pipe: Option<PipeThreadIntent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npt: Option<NptThreadIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buttress: Option<ButtressIntent>,
     /// Basic major diameter at the base plane, before fabrication allowance.
     pub major_diameter: Dimension,
     pub pitch: Dimension,
@@ -126,6 +130,7 @@ impl Default for ThreadParameters {
             custom: None,
             pipe: None,
             npt: None,
+            buttress: None,
             major_diameter: length(8.),
             pitch: length(1.25),
             length: length(12.5),
@@ -143,6 +148,7 @@ impl Default for ThreadParameters {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedThread {
+    pub buttress: Option<ResolvedButtressThread>,
     pub lead_screw: Option<ResolvedLeadScrew>,
     pub pipe: Option<ResolvedPipeThread>,
     pub npt: Option<ResolvedNptThread>,
@@ -209,6 +215,16 @@ impl ThreadParameters {
         if (self.family == ThreadFamily::Npt) != self.npt.is_some() {
             return Err(invalid(
                 "Only NPT requires its explicit historical form, size, gauge and truncation intent",
+            ));
+        }
+        if (self.family == ThreadFamily::Buttress) != self.buttress.is_some() {
+            return Err(invalid(
+                "Only Buttress requires its explicit series and load-flank side",
+            ));
+        }
+        if self.family == ThreadFamily::Buttress && self.starts != 1 {
+            return Err(invalid(
+                "The sourced circular-root buttress subset currently supports one start",
             ));
         }
         if let Some(profile) = &self.custom {
@@ -328,6 +344,12 @@ impl ThreadParameters {
             .then(|| lead_screw::lead_screw_preset(self.family, diameter, pitch))
             .transpose()?
             .map(|preset| lead_screw::lead_screw_receipt(preset, mode, self.starts, self.hand));
+        let buttress = self
+            .buttress
+            .map(|intent| {
+                buttress::resolve_buttress(intent, mode, diameter, pitch, radial, axial, self.hand)
+            })
+            .transpose()?;
         if diameter <= 0.
             || pitch < 0.001
             || length < pitch
@@ -355,7 +377,16 @@ impl ThreadParameters {
                 "Axial allowance for true rounded profiles is unsupported; use zero axial allowance",
             ));
         }
-        let mut profile = if let Some(lead_screw) = &lead_screw {
+        let mut profile = if let Some(buttress) = &buttress {
+            ResolvedThreadProfile {
+                depth_mm: buttress.depth_mm,
+                crest_width_mm: buttress.crest_width_mm,
+                lower_flank_deg: buttress.lower_flank_deg,
+                upper_flank_deg: buttress.upper_flank_deg,
+                radial_taper: 0.,
+                rounding_radius_mm: None,
+            }
+        } else if let Some(lead_screw) = &lead_screw {
             lead_screw.preset.construction(mode).1
         } else if let Some(npt) = &npt {
             ResolvedThreadProfile {
@@ -390,12 +421,17 @@ impl ThreadParameters {
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
         };
-        let nominal_pitch_diameter_mm = lead_screw
+        let nominal_pitch_diameter_mm = buttress
             .as_ref()
-            .map(|lead| lead.nominal_pitch_diameter_mm)
+            .map(|b| b.basic_pitch_diameter_mm)
             .or_else(|| {
-                (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
-                    .then_some(diameter - 2. * pitch_drop)
+                lead_screw
+                    .as_ref()
+                    .map(|lead| lead.nominal_pitch_diameter_mm)
+                    .or_else(|| {
+                        (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
+                            .then_some(diameter - 2. * pitch_drop)
+                    })
             });
         let sign = if mode == ThreadMode::CutInternal {
             1.
@@ -465,6 +501,7 @@ impl ThreadParameters {
                 .transpose()?
         };
         Ok(ResolvedThread {
+            buttress,
             lead_screw,
             pipe,
             npt,

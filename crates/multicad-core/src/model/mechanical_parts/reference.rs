@@ -108,7 +108,8 @@ impl MechanicalPartDefinition {
                 || a.fit != b.fit
                 || a.runout != b.runout
                 || a.pipe != b.pipe
-                || a.npt != b.npt)
+                || a.npt != b.npt
+                || a.buttress != b.buttress)
         {
             return Ok(false);
         }
@@ -132,6 +133,7 @@ impl MechanicalPartDefinition {
                 || at.fit != bt.fit
                 || at.pipe != bt.pipe
                 || at.npt != bt.npt
+                || at.buttress != bt.buttress
                 || at.runout != bt.runout)
         {
             return Ok(false);

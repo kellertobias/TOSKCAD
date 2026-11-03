@@ -8,7 +8,8 @@ use multicad_core::{
 };
 use multicad_kernel::{
     AxialFlatHelicalThread, BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy,
-    HelicalThread, PlaneFrame, RigidTransform, RoundedHelicalThread, Solid,
+    HelicalThread, PlaneFrame, RigidTransform, RootRoundedHelicalThread, RoundedHelicalThread,
+    Solid,
 };
 use std::collections::BTreeMap;
 
@@ -111,7 +112,31 @@ pub(crate) fn build_resolved(
 ) -> Result<Solid, ModelError> {
     let tool = if resolved.representation == ThreadRepresentation::Modeled {
         let profile = resolved.profile;
-        let local = if let Some(npt) = &resolved.npt {
+        let local = if let Some(circle) = resolved
+            .buttress
+            .as_ref()
+            .and_then(|b| b.root_circle.as_ref())
+        {
+            Solid::root_rounded_helical_thread_named(
+                RootRoundedHelicalThread {
+                    profile: HelicalThread {
+                        major_radius_mm: resolved.major_radius_mm,
+                        pitch_mm: resolved.pitch_mm,
+                        length_mm: resolved.length_mm,
+                        depth_mm: profile.depth_mm,
+                        crest_width_mm: profile.crest_width_mm,
+                        lower_flank_deg: profile.lower_flank_deg,
+                        upper_flank_deg: profile.upper_flank_deg,
+                        radial_taper: 0.,
+                        starts: resolved.starts,
+                        left_hand: resolved.hand == ThreadHand::Left,
+                    },
+                    root_radius_mm: circle.radius_mm,
+                },
+                feature,
+                policy,
+            )
+        } else if let Some(npt) = &resolved.npt {
             Solid::axial_flat_helical_thread_named(
                 AxialFlatHelicalThread {
                     profile: HelicalThread {
@@ -166,12 +191,17 @@ pub(crate) fn build_resolved(
             )
         }
         .map_err(|e| error(Some(feature), e))?;
+        let phase = resolved
+            .buttress
+            .as_ref()
+            .map_or(0., |b| b.phase_rotation_rad);
+        let (sin, cos) = phase.sin_cos();
         local
             .transformed(RigidTransform {
                 rotation: std::array::from_fn(|i| {
                     [
-                        resolved.frame.u[i],
-                        resolved.frame.v[i],
+                        resolved.frame.u[i] * cos + resolved.frame.v[i] * sin,
+                        resolved.frame.v[i] * cos - resolved.frame.u[i] * sin,
                         resolved.frame.n[i],
                     ]
                 }),

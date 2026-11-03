@@ -388,7 +388,7 @@ pub(super) fn inspect_mechanical_part(
             across_flats_mm,
             thread,
         } => {
-            json!({"kind":"hex_nut","across_flats_mm":across_flats_mm,"height_mm":thread.length_mm,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pipe":thread.pipe,"npt":thread.npt,"lead_screw":thread.lead_screw,"radial_taper":thread.profile.radial_taper,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
+            json!({"kind":"hex_nut","across_flats_mm":across_flats_mm,"height_mm":thread.length_mm,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pipe":thread.pipe,"npt":thread.npt,"lead_screw":thread.lead_screw,"buttress":thread.buttress,"radial_taper":thread.profile.radial_taper,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
         }
         model::ResolvedMechanicalPart::MachineScrew {
             underhead_length_mm,
@@ -418,7 +418,7 @@ pub(super) fn inspect_mechanical_part(
                 }
                 model::ResolvedScrewDrive::ExternalHex => json!({"kind":"external_hex"}),
             };
-            json!({"kind":"machine_screw","underhead_length_mm":underhead_length_mm,"shank_diameter_mm":2.*shank_radius_mm,"thread_start_mm":underhead_length_mm-thread.length_mm,"thread_length_mm":thread.length_mm,"fully_threaded":underhead_length_mm==thread.length_mm,"head":head,"drive":drive,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pipe":thread.pipe,"npt":thread.npt,"lead_screw":thread.lead_screw,"radial_taper":thread.profile.radial_taper,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
+            json!({"kind":"machine_screw","underhead_length_mm":underhead_length_mm,"shank_diameter_mm":2.*shank_radius_mm,"thread_start_mm":underhead_length_mm-thread.length_mm,"thread_length_mm":thread.length_mm,"fully_threaded":underhead_length_mm==thread.length_mm,"head":head,"drive":drive,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pipe":thread.pipe,"npt":thread.npt,"lead_screw":thread.lead_screw,"buttress":thread.buttress,"radial_taper":thread.profile.radial_taper,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
         }
     };
     Ok(

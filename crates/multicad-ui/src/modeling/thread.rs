@@ -27,6 +27,7 @@ pub(super) struct ThreadPanel {
     fit: ThreadFit,
     pipe: Option<model::PipeThreadIntent>,
     npt: Option<model::NptThreadIntent>,
+    buttress: Option<model::ButtressIntent>,
     hand: ThreadHand,
     starts: u32,
     representation: ThreadRepresentation,
@@ -71,6 +72,7 @@ impl ThreadPanel {
             fit: p.fit,
             pipe: p.pipe,
             npt: p.npt,
+            buttress: p.buttress,
             hand: p.hand,
             starts: p.starts,
             representation: p.representation,
@@ -147,6 +149,11 @@ impl ThreadPanel {
         let basis = self.plane.map(Datum::frame);
         let parameters = ThreadParameters {
             family: self.family,
+            buttress: if self.family == ThreadFamily::Buttress {
+                self.buttress
+            } else {
+                None
+            },
             npt: if self.family == ThreadFamily::Npt {
                 self.npt
             } else {
@@ -221,6 +228,14 @@ impl ThreadPanel {
                         changed |= self.family != family;
                         self.family = family;
                         self.fit = Self::fit_for(family, mode);
+                        if family == ThreadFamily::Buttress {
+                            self.starts = 1;
+                            if self.buttress.is_some() {
+                                let row = model::buttress_thread_presets().remove(0);
+                                self.diameter.set_exact_literal(row.diameter_mm, "mm");
+                                self.pitch.set_exact_literal(row.pitch_mm, "mm");
+                            }
+                        }
                         if family == ThreadFamily::Npt
                             && let Some(mut npt) = self.npt
                         {
@@ -256,6 +271,9 @@ impl ThreadPanel {
                 }
             });
         ui.small(self.family.source());
+        if self.family == ThreadFamily::Buttress {
+            changed |= self.buttress_controls(ui);
+        }
         if self.family.is_lead_screw() {
             changed |= self.lead_screw_controls(ui);
         }
@@ -379,7 +397,10 @@ impl ThreadPanel {
                 .add_enabled(
                     !self.family.is_unified()
                         && !self.family.is_rounded()
-                        && !matches!(self.family, ThreadFamily::Bspt | ThreadFamily::Npt),
+                        && !matches!(
+                            self.family,
+                            ThreadFamily::Bspt | ThreadFamily::Npt | ThreadFamily::Buttress
+                        ),
                     egui::DragValue::new(&mut self.starts).range(1..=8),
                 )
                 .changed();
@@ -486,6 +507,58 @@ impl ThreadPanel {
                 );
             }
         }
+        changed
+    }
+    fn buttress_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let mut selected = None;
+        controls::inspector_combo(ui, "thread-buttress-preset")
+            .selected_text("Choose sourced ST size…")
+            .show_ui(ui, |ui| {
+                for row in model::buttress_thread_presets() {
+                    if ui.selectable_label(false, row.designation).clicked() {
+                        selected = Some(row);
+                    }
+                }
+            });
+        if let Some(row) = selected {
+            let side = self
+                .buttress
+                .map_or(model::ButtressLoadFlankSide::NegativeAxisSide, |b| {
+                    b.load_flank_side
+                });
+            self.buttress = Some(model::ButtressIntent {
+                series: row.series,
+                load_flank_side: side,
+            });
+            self.diameter.set_exact_literal(row.diameter_mm, "mm");
+            self.pitch.set_exact_literal(row.pitch_mm, "mm");
+            if self.preset_length_default {
+                self.length.set_exact_literal(3. * row.pitch_mm, "mm");
+            }
+            self.starts = 1;
+            self.fit = ThreadFit::NominalBasic;
+            changed = true;
+        }
+        if let Some(intent) = &mut self.buttress {
+            ui.label("3° load flank placement");
+            for (side, label) in [
+                (
+                    model::ButtressLoadFlankSide::NegativeAxisSide,
+                    "Negative local axis side",
+                ),
+                (
+                    model::ButtressLoadFlankSide::PositiveAxisSide,
+                    "Positive local axis side",
+                ),
+            ] {
+                changed |= ui
+                    .radio_value(&mut intent.load_flank_side, side, label)
+                    .changed();
+            }
+        }
+        ui.small("The side names the external tooth's 3° face, independently of RH/LH. It does not name applied force; the mating material normal reverses.");
+        ui.small("BIS 2004 nominal ST20×4 only, one start. External roots are circular; the internal cutter is flat. Axial fabrication allowance is zero. No default 7e/7H fit class is claimed.");
         changed
     }
     fn lead_screw_controls(&mut self, ui: &mut egui::Ui) -> bool {
@@ -889,6 +962,21 @@ impl ThreadPanel {
                         "Pitch {:.4} mm · lead {:.4} mm · {} starts",
                         resolved.pitch_mm, resolved.lead_mm, resolved.starts
                     ));
+                    if let Some(buttress) = &resolved.buttress {
+                        ui.strong(&buttress.designation);
+                        ui.small(format!(
+                            "Engagement height {:.6} mm · actual profile depth {:.6} mm",
+                            buttress.nominal_engagement_height_mm, buttress.depth_mm
+                        ));
+                        if let Some(circle) = &buttress.root_circle {
+                            ui.small(format!(
+                                "Tangent external root circle · radius {:.6} mm",
+                                circle.radius_mm
+                            ));
+                        } else {
+                            ui.small(format!("Flat internal cutter · source relief-side axial clearance {:.6} mm · crest phase {:+.6} mm",buttress.axial_relief_clearance_mm,buttress.crest_phase_axial_mm));
+                        }
+                    }
                     if let Some(lead) = &resolved.lead_screw {
                         ui.strong(&lead.designation);
                         ui.small(format!(

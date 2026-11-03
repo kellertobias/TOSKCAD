@@ -324,6 +324,19 @@ retains an existing edit; changing family clears it. An NPT object on another
 family is refused. The [NPT reference](threads.md#npt-construction-and-source-limits)
 defines the bounded historical conventions and unsupported combinations.
 
+Buttress uses `family: "buttress"`, `fit: "nominal_basic"` and an explicit
+`buttress` object with `series: "bis_4696_nominal_2004"` and
+`load_flank_side: "negative_axis_side"` or `"positive_axis_side"`.
+The schema is generated from the [typed request](../../crates/multicad-mcp/src/tools/threads.rs).
+The side selects the external tooth's 3-degree face and remains independent
+of hand. `thread_profiles.buttress_presets` and `buttress_support` expose
+bounded source coverage. Direct and nested inspection return the same
+mode-specific `resolved.buttress` receipt. Omitted or null intent preserves
+it on same-family edits; changing family clears it. Supplying it for another
+family, omitting it on new Buttress creation, unsupported sizes/starts/fit
+or nonzero axial fabrication allowance fails before commit. See the
+[buttress construction](threads.md#metric-buttress-profile) for phase and source limits.
+
 Trapezoidal and Acme use their distinct `trapezoidal` and `acme` families
 with existing `fit: "nominal_basic"`, a listed nominal diameter/pitch, hand,
 starts and fabrication allowances. `thread_profiles.lead_screw_presets`

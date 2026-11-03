@@ -193,7 +193,7 @@ fn rounded_profiles_distinguish_series_pipe_size_semantics_and_explicit_class_co
     );
     assert_eq!(report["bspt_presets"].as_array().unwrap().len(), 2);
     assert_eq!(report["bspt_support"]["hands"], json!(["right"]));
-    for family in ["whitworth", "buttress"] {
+    for family in ["whitworth", "round"] {
         assert_eq!(
             report["families"]
                 .as_array()
@@ -1051,5 +1051,141 @@ fn lead_screw_nested_hardware_exposes_the_same_mode_specific_basic_receipt() {
                     < 1e-12
             );
         }
+    }
+}
+
+fn buttress_args(side: &str, hand: &str) -> Value {
+    json!({"name":"Sourced ST buttress", "family":"buttress", "fit":"nominal_basic", "major_diameter":mm(20.), "pitch":mm(4.), "length":mm(13.48), "hand":hand, "buttress":{"series":"bis_4696_nominal_2004","load_flank_side":side}})
+}
+#[test]
+fn buttress_catalog_and_owner_preview_preserve_hand_independent_load_side() {
+    let h = empty();
+    let before = h.document();
+    let catalog = run(&h, "thread_profiles", json!({}));
+    assert_eq!(catalog["buttress_presets"].as_array().unwrap().len(), 1);
+    assert_eq!(h.document(), before);
+    for side in ["negative_axis_side", "positive_axis_side"] {
+        for hand in ["right", "left"] {
+            let inspected =
+                reviewed_native_thread(model::ThreadFamily::Buttress, buttress_args(side, hand));
+            assert_eq!(
+                inspected["source"]["parameters"]["buttress"]["load_flank_side"],
+                side
+            );
+            assert_eq!(inspected["source"]["parameters"]["hand"], hand);
+            let b = &inspected["resolved"]["buttress"];
+            assert_eq!(
+                b["lower_flank_deg"],
+                if side == "negative_axis_side" {
+                    3.
+                } else {
+                    30.
+                }
+            );
+            assert!((b["root_circle"]["radius_mm"].as_f64().unwrap() - 0.49708).abs() < 1e-12);
+            assert_eq!(b["crest_phase_axial_mm"], 0.);
+        }
+    }
+}
+#[test]
+fn buttress_mcp_omitted_edits_atomic_failures_cancel_history_and_independent_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("buttress.tcd");
+    Store
+        .save(
+            &path,
+            &ProjectFile::new(Document::new("Buttress MCP").unwrap()).unwrap(),
+        )
+        .unwrap();
+    let h = Headless::new(
+        Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    let mut args = buttress_args("positive_axis_side", "left");
+    args["expected_revision"] = json!(0);
+    assert_eq!(
+        dispatch(&h, &call(true), "set_thread", args.clone())
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    let created = run(&h, "set_thread", args);
+    let feature = created["thread"].clone();
+    let original = h.document();
+    for bad in [
+        json!({"expected_revision":1,"thread":feature,"starts":2}),
+        json!({"expected_revision":1,"thread":feature,"axial_allowance":mm(0.001)}),
+        json!({"expected_revision":1,"thread":feature,"major_diameter":mm(21.)}),
+        json!({"expected_revision":1,"thread":feature,"fit":"unified_2a"}),
+        json!({"expected_revision":1,"thread":feature,"family":"custom","buttress":{"series":"bis_4696_nominal_2004","load_flank_side":"positive_axis_side"}}),
+        json!({"expected_revision":1,"thread":feature,"buttress":{"series":"current_din_513","load_flank_side":"positive_axis_side"}}),
+        json!({"expected_revision":0,"thread":feature,"radial_allowance":mm(0.005)}),
+    ] {
+        assert!(dispatch(&h, &call(false), "set_thread", bad).is_err());
+        assert_eq!(h.document(), original);
+    }
+    run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":1,"thread":feature,"radial_allowance":mm(0.005)}),
+    );
+    let inspected = run(&h, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(
+        inspected["source"]["parameters"]["buttress"]["load_flank_side"],
+        "positive_axis_side"
+    );
+    assert_eq!(inspected["source"]["parameters"]["hand"], "left");
+    let changed = h.document();
+    run(&h, "undo", json!({"expected_revision":2}));
+    assert_eq!(h.document(), original);
+    run(&h, "redo", json!({"expected_revision":3}));
+    assert_eq!(h.document(), changed);
+    run(&h, "save_project", json!({"expected_revision":4}));
+    drop(h);
+    let reopened = Headless::new(
+        Workspace::project(path, Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    assert_eq!(reopened.document(), changed);
+    let restored = run(&reopened, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(restored["source"], inspected["source"]);
+    assert_eq!(restored["resolved"], inspected["resolved"]);
+    let step = run(
+        &reopened,
+        "export_step",
+        json!({"part":created["part"],"file_name":"buttress.step"}),
+    );
+    assert!(step["readback_volume_mm3"].as_f64().unwrap() > 0.);
+}
+#[test]
+fn buttress_nested_hardware_exposes_distinct_internal_phase_and_flat_root() {
+    for internal in [false, true] {
+        let h = empty();
+        let mut thread = buttress_args("negative_axis_side", "left");
+        thread.as_object_mut().unwrap().remove("name");
+        let recipe = if internal {
+            json!({"kind":"hex_nut","across_flats":mm(30.),"thread":thread})
+        } else {
+            json!({"kind":"machine_screw","underhead_length":mm(13.48),"shank_diameter":mm(20.),"head":{"kind":"external_hex","across_flats":mm(30.),"height":mm(3.)},"drive":{"kind":"external_hex"},"thread":thread})
+        };
+        let created = run(
+            &h,
+            "set_mechanical_part",
+            json!({"expected_revision":0,"name":"Buttress hardware","recipe":recipe}),
+        );
+        let report = run(
+            &h,
+            "inspect_mechanical_part",
+            json!({"feature":created["feature"]}),
+        );
+        let b = &report["resolved"]["buttress"];
+        assert_eq!(b["intent"]["load_flank_side"], "negative_axis_side");
+        assert_eq!(b["root_circle"].is_null(), internal);
+        assert!(
+            (b["crest_phase_axial_mm"].as_f64().unwrap() - if internal { 0.1 } else { 0. }).abs()
+                < 1e-12
+        );
     }
 }

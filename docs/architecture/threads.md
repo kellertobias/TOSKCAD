@@ -28,7 +28,7 @@ disabled in the inspector and refused by the canonical API.
 | NPT | Right-hand, single-start external/internal 60-degree axial form; 1/8-27 and 1/4-18 | NBS H28 (1957) Part II, 1959 printing; plain-face nominal gauge, historical one-turn tolerance, explicit midpoint truncation; no NPTF or vanish/runout |
 | Trapezoidal | Parallel 30-degree nominal sharp design profile; Tr10x2 and Tr12x3 | ISO 2901:2016 and ISO 2904:2020 basic/design dimensions; source crest/root clearance, no ISO 2903 tolerance class |
 | Acme | Parallel 29-degree nominal sharp profile; 3/8-12 and 1/2-10 | NBS H28 (1957) Part III, issued 1960; basic form plus general-purpose crest/root clearance, no G-class fit |
-| Buttress | Unavailable | Standard asymmetric profile and size coverage unimplemented |
+| Buttress | Parallel ST20x4 nominal profile; 3/30-degree flanks, circular external root and flat internal cutter; RH/LH, single start | BIS IS 4696 Parts 1/2/3:2004; explicit steep-flank axial side, source relief clearance, no 7e/7H fit class |
 | Round | Unavailable | Rounded profile and standard size coverage unimplemented |
 
 The metric data comes from the
@@ -93,6 +93,47 @@ establish full ISO compliance. The
 [ISO 228-1:2000 abstract](https://committee.iso.org/standard/33777.html?browse=tc)
 identifies parallel fastening threads with any pressure seal outside the
 thread. No pressure-sealing result is claimed.
+
+## Metric buttress profile
+
+The [buttress registry](../../crates/multicad-core/src/model/threads/buttress.rs)
+bounds coverage to nominal ST20x4 from BIS IS 4696:2004. The primary
+[Part 1 profile](https://law.resource.org/pub/in/bis/S01/is.4696.1.2004.pdf)
+is dated November 2004; printed pages 2-3 define the 3-degree pressure flank,
+30-degree opposing flank and circular external root. The
+[Part 2 designation](https://law.resource.org/pub/in/bis/S01/is.4696.2.2004.pdf)
+is dated October 2004 and uses `ST`. The
+[Part 3 dimensions](https://law.resource.org/pub/in/bis/S01/is.4696.3.2004.pdf)
+are dated September 2004; printed page 3 lists the nominal diameter 20 mm,
+pitch 4 mm, external/internal pitch diameters 17/17.635 mm, external/internal
+minor diameters 13.058/14 mm, depth 3.471 mm and root radius 0.497 mm.
+The source was aligned with historical DIN 513 sheets. Coverage does not
+assert a current DIN edition, 7e/7H tolerance class, physical fit or load capacity.
+
+Persisted `buttress` intent selects `bis_4696_nominal_2004` and the axial side
+of the external tooth's 3-degree face. `negative_axis_side` gives lower/upper
+flank angles 3/30 degrees; `positive_axis_side` gives 30/3 degrees. This choice
+is independent of right/left hand. Internal material normals reverse after
+subtraction, so the saved side is a profile direction, not an applied-force sign.
+Only one start, `nominal_basic`, the listed diameter/pitch and zero axial
+fabrication allowance are supported. Radial fabrication allowance is separate.
+
+For pitch `P`, let `S = tan(3 degrees) + tan(30 degrees)` and
+`w = (0.5 - 0.375*S)*P`. The external crest width is `w` and its tangent
+root circle has `R = 0.12427*P`. Exact tangency gives external depth
+`0.8677683831826664*P`; the source's rounded coefficients/table dimensions
+remain separately visible. No sharp-root approximation substitutes for the circle.
+The internal cutter is flat, has radial depth `0.75*P` and crest width `w+a`,
+where the source clearance is `a = 0.1*sqrt(P)` with `P` numerically in mm.
+Its material crest is `w-a`. The common basic pitch diameter is `d-0.75*P`;
+the internal construction pitch diameter is `d-0.75*P+2*a/S`.
+
+The internal cutter crest is shifted axially by `+a/2` for the negative-side
+3-degree flank and `-a/2` for the positive-side flank. A local-axis rotation
+of `-hand_sign*2*pi*offset/lead` implements this phase without moving the end
+planes. It aligns the pressure flank and puts the source clearance on the
+opposing flank. The resolved receipt exposes the signed phase, actual root
+circle, nominal construction dimensions and source dimensions separately.
 
 ## Trapezoidal and Acme lead-screw profiles
 

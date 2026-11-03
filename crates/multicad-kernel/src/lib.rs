@@ -70,6 +70,7 @@ mod ffi {
         overlap: f64,
         tolerance: f64,
         crest_limit: f64,
+        root_rounding: f64,
         starts: u32,
         left: bool,
         axial_flat: bool,
@@ -576,8 +577,8 @@ mod advanced_profiles;
 pub mod thread_prototypes;
 mod threads;
 pub use threads::{
-    AxialFlatHelicalThread, HelicalThread, RoundedHelicalThread, ThreadFactoryStats,
-    thread_factory_stats,
+    AxialFlatHelicalThread, HelicalThread, RootRoundedHelicalThread, RoundedHelicalThread,
+    ThreadFactoryStats, thread_factory_stats,
 };
 mod gears;
 pub use gears::{GearSweep, InvoluteGear};

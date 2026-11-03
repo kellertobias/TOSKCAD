@@ -213,6 +213,9 @@ pub struct ThreadRecipeArgs {
     /// Historical plain-face NPT with explicit midpoint truncation construction.
     #[serde(default)]
     pub npt: Option<NptThreadArgs>,
+    /// Named nominal buttress series and external tooth load-side orientation.
+    #[serde(default)]
+    pub buttress: Option<ButtressThreadArgs>,
     /// Full explicit replacement of a Custom profile, including its angle/taper units.
     #[serde(default)]
     pub custom_profile: Option<ThreadProfileArgs>,
@@ -326,6 +329,38 @@ impl From<NptThreadArgs> for model::NptThreadIntent {
         }
     }
 }
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+pub enum ButtressSeriesArg {
+    #[serde(rename = "bis_4696_nominal_2004")]
+    Bis4696Nominal2004,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ButtressLoadFlankArg {
+    NegativeAxisSide,
+    PositiveAxisSide,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ButtressThreadArgs {
+    pub series: ButtressSeriesArg,
+    pub load_flank_side: ButtressLoadFlankArg,
+}
+impl From<ButtressThreadArgs> for model::ButtressIntent {
+    fn from(b: ButtressThreadArgs) -> Self {
+        Self {
+            series: model::ButtressSeries::Bis4696Nominal2004,
+            load_flank_side: match b.load_flank_side {
+                ButtressLoadFlankArg::NegativeAxisSide => {
+                    model::ButtressLoadFlankSide::NegativeAxisSide
+                }
+                ButtressLoadFlankArg::PositiveAxisSide => {
+                    model::ButtressLoadFlankSide::PositiveAxisSide
+                }
+            },
+        }
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InspectThreadArgs {
@@ -344,6 +379,16 @@ pub(super) fn parameters(
     }
     if let Some(fit) = args.fit {
         p.fit = fit.into();
+    }
+    if let Some(buttress) = args.buttress {
+        p.buttress = Some(buttress.into());
+    } else if p.family != ThreadFamily::Buttress {
+        p.buttress = None;
+    }
+    if p.family != ThreadFamily::Buttress && args.buttress.is_some() {
+        return Err(ToolError::invalid(
+            "buttress intent is valid only for family buttress",
+        ));
     }
     if let Some(npt) = args.npt {
         p.npt = Some(npt.into());
@@ -491,6 +536,8 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "rounded_presets":rounded_presets,
         "bspt_presets":model::pipe_thread_presets(),
         "lead_screw_presets":model::lead_screw_presets(),
+        "buttress_presets":model::buttress_thread_presets(),
+        "buttress_support":{"series":"bis_4696_nominal_2004","load_flank_side":["negative_axis_side","positive_axis_side"],"orientation":"Axial side of the external tooth's 3-degree face, independent of hand; not applied force","hands":["right","left"],"starts":[1],"fit":"nominal_basic","external_root":"tangent_circle","internal_material_root_and_crest":"flat","axial_fabrication_allowance_mm":[0],"scope":"Source nominal ST geometry and relief-side clearance; no default 7e/7H fit, current DIN or physical-fit claim"},
         "lead_screw_support":{"fit":"nominal_basic","hands":["right","left"],"starts":[1,2,3,4,5,6,7,8],"lead":"pitch times starts; adjacent-thread TPI is distinct from turns per inch","corners":"sharp limiting design","tolerance_classes":"unavailable","scope":"Source basic geometry and crest/root clearance; multiple starts are engineering coverage, no fitted-class, gage, free-running or physical-fit certification"},
         "npt_presets":model::npt_thread_presets(),
         "npt_support":{"forms":["external","internal"],"hands":["right"],"starts":[1],"gauge":"nbs1959_plain_face","truncation":"midpoint_cone_parallel","source":model::NPT_THREAD_SOURCE,"source_url":model::NPT_THREAD_SOURCE_URL,"included_angle_deg":60,"diameter_taper":"1:16","external_length":"L2; crests clipped to pipe stock OD; no L2..L4 vanish","internal_length":"at least L1 plus three pitches plus positive gauge travel","gauge_tolerance_turns":1,"radial_allowance":"0 to pitch / 32","axial_allowance_mm":[0],"nptf":"unavailable"},
@@ -506,7 +553,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {
