@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <vector>
 #include <algorithm>
+#include <limits>
 
 namespace multicad::kernel {
 namespace {
@@ -78,9 +79,22 @@ std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
     const double phase=2*pi*start/s.starts,z=-lead;
     Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,z/c),gp_Dir2d(sign*2*pi,lead/c));
     const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
-    auto edge=BRepBuilderAPI_MakeEdge(line,surface,0,end).Edge();
-    if(!BRepLib::BuildCurve3d(edge,s.tolerance))throw std::runtime_error("Native helix has no bounded 3D curve");
-    const auto spine=BRepBuilderAPI_MakeWire(edge).Wire();
+    // A single multi-turn sweep face can lose an interior ridge when OCCT
+    // clips its upper end at a fractional turn, despite a valid Boolean result.
+    // Bound the sweep faces with per-turn spine edges on the same exact helix.
+    // The last edge keeps the requested fractional endpoint and initial phase.
+    BRepBuilderAPI_MakeWire spineBuilder;
+    const double turn=std::hypot(2*pi,lead/c);
+    for(double begin=0;begin<end;) {
+      // Merge only floating-point roundoff at a complete-turn endpoint into
+      // the preceding edge; never create an almost-zero final edge or move end.
+      const double finish=end-begin>turn*(1.+16*std::numeric_limits<double>::epsilon())?
+          begin+turn:end;
+      auto edge=BRepBuilderAPI_MakeEdge(line,surface,begin,finish).Edge();
+      if(!BRepLib::BuildCurve3d(edge,s.tolerance))throw std::runtime_error("Native helix has no bounded 3D curve");
+      spineBuilder.Add(edge);begin=finish;
+    }
+    const auto spine=spineBuilder.Wire();
     const auto point=[&](double radius,double dz) {
       const double r=radius+s.taper*(z+dz);
       return gp_Pnt(r*std::cos(phase),r*std::sin(phase),z+dz);

@@ -22,6 +22,55 @@ fn metric() -> HelicalThread {
 fn build(spec: HelicalThread) -> Solid {
     Solid::helical_thread_named(spec, EntityId::new(), GeometryPolicy::default()).unwrap()
 }
+#[test]
+fn short_unf_internal_tools_retain_helices_at_nonintegral_lengths() {
+    let pitch = 25.4 / 28.;
+    let h = 3_f64.sqrt() * pitch / 2.;
+    let pitch_diameter = (0.2268 + 0.2311) / 2. * 25.4;
+    for length in [2.5, 2.4, 2.6, 3., 3.2, pitch, 4. * pitch] {
+        let spec = HelicalThread {
+            major_radius_mm: (pitch_diameter + 3. * h / 4.) / 2.,
+            pitch_mm: pitch,
+            length_mm: length,
+            depth_mm: 5. * h / 8.,
+            crest_width_mm: pitch / 8.,
+            ..metric()
+        };
+        let feature = EntityId::new();
+        let solid = Solid::helical_thread_named(spec, feature, Default::default())
+            .unwrap_or_else(|e| panic!("UNF internal-tool length {length}: {e}"));
+        assert!((solid.volume_mm3().unwrap() - expected_volume(spec)).abs() < 1e-3);
+        let bounds = solid.bounds().unwrap();
+        assert!(bounds.min[2].abs() < 1e-6);
+        assert!((bounds.max[2] - length).abs() < 1e-6);
+        let topology = solid.topology_snapshot(feature, 0).unwrap();
+        for role in [
+            "cap.start",
+            "cap.end",
+            "thread.root",
+            "thread/start/0/lower",
+            "thread/start/0/crest",
+            "thread/start/0/upper",
+        ] {
+            assert!(
+                topology
+                    .elements
+                    .iter()
+                    .any(|e| e.key.kind == TopologyKind::Face
+                        && e.origins
+                            .iter()
+                            .any(|o| o.source == feature && o.role == role)),
+                "missing {role} at length {length}"
+            );
+        }
+        let r = spec.major_radius_mm - 0.05 * spec.depth_mm;
+        for z in [length * 0.23, length * 0.47, length * 0.71] {
+            let angle = TAU * z / pitch;
+            assert!(probe(&solid, [r * angle.cos(), r * angle.sin(), z]) > 0.999);
+            assert!(probe(&solid, [-r * angle.cos(), -r * angle.sin(), z]) < 1e-5);
+        }
+    }
+}
 fn probe(solid: &Solid, center: [f64; 3]) -> f64 {
     let size = 0.005;
     let cube = Solid::box_solid([size; 3], GeometryPolicy::default())
