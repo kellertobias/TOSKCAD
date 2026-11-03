@@ -1040,3 +1040,114 @@ mod volume_cache_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod face_cache_tests {
+    use super::*;
+    fn count(s: &Solid) -> u64 {
+        ffi::face_integration_count(&s.native.0).unwrap()
+    }
+    fn shares(a: &Solid, b: &Solid) -> bool {
+        ffi::shares_face_cache(&a.native.0, &b.native.0)
+    }
+    fn area(s: &Solid) -> f64 {
+        s.faces().unwrap().iter().map(|f| f.area_mm2).sum()
+    }
+
+    #[test]
+    fn completed_face_properties_share_only_identical_geometry_and_recompute_imports_and_edits() {
+        let policy = GeometryPolicy::default();
+        let source = Solid::box_solid([4., 5., 6.], policy).unwrap();
+        let expected = source.faces().unwrap();
+        assert_eq!(expected.len(), 6);
+        assert!((area(&source) - 148.).abs() < 1e-10);
+        let shared = source.share().unwrap();
+        assert!(shares(&source, &shared));
+        for _ in 0..50 {
+            assert_eq!(shared.faces().unwrap(), expected);
+        }
+        assert_eq!(count(&source), 6);
+        let moved = source
+            .transformed(RigidTransform {
+                rotation: [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]],
+                translation_mm: [9., -3., 7.],
+            })
+            .unwrap();
+        assert!(!shares(&source, &moved));
+        let moved_faces = moved.faces().unwrap();
+        for (before, after) in expected.iter().zip(&moved_faces) {
+            assert!((before.area_mm2 - after.area_mm2).abs() < 1e-10);
+            let [x, y, z] = before.center_mm;
+            for (actual, want) in after.center_mm.into_iter().zip([x + 9., -z - 3., y + 7.]) {
+                assert!((actual - want).abs() < 1e-10);
+            }
+        }
+        assert_eq!(count(&moved), 6);
+        let fresh = Solid::from_brep(&moved.to_brep().unwrap(), policy).unwrap();
+        assert!(!shares(&moved, &fresh));
+        assert!((area(&fresh) - 148.).abs() < 1e-10);
+        assert_eq!(count(&fresh), 6);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("independent-faces.step");
+        moved.write_step(&path).unwrap();
+        let read = Solid::read_step(&path, policy).unwrap();
+        assert!(!shares(&moved, &read));
+        assert!((area(&read) - 148.).abs() < 1e-8);
+        assert_eq!(count(&read), 6);
+        let tool = Solid::box_solid([2., 5., 6.], policy).unwrap();
+        let cut = source
+            .boolean(&tool, BooleanOperation::Subtract, policy)
+            .unwrap()
+            .unwrap();
+        assert!(!shares(&source, &cut));
+        assert!((area(&cut) - 104.).abs() < 1e-10);
+        assert_eq!(source.faces().unwrap(), expected);
+        assert_eq!(count(&source), 6);
+    }
+
+    #[test]
+    fn exact_identity_pose_preserves_numeric_face_cache_without_reusing_owner_metadata() {
+        let policy = GeometryPolicy::default();
+        let owner = multicad_core::document::EntityId::new();
+        let source = Solid::box_named([4., 5., 6.], owner, policy).unwrap();
+        let expected = source.faces().unwrap();
+        let bounds = source.bounds().unwrap();
+        let before = count(&source);
+        let identity = source.transformed(RigidTransform::default()).unwrap();
+        assert!(shares(&source, &identity));
+        assert_eq!(identity.faces().unwrap(), expected);
+        assert_eq!(identity.bounds().unwrap(), bounds);
+        assert_eq!(
+            identity.topology_snapshot(owner, 0).unwrap(),
+            source.topology_snapshot(owner, 0).unwrap()
+        );
+        assert_eq!(count(&identity), before);
+        let fresh = Solid::from_brep(&identity.to_brep().unwrap(), policy).unwrap();
+        assert!(!shares(&source, &fresh));
+        assert_eq!(fresh.faces().unwrap(), expected);
+        let translated = source
+            .transformed(RigidTransform {
+                translation_mm: [1e-10, 0., 0.],
+                ..RigidTransform::default()
+            })
+            .unwrap();
+        assert!(!shares(&source, &translated));
+        for (old, new) in expected.iter().zip(translated.faces().unwrap()) {
+            assert!((new.center_mm[0] - old.center_mm[0] - 1e-10).abs() < 1e-12);
+        }
+        assert_eq!(source.faces().unwrap(), expected);
+        assert_eq!(count(&source), before);
+    }
+
+    #[test]
+    fn cold_face_cache_serializes_eight_native_queries_without_crossing_rust_ownership() {
+        let solid = Solid::cylinder(Default::default(), 3., 4., Default::default()).unwrap();
+        assert!(ffi::face_cache_concurrent_probe(&solid.native.0).unwrap());
+        assert!((area(&solid) - 42. * std::f64::consts::PI).abs() < 1e-9);
+        let initial = count(&solid);
+        for _ in 0..100 {
+            assert_eq!(solid.faces().unwrap().len(), 3);
+        }
+        assert_eq!(count(&solid), initial);
+    }
+}

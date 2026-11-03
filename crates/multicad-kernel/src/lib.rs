@@ -345,6 +345,12 @@ mod ffi {
         fn shares_volume_cache(a: &Shape, b: &Shape) -> bool;
         #[allow(dead_code)]
         fn volume_cache_concurrent_probe(shape: &Shape) -> Result<bool>;
+        #[allow(dead_code)] // Private completed face-property cache regressions.
+        fn face_integration_count(shape: &Shape) -> Result<u64>;
+        #[allow(dead_code)]
+        fn shares_face_cache(a: &Shape, b: &Shape) -> bool;
+        #[allow(dead_code)]
+        fn face_cache_concurrent_probe(shape: &Shape) -> Result<bool>;
         fn thread_factory_stats() -> Result<ThreadFactoryStats>;
         fn remember_validated_thread(shape: &Shape) -> Result<bool>;
         #[allow(dead_code)] // Private bounded factory lifetime/invalidation tests.

@@ -48,6 +48,17 @@ struct VolumeCache {
   std::optional<VolumeCertificate> certificate;
   uint64_t integrations=0;
 };
+struct CachedFace {
+  uint32_t index;
+  bool planar;
+  std::array<double,3> origin,normal,centroid;
+  double area;
+};
+struct FaceCache {
+  std::mutex mutex;
+  std::optional<std::vector<CachedFace>> value;
+  uint64_t integrations=0;
+};
 struct Shape {
   TopoDS_Shape value;
   std::vector<NativeAncestry> ancestry;
@@ -58,6 +69,9 @@ struct Shape {
   // Only completed positive, finite native integrations are memoized. New
   // geometry/imports start empty; identical immutable owners share the cache.
   std::shared_ptr<VolumeCache> volume_cache=std::make_shared<VolumeCache>();
+  // Completed numeric face properties belong to this exact immutable geometry.
+  // Memory is bounded by its face count and lifetime; new geometry starts cold.
+  std::shared_ptr<FaceCache> face_cache=std::make_shared<FaceCache>();
   // Only an original local thread result has this opaque factory identity.
   // Geometry-changing operations/imports never inherit it.
   std::shared_ptr<const ThreadFactoryTag> thread_factory_tag;
@@ -69,6 +83,9 @@ Mesh mesh(const Shape &, double deflection);
 double volume(const Shape &);
 uint64_t volume_integration_count(const Shape &);
 bool shares_volume_cache(const Shape &,const Shape &);
+uint64_t face_integration_count(const Shape &);
+bool shares_face_cache(const Shape &,const Shape &);
+bool face_cache_concurrent_probe(const Shape &);
 bool volume_cache_concurrent_probe(const Shape &);
 ThreadFactoryStats thread_factory_stats();
 bool remember_validated_thread(const Shape &);

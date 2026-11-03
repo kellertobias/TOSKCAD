@@ -642,6 +642,17 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
       throw std::runtime_error("Rigid transform failed");
     auto result = checked(operation.Shape());
     record_history(*result, s, 0, operation);
+    // OCCT may attach a new identity Location datum even when its exact
+    // matrix is identity, so structural IsEqual alone misses this case.
+    // Require exact coefficients plus identical topological partner/orientation;
+    // no epsilon or transformed-centroid approximation is involved.
+    bool identity=true;
+    for(int row=1;row<=3;++row)for(int col=1;col<=4;++col)
+      identity=identity&&(tr.Value(row,col)==(row==col?1.:0.));
+    if(identity&&result->value.IsPartner(s.value)&&result->value.Orientation()==s.value.Orientation()) {
+      result->bounds_cache=s.bounds_cache;
+      result->face_cache=s.face_cache;
+    }
     // A completed native mass certificate is invariant under this exact
     // unit-scale proper isometry. Other transforms and all new geometry keep
     // fresh caches; imported STEP/BRep must independently integrate again.
@@ -854,11 +865,14 @@ uint32_t solid_count(const Shape &s) {
 }
 rust::Vec<FaceInfo> faces(const Shape &s) {
   return guard([&] {
-    rust::Vec<FaceInfo> out;
+    std::lock_guard<std::mutex> lock(s.face_cache->mutex);
+    if(!s.face_cache->value) {
+    std::vector<CachedFace> completed;
     auto map = topology_map(s.value, 0);
     for (int index = 1; index <= map.Extent(); ++index) {
       auto face = TopoDS::Face(map(index));
       BRepAdaptor_Surface surface(face, true);
+      ++s.face_cache->integrations;
       const auto p = measured_face(face);
       FaceInfo info{static_cast<uint32_t>(index - 1), false, Point3{0, 0, 0}, Point3{0, 0, 0},
                     data(p.CentreOfMass()), p.Mass()};
@@ -876,10 +890,53 @@ rust::Vec<FaceInfo> faces(const Shape &s) {
         info.origin = data(plane.Location());
         info.normal = Point3{n.X(), n.Y(), n.Z()};
       }
-      out.push_back(info);
+      completed.push_back({info.index,info.planar,{info.origin.x,info.origin.y,info.origin.z},
+          {info.normal.x,info.normal.y,info.normal.z},
+          {info.center.x,info.center.y,info.center.z},info.area});
     }
+    // Publish only a complete successful measurement. An exception leaves no
+    // partial certificate; existing adaptive integration guards stay unchanged.
+    s.face_cache->value=std::move(completed);
+    }
+    rust::Vec<FaceInfo> out;
+    for(const auto &f:*s.face_cache->value)out.push_back({f.index,f.planar,
+        Point3{f.origin[0],f.origin[1],f.origin[2]},
+        Point3{f.normal[0],f.normal[1],f.normal[2]},
+        Point3{f.centroid[0],f.centroid[1],f.centroid[2]},f.area});
     return out;
   });
+}
+uint64_t face_integration_count(const Shape &s) {
+  std::lock_guard<std::mutex> lock(s.face_cache->mutex);
+  return s.face_cache->integrations;
+}
+bool shares_face_cache(const Shape &a,const Shape &b) {return a.face_cache==b.face_cache;}
+bool face_cache_concurrent_probe(const Shape &source) {
+  Shape cold{source.value};
+  const auto shared=share_shape(cold);
+  std::array<std::vector<double>,8> values;
+  std::array<std::exception_ptr,8> errors{};
+  std::vector<std::thread> workers;
+  std::atomic<bool> start{false};
+  try {for(int i=0;i<8;++i)workers.emplace_back([&,i] {
+    while(!start.load(std::memory_order_acquire))std::this_thread::yield();
+    try {
+      for(const auto &f:faces(i%2?*shared:cold)) {
+        auto &v=values[i];
+        v.insert(v.end(),{double(f.index),double(f.planar),f.origin.x,f.origin.y,f.origin.z,
+            f.normal.x,f.normal.y,f.normal.z,f.center.x,f.center.y,f.center.z,f.area});
+      }
+    } catch(...) {errors[i]=std::current_exception();}
+  });} catch(...) {
+    start.store(true,std::memory_order_release);
+    for(auto &worker:workers)worker.join();
+    throw;
+  }
+  start.store(true,std::memory_order_release);
+  for(auto &worker:workers)worker.join();
+  for(int i=0;i<8;++i)if(errors[i])std::rethrow_exception(errors[i]);
+  for(int i=1;i<8;++i)if(values[i]!=values[0])return false;
+  return !values[0].empty()&&face_integration_count(cold)==values[0].size()/12;
 }
 rust::Vec<TopologyNode> topology(const Shape &s) {
   return guard([&] {

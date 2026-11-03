@@ -294,6 +294,8 @@ mod factory_tests {
         let first_id = EntityId::new();
         let second_id = EntityId::new();
         let first = build(spec, first_id);
+        let face_integrations = ffi::face_integration_count(&first.native.0).unwrap();
+        assert!(face_integrations > 0);
         let before = thread_factory_stats().unwrap();
         assert_eq!(
             (
@@ -308,6 +310,16 @@ mod factory_tests {
         let started = std::time::Instant::now();
         let second = build(spec, second_id);
         let warm = started.elapsed();
+        assert!(ffi::shares_face_cache(&first.native.0, &second.native.0));
+        assert_eq!(
+            ffi::face_integration_count(&second.native.0).unwrap(),
+            face_integrations
+        );
+        assert_eq!(first.faces().unwrap(), second.faces().unwrap());
+        assert_eq!(
+            ffi::face_integration_count(&first.native.0).unwrap(),
+            face_integrations
+        );
         let after = thread_factory_stats().unwrap();
         assert_eq!((after.requests, after.constructions, after.hits), (2, 1, 1));
         assert_eq!(after.continuous_attempts, before.continuous_attempts);

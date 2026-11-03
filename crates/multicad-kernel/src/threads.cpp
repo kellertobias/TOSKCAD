@@ -79,6 +79,7 @@ std::unique_ptr<Shape> thread_wrapper(const Shape &source) {
   auto result=std::make_unique<Shape>(Shape{source.value,{},source.seeds});
   result->bounds_cache=source.bounds_cache;
   result->volume_cache=source.volume_cache;
+  result->face_cache=source.face_cache;
   result->thread_factory_tag=source.thread_factory_tag;
   return result;
 }
