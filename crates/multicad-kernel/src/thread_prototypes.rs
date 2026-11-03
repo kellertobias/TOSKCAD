@@ -17,6 +17,11 @@ fn registered_entry(
     data: &ffi::ThreadData,
     policy: GeometryPolicy,
 ) -> Option<&'static Registration> {
+    // This derived table is typed to legacy HelicalThread inputs only. New
+    // axial-flat/stock-clipped construction must never reuse those receipts.
+    if data.axial_flat || data.crest_limit.to_bits() != 0 {
+        return None;
+    }
     REGISTRY.iter().find(|entry| {
         entry.inputs == input_bits(data)
             && entry.starts == data.starts
@@ -351,6 +356,12 @@ mod tests {
         assert!(load(&data, changed_policy).unwrap().is_none());
         let mut changed = data;
         changed.left = !changed.left;
+        assert!(load(&changed, policy).unwrap().is_none());
+        let mut changed = data;
+        changed.axial_flat = true;
+        assert!(load(&changed, policy).unwrap().is_none());
+        let mut changed = data;
+        changed.crest_limit = 1.5;
         assert!(load(&changed, policy).unwrap().is_none());
     }
     #[test]

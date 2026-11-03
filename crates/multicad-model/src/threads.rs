@@ -7,8 +7,8 @@ use multicad_core::{
     references::Origin,
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, HelicalThread, PlaneFrame,
-    RigidTransform, RoundedHelicalThread, Solid,
+    AxialFlatHelicalThread, BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy,
+    HelicalThread, PlaneFrame, RigidTransform, RoundedHelicalThread, Solid,
 };
 use std::collections::BTreeMap;
 
@@ -111,7 +111,27 @@ pub(crate) fn build_resolved(
 ) -> Result<Solid, ModelError> {
     let tool = if resolved.representation == ThreadRepresentation::Modeled {
         let profile = resolved.profile;
-        let local = if let Some(rounding_radius_mm) = profile.rounding_radius_mm {
+        let local = if let Some(npt) = &resolved.npt {
+            Solid::axial_flat_helical_thread_named(
+                AxialFlatHelicalThread {
+                    profile: HelicalThread {
+                        major_radius_mm: resolved.major_radius_mm,
+                        pitch_mm: resolved.pitch_mm,
+                        length_mm: resolved.length_mm,
+                        depth_mm: profile.depth_mm,
+                        crest_width_mm: profile.crest_width_mm,
+                        lower_flank_deg: profile.lower_flank_deg,
+                        upper_flank_deg: profile.upper_flank_deg,
+                        radial_taper: profile.radial_taper,
+                        starts: resolved.starts,
+                        left_hand: resolved.hand == ThreadHand::Left,
+                    },
+                    crest_radius_limit_mm: npt.stock_crest_radius_limit_mm,
+                },
+                feature,
+                policy,
+            )
+        } else if let Some(rounding_radius_mm) = profile.rounding_radius_mm {
             Solid::rounded_helical_thread_named(
                 RoundedHelicalThread {
                     major_radius_mm: resolved.major_radius_mm,
@@ -167,13 +187,38 @@ pub(crate) fn build_resolved(
             } else {
                 0.
             };
-        envelope(
+        let cosmetic = envelope(
             feature,
             radius,
             &resolved,
             "thread.cosmetic.envelope",
             policy,
-        )?
+        )?;
+        if let Some(limit) = resolved
+            .npt
+            .as_ref()
+            .and_then(|npt| npt.stock_crest_radius_limit_mm)
+        {
+            let mut stock_context = resolved.clone();
+            stock_context.profile.radial_taper = 0.;
+            let stock = envelope(
+                feature,
+                limit,
+                &stock_context,
+                "thread.stock.envelope",
+                policy,
+            )?;
+            boolean(
+                feature,
+                &cosmetic,
+                &stock,
+                BooleanOperation::Intersect,
+                policy,
+            )?
+            .ok_or_else(|| error(Some(feature), "NPT cosmetic stock envelope is empty"))?
+        } else {
+            cosmetic
+        }
     };
     if mode == ThreadMode::NewExternal {
         return Ok(tool);
@@ -188,10 +233,23 @@ pub(crate) fn build_resolved(
     }
     let cutter = match mode {
         ThreadMode::CutExternal => {
+            // NPT is formed from its sourced pipe-OD cylinder, including the
+            // conical reduction before the imperfect-crest region.
+            let mut receiving_context = resolved.clone();
+            let nominal_radius = if let Some(limit) = resolved
+                .npt
+                .as_ref()
+                .and_then(|npt| npt.stock_crest_radius_limit_mm)
+            {
+                receiving_context.profile.radial_taper = 0.;
+                limit
+            } else {
+                resolved.nominal_major_radius_mm
+            };
             let nominal = envelope(
                 feature,
-                resolved.nominal_major_radius_mm,
-                &resolved,
+                nominal_radius,
+                &receiving_context,
                 "thread.nominal.envelope",
                 policy,
             )?;
@@ -204,8 +262,8 @@ pub(crate) fn build_resolved(
             )?;
             let mask = envelope(
                 feature,
-                resolved.nominal_major_radius_mm + resolved.pitch_mm * 0.25,
-                &resolved,
+                nominal_radius + resolved.pitch_mm * 0.25,
+                &receiving_context,
                 "thread.cut.limit",
                 policy,
             )?;

@@ -25,7 +25,7 @@ disabled in the inspector and refused by the canonical API.
 | BSPP | Single-start rounded 55-degree parallel profile; G1/8-28 and G1/4-19 | Elesa+Ganter 2018 external Class B/internal limits; NBK JIS B 0202:1999 basic form; sealing outside the thread |
 | Legacy ambiguous Whitworth | Unavailable | Select BSW or BSF explicitly; `whitworth` remains unsupported |
 | BSPT | Right-hand, single-start R external and Rc internal tapered rounded 55-degree form; 1/8-28 and 1/4-19 | ISO 7-1:1994 with Cor 1:2007; nominal gauge convention and bounded position tolerance; Rp unavailable |
-| NPT | Unavailable | Tapered pipe profile, gauge planes and standard size coverage unimplemented |
+| NPT | Right-hand, single-start external/internal 60-degree axial form; 1/8-27 and 1/4-18 | NBS H28 (1957) Part II, 1959 printing; plain-face nominal gauge, historical one-turn tolerance, explicit midpoint truncation; no NPTF or vanish/runout |
 | Trapezoidal | Unavailable | Standard profile and size coverage unimplemented |
 | Acme | Unavailable | Standard profile and size coverage unimplemented |
 | Buttress | Unavailable | Standard asymmetric profile and size coverage unimplemented |
@@ -93,6 +93,59 @@ establish full ISO compliance. The
 [ISO 228-1:2000 abstract](https://committee.iso.org/standard/33777.html?browse=tc)
 identifies parallel fastening threads with any pressure seal outside the
 thread. No pressure-sealing result is claimed.
+
+## NPT construction and source limits
+
+The [NPT registry](../../crates/multicad-core/src/model/threads/npt.rs) retains
+form, nominal pipe size, `nbs1959_plain_face` gauge convention and the explicit
+`midpoint_cone_parallel` truncation target. Its primary source is
+[NBS H28 (1957), Part II](https://nvlpubs.nist.gov/nistpubs/Legacy/hb/nbshandbook28supp1957pt2.pdf),
+issued 16 November 1959. Figure VII.1 is printed page 3 (PDF page 13),
+truncation Table VII.1 is printed page 4 (PDF page 14), and product Table VII.2
+is printed pages 5-6 (PDF pages 15-16). The pipe-size rows are cross-checked
+against [Hy-Lok Pipe Fittings, May 2016](https://english.hy-lok.com/data/PRODUCTS/FITTINGS/4-8._Pipe_Fittings_%282016%29-02.pdf),
+page 38. These historical sources establish the implemented subset; they do
+not establish current ASME compliance, calibrated-gage acceptance, pressure
+sealing or physical fit. NPTF remains unavailable.
+
+| Nominal size | TPI | Stock OD, inch | Gauge pitch diameter E1, inch | L1, inch | External extent L2, inch | Source basic L5, inch | Truncation f/P range |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1/8 | 27 | 0.405 | 0.37360 | 0.1615 | 0.2639 | 0.1898 | 0.033-0.096 |
+| 1/4 | 18 | 0.540 | 0.49163 | 0.2278 | 0.4018 | 0.2907 | 0.033-0.088 |
+
+Pitch is exactly `25.4/TPI` mm. The external datum is the small end, with
+nominal gauge at L1 and radius slope +1/32. The internal datum is the fitting
+face, with nominal gauge at zero and inward radius slope −1/32. Both pitch
+cones anchor the published E1 once; derived E0/E2/E3 remain distinct from
+independently rounded printed values. The historical Table VII.9 gage E0 entry
+for 1/8 conflicts with the product row; construction uses Table VII.2 and
+retains its raw values. It does not substitute that gage-table entry.
+
+The axial flanks have a true 60-degree included angle, with bisector normal
+to the axis. For `m = cot(30°)` and signed radius taper `k`, the compensated
+slopes sum to `S = 1/(m-k) + 1/(m+k)`. Fundamental height is `H = P/S`,
+slightly below the conventional `sqrt(3)*P/2` approximation. The explicit
+engineering target chooses the midpoint of each source truncation range:
+`h = H - 2f`, with cone-parallel crest and root flat widths `f*S`.
+The native meridian construction preserves these axial angles. Legacy Custom
+geometry keeps its existing construction.
+
+External length is fixed to source L2. A real cylinder intersection clips
+crests to source pipe OD, producing the imperfect crest region while retaining
+roots and flanks. Raw source basic L5 and the actual target profile's stock
+intersection are reported separately: midpoint truncation and radial allowance
+move the actual intersection. The incomplete crests do not retain complete
+profile truncation limits. The L2-to-L4 root vanish/tool withdrawal is omitted;
+other external lengths are refused until that construction exists.
+
+Internal depth must be at least `L1 + 3P + 32*radial_clearance`. The three
+pitches are the source wrench allowance; the receiving-depth convention is
+an explicit engineering choice. The default `L1 + 4P` includes one pitch of
+positive gauge travel. Both forms allow nonnegative radial clearance through
+`P/32`, covering the supported half of the historical bilateral one-turn gauge
+range. Axial allowance is zero; left hand, multiple starts and unlisted sizes
+are refused before commit. `model.thread.npt.1` is required for saved direct,
+nested hardware, suppressed and embedded or retained reference definitions.
 
 ## Tapered pipe construction
 

@@ -80,6 +80,8 @@ pub enum ThreadFitArg {
     BsppInternal,
     #[serde(rename = "bspt_nominal")]
     BsptNominal,
+    #[serde(rename = "npt_historical_midpoint")]
+    NptHistoricalMidpoint,
 }
 impl From<ThreadFitArg> for ThreadFit {
     fn from(f: ThreadFitArg) -> Self {
@@ -92,6 +94,7 @@ impl From<ThreadFitArg> for ThreadFit {
             ThreadFitArg::BsppClassBExternal => Self::BsppClassBExternal,
             ThreadFitArg::BsppInternal => Self::BsppInternal,
             ThreadFitArg::BsptNominal => Self::BsptNominal,
+            ThreadFitArg::NptHistoricalMidpoint => Self::NptHistoricalMidpoint,
         }
     }
 }
@@ -207,6 +210,9 @@ pub struct ThreadRecipeArgs {
     /// Explicit ISO 7-1:1994 nominal gauge R/Rc intent. Omitted edits retain it.
     #[serde(default)]
     pub pipe: Option<PipeThreadArgs>,
+    /// Historical plain-face NPT with explicit midpoint truncation construction.
+    #[serde(default)]
+    pub npt: Option<NptThreadArgs>,
     /// Full explicit replacement of a Custom profile, including its angle/taper units.
     #[serde(default)]
     pub custom_profile: Option<ThreadProfileArgs>,
@@ -280,6 +286,46 @@ impl From<PipeThreadArgs> for model::PipeThreadIntent {
     }
 }
 
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NptFormArg {
+    External,
+    Internal,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NptGaugeArg {
+    Nbs1959PlainFace,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NptTruncationArg {
+    MidpointConeParallel,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NptThreadArgs {
+    pub form: NptFormArg,
+    pub size: PipeSizeArg,
+    pub gauge: NptGaugeArg,
+    pub truncation: NptTruncationArg,
+}
+impl From<NptThreadArgs> for model::NptThreadIntent {
+    fn from(p: NptThreadArgs) -> Self {
+        Self {
+            form: match p.form {
+                NptFormArg::External => model::NptThreadForm::External,
+                NptFormArg::Internal => model::NptThreadForm::Internal,
+            },
+            size: match p.size {
+                PipeSizeArg::OneEighth => model::NptThreadSize::OneEighth,
+                PipeSizeArg::OneQuarter => model::NptThreadSize::OneQuarter,
+            },
+            gauge: model::NptGaugeConvention::Nbs1959PlainFace,
+            truncation: model::NptTruncationTarget::MidpointConeParallel,
+        }
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InspectThreadArgs {
@@ -298,6 +344,16 @@ pub(super) fn parameters(
     }
     if let Some(fit) = args.fit {
         p.fit = fit.into();
+    }
+    if let Some(npt) = args.npt {
+        p.npt = Some(npt.into());
+    } else if p.family != ThreadFamily::Npt {
+        p.npt = None;
+    }
+    if p.family != ThreadFamily::Npt && args.npt.is_some() {
+        return Err(ToolError::invalid(
+            "npt intent is valid only for family npt",
+        ));
     }
     if let Some(pipe) = args.pipe {
         p.pipe = Some(pipe.into());
@@ -405,6 +461,8 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
             vec![ThreadFit::BsppClassBExternal,ThreadFit::BsppInternal]
         } else if family==ThreadFamily::Bspt {
             vec![ThreadFit::BsptNominal]
+        } else if family==ThreadFamily::Npt {
+            vec![ThreadFit::NptHistoricalMidpoint]
         } else if family.supported() {
             vec![ThreadFit::NominalBasic]
         } else {vec![]};
@@ -432,6 +490,8 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "unified_presets":unified_presets,
         "rounded_presets":rounded_presets,
         "bspt_presets":model::pipe_thread_presets(),
+        "npt_presets":model::npt_thread_presets(),
+        "npt_support":{"forms":["external","internal"],"hands":["right"],"starts":[1],"gauge":"nbs1959_plain_face","truncation":"midpoint_cone_parallel","source":model::NPT_THREAD_SOURCE,"source_url":model::NPT_THREAD_SOURCE_URL,"included_angle_deg":60,"diameter_taper":"1:16","external_length":"L2; crests clipped to pipe stock OD; no L2..L4 vanish","internal_length":"at least L1 plus three pitches plus positive gauge travel","gauge_tolerance_turns":1,"radial_allowance":"0 to pitch / 32","axial_allowance_mm":[0],"nptf":"unavailable"},
         "bspt_support":{"forms":["r","rc"],"hands":["right"],"gauge":"iso7_nominal1994","source":model::BSPT_THREAD_SOURCE,"source_url":model::BSPT_THREAD_SOURCE_URL,"diameter_taper":"1:16","radial_taper":{"r":0.03125,"rc":-0.03125},"reference":{"r":"small end","rc":"fitting face; gauge half a pitch inward"},"starts":[1],"axial_allowance_mm":[0],"rp":"unavailable","sealing":"Appropriate jointing medium required; no pressure, physical fit or gage certification"},
         "rounded_support":{"starts":[1],"included_angle_deg":55,"crest_and_root":"tangent_circular_arcs","axial_allowance_mm":[0],"coating":"uncoated","bspp_sealing":"Parallel fastening thread; sealing is outside the thread. G labels are nominal pipe sizes, not physical inch diameters.","claim":"BSW/BSF: bounded BS 84:2007 Medium rows. BSPP: bounded Elesa+Ganter 2018 table and NBK JIS B 0202:1999 basic form; no pressure-seal, full ISO compliance or physical-fit certification."},
         "unified_support":{"starts":[1],"form":"un_flat_root","coating":"uncoated","max_length_nominal_diameters":1.5,"limits":"Null range endpoints are unspecified; an external minor reference is not an acceptance limit","claim":"Historical sourced dimensions; no current ASME, calibrated-gage or physical-fit certification"},
@@ -444,7 +504,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {

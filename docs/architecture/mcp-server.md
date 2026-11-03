@@ -311,6 +311,19 @@ changing to another family clears it. A pipe object on another family is refused
 `inspect_thread.resolved.pipe` and nested hardware inspection expose the same
 gauge receipt, source and allowance displacement in turns.
 
+NPT uses `family: "npt"`, `fit: "npt_historical_midpoint"` and an explicit
+`npt` object: `form` is `external` or `internal`, `size` is `1/8` or `1/4`,
+`gauge` is `nbs1959_plain_face` and `truncation` is
+`midpoint_cone_parallel`. Creation requires the corresponding base major
+diameter, pitch and supported length from the canonical registry.
+`thread_profiles.npt_presets` retains the printed source rows;
+`npt_support` states construction limits. Direct and nested inspection return
+the same `resolved.npt` receipt, including actual gauge travel and actual
+stock intersection separately from source basic L5. Omitted or null intent
+retains an existing edit; changing family clears it. An NPT object on another
+family is refused. The [NPT reference](threads.md#npt-construction-and-source-limits)
+defines the bounded historical conventions and unsupported combinations.
+
 `inspect_thread` reads canonical source and resolved dimensions without
 evaluating a solid. Use `evaluate_model` for native geometry and diagnostics.
 Its `nominal_pitch_diameter_mm` remains the basic-profile value.

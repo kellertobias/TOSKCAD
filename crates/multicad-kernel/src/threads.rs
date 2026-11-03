@@ -46,6 +46,15 @@ pub struct RoundedHelicalThread {
     pub starts: u32,
     pub left_hand: bool,
 }
+/// Actual axial flank angles with cone-parallel flats. This distinct adapter
+/// preserves legacy Custom's existing conical profile/transport convention.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AxialFlatHelicalThread {
+    pub profile: HelicalThread,
+    /// Optional physical stock radius which clips external crests. It never
+    /// changes the nominal cone or its pitch diameter.
+    pub crest_radius_limit_mm: Option<f64>,
+}
 fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError {
     GeometryError {
         operation: "thread",
@@ -120,9 +129,64 @@ impl HelicalThread {
             taper: self.radial_taper,
             overlap,
             tolerance: policy.linear_tolerance_mm,
+            crest_limit: 0.,
             starts: self.starts,
             left: self.left_hand,
+            axial_flat: false,
         })
+    }
+}
+impl AxialFlatHelicalThread {
+    fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
+        if self.profile.lower_flank_deg != 30. || self.profile.upper_flank_deg != 30. {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Axial flat pipe construction currently requires the sourced 60-degree profile",
+            ));
+        }
+        let p = self.profile;
+        let mut data = p.checked(policy)?;
+        if p.starts != 1 || p.radial_taper.abs() != 1. / 32. {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Axial flat conical threads require one start and signed 1:16 diameter taper",
+            ));
+        }
+        let lower = 1. / p.lower_flank_deg.to_radians().tan() - p.radial_taper;
+        let upper = 1. / p.upper_flank_deg.to_radians().tan() + p.radial_taper;
+        if lower <= 0. || upper <= 0. {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Axial thread flank crosses its cone",
+            ));
+        }
+        data.lower_slope = 1. / lower;
+        data.upper_slope = 1. / upper;
+        let width =
+            p.crest_width_mm + (p.depth_mm + data.overlap) * (data.lower_slope + data.upper_slope);
+        if width >= p.pitch_mm - policy.minimum_feature_mm {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Axial thread profile overlaps adjacent turns",
+            ));
+        }
+        if let Some(limit) = self.crest_radius_limit_mm {
+            policy.length(limit)?;
+            let root = p.major_radius_mm - p.depth_mm;
+            let maximum_root = [-2. * p.lead_mm(), p.length_mm + 2. * p.lead_mm()]
+                .into_iter()
+                .map(|z| root + p.radial_taper * z)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if limit <= maximum_root + policy.minimum_feature_mm * 2. {
+                return Err(failure(
+                    GeometryErrorKind::Input,
+                    "Crest clipping must preserve the extended thread core",
+                ));
+            }
+            data.crest_limit = limit;
+        }
+        data.axial_flat = true;
+        Ok(data)
     }
 }
 impl RoundedHelicalThread {
@@ -171,6 +235,30 @@ impl RoundedHelicalThread {
     }
 }
 impl Solid {
+    pub fn axial_flat_helical_thread_named(
+        spec: AxialFlatHelicalThread,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Thread feature identity must not be nil",
+            ));
+        }
+        let native = ffi::helical_thread(&spec.checked(policy)?)
+            .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+        let mut solid = Self::adopt(native, policy, "axial flat thread")?;
+        if solid.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Thread must remain one connected solid",
+            ));
+        }
+        solid.name_thread(feature, spec.profile.starts)?;
+        let _ = ffi::remember_validated_thread(&solid.native.0);
+        Ok(solid)
+    }
     pub fn rounded_helical_thread_named(
         spec: RoundedHelicalThread,
         feature: EntityId,
@@ -477,11 +565,15 @@ mod factory_tests {
         changed!(taper);
         changed!(overlap);
         changed!(tolerance);
+        changed!(crest_limit);
         let mut candidate = original;
         candidate.starts += 1;
         assert!(!ffi::thread_factory_contains(&candidate).unwrap());
         candidate = original;
         candidate.left = !candidate.left;
+        assert!(!ffi::thread_factory_contains(&candidate).unwrap());
+        candidate = original;
+        candidate.axial_flat = !candidate.axial_flat;
         assert!(!ffi::thread_factory_contains(&candidate).unwrap());
         let changed = build(
             HelicalThread {

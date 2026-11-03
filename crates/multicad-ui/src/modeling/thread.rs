@@ -26,6 +26,7 @@ pub(super) struct ThreadPanel {
     family: ThreadFamily,
     fit: ThreadFit,
     pipe: Option<model::PipeThreadIntent>,
+    npt: Option<model::NptThreadIntent>,
     hand: ThreadHand,
     starts: u32,
     representation: ThreadRepresentation,
@@ -69,6 +70,7 @@ impl ThreadPanel {
             family: p.family,
             fit: p.fit,
             pipe: p.pipe,
+            npt: p.npt,
             hand: p.hand,
             starts: p.starts,
             representation: p.representation,
@@ -145,6 +147,11 @@ impl ThreadPanel {
         let basis = self.plane.map(Datum::frame);
         let parameters = ThreadParameters {
             family: self.family,
+            npt: if self.family == ThreadFamily::Npt {
+                self.npt
+            } else {
+                None
+            },
             pipe: if self.family == ThreadFamily::Bspt {
                 self.pipe
             } else {
@@ -214,6 +221,20 @@ impl ThreadPanel {
                         changed |= self.family != family;
                         self.family = family;
                         self.fit = Self::fit_for(family, mode);
+                        if family == ThreadFamily::Npt
+                            && let Some(mut npt) = self.npt
+                        {
+                            npt.form = if mode == ThreadMode::CutInternal {
+                                model::NptThreadForm::Internal
+                            } else {
+                                model::NptThreadForm::External
+                            };
+                            self.npt = Some(npt);
+                            self.diameter.set_exact_literal(npt.base_major_mm(), "mm");
+                            self.pitch.set_exact_literal(npt.preset().pitch_mm, "mm");
+                            self.starts = 1;
+                            self.hand = ThreadHand::Right;
+                        }
                         if family == ThreadFamily::Bspt
                             && let Some(mut pipe) = self.pipe
                         {
@@ -235,6 +256,9 @@ impl ThreadPanel {
                 }
             });
         ui.small(self.family.source());
+        if self.family == ThreadFamily::Npt {
+            changed |= self.npt_controls(ui, mode);
+        }
         if self.family == ThreadFamily::Bspt {
             changed |= self.pipe_controls(ui, mode);
         }
@@ -352,7 +376,7 @@ impl ThreadPanel {
                 .add_enabled(
                     !self.family.is_unified()
                         && !self.family.is_rounded()
-                        && self.family != ThreadFamily::Bspt,
+                        && !matches!(self.family, ThreadFamily::Bspt | ThreadFamily::Npt),
                     egui::DragValue::new(&mut self.starts).range(1..=8),
                 )
                 .changed();
@@ -363,7 +387,8 @@ impl ThreadPanel {
                 (ThreadHand::Left, "Left hand"),
             ] {
                 ui.add_enabled_ui(
-                    self.family != ThreadFamily::Bspt || hand == ThreadHand::Right,
+                    !matches!(self.family, ThreadFamily::Bspt | ThreadFamily::Npt)
+                        || hand == ThreadHand::Right,
                     |ui| {
                         changed |= ui.radio_value(&mut self.hand, hand, label).changed();
                     },
@@ -400,6 +425,11 @@ impl ThreadPanel {
         );
         if self.family.is_rounded() || self.family == ThreadFamily::Bspt {
             ui.small("Rounded profiles currently require zero axial clearance; radial clearance must remain within the selected fit limits.");
+        }
+        if self.family == ThreadFamily::Npt {
+            ui.small(
+                "NPT requires zero axial clearance and radial clearance from zero to pitch / 32.",
+            );
         }
         if mode == ThreadMode::CutInternal {
             changed |= self.wall.show(
@@ -543,7 +573,9 @@ impl ThreadPanel {
         changed
     }
     fn fit_for(family: ThreadFamily, mode: ThreadMode) -> ThreadFit {
-        if family == ThreadFamily::Bspt {
+        if family == ThreadFamily::Npt {
+            ThreadFit::NptHistoricalMidpoint
+        } else if family == ThreadFamily::Bspt {
             ThreadFit::BsptNominal
         } else if matches!(family, ThreadFamily::Bsw | ThreadFamily::Bsf) {
             if mode == ThreadMode::CutInternal {
@@ -564,6 +596,54 @@ impl ThreadPanel {
         } else {
             ThreadFit::Unified2A
         }
+    }
+    fn npt_controls(&mut self, ui: &mut egui::Ui, mode: ThreadMode) -> bool {
+        let form = if mode == ThreadMode::CutInternal {
+            model::NptThreadForm::Internal
+        } else {
+            model::NptThreadForm::External
+        };
+        let mut selected = None;
+        controls::inspector_combo(ui, "thread-npt-preset")
+            .selected_text(self.npt.map_or("Choose sourced NPT size…".into(), |p| {
+                format!("NPT {}", p.preset().size_label)
+            }))
+            .show_ui(ui, |ui| {
+                for row in model::npt_thread_presets() {
+                    if ui
+                        .selectable_label(
+                            self.npt
+                                .is_some_and(|p| p.size == row.size && p.form == form),
+                            format!("NPT {} · {} TPI", row.size_label, row.threads_per_inch),
+                        )
+                        .clicked()
+                    {
+                        selected = Some(model::NptThreadIntent {
+                            form,
+                            size: row.size,
+                            gauge: model::NptGaugeConvention::Nbs1959PlainFace,
+                            truncation: model::NptTruncationTarget::MidpointConeParallel,
+                        });
+                    }
+                }
+            });
+        if let Some(npt) = selected {
+            self.npt = Some(npt);
+            self.diameter.set_exact_literal(npt.base_major_mm(), "mm");
+            self.pitch.set_exact_literal(npt.preset().pitch_mm, "mm");
+            if self.preset_length_default {
+                self.length.set_exact_literal(npt.default_length_mm(), "mm");
+            }
+            self.fit = ThreadFit::NptHistoricalMidpoint;
+            self.starts = 1;
+            self.hand = ThreadHand::Right;
+        }
+        if let Some(npt) = self.npt {
+            ui.small(format!("Gauge {:.6} mm inward · radius slope {:+.5} · nominal gauge pitch diameter {:.6} mm", npt.gauge_offset_mm(),npt.radial_taper(),npt.preset().published.e1_inch*25.4));
+            ui.small(if form==model::NptThreadForm::External {"External length is sourced L2; crests are clipped to nominal pipe stock OD."}else{"Internal depth includes three wrench turns plus positive gauge travel; the default adds one pitch of gauge travel."});
+        }
+        ui.small("Historical NBS 1959 dimensions; midpoint cone-parallel truncations. RH, one start, 1/8 and 1/4 only. NPTF and vanish/runout are unavailable.");
+        selected.is_some()
     }
     fn pipe_controls(&mut self, ui: &mut egui::Ui, mode: ThreadMode) -> bool {
         let form = if mode == ThreadMode::CutInternal {
@@ -737,6 +817,22 @@ impl ThreadPanel {
             self.diameter.set_exact_literal(pipe.base_major_mm(), "mm");
             self.fit = ThreadFit::BsptNominal;
         }
+        if previous_mode != self.mode
+            && self.family == ThreadFamily::Npt
+            && let Some(mut npt) = self.npt
+        {
+            npt.form = if self.mode == ThreadMode::CutInternal {
+                model::NptThreadForm::Internal
+            } else {
+                model::NptThreadForm::External
+            };
+            self.npt = Some(npt);
+            self.diameter.set_exact_literal(npt.base_major_mm(), "mm");
+            if self.preset_length_default {
+                self.length.set_exact_literal(npt.default_length_mm(), "mm");
+            }
+            self.fit = ThreadFit::NptHistoricalMidpoint;
+        }
         if self.editing
             && let Some(target) = &self.request.target
         {
@@ -756,6 +852,16 @@ impl ThreadPanel {
                         "Pitch {:.4} mm · lead {:.4} mm · {} starts",
                         resolved.pitch_mm, resolved.lead_mm, resolved.starts
                     ));
+                    if let Some(npt) = &resolved.npt {
+                        ui.strong(&npt.designation);
+                        ui.small(format!("Pitch diameter at nominal gauge plane {:.6} mm · gauge shift {:.6} turns",npt.actual_pitch_at_nominal_gauge_mm,npt.gauge_displacement_turns));
+                        if let Some(z) = npt.actual_stock_intersection_mm {
+                            ui.small(format!(
+                                "Actual stock intersection {:.6} mm · source basic L5 {:.6} mm",
+                                z, npt.source_basic_complete_length_mm
+                            ));
+                        }
+                    }
                     if let Some(pipe) = &resolved.pipe {
                         ui.strong(&pipe.designation);
                         ui.small(format!(

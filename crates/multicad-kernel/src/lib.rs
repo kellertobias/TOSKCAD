@@ -69,8 +69,10 @@ mod ffi {
         taper: f64,
         overlap: f64,
         tolerance: f64,
+        crest_limit: f64,
         starts: u32,
         left: bool,
+        axial_flat: bool,
     }
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct ThreadFactoryStats {
@@ -573,7 +575,10 @@ mod advanced_operations;
 mod advanced_profiles;
 pub mod thread_prototypes;
 mod threads;
-pub use threads::{HelicalThread, RoundedHelicalThread, ThreadFactoryStats, thread_factory_stats};
+pub use threads::{
+    AxialFlatHelicalThread, HelicalThread, RoundedHelicalThread, ThreadFactoryStats,
+    thread_factory_stats,
+};
 mod gears;
 pub use gears::{GearSweep, InvoluteGear};
 mod edge_treatment;

@@ -49,7 +49,7 @@
 #include <tuple>
 
 namespace multicad::kernel {
-using ThreadKey=std::tuple<std::array<uint64_t,11>,uint32_t,bool>;
+using ThreadKey=std::tuple<std::array<uint64_t,12>,uint32_t,bool,bool>;
 struct ThreadFactoryTag {
   ThreadKey key;
   TopoDS_Shape original;
@@ -66,7 +66,7 @@ ThreadKey thread_key(const ThreadData &s) {
   return {{exact_bits(s.radius),exact_bits(s.pitch),exact_bits(s.height),
       exact_bits(s.depth),exact_bits(s.crest_width),exact_bits(s.rounding),
       exact_bits(s.lower_slope),exact_bits(s.upper_slope),exact_bits(s.taper),
-      exact_bits(s.overlap),exact_bits(s.tolerance)},s.starts,s.left};
+      exact_bits(s.overlap),exact_bits(s.tolerance),exact_bits(s.crest_limit)},s.starts,s.left,s.axial_flat};
 }
 struct ThreadEntry {
   std::unique_ptr<Shape> shape;
@@ -363,7 +363,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     // correct surfaces and volume. Flat profiles preserve
     // their established continuous representation and per-turn fallback.
     BRepBuilderAPI_MakeWire spineBuilder;
-    const double turn=segmented?std::hypot(2*pi,lead/c)*(s.rounding>0?(s.taper==0?.5:.25):1.):end;
+    const double turn=segmented?std::hypot(2*pi,lead/c)*(s.axial_flat?.25:s.rounding>0?(s.taper==0?.5:.25):1.):end;
     for(uint32_t span=0;;++span) {
       const double begin=span*turn;
       if(begin>=end)break;
@@ -389,7 +389,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       for(const auto &edge:source){profile.Add(edge);edges.push_back(profile.Edge());}
       if(!profile.IsDone())throw std::runtime_error("Native thread profile is disconnected");
       TopoDS_Shape ridge;std::vector<std::vector<TopoDS_Shape>> generated;
-      if(s.rounding>0&&s.taper!=0) {
+      if((s.rounding>0||s.axial_flat)&&s.taper!=0) {
         auto exact=sweep_meridian(spine,profile.Wire(),edges,phase,
           sign*2*pi/std::hypot(2*pi,lead/c),root+s.taper*z,z,s.tolerance);
         ridge=exact.solid;generated=std::move(exact.faces);
@@ -490,10 +490,19 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   }
   // Joining before trimming is essential: a separately trimmed ridge can be
   // silently lost by a later union despite a valid, one-solid core result.
+  if(s.crest_limit>0) {
+    if(!s.axial_flat||s.starts!=1)throw std::runtime_error("Crest stock clipping requires a single axial-flat helix");
+    const auto stock=BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0,0,-3*lead),gp_Dir(0,0,1)),s.crest_limit,s.height+6*lead).Shape();
+    for(TopExp_Explorer it(stock,TopAbs_FACE);it.More();it.Next())
+      if(BRepAdaptor_Surface(TopoDS::Face(it.Current())).GetType()==GeomAbs_Cylinder)
+        ancestry.push_back({it.Current(),1,2});
+    BRepAlgoAPI_Common clip;boolean_inputs(clip,solid,stock);
+    ancestry=carry_thread_faces(clip,ancestry);solid=clip.Shape();
+  }
   const double bound=s.radius+std::abs(s.taper)*(s.height+3*lead)+s.pitch;
   measured=trace.mark();
   const auto limit=BRepPrimAPI_MakeBox(gp_Pnt(-bound,-bound,0),2*bound,2*bound,s.height).Shape();
-  if(s.rounding>0) {
+  if(s.rounding>0||s.axial_flat) {
     int count=0;for(TopExp_Explorer it(solid,TopAbs_SOLID);it.More();it.Next())++count;
     if(count!=1||!BRepCheck_Analyzer(solid).IsValid())
       throw std::runtime_error("Untrimmed rounded thread is not one valid solid");
@@ -514,7 +523,9 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     const double sampleZ=band==bands?s.height*.47:s.height*(band+.5)/bands;
     for(uint32_t start=0;start<s.starts;++start) {
       const double angle=sign*2*pi*sampleZ/lead+2*pi*start/s.starts;
-      const double radius=s.radius+s.taper*sampleZ-std::min(s.depth*.05,s.crest_width*.1);
+      const double coneCrest=s.radius+s.taper*sampleZ;
+      const double crest=s.crest_limit>0?std::min(coneCrest,s.crest_limit):coneCrest;
+      const double radius=crest-std::min(s.depth*.05,s.crest_width*.1);
       const auto state=[&](double a){classifier.Perform(gp_Pnt(radius*std::cos(a),radius*std::sin(a),sampleZ),s.tolerance*4);return classifier.State();};
       const auto inside=state(angle);
       const auto outside=inside==TopAbs_IN?state(angle+pi/s.starts):TopAbs_UNKNOWN;
@@ -597,7 +608,7 @@ static std::unique_ptr<Shape> helical_thread_impl(const ThreadData &s,bool useCa
   // outset, avoiding invalid continuous unions and false trimmed-solid native
   // classification. Flat profiles retain their established representation and
   // narrowly typed reconstruction rules below.
-  if(s.rounding>0) {
+  if(s.rounding>0||s.axial_flat) {
     ++cache.stats.bounded_attempts;
     auto result=build_helical_thread(s,true,trace);
     const auto measured=trace.mark();

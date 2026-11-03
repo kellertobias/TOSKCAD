@@ -193,7 +193,7 @@ fn rounded_profiles_distinguish_series_pipe_size_semantics_and_explicit_class_co
     );
     assert_eq!(report["bspt_presets"].as_array().unwrap().len(), 2);
     assert_eq!(report["bspt_support"]["hands"], json!(["right"]));
-    for family in ["whitworth", "npt"] {
+    for family in ["whitworth", "acme"] {
         assert_eq!(
             report["families"]
                 .as_array()
@@ -710,5 +710,173 @@ fn bspt_nested_nut_and_screw_inspection_keep_the_shared_gauge_receipt() {
             json!({"feature":feature}),
         );
         assert_eq!(restored["resolved"]["pipe"], inspected["resolved"]["pipe"]);
+    }
+}
+
+#[test]
+fn npt_nominal_gauge_intent_is_preserved_through_native_owner_preview_reject_and_apply() {
+    let intent = model::NptThreadIntent {
+        form: model::NptThreadForm::External,
+        size: model::NptThreadSize::OneEighth,
+        gauge: model::NptGaugeConvention::Nbs1959PlainFace,
+        truncation: model::NptTruncationTarget::MidpointConeParallel,
+    };
+    let inspected = reviewed_native_thread(
+        model::ThreadFamily::Npt,
+        json!({"name":"R 1/8", "family":"npt", "fit":"npt_historical_midpoint", "npt":intent, "major_diameter":mm(intent.base_major_mm()), "pitch":mm(intent.preset().pitch_mm), "length":mm(intent.default_length_mm())}),
+    );
+    assert_eq!(inspected["source"]["parameters"]["npt"], json!(intent));
+    assert_eq!(
+        inspected["resolved"]["npt"]["designation"],
+        "1/8-27 NPT (external)"
+    );
+    assert_eq!(
+        inspected["resolved"]["npt"]["gauge_offset_mm"],
+        intent.gauge_offset_mm()
+    );
+    assert_eq!(inspected["resolved"]["profile"]["radial_taper"], 1. / 32.);
+}
+#[test]
+fn npt_mcp_omitted_edits_undo_reopen_and_failures_retain_canonical_intent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pipe.tcd");
+    Store
+        .save(
+            &path,
+            &ProjectFile::new(Document::new("Pipe MCP").unwrap()).unwrap(),
+        )
+        .unwrap();
+    let h = Headless::new(
+        Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    let intent = model::NptThreadIntent {
+        form: model::NptThreadForm::External,
+        size: model::NptThreadSize::OneEighth,
+        gauge: model::NptGaugeConvention::Nbs1959PlainFace,
+        truncation: model::NptTruncationTarget::MidpointConeParallel,
+    };
+    let args = json!({"expected_revision":0,"name":"MCP R 1/8","family":"npt","fit":"npt_historical_midpoint","npt":intent,"major_diameter":mm(intent.base_major_mm()),"pitch":mm(intent.preset().pitch_mm),"length":mm(intent.default_length_mm())});
+    assert_eq!(
+        dispatch(&h, &call(true), "set_thread", args.clone())
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    let created = run(&h, "set_thread", args);
+    let feature = created["thread"].clone();
+    let original = h.document();
+    for bad in [
+        json!({"expected_revision":1,"thread":feature,"axial_allowance":mm(0.01)}),
+        json!({"expected_revision":1,"thread":feature,"npt":{"form":"internal","size":"1/8","gauge":"nbs1959_plain_face","truncation":"midpoint_cone_parallel"}}),
+        json!({"expected_revision":1,"thread":feature,"npt":{"form":"nptf","size":"1/8","gauge":"nbs1959_plain_face","truncation":"midpoint_cone_parallel"}}),
+        json!({"expected_revision":0,"thread":feature,"length":mm(9.)}),
+    ] {
+        assert!(dispatch(&h, &call(false), "set_thread", bad).is_err());
+        assert_eq!(h.document(), original);
+    }
+    run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":1,"thread":feature,"radial_allowance":mm(0.001)}),
+    );
+    let inspected = run(&h, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(inspected["source"]["parameters"]["npt"], json!(intent));
+    assert!(
+        (inspected["resolved"]["npt"]["actual_pitch_at_nominal_gauge_mm"]
+            .as_f64()
+            .unwrap()
+            - (intent.preset().published.e1_inch * 25.4 - 0.002))
+            .abs()
+            < 1e-12
+    );
+    let changed = h.document();
+    run(&h, "undo", json!({"expected_revision":2}));
+    assert_eq!(h.document(), original);
+    run(&h, "redo", json!({"expected_revision":3}));
+    assert_eq!(h.document(), changed);
+    run(&h, "save_project", json!({"expected_revision":4}));
+    drop(h);
+    let reopened = Headless::new(
+        Workspace::project(path, Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    assert_eq!(reopened.document(), changed);
+    let inspected = run(&reopened, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(inspected["source"]["parameters"]["npt"], json!(intent));
+    let output = run(
+        &reopened,
+        "export_step",
+        json!({"part":created["part"],"file_name":"pipe.step"}),
+    );
+    assert!(output["readback_volume_mm3"].as_f64().unwrap() > 0.);
+}
+#[test]
+fn npt_nested_nut_and_screw_inspection_keep_the_shared_gauge_receipt() {
+    for form in [
+        model::NptThreadForm::External,
+        model::NptThreadForm::Internal,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hardware.tcd");
+        Store
+            .save(
+                &path,
+                &ProjectFile::new(Document::new("Pipe hardware MCP").unwrap()).unwrap(),
+            )
+            .unwrap();
+        let h = Headless::new(
+            Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+            None,
+            false,
+        );
+        let intent = model::NptThreadIntent {
+            form,
+            size: model::NptThreadSize::OneEighth,
+            gauge: model::NptGaugeConvention::Nbs1959PlainFace,
+            truncation: model::NptTruncationTarget::MidpointConeParallel,
+        };
+        let thread = json!({"family":"npt","fit":"npt_historical_midpoint","npt":intent,"major_diameter":mm(intent.base_major_mm()),"pitch":mm(intent.preset().pitch_mm),"length":mm(intent.default_length_mm()),"representation":"modeled"});
+        let recipe = if form == model::NptThreadForm::Internal {
+            json!({"kind":"hex_nut","across_flats":mm(16.),"thread":thread})
+        } else {
+            json!({"kind":"machine_screw","underhead_length":mm(intent.default_length_mm()),"shank_diameter":mm(intent.base_major_mm()),"head":{"kind":"external_hex","across_flats":mm(16.),"height":mm(3.)},"drive":{"kind":"external_hex"},"thread":thread})
+        };
+        let created = run(
+            &h,
+            "set_mechanical_part",
+            json!({"expected_revision":0,"name":"Shared pipe hardware","recipe":recipe}),
+        );
+        let feature = created["feature"].clone();
+        let inspected = run(&h, "inspect_mechanical_part", json!({"feature":feature}));
+        assert_eq!(inspected["resolved"]["npt"]["intent"], json!(intent));
+        assert_eq!(inspected["resolved"]["radial_taper"], intent.radial_taper());
+        let edited = run(
+            &h,
+            "set_mechanical_part",
+            json!({"expected_revision":1,"feature":feature,"recipe":{"kind":if form == model::NptThreadForm::Internal {"hex_nut"}else{"machine_screw"},"thread":{"radial_allowance":mm(0.)}}}),
+        );
+        assert_eq!(edited["revision"], 1, "An unchanged edit must stay a no-op");
+        run(
+            &h,
+            "save_project",
+            json!({"expected_revision":edited["revision"]}),
+        );
+        let saved = h.document();
+        drop(h);
+        let reopened = Headless::new(
+            Workspace::project(path, Box::new(Store)).unwrap(),
+            None,
+            false,
+        );
+        assert_eq!(reopened.document(), saved);
+        let restored = run(
+            &reopened,
+            "inspect_mechanical_part",
+            json!({"feature":feature}),
+        );
+        assert_eq!(restored["resolved"]["npt"], inspected["resolved"]["npt"]);
     }
 }

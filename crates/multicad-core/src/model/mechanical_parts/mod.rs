@@ -210,6 +210,11 @@ impl MechanicalPartParameters {
                 let thread_max = thread
                     .major_radius_mm
                     .max(thread.major_radius_mm + thread.profile.radial_taper * thread.length_mm);
+                let thread_max = thread
+                    .npt
+                    .as_ref()
+                    .and_then(|npt| npt.stock_crest_radius_limit_mm)
+                    .map_or(thread_max, |limit| thread_max.min(limit));
                 if underhead_length_mm <= 0.
                     || shank_radius_mm <= 0.
                     || thread.length_mm > underhead_length_mm

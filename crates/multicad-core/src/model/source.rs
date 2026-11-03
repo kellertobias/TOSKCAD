@@ -934,6 +934,21 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         capabilities.insert(super::BSPT_THREAD_CAPABILITY.into());
     }
     if saved_feature_matches(document, |type_id, data| {
+        let paths: &[&str] = match type_id {
+            super::THREAD_TYPE => &["/parameters/family"],
+            super::MECHANICAL_PART_TYPE => &[
+                "/parameters/thread/family",
+                "/provenance/reference_geometry/thread/family",
+            ],
+            _ => return false,
+        };
+        paths
+            .iter()
+            .any(|path| data.pointer(path).and_then(serde_json::Value::as_str) == Some("npt"))
+    }) {
+        capabilities.insert(super::NPT_THREAD_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
         type_id == super::MECHANICAL_PART_TYPE
             && data.pointer("/provenance/catalog_facts").is_some()
     }) {

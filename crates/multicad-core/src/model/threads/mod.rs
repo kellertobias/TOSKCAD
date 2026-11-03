@@ -1,5 +1,6 @@
 //! Versioned thread intent and transactions. Native receipts must still prove
 //! receiving geometry and manufactured solids before the UI enables Apply.
+mod npt;
 mod pipe;
 mod prepare;
 mod profiles;
@@ -18,6 +19,7 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     sketch::Frame,
 };
+pub use npt::*;
 pub use pipe::*;
 pub use prepare::*;
 pub use profiles::*;
@@ -68,6 +70,7 @@ pub enum ThreadFit {
     BsppClassBExternal,
     BsppInternal,
     BsptNominal,
+    NptHistoricalMidpoint,
 }
 impl ThreadFit {
     pub fn label(self) -> &'static str {
@@ -80,6 +83,7 @@ impl ThreadFit {
             Self::BsppClassBExternal => "Class B external (2018 source table)",
             Self::BsppInternal => "Internal (2018 source table)",
             Self::BsptNominal => "Nominal gauge position (ISO 7-1:1994)",
+            Self::NptHistoricalMidpoint => "Historical NPT mid-truncation target (1959)",
         }
     }
 }
@@ -95,6 +99,8 @@ pub struct ThreadParameters {
     pub custom: Option<CustomThreadProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pipe: Option<PipeThreadIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npt: Option<NptThreadIntent>,
     /// Basic major diameter at the base plane, before fabrication allowance.
     pub major_diameter: Dimension,
     pub pitch: Dimension,
@@ -117,6 +123,7 @@ impl Default for ThreadParameters {
             family: ThreadFamily::IsoMetric,
             custom: None,
             pipe: None,
+            npt: None,
             major_diameter: length(8.),
             pitch: length(1.25),
             length: length(12.5),
@@ -135,6 +142,7 @@ impl Default for ThreadParameters {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedThread {
     pub pipe: Option<ResolvedPipeThread>,
+    pub npt: Option<ResolvedNptThread>,
     pub nominal_major_radius_mm: f64,
     pub nominal_pitch_diameter_mm: Option<f64>,
     /// Intended profile after fit selection and fabrication allowances.
@@ -195,6 +203,11 @@ impl ThreadParameters {
                 "Only BSPT requires explicit R/Rc pipe size and gauge intent",
             ));
         }
+        if (self.family == ThreadFamily::Npt) != self.npt.is_some() {
+            return Err(invalid(
+                "Only NPT requires its explicit historical form, size, gauge and truncation intent",
+            ));
+        }
         if let Some(profile) = &self.custom {
             profile.validate()?;
         }
@@ -206,6 +219,15 @@ impl ThreadParameters {
             {
                 return Err(invalid(
                     "Sourced UNC/UNF require 2A external or 2B internal and one start; other combinations remain unavailable",
+                ));
+            }
+        } else if self.family == ThreadFamily::Npt {
+            if self.fit != ThreadFit::NptHistoricalMidpoint
+                || self.starts != 1
+                || self.hand != ThreadHand::Right
+            {
+                return Err(invalid(
+                    "Sourced NPT requires its historical midpoint target and one right-hand start",
                 ));
             }
         } else if self.family == ThreadFamily::Bspt {
@@ -243,6 +265,13 @@ impl ThreadParameters {
     }
     pub fn validate_for_mode(&self, mode: ThreadMode) -> Result<(), DocumentError> {
         self.validate()?;
+        if let Some(npt) = self.npt
+            && (mode == ThreadMode::CutInternal) != (npt.form == NptThreadForm::Internal)
+        {
+            return Err(invalid(
+                "NPT external/internal intent must match the thread mode",
+            ));
+        }
         if let Some(pipe) = self.pipe
             && (mode == ThreadMode::CutInternal) != (pipe.form == PipeThreadForm::Rc)
         {
@@ -286,6 +315,10 @@ impl ThreadParameters {
             .pipe
             .map(|intent| pipe::resolve_pipe(intent, mode, diameter, pitch, length, radial, axial))
             .transpose()?;
+        let npt = self
+            .npt
+            .map(|intent| npt::resolve_npt(intent, mode, diameter, pitch, length, radial, axial))
+            .transpose()?;
         if diameter <= 0.
             || pitch < 0.001
             || length < pitch
@@ -313,14 +346,25 @@ impl ThreadParameters {
                 "Axial allowance for true rounded profiles is unsupported; use zero axial allowance",
             ));
         }
-        let mut profile = profiles::resolve_profile(
-            self.family,
-            self.custom.as_ref(),
-            diameter,
-            pitch,
-            mode,
-            parameters,
-        )?;
+        let mut profile = if let Some(npt) = &npt {
+            ResolvedThreadProfile {
+                depth_mm: npt.depth_mm,
+                crest_width_mm: npt.flat_width_mm,
+                lower_flank_deg: 30.,
+                upper_flank_deg: 30.,
+                radial_taper: npt.radial_taper,
+                rounding_radius_mm: None,
+            }
+        } else {
+            profiles::resolve_profile(
+                self.family,
+                self.custom.as_ref(),
+                diameter,
+                pitch,
+                mode,
+                parameters,
+            )?
+        };
         if let Some(pipe) = &pipe {
             profile.radial_taper = pipe.radial_taper;
             let (depth, rounding) = pipe::tapered_profile(pitch, pipe.radial_taper);
@@ -330,7 +374,7 @@ impl ThreadParameters {
         let true_rounded = profile.rounding_radius_mm.is_some();
         let slopes =
             profile.lower_flank_deg.to_radians().tan() + profile.upper_flank_deg.to_radians().tan();
-        let pitch_drop = if true_rounded {
+        let pitch_drop = if true_rounded || npt.is_some() {
             profile.depth_mm / 2.
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
@@ -370,7 +414,7 @@ impl ThreadParameters {
                 "Thread allowance or profile leaves no root/crest, overlaps adjacent starts, or crosses the cone apex",
             ));
         }
-        let actual_pitch_drop = if true_rounded {
+        let actual_pitch_drop = if true_rounded || npt.is_some() {
             profile.depth_mm / 2.
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
@@ -404,6 +448,7 @@ impl ThreadParameters {
         };
         Ok(ResolvedThread {
             pipe,
+            npt,
             nominal_major_radius_mm: diameter / 2.,
             nominal_pitch_diameter_mm,
             actual_pitch_diameter_mm,

@@ -67,6 +67,7 @@ impl ThreadFamily {
                 | Self::Bsf
                 | Self::Bspp
                 | Self::Bspt
+                | Self::Npt
                 | Self::Custom
         )
     }
@@ -84,6 +85,7 @@ impl ThreadFamily {
             Self::Bsw | Self::Bsf => WHITWORTH_THREAD_SOURCE,
             Self::Bspp => BSPP_THREAD_SOURCE,
             Self::Bspt => BSPT_THREAD_SOURCE,
+            Self::Npt => NPT_THREAD_SOURCE,
             _ => "Not implemented; no sourced geometry or tolerance coverage claimed",
         }
     }

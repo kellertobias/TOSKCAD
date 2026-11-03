@@ -928,3 +928,119 @@ fn rounded_preset_selection_preserves_explicit_authored_length_and_invalid_recip
         }
     }
 }
+
+#[test]
+fn painted_npt_mode_changes_preserve_length_and_native_preview_cancel_apply_history() {
+    let mut s = Session::new(Document::new("NPT inspector").unwrap()).unwrap();
+    let before = s.document().clone();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut c = controller();
+    let request = model::ThreadRequest::new(
+        "Pipe",
+        model::ThreadParameters {
+            length: model::length(0.4018 * 25.4),
+            ..Default::default()
+        },
+    );
+    c.begin_form(
+        &s,
+        &Default::default(),
+        Channel::Ui,
+        ModelForm::Thread(Box::new(
+            ThreadPanel::new(
+                request,
+                s.parameters().clone(),
+                vec![],
+                &BTreeSet::new(),
+                false,
+            )
+            .unwrap(),
+        )),
+    )
+    .unwrap();
+    unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+    unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::Npt.label());
+    unified_click(&ctx, &mut c, &mut s, "Choose sourced NPT size…");
+    unified_click(&ctx, &mut c, &mut s, "NPT 1/4 · 18 TPI");
+    let recipe = |c: &ModelToolController, mode| match c.form.as_ref().unwrap() {
+        ModelForm::Thread(panel) => panel.recipe(s.document(), mode).unwrap(),
+        _ => panic!(),
+    };
+    let original = recipe(&c, model::ThreadMode::NewExternal);
+    assert_eq!(original.length, model::length(0.4018 * 25.4));
+    assert_eq!(original.npt.unwrap().form, model::NptThreadForm::External);
+    unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::Npt.label());
+    unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+    unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+    unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::Npt.label());
+    let restored = match c.form.as_ref().unwrap() {
+        ModelForm::Thread(panel) => panel
+            .recipe(s.document(), model::ThreadMode::NewExternal)
+            .unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(restored, original);
+    unified_click(&ctx, &mut c, &mut s, "New threaded shaft");
+    unified_click(&ctx, &mut c, &mut s, "Cut internal thread");
+    let internal = match c.form.as_ref().unwrap() {
+        ModelForm::Thread(panel) => panel
+            .recipe(s.document(), model::ThreadMode::CutInternal)
+            .unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(internal.npt.unwrap().form, model::NptThreadForm::Internal);
+    assert_eq!(
+        internal.major_diameter,
+        model::length(internal.npt.unwrap().base_major_mm())
+    );
+    assert_eq!(internal.length, model::length(0.4018 * 25.4));
+    unified_click(&ctx, &mut c, &mut s, "Cut internal thread");
+    unified_click(&ctx, &mut c, &mut s, "New threaded shaft");
+    let request = match c.form.as_ref().unwrap() {
+        ModelForm::Thread(panel) => panel.request(s.document(), true).unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(request.parameters, original);
+    unified_click(&ctx, &mut c, &mut s, "Preview");
+    wait(&mut c, &s);
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+    assert_eq!(s.document(), &before);
+    unified_click(&ctx, &mut c, &mut s, "Cancel");
+    assert_eq!(s.document(), &before);
+    c.begin_form(
+        &s,
+        &Default::default(),
+        Channel::Ui,
+        ModelForm::Thread(Box::new(
+            ThreadPanel::new(
+                request,
+                s.parameters().clone(),
+                vec![],
+                &BTreeSet::new(),
+                false,
+            )
+            .unwrap(),
+        )),
+    )
+    .unwrap();
+    unified_click(&ctx, &mut c, &mut s, "Preview");
+    wait(&mut c, &s);
+    let outputs = c.apply(&mut s, &Default::default()).unwrap();
+    let feature = outputs[0].feature;
+    assert_eq!(
+        model::read_thread(s.document(), feature)
+            .unwrap()
+            .parameters,
+        original
+    );
+    let saved = s.document().clone();
+    s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(s.document(), &before);
+    s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(s.document(), &saved);
+    c.begin_existing(&s, &Default::default(), feature, Channel::Ui)
+        .unwrap();
+    c.cancel();
+    assert_eq!(s.document(), &saved);
+}
