@@ -120,6 +120,15 @@ the kernel's multiple-start support remains restricted to the families that
 allow it. Flat cut ends are the only supported runout;
 automatic relief grooves and chamfers are unimplemented.
 
+The spine first uses the established continuous helix representation. Native
+crest/gap checks sample every quarter-pitch band across its height. If those
+checks detect lost ridge material, construction retries with per-turn edges
+and an exact final fractional endpoint. This bounds the swept faces for short,
+non-integral thread lengths while retaining existing metric representation
+when it passes. Pitch, phase and authored length stay unchanged; validity,
+solid-count, physical and complete-face-ancestry checks apply to both paths.
+Other construction failures retain their original refusal behavior.
+
 The [kernel input policy](../../crates/multicad-kernel/src/threads.rs) bounds
 construction to 1-8 starts, pitch of at least 0.001 mm, and length of at least
 one pitch. It limits `length/pitch + 2*starts` to 128.

@@ -149,7 +149,30 @@ fn hex_nut_contains_a_real_helical_internal_thread_and_retains_flats_and_height(
     solid.write_step(&path).unwrap();
     let readback = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
     assert_eq!(readback.solid_count().unwrap(), 1);
-    assert!((readback.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < 1e-5);
+    for turn in [1., 2., 3.] {
+        assert!(probe(&readback, [pitch_radius, 0., turn + 0.2]) < 1e-5);
+        assert!(probe(&readback, [pitch_radius, 0., turn + 0.3]) > 0.999);
+    }
+    let before_volume = solid.volume_mm3().unwrap();
+    let after_volume = readback.volume_mm3().unwrap();
+    let root = 3. - 5. * 3_f64.sqrt() / 16.;
+    // Each axial slice has the same annular thread area, even at fractional
+    // pitches. Integrate its linear flanks, then subtract from the hex prism.
+    let integral = 0.125 * (9. - root * root) / 2.
+        + 2. / 3_f64.sqrt() * (3. * (9. - root * root) / 2. - (27. - root.powi(3)) / 3.);
+    let expected = 5.2 * (50. * 3_f64.sqrt() - PI * root * root - 2. * PI * integral);
+    assert!(
+        (before_volume - expected).abs() < 1e-5,
+        "native={before_volume:.15}, expected={expected:.15}"
+    );
+    assert!(
+        (after_volume - expected).abs() < 1e-5,
+        "STEP={after_volume:.15}, expected={expected:.15}"
+    );
+    assert!(
+        (after_volume - before_volume).abs() < 1e-5,
+        "before={before_volume:.15}, after={after_volume:.15}, expected={expected:.15}"
+    );
 }
 #[test]
 fn native_cache_edits_history_and_reopen_preserve_parametric_body_identity() {

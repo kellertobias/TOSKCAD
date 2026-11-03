@@ -29,6 +29,10 @@
 namespace multicad::kernel {
 namespace {
 struct ThreadFace { TopoDS_Shape face; uint32_t source; uint8_t role; };
+class ThreadRidgeLoss : public std::runtime_error {
+public:
+  ThreadRidgeLoss():std::runtime_error("Native Boolean did not retain the requested thread crests and gaps"){}
+};
 template<class Operation>
 std::vector<ThreadFace> carry_thread_faces(Operation &operation,
     const std::vector<ThreadFace> &sources) {
@@ -55,7 +59,7 @@ void boolean_inputs(BRepAlgoAPI_BooleanOperation &operation,
     throw std::runtime_error("Native thread Boolean failed");
 }
 }
-std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
+static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segmented) {
  try {
   const double pi=std::acos(-1.),lead=s.pitch*s.starts;
   const double root=s.radius-s.depth,z0=-2*lead,z1=s.height+2*lead;
@@ -79,12 +83,11 @@ std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
     const double phase=2*pi*start/s.starts,z=-lead;
     Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,z/c),gp_Dir2d(sign*2*pi,lead/c));
     const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
-    // A single multi-turn sweep face can lose an interior ridge when OCCT
-    // clips its upper end at a fractional turn, despite a valid Boolean result.
-    // Bound the sweep faces with per-turn spine edges on the same exact helix.
-    // The last edge keeps the requested fractional endpoint and initial phase.
+    // Preserve the established continuous representation when it passes the
+    // physical guards. A failed clipping result may be rebuilt with bounded
+    // per-turn faces on the same helix, without changing its extent or phase.
     BRepBuilderAPI_MakeWire spineBuilder;
-    const double turn=std::hypot(2*pi,lead/c);
+    const double turn=segmented?std::hypot(2*pi,lead/c):end;
     for(double begin=0;begin<end;) {
       // Merge only floating-point roundoff at a complete-turn endpoint into
       // the preceding edge; never create an almost-zero final edge or move end.
@@ -128,13 +131,19 @@ std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
   int count=0;for(TopExp_Explorer it(solid,TopAbs_SOLID);it.More();it.Next())++count;
   if(count!=1)throw std::runtime_error("Thread must remain one connected solid");
   // Validate physical crests and gaps, not merely a successful Boolean call.
-  const double sampleZ=s.height*.47;
-  for(uint32_t start=0;start<s.starts;++start) {
-    const double angle=sign*2*pi*sampleZ/lead+2*pi*start/s.starts;
-    const double radius=s.radius+s.taper*sampleZ-std::min(s.depth*.05,s.crest_width*.1);
-    const auto state=[&](double a){return BRepClass3d_SolidClassifier(solid,gp_Pnt(radius*std::cos(a),radius*std::sin(a),sampleZ),s.tolerance*4).State();};
-    if(state(angle)!=TopAbs_IN||state(angle+pi/s.starts)!=TopAbs_OUT)
-      throw std::runtime_error("Native Boolean did not retain the requested thread crests and gaps");
+  // Probe every quarter-pitch band and the original regression sample. This
+  // checks the whole axial extent, rather than accepting one surviving crest.
+  const uint32_t bands=static_cast<uint32_t>(std::ceil(4*s.height/s.pitch));
+  BRepClass3d_SolidClassifier classifier(solid);
+  for(uint32_t band=0;band<=bands;++band) {
+    const double sampleZ=band==bands?s.height*.47:s.height*(band+.5)/bands;
+    for(uint32_t start=0;start<s.starts;++start) {
+      const double angle=sign*2*pi*sampleZ/lead+2*pi*start/s.starts;
+      const double radius=s.radius+s.taper*sampleZ-std::min(s.depth*.05,s.crest_width*.1);
+      const auto state=[&](double a){classifier.Perform(gp_Pnt(radius*std::cos(a),radius*std::sin(a),sampleZ),s.tolerance*4);return classifier.State();};
+      if(state(angle)!=TopAbs_IN||state(angle+pi/s.starts)!=TopAbs_OUT)
+        throw ThreadRidgeLoss();
+    }
   }
   auto result=std::make_unique<Shape>(Shape{solid,{},{}});
   TopTools_IndexedMapOfShape faces;TopExp::MapShapes(solid,TopAbs_FACE,faces);
@@ -158,5 +167,14 @@ std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
  } catch(const Standard_Failure &e) {
   throw std::runtime_error(e.GetMessageString()?e.GetMessageString():"Native thread operation failed");
  }
+}
+std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
+  try {
+    return build_helical_thread(s,false);
+  } catch(const ThreadRidgeLoss &) {
+    // Retry only a proven physical clipping failure. Invalid geometry, native
+    // errors and missing ancestry retain their original refusal semantics.
+    return build_helical_thread(s,true);
+  }
 }
 }
