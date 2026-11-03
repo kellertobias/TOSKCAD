@@ -9,6 +9,9 @@ struct CompoundMember {
   std::optional<VolumeCertificate> volume;
   uint32_t solids=0;
   bool exact_copy=true;
+  bool same_world=true;
+  std::optional<std::array<double,6>> bounds;
+  std::shared_ptr<MeshIdentity> mesh_identity;
 };
 struct CompoundJob { std::vector<CompoundMember> members; std::size_t topology_count = 0; };
 std::unique_ptr<CompoundJob> compound_job();

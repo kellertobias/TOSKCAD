@@ -88,6 +88,10 @@ void compound_add(CompoundJob &job,const Shape &source) {
     BRepBuilderAPI_Copy copy(source.value,true,false);if(!copy.IsDone())throw std::runtime_error("Compound member copy failed");
     CompoundMember member{copy.Shape(),{},{},{}};
     member.exact_copy=member.copied.ShapeType()==source.value.ShapeType()&&member.copied.Orientation()==source.value.Orientation();
+    const auto beforeLocation=source.value.Location().Transformation(),afterLocation=member.copied.Location().Transformation();
+    for(int row=1;row<=3;++row)for(int col=1;col<=4;++col)
+      member.same_world=member.same_world&&beforeLocation.Value(row,col)==afterLocation.Value(row,col);
+
     try {
       for(TopExp_Explorer it(source.value,TopAbs_SOLID);it.More();it.Next())++member.solids;
       uint32_t copiedSolids=0;for(TopExp_Explorer it(member.copied,TopAbs_SOLID);it.More();it.Next())++copiedSolids;
@@ -119,6 +123,8 @@ void compound_add(CompoundJob &job,const Shape &source) {
     if(member.exact_copy)try {
       {std::lock_guard<std::mutex> lock(source.face_cache->mutex);member.faces=source.face_cache->value;}
       {std::lock_guard<std::mutex> lock(source.volume_cache->mutex);member.volume=source.volume_cache->certificate;}
+      {std::lock_guard<std::mutex> lock(source.bounds_cache->mutex);member.bounds=source.bounds_cache->value;}
+      member.mesh_identity=source.mesh_identity;
     } catch(const std::bad_alloc &) {member.faces.reset();member.volume.reset();}
     job.members.push_back(std::move(member));
     job.topology_count+=count;
@@ -174,10 +180,24 @@ std::unique_ptr<Shape> compound_finish(CompoundJob &job) {
       TopoDS_Iterator child(compound);
       const bool onlyChild=child.More()&&child.Value().IsEqual(member.copied);
       if(child.More())child.Next();
-      if(onlyChild&&!child.More()&&member.exact_copy&&solids==member.solids&&member.volume) {
-        const auto &v=*member.volume;
-        if(std::isfinite(v.mass)&&v.mass>0.&&std::isfinite(v.relative_error)&&v.relative_error>=0.&&v.relative_error<=1e-7)
-          result->volume_cache->certificate=v;
+      if(onlyChild&&!child.More()&&member.exact_copy&&member.same_world&&solids==member.solids) {
+        if(member.volume) {
+          const auto &v=*member.volume;
+          if(std::isfinite(v.mass)&&v.mass>0.&&std::isfinite(v.relative_error)&&v.relative_error>=0.&&v.relative_error<=1e-7)
+            result->volume_cache->certificate=v;
+        }
+        if(member.bounds)result->bounds_cache->value=member.bounds;
+        // No triangle picking-index remap is implicit: only exact ordinal
+        // identity through every source face/copy/output occurrence qualifies.
+        const auto output=map(compound,0),copied=map(member.copied,0);
+        bool ordinal=output.Extent()==copied.Extent();
+        for(int face=0;ordinal&&face<output.Extent();++face) {
+          if(static_cast<size_t>(face)>=member.links.size()) {ordinal=false;break;}
+          const auto &link=member.links[face];
+          ordinal=link.kind==0&&link.input==static_cast<uint32_t>(face)&&
+              output.FindIndex(link.copied)==face+1&&output(face+1).Orientation()==link.orientation;
+        }
+        if(ordinal&&member.mesh_identity)result->mesh_identity=member.mesh_identity;
       }
     }} catch(const Standard_Failure &) { /* Ordinary native volume remains available. */ }
        catch(const std::bad_alloc &) { /* Optional proof cannot invalidate geometry. */ }

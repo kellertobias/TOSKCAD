@@ -1,6 +1,8 @@
 #include "bridge.hpp"
 #include "measure.hpp"
 #include <tuple>
+#include <cstring>
+#include <limits>
 #include "multicad-kernel/src/lib.rs.h"
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -375,8 +377,48 @@ bool volume_cache_concurrent_probe(const Shape &source) {
 Mesh mesh(const Shape &s, double tolerance) {
   return tessellate(s, tolerance, 0.5, 1000000);
 }
-Mesh tessellate(const Shape &s, double tolerance, double angle, uint32_t limit) {
+struct MeshBuffer {
+  // Exact-sized numeric arrays: no geometric/native handles or unaccounted
+  // vector growth, including while a new bounded receipt is being prepared.
+  std::unique_ptr<double[]> vertices;
+  std::unique_ptr<uint32_t[]> indices,faces;
+  size_t vertex_size=0,index_size=0,face_size=0;
+};
+namespace {
+constexpr uint64_t meshTotalBytes=32*1024*1024,meshReceiptBytes=4*1024*1024;
+constexpr uint32_t meshEntries=16;
+uint64_t mesh_bits(double value) {uint64_t bits;std::memcpy(&bits,&value,sizeof(bits));return bits;}
+MeshKey mesh_key(double linear,double angular,uint32_t triangles) {return {mesh_bits(linear),mesh_bits(angular),triangles};}
+struct MeshEntry {std::weak_ptr<MeshIdentity> identity;MeshKey key;std::shared_ptr<const MeshBuffer> data;uint64_t bytes,used;};
+struct MeshMemo {
+  std::vector<MeshEntry> entries;
+  MeshCacheStats stats{};
+  uint64_t bytes=0,clock=0,total_limit=meshTotalBytes,receipt_limit=meshReceiptBytes;
+  uint32_t entry_limit=meshEntries;
+};
+MeshMemo &mesh_memo() {thread_local MeshMemo memo;return memo;}
+void purge_meshes(MeshMemo &memo) {
+  for(auto it=memo.entries.begin();it!=memo.entries.end();) {
+    if(it->identity.expired()) {memo.bytes-=it->bytes;it=memo.entries.erase(it);}else ++it;
+  }
+}
+Mesh detached_mesh(const MeshBuffer &buffer) {
+  Mesh result;
+  result.vertices.reserve(buffer.vertex_size);result.indices.reserve(buffer.index_size);result.face_indices.reserve(buffer.face_size);
+  for(size_t i=0;i<buffer.vertex_size;++i)result.vertices.push_back(buffer.vertices[i]);
+  for(size_t i=0;i<buffer.index_size;++i)result.indices.push_back(buffer.indices[i]);
+  for(size_t i=0;i<buffer.face_size;++i)result.face_indices.push_back(buffer.faces[i]);
+  return result;
+}
+}
+static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_t limit,bool cached) {
   return guard([&] {
+    auto &memo=mesh_memo();++memo.stats.requests;purge_meshes(memo);
+    const auto key=mesh_key(tolerance,angle,limit);
+    if(cached)for(auto &entry:memo.entries)if(entry.identity.lock()==s.mesh_identity&&entry.key==key) {
+      auto result=detached_mesh(*entry.data);entry.used=++memo.clock;++memo.stats.hits;return result;
+    }
+    ++memo.stats.builds;
     // Meshing mutates triangulations. Detach geometry so a display request
     // cannot modify a cached modeling operand or its manufacturing geometry.
     BRepBuilderAPI_Copy copy(s.value, true, false);
@@ -421,6 +463,46 @@ Mesh tessellate(const Shape &s, double tolerance, double angle, uint32_t limit) 
     return out;
   });
 }
+Mesh tessellate(const Shape &s,double tolerance,double angle,uint32_t limit) {return tessellate_impl(s,tolerance,angle,limit,true);}
+Mesh tessellate_fresh(const Shape &s,double tolerance,double angle,uint32_t limit) {return tessellate_impl(s,tolerance,angle,limit,false);}
+bool remember_validated_mesh(const Shape &s,double tolerance,double angle,uint32_t limit,const Mesh &mesh) {
+  // Called only after the complete Rust TriangleMesh checks. Cache operations
+  // cannot convert accepted display data into a geometry/modeling failure.
+  auto &memo=mesh_memo();purge_meshes(memo);
+  const auto key=mesh_key(tolerance,angle,limit);
+  for(auto &entry:memo.entries)if(entry.identity.lock()==s.mesh_identity&&entry.key==key) {entry.used=++memo.clock;return true;}
+  const auto unretained=[&](){++memo.stats.unretained;return false;};
+  if(mesh.vertices.size()>meshReceiptBytes/sizeof(double)||mesh.indices.size()>meshReceiptBytes/sizeof(uint32_t)||mesh.face_indices.size()>meshReceiptBytes/sizeof(uint32_t))return unretained();
+  const uint64_t bytes=mesh.vertices.size()*sizeof(double)+(mesh.indices.size()+mesh.face_indices.size())*sizeof(uint32_t);
+  if(!memo.entry_limit||!bytes||bytes>memo.receipt_limit||bytes>memo.total_limit||mesh.indices.size()/3>limit)return unretained();
+  try {
+    // Free budget before allocating a pending numeric receipt. Failure may
+    // evict optional old data but never invalidates the accepted caller mesh.
+    memo.entries.reserve(memo.entry_limit);
+    while(memo.entries.size()>=memo.entry_limit||memo.bytes>memo.total_limit-bytes) {
+      auto oldest=std::min_element(memo.entries.begin(),memo.entries.end(),[](const auto &a,const auto &b){return a.used<b.used;});
+      memo.bytes-=oldest->bytes;memo.entries.erase(oldest);++memo.stats.evictions;
+    }
+    auto data=std::make_shared<MeshBuffer>();
+    data->vertex_size=mesh.vertices.size();data->index_size=mesh.indices.size();data->face_size=mesh.face_indices.size();
+    data->vertices=std::make_unique<double[]>(data->vertex_size);
+    data->indices=std::make_unique<uint32_t[]>(data->index_size);
+    data->faces=std::make_unique<uint32_t[]>(data->face_size);
+    std::copy(mesh.vertices.begin(),mesh.vertices.end(),data->vertices.get());
+    std::copy(mesh.indices.begin(),mesh.indices.end(),data->indices.get());
+    std::copy(mesh.face_indices.begin(),mesh.face_indices.end(),data->faces.get());
+    memo.entries.push_back({s.mesh_identity,key,data,bytes,++memo.clock});memo.bytes+=bytes;
+    {std::lock_guard<std::mutex> lock(s.mesh_identity->mutex);s.mesh_identity->key=key;s.mesh_identity->receipt=data;}
+    return true;
+  }catch(const std::bad_alloc &) {return unretained();}
+}
+MeshCacheStats mesh_cache_stats() {auto &memo=mesh_memo();purge_meshes(memo);auto result=memo.stats;result.entries=memo.entries.size();result.bytes=memo.bytes;return result;}
+void reset_mesh_cache() {mesh_memo()=MeshMemo{};}
+void mesh_cache_test_limits(uint32_t entries,uint64_t total,uint64_t receipt) {
+  if(entries>meshEntries||total>meshTotalBytes||receipt>meshReceiptBytes)throw std::runtime_error("Mesh test limits cannot exceed production bounds");
+  reset_mesh_cache();auto &memo=mesh_memo();memo.entry_limit=entries;memo.total_limit=total;memo.receipt_limit=receipt;
+}
+bool shares_mesh_identity(const Shape &a,const Shape &b) {return a.mesh_identity==b.mesh_identity;}
 // STEP reader/writer initialization and shape-fix parameters use shared OCCT
 // translator state. Acquire before constructing either translator and retain
 // through destruction; unrelated geometry and owned handles remain independent.
@@ -773,6 +855,7 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
     if(identity) {
       result->bounds_cache=s.bounds_cache;
       result->face_cache=s.face_cache;
+      result->mesh_identity=s.mesh_identity;
     }
     // A completed native mass certificate is invariant under this exact
     // unit-scale proper isometry. Other transforms and all new geometry keep

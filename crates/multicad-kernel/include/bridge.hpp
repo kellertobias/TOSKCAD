@@ -16,6 +16,7 @@ public:
   VolumeIntegrationFailure():std::runtime_error("Native volume integration did not converge"){}
 };
 struct Mesh;
+struct MeshCacheStats;
 struct Point3;
 struct Frame3;
 struct CurveEdge;
@@ -67,6 +68,17 @@ struct ValidityCache {
   bool accepted=false;
   uint64_t checks=0;
 };
+struct MeshKey {
+  uint64_t linear,angular;
+  uint32_t triangles;
+  bool operator==(const MeshKey &other)const {return linear==other.linear&&angular==other.angular&&triangles==other.triangles;}
+};
+struct MeshBuffer;
+struct MeshIdentity {
+  std::mutex mutex;
+  std::optional<MeshKey> key;
+  std::weak_ptr<const MeshBuffer> receipt;
+};
 struct Shape {
   TopoDS_Shape value;
   std::vector<NativeAncestry> ancestry;
@@ -82,6 +94,9 @@ struct Shape {
   std::shared_ptr<FaceCache> face_cache=std::make_shared<FaceCache>();
   // Only successful native validation of this exact immutable geometry.
   std::shared_ptr<ValidityCache> validity_cache=std::make_shared<ValidityCache>();
+  // Identity and a weak numeric receipt only; strong mesh retention is bounded
+  // by the owning thread LRU and never retains native geometry handles.
+  std::shared_ptr<MeshIdentity> mesh_identity=std::make_shared<MeshIdentity>();
   // Only an original local thread result has this opaque factory identity.
   // Geometry-changing operations/imports never inherit it.
   std::shared_ptr<const ThreadFactoryTag> thread_factory_tag = {};
@@ -90,6 +105,12 @@ std::unique_ptr<Shape> extrude(double width, double depth, double height);
 std::unique_ptr<Shape> cut(const Shape &, double x, double width, double depth,
                            double height);
 Mesh mesh(const Shape &, double deflection);
+Mesh tessellate_fresh(const Shape &,double,double,uint32_t);
+bool remember_validated_mesh(const Shape &,double,double,uint32_t,const Mesh &);
+MeshCacheStats mesh_cache_stats();
+void reset_mesh_cache();
+void mesh_cache_test_limits(uint32_t,uint64_t,uint64_t);
+bool shares_mesh_identity(const Shape &,const Shape &);
 double volume(const Shape &);
 uint64_t volume_integration_count(const Shape &);
 bool shares_volume_cache(const Shape &,const Shape &);

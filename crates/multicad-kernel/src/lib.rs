@@ -12,6 +12,16 @@ mod ffi {
         /// One evaluation-local B-rep face index per display triangle.
         pub face_indices: Vec<u32>,
     }
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct MeshCacheStats {
+        pub requests: u64,
+        pub hits: u64,
+        pub builds: u64,
+        pub entries: u64,
+        pub bytes: u64,
+        pub evictions: u64,
+        pub unretained: u64,
+    }
     #[derive(Clone, Copy, Debug)]
     pub struct Point3 {
         pub x: f64,
@@ -513,6 +523,29 @@ mod ffi {
             ruled: bool,
             tolerance: f64,
         ) -> Result<UniquePtr<Shape>>;
+        fn remember_validated_mesh(
+            shape: &Shape,
+            deflection: f64,
+            angle: f64,
+            max_triangles: u32,
+            mesh: &Mesh,
+        ) -> Result<bool>;
+        #[allow(dead_code)] // Private bounded detached display receipt regressions.
+        fn tessellate_fresh(
+            shape: &Shape,
+            deflection: f64,
+            angle: f64,
+            max_triangles: u32,
+        ) -> Result<Mesh>;
+        #[allow(dead_code)]
+        fn mesh_cache_stats() -> Result<MeshCacheStats>;
+        #[allow(dead_code)]
+        fn reset_mesh_cache() -> Result<()>;
+        #[allow(dead_code)]
+        fn mesh_cache_test_limits(entries: u32, total_bytes: u64, receipt_bytes: u64)
+        -> Result<()>;
+        #[allow(dead_code)]
+        fn shares_mesh_identity(a: &Shape, b: &Shape) -> bool;
         fn tessellate(
             shape: &Shape,
             deflection: f64,
@@ -631,3 +664,6 @@ pub use sketch_references::*;
 
 #[cfg(test)]
 mod validity_cache_tests;
+
+#[cfg(test)]
+mod mesh_cache_tests;

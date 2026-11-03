@@ -81,6 +81,7 @@ std::unique_ptr<Shape> thread_wrapper(const Shape &source) {
   result->volume_cache=source.volume_cache;
   result->face_cache=source.face_cache;
   result->validity_cache=source.validity_cache;
+  result->mesh_identity=source.mesh_identity;
   result->thread_factory_tag=source.thread_factory_tag;
   return result;
 }

@@ -700,6 +700,15 @@ impl Solid {
                 "Invalid display mesh",
             ));
         }
+        // Retain only after every ordinary detached TriangleMesh validation.
+        // Optional receipt allocation failure does not invalidate display data.
+        let _ = ffi::remember_validated_mesh(
+            &self.native.0,
+            options.linear_deflection_mm,
+            options.angular_deflection_rad,
+            options.maximum_triangles,
+            &mesh,
+        );
         Ok(mesh)
     }
     pub fn display_edges(&self, deflection_mm: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
