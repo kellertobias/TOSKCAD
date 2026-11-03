@@ -302,7 +302,9 @@ impl Compiler {
         revision: u64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
-        self.compile_scoped(document, revision, None, interrupt, None)
+        crate::worker_cache::with_current_cache(|cache| {
+            self.compile_scoped(document, revision, None, interrupt, cache)
+        })
     }
     /// A full compile that reuses unchanged feature results from earlier
     /// compiles through `cache` and records new ones (see [`EvaluationCache`]).
@@ -347,7 +349,9 @@ impl Compiler {
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
         let roots = validate_source_roots(document, roots)?;
-        self.compile_scoped(document, revision, Some(roots), interrupt, None)
+        crate::worker_cache::with_current_cache(|cache| {
+            self.compile_scoped(document, revision, Some(roots), interrupt, cache)
+        })
     }
     /// Nested evaluators report their own cancellation wording (for example
     /// a sketch "cancelled" or a wrapped native failure). A failure observed
@@ -359,16 +363,28 @@ impl Compiler {
         revision: u64,
         roots: Option<Vec<EntityId>>,
         interrupt: Option<&dyn Fn() -> bool>,
-        cache: Option<&mut crate::EvaluationCache>,
+        mut cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
-        self.compile_scoped_unchecked(document, revision, roots, interrupt, cache)
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.begin_symbol_proofs();
+        }
+        let result = self
+            .compile_scoped_unchecked(document, revision, roots, interrupt, cache.as_deref_mut())
+            .and_then(|model| {
+                checkpoint(interrupt)?;
+                Ok(model)
+            })
             .map_err(|e| {
                 if !is_superseded(&e) && interrupt.is_some_and(|f| f()) {
                     error(e.entity, "Model evaluation superseded")
                 } else {
                     e
                 }
-            })
+            });
+        if let Some(cache) = cache {
+            cache.finish_symbol_proofs(result.is_ok());
+        }
+        result
     }
     fn compile_scoped_unchecked(
         &self,
@@ -382,7 +398,13 @@ impl Compiler {
         document.validate().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
         if roots.is_none() {
-            crate::symbols::validate_definitions(self, document, revision, interrupt)?;
+            crate::symbols::validate_definitions(
+                self,
+                document,
+                revision,
+                interrupt,
+                cache.as_deref_mut(),
+            )?;
         }
         let context =
             SketchEvaluationContext::new(document, revision).map_err(|e| error(e.source, e))?;
@@ -1343,4 +1365,69 @@ pub fn validate_source_roots(
         }
     }
     Ok(unique.into_iter().collect())
+}
+
+#[cfg(test)]
+mod owner_cache_scope_tests {
+    use super::*;
+    use multicad_core::commands::{Actor, Channel, Session};
+
+    fn fixture() -> (Document, EntityId) {
+        let mut session = Session::new(Document::new("Owner cache").unwrap()).unwrap();
+        let request = model::PrimitiveRequest::new(
+            "Box",
+            model::PrimitiveParameters::Box {
+                size: [model::length(10.), model::length(20.), model::length(5.)],
+                frame: Default::default(),
+            },
+        );
+        session
+            .commit(
+                model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &request)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        (session.document().clone(), request.feature)
+    }
+    fn reused(feature: EntityId) -> bool {
+        crate::worker_cache::with_current_cache(|cache| {
+            cache.unwrap().last_compile().reused.contains(&feature)
+        })
+    }
+    #[test]
+    fn ordinary_and_source_compilers_share_only_the_current_owner_scope() {
+        let (document, feature) = fixture();
+        crate::worker_cache::with_current_cache(|cache| assert!(cache.is_none()));
+        crate::with_evaluation_cache(|| {
+            let compiler = Compiler::default();
+            compiler.compile(&document, 1).unwrap();
+            assert!(!reused(feature));
+            compiler.compile(&document, 2).unwrap();
+            assert!(reused(feature));
+            compiler.compile_sources(&document, 3, &[feature]).unwrap();
+            assert!(reused(feature));
+            // Holding the ambient mutable borrow makes recursive compilation
+            // deliberately uncached rather than panicking on RefCell reentry.
+            crate::worker_cache::with_current_cache(|cache| {
+                assert!(cache.is_some());
+                compiler.compile(&document, 4).unwrap();
+            });
+            let other_document = document.clone();
+            std::thread::spawn(move || {
+                crate::worker_cache::with_current_cache(|cache| assert!(cache.is_none()));
+                crate::with_evaluation_cache(|| {
+                    Compiler::default().compile(&other_document, 1).unwrap();
+                    assert!(!reused(feature));
+                });
+            })
+            .join()
+            .unwrap();
+        });
+        crate::worker_cache::with_current_cache(|cache| assert!(cache.is_none()));
+        crate::with_evaluation_cache(|| {
+            Compiler::default().compile(&document, 1).unwrap();
+            assert!(!reused(feature));
+        });
+    }
 }

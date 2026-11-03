@@ -21,6 +21,7 @@ mod fences;
 mod gear_pairs;
 mod gears;
 mod mechanical_parts;
+mod worker_cache;
 pub use gear_pairs::GearPairCheck;
 mod equipment_plans;
 pub mod imports;
@@ -65,3 +66,4 @@ pub use sheet_unfold::{BendLine, DevelopedPattern, Diagnostic, DiagnosticScope, 
 pub use targets::*;
 pub use weld_schedule::{CutGroup, WeldRecord, group_cuts, weld_plan_annotations};
 pub use weldment::{EndRecord, LongPoint, MemberRecord};
+pub use worker_cache::with_evaluation_cache;

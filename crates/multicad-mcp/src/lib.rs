@@ -5,6 +5,7 @@ pub mod headless;
 pub mod host;
 #[cfg(unix)]
 pub mod local_socket;
+mod native_worker;
 pub mod server;
 pub mod tools;
 

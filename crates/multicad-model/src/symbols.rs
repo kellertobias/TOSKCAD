@@ -14,6 +14,7 @@ pub(crate) fn validate_definitions(
     document: &Document,
     revision: u64,
     interrupt: Option<&dyn Fn() -> bool>,
+    mut cache: Option<&mut crate::EvaluationCache>,
 ) -> Result<(), ModelError> {
     let definitions = symbols::definitions(document).map_err(|e| error(None, e))?;
     if definitions.len() > MAX_DEFINITIONS {
@@ -51,6 +52,41 @@ pub(crate) fn validate_definitions(
             // unplaced construction pin carries no native geometry receipt.
             continue;
         }
+        // These providers consume only authored template source. Other providers
+        // (including imported resources and context-dependent architecture) keep
+        // the complete native check on every compile until separately audited.
+        let pure = definition
+            .template
+            .entities()
+            .all(|entity| match &entity.data {
+                multicad_core::document::EntityData::Parameter { .. }
+                | multicad_core::document::EntityData::Material { .. }
+                | multicad_core::document::EntityData::Part { .. } => true,
+                multicad_core::document::EntityData::Feature { definition, .. } => [
+                    multicad_core::model::PRIMITIVE_TYPE,
+                    multicad_core::model::THREAD_TYPE,
+                    multicad_core::model::MECHANICAL_PART_TYPE,
+                ]
+                .contains(&definition.type_id.as_str()),
+                _ => false,
+            });
+        let proof = pure.then(|| {
+            ContentHash::of(
+                format!(
+                    "multicad.symbol-native-proof/1|{pin}|{:?}|{:?}|{}",
+                    compiler.policy, compiler.mesh, compiler.omit_display,
+                )
+                .as_bytes(),
+            )
+        });
+        if let (Some(key), Some(cache)) = (proof, cache.as_deref_mut())
+            && cache.symbol_proof_hit(key)
+        {
+            continue;
+        }
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.symbol_native_check();
+        }
         // Core rejects nested symbol providers. This recursive call therefore
         // evaluates a bounded ordinary source graph, not another symbol graph.
         let native = compiler
@@ -75,6 +111,12 @@ pub(crate) fn validate_definitions(
             ));
         }
         require_references(id, &definition.template, &native.snapshot().references)?;
+        if interrupt.is_some_and(|f| f()) {
+            return Err(error(Some(id), "Symbol definition evaluation superseded"));
+        }
+        if let (Some(key), Some(cache)) = (proof, cache.as_deref_mut()) {
+            cache.stage_symbol_proof(key);
+        }
     }
     Ok(())
 }

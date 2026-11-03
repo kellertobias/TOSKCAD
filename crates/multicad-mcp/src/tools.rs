@@ -235,6 +235,16 @@ macro_rules! tools {
             };
             finish(host, &request, read_only, result)
         }
+        /// Record a known tool rejected before native dispatch, preserving the
+        /// same actor, arguments and append-only failure audit as normal calls.
+        pub(crate) fn reject(host: &dyn Host, call: &Call, name: &str, arguments: Value, error: ToolError) -> ToolResult {
+            let (tool, read_only) = match name {
+                $($name => ($name, $read_only),)*
+                _ => return Err(ToolError::new("unknown_tool", format!("Unknown tool '{name}'"))),
+            };
+            let request = Request { call: call.clone(), tool, arguments, review: Arc::default() };
+            finish(host, &request, read_only, Err(error))
+        }
     };
 }
 

@@ -21,27 +21,41 @@ pub struct Backend {
     expected: Option<(u64, SceneStamp)>,
 }
 impl Backend {
+    fn runtime() -> Result<Runtime<Arc<viewport::Scene>>, String> {
+        Runtime::with_model_and_snapshot(
+            Compiler::default(),
+            |document, model, snapshot, generation| {
+                let mut published = scene(document, snapshot, generation)?;
+                if published.is_full_model() {
+                    let plan = architecture_plan::build(document, model);
+                    Arc::get_mut(&mut published)
+                        .expect("publication is not shared before return")
+                        .set_architecture_plan(plan)
+                        .map_err(|message| ModelError {
+                            entity: None,
+                            message,
+                        })?;
+                }
+                Ok(published)
+            },
+        )
+    }
     pub fn new() -> Self {
         Self {
-            runtime: Runtime::with_model_and_snapshot(
-                Compiler::default(),
-                |document, model, snapshot, generation| {
-                    let mut published = scene(document, snapshot, generation)?;
-                    if published.is_full_model() {
-                        let plan = architecture_plan::build(document, model);
-                        Arc::get_mut(&mut published)
-                            .expect("publication is not shared before return")
-                            .set_architecture_plan(plan)
-                            .map_err(|message| ModelError {
-                                entity: None,
-                                message,
-                            })?;
-                    }
-                    Ok(published)
-                },
-            ),
+            runtime: Self::runtime(),
             expected: None,
         }
+    }
+    /// Each backend publishes independently while exact geometry remains on
+    /// one app-owned native worker across preview and canonical requests.
+    pub fn factory() -> Result<viewport::BackendFactory, String> {
+        let owner = Self::new().runtime?;
+        Ok(Arc::new(move || {
+            Box::new(Self {
+                runtime: owner.fork(),
+                expected: None,
+            })
+        }))
     }
     fn evaluate(
         &mut self,

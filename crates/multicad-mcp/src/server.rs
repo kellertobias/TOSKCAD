@@ -23,10 +23,14 @@ const INSTRUCTIONS: &str = "MultiCAD controls one canonical parametric document.
 #[derive(Clone)]
 pub struct Server {
     host: Arc<dyn Host>,
+    native: Arc<crate::native_worker::NativeWorker>,
 }
 impl Server {
     pub fn new(host: Arc<dyn Host>) -> Self {
-        Self { host }
+        Self {
+            native: Arc::new(crate::native_worker::NativeWorker::new(Arc::clone(&host))),
+            host,
+        }
     }
     fn tools() -> Vec<Tool> {
         tools::catalog()
@@ -92,12 +96,17 @@ impl ServerHandler for Server {
         let host = Arc::clone(&self.host);
         let name = request.name.to_string();
         let arguments = request.arguments.map(Value::Object).unwrap_or(Value::Null);
-        let result = tokio::task::spawn_blocking(move || {
-            tools::dispatch(host.as_ref(), &call, &name, arguments)
-        })
-        .await;
+        let result = if crate::native_worker::source_inspection(&name) {
+            tokio::task::spawn_blocking(move || {
+                tools::dispatch(host.as_ref(), &call, &name, arguments)
+            })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))
+        } else {
+            Ok(self.native.dispatch(call, name, arguments).await)
+        };
         watcher.abort();
-        let result = result.map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let result = result?;
         Ok(match result {
             Ok(value) => CallToolResult::structured(value),
             Err(error) => CallToolResult::structured_error(

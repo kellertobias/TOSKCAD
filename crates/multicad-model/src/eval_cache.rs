@@ -48,6 +48,11 @@
 //! and material assignments before every hit; those checks cannot be skipped
 //! by a cached shape. Failed partial run generation returns no cacheable member.
 //!
+//! Native symbol-template validation additionally retains up to 64 completed
+//! receipts (also bounded by `max_entries`). Only audited self-contained source
+//! providers qualify. Receipts cover the entire pin and compiler configuration,
+//! and are published only after the enclosing compile completes successfully.
+//!
 //! # Lifetime, memory and threads
 //!
 //! Entries are only stored for successfully evaluated features, so a
@@ -158,6 +163,10 @@ pub struct EvaluationCache {
     max_entries: usize,
     last: CompileStats,
     pub(crate) gear_pairs: crate::gear_pairs::PairValidationCache,
+    symbol_proofs: BTreeSet<ContentHash>,
+    pending_symbol_proofs: BTreeSet<ContentHash>,
+    symbol_proof_hits: usize,
+    symbol_native_checks: usize,
 }
 impl Default for EvaluationCache {
     fn default() -> Self {
@@ -173,6 +182,10 @@ impl EvaluationCache {
             max_entries,
             last: CompileStats::default(),
             gear_pairs: Default::default(),
+            symbol_proofs: BTreeSet::new(),
+            pending_symbol_proofs: BTreeSet::new(),
+            symbol_proof_hits: 0,
+            symbol_native_checks: 0,
         }
     }
     /// Statistics of the most recent cached compile (also when it failed or
@@ -192,6 +205,50 @@ impl EvaluationCache {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.gear_pairs.clear();
+        self.symbol_proofs.clear();
+        self.pending_symbol_proofs.clear();
+    }
+    /// Completed, bounded native template receipts retained by this owner.
+    pub fn symbol_template_proofs(&self) -> usize {
+        self.symbol_proofs.len()
+    }
+    /// Cumulative successful template-proof hits (independent of feature stats).
+    pub fn symbol_template_proof_hits(&self) -> usize {
+        self.symbol_proof_hits
+    }
+    /// Cumulative template native checks, including failed checks.
+    pub fn symbol_template_native_checks(&self) -> usize {
+        self.symbol_native_checks
+    }
+    pub(crate) fn begin_symbol_proofs(&mut self) {
+        self.pending_symbol_proofs.clear();
+    }
+    pub(crate) fn finish_symbol_proofs(&mut self, success: bool) {
+        let pending = std::mem::take(&mut self.pending_symbol_proofs);
+        if success {
+            let limit = self.max_entries.min(64);
+            for key in pending {
+                if limit == 0 {
+                    break;
+                }
+                if self.symbol_proofs.len() >= limit {
+                    self.symbol_proofs.pop_first();
+                }
+                self.symbol_proofs.insert(key);
+            }
+        }
+    }
+    pub(crate) fn symbol_proof_hit(&mut self, key: ContentHash) -> bool {
+        let hit = self.symbol_proofs.contains(&key);
+        self.symbol_proof_hits += usize::from(hit);
+        hit
+    }
+    pub(crate) fn symbol_native_check(&mut self) {
+        self.symbol_native_checks += 1;
+    }
+    pub(crate) fn stage_symbol_proof(&mut self, key: ContentHash) {
+        // Current compile also has a 64-definition source budget.
+        self.pending_symbol_proofs.insert(key);
     }
     fn evict(&mut self) -> usize {
         let current = self.clock;

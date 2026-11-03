@@ -129,11 +129,10 @@ fn run_application(project: Option<PathBuf>) -> Result<(), String> {
     app.set_sketch_queries(std::sync::Arc::new(|| {
         Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
     }));
-    let models: multicad_ui::viewport::BackendFactory =
-        std::sync::Arc::new(|| Box::new(modeling::Backend::new()));
+    let models = modeling::Backend::factory()?;
     app.set_scene_backends(std::sync::Arc::clone(&models));
-    // The tool controller uses its own worker and publication lane so a
-    // candidate can never replace canonical geometry under the same revision.
+    // Preview and canonical lanes share native evaluation results while their
+    // request stamps, cancellation and authoritative publications stay separate.
     app.set_model_backends(models);
     app.set_external_query_backends(std::sync::Arc::new(|| {
         Ok(Box::new(external_queries::Backend::new()))

@@ -1014,3 +1014,450 @@ fn layered_wall_scene_publishes_each_live_source_material_without_flattening_the
         assert_eq!(colors.len(), 2);
     }
 }
+
+#[test]
+fn shared_native_owner_reuses_default_screw_preview_for_authoritative_apply() {
+    fn receive_screw(backend: &mut Backend) -> SceneReply {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if let Some(reply) = backend.poll() {
+                return reply;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Default M3 screw did not publish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let owner = Backend::runtime().unwrap();
+    let mut preview = Backend {
+        runtime: owner.fork(),
+        expected: None,
+    };
+    let mut canonical = Backend {
+        runtime: owner.fork(),
+        expected: None,
+    };
+    let mut session = Session::new(Document::new("Default M3 shared owner").unwrap()).unwrap();
+    let resources = Default::default();
+    for number in 1..=2 {
+        let parameters = model::default_machine_screw();
+        let request =
+            model::MechanicalPartRequest::new(format!("Default M3 {number}"), parameters.clone());
+        let prepared = model::prepare_mechanical_part(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            &request,
+        )
+        .unwrap();
+        let original = session.document().clone();
+        let stamp = SceneStamp {
+            document: original.id(),
+            revision: session.revision(),
+            generation: number * 10,
+        };
+        let started = Instant::now();
+        preview
+            .request_evaluation(
+                prepared.prepared.document(),
+                &resources,
+                stamp,
+                &Default::default(),
+            )
+            .unwrap();
+        let checked = receive_screw(&mut preview).result.unwrap();
+        let initial_ms = started.elapsed().as_secs_f64() * 1000.;
+        assert_eq!(checked.stamp(), stamp);
+        assert_eq!(checked.instances().len(), number as usize);
+        assert_eq!(session.document(), &original);
+        let started = Instant::now();
+        let unchanged_stamp = SceneStamp {
+            generation: stamp.generation + 1,
+            ..stamp
+        };
+        preview
+            .request_evaluation(
+                prepared.prepared.document(),
+                &resources,
+                unchanged_stamp,
+                &Default::default(),
+            )
+            .unwrap();
+        let unchanged = receive_screw(&mut preview).result.unwrap();
+        let unchanged_ms = started.elapsed().as_secs_f64() * 1000.;
+        let stats = preview
+            .runtime
+            .as_ref()
+            .unwrap()
+            .last_compile_stats()
+            .unwrap();
+        assert!(stats.evaluated.is_empty());
+        assert!(stats.reused.contains(&request.feature));
+        assert_eq!(unchanged.stamp(), unchanged_stamp);
+        assert_eq!(unchanged.instances().len(), number as usize);
+        let started = Instant::now();
+        session.commit(prepared.prepared).unwrap();
+        let applied_stamp = SceneStamp {
+            revision: session.revision(),
+            generation: stamp.generation + 2,
+            ..stamp
+        };
+        canonical
+            .request_evaluation(
+                session.document(),
+                &resources,
+                applied_stamp,
+                &Default::default(),
+            )
+            .unwrap();
+        let applied = receive_screw(&mut canonical).result.unwrap();
+        let apply_ready_ms = started.elapsed().as_secs_f64() * 1000.;
+        let stats = canonical
+            .runtime
+            .as_ref()
+            .unwrap()
+            .last_compile_stats()
+            .unwrap();
+        assert!(
+            stats.evaluated.is_empty(),
+            "Apply re-ran native feature providers: {stats:?}"
+        );
+        assert!(stats.reused.contains(&request.feature));
+        assert_eq!(applied.stamp(), applied_stamp);
+        assert_eq!(applied.instances().len(), number as usize);
+        assert!(
+            applied
+                .instances()
+                .iter()
+                .any(|instance| instance.id == request.body)
+        );
+        assert_eq!(
+            model::read_mechanical_part(session.document(), request.feature)
+                .unwrap()
+                .parameters,
+            parameters
+        );
+        assert_eq!(
+            applied.model_evaluation().unwrap().source_hash,
+            multicad_core::project_file::ContentHash::document(session.document()).unwrap()
+        );
+        eprintln!(
+            "default_m3_l10_b10 feature={number} preview_ms={initial_ms:.3} unchanged_preview_ms={unchanged_ms:.3} apply_canonical_ready_ms={apply_ready_ms:.3}"
+        );
+    }
+}
+
+#[test]
+fn app_backend_factory_keeps_candidate_and_canonical_publications_separate() {
+    let factory = Backend::factory().unwrap();
+    let mut candidate = factory();
+    let mut canonical = factory();
+    let (session, _) = box_session();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 1,
+    };
+    candidate.request(session.document(), stamp).unwrap();
+    let canonical_stamp = SceneStamp {
+        generation: 2,
+        ..stamp
+    };
+    canonical
+        .request(session.document(), canonical_stamp)
+        .unwrap();
+    candidate.cancel();
+    drop(candidate);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(reply) = canonical.poll() {
+            assert_eq!(reply.stamp, canonical_stamp);
+            assert_eq!(reply.result.unwrap().stamp(), canonical_stamp);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+mod painted_default_screw {
+    use super::*;
+    use multicad_ui::{
+        egui,
+        modeling::{ModelToolController, ModelToolOutcome},
+        viewport::SceneFeed,
+    };
+    use std::sync::Mutex;
+
+    type Records = Arc<Mutex<Vec<(SceneStamp, Option<multicad_model::CompileStats>)>>>;
+    struct RecordedBackend {
+        backend: Backend,
+        records: Records,
+    }
+    impl SceneBackend for RecordedBackend {
+        fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
+            self.backend.request(document, stamp)
+        }
+        fn request_evaluation(
+            &mut self,
+            document: &Document,
+            resources: &multicad_core::project_file::ProjectResources,
+            stamp: SceneStamp,
+            options: &EvaluationOptions,
+        ) -> Result<(), String> {
+            self.backend
+                .request_evaluation(document, resources, stamp, options)
+        }
+        fn request_sources(
+            &mut self,
+            document: &Document,
+            resources: &multicad_core::project_file::ProjectResources,
+            stamp: SceneStamp,
+            roots: &[multicad_core::document::EntityId],
+        ) -> Result<(), String> {
+            self.backend
+                .request_sources(document, resources, stamp, roots)
+        }
+        fn cancel(&mut self) {
+            self.backend.cancel();
+        }
+        fn poll(&mut self) -> Option<SceneReply> {
+            let reply = self.backend.poll()?;
+            let stats = self
+                .backend
+                .runtime
+                .as_ref()
+                .ok()
+                .and_then(Runtime::last_compile_stats);
+            self.records.lock().unwrap().push((reply.stamp, stats));
+            Some(reply)
+        }
+    }
+    struct Painted {
+        ctx: egui::Context,
+        controller: ModelToolController,
+        canonical: SceneFeed,
+        session: Session,
+        applied: Vec<model::CreatedBody>,
+        clock: Instant,
+    }
+    impl Painted {
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            let resources = Default::default();
+            self.controller.poll(&self.session, &resources);
+            self.canonical.tick_project(
+                self.session.document(),
+                &resources,
+                self.session.revision(),
+                self.clock.elapsed().as_secs_f64(),
+            );
+            self.ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(460., 2600.),
+                    )),
+                    focused: true,
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    if self.controller.active()
+                        && let Some(ModelToolOutcome::Applied(parts)) = self
+                            .controller
+                            .show(ui, &mut self.session, &resources)
+                            .unwrap()
+                    {
+                        self.applied.extend(parts);
+                    }
+                },
+            )
+        }
+        fn click(&mut self, label: &str) {
+            self.frame(vec![]).drop_without_applying_deltas();
+            let output = self.frame(vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .or_else(|| {
+                    output
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .and_then(|update| {
+                            update
+                                .nodes
+                                .iter()
+                                .filter_map(|(_, node)| {
+                                    (node.label() == Some(label))
+                                        .then(|| node.bounds())
+                                        .flatten()
+                                })
+                                .max_by(|a, b| {
+                                    ((a.x1 - a.x0) * (a.y1 - a.y0))
+                                        .total_cmp(&((b.x1 - b.x0) * (b.y1 - b.y0)))
+                                })
+                                .map(|r| {
+                                    egui::pos2(
+                                        ((r.x0 + r.x1) * 0.5) as f32,
+                                        ((r.y0 + r.y1) * 0.5) as f32,
+                                    )
+                                })
+                        })
+                })
+                .unwrap_or_else(|| panic!("Missing painted hardware control {label}"));
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                self.frame(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ])
+                .drop_without_applying_deltas();
+            }
+        }
+        fn wait(&mut self, canonical: bool) {
+            let deadline = Instant::now() + Duration::from_secs(120);
+            loop {
+                self.frame(vec![]).drop_without_applying_deltas();
+                let ready = if canonical {
+                    !self.canonical.pending()
+                        && self
+                            .canonical
+                            .is_current(self.session.document().id(), self.session.revision())
+                } else {
+                    !self.controller.pending()
+                        && self
+                            .controller
+                            .can_apply(&self.session, &Default::default())
+                };
+                if ready {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "Painted default screw timed out: canonical={} controller={:?} scene={:?}",
+                    canonical,
+                    self.controller.error(),
+                    self.canonical.error()
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    #[test]
+    fn actual_default_m3_controls_measure_preview_unchanged_and_apply_to_canonical_ready() {
+        let owner = Backend::runtime().unwrap();
+        let preview_records: Records = Default::default();
+        let canonical_records: Records = Default::default();
+        let factory = |records| {
+            Box::new(RecordedBackend {
+                backend: Backend {
+                    runtime: owner.fork(),
+                    expected: None,
+                },
+                records,
+            }) as Box<dyn SceneBackend>
+        };
+        let mut controller = ModelToolController::default();
+        controller.set_backend(factory(preview_records.clone()));
+        let mut canonical = SceneFeed::default();
+        canonical.set_backend(factory(canonical_records.clone()));
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut painted = Painted {
+            ctx,
+            controller,
+            canonical,
+            session: Session::new(Document::new("Painted default M3").unwrap()).unwrap(),
+            applied: vec![],
+            clock: Instant::now(),
+        };
+        painted.wait(true);
+        for number in 1..=2 {
+            let before = painted.session.document().clone();
+            let revision = painted.session.revision();
+            painted
+                .controller
+                .begin_mechanical_part(&painted.session, &Default::default(), Channel::Ui)
+                .unwrap();
+            painted.click("Plain washer");
+            painted.click("Machine screw");
+            let started = Instant::now();
+            painted.click("Preview");
+            painted.wait(false);
+            let preview_ms = started.elapsed().as_secs_f64() * 1000.;
+            assert_eq!(painted.session.document(), &before);
+            assert_eq!(painted.session.revision(), revision);
+            let started = Instant::now();
+            painted.click("Preview");
+            painted.wait(false);
+            let unchanged_ms = started.elapsed().as_secs_f64() * 1000.;
+            {
+                let records = preview_records.lock().unwrap();
+                let (_, stats) = records.last().expect("Painted native preview publication");
+                assert!(
+                    stats.as_ref().unwrap().evaluated.is_empty(),
+                    "Unchanged preview reran native providers"
+                );
+                assert_eq!(stats.as_ref().unwrap().reused.len(), number);
+            }
+            let started = Instant::now();
+            painted.click("Apply");
+            assert_eq!(painted.session.revision(), revision + 1);
+            assert!(!painted.controller.active());
+            painted.wait(true);
+            let apply_ready_ms = started.elapsed().as_secs_f64() * 1000.;
+            let created = painted.applied.last().expect("Painted Apply outcome");
+            assert_eq!(painted.applied.len(), number);
+            assert_eq!(
+                model::read_mechanical_part(painted.session.document(), created.feature)
+                    .unwrap()
+                    .parameters,
+                model::default_machine_screw()
+            );
+            let scene = painted.canonical.visible().unwrap();
+            assert_eq!(scene.stamp().revision, revision + 1);
+            assert_eq!(scene.instances().len(), number);
+            assert!(
+                scene
+                    .instances()
+                    .iter()
+                    .any(|instance| instance.id == created.body)
+            );
+            {
+                let records = canonical_records.lock().unwrap();
+                let (stamp, stats) = records.last().unwrap();
+                assert_eq!(stamp.revision, revision + 1);
+                let stats = stats.as_ref().unwrap();
+                assert!(
+                    stats.evaluated.is_empty(),
+                    "Canonical Apply reran native providers: {stats:?}"
+                );
+                assert_eq!(stats.reused.len(), number);
+                assert!(stats.reused.contains(&created.feature));
+            }
+            if number == 2 {
+                assert_ne!(painted.applied[0].feature, created.feature);
+                assert_ne!(painted.applied[0].body, created.body);
+            }
+            eprintln!(
+                "painted_default_m3_l10_b10 feature={number} source={} preview_ready_ms={preview_ms:.3} unchanged_preview_ms={unchanged_ms:.3} apply_canonical_ready_ms={apply_ready_ms:.3}",
+                created.feature
+            );
+        }
+    }
+}
