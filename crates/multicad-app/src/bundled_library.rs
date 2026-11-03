@@ -214,8 +214,9 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 28);
+        assert_eq!(entries.len(), 38);
         let mut bearings = 0;
+        let mut washers = BTreeSet::new();
         let mut plants = 0;
         let mut equipment = std::collections::BTreeSet::new();
         for entry in entries {
@@ -231,15 +232,29 @@ mod tests {
                 }
                 continue;
             }
-            bearings += 1;
             assert_eq!(entry.mechanical_parts.len(), 1);
-            assert!(entry.mechanical_parts[0].matches_reference_dimensions);
-            assert_eq!(
-                entry.mechanical_parts[0].family,
-                "Bearing mounting envelope"
-            );
+            let card = &entry.mechanical_parts[0];
+            assert!(card.matches_reference_dimensions);
+            if card.family == "Plain washer" {
+                let facts = card.catalog_facts.as_ref().unwrap();
+                washers.insert((facts.nominal_fastener_diameter_mm.unwrap() * 1000.0) as u32);
+                assert_eq!(
+                    facts.series.as_deref(),
+                    Some("normal (BOLTS plainwasher1, curated revision 1)")
+                );
+                assert!(facts.material.is_none());
+                assert!(facts.grade.is_none());
+            } else {
+                bearings += 1;
+                assert_eq!(card.family, "Bearing mounting envelope");
+                assert!(card.catalog_facts.is_none());
+            }
         }
         assert_eq!((bearings, plants), (4, 2));
+        assert_eq!(
+            washers,
+            [2000, 2500, 3000, 3500, 4000, 5000, 6000, 7000, 8000, 10000].into()
+        );
         assert_eq!(
             equipment,
             multicad_core::equipment::Kind::ALL

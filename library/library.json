@@ -139,6 +139,56 @@
       "document": "cad20300-0000-4000-8000-000000035b61",
       "file": "equipment-junction-box.tcd",
       "sha256": "fb9a5942161c9626f5afbfa0739747de05474c08b4cf19543635576553a15308"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-000000030d40",
+      "file": "washer-normal-m2.tcd",
+      "sha256": "a1c86653d8b025ae1464167250ea56d2ebfec1c0eb6f8e997e57a179af1bfa0e"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-00000003d090",
+      "file": "washer-normal-m2-5.tcd",
+      "sha256": "450c4ff56cbe204e4fb9f26ff7b6b62bffb7587a4e60d2df3a117c2075f7826b"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-0000000493e0",
+      "file": "washer-normal-m3.tcd",
+      "sha256": "b6c796bff44fa60dfee6611c84c1fe118ab9a74361b982088d0a2bd1eddb882a"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-000000055730",
+      "file": "washer-normal-m3-5.tcd",
+      "sha256": "2e014708236d7d87858af54ffbbd81d062f33a0d3a6abcc9f653db9fae7ad539"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-000000061a80",
+      "file": "washer-normal-m4.tcd",
+      "sha256": "df86d91e6318c20037c3dbb00405e68a7685d393f22198e9f6c69edb56d9808e"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-00000007a120",
+      "file": "washer-normal-m5.tcd",
+      "sha256": "e94db48b05ed00788635bbcb7f6dee59cada17a3116e22d6d261a366049954b0"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-0000000927c0",
+      "file": "washer-normal-m6.tcd",
+      "sha256": "e1ee8bca4ee02b1ff4085f0df6b4bf432bd58351e561d57c9b68f0c09f5a0121"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-0000000aae60",
+      "file": "washer-normal-m7.tcd",
+      "sha256": "826b995b929c6ef5ccd5aa42f56ab6f9b0f7e194f8e8ad2b481d32b9583b1273"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-0000000c3500",
+      "file": "washer-normal-m8.tcd",
+      "sha256": "4fc0ab5cd06f7b3fd38180f55718974c72a2192416193e960a0d2ea7cd0d9f10"
+    },
+    {
+      "document": "cad23300-0000-4000-8000-0000000f4240",
+      "file": "washer-normal-m10.tcd",
+      "sha256": "9c060915cf414bca99526b8e1201c60a87b4770e5c0096577ac3f76042ddbc6e"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -146,8 +196,11 @@
     "curation.json",
     "sources/bolts/bearings.blt",
     "sources/bolts/COPYING.LESSER",
-    "README.md"
+    "README.md",
+    "washers-curation.json",
+    "sources/bolts/washer.blt",
+    "sources/bolts/WASHER-NOTICES.md"
   ],
-  "revision": "4",
+  "revision": "5",
   "version": 1
 }

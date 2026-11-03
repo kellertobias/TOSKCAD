@@ -1,0 +1,237 @@
+{
+  "format": "toskcad.washer-curation",
+  "version": 1,
+  "revision": "1",
+  "data_source": "https://github.com/boltsparts/boltsparts/blob/5c83300a57761f70db87f50c9a1f647c7278a4c2/data/washer.blt",
+  "data_revision": "5c83300a57761f70db87f50c9a1f647c7278a4c2",
+  "data_license": "LGPL-2.1-or-later",
+  "data_sha256": "0f04b56108c958275b05bb1fcf915d6ba971bd2f20cdce70da9c1de75b93c326",
+  "verified_on": "2026-11-03",
+  "scope": "Adapted BOLTS plainwasher1 normal-series dimensions. Upstream DIN 125 A / ISO 7089 labels specify no standard edition. NBK JIS B 1256:2008 normal-series dimensions independently cross-check the selected rows except M7, whose physical triple is cross-checked against the identified RECA product. The M10 bore correction is explicit. Exact annular solids omit dimensional tolerances, edge breaks and chamfers. Material and grade remain unspecified. No manufacturer CAD, artwork, catalog prose, stock, current-standard or physical-fit certification.",
+  "entries": [
+    {
+      "id": "washer.normal.m2",
+      "file": "washer-normal-m2.tcd",
+      "designation": "M2",
+      "nominal_mm": 2,
+      "bore_mm": 2.2,
+      "outside_mm": 5,
+      "thickness_mm": 0.3,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m2-5",
+      "file": "washer-normal-m2-5.tcd",
+      "designation": "M2.5",
+      "nominal_mm": 2.5,
+      "bore_mm": 2.7,
+      "outside_mm": 6,
+      "thickness_mm": 0.5,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m3",
+      "file": "washer-normal-m3.tcd",
+      "designation": "M3",
+      "nominal_mm": 3,
+      "bore_mm": 3.2,
+      "outside_mm": 7,
+      "thickness_mm": 0.5,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m3-5",
+      "file": "washer-normal-m3-5.tcd",
+      "designation": "M3.5",
+      "nominal_mm": 3.5,
+      "bore_mm": 3.7,
+      "outside_mm": 8,
+      "thickness_mm": 0.5,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m4",
+      "file": "washer-normal-m4.tcd",
+      "designation": "M4",
+      "nominal_mm": 4,
+      "bore_mm": 4.3,
+      "outside_mm": 9,
+      "thickness_mm": 0.8,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m5",
+      "file": "washer-normal-m5.tcd",
+      "designation": "M5",
+      "nominal_mm": 5,
+      "bore_mm": 5.3,
+      "outside_mm": 10,
+      "thickness_mm": 1,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m6",
+      "file": "washer-normal-m6.tcd",
+      "designation": "M6",
+      "nominal_mm": 6,
+      "bore_mm": 6.4,
+      "outside_mm": 12,
+      "thickness_mm": 1.6,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m7",
+      "file": "washer-normal-m7.tcd",
+      "designation": "M7",
+      "nominal_mm": 7,
+      "bore_mm": 7.4,
+      "outside_mm": 14,
+      "thickness_mm": 1.6,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://shop.reca.fr/Washer-DIN-125-200-HV-zinc-plated/54077.sku/en/US/EUR/",
+      "verification_reference": "RECA article 54077, EAN 4029484178117; product-page dimensional cross-check, no dated revision identified",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m8",
+      "file": "washer-normal-m8.tcd",
+      "designation": "M8",
+      "nominal_mm": 8,
+      "bore_mm": 8.4,
+      "outside_mm": 16,
+      "thickness_mm": 1.6,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": null
+    },
+    {
+      "id": "washer.normal.m10",
+      "file": "washer-normal-m10.tcd",
+      "designation": "M10",
+      "nominal_mm": 10,
+      "bore_mm": 10.5,
+      "outside_mm": 20,
+      "thickness_mm": 2,
+      "series": "normal",
+      "material": null,
+      "grade": null,
+      "verification_url": "https://www.nbk1560.com/images/en-US/product/technical_data/hira_zagane_NBK/hira_zagane_NBK_1.pdf",
+      "verification_reference": "NBK excerpt JIS B 1256:2008, normal series product grade A, PDF page 2; dimensions only",
+      "correction": "BOLTS plainwasher1 M10 bore corrected from 10.0 mm to 10.5 mm against the named NBK table; outside diameter and thickness retained."
+    }
+  ],
+  "coverage": [
+    {
+      "nominal_mm": 2,
+      "status": "supported",
+      "entry_id": "washer.normal.m2",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 2.5,
+      "status": "supported",
+      "entry_id": "washer.normal.m2-5",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 3,
+      "status": "supported",
+      "entry_id": "washer.normal.m3",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 3.5,
+      "status": "supported",
+      "entry_id": "washer.normal.m3-5",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 4,
+      "status": "supported",
+      "entry_id": "washer.normal.m4",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 4.5,
+      "status": "unavailable",
+      "entry_id": null,
+      "reason": "No row in the selected pinned BOLTS normal-series source or NBK normal-series cross-check; use explicit custom dimensions. Other commercial series are outside this catalog."
+    },
+    {
+      "nominal_mm": 5,
+      "status": "supported",
+      "entry_id": "washer.normal.m5",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 6,
+      "status": "supported",
+      "entry_id": "washer.normal.m6",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 7,
+      "status": "supported",
+      "entry_id": "washer.normal.m7",
+      "reason": "Licensed BOLTS row; separately identified primary product cross-check."
+    },
+    {
+      "nominal_mm": 8,
+      "status": "supported",
+      "entry_id": "washer.normal.m8",
+      "reason": "Licensed BOLTS row corroborated by the named JIS B 1256:2008 normal-series table."
+    },
+    {
+      "nominal_mm": 9,
+      "status": "unavailable",
+      "entry_id": null,
+      "reason": "No row in the selected pinned BOLTS normal-series source or NBK normal-series cross-check; use explicit custom dimensions. Other commercial series are outside this catalog."
+    },
+    {
+      "nominal_mm": 10,
+      "status": "supported",
+      "entry_id": "washer.normal.m10",
+      "reason": "Reviewed M10 bore correction recorded on the entry."
+    }
+  ]
+}
