@@ -229,6 +229,95 @@ fn accepted_write_guards_quit_until_hidden_tab_reply_and_file_dialog_blocks_new_
         "Export keyboard input cannot move a hidden model camera"
     );
 }
+#[test]
+fn accepted_drawing_pdf_guards_close_during_checking_until_cancel_is_acknowledged() {
+    use multicad_core::drawings::{self, Page};
+    let (mut app, state) = fixture();
+    let p = app.current_mut();
+    let page = Page::new("A1");
+    let page_id = page.id;
+    let (book, prepared) = drawings::prepare_create(
+        &p.session,
+        p.session.revision(),
+        Actor::local(Channel::Ui),
+        "Construction",
+        Some(page),
+    )
+    .unwrap();
+    p.session.commit(prepared).unwrap();
+    p.drawings.sync(&p.session).unwrap();
+    p.editor.reload(&p.session);
+    let revision = p.session.revision();
+    p.session.mark_saved(revision).unwrap();
+    let before = p.session.document().clone();
+    assert!(p.exchange.set_directory(&temp_dir()).is_none());
+    p.exchange
+        .open_drawing_pdf(
+            &p.session,
+            PageRef {
+                book,
+                page: page_id,
+            },
+        )
+        .unwrap();
+    p.exchange
+        .start_drawing_pdf(&p.session, Channel::Ui)
+        .unwrap();
+    // Hold the native preview response so an actual close request arrives
+    // during Checking, before the controller can automatically submit Run.
+    let delayed = state.lock().unwrap().replies.pop_front().unwrap();
+    assert!(app.current().exchange.pending());
+    assert!(
+        app.should_defer_close(),
+        "Export PDF already accepted publication"
+    );
+    let ctx = egui::Context::default();
+    assert!(app.confirm_close_without_saving(&ctx).is_err());
+    app.mode = Mode::Drawings;
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1400., 900.),
+        )),
+        ..Default::default()
+    };
+    input
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    let output = ctx.run_ui(input, |ui| app.show(ui));
+    assert!(output.viewport_output.values().any(|viewport| {
+        viewport
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+    }));
+    assert!(!app.close_allowed);
+    assert!(app.close_confirm);
+    output.drop_without_applying_deltas();
+
+    app.cancel_close();
+    app.current_mut().exchange.cancel_drawing_pdf();
+    assert!(
+        app.should_defer_close(),
+        "Cancellation still awaits its terminal reply"
+    );
+    state.lock().unwrap().replies.push_back(delayed);
+    let p = app.current_mut();
+    p.exchange.poll(&p.session);
+    assert!(!p.exchange.pending());
+    assert!(!p.exchange.writing());
+    assert_eq!(p.session.document(), &before);
+    assert_eq!(p.session.revision(), revision);
+    assert!(
+        state.lock().unwrap().run.is_none(),
+        "Cancelled Checking must never submit Run"
+    );
+    assert!(!app.should_defer_close());
+    assert!(app.confirm_close_without_saving(&ctx).is_ok());
+}
 fn finish_run(state: &Arc<Mutex<State>>) {
     let (id, d, r, key, a) = state.lock().unwrap().run.take().unwrap();
     state.lock().unwrap().replies.push_back(ExportReply {

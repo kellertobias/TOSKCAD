@@ -169,7 +169,9 @@ impl ExportWorkspace {
     pub fn writing(&self) -> bool {
         self.pending.values().any(|p| p.run)
             || self.writing_schedule()
-            || self.drawing_pdf.writing()
+            // Direct PDF accepts publication before its automatic preview.
+            // Keep lifecycle guards until the complete job acknowledges it.
+            || self.drawing_pdf.pending()
     }
     pub fn pending(&self) -> bool {
         !self.pending.is_empty()

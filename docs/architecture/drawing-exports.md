@@ -43,8 +43,10 @@ publication. It validates the originating session, source, actor, page scope and
 destination before starting the write, and checks the publication receipt
 against the accepted preview. The result reports the PDF path in the dialog
 and shared output history. Cancellation retains drawing drafts; publication
-that finishes before cancellation is reported explicitly. PDF recipes also
-remain available in saved Export sets.
+that finishes before cancellation is reported explicitly. Close guards cover
+the accepted direct job from checking through its terminal reply, because the
+checking stage automatically starts publication. PDF recipes also remain
+available in saved Export sets.
 
 ## PDF
 

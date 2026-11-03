@@ -144,12 +144,18 @@ fn cancellation_prevents_unstarted_writes_and_attributes_late_publication() {
     let (s, mut w, service, page) = fixture();
     w.open_drawing_pdf(&s, page.clone()).unwrap();
     w.start_drawing_pdf(&s, Channel::Ui).unwrap();
+    assert!(
+        w.writing(),
+        "Accepted PDF publication includes its checking stage"
+    );
     w.cancel_drawing_pdf();
+    assert!(w.writing(), "Cancellation still requires acknowledgement");
     let reply = preview(&service, 0);
     service.borrow_mut().replies.push_back(reply);
     w.poll(&s);
     assert_eq!(service.borrow().requests.len(), 1);
     assert!(!w.pending());
+    assert!(!w.writing());
     w.open_drawing_pdf(&s, page).unwrap();
     w.start_drawing_pdf(&s, Channel::Ui).unwrap();
     let reply = preview(&service, 1);

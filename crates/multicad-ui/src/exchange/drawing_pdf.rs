@@ -45,9 +45,6 @@ impl State {
     pub(super) fn pending(&self) -> bool {
         self.job.is_some()
     }
-    pub(super) fn writing(&self) -> bool {
-        self.job.as_ref().is_some_and(|j| j.expected.is_some())
-    }
     pub(super) fn owns(&self, id: EntityId) -> bool {
         self.job.as_ref().is_some_and(|j| j.id == id)
     }
