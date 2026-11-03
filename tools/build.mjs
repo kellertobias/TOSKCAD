@@ -28,6 +28,11 @@ export function bootstrap(){
 export function version(){
   return readFileSync(join(root,'Cargo.toml'),'utf8').match(/\[workspace\.package\][\s\S]*?^version = "([^"]+)"/m)?.[1]??'0.1.0-dev';
 }
+export function developmentExecutable(environment=process.env){
+  const metadata=JSON.parse(execFileSync('cargo',['metadata','--no-deps','--format-version','1','--locked','--offline'],{cwd:root,env:environment,encoding:'utf8'}));
+  if(typeof metadata.target_directory!=='string'||!metadata.target_directory)throw new Error('Cargo did not report its build output directory');
+  return join(metadata.target_directory,'debug',process.platform==='win32'?'multicad.exe':'multicad');
+}
 function releaseDependencies(){
   if(!existsSync(join(root,'node_modules/semver/package.json')))run(process.platform==='win32'?'npm.cmd':'npm',['ci','--ignore-scripts','--no-audit','--no-fund']);
 }
@@ -66,7 +71,7 @@ async function main(){
     }return;
   }
   run('cargo',['build','--workspace','--locked']);
-  const binary=join(root,'target/debug',process.platform==='win32'?'multicad.exe':'multicad');
+  const binary=developmentExecutable();
   const parent=join(root,'artifacts/development');mkdirSync(parent,{recursive:true});
   const bundle=mkdtempSync(join(parent,'build-'));assembleRuntime(bundle,binary,version());
   writeFileSync(join(parent,'latest.json'),JSON.stringify({bundle,executable:executable(bundle)}));

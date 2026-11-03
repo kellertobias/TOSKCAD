@@ -5,7 +5,7 @@
   "license": "GPL-3.0-or-later",
   "engines": { "node": ">=22.14.0" },
   "scripts": {
-    "test": "node --test tools/release-contract.test.mjs tools/package-release.test.mjs tools/native-package.test.mjs tools/website-releases.test.mjs",
+    "test": "node --test tools/release-contract.test.mjs tools/package-release.test.mjs tools/native-package.test.mjs tools/website-releases.test.mjs tools/build.test.mjs",
     "release": "node tools/run-semantic-release.mjs",
     "release:dry-run": "node tools/run-semantic-release.mjs --dry-run",
     "release:package": "node tools/package-release.mjs build",

@@ -6,7 +6,7 @@ From any working directory, invoke the repository's `build` executable (Windows:
 
 ```sh
 ./build                 # acquire pinned source/dependencies; build every component
-./build open            # rebuild; replace only the previous wrapper-owned process; launch
+./build open            # rebuild; launch another native application window
 ./build check           # formatting, Clippy and tests
 ./build archive         # clean release products; runtime ZIP and corresponding-source ZIP
 ./build archive install # explicit macOS install/start into /Applications/MultiCAD.app
@@ -22,9 +22,29 @@ The wrapper selects Rust 1.99.1 from `rust-toolchain.toml` without changing the 
 
 OCCT is statically linked and compiled into a cache under `target/native/occt/<target>/<identity>`. Identity includes the source archive hash, compiler version/arguments, target, relevant SDK/ABI variables and build-configuration source. A filesystem lock serializes creation across Cargo check/test/build. Removing Cargo product output does not discard this expensive native cache. Rust package-manager caches remain normal Cargo caches. Cross-compiling from this Mac is not configured.
 
+## Cargo output and maintenance
+
+Repository Cargo commands default to `target/cargo/`. The historical
+`target/debug/` and `target/release/` trees are preserved. A large dependency
+directory can stall compiler directory reads despite idle CPU cores; this
+occurred with 1,623,514 entries and a 99.8-second listing during CAD-253.
+
+`CARGO_TARGET_DIR` can select a separate output directory. The development
+wrapper and release packager obtain the executable path from Cargo metadata,
+so they package the selected build rather than an older default-path binary.
+The native OCCT cache remains at `target/native/` regardless of this override.
+
+Before clearing Rust products, finish or cancel builds and tests using that
+output directory. Then `cargo clean` removes the configured Rust output; it
+preserves the separate OCCT cache, application bundles and project files.
+For an immediate non-destructive recovery, choose a fresh `CARGO_TARGET_DIR`
+for subsequent commands. Do not delete or move an active build directory.
+Clean unused Rust products during idle maintenance if stale products accumulate
+or directory reads become slow; no automatic cleanup runs while building.
+
 ## Outputs and runtime checks
 
-Default builds assemble a new development layout under `artifacts/development/build-*/`; `latest.json` records its location. macOS includes `MultiCAD.app`; Windows/Linux include the native executable and resources. `open` starts the new host only after a successful build, and only stops the previous process recorded by this wrapper after verifying its executable path. It does not terminate unrelated MultiCAD/Finder processes. The current host owns no editable project; a graceful close/unsaved-document protocol must replace the launcher's SIGTERM path before document sessions are integrated.
+Default builds assemble a new development layout under `artifacts/development/build-*/`; `latest.json` records its location. macOS includes `MultiCAD.app`; Windows/Linux include the native executable and resources. `open` starts a new host after a successful build and records its process. Existing editable windows keep their documents and close prompts; the wrapper does not terminate them or unrelated applications.
 
 Archive builds require clean committed source, stamp the requested version/source SHA, run tests, clean/rebuild shipped release products and verify the packaged executable's version/identity, dependency closure and real STEP smoke result. `MULTICAD_RELEASE_VERSION` overrides the development archive version. ZIPs, manifests and SHA-256 checksums are under `artifacts/release/`:
 
@@ -61,4 +81,4 @@ With no arguments `multicad` opens the native host. `--self-test` creates an act
 
 The canonical document/command registry, native project files, modeled workspaces, MCP, full manufacturing exports and production viewport are not implemented by CAD-50. The older `spikes/native-foundation` workspace stays a bounded reference and is not shipped as the product UI.
 
-GitHub Actions builds three targets using the same package code. Read-only build/check jobs are separate from the gated tag-only publisher. Hosted execution, physical Windows/Linux behavior, signing, low-power performance and human acceptance remain separate evidence. Forgejo remains authoritative; see [RELEASING.md](RELEASING.md). Nothing is pushed automatically.
+GitHub Actions builds three targets using the same package code. Read-only build/check jobs are separate from the gated tag-only publisher. Hosted execution, physical Windows/Linux behavior, signing, low-power performance and human acceptance remain separate evidence. GitHub is primary; see [RELEASING.md](RELEASING.md). Nothing is pushed automatically.

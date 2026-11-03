@@ -1,3 +1,8 @@
+[build]
+# Keep Rust products separate from the retained target/native OCCT cache and
+# the historical target/debug directory. CARGO_TARGET_DIR still overrides it.
+target-dir = "target/cargo"
+
 # Avoid requiring a separately installed Visual C++ runtime in Windows archives.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
