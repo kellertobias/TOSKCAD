@@ -514,6 +514,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::UNIFIED_THREAD_CAPABILITY.into(),
         crate::model::GEAR_CAPABILITY.into(),
         crate::model::MECHANICAL_PART_CAPABILITY.into(),
+        crate::model::MECHANICAL_PART_CATALOG_FACTS_CAPABILITY.into(),
         crate::model::GEAR_PAIR_CAPABILITY.into(),
         crate::model::REVOLVE_CAPABILITY.into(),
         crate::model::FACE_PROFILE_CAPABILITY.into(),

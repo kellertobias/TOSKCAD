@@ -32,6 +32,7 @@ fn library_cards_describe_pinned_defaults_not_changed_authoring_geometry() {
         designation: "Test ring".into(),
         source_url: "https://example.invalid/fixture".into(),
         reference_geometry: washer(),
+        catalog_facts: None,
     });
     let prepared = prepare_mechanical_part(&s, s.revision(), actor(), &request).unwrap();
     s.commit(prepared.prepared).unwrap();
@@ -299,6 +300,7 @@ fn invalid_rings_nut_walls_units_and_nonliteral_reference_facts_are_refused() {
         designation: "Fixture".into(),
         source_url: "https://example.invalid/fixture".into(),
         reference_geometry: facts,
+        catalog_facts: None,
     });
     assert!(prepare_mechanical_part(&s, s.revision(), actor(), &request).is_err());
 }
@@ -327,6 +329,12 @@ fn pinned_variants_remap_real_parameters_but_never_uuid_looking_catalog_prose() 
             EntityId::nil()
         ),
         reference_geometry: washer(),
+        catalog_facts: Some(MechanicalPartCatalogFacts {
+            nominal_fastener_diameter_mm: Some(3.),
+            series: Some(width.to_string()),
+            material: Some(request.feature.to_string()),
+            grade: Some(EntityId::nil().to_string()),
+        }),
     };
     request.provenance = Some(provenance.clone());
     let p = prepare_mechanical_part(&library, library.revision(), actor(), &request).unwrap();
@@ -416,6 +424,7 @@ fn source_dimension_matching_ignores_placement_but_detects_customized_dimensions
             designation: "Dimensional fixture".into(),
             source_url: "https://example.invalid/reference".into(),
             reference_geometry: reference,
+            catalog_facts: None,
         }),
     };
     assert!(source.matches_reference_dimensions(s.parameters()).unwrap());

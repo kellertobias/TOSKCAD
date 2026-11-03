@@ -45,6 +45,23 @@ UUID-looking catalog identifiers, revisions and URL segments. Remap only the
 actual recipe/output identities and bound parameter references through the
 provider's audited schema.
 
+CAD-233 adds optional `catalog_facts` within that same literal provenance:
+`nominal_fastener_diameter_mm`, `series`, `material` and `grade`. Missing fields
+mean unknown. A nominal M3 washer may have a physical 3.2 mm bore; neither its
+bore nor its name supplies a sourced nominal. Catalog material is descriptive
+source evidence and does not replace the material assigned to a project Part.
+Physical edits retain these facts while reference-dimension matching reports
+whether the authored geometry still matches the literal snapshot.
+
+Facts-bearing source requires `model.mechanical_part.catalog_facts.1`, including
+suppressed features and features stored only inside an imported symbol
+template. Readers that lack the capability reject such files. When facts are
+absent, their fields are omitted and existing hardware serialization remains
+unchanged. Exact nominal Library searches use these typed facts and keep other
+query terms within the same source card; filename matches cannot bypass a
+nominal selector. The curated washer data and its source/modification notices
+live alongside the existing Library, without revising existing bearing pins.
+
 Reuse the existing typed thread model for nut thread intent. Nut height is the
 thread length and the thread frame locates the whole nut; do not retain a
 second independently editable height or axis. Cosmetic thread envelopes must

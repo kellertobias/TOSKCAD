@@ -14,6 +14,7 @@ pub struct MechanicalPartCard {
     pub representation: String,
     pub designation: Option<String>,
     pub source_url: Option<String>,
+    pub catalog_facts: Option<MechanicalPartCatalogFacts>,
     pub matches_reference_dimensions: bool,
     pub problem: Option<String>,
 }
@@ -56,6 +57,7 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                 representation: String::new(),
                 designation: None,
                 source_url: None,
+                catalog_facts: None,
                 matches_reference_dimensions: false,
                 problem: None,
             };
@@ -130,6 +132,7 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                 if let Some(provenance) = source.provenance {
                     card.designation = Some(provenance.designation);
                     card.source_url = Some(provenance.source_url);
+                    card.catalog_facts = provenance.catalog_facts;
                 }
                 Ok(())
             })();

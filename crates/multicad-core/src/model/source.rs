@@ -751,6 +751,42 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     }
     Ok(())
 }
+fn saved_catalog_facts(document: &Document) -> bool {
+    let needs_reader = |type_id: &str, data: &serde_json::Value| {
+        type_id == super::MECHANICAL_PART_TYPE
+            && data.pointer("/provenance/catalog_facts").is_some()
+    };
+    document.entities().any(|entity| match &entity.data {
+        EntityData::Feature { definition, .. } => {
+            needs_reader(&definition.type_id, &definition.data)
+        }
+        EntityData::Extension { definition, .. }
+            if definition.type_id == crate::symbols::DEFINITION_TYPE =>
+        {
+            // Nested embedded providers are unsupported. Inspect the saved
+            // template features, including suppressed ones, without evaluation.
+            definition
+                .data
+                .pointer("/template/entities")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|entities| {
+                    entities.values().any(|entity| {
+                        entity
+                            .pointer("/data/kind")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("feature")
+                            && entity
+                                .pointer("/data/definition/type_id")
+                                .and_then(serde_json::Value::as_str)
+                                .zip(entity.pointer("/data/definition/data"))
+                                .is_some_and(|(type_id, data)| needs_reader(type_id, data))
+                    })
+                })
+        }
+        _ => false,
+    })
+}
+
 pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     let mut capabilities: BTreeSet<String> = document
         .entities()
@@ -865,6 +901,9 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             .is_some_and(|family| matches!(family, "unc" | "unf"))
     }) {
         capabilities.insert(super::UNIFIED_THREAD_CAPABILITY.into());
+    }
+    if saved_catalog_facts(document) {
+        capabilities.insert(super::MECHANICAL_PART_CATALOG_FACTS_CAPABILITY.into());
     }
     if document.entities().any(|entity|matches!(&entity.data,EntityData::Feature {definition,..} if definition.type_id==super::WALL_TYPE && definition.data.pointer("/layer_placement/junctions").and_then(serde_json::Value::as_array).is_some_and(|j|!j.is_empty()))) {
         capabilities.insert(super::WALL_JUNCTION_CAPABILITY.into());

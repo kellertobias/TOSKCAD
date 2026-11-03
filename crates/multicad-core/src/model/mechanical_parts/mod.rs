@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub const MECHANICAL_PART_TYPE: &str = "model.mechanical_part";
 pub const MECHANICAL_PART_SCHEMA: u32 = 1;
 pub const MECHANICAL_PART_CAPABILITY: &str = "model.mechanical_part.1";
+pub const MECHANICAL_PART_CATALOG_FACTS_CAPABILITY: &str = "model.mechanical_part.catalog_facts.1";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -191,6 +192,41 @@ impl MechanicalPartParameters {
         })
     }
 }
+/// Literal catalog facts, distinct from physical dimensions or assigned material.
+/// An absent field is unknown; no nominal size is inferred from a washer bore.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MechanicalPartCatalogFacts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nominal_fastener_diameter_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<String>,
+}
+impl MechanicalPartCatalogFacts {
+    fn validate(&self) -> Result<(), DocumentError> {
+        if self
+            .nominal_fastener_diameter_mm
+            .is_some_and(|v| !v.is_finite() || v <= 0.)
+        {
+            return Err(invalid(
+                "Catalog nominal fastener diameter must be finite and positive",
+            ));
+        }
+        for text in [&self.series, &self.material, &self.grade]
+            .into_iter()
+            .flatten()
+        {
+            if text.trim().is_empty() || text.len() > 4096 || text.chars().any(char::is_control) {
+                return Err(invalid("Present catalog facts need bounded nonempty text"));
+            }
+        }
+        Ok(())
+    }
+}
 /// Descriptive source facts. `reference_geometry` is an immutable literal
 /// snapshot for comparison, never a replacement for authored parameters.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -201,9 +237,14 @@ pub struct MechanicalPartProvenance {
     pub designation: String,
     pub source_url: String,
     pub reference_geometry: MechanicalPartParameters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_facts: Option<MechanicalPartCatalogFacts>,
 }
 impl MechanicalPartProvenance {
     fn validate(&self) -> Result<(), DocumentError> {
+        if let Some(facts) = &self.catalog_facts {
+            facts.validate()?;
+        }
         for text in [
             &self.catalog_id,
             &self.revision,
