@@ -3,8 +3,13 @@
 #include <TopoDS_Shape.hxx>
 #include <memory>
 #include <vector>
+#include <stdexcept>
 
 namespace multicad::kernel {
+class VolumeIntegrationFailure : public std::runtime_error {
+public:
+  VolumeIntegrationFailure():std::runtime_error("Native volume integration did not converge"){}
+};
 struct Mesh;
 struct Point3;
 struct Frame3;

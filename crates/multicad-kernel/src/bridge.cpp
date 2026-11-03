@@ -268,7 +268,7 @@ double volume(const Shape &s) {
     // from near-zero individual face contributions. Spline spans are enabled.
     const double relativeError = BRepGProp::VolumePropertiesGK(s.value, p, 1e-10, true, true);
     if (!std::isfinite(relativeError) || relativeError < 0. || relativeError > 1e-7)
-      throw std::runtime_error("Native volume integration did not converge");
+      throw VolumeIntegrationFailure();
     return p.Mass();
   });
 }

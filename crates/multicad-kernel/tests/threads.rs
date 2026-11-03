@@ -23,6 +23,45 @@ fn build(spec: HelicalThread) -> Solid {
     Solid::helical_thread_named(spec, EntityId::new(), GeometryPolicy::default()).unwrap()
 }
 #[test]
+fn metric_complete_turn_and_fractional_spines_produce_measurable_accurate_solids() {
+    for (diameter, pitch, length) in [(3., 0.5, 6.), (3., 0.5, 10.), (2.5, 0.45, 12.)] {
+        let spec = HelicalThread {
+            major_radius_mm: diameter / 2.,
+            pitch_mm: pitch,
+            length_mm: length,
+            depth_mm: 5. * 3_f64.sqrt() / 16. * pitch,
+            crest_width_mm: pitch / 8.,
+            ..metric()
+        };
+        let solid = build(spec);
+        let actual = solid.volume_mm3().unwrap();
+        let expected = expected_volume(spec);
+        let area: f64 = solid
+            .faces()
+            .unwrap()
+            .iter()
+            .map(|face| face.area_mm2)
+            .sum();
+        // The same linear geometry policy and unchanged GK relative-error gate
+        // bound measurement uncertainty; this does not relax legacy thresholds.
+        let uncertainty =
+            GeometryPolicy::default().linear_tolerance_mm * area + 1e-7 * actual.abs();
+        assert!(
+            (actual - expected).abs() <= uncertainty,
+            "M{diameter} length {length}: native {actual}, analytic {expected}, budget {uncertainty}"
+        );
+        let bounds = solid.bounds().unwrap();
+        assert!(bounds.min[2].abs() < 1e-6);
+        assert!((bounds.max[2] - length).abs() < 1e-6);
+        let radius = spec.major_radius_mm - spec.depth_mm * 0.05;
+        for z in [length * 0.19, length * 0.47, length * 0.83] {
+            let angle = TAU * z / pitch;
+            assert!(probe(&solid, [radius * angle.cos(), radius * angle.sin(), z]) > 0.999);
+            assert!(probe(&solid, [-radius * angle.cos(), -radius * angle.sin(), z]) < 1e-5);
+        }
+    }
+}
+#[test]
 fn short_unf_internal_tools_retain_helices_at_nonintegral_lengths() {
     let pitch = 25.4 / 28.;
     let h = 3_f64.sqrt() * pitch / 2.;

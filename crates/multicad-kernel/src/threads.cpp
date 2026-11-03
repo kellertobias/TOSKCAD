@@ -88,14 +88,18 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     // per-turn faces on the same helix, without changing its extent or phase.
     BRepBuilderAPI_MakeWire spineBuilder;
     const double turn=segmented?std::hypot(2*pi,lead/c):end;
-    for(double begin=0;begin<end;) {
-      // Merge only floating-point roundoff at a complete-turn endpoint into
-      // the preceding edge; never create an almost-zero final edge or move end.
-      const double finish=end-begin>turn*(1.+16*std::numeric_limits<double>::epsilon())?
-          begin+turn:end;
+    for(uint32_t span=0;;++span) {
+      const double begin=span*turn;
+      if(begin>=end)break;
+      // Derive boundaries from the integer span index, avoiding accumulated
+      // addition error. Merge only end-parameter-scale floating-point roundoff
+      // into the preceding edge; never move the exact fractional endpoint.
+      const double next=(span+1)*turn;
+      const double finish=next<end-16*std::numeric_limits<double>::epsilon()*end?next:end;
       auto edge=BRepBuilderAPI_MakeEdge(line,surface,begin,finish).Edge();
       if(!BRepLib::BuildCurve3d(edge,s.tolerance))throw std::runtime_error("Native helix has no bounded 3D curve");
-      spineBuilder.Add(edge);begin=finish;
+      spineBuilder.Add(edge);
+      if(finish==end)break;
     }
     const auto spine=spineBuilder.Wire();
     const auto point=[&](double radius,double dz) {
@@ -170,11 +174,18 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
 }
 std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
   try {
-    return build_helical_thread(s,false);
+    auto result=build_helical_thread(s,false);
+    volume(*result);
+    return result;
   } catch(const ThreadRidgeLoss &) {
-    // Retry only a proven physical clipping failure. Invalid geometry, native
-    // errors and missing ancestry retain their original refusal semantics.
-    return build_helical_thread(s,true);
+    // Retry a proven physical clipping failure on the same authored helix.
+  } catch(const VolumeIntegrationFailure &) {
+    // The continuous B-rep passed the physical guards but cannot satisfy the
+    // shared volume integration guard. Reconstruct the same helix with bounded
+    // faces. Other native, validity and ancestry errors are never retried.
   }
+  auto result=build_helical_thread(s,true);
+  volume(*result);
+  return result;
 }
 }
