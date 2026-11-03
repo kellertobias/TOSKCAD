@@ -377,3 +377,173 @@ fn rounded_mcp_unsupported_units_classes_axial_relief_stale_and_cancel_leave_no_
     assert!(dispatch(&h,&call(false),"set_thread",json!({"expected_revision":0,"thread":created["thread"],"length":mm(3.*preset.pitch_mm)})).is_err());
     assert_eq!(h.document(), saved);
 }
+
+struct ReviewedThreadOwner {
+    session: Session,
+    ledger: multicad_core::control::ControlLedger,
+    resources: multicad_core::project_file::ProjectResources,
+}
+impl multicad_mcp::Target for ReviewedThreadOwner {
+    fn session(&self) -> &Session {
+        &self.session
+    }
+    fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+    fn resources(&self) -> &multicad_core::project_file::ProjectResources {
+        &self.resources
+    }
+    fn project_path(&self) -> Option<&std::path::Path> {
+        None
+    }
+    fn save(&mut self) -> Result<std::path::PathBuf, String> {
+        Err("unused".into())
+    }
+    fn review_policy(&self, _: &Actor) -> multicad_core::control::ReviewPolicy {
+        multicad_core::control::ReviewPolicy::Reviewed
+    }
+    fn control(&mut self) -> (&mut Session, &mut multicad_core::control::ControlLedger) {
+        (&mut self.session, &mut self.ledger)
+    }
+    fn ledger(&self) -> &multicad_core::control::ControlLedger {
+        &self.ledger
+    }
+}
+struct ReviewedThreadHost(std::sync::Mutex<ReviewedThreadOwner>);
+impl multicad_mcp::Host for ReviewedThreadHost {
+    fn scope(&self) -> multicad_mcp::Scope {
+        multicad_mcp::Scope {
+            mode: "application",
+            transport: "local-socket",
+            project: None,
+            export_directory: None,
+            read_only: false,
+        }
+    }
+    fn submit(&self, job: multicad_mcp::Job) -> Result<(), String> {
+        job(Ok(&mut *self.0.lock().unwrap()));
+        Ok(())
+    }
+}
+
+#[test]
+fn all_rounded_families_preview_natively_then_reject_or_apply_once_with_client_attribution() {
+    use multicad_core::{
+        commands::ActivityKind,
+        control::{AuditOutcome, ReviewState},
+    };
+    for family in [
+        model::ThreadFamily::Bsw,
+        model::ThreadFamily::Bsf,
+        model::ThreadFamily::Bspp,
+    ] {
+        let preset = model::whitworth_thread_presets()
+            .into_iter()
+            .find(|p| p.family == family)
+            .unwrap();
+        let host = ReviewedThreadHost(std::sync::Mutex::new(ReviewedThreadOwner {
+            session: Session::new(Document::new("Reviewed rounded native thread").unwrap())
+                .unwrap(),
+            ledger: Default::default(),
+            resources: Default::default(),
+        }));
+        let original = host.0.lock().unwrap().session.document().clone();
+        let mut request = args(&preset, false);
+        request["expected_revision"] = json!(0);
+        let before_native = multicad_kernel::thread_factory_stats().unwrap();
+        let preview = dispatch(&host, &call(false), "set_thread", request.clone()).unwrap();
+        // set_thread exposes no native model receipt. Observe the actual native
+        // constructor path instead; this in-process reviewed host is not an OS UI.
+        assert!(multicad_kernel::thread_factory_stats().unwrap().requests > before_native.requests);
+        assert_eq!(preview["status"], "pending_review");
+        assert_eq!(preview["revision"], 0);
+        let rejected = preview["review"].as_u64().unwrap();
+        let rejected_feature: EntityId = serde_json::from_value(preview["thread"].clone()).unwrap();
+        {
+            let owner = &mut *host.0.lock().unwrap();
+            assert_eq!(owner.session.document(), &original);
+            assert_eq!(owner.session.revision(), 0);
+            assert_eq!(owner.session.activity().count(), 0);
+            assert!(!owner.session.can_undo());
+            assert!(!owner.session.can_redo());
+            let pending = owner.ledger.pending();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].actor, call(false).actor);
+            assert_eq!(pending[0].tool, "set_thread");
+            let candidate = pending[0].candidate().unwrap();
+            let source = model::read_thread(candidate.document(), rejected_feature).unwrap();
+            assert_eq!(source.parameters.family, family);
+            assert_eq!(
+                source.parameters.representation,
+                model::ThreadRepresentation::Modeled
+            );
+            owner
+                .ledger
+                .reject(rejected, "Owner rejected rounded preview")
+                .unwrap();
+            assert_eq!(owner.ledger.state(rejected), Some(ReviewState::Rejected));
+            assert!(owner.ledger.pending().is_empty());
+            assert_eq!(owner.session.document(), &original);
+            assert_eq!(owner.session.activity().count(), 0);
+            assert!(!owner.session.can_undo());
+            assert!(!owner.session.can_redo());
+        }
+        let before_native = multicad_kernel::thread_factory_stats().unwrap();
+        let preview = dispatch(&host, &call(false), "set_thread", request).unwrap();
+        assert!(multicad_kernel::thread_factory_stats().unwrap().requests > before_native.requests);
+        assert_eq!(preview["status"], "pending_review");
+        assert_eq!(preview["revision"], 0);
+        let review = preview["review"].as_u64().unwrap();
+        assert_ne!(review, rejected);
+        let feature: EntityId = serde_json::from_value(preview["thread"].clone()).unwrap();
+        assert_ne!(feature, rejected_feature);
+        {
+            let owner = &mut *host.0.lock().unwrap();
+            assert_eq!(owner.session.document(), &original);
+            assert_eq!(owner.session.activity().count(), 0);
+            assert!(!owner.session.can_undo());
+            assert_eq!(owner.ledger.accept(review, &mut owner.session).unwrap(), 1);
+            assert_eq!(
+                owner.ledger.state(review),
+                Some(ReviewState::Applied { revision: 1 })
+            );
+            assert!(owner.ledger.pending().is_empty());
+            assert!(owner.session.can_undo());
+            assert!(!owner.session.can_redo());
+            let activity: Vec<_> = owner.session.activity().collect();
+            assert_eq!(activity.len(), 1);
+            assert_eq!(activity[0].actor, call(false).actor);
+            assert_eq!(activity[0].kind, ActivityKind::Apply);
+            let source = model::read_thread(owner.session.document(), feature).unwrap();
+            assert_eq!(source.parameters.family, family);
+            assert_eq!(
+                serde_json::to_value(source.parameters.fit).unwrap(),
+                fit_name(family == model::ThreadFamily::Bspp, false)
+            );
+            assert!(owner.session.document().get(rejected_feature).is_none());
+            let applied = owner.session.document().clone();
+            assert!(owner.ledger.accept(review, &mut owner.session).is_err());
+            assert_eq!(owner.session.revision(), 1);
+            assert_eq!(owner.session.document(), &applied);
+            assert_eq!(owner.session.activity().count(), 1);
+            let commits: Vec<_> = owner
+                .ledger
+                .entries()
+                .filter(|e| e.outcome == AuditOutcome::Applied)
+                .collect();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(commits[0].actor, call(false).actor);
+            assert_eq!(commits[0].tool, "set_thread");
+            assert_eq!(commits[0].review, Some(review));
+            assert_eq!(commits[0].revision, Some(1));
+        }
+        let inspected = dispatch(
+            &host,
+            &call(false),
+            "inspect_thread",
+            json!({"thread":feature}),
+        )
+        .unwrap();
+        assert_fit(&inspected, &preset, false);
+    }
+}
