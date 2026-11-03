@@ -204,7 +204,7 @@ impl ExportWorkspace {
                             .map_err(|e| e.to_string())?;
                         state.refresh_catalog(s);
                         if state.pages() != job.pages
-                            || PathBuf::from(self.directory.trim()) != job.directory
+                            || Path::new(self.directory.trim()) != job.directory.as_path()
                         {
                             return Err(
                                 "PDF scope or destination changed; start the export again".into()
