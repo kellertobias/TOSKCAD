@@ -179,3 +179,325 @@ fn stale_cancelled_unsupported_ambiguous_and_native_invalid_requests_change_noth
     );
     assert_eq!(h.document(), before);
 }
+
+struct WasherProjectStore;
+impl multicad_mcp::Storage for WasherProjectStore {
+    fn open(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<multicad_core::project_file::ProjectFile, String> {
+        multicad_core::project_file::read(
+            &mut std::fs::File::open(path).map_err(|e| e.to_string())?,
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .map(|read| read.project)
+        .map_err(|e| e.to_string())
+    }
+    fn save(
+        &mut self,
+        path: &std::path::Path,
+        project: &multicad_core::project_file::ProjectFile,
+    ) -> Result<(), String> {
+        multicad_core::project_file::write(
+            project,
+            &mut std::fs::File::create(path).map_err(|e| e.to_string())?,
+            Default::default(),
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn configured_washer_keeps_nominal_facts_through_owner_overrides_mcp_history_and_saved_reopen() {
+    use multicad_core::{
+        commands::{Request, Session},
+        constraint_sketch::Dimension,
+        document::{Entity, EntityData, Mutation, Placement},
+        model::{
+            self, MechanicalPartCatalogFacts, MechanicalPartParameters, MechanicalPartProvenance,
+            MechanicalPartRequest, length,
+        },
+        parameters::BoundExpression,
+        project_file::ProjectFile,
+        symbols::{
+            self, SymbolAuthorRequest, SymbolEditRequest, SymbolKind, SymbolPlaceRequest,
+            SymbolValue,
+        },
+    };
+    use multicad_mcp::Storage;
+    use std::collections::BTreeMap;
+
+    let actor = Actor::local(Channel::Mcp);
+    let mut library = Session::new(Document::new("Test-only sourced washer").unwrap()).unwrap();
+    let parameter = Entity::new(
+        "outside",
+        EntityData::Parameter {
+            expression: "7".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let parameter_id = parameter.id;
+    library
+        .apply(Request {
+            expected_revision: 0,
+            actor: actor.clone(),
+            label: "Expose washer outside".into(),
+            edits: vec![Mutation::Insert(parameter)],
+        })
+        .unwrap();
+    let thickness_parameter = Entity::new(
+        "thickness",
+        EntityData::Parameter {
+            expression: "0.5".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let thickness_id = thickness_parameter.id;
+    library
+        .apply(Request {
+            expected_revision: library.revision(),
+            actor: actor.clone(),
+            label: "Expose washer thickness".into(),
+            edits: vec![Mutation::Insert(thickness_parameter)],
+        })
+        .unwrap();
+    let reference = MechanicalPartParameters::Washer {
+        bore_diameter: length(3.2),
+        outside_diameter: length(7.),
+        thickness: length(0.5),
+        frame: Default::default(),
+    };
+    let mut parameters = reference.clone();
+    let MechanicalPartParameters::Washer {
+        outside_diameter,
+        thickness,
+        ..
+    } = &mut parameters
+    else {
+        unreachable!()
+    };
+    *outside_diameter = Dimension::Expression {
+        expression: BoundExpression::bind(library.document(), "=$outside", "mm", None).unwrap(),
+    };
+    *thickness = Dimension::Expression {
+        expression: BoundExpression::bind(library.document(), "=$thickness", "mm", None).unwrap(),
+    };
+    let facts = MechanicalPartCatalogFacts {
+        nominal_fastener_diameter_mm: Some(3.),
+        series: Some("normal".into()),
+        material: None,
+        grade: None,
+    };
+    let mut request = MechanicalPartRequest::new("Test-only M3 washer", parameters);
+    request.provenance = Some(MechanicalPartProvenance {
+        catalog_id: "test-only-washer-reference".into(),
+        revision: "fixture-1".into(),
+        designation: "Test-only M3 washer".into(),
+        source_url: "https://example.invalid/test-washer-reference".into(),
+        reference_geometry: reference,
+        catalog_facts: Some(facts.clone()),
+    });
+    let prepared =
+        model::prepare_mechanical_part(&library, library.revision(), actor.clone(), &request)
+            .unwrap();
+    library.commit(prepared.prepared).unwrap();
+    let author = SymbolAuthorRequest::new(
+        "Test-only M3 washer",
+        request.body,
+        SymbolKind::Dynamic,
+        vec![parameter_id, thickness_id],
+        None,
+    );
+    let prepared =
+        symbols::prepare_author(&library, library.revision(), actor.clone(), &author).unwrap();
+    library.commit(prepared.prepared).unwrap();
+    let definition = symbols::read_definition(library.document(), author.definition).unwrap();
+    let pin = definition.pin().unwrap();
+    let mut consuming = Session::new(Document::new("Configured washer consumer").unwrap()).unwrap();
+    let imported = symbols::prepare_import(&consuming, 0, actor.clone(), &definition).unwrap();
+    let imported_id = imported.definition;
+    consuming.commit(imported.prepared).unwrap();
+    let placement = SymbolPlaceRequest::new(
+        consuming.document(),
+        imported_id,
+        "Configured washer",
+        BTreeMap::from([(
+            parameter_id,
+            SymbolValue {
+                value: 8.,
+                unit: "mm".into(),
+            },
+        )]),
+        Placement::default(),
+    )
+    .unwrap();
+    let prepared =
+        symbols::prepare_place(&consuming, consuming.revision(), actor, &placement).unwrap();
+    consuming.commit(prepared.prepared).unwrap();
+    let instance = symbols::read_instance(consuming.document(), placement.instance).unwrap();
+    assert_eq!(instance.pin, pin);
+    let feature = instance.ids[&request.feature];
+    let part = model::read_mechanical_part(consuming.document(), feature)
+        .unwrap()
+        .output
+        .body;
+    assert_ne!(feature, request.feature);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("configured-washer.tcd");
+    WasherProjectStore
+        .save(
+            &path,
+            &ProjectFile::new(consuming.document().clone()).unwrap(),
+        )
+        .unwrap();
+    let h = Headless::new(
+        Workspace::project(path.clone(), Box::new(WasherProjectStore)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    let inspect = |h: &Headless| run(h, "inspect_mechanical_part", json!({"feature":feature}));
+    let report = inspect(&h);
+    assert_eq!(report["resolved"]["outside_diameter_mm"], 8.);
+    assert_eq!(
+        report["source"]["provenance"]["reference_geometry"]["outside_diameter"]["value"],
+        7.
+    );
+    assert_eq!(
+        report["source"]["provenance"]["catalog_facts"]["nominal_fastener_diameter_mm"],
+        3.
+    );
+    assert_eq!(report["matches_reference_dimensions"], false);
+    let before_edit = h.document();
+    // MCP cannot directly mutate private materialized symbol source. Use the
+    // same typed override transaction as the native instance editor instead.
+    let error = dispatch(&h, &call(false), "set_mechanical_part", json!({"expected_revision":0,"feature":feature,"recipe":{"kind":"washer","thickness":mm(0.8)}})).unwrap_err();
+    assert_eq!(error.code, "invalid_document");
+    assert_eq!(h.document(), before_edit);
+    let edit = SymbolEditRequest {
+        record: placement.instance,
+        overrides: BTreeMap::from([
+            (
+                parameter_id,
+                SymbolValue {
+                    value: 8.,
+                    unit: "mm".into(),
+                },
+            ),
+            (
+                thickness_id,
+                SymbolValue {
+                    value: 0.8,
+                    unit: "mm".into(),
+                },
+            ),
+        ]),
+    };
+    let prepared = multicad_mcp::host::with(&h, move |owner| {
+        symbols::prepare_edit(owner.session(), 0, Actor::local(Channel::Ui), &edit)
+    })
+    .unwrap()
+    .unwrap();
+    multicad_model::Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile(prepared.prepared.document(), 1)
+    .unwrap();
+    multicad_mcp::host::with(&h, move |owner| {
+        owner.session_mut().commit(prepared.prepared)
+    })
+    .unwrap()
+    .unwrap();
+    let after_edit = h.document();
+    let changed_instance = symbols::read_instance(&after_edit, placement.instance).unwrap();
+    assert_eq!(changed_instance.pin, instance.pin);
+    assert_eq!(changed_instance.ids, instance.ids);
+    assert_eq!(changed_instance.overrides[&thickness_id].value, 0.8);
+    assert_eq!(
+        model::read_mechanical_part(&after_edit, feature)
+            .unwrap()
+            .output
+            .body,
+        part
+    );
+    let changed = inspect(&h);
+    assert_eq!(
+        changed["source"]["provenance"],
+        report["source"]["provenance"]
+    );
+    assert_eq!(changed["resolved"]["outside_diameter_mm"], 8.);
+    assert_eq!(changed["resolved"]["bore_diameter_mm"], 3.2);
+    assert_eq!(changed["resolved"]["thickness_mm"], 0.8);
+    run(&h, "undo", json!({"expected_revision":1}));
+    assert_eq!(h.document(), before_edit);
+    run(&h, "redo", json!({"expected_revision":2}));
+    assert_eq!(h.document(), after_edit);
+    run(&h, "save_project", json!({"expected_revision":3}));
+    let reopened = Headless::new(
+        Workspace::project(path, Box::new(WasherProjectStore)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    assert_eq!(reopened.document(), after_edit);
+    let reopened_report = inspect(&reopened);
+    assert_eq!(reopened_report["revision"], 0);
+    assert_eq!(reopened_report["source"], changed["source"]);
+    assert_eq!(reopened_report["matches_reference_dimensions"], false);
+    assert_eq!(
+        symbols::read_instance(&reopened.document(), placement.instance).unwrap(),
+        changed_instance
+    );
+    let source = model::read_mechanical_part(&reopened.document(), feature).unwrap();
+    assert_eq!(source.provenance.unwrap().catalog_facts, Some(facts));
+    let step = run(
+        &reopened,
+        "export_step",
+        json!({"part":part,"file_name":"configured-washer.step"}),
+    );
+    let expected = std::f64::consts::PI * (8_f64.powi(2) - 3.2_f64.powi(2)) * 0.8 / 4.;
+    assert!((step["readback_volume_mm3"].as_f64().unwrap() - expected).abs() < 1e-6);
+    let before_invalid = reopened.document();
+    for overrides in [
+        BTreeMap::from([(
+            parameter_id,
+            SymbolValue {
+                value: 3.2,
+                unit: "mm".into(),
+            },
+        )]),
+        BTreeMap::from([(
+            thickness_id,
+            SymbolValue {
+                value: 0.,
+                unit: "mm".into(),
+            },
+        )]),
+    ] {
+        let edit = SymbolEditRequest {
+            record: placement.instance,
+            overrides,
+        };
+        // Preparation may reject resolved invalid source immediately; if a
+        // candidate exists, native preflight must refuse it before commit.
+        let candidate = multicad_mcp::host::with(&reopened, move |owner| {
+            symbols::prepare_edit(owner.session(), 0, Actor::local(Channel::Ui), &edit)
+        })
+        .unwrap();
+        if let Ok(candidate) = candidate {
+            assert!(
+                multicad_model::Compiler {
+                    omit_display: true,
+                    ..Default::default()
+                }
+                .compile(candidate.prepared.document(), 1)
+                .is_err()
+            );
+        }
+        assert_eq!(reopened.document(), before_invalid);
+    }
+}
