@@ -701,6 +701,59 @@ impl Solid {
         result.finish_provenance(elements, &nodes)?;
         Ok(())
     }
+    /// Share completed immutable geometry with a new exclusive source owner.
+    /// Only source identities change; roles, face ordinals, boundaries and
+    /// numeric attachment frames stay intact. Foreign or unnamed ancestry is
+    /// refused rather than silently relabeled.
+    pub fn rebind_exclusive_owner(
+        &self,
+        previous: EntityId,
+        next: EntityId,
+    ) -> Result<Self, GeometryError> {
+        if previous.is_nil()
+            || next.is_nil()
+            || self.provenance.is_empty()
+            || !ffi::valid(&self.native.0).map_err(failure)?
+            || self.solid_count()? != 1
+            || self.volume_mm3()? <= 0.
+        {
+            return Err(failure(
+                "Owner rebinding requires a completed positive owned solid",
+            ));
+        }
+        let snapshot = self.topology_snapshot(previous, 0)?;
+        if snapshot.elements.iter().any(|element| {
+            (element.key.kind == TopologyKind::Face && element.origins.is_empty())
+                || element
+                    .origins
+                    .iter()
+                    .chain(&element.boundary)
+                    .chain(element.frames.iter().map(|frame| &frame.origin))
+                    .any(|origin| origin.source != previous)
+        }) {
+            return Err(failure(
+                "Owner rebinding refuses unnamed or foreign source ancestry",
+            ));
+        }
+        let mut result = self.share()?;
+        for element in &mut result.provenance {
+            let rebind = |origin: &Origin| Origin {
+                source: next,
+                role: origin.role.clone(),
+            };
+            element.origins = element.origins.iter().map(rebind).collect();
+            element.boundary = element.boundary.iter().map(rebind).collect();
+            for frame in &mut element.frames {
+                frame.origin.source = next;
+            }
+        }
+        result
+            .topology_snapshot(next, 0)?
+            .validate()
+            .map_err(failure)?;
+        Ok(result)
+    }
+
     /// Simultaneously relabel this feature's default start/end caps. Used for
     /// the backward half of a two-sided sweep before exact union. Geometry and
     /// attachment frames stay unchanged; foreign feature provenance is retained.
@@ -1097,5 +1150,89 @@ impl Solid {
         // Validate native-derived data before it can enter the shared API.
         self.topology_snapshot(EntityId::new(), 0)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod exclusive_owner_tests {
+    use super::*;
+    #[test]
+    fn exclusive_owner_rebind_preserves_geometry_and_all_source_roles_without_mutation() {
+        let old = EntityId::new();
+        let next = EntityId::new();
+        let policy = GeometryPolicy::default();
+        let source = Solid::box_named([4., 5., 6.], old, policy).unwrap();
+        let before = source.topology_snapshot(old, 0).unwrap();
+        let brep = source.to_brep().unwrap();
+        let rebound = source.rebind_exclusive_owner(old, next).unwrap();
+        let after = rebound.topology_snapshot(next, 0).unwrap();
+        assert_eq!(before.elements.len(), after.elements.len());
+        for (a, b) in before.elements.iter().zip(&after.elements) {
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.geometry, b.geometry);
+            assert_eq!(
+                a.origins
+                    .iter()
+                    .map(|o| o.role.clone())
+                    .collect::<BTreeSet<_>>(),
+                b.origins.iter().map(|o| o.role.clone()).collect()
+            );
+            assert_eq!(
+                a.boundary
+                    .iter()
+                    .map(|o| o.role.clone())
+                    .collect::<BTreeSet<_>>(),
+                b.boundary.iter().map(|o| o.role.clone()).collect()
+            );
+            assert_eq!(a.frames.len(), b.frames.len());
+            for (x, y) in a.frames.iter().zip(&b.frames) {
+                assert_eq!(x.frame, y.frame);
+                assert_eq!(x.origin.role, y.origin.role);
+            }
+            assert!(
+                b.origins
+                    .iter()
+                    .chain(&b.boundary)
+                    .chain(b.frames.iter().map(|f| &f.origin))
+                    .all(|o| o.source == next)
+            );
+        }
+        assert_eq!(rebound.to_brep().unwrap(), brep);
+        assert_eq!(source.topology_snapshot(old, 0).unwrap(), before);
+        assert_eq!(source.to_brep().unwrap(), brep);
+        assert!(
+            source
+                .rebind_exclusive_owner(EntityId::nil(), next)
+                .is_err()
+        );
+        assert!(source.rebind_exclusive_owner(old, EntityId::nil()).is_err());
+        assert!(source.rebind_exclusive_owner(next, old).is_err());
+        for field in 0..3 {
+            let mut foreign = source.share().unwrap();
+            let origin = Origin {
+                source: EntityId::new(),
+                role: "foreign".into(),
+            };
+            match field {
+                0 => {
+                    foreign.provenance[0].origins.insert(origin);
+                }
+                1 => {
+                    foreign.provenance[0].boundary.insert(origin);
+                }
+                _ => {
+                    let frame = foreign
+                        .provenance
+                        .iter_mut()
+                        .flat_map(|e| &mut e.frames)
+                        .next()
+                        .unwrap();
+                    frame.origin = origin;
+                }
+            }
+            assert!(foreign.rebind_exclusive_owner(old, next).is_err());
+        }
+        let unnamed = Solid::box_solid([4., 5., 6.], policy).unwrap();
+        assert!(unnamed.rebind_exclusive_owner(old, next).is_err());
     }
 }

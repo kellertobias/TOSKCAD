@@ -15,6 +15,168 @@ use multicad_kernel::{
     Solid,
 };
 
+use std::{cell::RefCell, collections::BTreeMap};
+
+const SCREW_FACTORY_ENTRIES: usize = 16;
+const SCREW_FACTORY_BYTES: usize = 32 * 1024 * 1024;
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ScrewKey {
+    numeric: Vec<u64>,
+    // Derived Debug preserves every resolved field, including fit semantics;
+    // retaining it also makes future resolved-field additions invalidate hits.
+    resolved_guard: String,
+}
+fn screw_key(resolved: &ResolvedMechanicalPart, policy: GeometryPolicy) -> Option<ScrewKey> {
+    let ResolvedMechanicalPart::MachineScrew {
+        underhead_length_mm,
+        shank_radius_mm,
+        head,
+        drive,
+        thread,
+    } = resolved
+    else {
+        return None;
+    };
+    let mut numbers = vec![
+        *underhead_length_mm,
+        *shank_radius_mm,
+        head.height_mm(),
+        thread.nominal_major_radius_mm,
+        thread.major_radius_mm,
+        thread.pitch_mm,
+        thread.lead_mm,
+        thread.length_mm,
+        thread.minimum_wall_mm,
+        thread.profile.depth_mm,
+        thread.profile.crest_width_mm,
+        thread.profile.lower_flank_deg,
+        thread.profile.upper_flank_deg,
+        thread.profile.radial_taper,
+        policy.linear_tolerance_mm,
+        policy.boolean_fuzzy_mm,
+        policy.minimum_feature_mm,
+        policy.maximum_coordinate_mm,
+    ];
+    numbers.extend(thread.frame.origin);
+    numbers.extend(thread.frame.u);
+    numbers.extend(thread.frame.v);
+    numbers.extend(thread.frame.n);
+    match head {
+        ResolvedScrewHead::SocketCap { radius_mm, .. } => numbers.push(*radius_mm),
+        ResolvedScrewHead::ExternalHex {
+            across_flats_mm, ..
+        } => numbers.push(*across_flats_mm),
+    }
+    if let ResolvedScrewDrive::HexSocket {
+        across_flats_mm,
+        depth_mm,
+    } = drive
+    {
+        numbers.extend([*across_flats_mm, *depth_mm]);
+    }
+    let mut numeric = numbers.into_iter().map(f64::to_bits).collect::<Vec<_>>();
+    for value in [
+        thread.nominal_pitch_diameter_mm,
+        thread.actual_pitch_diameter_mm,
+        thread.profile.rounding_radius_mm,
+    ] {
+        numeric.push(u64::from(value.is_some()));
+        numeric.push(value.unwrap_or(0.).to_bits());
+    }
+    numeric.push(u64::from(thread.starts));
+    Some(ScrewKey {
+        numeric,
+        resolved_guard: format!("machine-screw-factory/1|{resolved:?}"),
+    })
+}
+struct ScrewEntry {
+    solid: Solid,
+    owner: EntityId,
+    bytes: usize,
+    used: u64,
+}
+#[derive(Default)]
+struct ScrewFactory {
+    entries: BTreeMap<ScrewKey, ScrewEntry>,
+    clock: u64,
+    bytes: usize,
+    requests: u64,
+    hits: u64,
+    builds: u64,
+}
+thread_local! {static SCREWS: RefCell<ScrewFactory> = RefCell::new(ScrewFactory::default());}
+fn cached_screw(key: &ScrewKey, feature: EntityId) -> Option<Solid> {
+    SCREWS.with(|slot| {
+        let mut cache = slot.borrow_mut();
+        cache.clock += 1;
+        cache.requests += 1;
+        let clock = cache.clock;
+        let entry = cache.entries.get_mut(key)?;
+        let result = entry
+            .solid
+            .rebind_exclusive_owner(entry.owner, feature)
+            .ok()?;
+        entry.used = clock;
+        cache.hits += 1;
+        Some(result)
+    })
+}
+fn remember_screw(key: ScrewKey, feature: EntityId, solid: &Solid) {
+    // Retain only an already completed, fully owned native result. Optional
+    // bookkeeping errors cannot turn successful geometry into a model error.
+    let Ok(owned) = solid.rebind_exclusive_owner(feature, feature) else {
+        return;
+    };
+    let Ok(brep) = owned.to_brep() else {
+        return;
+    };
+    let Ok(topology) = owned.topology_snapshot(feature, 0) else {
+        return;
+    };
+    let Ok(receipt) = serde_json::to_vec(&topology) else {
+        return;
+    };
+    let Some(bytes) = brep.len().checked_add(receipt.len()) else {
+        return;
+    };
+    if bytes > SCREW_FACTORY_BYTES {
+        return;
+    }
+    SCREWS.with(|slot| {
+        let mut cache = slot.borrow_mut();
+        cache.builds += 1;
+        if let Some(old) = cache.entries.remove(&key) {
+            cache.bytes -= old.bytes;
+        }
+        while cache.entries.len() >= SCREW_FACTORY_ENTRIES
+            || cache.bytes > SCREW_FACTORY_BYTES - bytes
+        {
+            let Some(oldest) = cache
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(old) = cache.entries.remove(&oldest) {
+                cache.bytes -= old.bytes;
+            }
+        }
+        cache.bytes += bytes;
+        let used = cache.clock;
+        cache.entries.insert(
+            key,
+            ScrewEntry {
+                solid: owned,
+                owner: feature,
+                bytes,
+                used,
+            },
+        );
+    });
+}
+
 fn hexagon(across_flats: f64) -> Vec<CurvedEdge2d> {
     let radius = across_flats / 3_f64.sqrt();
     let point = |i: usize| {
@@ -158,6 +320,7 @@ pub(crate) fn build(
         .parameters
         .resolve(evaluated)
         .map_err(|e| error(Some(feature), e))?;
+    let factory_key = screw_key(&resolved, policy);
     match resolved {
         ResolvedMechanicalPart::MachineScrew {
             underhead_length_mm,
@@ -180,6 +343,12 @@ pub(crate) fn build(
                     Some(feature),
                     "Hex socket floor or corner wall is below native minimum feature size",
                 ));
+            }
+            policy.validate().map_err(|e| error(Some(feature), e))?;
+            let factory_key = factory_key
+                .ok_or_else(|| error(Some(feature), "Missing resolved screw factory key"))?;
+            if let Some(cached) = cached_screw(&factory_key, feature) {
+                return Ok(cached);
             }
             let circle = |radius_mm| {
                 vec![CurvedEdge2d::Circle {
@@ -256,12 +425,14 @@ pub(crate) fn build(
                     "Machine screw has incomplete native face ancestry",
                 ));
             }
-            result
+            let completed = result
                 .transformed(RigidTransform {
                     rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.n[i]]),
                     translation_mm: frame.origin,
                 })
-                .map_err(|e| error(Some(feature), format!("Screw world transform: {e}")))
+                .map_err(|e| error(Some(feature), format!("Screw world transform: {e}")))?;
+            remember_screw(factory_key, feature, &completed);
+            Ok(completed)
         }
         ResolvedMechanicalPart::Washer {
             bore_radius_mm,
@@ -319,6 +490,316 @@ pub(crate) fn build(
                 Some(&blank),
                 policy,
             )
+        }
+    }
+}
+
+#[cfg(test)]
+mod screw_factory_tests {
+    use super::*;
+    use multicad_core::{
+        document::Document,
+        model::{self, BodyOutput, MechanicalPartParameters, ThreadRepresentation, length},
+        parameters,
+    };
+    fn reset() {
+        SCREWS.with(|slot| *slot.borrow_mut() = ScrewFactory::default());
+    }
+    fn source() -> MechanicalPartDefinition {
+        MechanicalPartDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            parameters: model::default_machine_screw(),
+            provenance: None,
+        }
+    }
+    fn stats() -> (u64, u64, u64, usize, usize) {
+        SCREWS.with(|slot| {
+            let c = slot.borrow();
+            (c.requests, c.hits, c.builds, c.entries.len(), c.bytes)
+        })
+    }
+    #[test]
+    fn completed_screw_reuses_full_native_result_for_fresh_owners_and_isolated_threads() {
+        reset();
+        let document = Document::new("Whole screw factory").unwrap();
+        let values = parameters::evaluate(&document).unwrap();
+        let recipe = source();
+        let policy = GeometryPolicy::default();
+        let first = EntityId::new();
+        let second = EntityId::new();
+        let a = build(first, &recipe, &values, policy).unwrap();
+        let geometry = a.to_brep().unwrap();
+        let before = a.topology_snapshot(first, 0).unwrap();
+        let native_before = multicad_kernel::thread_factory_stats().unwrap();
+        let b = build(second, &recipe, &values, policy).unwrap();
+        assert_eq!(stats().0, 2);
+        assert_eq!(stats().1, 1);
+        assert_eq!(stats().2, 1);
+        assert_eq!(
+            multicad_kernel::thread_factory_stats().unwrap(),
+            native_before,
+            "Whole screw hit must not even request a thread subshape"
+        );
+        assert_eq!(b.to_brep().unwrap(), geometry);
+        assert_eq!(a.topology_snapshot(first, 0).unwrap(), before);
+        let rebound = b.topology_snapshot(second, 0).unwrap();
+        assert_eq!(before.elements.len(), rebound.elements.len());
+        for (a, b) in before.elements.iter().zip(&rebound.elements) {
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.geometry, b.geometry);
+            assert_eq!(
+                a.origins.iter().map(|o| &o.role).collect::<Vec<_>>(),
+                b.origins.iter().map(|o| &o.role).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                a.boundary.iter().map(|o| &o.role).collect::<Vec<_>>(),
+                b.boundary.iter().map(|o| &o.role).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                a.frames
+                    .iter()
+                    .map(|f| (&f.origin.role, f.frame))
+                    .collect::<Vec<_>>(),
+                b.frames
+                    .iter()
+                    .map(|f| (&f.origin.role, f.frame))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let independent = Solid::from_brep(&b.to_brep().unwrap(), policy).unwrap();
+        for (a, b) in b.faces().unwrap().iter().zip(independent.faces().unwrap()) {
+            assert_eq!(a.index, b.index);
+            assert_eq!(a.plane, b.plane);
+            assert!((a.area_mm2 - b.area_mm2).abs() < 1e-7 * (a.area_mm2 + b.area_mm2));
+            assert!(
+                a.center_mm
+                    .into_iter()
+                    .zip(b.center_mm)
+                    .all(|(x, y)| (x - y).abs() < policy.linear_tolerance_mm)
+            );
+        }
+
+        assert!(
+            rebound
+                .elements
+                .iter()
+                .flat_map(|e| e
+                    .origins
+                    .iter()
+                    .chain(&e.boundary)
+                    .chain(e.frames.iter().map(|f| &f.origin)))
+                .all(|o| o.source == second)
+        );
+        assert!(
+            rebound
+                .elements
+                .iter()
+                .any(|e| e.origins.iter().any(|o| o.role.starts_with("screw.head/")))
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("whole-screw.step");
+        b.write_step(&path).unwrap();
+        let read = Solid::read_step(&path, policy).unwrap();
+        // Match the established new-screw metrology policy: boundary error
+        // is bounded by linear tolerance times measured surface area, plus
+        // the unchanged native GK relative convergence budget for each solid.
+        let volume_budget = policy.linear_tolerance_mm
+            * (b.faces().unwrap().iter().map(|f| f.area_mm2).sum::<f64>()
+                + read
+                    .faces()
+                    .unwrap()
+                    .iter()
+                    .map(|f| f.area_mm2)
+                    .sum::<f64>())
+            + 1e-7 * (b.volume_mm3().unwrap().abs() + read.volume_mm3().unwrap().abs());
+        assert!((read.volume_mm3().unwrap() - b.volume_mm3().unwrap()).abs() < volume_budget);
+        assert_eq!(a.volume_mm3().unwrap(), b.volume_mm3().unwrap());
+        assert_eq!(a.bounds().unwrap(), b.bounds().unwrap());
+        let uncached_path = directory.path().join("ordinary-first-build.step");
+        a.write_step(&uncached_path).unwrap();
+        let uncached_read = Solid::read_step(&uncached_path, policy).unwrap();
+        assert_eq!(
+            read.volume_mm3().unwrap(),
+            uncached_read.volume_mm3().unwrap(),
+            "Cached and ordinary first-build exports must retain identical geometry"
+        );
+        let detached = std::thread::spawn(|| {
+            reset();
+            assert_eq!(stats(), (0, 0, 0, 0, 0));
+            let document = Document::new("Independent screw owner thread").unwrap();
+            let values = parameters::evaluate(&document).unwrap();
+            let recipe = source();
+            let first =
+                build(EntityId::new(), &recipe, &values, GeometryPolicy::default()).unwrap();
+            let second =
+                build(EntityId::new(), &recipe, &values, GeometryPolicy::default()).unwrap();
+            assert_eq!(first.to_brep().unwrap(), second.to_brep().unwrap());
+            let state = stats();
+            (state.0, state.1, state.2, state.3)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(detached, (2, 1, 1, 1));
+        assert_eq!(stats().1, 1);
+        assert!(stats().3 <= SCREW_FACTORY_ENTRIES && stats().4 <= SCREW_FACTORY_BYTES);
+        let mut bad = recipe.clone();
+        if let MechanicalPartParameters::MachineScrew { head, .. } = &mut bad.parameters {
+            *head = model::ScrewHead::SocketCap {
+                diameter: length(0.001),
+                height: length(0.001),
+            };
+        }
+        let stable = stats();
+        assert!(build(EntityId::new(), &bad, &values, policy).is_err());
+        assert_eq!(stats(), stable);
+        assert_eq!(a.to_brep().unwrap(), geometry);
+    }
+    #[test]
+    fn superseded_compilation_reuses_only_complete_geometry_without_publishing_document_edits() {
+        use multicad_core::commands::{Actor, Channel, Session};
+        reset();
+        let mut session = Session::new(Document::new("Interrupted whole screw").unwrap()).unwrap();
+        let request = model::MechanicalPartRequest::new("Screw", model::default_machine_screw());
+        let prepared =
+            model::prepare_mechanical_part(&session, 0, Actor::local(Channel::Mcp), &request)
+                .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let source_before = serde_json::to_vec(session.document()).unwrap();
+        let compiler = crate::Compiler::default();
+        assert!(
+            compiler
+                .compile_interruptible(session.document(), session.revision(), Some(&|| true))
+                .is_err()
+        );
+        assert_eq!(stats(), (0, 0, 0, 0, 0));
+        // Once the provider starts, its native build is synchronous. A later
+        // supersession may retain the completely checked immutable geometry,
+        // but cannot publish a model or canonical document mutation.
+        let interrupted = compiler.compile_interruptible(
+            session.document(),
+            session.revision(),
+            Some(&|| stats().0 > 0),
+        );
+        assert!(interrupted.is_err());
+        assert_eq!(stats().2, 1);
+        assert_eq!(stats().3, 1);
+        assert_eq!(
+            serde_json::to_vec(session.document()).unwrap(),
+            source_before
+        );
+        let values = parameters::evaluate(session.document()).unwrap();
+        let source = model::read_mechanical_part(session.document(), request.feature).unwrap();
+        let complete = build(EntityId::new(), &source, &values, GeometryPolicy::default()).unwrap();
+        assert_eq!(stats().1, 1);
+        assert!(complete.volume_mm3().unwrap() > 0.);
+        assert_eq!(
+            serde_json::to_vec(session.document()).unwrap(),
+            source_before
+        );
+    }
+
+    #[test]
+    fn full_screw_factory_evicts_old_geometry_and_never_retains_failed_or_foreign_results() {
+        reset();
+        let document = Document::new("Bounded whole screw cache").unwrap();
+        let values = parameters::evaluate(&document).unwrap();
+        let policy = GeometryPolicy::default();
+        let original = source();
+        let owner = EntityId::new();
+        let retained = build(owner, &original, &values, policy).unwrap();
+        let geometry = retained.to_brep().unwrap();
+        let foreign = retained
+            .share()
+            .unwrap()
+            .with_occurrence_origin(EntityId::new(), EntityId::new())
+            .unwrap();
+        let key = screw_key(&original.parameters.resolve(&values).unwrap(), policy).unwrap();
+        let before = stats();
+        remember_screw(key.clone(), owner, &foreign);
+        assert_eq!(stats(), before);
+        for index in 1..=SCREW_FACTORY_ENTRIES {
+            let mut recipe = original.clone();
+            if let MechanicalPartParameters::MachineScrew {
+                underhead_length, ..
+            } = &mut recipe.parameters
+            {
+                *underhead_length = length(10. + index as f64 * 0.1);
+            }
+            build(EntityId::new(), &recipe, &values, policy).unwrap();
+            assert!(stats().3 <= SCREW_FACTORY_ENTRIES && stats().4 <= SCREW_FACTORY_BYTES);
+        }
+        assert!(SCREWS.with(|slot| !slot.borrow().entries.contains_key(&key)));
+        assert_eq!(retained.to_brep().unwrap(), geometry);
+        let hits = stats().1;
+        build(EntityId::new(), &original, &values, policy).unwrap();
+        assert_eq!(stats().1, hits);
+    }
+
+    #[test]
+    fn exact_screw_key_covers_resolved_fields_pose_representation_and_policy() {
+        let document = Document::new("Exact factory keys").unwrap();
+        let values = parameters::evaluate(&document).unwrap();
+        let resolved = source().parameters.resolve(&values).unwrap();
+        let policy = GeometryPolicy::default();
+        let base = screw_key(&resolved, policy).unwrap();
+        let mut changed = resolved.clone();
+        if let ResolvedMechanicalPart::MachineScrew { thread, .. } = &mut changed {
+            thread.frame.origin[0] = -0.;
+        }
+        assert!(
+            screw_key(&changed, policy).unwrap() != base,
+            "Exact zero sign must not alias"
+        );
+        for field in 0..10 {
+            let mut changed = resolved.clone();
+            let ResolvedMechanicalPart::MachineScrew {
+                underhead_length_mm,
+                shank_radius_mm,
+                head,
+                drive,
+                thread,
+            } = &mut changed
+            else {
+                unreachable!()
+            };
+            let value = match field {
+                0 => underhead_length_mm,
+                1 => shank_radius_mm,
+                2 => &mut thread.length_mm,
+                3 => &mut thread.pitch_mm,
+                4 => &mut thread.profile.depth_mm,
+                5 => &mut thread.frame.origin[2],
+                6 => &mut thread.frame.u[0],
+                7 => match head {
+                    ResolvedScrewHead::SocketCap { radius_mm, .. } => radius_mm,
+                    _ => unreachable!(),
+                },
+                8 => match drive {
+                    ResolvedScrewDrive::HexSocket { depth_mm, .. } => depth_mm,
+                    _ => unreachable!(),
+                },
+                _ => &mut thread.minimum_wall_mm,
+            };
+            *value = f64::from_bits(value.to_bits() + 1);
+            assert!(screw_key(&changed, policy).unwrap() != base);
+        }
+        let mut cosmetic = resolved.clone();
+        if let ResolvedMechanicalPart::MachineScrew { thread, .. } = &mut cosmetic {
+            thread.representation = ThreadRepresentation::CosmeticEnvelope;
+        }
+        assert!(screw_key(&cosmetic, policy).unwrap() != base);
+        for field in 0..4 {
+            let mut p = policy;
+            let value = match field {
+                0 => &mut p.linear_tolerance_mm,
+                1 => &mut p.boolean_fuzzy_mm,
+                2 => &mut p.minimum_feature_mm,
+                _ => &mut p.maximum_coordinate_mm,
+            };
+            *value = f64::from_bits(value.to_bits() + 1);
+            assert!(screw_key(&resolved, p).unwrap() != base);
         }
     }
 }
