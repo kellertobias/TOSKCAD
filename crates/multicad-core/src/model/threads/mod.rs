@@ -412,7 +412,7 @@ pub fn read_thread(
 }
 
 /// A cosmetic thread anywhere in a producer's input history remains display
-/// geometry, including a thread retained inside a mechanical hex-nut recipe.
+/// geometry, including a thread retained inside a mechanical nut or screw.
 /// Manufacturing callers refuse it until the representation is Modeled.
 fn cosmetic_feature(document: &Document, id: EntityId) -> Result<bool, DocumentError> {
     let Some(EntityData::Feature { definition, .. }) = document.get(id).map(|e| &e.data) else {
@@ -425,7 +425,8 @@ fn cosmetic_feature(document: &Document, id: EntityId) -> Result<bool, DocumentE
         }
         super::MECHANICAL_PART_TYPE => {
             matches!(super::read_mechanical_part(document, id)?.parameters,
-            super::MechanicalPartParameters::HexNut { thread, .. } if thread.representation == ThreadRepresentation::CosmeticEnvelope)
+            super::MechanicalPartParameters::HexNut { thread, .. } | super::MechanicalPartParameters::MachineScrew {thread,..}
+                if thread.representation == ThreadRepresentation::CosmeticEnvelope)
         }
         _ => false,
     })

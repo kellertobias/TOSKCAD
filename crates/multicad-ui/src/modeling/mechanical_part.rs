@@ -9,8 +9,8 @@ use crate::{controls, egui};
 use multicad_core::{
     document::Document,
     model::{
-        self, MechanicalPartParameters, MechanicalPartRequest, PrimitiveFrame, ThreadMode,
-        ThreadParameters, ThreadRepresentation, ThreadRequest, length,
+        self, MechanicalPartParameters, MechanicalPartRequest, PrimitiveFrame, ScrewDrive,
+        ScrewHead, ThreadMode, ThreadParameters, ThreadRepresentation, ThreadRequest, length,
     },
     parameters::EvaluatedParameters,
     sketch::Datum,
@@ -19,6 +19,7 @@ use multicad_core::{
 enum Kind {
     Washer,
     HexNut,
+    MachineScrew,
     BearingEnvelope,
 }
 impl Kind {
@@ -26,6 +27,7 @@ impl Kind {
         match self {
             Self::Washer => "Plain washer",
             Self::HexNut => "Hex nut",
+            Self::MachineScrew => "Machine screw",
             Self::BearingEnvelope => "Bearing mounting envelope",
         }
     }
@@ -36,6 +38,8 @@ pub(super) struct MechanicalPartPanel {
     kind: Kind,
     fields: [DimensionField; 3],
     thread: ThreadPanel,
+    screw_fields: [DimensionField; 6],
+    screw_hex: bool,
     origin: [DimensionField; 3],
     plane: Option<Datum>,
     stamp: FormStamp,
@@ -47,6 +51,47 @@ impl MechanicalPartPanel {
         parameters: EvaluatedParameters,
         editing: bool,
     ) -> Result<Self, String> {
+        let defaults = model::default_machine_screw();
+        let screw_source = if matches!(
+            request.parameters,
+            MechanicalPartParameters::MachineScrew { .. }
+        ) {
+            &request.parameters
+        } else {
+            &defaults
+        };
+        let MechanicalPartParameters::MachineScrew {
+            underhead_length,
+            shank_diameter,
+            head,
+            drive,
+            ..
+        } = screw_source
+        else {
+            unreachable!("canonical screw default")
+        };
+        let (head_size, head_height, screw_hex) = match head {
+            ScrewHead::SocketCap { diameter, height } => (diameter, height, false),
+            ScrewHead::ExternalHex {
+                across_flats,
+                height,
+            } => (across_flats, height, true),
+        };
+        let (socket_size, socket_depth) = match drive {
+            ScrewDrive::HexSocket {
+                across_flats,
+                depth,
+            } => (across_flats.clone(), depth.clone()),
+            ScrewDrive::ExternalHex => (length(2.55), length(1.3)),
+        };
+        let screw_dimensions = [
+            underhead_length.clone(),
+            shank_diameter.clone(),
+            head_size.clone(),
+            head_height.clone(),
+            socket_size,
+            socket_depth,
+        ];
         let (kind, dimensions, thread) = match &request.parameters {
             MechanicalPartParameters::Washer {
                 bore_diameter,
@@ -76,6 +121,11 @@ impl MechanicalPartPanel {
                 ],
                 Self::default_thread(),
             ),
+            MechanicalPartParameters::MachineScrew { thread, .. } => (
+                Kind::MachineScrew,
+                [length(0.), length(0.), length(0.)],
+                *thread.clone(),
+            ),
             MechanicalPartParameters::HexNut {
                 across_flats,
                 thread,
@@ -89,6 +139,15 @@ impl MechanicalPartPanel {
         let field = |d| DimensionField::from_dimension(d, "mm");
         Ok(Self {
             kind,
+            screw_hex,
+            screw_fields: [
+                field(&screw_dimensions[0])?,
+                field(&screw_dimensions[1])?,
+                field(&screw_dimensions[2])?,
+                field(&screw_dimensions[3])?,
+                field(&screw_dimensions[4])?,
+                field(&screw_dimensions[5])?,
+            ],
             fields: [
                 field(&dimensions[0])?,
                 field(&dimensions[1])?,
@@ -103,7 +162,7 @@ impl MechanicalPartPanel {
                 .into_iter()
                 .find(|d| d.frame().u == frame.u && d.frame().v == frame.v),
             thread: ThreadPanel::new(
-                ThreadRequest::new("Nut thread recipe", thread),
+                ThreadRequest::new("Hardware thread recipe", thread),
                 parameters.clone(),
                 vec![],
                 &Default::default(),
@@ -165,6 +224,36 @@ impl MechanicalPartPanel {
                 width: self.fields[2].resolve(document)?,
                 frame,
             },
+            Kind::MachineScrew => {
+                let mut thread = self.thread.recipe(document, ThreadMode::NewExternal)?;
+                thread.frame = frame;
+                let head_size = self.screw_fields[2].resolve(document)?;
+                let height = self.screw_fields[3].resolve(document)?;
+                MechanicalPartParameters::MachineScrew {
+                    underhead_length: self.screw_fields[0].resolve(document)?,
+                    shank_diameter: self.screw_fields[1].resolve(document)?,
+                    head: if self.screw_hex {
+                        ScrewHead::ExternalHex {
+                            across_flats: head_size,
+                            height,
+                        }
+                    } else {
+                        ScrewHead::SocketCap {
+                            diameter: head_size,
+                            height,
+                        }
+                    },
+                    drive: if self.screw_hex {
+                        ScrewDrive::ExternalHex
+                    } else {
+                        ScrewDrive::HexSocket {
+                            across_flats: self.screw_fields[4].resolve(document)?,
+                            depth: self.screw_fields[5].resolve(document)?,
+                        }
+                    },
+                    thread: Box::new(thread),
+                }
+            }
             Kind::HexNut => {
                 let mut thread = self.thread.recipe(document, ThreadMode::CutInternal)?;
                 thread.frame = frame;
@@ -188,7 +277,35 @@ impl MechanicalPartPanel {
             Kind::Washer => [3.2, 7., 0.5],
             Kind::BearingEnvelope => [10., 30., 9.],
             Kind::HexNut => [10., 0., 0.],
+            Kind::MachineScrew => [0., 0., 0.],
         };
+        if kind == Kind::MachineScrew {
+            // A new selection starts from the canonical default. Reopening an
+            // authored screw never enters this path or rewrites its lengths.
+            if let MechanicalPartParameters::MachineScrew { thread, .. } =
+                model::default_machine_screw()
+            {
+                if let Ok(panel) = ThreadPanel::new(
+                    ThreadRequest::new("Screw thread recipe", *thread),
+                    self.parameters.clone(),
+                    vec![],
+                    &Default::default(),
+                    false,
+                ) {
+                    self.thread = panel;
+                }
+            }
+        } else if kind == Kind::HexNut {
+            if let Ok(panel) = ThreadPanel::new(
+                ThreadRequest::new("Nut thread recipe", Self::default_thread()),
+                self.parameters.clone(),
+                vec![],
+                &Default::default(),
+                false,
+            ) {
+                self.thread = panel;
+            }
+        }
         for (field, value) in self.fields.iter_mut().zip(values) {
             field.set_literal(value, "mm");
         }
@@ -207,9 +324,7 @@ impl MechanicalPartPanel {
             "Create hardware"
         });
         form::preview_status(ui, self.stamp, preview);
-        ui.small(
-            "Generic parametric geometry. The sourced standard-parts catalog is under development.",
-        );
+        ui.small("Custom parametric hardware. Sourced presets are available through Library.");
         ui.label("Part name");
         let mut changed = ui
             .add_enabled(
@@ -223,7 +338,12 @@ impl MechanicalPartPanel {
             controls::inspector_combo(ui, "mechanical-kind")
                 .selected_text(self.kind.label())
                 .show_ui(ui, |ui| {
-                    for kind in [Kind::Washer, Kind::HexNut, Kind::BearingEnvelope] {
+                    for kind in [
+                        Kind::Washer,
+                        Kind::HexNut,
+                        Kind::MachineScrew,
+                        Kind::BearingEnvelope,
+                    ] {
                         ui.selectable_value(&mut selected, kind, kind.label());
                     }
                 });
@@ -232,7 +352,45 @@ impl MechanicalPartPanel {
             self.change_kind(selected);
             changed = true;
         }
-        if self.kind == Kind::HexNut {
+        if self.kind == Kind::MachineScrew {
+            controls::inspector_combo(ui, "screw-head-drive")
+                .selected_text(if self.screw_hex {
+                    "External hex head"
+                } else {
+                    "Socket cap · hex socket"
+                })
+                .show_ui(ui, |ui| {
+                    changed |= ui
+                        .selectable_value(&mut self.screw_hex, false, "Socket cap · hex socket")
+                        .changed();
+                    changed |= ui
+                        .selectable_value(&mut self.screw_hex, true, "External hex head")
+                        .changed();
+                });
+            for (index, label) in [
+                "Underhead length",
+                "Shank diameter",
+                if self.screw_hex {
+                    "Head across flats"
+                } else {
+                    "Head diameter"
+                },
+                "Head height",
+                "Socket across flats",
+                "Socket depth",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if index < 4 || !self.screw_hex {
+                    changed |= self.screw_fields[index].show(ui, label, "Authored millimeters or a bound project parameter; validation precedes native Preview");
+                }
+            }
+            ui.small("Underhead length runs toward the tip. The head lies behind the underhead plane. Thread length is independent: shorter threads leave a plain shank beside the head.");
+            changed |=
+                self.thread
+                    .recipe_controls(ui, ThreadMode::NewExternal, "Thread length", false);
+        } else if self.kind == Kind::HexNut {
             changed |= self.fields[0].show(
                 ui,
                 "Across flats",
@@ -285,7 +443,11 @@ impl MechanicalPartPanel {
             changed |= field.show(
                 ui,
                 label,
-                "The part extends along the plane normal from this base center",
+                if self.kind == Kind::MachineScrew {
+                    "Underhead center; shaft extends along the normal and head behind it"
+                } else {
+                    "The part extends along the plane normal from this base center"
+                },
             );
         }
         let validation = self.request(document, enabled);

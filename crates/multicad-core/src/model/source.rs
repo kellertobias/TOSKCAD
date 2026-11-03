@@ -751,11 +751,10 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     }
     Ok(())
 }
-fn saved_catalog_facts(document: &Document) -> bool {
-    let needs_reader = |type_id: &str, data: &serde_json::Value| {
-        type_id == super::MECHANICAL_PART_TYPE
-            && data.pointer("/provenance/catalog_facts").is_some()
-    };
+fn saved_feature_matches(
+    document: &Document,
+    needs_reader: impl Fn(&str, &serde_json::Value) -> bool,
+) -> bool {
     document.entities().any(|entity| match &entity.data {
         EntityData::Feature { definition, .. } => {
             needs_reader(&definition.type_id, &definition.data)
@@ -902,8 +901,20 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }) {
         capabilities.insert(super::UNIFIED_THREAD_CAPABILITY.into());
     }
-    if saved_catalog_facts(document) {
+    if saved_feature_matches(document, |type_id, data| {
+        type_id == super::MECHANICAL_PART_TYPE
+            && data.pointer("/provenance/catalog_facts").is_some()
+    }) {
         capabilities.insert(super::MECHANICAL_PART_CATALOG_FACTS_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
+        type_id == super::MECHANICAL_PART_TYPE
+            && data
+                .pointer("/parameters/kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("machine_screw")
+    }) {
+        capabilities.insert(super::MACHINE_SCREW_CAPABILITY.into());
     }
     if document.entities().any(|entity|matches!(&entity.data,EntityData::Feature {definition,..} if definition.type_id==super::WALL_TYPE && definition.data.pointer("/layer_placement/junctions").and_then(serde_json::Value::as_array).is_some_and(|j|!j.is_empty()))) {
         capabilities.insert(super::WALL_JUNCTION_CAPABILITY.into());

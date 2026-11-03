@@ -2,6 +2,7 @@
 mod cards;
 mod prepare;
 mod reference;
+mod screws;
 use super::{
     BodyOutput, PrimitiveFrame, ResolvedThread, ThreadMode, ThreadParameters,
     common::*,
@@ -15,6 +16,7 @@ use crate::{
 };
 pub use cards::*;
 pub use prepare::*;
+pub use screws::*;
 use serde::{Deserialize, Serialize};
 
 pub const MECHANICAL_PART_TYPE: &str = "model.mechanical_part";
@@ -25,6 +27,15 @@ pub const MECHANICAL_PART_CATALOG_FACTS_CAPABILITY: &str = "model.mechanical_par
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MechanicalPartParameters {
+    /// The thread frame is the underhead bearing plane; +N points to the tip.
+    /// Thread length is retained once in `thread.length`; full/partial is derived.
+    MachineScrew {
+        underhead_length: Dimension,
+        shank_diameter: Dimension,
+        head: ScrewHead,
+        drive: ScrewDrive,
+        thread: Box<ThreadParameters>,
+    },
     Washer {
         bore_diameter: Dimension,
         outside_diameter: Dimension,
@@ -47,6 +58,13 @@ pub enum MechanicalPartParameters {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolvedMechanicalPart {
+    MachineScrew {
+        underhead_length_mm: f64,
+        shank_radius_mm: f64,
+        head: ResolvedScrewHead,
+        drive: ResolvedScrewDrive,
+        thread: Box<ResolvedThread>,
+    },
     Washer {
         bore_radius_mm: f64,
         outside_radius_mm: f64,
@@ -67,6 +85,7 @@ pub enum ResolvedMechanicalPart {
 impl MechanicalPartParameters {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::MachineScrew { .. } => "Machine screw",
             Self::Washer { .. } => "Plain washer",
             Self::HexNut { .. } => "Hex nut",
             Self::BearingEnvelope { .. } => "Bearing mounting envelope",
@@ -75,11 +94,24 @@ impl MechanicalPartParameters {
     pub fn frame(&self) -> &PrimitiveFrame {
         match self {
             Self::Washer { frame, .. } | Self::BearingEnvelope { frame, .. } => frame,
-            Self::HexNut { thread, .. } => &thread.frame,
+            Self::HexNut { thread, .. } | Self::MachineScrew { thread, .. } => &thread.frame,
         }
     }
     fn dimensions(&self) -> Vec<&Dimension> {
         let mut fields = match self {
+            Self::MachineScrew {
+                underhead_length,
+                shank_diameter,
+                head,
+                drive,
+                thread,
+            } => {
+                let mut fields = vec![underhead_length, shank_diameter];
+                fields.extend(head.dimensions());
+                fields.extend(drive.dimensions());
+                fields.extend(thread.dimensions());
+                return fields;
+            }
             Self::Washer {
                 bore_diameter,
                 outside_diameter,
@@ -107,6 +139,31 @@ impl MechanicalPartParameters {
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame().validate()?;
         match self {
+            Self::MachineScrew {
+                underhead_length,
+                shank_diameter,
+                head,
+                drive,
+                thread,
+            } => {
+                for d in [underhead_length, shank_diameter]
+                    .into_iter()
+                    .chain(head.dimensions())
+                    .chain(drive.dimensions())
+                {
+                    check_dimension(d, Unit::Millimeter)?;
+                }
+                thread.validate_for_mode(ThreadMode::NewExternal)?;
+                if !matches!(
+                    (head, drive),
+                    (ScrewHead::SocketCap { .. }, ScrewDrive::HexSocket { .. })
+                        | (ScrewHead::ExternalHex { .. }, ScrewDrive::ExternalHex)
+                ) {
+                    return Err(invalid(
+                        "Machine screw head and drive forms must be a supported pair",
+                    ));
+                }
+            }
             Self::HexNut {
                 across_flats,
                 thread,
@@ -138,6 +195,52 @@ impl MechanicalPartParameters {
             Ok((bore / 2., outside / 2., height))
         };
         Ok(match self {
+            Self::MachineScrew {
+                underhead_length,
+                shank_diameter,
+                head,
+                drive,
+                thread,
+            } => {
+                let underhead_length_mm = mm(underhead_length)?;
+                let shank_radius_mm = mm(shank_diameter)? / 2.;
+                let head = head.resolve(evaluated)?;
+                let drive = drive.resolve(evaluated)?;
+                let thread = thread.resolve(evaluated, ThreadMode::NewExternal)?;
+                let thread_max = thread
+                    .major_radius_mm
+                    .max(thread.major_radius_mm + thread.profile.radial_taper * thread.length_mm);
+                if underhead_length_mm <= 0.
+                    || shank_radius_mm <= 0.
+                    || thread.length_mm > underhead_length_mm
+                    || head.height_mm() <= 0.
+                    || head.minimum_radius_mm() <= shank_radius_mm.max(thread_max)
+                {
+                    return Err(invalid(
+                        "Machine screw needs a positive head and shank, a wider head, and thread length no greater than underhead length",
+                    ));
+                }
+                if let ResolvedScrewDrive::HexSocket {
+                    across_flats_mm,
+                    depth_mm,
+                } = drive
+                    && (across_flats_mm <= 0.
+                        || depth_mm <= 0.
+                        || depth_mm >= head.height_mm()
+                        || across_flats_mm / 3_f64.sqrt() >= head.minimum_radius_mm())
+                {
+                    return Err(invalid(
+                        "Hex socket needs positive depth, an axial floor and wall around its corners",
+                    ));
+                }
+                ResolvedMechanicalPart::MachineScrew {
+                    underhead_length_mm,
+                    shank_radius_mm,
+                    head,
+                    drive,
+                    thread: Box::new(thread),
+                }
+            }
             Self::Washer {
                 bore_diameter,
                 outside_diameter,

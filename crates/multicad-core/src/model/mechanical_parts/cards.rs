@@ -71,6 +71,56 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                     .resolve(evaluated)
                     .map_err(|e| e.to_string())?;
                 let (values, representation) = match resolved {
+                    ResolvedMechanicalPart::MachineScrew {
+                        underhead_length_mm,
+                        shank_radius_mm,
+                        head,
+                        drive,
+                        thread,
+                    } => {
+                        let mut values = vec![
+                            (
+                                "Nominal thread diameter",
+                                thread.nominal_major_radius_mm * 2.,
+                            ),
+                            ("Pitch", thread.pitch_mm),
+                            ("Underhead length", underhead_length_mm),
+                            ("Thread length", thread.length_mm),
+                            ("Plain shank length", underhead_length_mm - thread.length_mm),
+                            ("Shank diameter", shank_radius_mm * 2.),
+                            ("Head height", head.height_mm()),
+                        ];
+                        let head_label = match head {
+                            ResolvedScrewHead::SocketCap { radius_mm, .. } => {
+                                values.push(("Head diameter", radius_mm * 2.));
+                                "Socket-cap head"
+                            }
+                            ResolvedScrewHead::ExternalHex {
+                                across_flats_mm, ..
+                            } => {
+                                values.push(("Head across flats", across_flats_mm));
+                                "External-hex head"
+                            }
+                        };
+                        let drive_label = match drive {
+                            ResolvedScrewDrive::HexSocket {
+                                across_flats_mm,
+                                depth_mm,
+                            } => {
+                                values.push(("Socket across flats", across_flats_mm));
+                                values.push(("Socket depth", depth_mm));
+                                "flat-floor hex socket"
+                            }
+                            ResolvedScrewDrive::ExternalHex => "external hex flats",
+                        };
+                        let profile = match thread.representation {
+                            super::super::ThreadRepresentation::Modeled => "modeled thread",
+                            super::super::ThreadRepresentation::CosmeticEnvelope => {
+                                "cosmetic thread envelope; model before manufacturing"
+                            }
+                        };
+                        (values, format!("{head_label} · {drive_label} · {profile}"))
+                    }
                     ResolvedMechanicalPart::Washer {
                         bore_radius_mm,
                         outside_radius_mm,
