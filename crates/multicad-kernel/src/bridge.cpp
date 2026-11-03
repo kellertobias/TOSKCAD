@@ -494,6 +494,54 @@ std::unique_ptr<Shape> shape_from_thread_prototype(rust::Str text,rust::Slice<co
 static gp_Pnt point(const Point3 &p) { return gp_Pnt(p.x, p.y, p.z); }
 static gp_Vec vec(const Point3 &p) { return gp_Vec(p.x, p.y, p.z); }
 static Point3 data(const gp_Pnt &p) { return Point3{p.X(), p.Y(), p.Z()}; }
+// Preserve the exact native planar descriptor path independently of numeric
+// quadrature: persistent references consume these output-surface descriptors.
+static CachedFace describe_face(const TopoDS_Face &face,uint32_t index,
+                                const gp_Pnt &center,double area) {
+  CachedFace result{index,false,{0,0,0},{0,0,0},{center.X(),center.Y(),center.Z()},area};
+  BRepAdaptor_Surface surface(face,true);
+  if(surface.GetType()==GeomAbs_Plane) {
+    const auto plane=surface.Plane();
+    gp_Pnt location;gp_Vec du,dv;surface.D1(0.,0.,location,du,dv);
+    gp_Dir normal(du.Crossed(dv));
+    if(face.Orientation()==TopAbs_REVERSED)normal.Reverse();
+    result.planar=true;
+    result.origin={plane.Location().X(),plane.Location().Y(),plane.Location().Z()};
+    result.normal={normal.X(),normal.Y(),normal.Z()};
+  }
+  return result;
+}
+static void carry_rigid_face_properties(Shape &result,const Shape &source,
+    BRepBuilderAPI_Transform &operation,const gp_Trsf &transform) {
+  // This optional optimization never changes geometry or accepts a partial
+  // mapping. No source lock is held during native topology/surface queries.
+  try {
+    std::optional<std::vector<CachedFace>> accepted;
+    {std::lock_guard<std::mutex> lock(source.face_cache->mutex);accepted=source.face_cache->value;}
+    if(!accepted)return;
+    const auto input=topology_map(source.value,0),output=topology_map(result.value,0);
+    if(input.Extent()!=output.Extent()||accepted->size()!=static_cast<size_t>(input.Extent()))return;
+    std::vector<CachedFace> completed(output.Extent());
+    std::vector<bool> covered(output.Extent(),false);
+    for(const auto &properties:*accepted) {
+      if(properties.index>=static_cast<uint32_t>(input.Extent()))return;
+      const auto &before=input(properties.index+1);
+      const auto mapped=operation.ModifiedShape(before);
+      if(mapped.IsNull()||mapped.ShapeType()!=TopAbs_FACE||mapped.Orientation()!=before.Orientation())return;
+      const int index=output.FindIndex(mapped);
+      if(index<=0||covered[index-1]||output(index).Orientation()!=mapped.Orientation())return;
+      const gp_Pnt center=gp_Pnt(properties.centroid[0],properties.centroid[1],properties.centroid[2]).Transformed(transform);
+      if(!std::isfinite(center.X())||!std::isfinite(center.Y())||!std::isfinite(center.Z()))return;
+      completed[index-1]=describe_face(TopoDS::Face(output(index)),index-1,center,properties.area);
+      covered[index-1]=true;
+    }
+    if(std::find(covered.begin(),covered.end(),false)!=covered.end())return;
+    // Fresh result-owned certificate: only accepted area/centroid are carried.
+    // Origins/normals are recomputed on the actual output native surface.
+    result.face_cache->value=std::move(completed);
+  } catch(const Standard_Failure &) { /* Leave a fresh cache for ordinary measurement. */ }
+    catch(const std::bad_alloc &) { /* Optional retention must not invalidate geometry. */ }
+}
 static gp_Ax2 axes(const Frame3 &f) {
   return gp_Ax2(point(f.origin), gp_Dir(vec(f.u).Crossed(vec(f.v))),
                 gp_Dir(vec(f.u)));
@@ -683,6 +731,8 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
       std::lock_guard<std::mutex> lock(s.volume_cache->mutex);
       if(s.volume_cache->certificate)result->volume_cache=s.volume_cache;
     }
+    if(result->face_cache!=s.face_cache&&tr.ScaleFactor()==1.&&!tr.IsNegative())
+      carry_rigid_face_properties(*result,s,operation,tr);
     return result;
   });
 }
@@ -894,28 +944,9 @@ rust::Vec<FaceInfo> faces(const Shape &s) {
     auto map = topology_map(s.value, 0);
     for (int index = 1; index <= map.Extent(); ++index) {
       auto face = TopoDS::Face(map(index));
-      BRepAdaptor_Surface surface(face, true);
       ++s.face_cache->integrations;
       const auto p = measured_face(face);
-      FaceInfo info{static_cast<uint32_t>(index - 1), false, Point3{0, 0, 0}, Point3{0, 0, 0},
-                    data(p.CentreOfMass()), p.Mass()};
-      if (surface.GetType() == GeomAbs_Plane) {
-        auto plane = surface.Plane();
-        // A reflected gp_Ax3 may be indirect: its stored axis is then the
-        // opposite of the parameter-space surface normal. Use exact native
-        // derivatives before applying the topological face orientation.
-        gp_Pnt location; gp_Vec du, dv;
-        surface.D1(0., 0., location, du, dv);
-        gp_Dir n(du.Crossed(dv));
-        if (face.Orientation() == TopAbs_REVERSED)
-          n.Reverse();
-        info.planar = true;
-        info.origin = data(plane.Location());
-        info.normal = Point3{n.X(), n.Y(), n.Z()};
-      }
-      completed.push_back({info.index,info.planar,{info.origin.x,info.origin.y,info.origin.z},
-          {info.normal.x,info.normal.y,info.normal.z},
-          {info.center.x,info.center.y,info.center.z},info.area});
+      completed.push_back(describe_face(face,index-1,p.CentreOfMass(),p.Mass()));
     }
     // Publish only a complete successful measurement. An exception leaves no
     // partial certificate; existing adaptive integration guards stay unchanged.

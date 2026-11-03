@@ -1082,7 +1082,7 @@ mod face_cache_tests {
                 assert!((actual - want).abs() < 1e-10);
             }
         }
-        assert_eq!(count(&moved), 6);
+        assert_eq!(count(&moved), 0);
         let fresh = Solid::from_brep(&moved.to_brep().unwrap(), policy).unwrap();
         assert!(!shares(&moved, &fresh));
         assert!((area(&fresh) - 148.).abs() < 1e-10);
@@ -1137,6 +1137,155 @@ mod face_cache_tests {
         }
         assert_eq!(source.faces().unwrap(), expected);
         assert_eq!(count(&source), before);
+    }
+
+    #[test]
+    fn proper_rigid_face_properties_match_independent_native_measurements_and_intents() {
+        use multicad_core::document::EntityId;
+        let policy = GeometryPolicy::default();
+        let owner = EntityId::new();
+        let source = Solid::helical_thread_named(
+            crate::HelicalThread {
+                major_radius_mm: 1.5,
+                pitch_mm: 0.5,
+                length_mm: 18.,
+                depth_mm: 5. * 3_f64.sqrt() / 32.,
+                crest_width_mm: 0.5 / 8.,
+                lower_flank_deg: 30.,
+                upper_flank_deg: 30.,
+                radial_taper: 0.,
+                starts: 1,
+                left_hand: false,
+            },
+            owner,
+            policy,
+        )
+        .unwrap();
+        let original = source.faces().unwrap();
+        let original_brep = source.to_brep().unwrap();
+        let original_bounds = source.bounds().unwrap();
+        let original_volume = source.volume_mm3().unwrap();
+        let original_count = count(&source);
+        let first = source
+            .transformed(RigidTransform {
+                rotation: [[0.6, -0.8, 0.], [0.8, 0.6, 0.], [0., 0., 1.]],
+                translation_mm: [7., -3., 12.],
+            })
+            .unwrap();
+        let composed = first
+            .transformed(RigidTransform {
+                rotation: [[1., 0., 0.], [0., 0.6, -0.8], [0., 0.8, 0.6]],
+                translation_mm: [-2., 8., 5.],
+            })
+            .unwrap();
+        for moved in [&first, &composed] {
+            assert!(!shares(&source, moved));
+            assert_eq!(
+                count(moved),
+                0,
+                "Proper rigid descriptor transport must avoid repeated quadrature"
+            );
+            let fresh = Solid::from_brep(&moved.to_brep().unwrap(), policy).unwrap();
+            let cached = moved.faces().unwrap();
+            let measured = fresh.faces().unwrap();
+            assert_eq!(cached.len(), measured.len());
+            for (a, b) in cached.iter().zip(&measured) {
+                assert_eq!(a.index, b.index);
+                assert_eq!(
+                    a.plane, b.plane,
+                    "Planar descriptors must use the unchanged output-native path"
+                );
+                assert!((a.area_mm2 - b.area_mm2).abs() < 1e-7 * (a.area_mm2 + b.area_mm2));
+                for (x, y) in a.center_mm.into_iter().zip(b.center_mm) {
+                    assert!((x - y).abs() < policy.linear_tolerance_mm);
+                }
+            }
+            assert_eq!(count(moved), 0);
+            let mut rebound = fresh.share().unwrap();
+            // BRep transport carries no owner metadata. Reapply the already
+            // verified ordinal receipt only to compare independent native
+            // measurement with the same persistent reference input.
+            rebound.provenance = moved.provenance.clone();
+            let cached_refs = moved.topology_snapshot(owner, 0).unwrap();
+            let measured_refs = rebound.topology_snapshot(owner, 0).unwrap();
+            assert_eq!(cached_refs.elements.len(), measured_refs.elements.len());
+            for (a, b) in cached_refs.elements.iter().zip(&measured_refs.elements) {
+                assert_eq!(a.key, b.key);
+                assert_eq!(a.origins, b.origins);
+                assert_eq!(a.boundary, b.boundary);
+                assert_eq!(a.frames, b.frames, "Anchored frame differs at {:?}", a.key);
+                if a.key.kind == multicad_core::references::TopologyKind::Face {
+                    assert_eq!(
+                        a.geometry, b.geometry,
+                        "Native plane descriptor differs at {:?}",
+                        a.key
+                    );
+                }
+            }
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("rigid-thread.step");
+            moved.write_step(&path).unwrap();
+            let step = Solid::read_step(&path, policy).unwrap();
+            for (a, b) in moved
+                .bounds()
+                .unwrap()
+                .min
+                .into_iter()
+                .chain(moved.bounds().unwrap().max)
+                .zip(
+                    step.bounds()
+                        .unwrap()
+                        .min
+                        .into_iter()
+                        .chain(step.bounds().unwrap().max),
+                )
+            {
+                assert!((a - b).abs() < policy.linear_tolerance_mm * 2.);
+            }
+            let area: f64 = cached.iter().map(|f| f.area_mm2).sum();
+            let bound = 2. * policy.linear_tolerance_mm * area
+                + 1e-7 * (step.volume_mm3().unwrap() + moved.volume_mm3().unwrap());
+            assert!((step.volume_mm3().unwrap() - moved.volume_mm3().unwrap()).abs() < bound);
+        }
+        assert!(
+            source
+                .transformed(RigidTransform {
+                    translation_mm: [f64::NAN, 0., 0.],
+                    ..Default::default()
+                })
+                .is_err()
+        );
+        assert_eq!(source.to_brep().unwrap(), original_brep);
+        assert_eq!(source.bounds().unwrap(), original_bounds);
+        assert_eq!(source.volume_mm3().unwrap(), original_volume);
+        assert_eq!(source.faces().unwrap(), original);
+        assert_eq!(count(&source), original_count);
+        let box_source = Solid::box_named([4., 5., 6.], EntityId::new(), policy).unwrap();
+        let scaled = box_source
+            .affine_transformed_named(
+                crate::AffineTransform {
+                    matrix: [[2., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                    translation_mm: [0.; 3],
+                },
+                EntityId::new(),
+                policy,
+            )
+            .unwrap();
+        assert!(!shares(&box_source, &scaled));
+        assert_eq!(count(&scaled), 6);
+        let mirrored = box_source
+            .mirrored_named(
+                PlaneFrame {
+                    origin: [0.; 3],
+                    u: [0., 1., 0.],
+                    v: [0., 0., 1.],
+                },
+                EntityId::new(),
+                policy,
+            )
+            .unwrap();
+        assert!(!shares(&box_source, &mirrored));
+        assert_eq!(count(&mirrored), 6);
     }
 
     #[test]
