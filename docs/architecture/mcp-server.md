@@ -152,8 +152,8 @@ schema is generated from the Rust argument types with schemars and returned by
 | `inspect_sketch` | no | Solve state, degrees of freedom, conflicts, geometry, constraints, text elements with their contour curve IDs and block corners, measurements, and regions with index and area |
 | `extrude` | yes | Extrude sketch regions, or planar model faces (`faces`: source feature and face ordinal from `reference_candidates`; exact boundary with holes, persistent face reference), by a signed distance as `new_body`, or `join`, `cut` or `intersect` a `target_part`; curved, missing, ambiguous or mixed inputs are refused unchanged |
 | `evaluate_model` | no | Native evaluation of every final part and placed instance, plus reference diagnostics |
-| `thread_profiles` | no | Offline family coverage, metric presets, source and manufacturing limits; see [threads](threads.md) |
-| `inspect_thread` | no | Canonical thread source and resolved dimensions, including separate pitch and lead |
+| `thread_profiles` | no | Offline family coverage, metric/UNC/UNF presets, fit limits, primary sources and manufacturing limits; see [threads](threads.md) |
+| `inspect_thread` | no | Canonical thread source, separate basic/fitted pitch diameters, applicable fit limits, pitch and lead |
 | `set_thread` | yes | Create or edit a native thread through the shared canonical transaction API; see [thread control](#thread-control) |
 | `undo`, `redo` | yes | The most recent transaction on any channel |
 | `history` | no | Recent activity with actor, channel, label, kind and changed IDs |
@@ -277,8 +277,21 @@ bounds.
 
 `thread_profiles` reports offline support and sourced presets. The
 [thread reference](threads.md) owns family coverage, geometry and fit limits.
+UNC and UNF are separate `unc` and `unf` families. The legacy ambiguous
+`unified` family remains unavailable. The catalog exposes each supported
+inch diameter/TPI combination, its millimeter dimensions, external `unified_2a`
+and internal `unified_2b` limits, and the versioned primary source URLs.
+Limit ranges have `min_mm` and `max_mm` endpoints; `null` means that endpoint
+is unspecified. An external minor-diameter reference is informational and
+must not become an invented acceptance limit.
+
 `inspect_thread` reads canonical source and resolved dimensions without
 evaluating a solid. Use `evaluate_model` for native geometry and diagnostics.
+Its `nominal_pitch_diameter_mm` remains the basic-profile value.
+`actual_pitch_diameter_mm` and `fit` describe the intended fitted construction
+after allowances, with class, designation, provenance and applicable diameter
+limits. They are not measurements or gage/physical-fit certification.
+Nested hex nuts expose the same fit evidence through `inspect_mechanical_part`.
 The generated `tools/list` schema owns argument names, types and enum values;
 the [tool implementation](../../crates/multicad-mcp/src/tools/threads.rs) defines
 the operations below.
@@ -293,6 +306,14 @@ Omitted optional edit fields retain their canonical values. Creation uses
 `ThreadParameters::default()` for omitted settings. Explicit `null` on an
 optional field has the same effect as omission; it does not clear saved data.
 All linear dimensions accept unit-bearing literals or formulas.
+For a listed UNC/UNF size, supply `fit: "unified_2a"` for external modes or
+`fit: "unified_2b"` for an internal cut or nested hex nut. Omitting `fit` on
+an edit retains its saved value. Creation defaults to `nominal_basic`, which
+does not authorize UNC/UNF; those families require an explicit matching class.
+The initial sourced coverage is uncoated, single-start UN with a flat root and
+threaded length no greater than 1.5 nominal diameters. Unsupported size/series,
+class/direction and allowance combinations fail before committing. These
+historical table limits establish no current-ASME or calibrated-gage claim.
 Custom flank angles require angle units, and radius taper requires ratio units.
 A supplied Custom profile replaces the complete profile; omission retains it
 on an edit, while creating a Custom thread requires the explicit profile.

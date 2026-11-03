@@ -257,7 +257,7 @@ pub(super) fn inspect_mechanical_part(
             across_flats_mm,
             thread,
         } => {
-            json!({"kind":"hex_nut","across_flats_mm":across_flats_mm,"height_mm":thread.length_mm,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
+            json!({"kind":"hex_nut","across_flats_mm":across_flats_mm,"height_mm":thread.length_mm,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
         }
     };
     Ok(

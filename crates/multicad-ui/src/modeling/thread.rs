@@ -9,7 +9,7 @@ use crate::{controls, egui};
 use multicad_core::{
     document::{Document, EntityId},
     model::{
-        self, CustomThreadProfile, PrimitiveFrame, ThreadFamily, ThreadHand, ThreadMode,
+        self, CustomThreadProfile, PrimitiveFrame, ThreadFamily, ThreadFit, ThreadHand, ThreadMode,
         ThreadParameters, ThreadRepresentation, ThreadRequest,
     },
     parameters::EvaluatedParameters,
@@ -24,6 +24,7 @@ pub(super) struct ThreadPanel {
     target: Option<EntityId>,
     mode: ThreadMode,
     family: ThreadFamily,
+    fit: ThreadFit,
     hand: ThreadHand,
     starts: u32,
     representation: ThreadRepresentation,
@@ -31,6 +32,7 @@ pub(super) struct ThreadPanel {
     diameter: DimensionField,
     pitch: DimensionField,
     length: DimensionField,
+    preset_length_default: bool,
     radial: DimensionField,
     axial: DimensionField,
     wall: DimensionField,
@@ -64,6 +66,7 @@ impl ThreadPanel {
             target,
             mode: request.mode,
             family: p.family,
+            fit: p.fit,
             hand: p.hand,
             starts: p.starts,
             representation: p.representation,
@@ -71,6 +74,7 @@ impl ThreadPanel {
             diameter: field(&p.major_diameter, "mm")?,
             pitch: field(&p.pitch, "mm")?,
             length: field(&p.length, "mm")?,
+            preset_length_default: !editing && *p == ThreadParameters::default(),
             radial: field(&p.radial_allowance, "mm")?,
             axial: field(&p.axial_allowance, "mm")?,
             wall: field(&p.minimum_wall, "mm")?,
@@ -168,7 +172,7 @@ impl ThreadPanel {
                 u: basis.map_or(self.request.parameters.frame.u, |b| b.u),
                 v: basis.map_or(self.request.parameters.frame.v, |b| b.v),
             },
-            fit: self.request.parameters.fit,
+            fit: self.fit,
             runout: self.request.parameters.runout,
         };
         parameters
@@ -202,6 +206,10 @@ impl ThreadPanel {
                     if response.clicked() {
                         changed |= self.family != family;
                         self.family = family;
+                        self.fit = Self::fit_for(family, mode);
+                        if family.is_unified() {
+                            self.starts = 1;
+                        }
                     }
                 }
             });
@@ -226,6 +234,74 @@ impl ThreadPanel {
             }
             ui.small("Basic profile only; no ISO 965 tolerance class. Multiple starts use this profile as custom geometry, not a standard fastening designation.");
         }
+        if self.family.is_unified() {
+            let fit = Self::fit_for(self.family, mode);
+            ui.label("Fit class");
+            controls::inspector_combo(ui, "thread-fit")
+                .selected_text(self.fit.label())
+                .show_ui(ui, |ui| {
+                    for class in [ThreadFit::Unified2A, ThreadFit::Unified2B] {
+                        if ui
+                            .add_enabled(
+                                class == fit,
+                                egui::Button::selectable(self.fit == class, class.label()),
+                            )
+                            .on_disabled_hover_text(
+                                "Choose an external or internal thread mode for this class",
+                            )
+                            .clicked()
+                        {
+                            changed |= self.fit != class;
+                            self.fit = class;
+                        }
+                    }
+                });
+            let mut selected = None;
+            let presets: Vec<_> = model::unified_thread_presets()
+                .into_iter()
+                .filter(|p| p.family == self.family)
+                .collect();
+            controls::inspector_combo(ui, "thread-unified-preset")
+                .selected_text(format!("Choose a sourced {} preset…", self.family.label()))
+                .show_ui(ui, |ui| {
+                    for p in &presets {
+                        if ui
+                            .selectable_label(false, &p.designation)
+                            .on_hover_text(format!(
+                                "{} in nominal · {} TPI · {:.9} mm pitch",
+                                p.nominal_diameter_inch, p.threads_per_inch, p.pitch_mm
+                            ))
+                            .clicked()
+                        {
+                            selected = Some(p.clone());
+                        }
+                    }
+                });
+            if let Some(p) = selected {
+                self.diameter
+                    .set_exact_literal(p.nominal_diameter_inch, "in");
+                self.pitch.set_exact_literal(p.pitch_mm, "mm");
+                if self.preset_length_default {
+                    self.length.set_exact_literal(3. * p.pitch_mm, "mm");
+                }
+                self.starts = 1;
+                self.fit = fit;
+                changed = true;
+            }
+            ui.small("Only listed 1/4 and 5/16 inch sizes, single-start uncoated UN flat roots. UNR and other classes are unavailable.");
+            ui.small("Thread length must not exceed 1.5 times the nominal diameter. Physical fit and current ASME compliance are unverified.");
+            ui.collapsing("Published size and fit limits", |ui| {
+                for p in &presets {
+                    ui.strong(format!("{} · {} TPI", p.designation, p.threads_per_inch));
+                    let limits = if mode == ThreadMode::CutInternal {
+                        &p.internal
+                    } else {
+                        &p.external
+                    };
+                    Self::show_limits(ui, limits);
+                }
+            });
+        }
         changed |= self.diameter.show(
             ui,
             "Nominal major diameter",
@@ -236,15 +312,20 @@ impl ThreadPanel {
             "Pitch",
             "Axial spacing of adjacent threads; lead = pitch × starts",
         );
-        changed |= self.length.show(
+        let length_changed = self.length.show(
             ui,
             length_label,
             "Complete receiving length from the base plane; at least one pitch",
         );
+        self.preset_length_default &= !length_changed;
+        changed |= length_changed;
         ui.horizontal(|ui| {
             ui.label("Starts");
             changed |= ui
-                .add(egui::DragValue::new(&mut self.starts).range(1..=8))
+                .add_enabled(
+                    !self.family.is_unified(),
+                    egui::DragValue::new(&mut self.starts).range(1..=8),
+                )
                 .changed();
         });
         ui.horizontal(|ui| {
@@ -337,6 +418,30 @@ impl ThreadPanel {
         }
         changed
     }
+    fn fit_for(family: ThreadFamily, mode: ThreadMode) -> ThreadFit {
+        if !family.is_unified() {
+            ThreadFit::NominalBasic
+        } else if mode == ThreadMode::CutInternal {
+            ThreadFit::Unified2B
+        } else {
+            ThreadFit::Unified2A
+        }
+    }
+    fn show_limits(ui: &mut egui::Ui, limits: &model::ThreadFitLimits) {
+        for (label, range) in [
+            ("Major", &limits.major),
+            ("Pitch", &limits.pitch),
+            ("Minor", &limits.minor),
+        ] {
+            let text = match (range.min_mm, range.max_mm) {
+                (Some(min), Some(max)) => format!("{min:.6} to {max:.6} mm"),
+                (Some(min), None) => format!("at least {min:.6} mm"),
+                (None, Some(max)) => format!("at most {max:.6} mm"),
+                (None, None) => "No published bound in this table".into(),
+            };
+            ui.small(format!("{label} diameter: {text}"));
+        }
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -358,6 +463,7 @@ impl ThreadPanel {
                 egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
             )
             .changed();
+        let previous_mode = self.mode;
         ui.add_enabled_ui(!self.editing, |ui| {
             controls::inspector_combo(ui, "thread-mode")
                 .selected_text(match self.mode {
@@ -402,6 +508,9 @@ impl ThreadPanel {
                 }
             }
         });
+        if previous_mode != self.mode && self.family.is_unified() {
+            self.fit = Self::fit_for(self.family, self.mode);
+        }
         if self.editing
             && let Some(target) = &self.request.target
         {
@@ -421,6 +530,26 @@ impl ThreadPanel {
                         "Pitch {:.4} mm · lead {:.4} mm · {} starts",
                         resolved.pitch_mm, resolved.lead_mm, resolved.starts
                     ));
+                    if let Some(fit) = &resolved.fit {
+                        ui.strong(format!("{} · {}", fit.designation, fit.class.label()));
+                        ui.small(format!(
+                            "Nominal {:.4} in · {:.0} TPI",
+                            2. * resolved.nominal_major_radius_mm / 25.4,
+                            25.4 / resolved.pitch_mm
+                        ));
+                        ui.small(format!(
+                            "Resolved major {:.6} mm · pitch {:.6} mm · minor {:.6} mm",
+                            fit.major_diameter_mm, fit.pitch_diameter_mm, fit.minor_diameter_mm
+                        ));
+                        ui.small(format!(
+                            "Maximum supported thread length {:.6} mm",
+                            fit.engagement_limit_mm
+                        ));
+                        Self::show_limits(ui, &fit.limits);
+                        if let Some(reference) = fit.external_minor_reference_mm {
+                            ui.small(format!("Published external minor reference {reference:.6} mm; not a fit limit"));
+                        }
+                    }
                 }
             }
             Err(error) => {

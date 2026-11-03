@@ -10,7 +10,10 @@ use crate::{
 use multicad_core::{
     constraint_sketch::Dimension,
     document::Document,
-    model::{self, ThreadFamily, ThreadHand, ThreadMode, ThreadParameters, ThreadRepresentation},
+    model::{
+        self, ThreadFamily, ThreadFit, ThreadHand, ThreadMode, ThreadParameters,
+        ThreadRepresentation,
+    },
     parameters::{BoundExpression, EvaluatedParameters, Unit},
     sketch::Datum,
 };
@@ -22,6 +25,9 @@ use serde_json::json;
 #[serde(rename_all = "snake_case")]
 pub enum ThreadFamilyArg {
     IsoMetric,
+    Unc,
+    Unf,
+    /// Legacy ambiguous family; unavailable. Choose unc or unf explicitly.
     Unified,
     Whitworth,
     Bspp,
@@ -37,6 +43,8 @@ impl From<ThreadFamilyArg> for ThreadFamily {
     fn from(f: ThreadFamilyArg) -> Self {
         match f {
             ThreadFamilyArg::IsoMetric => Self::IsoMetric,
+            ThreadFamilyArg::Unc => Self::Unc,
+            ThreadFamilyArg::Unf => Self::Unf,
             ThreadFamilyArg::Unified => Self::Unified,
             ThreadFamilyArg::Whitworth => Self::Whitworth,
             ThreadFamilyArg::Bspp => Self::Bspp,
@@ -47,6 +55,24 @@ impl From<ThreadFamilyArg> for ThreadFamily {
             ThreadFamilyArg::Buttress => Self::Buttress,
             ThreadFamilyArg::Round => Self::Round,
             ThreadFamilyArg::Custom => Self::Custom,
+        }
+    }
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+pub enum ThreadFitArg {
+    #[serde(rename = "nominal_basic")]
+    NominalBasic,
+    #[serde(rename = "unified_2a")]
+    Unified2A,
+    #[serde(rename = "unified_2b")]
+    Unified2B,
+}
+impl From<ThreadFitArg> for ThreadFit {
+    fn from(f: ThreadFitArg) -> Self {
+        match f {
+            ThreadFitArg::NominalBasic => Self::NominalBasic,
+            ThreadFitArg::Unified2A => Self::Unified2A,
+            ThreadFitArg::Unified2B => Self::Unified2B,
         }
     }
 }
@@ -156,6 +182,9 @@ pub struct ThreadArgs {
 pub struct ThreadRecipeArgs {
     #[serde(default)]
     pub family: Option<ThreadFamilyArg>,
+    /// UNC/UNF require unified_2a externally or unified_2b internally. Omitted edits retain the saved class.
+    #[serde(default)]
+    pub fit: Option<ThreadFitArg>,
     /// Full explicit replacement of a Custom profile, including its angle/taper units.
     #[serde(default)]
     pub custom_profile: Option<ThreadProfileArgs>,
@@ -203,6 +232,9 @@ pub(super) fn parameters(
     let mut p = previous.cloned().unwrap_or_default();
     if let Some(family) = args.family {
         p.family = family.into();
+    }
+    if let Some(fit) = args.fit {
+        p.fit = fit.into();
     }
     p.custom = if p.family == ThreadFamily::Custom {
         match &args.custom_profile {
@@ -291,9 +323,29 @@ pub(super) fn parameters(
     Ok(p)
 }
 pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
-    Ok(
-        json!({"families":ThreadFamily::ALL.into_iter().map(|family|json!({"family":family,"label":family.label(),"supported":family.supported(),"source":family.source()})).collect::<Vec<_>>(),"metric_source":model::METRIC_THREAD_SOURCE_URL,"metric_presets":model::metric_thread_presets().into_iter().map(|p|json!({"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm})).collect::<Vec<_>>(),"fit":"Nominal basic dimensions only; no standardized tolerance class","runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"}),
-    )
+    let families:Vec<_> = ThreadFamily::ALL.into_iter().map(|family| {
+        let fit_classes:Vec<_> = if family.supported() && family.is_unified() {
+            vec![ThreadFit::Unified2A, ThreadFit::Unified2B]
+        } else if family.supported() {
+            vec![ThreadFit::NominalBasic]
+        } else {vec![]};
+        json!({"family":family,"label":family.label(),"supported":family.supported(),"source":family.source(),"fit_classes":fit_classes})
+    }).collect();
+    let unified_presets:Vec<_> = model::unified_thread_presets().into_iter().map(|p|json!({
+        "family":p.family,"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm,
+        "nominal_diameter_inch":p.nominal_diameter_inch,"threads_per_inch":p.threads_per_inch,
+        "external":{"class":ThreadFit::Unified2A,"limits":p.external,"allowance_mm":p.external_allowance_mm,"minor_reference_mm":p.external_minor_reference_mm},
+        "internal":{"class":ThreadFit::Unified2B,"limits":p.internal},
+        "engagement_limit_mm":1.5*p.diameter_mm,
+    })).collect();
+    Ok(json!({"families":families,
+        "metric_source":model::METRIC_THREAD_SOURCE_URL,
+        "metric_presets":model::metric_thread_presets().into_iter().map(|p|json!({"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm})).collect::<Vec<_>>(),
+        "unified_source":model::UNIFIED_THREAD_SOURCE,"unified_source_url":model::UNIFIED_THREAD_SOURCE_URL,"unified_profile_source_url":model::UNIFIED_PROFILE_SOURCE_URL,
+        "unified_presets":unified_presets,
+        "unified_support":{"starts":[1],"form":"un_flat_root","coating":"uncoated","max_length_nominal_diameters":1.5,"limits":"Null range endpoints are unspecified; an external minor reference is not an acceptance limit","claim":"Historical sourced dimensions; no current ASME, calibrated-gage or physical-fit certification"},
+        "fit":"ISO metric and Custom use nominal basic dimensions; listed UNC/UNF sizes require explicit external 2A or internal 2B",
+        "runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"}))
 }
 pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadArgs) -> ToolResult {
     let (document, revision, evaluated) = snapshot(host)?;
@@ -301,7 +353,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation},"scope":"Canonical source and resolved dimensions; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {
@@ -410,5 +462,16 @@ mod recipe_wire_tests {
         let schema = serde_json::to_value(schemars::schema_for!(ThreadArgs)).unwrap();
         assert!(schema["properties"]["major_diameter"].is_object());
         assert!(schema["properties"].get("recipe").is_none());
+        assert!(schema["properties"]["fit"].is_object());
+        for (family, fit, expected_family, expected_fit) in [
+            ("unc", "unified_2a", ThreadFamily::Unc, ThreadFit::Unified2A),
+            ("unf", "unified_2b", ThreadFamily::Unf, ThreadFit::Unified2B),
+        ] {
+            let recipe: ThreadRecipeArgs =
+                serde_json::from_value(json!({"family":family,"fit":fit})).unwrap();
+            assert_eq!(ThreadFamily::from(recipe.family.unwrap()), expected_family);
+            assert_eq!(ThreadFit::from(recipe.fit.unwrap()), expected_fit);
+        }
+        assert!(serde_json::from_value::<ThreadRecipeArgs>(json!({"fit":"2A"})).is_err());
     }
 }

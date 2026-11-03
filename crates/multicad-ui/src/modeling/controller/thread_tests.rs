@@ -162,3 +162,413 @@ fn actual_native_receiving_failure_never_enables_apply_or_changes_the_document()
     assert_eq!(session.document(), &before);
     assert_eq!(session.revision(), 1);
 }
+
+fn unified_frame(
+    ctx: &egui::Context,
+    controller: &mut ModelToolController,
+    session: &mut Session,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    controller.poll(session, &Default::default());
+    ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(460., 1800.),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            crate::inspector_actions::scope(
+                ui,
+                Some(crate::inspector_actions::Owner::Model),
+                crate::registry::Mode::Model.color(),
+                |ui| {
+                    controller.show(ui, session, &Default::default()).unwrap();
+                },
+            );
+        },
+    )
+}
+fn unified_click(ctx: &egui::Context, c: &mut ModelToolController, s: &mut Session, label: &str) {
+    unified_frame(ctx, c, s, vec![]).drop_without_applying_deltas();
+    let out = unified_frame(ctx, c, s, vec![]);
+    let pos = out
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .or_else(|| {
+            out.platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .max_by(|a, b| {
+                    ((a.x1 - a.x0) * (a.y1 - a.y0)).total_cmp(&((b.x1 - b.x0) * (b.y1 - b.y0)))
+                })
+                .map(|bounds| {
+                    egui::pos2(
+                        ((bounds.x0 + bounds.x1) / 2.) as f32,
+                        ((bounds.y0 + bounds.y1) / 2.) as f32,
+                    )
+                })
+        })
+        .unwrap_or_else(|| panic!("Missing thread control {label}"));
+    out.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        unified_frame(
+            ctx,
+            c,
+            s,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+}
+fn choose_unified(
+    ctx: &egui::Context,
+    c: &mut ModelToolController,
+    s: &mut Session,
+    preset: &model::UnifiedThreadPreset,
+) {
+    unified_click(ctx, c, s, model::ThreadFamily::IsoMetric.label());
+    unified_click(ctx, c, s, preset.family.label());
+    unified_click(
+        ctx,
+        c,
+        s,
+        &format!("Choose a sourced {} preset…", preset.family.label()),
+    );
+    unified_click(ctx, c, s, &preset.designation);
+}
+#[test]
+fn painted_unc_and_unf_presets_keep_exact_inch_tpi_and_native_cancel_apply_history_and_reopen() {
+    for family in [model::ThreadFamily::Unc, model::ThreadFamily::Unf] {
+        let preset = model::unified_thread_presets()
+            .into_iter()
+            .find(|p| p.family == family)
+            .unwrap();
+        let mut s = Session::new(Document::new("Unified thread controls").unwrap()).unwrap();
+        let original = s.document().clone();
+        let mut c = controller();
+        c.begin_thread(&s, &Default::default(), None, &BTreeSet::new(), Channel::Ui)
+            .unwrap();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        choose_unified(&ctx, &mut c, &mut s, &preset);
+        let request = match c.form.as_ref().unwrap() {
+            ModelForm::Thread(panel) => panel.request(s.document(), true).unwrap(),
+            _ => panic!("Expected Thread inspector"),
+        };
+        assert_eq!(request.parameters.family, family);
+        assert_eq!(request.parameters.fit, model::ThreadFit::Unified2A);
+        assert_eq!(
+            request.parameters.major_diameter,
+            multicad_core::constraint_sketch::Dimension::Literal {
+                value: preset.nominal_diameter_inch,
+                unit: "in".into()
+            }
+        );
+        assert_eq!(
+            request.parameters.pitch,
+            model::length(25.4 / f64::from(preset.threads_per_inch))
+        );
+        let resolved = request
+            .parameters
+            .resolve(s.parameters(), request.mode)
+            .unwrap();
+        assert!(
+            (resolved.length_mm - 3. * preset.pitch_mm).abs() < 1e-12,
+            "New default length follows its first Unified preset"
+        );
+        assert_eq!(
+            resolved.fit.as_ref().unwrap().class,
+            model::ThreadFit::Unified2A
+        );
+        let out = unified_frame(&ctx, &mut c, &mut s, vec![]);
+        assert!(out.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.job.text.contains(&format!("{} TPI",preset.threads_per_inch)))));
+        out.drop_without_applying_deltas();
+        c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &original);
+        c.cancel();
+        assert_eq!(s.document(), &original);
+        let panel = ThreadPanel::new(
+            request.clone(),
+            s.parameters().clone(),
+            vec![],
+            &BTreeSet::new(),
+            false,
+        )
+        .unwrap();
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Thread(Box::new(panel)),
+        )
+        .unwrap();
+        c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+        wait(&mut c, &s);
+        let output = c.apply(&mut s, &Default::default()).unwrap();
+        assert_eq!(output[0].feature, request.feature);
+        let saved = s.document().clone();
+        assert_eq!(
+            model::read_thread(s.document(), request.feature)
+                .unwrap()
+                .parameters,
+            request.parameters
+        );
+        s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &original);
+        s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &saved);
+        let project = multicad_core::project_file::ProjectFile::new(saved.clone()).unwrap();
+        let mut bytes = vec![];
+        multicad_core::project_file::write(&project, &mut bytes, Default::default()).unwrap();
+        let reopened = multicad_core::project_file::read(
+            &mut &bytes[..],
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let independent = Session::new(reopened.document).unwrap();
+        let mut reopened_controller = controller();
+        reopened_controller
+            .begin_existing(
+                &independent,
+                &Default::default(),
+                request.feature,
+                Channel::Ui,
+            )
+            .unwrap();
+        let restored = match reopened_controller.form.as_ref().unwrap() {
+            ModelForm::Thread(panel) => panel.request(independent.document(), true).unwrap(),
+            _ => panic!("Expected restored Thread inspector"),
+        };
+        assert_eq!(restored.parameters, request.parameters);
+        reopened_controller
+            .preview(&independent, &Default::default(), Channel::Ui)
+            .unwrap();
+        wait(&mut reopened_controller, &independent);
+        assert!(reopened_controller.can_apply(&independent, &Default::default()));
+        reopened_controller.cancel();
+        assert_eq!(independent.document(), &saved);
+    }
+}
+#[test]
+fn nested_hex_nut_unified_controls_use_internal_class_and_keep_authored_height() {
+    let preset = model::unified_thread_presets()
+        .into_iter()
+        .find(|p| p.family == model::ThreadFamily::Unf)
+        .unwrap();
+    let mut s = Session::new(Document::new("Unified hex nut controls").unwrap()).unwrap();
+    let original = s.document().clone();
+    let request = model::MechanicalPartRequest::new(
+        "Nut",
+        model::MechanicalPartParameters::HexNut {
+            across_flats: model::length(12.),
+            thread: Box::new(model::ThreadParameters {
+                major_diameter: model::length(6.),
+                pitch: model::length(1.),
+                length: model::length(4.2),
+                ..Default::default()
+            }),
+        },
+    );
+    let panel = MechanicalPartPanel::new(request.clone(), s.parameters().clone(), false).unwrap();
+    let mut c = controller();
+    c.begin_form(
+        &s,
+        &Default::default(),
+        Channel::Ui,
+        ModelForm::MechanicalPart(Box::new(panel)),
+    )
+    .unwrap();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    choose_unified(&ctx, &mut c, &mut s, &preset);
+    let candidate = match c.form.as_ref().unwrap() {
+        ModelForm::MechanicalPart(panel) => panel.request(s.document(), true).unwrap(),
+        _ => panic!("Expected nested hardware controls"),
+    };
+    let model::MechanicalPartParameters::HexNut { thread, .. } = &candidate.parameters else {
+        panic!("Expected hex nut")
+    };
+    assert_eq!(thread.fit, model::ThreadFit::Unified2B);
+    assert_eq!(thread.length, model::length(4.2));
+    assert_eq!(
+        thread.major_diameter,
+        multicad_core::constraint_sketch::Dimension::Literal {
+            value: preset.nominal_diameter_inch,
+            unit: "in".into()
+        }
+    );
+    c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+    wait(&mut c, &s);
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+    assert_eq!(s.document(), &original);
+    c.apply(&mut s, &Default::default()).unwrap();
+    assert_eq!(
+        model::read_mechanical_part(s.document(), request.feature)
+            .unwrap()
+            .parameters,
+        candidate.parameters
+    );
+}
+
+#[test]
+fn reopening_a_default_valued_native_nut_keeps_its_authored_height_when_selecting_unified() {
+    let mut source =
+        Session::new(Document::new("Existing default-valued M8 nut").unwrap()).unwrap();
+    let request = model::MechanicalPartRequest::new(
+        "Saved M8 nut",
+        model::MechanicalPartParameters::HexNut {
+            across_flats: model::length(14.),
+            thread: Box::new(model::ThreadParameters::default()),
+        },
+    );
+    let prepared = model::prepare_mechanical_part(
+        &source,
+        source.revision(),
+        Actor::local(Channel::Ui),
+        &request,
+    )
+    .unwrap();
+    let native = multicad_model::Compiler::default()
+        .compile(prepared.prepared.document(), source.revision() + 1)
+        .unwrap();
+    assert_eq!(native.snapshot().shapes[&request.feature].solid_count, 1);
+    assert!(
+        native.snapshot().shapes[&request.feature]
+            .topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == multicad_core::references::TopologyKind::Face)
+            .count()
+            > 3
+    );
+    source.commit(prepared.prepared).unwrap();
+    source.mark_saved(source.revision()).unwrap();
+    let saved = source.document().clone();
+    for family in [model::ThreadFamily::Unc, model::ThreadFamily::Unf] {
+        let preset = model::unified_thread_presets()
+            .into_iter()
+            .find(|p| p.family == family)
+            .unwrap();
+        let mut s = Session::new(saved.clone()).unwrap();
+        let mut c = controller();
+        c.begin_existing(&s, &Default::default(), request.feature, Channel::Ui)
+            .unwrap();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        choose_unified(&ctx, &mut c, &mut s, &preset);
+        let error = match c.form.as_ref().unwrap() {
+            ModelForm::MechanicalPart(panel) => panel.request(s.document(), true).unwrap_err(),
+            _ => panic!("Expected reopened hardware inspector"),
+        };
+        assert!(
+            error.contains("1.5"),
+            "Retained 12.5 mm height must require explicit correction: {error}"
+        );
+        assert!(c.preview(&s, &Default::default(), Channel::Ui).is_err());
+        assert!(!c.can_apply(&s, &Default::default()));
+        assert_eq!(s.document(), &saved);
+
+        let display =
+            crate::modeling::dimension::DimensionField::from_dimension(&model::length(12.5), "mm")
+                .unwrap()
+                .text;
+        let out = unified_frame(&ctx, &mut c, &mut s, vec![]);
+        let bounds = out
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| {
+                (node.role() == egui::accesskit::Role::TextInput
+                    && node.value() == Some(display.as_str()))
+                .then(|| node.bounds())
+                .flatten()
+            })
+            .find(|b| b.x1 - b.x0 > 50.)
+            .expect("Retained authored nut height must remain visible");
+        let pos = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.) as f32,
+            ((bounds.y0 + bounds.y1) / 2.) as f32,
+        );
+        out.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            unified_frame(
+                &ctx,
+                &mut c,
+                &mut s,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+        unified_frame(
+            &ctx,
+            &mut c,
+            &mut s,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Text("8 mm".into()),
+            ],
+        )
+        .drop_without_applying_deltas();
+        let candidate = match c.form.as_ref().unwrap() {
+            ModelForm::MechanicalPart(panel) => panel.request(s.document(), true).unwrap(),
+            _ => panic!("Expected edited hardware inspector"),
+        };
+        let model::MechanicalPartParameters::HexNut { thread, .. } = candidate.parameters else {
+            panic!("Expected nut")
+        };
+        assert_eq!(thread.length, model::length(8.));
+        assert_eq!(thread.fit, model::ThreadFit::Unified2B);
+        c.cancel();
+        assert_eq!(s.document(), &saved);
+    }
+}

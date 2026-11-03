@@ -107,7 +107,7 @@ impl MechanicalPartPanel {
                 parameters.clone(),
                 vec![],
                 &Default::default(),
-                false,
+                editing,
             )?,
             parameters,
             request,
