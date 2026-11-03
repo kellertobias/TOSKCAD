@@ -20,7 +20,7 @@ struct Scope {
     resources: ProjectResources,
     embedded: Vec<(EntityId, SymbolDefinition)>,
     embedded_pins: BTreeMap<EntityId, ContentHash>,
-    embedded_search: BTreeMap<EntityId, String>,
+    embedded_search: BTreeMap<EntityId, super::installed::SearchIndex>,
 }
 struct Candidate {
     prepared: Prepared,
@@ -47,14 +47,14 @@ pub struct SymbolController {
     pub(super) library: Vec<SymbolDefinition>,
     installed: super::installed::Installed,
     library_pins: Vec<ContentHash>,
-    library_search: Vec<String>,
+    library_search: Vec<super::installed::SearchIndex>,
     actions: VecDeque<SymbolAction>,
     generation: u64,
     pub(super) error: Option<String>,
 }
 impl SymbolController {
     pub fn set_installed_library(&mut self, entries: Arc<Vec<crate::library::LibraryEntry>>) {
-        self.installed.entries = entries;
+        self.installed.set_entries(entries);
     }
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
         self.cancel();

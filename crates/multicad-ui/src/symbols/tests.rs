@@ -122,6 +122,167 @@ fn loaded_hardware_definitions_remain_findable_by_their_source_dimensions() {
         "choosing Import still requires native Preview and Apply"
     );
 }
+fn catalog_search_fixture(
+    name: &str,
+    nominal: Option<f64>,
+    bore: f64,
+    material: &str,
+) -> symbols::SymbolDefinition {
+    let mut source =
+        Session::new(Document::new("Synthetic catalog-search fixture").unwrap()).unwrap();
+    let geometry = model::MechanicalPartParameters::Washer {
+        bore_diameter: length(bore),
+        outside_diameter: length(bore + 4.),
+        thickness: length(0.5),
+        frame: Default::default(),
+    };
+    let mut request =
+        model::MechanicalPartRequest::new(format!("Physical ring for {name}"), geometry.clone());
+    request.provenance = Some(model::MechanicalPartProvenance {
+        catalog_id: format!("test-only/{name}"),
+        revision: "fixture-1".into(),
+        designation: format!("Fixture {name}"),
+        source_url: "https://example.invalid/test-only-catalog".into(),
+        reference_geometry: geometry,
+        catalog_facts: nominal.map(|nominal| model::MechanicalPartCatalogFacts {
+            nominal_fastener_diameter_mm: Some(nominal),
+            series: Some("Fixture normal series".into()),
+            material: Some(material.into()),
+            grade: None,
+        }),
+    });
+    let p = model::prepare_mechanical_part(&source, 0, actor(), &request).unwrap();
+    source.commit(p.prepared).unwrap();
+    let author = SymbolAuthorRequest::new(name, request.body, SymbolKind::Static, vec![], None);
+    let p = symbols::prepare_author(&source, source.revision(), actor(), &author).unwrap();
+    source.commit(p.prepared).unwrap();
+    symbols::read_definition(source.document(), author.definition).unwrap()
+}
+fn painted_text_count(output: &egui::FullOutput, text: &str) -> usize {
+    fn count(shape: &egui::Shape, text: &str) -> usize {
+        match shape {
+            egui::Shape::Text(value) => usize::from(value.galley.text() == text),
+            egui::Shape::Vec(shapes) => shapes.iter().map(|s| count(s, text)).sum(),
+            _ => 0,
+        }
+    }
+    output.shapes.iter().map(|s| count(&s.shape, text)).sum()
+}
+#[test]
+fn sourced_nominal_search_is_exact_across_installed_embedded_and_loaded_definitions() {
+    use crate::library::{LibraryEntry, LibraryOrigin};
+    use std::sync::Arc;
+    let definitions = vec![
+        catalog_search_fixture("Three fixture", Some(3.), 3.2, "Fixture steel"),
+        catalog_search_fixture("Decimal fixture", Some(3.5), 3.7, "Fixture steel"),
+        catalog_search_fixture("Thirty fixture", Some(30.), 31., "Fixture brass"),
+        catalog_search_fixture("Unattributed M3 fixture", None, 3.2, "Unused material"),
+    ];
+    let entries: Vec<_> = definitions
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| {
+            let mut cards = model::mechanical_part_cards(&definition.template);
+            for card in &mut cards {
+                card.symbol = Some((definition.symbol, definition.revision.clone()));
+            }
+            LibraryEntry {
+                origin: LibraryOrigin::ListedOriginal,
+                id: EntityId::new(),
+                document: definition.template.id(),
+                path: format!("/offline/library/M3-M30-fixture-{index}.tcd").into(),
+                name: format!("Installed {}", definition.name),
+                description: "Synthetic search fixtures, not product dimensions".into(),
+                preview: None,
+                registered_unix_ms: 1,
+                symbol_definitions: 1,
+                mechanical_parts: cards,
+                problem: None,
+            }
+        })
+        .collect();
+    let mut session = Session::new(Document::new("Search host").unwrap()).unwrap();
+    for definition in &definitions {
+        let prepared =
+            symbols::prepare_import(&session, session.revision(), actor(), definition).unwrap();
+        session.commit(prepared.prepared).unwrap();
+    }
+    let before = session.document().clone();
+    let revision = session.revision();
+    let mut c = controller();
+    c.set_installed_library(Arc::new(entries.clone()));
+    c.set_library_snapshot(definitions.clone()).unwrap();
+    begin(&mut c, &session, SymbolTool::Library, Default::default());
+    let ctx = egui::Context::default();
+    for (query, selected) in [
+        ("M3", Some(0)),
+        ("m3 steel normal", Some(0)),
+        ("M3.5", Some(1)),
+        ("M30", Some(2)),
+        ("M3 brass", None),
+        ("M3 31", None),
+        ("M3 3.7", None),
+        ("M3 M30", None),
+        ("M4.5", None),
+        ("M9", None),
+    ] {
+        c.form.as_mut().unwrap().filter = query.into();
+        let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 6000.);
+        for (index, definition) in definitions.iter().enumerate() {
+            let expected = usize::from(selected == Some(index));
+            assert_eq!(
+                painted_text_count(&output, &format!("Installed {}", definition.name)),
+                expected,
+                "Installed {query}"
+            );
+            assert_eq!(
+                painted_text_count(&output, &definition.name),
+                expected * 2,
+                "Embedded and loaded {query}"
+            );
+        }
+        if selected == Some(0) {
+            assert_eq!(
+                painted_text_count(&output, "Source nominal fastener diameter: 3 mm"),
+                3
+            );
+            assert_eq!(
+                painted_text_count(&output, "Source grade: not specified"),
+                3
+            );
+        }
+        output.drop_without_applying_deltas();
+    }
+    c.form.as_mut().unwrap().filter = "washer 3.2".into();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 6000.);
+    for index in [0, 3] {
+        assert_eq!(painted_text_count(&output, &definitions[index].name), 2);
+    }
+    output.drop_without_applying_deltas();
+    let mut changed = entries;
+    changed[0].mechanical_parts[0]
+        .catalog_facts
+        .as_mut()
+        .unwrap()
+        .nominal_fastener_diameter_mm = Some(30.);
+    c.set_installed_library(Arc::new(changed));
+    c.form.as_mut().unwrap().filter = "M3".into();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 6000.);
+    assert_eq!(
+        painted_text_count(&output, "Installed Three fixture"),
+        0,
+        "Updated Library snapshot must refresh its cached facts"
+    );
+    assert_eq!(
+        painted_text_count(&output, "Three fixture"),
+        2,
+        "Embedded and loaded pins keep their own facts"
+    );
+    output.drop_without_applying_deltas();
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), revision);
+    assert!(!c.pending());
+}
 fn fixture() -> (Session, PrimitiveRequest, EntityId) {
     let mut session = Session::new(Document::new("Symbol UI").unwrap()).unwrap();
     let parameter = Entity::new(

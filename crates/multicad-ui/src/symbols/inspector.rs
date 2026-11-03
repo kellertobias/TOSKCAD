@@ -22,10 +22,10 @@ enum Next {
 pub(super) struct Catalogue<'a> {
     pub embedded: &'a [(EntityId, SymbolDefinition)],
     pub embedded_pins: &'a BTreeMap<EntityId, ContentHash>,
-    pub embedded_search: &'a BTreeMap<EntityId, String>,
+    pub embedded_search: &'a BTreeMap<EntityId, super::installed::SearchIndex>,
     pub library: &'a [SymbolDefinition],
     pub library_pins: &'a [ContentHash],
-    pub library_search: &'a [String],
+    pub library_search: &'a [super::installed::SearchIndex],
     pub installed: &'a mut super::installed::Installed,
 }
 pub(super) fn show(
@@ -47,17 +47,19 @@ pub(super) fn show(
     ui.add_enabled_ui(enabled, |ui| { match &mut form.operation {
         Operation::Library=>{
             changed|=fields::text(ui,"Filter symbols",&mut form.filter,"Search listed files, embedded and loaded definitions");
-            action=catalogue.installed.show(ui,&form.filter);
+            ui.small("M3 selects a sourced nominal fastener diameter of exactly 3 mm. Other terms search names and source dimensions.");
+            let filter=super::installed::SearchQuery::new(&form.filter);
+            action=catalogue.installed.show(ui,&filter);
             ui.separator();
             if ui.button("Open library file…").on_hover_text("Load definitions without changing this project. Embedded pins continue working when the file is unavailable").clicked(){action=Some(SymbolAction::ImportLibrary);}
             ui.strong("Embedded in this project");
-            let filter=form.filter.to_lowercase();
             let mut shown=0;
             for (id,definition) in definitions {
-                if !super::installed::contains_terms(&catalogue.embedded_search[id], &filter){continue;}
+                if !catalogue.embedded_search[id].matches(&filter, ""){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
+                    catalogue.embedded_search[id].show_cards(ui,&filter,"");
                     if let Some(role)=super::architecture::role(definition) {
                         let label=match role { symbols::architecture::ArchitectureRole::Wall=>"Draw wall", symbols::architecture::ArchitectureRole::Fence=>"Draw fence" };
                         if ui.button(label).clicked(){action=Some(SymbolAction::DrawConstruction{definition:*id,role});}
@@ -72,10 +74,11 @@ pub(super) fn show(
             ui.separator();ui.strong("Loaded library · import before placing");
             let mut shown=0;
             for ((definition,pin),search) in library.iter().zip(catalogue.library_pins).zip(catalogue.library_search) {
-                if !super::installed::contains_terms(search, &filter){continue;}
+                if !search.matches(&filter, ""){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
+                    search.show_cards(ui,&filter,"");
                     let embedded=definitions.iter().any(|(id,def)|def.symbol==definition.symbol&&catalogue.embedded_pins.get(id)==Some(pin));
                     if embedded {ui.small("This exact revision is embedded");}else if ui.button("Import definition").on_hover_text("Preview and explicitly embed this immutable definition before placing it").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
                 });
