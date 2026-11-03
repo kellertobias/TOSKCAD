@@ -31,8 +31,7 @@ pub struct HelicalThread {
     pub starts: u32,
     pub left_hand: bool,
 }
-/// Symmetric circular crest/root profile in an axial meridian. The first
-/// bounded implementation accepts the exact single-start, parallel 55° form.
+/// Circular crest/root profile in an axial meridian, with true 55° flanks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoundedHelicalThread {
     pub major_radius_mm: f64,
@@ -42,6 +41,8 @@ pub struct RoundedHelicalThread {
     pub rounding_radius_mm: f64,
     /// Half of the included angle, measured from the radial direction.
     pub flank_angle_deg: f64,
+    /// Radius change per axial millimetre: zero or signed 1:16 diameter taper.
+    pub radial_taper: f64,
     pub starts: u32,
     pub left_hand: bool,
 }
@@ -128,11 +129,19 @@ impl RoundedHelicalThread {
     fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
         let angle = 27.5_f64.to_radians();
         let depth = self.pitch_mm / (3. * angle.tan());
-        let rounding = self.pitch_mm * angle.cos() / (12. * (1. - angle.sin()));
+        let k = self.radial_taper;
+        let rounding = if k == 0. {
+            self.pitch_mm * angle.cos() / (12. * (1. - angle.sin()))
+        } else {
+            let m = 1. / angle.tan();
+            let fundamental = self.pitch_mm * (m * m - k * k) / (2. * m);
+            (fundamental - depth) / (2. * (1. / angle.sin() - (1. + k * k).sqrt()))
+        };
         let matches = |actual: f64, expected: f64| {
             actual.is_finite() && (actual - expected).abs() <= expected.abs() * 1e-12
         };
         if self.starts != 1
+            || ![0., 1. / 32., -1. / 32.].contains(&k)
             || !self.flank_angle_deg.is_finite()
             || (self.flank_angle_deg - 27.5).abs() > 1e-10
             || !matches(self.depth_mm, depth)
@@ -140,7 +149,7 @@ impl RoundedHelicalThread {
         {
             return Err(failure(
                 GeometryErrorKind::Input,
-                "Rounded thread needs the exact symmetric 55-degree single-start parallel profile",
+                "Rounded thread needs the exact 55-degree single-start parallel or 1:16 tapered profile",
             ));
         }
         policy.length(self.rounding_radius_mm)?;
@@ -152,7 +161,7 @@ impl RoundedHelicalThread {
             crest_width_mm: 2. * self.rounding_radius_mm * angle.cos(),
             lower_flank_deg: self.flank_angle_deg,
             upper_flank_deg: self.flank_angle_deg,
-            radial_taper: 0.,
+            radial_taper: k,
             starts: self.starts,
             left_hand: self.left_hand,
         }
@@ -263,6 +272,10 @@ impl Solid {
 
 #[cfg(test)]
 mod factory_tests {
+    #[test]
+    fn tapered_meridian_frames_keep_global_phase_across_native_segments_and_hands() {
+        assert!(crate::ffi::thread_meridian_frame_probe().unwrap());
+    }
     use super::*;
     use crate::{BooleanOperation, MeshOptions, RigidTransform};
     use multicad_core::references::TopologyKind;

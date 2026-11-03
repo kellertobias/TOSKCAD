@@ -1,5 +1,6 @@
 //! Versioned thread intent and transactions. Native receipts must still prove
 //! receiving geometry and manufactured solids before the UI enables Apply.
+mod pipe;
 mod prepare;
 mod profiles;
 mod unified;
@@ -17,6 +18,7 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     sketch::Frame,
 };
+pub use pipe::*;
 pub use prepare::*;
 pub use profiles::*;
 use serde::{Deserialize, Serialize};
@@ -65,6 +67,7 @@ pub enum ThreadFit {
     WhitworthMediumInternal,
     BsppClassBExternal,
     BsppInternal,
+    BsptNominal,
 }
 impl ThreadFit {
     pub fn label(self) -> &'static str {
@@ -76,6 +79,7 @@ impl ThreadFit {
             Self::WhitworthMediumInternal => "Medium internal (BS 84:2007)",
             Self::BsppClassBExternal => "Class B external (2018 source table)",
             Self::BsppInternal => "Internal (2018 source table)",
+            Self::BsptNominal => "Nominal gauge position (ISO 7-1:1994)",
         }
     }
 }
@@ -89,6 +93,8 @@ pub enum ThreadRunout {
 pub struct ThreadParameters {
     pub family: ThreadFamily,
     pub custom: Option<CustomThreadProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipe: Option<PipeThreadIntent>,
     /// Basic major diameter at the base plane, before fabrication allowance.
     pub major_diameter: Dimension,
     pub pitch: Dimension,
@@ -110,6 +116,7 @@ impl Default for ThreadParameters {
         Self {
             family: ThreadFamily::IsoMetric,
             custom: None,
+            pipe: None,
             major_diameter: length(8.),
             pitch: length(1.25),
             length: length(12.5),
@@ -127,6 +134,7 @@ impl Default for ThreadParameters {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedThread {
+    pub pipe: Option<ResolvedPipeThread>,
     pub nominal_major_radius_mm: f64,
     pub nominal_pitch_diameter_mm: Option<f64>,
     /// Intended profile after fit selection and fabrication allowances.
@@ -182,6 +190,11 @@ impl ThreadParameters {
                 "Only Custom threads must contain an explicit custom profile",
             ));
         }
+        if (self.family == ThreadFamily::Bspt) != self.pipe.is_some() {
+            return Err(invalid(
+                "Only BSPT requires explicit R/Rc pipe size and gauge intent",
+            ));
+        }
         if let Some(profile) = &self.custom {
             profile.validate()?;
         }
@@ -193,6 +206,15 @@ impl ThreadParameters {
             {
                 return Err(invalid(
                     "Sourced UNC/UNF require 2A external or 2B internal and one start; other combinations remain unavailable",
+                ));
+            }
+        } else if self.family == ThreadFamily::Bspt {
+            if self.fit != ThreadFit::BsptNominal
+                || self.starts != 1
+                || self.hand != ThreadHand::Right
+            {
+                return Err(invalid(
+                    "BSPT requires nominal gauge fit, one right-hand start and explicit R/Rc intent",
                 ));
             }
         } else if self.family.is_rounded() {
@@ -221,6 +243,13 @@ impl ThreadParameters {
     }
     pub fn validate_for_mode(&self, mode: ThreadMode) -> Result<(), DocumentError> {
         self.validate()?;
+        if let Some(pipe) = self.pipe
+            && (mode == ThreadMode::CutInternal) != (pipe.form == PipeThreadForm::Rc)
+        {
+            return Err(invalid(
+                "R requires external mode; Rc requires internal mode",
+            ));
+        }
         if self.family.is_unified()
             && (mode == ThreadMode::CutInternal) != (self.fit == ThreadFit::Unified2B)
         {
@@ -253,6 +282,10 @@ impl ThreadParameters {
         let radial = number(&self.radial_allowance, Unit::Millimeter, parameters)?;
         let axial = number(&self.axial_allowance, Unit::Millimeter, parameters)?;
         let wall = number(&self.minimum_wall, Unit::Millimeter, parameters)?;
+        let pipe = self
+            .pipe
+            .map(|intent| pipe::resolve_pipe(intent, mode, diameter, pitch, length, radial, axial))
+            .transpose()?;
         if diameter <= 0.
             || pitch < 0.001
             || length < pitch
@@ -288,9 +321,16 @@ impl ThreadParameters {
             mode,
             parameters,
         )?;
+        if let Some(pipe) = &pipe {
+            profile.radial_taper = pipe.radial_taper;
+            let (depth, rounding) = pipe::tapered_profile(pitch, pipe.radial_taper);
+            profile.depth_mm = depth;
+            profile.rounding_radius_mm = Some(rounding);
+        }
+        let true_rounded = profile.rounding_radius_mm.is_some();
         let slopes =
             profile.lower_flank_deg.to_radians().tan() + profile.upper_flank_deg.to_radians().tan();
-        let pitch_drop = if rounded.is_some() {
+        let pitch_drop = if true_rounded {
             profile.depth_mm / 2.
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
@@ -320,7 +360,7 @@ impl ThreadParameters {
         let width = profile.crest_width_mm + profile.depth_mm * slopes;
         let root = radius - profile.depth_mm;
         let lead = pitch * f64::from(self.starts);
-        if (rounded.is_none() && (profile.crest_width_mm <= 0. || width >= pitch))
+        if (!true_rounded && (profile.crest_width_mm <= 0. || width >= pitch))
             || root <= 0.
             || [-2. * lead, length + 2. * lead]
                 .into_iter()
@@ -330,7 +370,7 @@ impl ThreadParameters {
                 "Thread allowance or profile leaves no root/crest, overlaps adjacent starts, or crosses the cone apex",
             ));
         }
-        let actual_pitch_drop = if rounded.is_some() {
+        let actual_pitch_drop = if true_rounded {
             profile.depth_mm / 2.
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
@@ -363,6 +403,7 @@ impl ThreadParameters {
                 .transpose()?
         };
         Ok(ResolvedThread {
+            pipe,
             nominal_major_radius_mm: diameter / 2.,
             nominal_pitch_diameter_mm,
             actual_pitch_diameter_mm,

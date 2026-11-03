@@ -24,7 +24,7 @@ disabled in the inspector and refused by the canonical API.
 | BSF | Single-start rounded 55-degree profile; 1/4-26 and 5/16-22 | BS 84:2007 uncoated Medium external/internal; engagement at most 15 pitches |
 | BSPP | Single-start rounded 55-degree parallel profile; G1/8-28 and G1/4-19 | Elesa+Ganter 2018 external Class B/internal limits; NBK JIS B 0202:1999 basic form; sealing outside the thread |
 | Legacy ambiguous Whitworth | Unavailable | Select BSW or BSF explicitly; `whitworth` remains unsupported |
-| BSPT | Unavailable | Tapered pipe profile, gauge planes and standard size coverage unimplemented |
+| BSPT | Right-hand, single-start R external and Rc internal tapered rounded 55-degree form; 1/8-28 and 1/4-19 | ISO 7-1:1994 with Cor 1:2007; nominal gauge convention and bounded position tolerance; Rp unavailable |
 | NPT | Unavailable | Tapered pipe profile, gauge planes and standard size coverage unimplemented |
 | Trapezoidal | Unavailable | Standard profile and size coverage unimplemented |
 | Acme | Unavailable | Standard profile and size coverage unimplemented |
@@ -41,8 +41,8 @@ plus selected larger sizes through 30 mm.
 
 This basic profile does not implement ISO 965 tolerance classes or certify
 compliance with the current ISO 724 edition. A Custom tapered profile does
-not establish NPT or BSPT compliance. Those families require their own sourced
-profile, gauge-plane and tolerance rules before they can become available.
+not establish NPT or BSPT compliance. Each pipe family requires its own sourced
+profile, gauge-plane and tolerance rules.
 
 The [Unified registry](../../crates/multicad-core/src/model/threads/unified.rs)
 uses NBS Handbook H28 (1969), issued March 1970, with USA B1.1-1960 as its
@@ -93,6 +93,55 @@ establish full ISO compliance. The
 [ISO 228-1:2000 abstract](https://committee.iso.org/standard/33777.html?browse=tc)
 identifies parallel fastening threads with any pressure seal outside the
 thread. No pressure-sealing result is claimed.
+
+## Tapered pipe construction
+
+The [pipe registry](../../crates/multicad-core/src/model/threads/pipe.rs)
+retains explicit R/Rc form, nominal pipe size and `iso7_nominal1994` gauge intent.
+It uses [ISO 7-1:1994, third edition](https://www.iso.org/standard/20819.html)
+with [Cor 1:2007](https://www.iso.org/standard/46479.html).
+The [ISO-authored preview](https://cdn.standards.iteh.ai/samples/20819/7860e4c71b9647f68baf76cd62d6e320/ISO-7-1-1994.pdf)
+contains Table 1 and length rules but omits the profile page.
+The identical [BIS IS 554:1999 adoption](https://law.resource.org/pub/in/bis/S01/is.554.1999.pdf)
+supplies Figures 1-2 and clauses 7.1.1-7.1.2 on printed page 4.
+The [corrigendum copy](https://www.evs.ee/en/StandardDownload/DownloadPdf?language=EnglishLanguage&productId=74799)
+supplies corrected Figure 5. Source PDFs are not redistributed.
+
+| Pipe size | TPI | Gauge major/pitch/minor (mm, printed) | R nominal gauge offset (mm) | R nominal minimum useful length (mm) | Rc complete receiving minimum (mm) |
+| --- | --- | --- | --- | --- | --- |
+| 1/8 | 28 | 9.728 / 9.147 / 8.566 | 4.0 | 6.5 | 7.4 |
+| 1/4 | 19 | 13.157 / 12.301 / 11.445 | 6.0 | 9.7 | 11.0 |
+
+R uses its small-end reference with radius slope `+1/32` along the local axis.
+Rc uses its fitting-face reference with slope `-1/32` and a gauge plane half
+a pitch inward, following corrected Figure 5. Diameter taper is 1:16.
+The saved `major_diameter` remains the basic diameter at the local base:
+`baseD = gaugeD - 2*slope*gaugeOffset`. Resolved pipe metadata separately
+reports construction diameters at the nominal gauge plane and the shifted
+actual gauge offset. It retains the rounded printed source values separately.
+Pitch uses exact `25.4/TPI`; pipe labels are nominal sizes.
+
+For half-angle `a = 27.5 degrees`, let `m = cot(a)` and signed slope `k`.
+The tapered fundamental height is `H = P*(m*m-k*k)/(2*m)`.
+Depth remains `h = P/(3*tan(a))`, with circle radius
+`r = (H-h)/(2*(csc(a)-sqrt(1+k*k)))`.
+These analytic coefficients round to the source's `0.960237`, `0.640327`
+and `0.137278`. Root centers are offset by `H/(m+k)` from the previous crest
+center. Their asymmetric spacing preserves true circular tangency and axial
+55-degree flanks. The tapered builder uses a radial/axial meridian frame along
+the conical helix, with finite native surface-approximation error bounded by
+the requested linear tolerance.
+
+The supported fit is `bspt_nominal`. Mandatory gauge-position tolerances are
+plus/minus one turn for R and 1.25 turns for Rc; printed millimetre conversions
+are informative rounded values. Radial allowance shifts the intended gauge
+position and must remain inside that tolerance. An R thread must also retain
+at least 2.75 pitches of fitting allowance beyond its shifted gauge plane.
+Complete Rc receiving length uses Table 1 column 16 and clause 7.2.2.
+Incomplete/free runout, washout, Rp, other sizes, left-hand source designation
+and axial allowance are unavailable. Suitable jointing medium and materials
+are required by the source; CAD geometry does not certify pressure sealing,
+calibrated-gage acceptance or physical fit.
 
 ## Parameters and receiving geometry
 
@@ -153,6 +202,9 @@ Rounded source similarly requires `model.thread.rounded.1`, including
 suppressed features, imported templates, nested mechanical recipes and retained
 literal references after a family edit. Existing metric, Custom and Unified
 capability inventories and serialized values remain unchanged.
+Saved BSPT additionally requires `model.thread.bspt.1`, including suppressed
+features, imported templates, nested hardware and retained literal references.
+Older source omits the optional pipe intent field.
 
 ## Native construction and output
 
@@ -166,7 +218,7 @@ automatic relief grooves and chamfers are unimplemented.
 The rounded builder sweeps a circular crest with tangent flanks and two
 separate root-arc shoulders. Narrow profiles avoid full-period sweep
 self-contact; buried overlap joins them to the core. Its spine uses bounded
-half-turn edges as the primary representation, preserving the requested
+half-turn parallel or quarter-turn tapered edges, preserving the requested
 physical phase and exact fractional endpoint. Boolean ancestry retains
 the two root arcs, crest and flanks. Rounded-only material checks verify the
 circles across the height; legacy flat-profile construction remains separate.
@@ -197,7 +249,8 @@ Profiles also need a positive root, separated adjacent starts and resolvable
 crest width. Flank angles must lie within 1-80 degrees and absolute radius
 taper within 0.1.
 The separate rounded input instead requires the validated tangent 55-degree
-form, single start and zero taper; a zero flat crest width is intentional.
+form, single start and either zero or signed 1:16 diameter taper;
+a zero flat crest width is intentional.
 
 Modeled threads contain helical native faces. Cosmetic envelopes retain
 thread intent but produce only a major external envelope or minor internal
@@ -211,6 +264,9 @@ The test sources cover
 [Unified limits, fit resolution and reader capabilities](../../crates/multicad-core/tests/model_unified_threads.rs),
 [rounded source limits and compatibility](../../crates/multicad-core/tests/model_rounded_threads.rs),
 [native rounded crest/root sections](../../crates/multicad-kernel/tests/rounded_threads.rs),
+[pipe source, gauge rules and reader compatibility](../../crates/multicad-core/tests/model_pipe_threads.rs),
+[tapered circular sections](../../crates/multicad-kernel/tests/tapered_rounded_threads.rs),
+[native R/Rc pairs and manufacturing exports](../../crates/multicad-model/tests/pipe_threads.rs),
 [rounded fit pairs and STEP/print sections](../../crates/multicad-model/tests/whitworth_threads.rs),
 [receiving solids, Unified pitch sections, mating clearance and manufacturing output](../../crates/multicad-model/tests/threads.rs),
 [native inspector preview/history and independent-session reopen](../../crates/multicad-ui/src/modeling/controller/thread_tests.rs),

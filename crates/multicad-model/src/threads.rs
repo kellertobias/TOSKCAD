@@ -120,6 +120,7 @@ pub(crate) fn build_resolved(
                     depth_mm: profile.depth_mm,
                     rounding_radius_mm,
                     flank_angle_deg: profile.lower_flank_deg,
+                    radial_taper: profile.radial_taper,
                     starts: resolved.starts,
                     left_hand: resolved.hand == ThreadHand::Left,
                 },

@@ -66,6 +66,7 @@ impl ThreadFamily {
                 | Self::Bsw
                 | Self::Bsf
                 | Self::Bspp
+                | Self::Bspt
                 | Self::Custom
         )
     }
@@ -82,6 +83,7 @@ impl ThreadFamily {
             Self::Unc | Self::Unf => UNIFIED_THREAD_SOURCE,
             Self::Bsw | Self::Bsf => WHITWORTH_THREAD_SOURCE,
             Self::Bspp => BSPP_THREAD_SOURCE,
+            Self::Bspt => BSPT_THREAD_SOURCE,
             _ => "Not implemented; no sourced geometry or tolerance coverage claimed",
         }
     }
@@ -195,7 +197,7 @@ pub(super) fn resolve_profile(
     parameters: &EvaluatedParameters,
 ) -> Result<ResolvedThreadProfile, DocumentError> {
     let profile = match family {
-        ThreadFamily::Bsw | ThreadFamily::Bsf | ThreadFamily::Bspp => {
+        ThreadFamily::Bsw | ThreadFamily::Bsf | ThreadFamily::Bspp | ThreadFamily::Bspt => {
             let (depth_mm, radius_mm) = whitworth::profile_dimensions(pitch);
             ResolvedThreadProfile {
                 depth_mm,

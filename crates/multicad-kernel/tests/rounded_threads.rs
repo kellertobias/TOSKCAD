@@ -13,6 +13,7 @@ fn spec() -> RoundedHelicalThread {
         depth_mm: pitch / (3. * angle.tan()),
         rounding_radius_mm: pitch * angle.cos() / (12. * (1. - angle.sin())),
         flank_angle_deg: 27.5,
+        radial_taper: 0.,
         starts: 1,
         left_hand: false,
     }
@@ -255,6 +256,7 @@ fn fitted_bsf_inch_pitch_preserves_the_exact_fractional_endpoint() {
         depth_mm: 0.625_550_590_064_969_3,
         rounding_radius_mm: 0.134_159_950_430_831_56,
         flank_angle_deg: 27.5,
+        radial_taper: 0.,
         starts: 1,
         left_hand: false,
     };
@@ -342,6 +344,7 @@ fn all_sourced_fits_survive_tpi_units_integer_fractional_lengths_and_allowances(
                     depth_mm: resolved.profile.depth_mm,
                     rounding_radius_mm: resolved.profile.rounding_radius_mm.unwrap(),
                     flank_angle_deg: 27.5,
+                    radial_taper: resolved.profile.radial_taper,
                     starts: 1,
                     left_hand,
                 };
@@ -386,6 +389,7 @@ fn fitted_left_bsw_fractional_preserves_diagonal_material_and_step_geometry() {
         depth_mm: 0.903_573_074_538_289_1,
         rounding_radius_mm: 0.193_786_595_066_756_72,
         flank_angle_deg: 27.5,
+        radial_taper: 0.,
         starts: 1,
         left_hand: true,
     };
@@ -430,6 +434,7 @@ fn fitted_bspp_internal_preserves_native_circles_and_step_geometry() {
         depth_mm: 0.580_868_405_060_328_7,
         rounding_radius_mm: 0.124_577_096_828_629_3,
         flank_angle_deg: 27.5,
+        radial_taper: 0.,
         starts: 1,
         left_hand: false,
     };
@@ -481,6 +486,7 @@ fn blind_and_through_rounded_receivers_keep_rigid_geometry_ancestry_and_step_bou
         depth_mm: p.profile.depth_mm,
         rounding_radius_mm: p.profile.rounding_radius_mm.unwrap(),
         flank_angle_deg: 27.5,
+        radial_taper: 0.,
         starts: 1,
         left_hand: false,
     };

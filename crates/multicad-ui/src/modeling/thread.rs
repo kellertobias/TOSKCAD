@@ -25,6 +25,7 @@ pub(super) struct ThreadPanel {
     mode: ThreadMode,
     family: ThreadFamily,
     fit: ThreadFit,
+    pipe: Option<model::PipeThreadIntent>,
     hand: ThreadHand,
     starts: u32,
     representation: ThreadRepresentation,
@@ -67,6 +68,7 @@ impl ThreadPanel {
             mode: request.mode,
             family: p.family,
             fit: p.fit,
+            pipe: p.pipe,
             hand: p.hand,
             starts: p.starts,
             representation: p.representation,
@@ -143,6 +145,11 @@ impl ThreadPanel {
         let basis = self.plane.map(Datum::frame);
         let parameters = ThreadParameters {
             family: self.family,
+            pipe: if self.family == ThreadFamily::Bspt {
+                self.pipe
+            } else {
+                None
+            },
             custom: if self.family == ThreadFamily::Custom {
                 Some(CustomThreadProfile {
                     depth: self.custom[0].resolve(document)?,
@@ -207,6 +214,20 @@ impl ThreadPanel {
                         changed |= self.family != family;
                         self.family = family;
                         self.fit = Self::fit_for(family, mode);
+                        if family == ThreadFamily::Bspt
+                            && let Some(mut pipe) = self.pipe
+                        {
+                            pipe.form = if mode == ThreadMode::CutInternal {
+                                model::PipeThreadForm::Rc
+                            } else {
+                                model::PipeThreadForm::R
+                            };
+                            self.pipe = Some(pipe);
+                            self.diameter.set_exact_literal(pipe.base_major_mm(), "mm");
+                            self.pitch.set_exact_literal(pipe.preset().pitch_mm, "mm");
+                            self.starts = 1;
+                            self.hand = ThreadHand::Right;
+                        }
                         if family.is_unified() || family.is_rounded() {
                             self.starts = 1;
                         }
@@ -214,6 +235,9 @@ impl ThreadPanel {
                 }
             });
         ui.small(self.family.source());
+        if self.family == ThreadFamily::Bspt {
+            changed |= self.pipe_controls(ui, mode);
+        }
         if self.family.is_rounded() {
             changed |= self.rounded_controls(ui, mode);
         }
@@ -326,7 +350,9 @@ impl ThreadPanel {
             ui.label("Starts");
             changed |= ui
                 .add_enabled(
-                    !self.family.is_unified() && !self.family.is_rounded(),
+                    !self.family.is_unified()
+                        && !self.family.is_rounded()
+                        && self.family != ThreadFamily::Bspt,
                     egui::DragValue::new(&mut self.starts).range(1..=8),
                 )
                 .changed();
@@ -336,7 +362,12 @@ impl ThreadPanel {
                 (ThreadHand::Right, "Right hand"),
                 (ThreadHand::Left, "Left hand"),
             ] {
-                changed |= ui.radio_value(&mut self.hand, hand, label).changed();
+                ui.add_enabled_ui(
+                    self.family != ThreadFamily::Bspt || hand == ThreadHand::Right,
+                    |ui| {
+                        changed |= ui.radio_value(&mut self.hand, hand, label).changed();
+                    },
+                );
             }
         });
         if self.family == ThreadFamily::Custom {
@@ -367,7 +398,7 @@ impl ThreadPanel {
             "Axial clearance",
             "Total tooth-width allowance in millimetres",
         );
-        if self.family.is_rounded() {
+        if self.family.is_rounded() || self.family == ThreadFamily::Bspt {
             ui.small("Rounded profiles currently require zero axial clearance; radial clearance must remain within the selected fit limits.");
         }
         if mode == ThreadMode::CutInternal {
@@ -512,7 +543,9 @@ impl ThreadPanel {
         changed
     }
     fn fit_for(family: ThreadFamily, mode: ThreadMode) -> ThreadFit {
-        if matches!(family, ThreadFamily::Bsw | ThreadFamily::Bsf) {
+        if family == ThreadFamily::Bspt {
+            ThreadFit::BsptNominal
+        } else if matches!(family, ThreadFamily::Bsw | ThreadFamily::Bsf) {
             if mode == ThreadMode::CutInternal {
                 ThreadFit::WhitworthMediumInternal
             } else {
@@ -531,6 +564,81 @@ impl ThreadPanel {
         } else {
             ThreadFit::Unified2A
         }
+    }
+    fn pipe_controls(&mut self, ui: &mut egui::Ui, mode: ThreadMode) -> bool {
+        let form = if mode == ThreadMode::CutInternal {
+            model::PipeThreadForm::Rc
+        } else {
+            model::PipeThreadForm::R
+        };
+        let mut selected = None;
+        controls::inspector_combo(ui, "thread-pipe-preset")
+            .selected_text(self.pipe.map_or("Choose sourced R/Rc size…".into(), |p| {
+                format!(
+                    "{} {}",
+                    if p.form == model::PipeThreadForm::R {
+                        "R"
+                    } else {
+                        "Rc"
+                    },
+                    p.preset().size_label
+                )
+            }))
+            .show_ui(ui, |ui| {
+                for row in model::pipe_thread_presets() {
+                    if ui
+                        .selectable_label(
+                            self.pipe
+                                .is_some_and(|p| p.size == row.size && p.form == form),
+                            format!(
+                                "{} {} · {} TPI",
+                                if form == model::PipeThreadForm::R {
+                                    "R"
+                                } else {
+                                    "Rc"
+                                },
+                                row.size_label,
+                                row.threads_per_inch
+                            ),
+                        )
+                        .clicked()
+                    {
+                        selected = Some(model::PipeThreadIntent {
+                            form,
+                            size: row.size,
+                            gauge: model::PipeGaugeConvention::Iso7Nominal1994,
+                        });
+                    }
+                }
+            });
+        if let Some(pipe) = selected {
+            self.pipe = Some(pipe);
+            self.diameter.set_exact_literal(pipe.base_major_mm(), "mm");
+            self.pitch.set_exact_literal(pipe.preset().pitch_mm, "mm");
+            if self.preset_length_default {
+                self.length
+                    .set_exact_literal(pipe.default_length_mm(), "mm");
+            }
+            self.fit = ThreadFit::BsptNominal;
+            self.starts = 1;
+            self.hand = ThreadHand::Right;
+        }
+        if let Some(pipe) = self.pipe {
+            ui.small(format!(
+                "{} reference · gauge {:.6} mm inward · radius slope {:+.5} · gauge major {:.3} mm",
+                if pipe.form == model::PipeThreadForm::R {
+                    "Small end"
+                } else {
+                    "Fitting face"
+                },
+                pipe.gauge_offset_mm(),
+                pipe.radial_taper(),
+                pipe.preset().gauge_major_mm
+            ));
+            ui.small(format!("Minimum complete/useful length {:.6} mm. Nominal gauge; position tolerance ±{} turns. Flat ends, no washout.", pipe.default_length_mm(), if pipe.form == model::PipeThreadForm::R { 1. } else { 1.25 }));
+        }
+        ui.small("Right-hand R/Rc 1/8 and 1/4 only; Rp unavailable. Suitable jointing medium is required; geometry does not certify sealing or pressure rating.");
+        selected.is_some()
     }
     fn show_limits(ui: &mut egui::Ui, limits: &model::ThreadFitLimits) {
         for (label, range) in [
@@ -616,6 +724,19 @@ impl ThreadPanel {
         if previous_mode != self.mode && (self.family.is_unified() || self.family.is_rounded()) {
             self.fit = Self::fit_for(self.family, self.mode);
         }
+        if previous_mode != self.mode
+            && self.family == ThreadFamily::Bspt
+            && let Some(mut pipe) = self.pipe
+        {
+            pipe.form = if self.mode == ThreadMode::CutInternal {
+                model::PipeThreadForm::Rc
+            } else {
+                model::PipeThreadForm::R
+            };
+            self.pipe = Some(pipe);
+            self.diameter.set_exact_literal(pipe.base_major_mm(), "mm");
+            self.fit = ThreadFit::BsptNominal;
+        }
         if self.editing
             && let Some(target) = &self.request.target
         {
@@ -635,6 +756,16 @@ impl ThreadPanel {
                         "Pitch {:.4} mm · lead {:.4} mm · {} starts",
                         resolved.pitch_mm, resolved.lead_mm, resolved.starts
                     ));
+                    if let Some(pipe) = &resolved.pipe {
+                        ui.strong(&pipe.designation);
+                        ui.small(format!(
+                            "At nominal gauge plane: major {:.6} mm · pitch {:.6} mm · minor {:.6} mm",
+                            pipe.actual_gauge_major_mm,
+                            pipe.actual_gauge_pitch_mm,
+                            pipe.actual_gauge_minor_mm
+                        ));
+                        ui.small(format!("Allowance shifts nominal gauge position {:.6} turns; this is construction intent, not a measured gage result.", pipe.gauge_displacement_turns));
+                    }
                     if let Some(fit) = &resolved.fit {
                         ui.strong(format!("{} · {}", fit.designation, fit.class.label()));
                         if self.family == ThreadFamily::Bspp {

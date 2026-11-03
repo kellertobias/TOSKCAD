@@ -182,7 +182,18 @@ fn rounded_profiles_distinguish_series_pipe_size_semantics_and_explicit_class_co
             }
         }
     }
-    for family in ["whitworth", "bspt", "npt"] {
+    assert_eq!(
+        report["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["family"] == "bspt")
+            .unwrap()["fit_classes"],
+        json!(["bspt_nominal"])
+    );
+    assert_eq!(report["bspt_presets"].as_array().unwrap().len(), 2);
+    assert_eq!(report["bspt_support"]["hands"], json!(["right"]));
+    for family in ["whitworth", "npt"] {
         assert_eq!(
             report["families"]
                 .as_array()
@@ -426,12 +437,117 @@ impl multicad_mcp::Host for ReviewedThreadHost {
     }
 }
 
-#[test]
-fn all_rounded_families_preview_natively_then_reject_or_apply_once_with_client_attribution() {
+fn reviewed_native_thread(family: model::ThreadFamily, mut request: Value) -> Value {
+    let expected_fit = request["fit"].clone();
     use multicad_core::{
         commands::ActivityKind,
         control::{AuditOutcome, ReviewState},
     };
+    let host = ReviewedThreadHost(std::sync::Mutex::new(ReviewedThreadOwner {
+        session: Session::new(Document::new("Reviewed rounded native thread").unwrap()).unwrap(),
+        ledger: Default::default(),
+        resources: Default::default(),
+    }));
+    let original = host.0.lock().unwrap().session.document().clone();
+    request["expected_revision"] = json!(0);
+    let before_native = multicad_kernel::thread_factory_stats().unwrap();
+    let preview = dispatch(&host, &call(false), "set_thread", request.clone()).unwrap();
+    // set_thread exposes no native model receipt. Observe the actual native
+    // constructor path instead; this in-process reviewed host is not an OS UI.
+    assert!(multicad_kernel::thread_factory_stats().unwrap().requests > before_native.requests);
+    assert_eq!(preview["status"], "pending_review");
+    assert_eq!(preview["revision"], 0);
+    let rejected = preview["review"].as_u64().unwrap();
+    let rejected_feature: EntityId = serde_json::from_value(preview["thread"].clone()).unwrap();
+    {
+        let owner = &mut *host.0.lock().unwrap();
+        assert_eq!(owner.session.document(), &original);
+        assert_eq!(owner.session.revision(), 0);
+        assert_eq!(owner.session.activity().count(), 0);
+        assert!(!owner.session.can_undo());
+        assert!(!owner.session.can_redo());
+        let pending = owner.ledger.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].actor, call(false).actor);
+        assert_eq!(pending[0].tool, "set_thread");
+        let candidate = pending[0].candidate().unwrap();
+        let source = model::read_thread(candidate.document(), rejected_feature).unwrap();
+        assert_eq!(source.parameters.family, family);
+        assert_eq!(
+            source.parameters.representation,
+            model::ThreadRepresentation::Modeled
+        );
+        owner
+            .ledger
+            .reject(rejected, "Owner rejected rounded preview")
+            .unwrap();
+        assert_eq!(owner.ledger.state(rejected), Some(ReviewState::Rejected));
+        assert!(owner.ledger.pending().is_empty());
+        assert_eq!(owner.session.document(), &original);
+        assert_eq!(owner.session.activity().count(), 0);
+        assert!(!owner.session.can_undo());
+        assert!(!owner.session.can_redo());
+    }
+    let before_native = multicad_kernel::thread_factory_stats().unwrap();
+    let preview = dispatch(&host, &call(false), "set_thread", request).unwrap();
+    assert!(multicad_kernel::thread_factory_stats().unwrap().requests > before_native.requests);
+    assert_eq!(preview["status"], "pending_review");
+    assert_eq!(preview["revision"], 0);
+    let review = preview["review"].as_u64().unwrap();
+    assert_ne!(review, rejected);
+    let feature: EntityId = serde_json::from_value(preview["thread"].clone()).unwrap();
+    assert_ne!(feature, rejected_feature);
+    {
+        let owner = &mut *host.0.lock().unwrap();
+        assert_eq!(owner.session.document(), &original);
+        assert_eq!(owner.session.activity().count(), 0);
+        assert!(!owner.session.can_undo());
+        assert_eq!(owner.ledger.accept(review, &mut owner.session).unwrap(), 1);
+        assert_eq!(
+            owner.ledger.state(review),
+            Some(ReviewState::Applied { revision: 1 })
+        );
+        assert!(owner.ledger.pending().is_empty());
+        assert!(owner.session.can_undo());
+        assert!(!owner.session.can_redo());
+        let activity: Vec<_> = owner.session.activity().collect();
+        assert_eq!(activity.len(), 1);
+        assert_eq!(activity[0].actor, call(false).actor);
+        assert_eq!(activity[0].kind, ActivityKind::Apply);
+        let source = model::read_thread(owner.session.document(), feature).unwrap();
+        assert_eq!(source.parameters.family, family);
+        assert_eq!(
+            serde_json::to_value(source.parameters.fit).unwrap(),
+            expected_fit
+        );
+        assert!(owner.session.document().get(rejected_feature).is_none());
+        let applied = owner.session.document().clone();
+        assert!(owner.ledger.accept(review, &mut owner.session).is_err());
+        assert_eq!(owner.session.revision(), 1);
+        assert_eq!(owner.session.document(), &applied);
+        assert_eq!(owner.session.activity().count(), 1);
+        let commits: Vec<_> = owner
+            .ledger
+            .entries()
+            .filter(|e| e.outcome == AuditOutcome::Applied)
+            .collect();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].actor, call(false).actor);
+        assert_eq!(commits[0].tool, "set_thread");
+        assert_eq!(commits[0].review, Some(review));
+        assert_eq!(commits[0].revision, Some(1));
+    }
+    dispatch(
+        &host,
+        &call(false),
+        "inspect_thread",
+        json!({"thread":feature}),
+    )
+    .unwrap()
+}
+
+#[test]
+fn all_rounded_families_preview_natively_then_reject_or_apply_once_with_client_attribution() {
     for family in [
         model::ThreadFamily::Bsw,
         model::ThreadFamily::Bsf,
@@ -441,109 +557,158 @@ fn all_rounded_families_preview_natively_then_reject_or_apply_once_with_client_a
             .into_iter()
             .find(|p| p.family == family)
             .unwrap();
-        let host = ReviewedThreadHost(std::sync::Mutex::new(ReviewedThreadOwner {
-            session: Session::new(Document::new("Reviewed rounded native thread").unwrap())
-                .unwrap(),
-            ledger: Default::default(),
-            resources: Default::default(),
-        }));
-        let original = host.0.lock().unwrap().session.document().clone();
-        let mut request = args(&preset, false);
-        request["expected_revision"] = json!(0);
-        let before_native = multicad_kernel::thread_factory_stats().unwrap();
-        let preview = dispatch(&host, &call(false), "set_thread", request.clone()).unwrap();
-        // set_thread exposes no native model receipt. Observe the actual native
-        // constructor path instead; this in-process reviewed host is not an OS UI.
-        assert!(multicad_kernel::thread_factory_stats().unwrap().requests > before_native.requests);
-        assert_eq!(preview["status"], "pending_review");
-        assert_eq!(preview["revision"], 0);
-        let rejected = preview["review"].as_u64().unwrap();
-        let rejected_feature: EntityId = serde_json::from_value(preview["thread"].clone()).unwrap();
-        {
-            let owner = &mut *host.0.lock().unwrap();
-            assert_eq!(owner.session.document(), &original);
-            assert_eq!(owner.session.revision(), 0);
-            assert_eq!(owner.session.activity().count(), 0);
-            assert!(!owner.session.can_undo());
-            assert!(!owner.session.can_redo());
-            let pending = owner.ledger.pending();
-            assert_eq!(pending.len(), 1);
-            assert_eq!(pending[0].actor, call(false).actor);
-            assert_eq!(pending[0].tool, "set_thread");
-            let candidate = pending[0].candidate().unwrap();
-            let source = model::read_thread(candidate.document(), rejected_feature).unwrap();
-            assert_eq!(source.parameters.family, family);
-            assert_eq!(
-                source.parameters.representation,
-                model::ThreadRepresentation::Modeled
-            );
-            owner
-                .ledger
-                .reject(rejected, "Owner rejected rounded preview")
-                .unwrap();
-            assert_eq!(owner.ledger.state(rejected), Some(ReviewState::Rejected));
-            assert!(owner.ledger.pending().is_empty());
-            assert_eq!(owner.session.document(), &original);
-            assert_eq!(owner.session.activity().count(), 0);
-            assert!(!owner.session.can_undo());
-            assert!(!owner.session.can_redo());
-        }
-        let before_native = multicad_kernel::thread_factory_stats().unwrap();
-        let preview = dispatch(&host, &call(false), "set_thread", request).unwrap();
-        assert!(multicad_kernel::thread_factory_stats().unwrap().requests > before_native.requests);
-        assert_eq!(preview["status"], "pending_review");
-        assert_eq!(preview["revision"], 0);
-        let review = preview["review"].as_u64().unwrap();
-        assert_ne!(review, rejected);
-        let feature: EntityId = serde_json::from_value(preview["thread"].clone()).unwrap();
-        assert_ne!(feature, rejected_feature);
-        {
-            let owner = &mut *host.0.lock().unwrap();
-            assert_eq!(owner.session.document(), &original);
-            assert_eq!(owner.session.activity().count(), 0);
-            assert!(!owner.session.can_undo());
-            assert_eq!(owner.ledger.accept(review, &mut owner.session).unwrap(), 1);
-            assert_eq!(
-                owner.ledger.state(review),
-                Some(ReviewState::Applied { revision: 1 })
-            );
-            assert!(owner.ledger.pending().is_empty());
-            assert!(owner.session.can_undo());
-            assert!(!owner.session.can_redo());
-            let activity: Vec<_> = owner.session.activity().collect();
-            assert_eq!(activity.len(), 1);
-            assert_eq!(activity[0].actor, call(false).actor);
-            assert_eq!(activity[0].kind, ActivityKind::Apply);
-            let source = model::read_thread(owner.session.document(), feature).unwrap();
-            assert_eq!(source.parameters.family, family);
-            assert_eq!(
-                serde_json::to_value(source.parameters.fit).unwrap(),
-                fit_name(family == model::ThreadFamily::Bspp, false)
-            );
-            assert!(owner.session.document().get(rejected_feature).is_none());
-            let applied = owner.session.document().clone();
-            assert!(owner.ledger.accept(review, &mut owner.session).is_err());
-            assert_eq!(owner.session.revision(), 1);
-            assert_eq!(owner.session.document(), &applied);
-            assert_eq!(owner.session.activity().count(), 1);
-            let commits: Vec<_> = owner
-                .ledger
-                .entries()
-                .filter(|e| e.outcome == AuditOutcome::Applied)
-                .collect();
-            assert_eq!(commits.len(), 1);
-            assert_eq!(commits[0].actor, call(false).actor);
-            assert_eq!(commits[0].tool, "set_thread");
-            assert_eq!(commits[0].review, Some(review));
-            assert_eq!(commits[0].revision, Some(1));
-        }
-        let inspected = dispatch(
-            &host,
-            &call(false),
-            "inspect_thread",
-            json!({"thread":feature}),
+        let inspected = reviewed_native_thread(preset.family, args(&preset, false));
+        assert_fit(&inspected, &preset, false);
+    }
+}
+#[test]
+fn bspt_nominal_gauge_intent_is_preserved_through_native_owner_preview_reject_and_apply() {
+    let intent = model::PipeThreadIntent {
+        form: model::PipeThreadForm::R,
+        size: model::PipeThreadSize::OneEighth,
+        gauge: model::PipeGaugeConvention::Iso7Nominal1994,
+    };
+    let inspected = reviewed_native_thread(
+        model::ThreadFamily::Bspt,
+        json!({"name":"R 1/8", "family":"bspt", "fit":"bspt_nominal", "pipe":intent, "major_diameter":mm(intent.base_major_mm()), "pitch":mm(intent.preset().pitch_mm), "length":mm(intent.default_length_mm())}),
+    );
+    assert_eq!(inspected["source"]["parameters"]["pipe"], json!(intent));
+    assert_eq!(inspected["resolved"]["pipe"]["designation"], "R 1/8");
+    assert_eq!(inspected["resolved"]["pipe"]["gauge_offset_mm"], 4.);
+    assert_eq!(inspected["resolved"]["profile"]["radial_taper"], 1. / 32.);
+}
+#[test]
+fn bspt_mcp_omitted_edits_undo_reopen_and_failures_retain_canonical_intent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pipe.tcd");
+    Store
+        .save(
+            &path,
+            &ProjectFile::new(Document::new("Pipe MCP").unwrap()).unwrap(),
         )
         .unwrap();
-        assert_fit(&inspected, &preset, false);
+    let h = Headless::new(
+        Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    let intent = model::PipeThreadIntent {
+        form: model::PipeThreadForm::R,
+        size: model::PipeThreadSize::OneEighth,
+        gauge: model::PipeGaugeConvention::Iso7Nominal1994,
+    };
+    let args = json!({"expected_revision":0,"name":"MCP R 1/8","family":"bspt","fit":"bspt_nominal","pipe":intent,"major_diameter":mm(intent.base_major_mm()),"pitch":mm(intent.preset().pitch_mm),"length":mm(8.)});
+    assert_eq!(
+        dispatch(&h, &call(true), "set_thread", args.clone())
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    let created = run(&h, "set_thread", args);
+    let feature = created["thread"].clone();
+    let original = h.document();
+    for bad in [
+        json!({"expected_revision":1,"thread":feature,"axial_allowance":mm(0.01)}),
+        json!({"expected_revision":1,"thread":feature,"pipe":{"form":"rc","size":"1/8","gauge":"iso7_nominal1994"}}),
+        json!({"expected_revision":1,"thread":feature,"pipe":{"form":"rp","size":"1/8","gauge":"iso7_nominal1994"}}),
+        json!({"expected_revision":0,"thread":feature,"length":mm(9.)}),
+    ] {
+        assert!(dispatch(&h, &call(false), "set_thread", bad).is_err());
+        assert_eq!(h.document(), original);
+    }
+    run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":1,"thread":feature,"length":mm(8.5)}),
+    );
+    let inspected = run(&h, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(inspected["source"]["parameters"]["pipe"], json!(intent));
+    assert_eq!(
+        inspected["resolved"]["pipe"]["actual_gauge_major_mm"],
+        9.728
+    );
+    let changed = h.document();
+    run(&h, "undo", json!({"expected_revision":2}));
+    assert_eq!(h.document(), original);
+    run(&h, "redo", json!({"expected_revision":3}));
+    assert_eq!(h.document(), changed);
+    run(&h, "save_project", json!({"expected_revision":4}));
+    drop(h);
+    let reopened = Headless::new(
+        Workspace::project(path, Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    assert_eq!(reopened.document(), changed);
+    let inspected = run(&reopened, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(inspected["source"]["parameters"]["pipe"], json!(intent));
+    let output = run(
+        &reopened,
+        "export_step",
+        json!({"part":created["part"],"file_name":"pipe.step"}),
+    );
+    assert!(output["readback_volume_mm3"].as_f64().unwrap() > 0.);
+}
+#[test]
+fn bspt_nested_nut_and_screw_inspection_keep_the_shared_gauge_receipt() {
+    for form in [model::PipeThreadForm::R, model::PipeThreadForm::Rc] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hardware.tcd");
+        Store
+            .save(
+                &path,
+                &ProjectFile::new(Document::new("Pipe hardware MCP").unwrap()).unwrap(),
+            )
+            .unwrap();
+        let h = Headless::new(
+            Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+            None,
+            false,
+        );
+        let intent = model::PipeThreadIntent {
+            form,
+            size: model::PipeThreadSize::OneEighth,
+            gauge: model::PipeGaugeConvention::Iso7Nominal1994,
+        };
+        let thread = json!({"family":"bspt","fit":"bspt_nominal","pipe":intent,"major_diameter":mm(intent.base_major_mm()),"pitch":mm(intent.preset().pitch_mm),"length":mm(intent.default_length_mm()),"representation":"modeled"});
+        let recipe = if form == model::PipeThreadForm::Rc {
+            json!({"kind":"hex_nut","across_flats":mm(16.),"thread":thread})
+        } else {
+            json!({"kind":"machine_screw","underhead_length":mm(intent.default_length_mm()),"shank_diameter":mm(intent.base_major_mm()),"head":{"kind":"external_hex","across_flats":mm(16.),"height":mm(3.)},"drive":{"kind":"external_hex"},"thread":thread})
+        };
+        let created = run(
+            &h,
+            "set_mechanical_part",
+            json!({"expected_revision":0,"name":"Shared pipe hardware","recipe":recipe}),
+        );
+        let feature = created["feature"].clone();
+        let inspected = run(&h, "inspect_mechanical_part", json!({"feature":feature}));
+        assert_eq!(inspected["resolved"]["pipe"]["intent"], json!(intent));
+        assert_eq!(inspected["resolved"]["radial_taper"], intent.radial_taper());
+        let edited = run(
+            &h,
+            "set_mechanical_part",
+            json!({"expected_revision":1,"feature":feature,"recipe":{"kind":if form == model::PipeThreadForm::Rc {"hex_nut"}else{"machine_screw"},"thread":{"radial_allowance":mm(0.)}}}),
+        );
+        assert_eq!(edited["revision"], 1, "An unchanged edit must stay a no-op");
+        run(
+            &h,
+            "save_project",
+            json!({"expected_revision":edited["revision"]}),
+        );
+        let saved = h.document();
+        drop(h);
+        let reopened = Headless::new(
+            Workspace::project(path, Box::new(Store)).unwrap(),
+            None,
+            false,
+        );
+        assert_eq!(reopened.document(), saved);
+        let restored = run(
+            &reopened,
+            "inspect_mechanical_part",
+            json!({"feature":feature}),
+        );
+        assert_eq!(restored["resolved"]["pipe"], inspected["resolved"]["pipe"]);
     }
 }

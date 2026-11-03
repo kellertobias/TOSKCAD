@@ -104,7 +104,7 @@ impl MechanicalPartDefinition {
             MechanicalPartParameters::HexNut { thread: a, .. },
             MechanicalPartParameters::HexNut { thread: b, .. },
         ) = (&self.parameters, &reference.reference_geometry)
-            && (a.family != b.family || a.fit != b.fit || a.runout != b.runout)
+            && (a.family != b.family || a.fit != b.fit || a.runout != b.runout || a.pipe != b.pipe)
         {
             return Ok(false);
         }
@@ -126,6 +126,7 @@ impl MechanicalPartDefinition {
                 || std::mem::discriminant(ad) != std::mem::discriminant(bd)
                 || at.family != bt.family
                 || at.fit != bt.fit
+                || at.pipe != bt.pipe
                 || at.runout != bt.runout)
         {
             return Ok(false);

@@ -119,6 +119,7 @@ bool shares_face_cache(const Shape &,const Shape &);
 bool face_cache_concurrent_probe(const Shape &);
 bool volume_cache_concurrent_probe(const Shape &);
 ThreadFactoryStats thread_factory_stats();
+bool thread_meridian_frame_probe();
 bool remember_validated_thread(const Shape &);
 bool remember_thread_prototype(const Shape &,const ThreadData &);
 void reset_thread_factory_cache();

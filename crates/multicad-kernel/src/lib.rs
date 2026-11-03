@@ -367,6 +367,8 @@ mod ffi {
         #[allow(dead_code)]
         fn face_cache_concurrent_probe(shape: &Shape) -> Result<bool>;
         fn thread_factory_stats() -> Result<ThreadFactoryStats>;
+        #[allow(dead_code)] // Private actual-location-law regression, no retained native handles.
+        fn thread_meridian_frame_probe() -> Result<bool>;
         fn remember_validated_thread(shape: &Shape) -> Result<bool>;
         fn remember_thread_prototype(shape: &Shape, spec: &ThreadData) -> Result<bool>;
         #[allow(dead_code)] // Private bounded factory lifetime/invalidation tests.

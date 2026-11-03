@@ -5,6 +5,16 @@
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <BRep_Builder.hxx>
+#include <BRepFill_Edge3DLaw.hxx>
+#include <BRepFill_ShapeLaw.hxx>
+#include <BRepFill_Sweep.hxx>
+#include <GeomFill_CurveAndTrihedron.hxx>
+#include <GeomFill_TrihedronLaw.hxx>
+#include <GeomFill_ConstantBiNormal.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepLib.hxx>
@@ -162,6 +172,162 @@ void boolean_inputs(BRepAlgoAPI_BooleanOperation &operation,
   if(!operation.IsDone()||operation.HasErrors()||operation.Shape().IsNull())
     throw std::runtime_error("Native thread Boolean failed");
 }
+// The conical helix tangent has a radial component. Constant-binormal
+// transport would introduce an unwanted radius-dependent azimuth offset.
+// This law retains the authored radial/axial meridian at every parameter.
+class MeridianFrame final: public GeomFill_TrihedronLaw {
+  double phase_,omega_;
+public:
+  MeridianFrame(double phase,double omega):phase_(phase),omega_(omega){}
+  Handle(GeomFill_TrihedronLaw) Copy()const override {
+    Handle(MeridianFrame) copy=new MeridianFrame(phase_,omega_);
+    if(!myCurve.IsNull())copy->SetCurve(myCurve);
+    return copy;
+  }
+  Standard_Boolean D0(Standard_Real t,gp_Vec &T,gp_Vec &N,gp_Vec &B)override {
+    const double u=phase_+omega_*t,hand=omega_<0?-1.:1.;
+    N=gp_Vec(-hand*std::cos(u),-hand*std::sin(u),0);B=gp_Vec(0,0,1);
+    T=gp_Vec(-hand*std::sin(u),hand*std::cos(u),0);return true;
+  }
+  Standard_Boolean D1(Standard_Real t,gp_Vec &T,gp_Vec &dT,gp_Vec &N,gp_Vec &dN,gp_Vec &B,gp_Vec &dB)override {
+    D0(t,T,N,B);dT=omega_*N;dN=-omega_*T;dB=gp_Vec(0,0,0);return true;
+  }
+  Standard_Boolean D2(Standard_Real t,gp_Vec &T,gp_Vec &dT,gp_Vec &ddT,gp_Vec &N,gp_Vec &dN,gp_Vec &ddN,gp_Vec &B,gp_Vec &dB,gp_Vec &ddB)override {
+    D1(t,T,dT,N,dN,B,dB);ddT=-omega_*omega_*T;ddN=-omega_*omega_*N;ddB=gp_Vec(0,0,0);return true;
+  }
+  Standard_Integer NbIntervals(GeomAbs_Shape)const override{return 1;}
+  void Intervals(TColStd_Array1OfReal &a,GeomAbs_Shape)const override {
+    a(a.Lower())=myTrimmed->FirstParameter();a(a.Lower()+1)=myTrimmed->LastParameter();
+  }
+  void GetAverageLaw(gp_Vec &T,gp_Vec &N,gp_Vec &B)override {
+    D0((myTrimmed->FirstParameter()+myTrimmed->LastParameter())/2,T,N,B);
+  }
+};
+struct MeridianSweep {
+  TopoDS_Shape solid;
+  std::vector<std::vector<TopoDS_Shape>> faces;
+};
+Handle(BRepFill_Edge3DLaw) meridian_location(const TopoDS_Wire &spine,double phase,double omega) {
+  Handle(GeomFill_CurveAndTrihedron) elementary=new GeomFill_CurveAndTrihedron(new MeridianFrame(phase,omega));
+  return new BRepFill_Edge3DLaw(spine,elementary);
+}
+MeridianSweep sweep_meridian(const TopoDS_Wire &spine,const TopoDS_Wire &profile,
+    const std::vector<TopoDS_Edge> &edges,double phase,double omega,
+    double anchorRadius,double anchorZ,double tolerance) {
+  const double co=std::cos(phase),si=std::sin(phase),hand=omega<0?-1.:1.;
+  gp_Trsf local;
+  local.SetValues(-hand*co,-hand*si,0,hand*anchorRadius,0,0,1,-anchorZ,-hand*si,hand*co,0,0);
+  BRepBuilderAPI_Transform transform(profile,local,true);
+  Handle(BRepFill_ShapeLaw) section=new BRepFill_ShapeLaw(TopoDS::Wire(transform.Shape()));
+  auto location=meridian_location(spine,phase,omega);
+  BRepFill_Sweep sweep(section,location,true);
+  TopoDS_Wire boundaries[2];
+  for(int end=0;end<2;++end) {
+    const auto &law=location->Law(end==0?1:location->NbLaw());
+    double first,last;law->GetDomain(first,last);
+    gp_Mat matrix;gp_Vec translation;
+    if(!law->D0(end==0?first:last,matrix,translation))throw std::runtime_error("Tapered end frame is unavailable");
+    gp_Trsf pose;pose.SetValues(matrix.Value(1,1),matrix.Value(1,2),matrix.Value(1,3),translation.X(),
+      matrix.Value(2,1),matrix.Value(2,2),matrix.Value(2,3),translation.Y(),
+      matrix.Value(3,1),matrix.Value(3,2),matrix.Value(3,3),translation.Z());
+    BRepBuilderAPI_Transform boundary(transform.Shape(),pose,true);
+    boundaries[end]=TopoDS::Wire(boundary.Shape());
+  }
+  sweep.SetBounds(boundaries[0],boundaries[1]);
+  sweep.SetTolerance(tolerance,tolerance,1e-5,1e-9);sweep.SetForceApproxC1(false);
+  TopTools_MapOfShape reversed;BRepFill_DataMapOfShapeHArray2OfShape tapes,rails;
+  sweep.Build(reversed,tapes,rails,BRepFill_Modified,GeomAbs_C2,GeomFill_Location,11,100);
+  if(!sweep.IsDone()||!std::isfinite(sweep.ErrorOnSurface())||sweep.ErrorOnSurface()>tolerance)
+    throw std::runtime_error("Tapered meridian sweep exceeded its native approximation tolerance");
+  auto shell=TopoDS::Shell(sweep.Shape());
+  const auto sections=sweep.Sections();
+  if(sections.IsNull())throw std::runtime_error("Tapered meridian sweep has no boundary sections");
+  BRep_Builder builder;
+  for(int column:{sections->LowerCol(),sections->UpperCol()}) {
+    BRepBuilderAPI_MakeWire boundary;
+    for(int row=sections->LowerRow();row<=sections->UpperRow();++row) {
+      const auto &shape=sections->Value(row,column);
+      if(shape.IsNull()||shape.ShapeType()!=TopAbs_EDGE)
+        throw std::runtime_error("Tapered meridian sweep boundary is incomplete");
+      boundary.Add(TopoDS::Edge(shape));
+    }
+    if(!boundary.IsDone()||!boundary.Wire().Closed())
+      throw std::runtime_error("Tapered meridian sweep boundary is not closed");
+    BRepBuilderAPI_MakeFace makeCap(boundary.Wire(),true);
+    if(!makeCap.IsDone())throw std::runtime_error("Tapered meridian sweep cap is not planar");
+    auto cap=makeCap.Face();bool matched=false,reverse=false;
+    for(TopExp_Explorer a(cap,TopAbs_EDGE);a.More();a.Next())
+      for(TopExp_Explorer b(shell,TopAbs_EDGE);b.More();b.Next())if(a.Current().IsSame(b.Current())) {
+        const bool same=a.Current().Orientation()==b.Current().Orientation();
+        if(matched&&same!=reverse)throw std::runtime_error("Tapered meridian cap orientation is inconsistent");
+        matched=true;reverse=same;
+      }
+    if(!matched)throw std::runtime_error("Tapered meridian cap does not share sweep edges");
+    if(reverse)cap.Reverse();builder.Add(shell,cap);
+  }
+  shell.Closed(true);
+  BRepBuilderAPI_MakeSolid makeSolid(shell);
+  if(!makeSolid.IsDone())throw std::runtime_error("Tapered meridian sweep is not a solid");
+  auto solid=makeSolid.Solid();
+  solid.Orientation(TopAbs_FORWARD);solid.Closed(true);
+  BRepClass3d_SolidClassifier orientation(solid);
+  orientation.PerformInfinitePoint(tolerance);
+  if(orientation.State()==TopAbs_IN) {
+    shell.Reverse();BRepBuilderAPI_MakeSolid oriented(shell);
+    if(!oriented.IsDone())throw std::runtime_error("Tapered meridian sweep orientation rebuild failed");
+    solid=oriented.Solid();solid.Orientation(TopAbs_FORWARD);solid.Closed(true);
+  } else if(orientation.State()!=TopAbs_OUT)throw std::runtime_error("Tapered meridian sweep orientation is ambiguous");
+  MeridianSweep result{solid,{}};
+  for(const auto &edge:edges) {
+    const auto mapped=transform.ModifiedShape(edge);
+    int index=0;
+    for(int i=1;i<=section->NbLaw();++i)if(section->Edge(i).IsSame(mapped)){index=i;break;}
+    if(index==0)throw std::runtime_error("Tapered meridian sweep lost profile ancestry");
+    result.faces.emplace_back();
+    for(TopExp_Explorer it(sweep.Tape(index),TopAbs_FACE);it.More();it.Next())result.faces.back().push_back(it.Current());
+    if(result.faces.back().empty())throw std::runtime_error("Tapered meridian sweep lost generated faces");
+  }
+  return result;
+}
+}
+bool thread_meridian_frame_probe() {
+  const double pi=std::acos(-1.),lead=25.4/19.,phase=.37;
+  double legacyError=0;unsigned samples=0;
+  for(double k:{-1./32.,1./32.})for(double hand:{-1.,1.}) {
+    const double alpha=std::atan(k),co=std::cos(alpha),norm=std::hypot(2*pi,lead/co);
+    Handle(Geom_Surface) cone=new Geom_ConicalSurface(gp_Ax3(),alpha,4.);
+    Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,-lead/co),gp_Dir2d(hand*2*pi,lead/co));
+    BRepBuilderAPI_MakeWire builder;
+    // Late, nonzero original curve parameters catch accidental per-edge resets.
+    for(int span=8;span<12;++span) {
+      auto edge=BRepBuilderAPI_MakeEdge(line,cone,span*norm/2,(span+1)*norm/2).Edge();
+      if(!BRepLib::BuildCurve3d(edge,1e-6))return false;
+      builder.Add(edge);
+    }
+    const double omega=hand*2*pi/norm;
+    auto location=meridian_location(builder.Wire(),phase,omega);
+    Handle(GeomFill_CurveAndTrihedron) oldFrame=new GeomFill_CurveAndTrihedron(new GeomFill_ConstantBiNormal(gp_Dir(0,0,1)));
+    Handle(BRepFill_Edge3DLaw) legacy=new BRepFill_Edge3DLaw(builder.Wire(),oldFrame);
+    for(int i=1;i<=location->NbLaw();++i) {
+      const auto &law=location->Law(i);double first,last;law->GetDomain(first,last);
+      for(double fraction:{0.,.25,.5,.75,1.}) {
+        const double t=first+(last-first)*fraction,u=phase+omega*t;
+        gp_Mat matrix;gp_Vec translation;
+        if(!law->D0(t,matrix,translation))return false;
+        const gp_Vec expected[]={gp_Vec(-hand*std::cos(u),-hand*std::sin(u),0),gp_Vec(0,0,1),gp_Vec(-hand*std::sin(u),hand*std::cos(u),0)};
+        for(int column=1;column<=3;++column)
+          if((gp_Vec(matrix.Column(column))-expected[column-1]).Magnitude()>1e-12)return false;
+        gp_XYZ offset(-hand*.37,.29,0);offset.Multiply(matrix);
+        const auto point=gp_Vec(offset)+translation;
+        const auto intended=translation+gp_Vec(.37*std::cos(u),.37*std::sin(u),.29);
+        if((point-intended).Magnitude()>1e-12)return false;
+        gp_Mat old;gp_Vec unused;if(!legacy->Law(i)->D0(t,old,unused))return false;
+        legacyError=std::max(legacyError,(gp_Vec(old.Column(1))-expected[0]).Magnitude());
+        ++samples;
+      }
+    }
+  }
+  return samples==80&&legacyError>1e-5;
 }
 static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segmented,ThreadProfile &trace) {
  try {
@@ -192,11 +358,12 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,z/c),gp_Dir2d(sign*2*pi,lead/c));
     const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
     // Keep the exact authored helix, extent and phase. New rounded sweeps use
-    // half-turn domains: full-turn trimmed circular sweeps can retain the exact
-    // boundary yet fail native classification/Booleans. Flat profiles preserve
+    // half-turn parallel and quarter-turn tapered domains. Wider trimmed
+    // circular faces can fail native classification and Booleans despite
+    // correct surfaces and volume. Flat profiles preserve
     // their established continuous representation and per-turn fallback.
     BRepBuilderAPI_MakeWire spineBuilder;
-    const double turn=segmented?std::hypot(2*pi,lead/c)*(s.rounding>0?.5:1.):end;
+    const double turn=segmented?std::hypot(2*pi,lead/c)*(s.rounding>0?(s.taper==0?.5:.25):1.):end;
     for(uint32_t span=0;;++span) {
       const double begin=span*turn;
       if(begin>=end)break;
@@ -221,19 +388,32 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       BRepBuilderAPI_MakeWire profile;std::vector<TopoDS_Edge> edges;
       for(const auto &edge:source){profile.Add(edge);edges.push_back(profile.Edge());}
       if(!profile.IsDone())throw std::runtime_error("Native thread profile is disconnected");
-      BRepOffsetAPI_MakePipeShell pipe(spine);
-      pipe.SetMode(gp_Dir(0,0,1));pipe.SetTolerance(s.tolerance,s.tolerance,1e-9);
-      pipe.Add(profile.Wire(),false,false);pipe.Build();
-      if(!pipe.IsDone()||!pipe.MakeSolid()||!BRepCheck_Analyzer(pipe.Shape()).IsValid())
+      TopoDS_Shape ridge;std::vector<std::vector<TopoDS_Shape>> generated;
+      if(s.rounding>0&&s.taper!=0) {
+        auto exact=sweep_meridian(spine,profile.Wire(),edges,phase,
+          sign*2*pi/std::hypot(2*pi,lead/c),root+s.taper*z,z,s.tolerance);
+        ridge=exact.solid;generated=std::move(exact.faces);
+      } else {
+        BRepOffsetAPI_MakePipeShell pipe(spine);
+        pipe.SetMode(gp_Dir(0,0,1));pipe.SetTolerance(s.tolerance,s.tolerance,1e-9);
+        pipe.Add(profile.Wire(),false,false);pipe.Build();
+        if(!pipe.IsDone()||!pipe.MakeSolid())throw std::runtime_error("Native helical ridge construction failed");
+        ridge=pipe.Shape();
+        for(const auto &edge:edges) {
+          generated.emplace_back();
+          for(const auto &face:pipe.Generated(edge))generated.back().push_back(face);
+        }
+      }
+      if(!BRepCheck_Analyzer(ridge).IsValid())
         throw std::runtime_error("Native helical ridge is not a valid solid");
       trace.stage("sweep_and_validity",measured);
       measured=trace.mark();
-      for(uint32_t i=0;i<edges.size();++i)for(const auto &face:pipe.Generated(edges[i]))
+      for(uint32_t i=0;i<edges.size();++i)for(const auto &face:generated[i])
         if(face.ShapeType()==TopAbs_FACE) {
           if(rootHalf>=0&&i==0)ancestry.push_back({face,static_cast<uint32_t>(rootHalf),4});
           else ancestry.push_back({face,start*4+(rootHalf>=0?3:i),2});
         }
-      BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,pipe.Shape());
+      BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,ridge);
       ancestry=carry_thread_faces(join,ancestry);solid=join.Shape();
       trace.stage("ridge_fuse_and_history",measured);
     };
@@ -253,7 +433,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       std::vector<TopoDS_Edge> edges;
       for(uint32_t i=0;i<4;++i)edges.push_back(edge(points[i],points[(i+1)%4]));
       sweep(edges,-1);
-    } else {
+    } else if(s.taper==0) {
       // Full-period closed profiles self-contact at their valley seam. Sweep
       // three narrower exact profiles instead: the crest/flanks and the two
       // circular root shoulders. All closure edges are buried in the core.
@@ -273,6 +453,38 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
         const double startZ=side==0?valley:valley-half,finishZ=side==0?valley+half:valley;
         const auto underEnd=point(root-s.overlap,finishZ),underStart=point(root-s.overlap,startZ);
         sweep({arc(start,middle,finish),edge(finish,underEnd),edge(underEnd,underStart),edge(underStart,start)},side);
+      }
+    } else {
+      // ISO 7 tapered axial form: preserve actual tangent circles and axial
+      // flank angles. Adding k*dz to a parallel circle would shear it.
+      const double theta=std::atan(s.lower_slope),r=s.rounding,k=s.taper;
+      const double m=1/s.lower_slope,q=std::sqrt(1+k*k);
+      const double H=s.pitch*(m*m-k*k)/(2*m),half=r*std::cos(theta);
+      const double center=s.radius-r*q,tangent=center+r*std::sin(theta);
+      const auto exact=[&](double radius,double dz) {
+        return gp_Pnt((radius+k*z)*std::cos(phase),(radius+k*z)*std::sin(phase),z+dz);
+      };
+      const double left=(root-s.overlap-tangent-m*half)/(m-k);
+      const double right=(tangent+m*half-root+s.overlap)/(m+k);
+      const auto a=exact(root+k*left-s.overlap,left),b=exact(tangent,-half);
+      const auto c=exact(tangent,half),d=exact(root+k*right-s.overlap,right);
+      sweep({edge(a,b),arc(b,exact(center+r,0),c),edge(c,d),edge(d,a)},-1);
+      for(int side=0;side<2;++side) {
+        const double direction=side==0?1.:-1.;
+        const double valley=side==0?-H/(m-k):H/(m+k);
+        const double rootCenter=root+k*valley+r*q;
+        const double lowAngle=std::atan(k),highAngle=direction*(pi/2-theta);
+        const auto circle=[&](double angle) {
+          return exact(rootCenter-r*std::cos(angle),valley+r*std::sin(angle));
+        };
+        const auto low=circle(lowAngle),high=circle(highAngle);
+        const auto start=side==0?low:high,finish=side==0?high:low;
+        const double startZ=side==0?valley+r*std::sin(lowAngle):valley-half;
+        const double finishZ=side==0?valley+half:valley+r*std::sin(lowAngle);
+        const auto underStart=exact(root+k*startZ-s.overlap,startZ);
+        const auto underEnd=exact(root+k*finishZ-s.overlap,finishZ);
+        sweep({arc(start,circle((lowAngle+highAngle)/2),finish),edge(finish,underEnd),
+          edge(underEnd,underStart),edge(underStart,start)},side);
       }
     }
   }
@@ -313,16 +525,22 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       }
       if(s.rounding>0) {
         const double half=s.rounding*std::cos(std::atan(s.lower_slope));
-        const double epsilon=std::max(s.tolerance*8,s.rounding*.01);
+        const double epsilon=s.taper==0?std::max(s.tolerance*8,s.rounding*.01):s.tolerance*16;
         for(double direction:{-1.,1.}) {
           const double dz=direction*.65*half;
           const double circle=std::sqrt(s.rounding*s.rounding-dz*dz);
           for(int valley=0;valley<2;++valley) {
-            const double boundary=valley?root+s.rounding-circle:s.radius-s.rounding+circle;
-            const double phase=sign*2*pi*(sampleZ-dz-valley*s.pitch/2)/lead;
+            const double m=1/s.lower_slope,k=s.taper;
+            const double q=std::sqrt(1+k*k),H=s.pitch*(m*m-k*k)/(2*m);
+            const double boundary=valley?root+k*(sampleZ-dz)+s.rounding*q-circle:
+              s.radius+k*(sampleZ-dz)-s.rounding*q+circle;
+            const double phase=sign*2*pi*(sampleZ-dz-valley*H/(m+k))/lead;
             const auto material=[&](double r){classifier.Perform(gp_Pnt(r*std::cos(phase),r*std::sin(phase),sampleZ),s.tolerance*4);return classifier.State();};
-            if(material(boundary-epsilon)!=TopAbs_IN||material(boundary+epsilon)!=TopAbs_OUT)
+            const auto circleInside=material(boundary-epsilon),circleOutside=material(boundary+epsilon);
+            if(circleInside!=TopAbs_IN||circleOutside!=TopAbs_OUT) {
+              trace.probe(valley?"root_circle":"crest_circle",sampleZ,phase,boundary,circleInside,circleOutside);
               throw ThreadRidgeLoss();
+            }
           }
         }
       }
@@ -375,7 +593,7 @@ static std::unique_ptr<Shape> helical_thread_impl(const ThreadData &s,bool useCa
     catch(const std::bad_alloc &) {++cache.stats.unretained;}
     return result;
   };
-  // Rounded profiles are new geometry. Use bounded half-turn faces from the
+  // Rounded profiles are new geometry. Use bounded circular sweep faces from the
   // outset, avoiding invalid continuous unions and false trimmed-solid native
   // classification. Flat profiles retain their established representation and
   // narrowly typed reconstruction rules below.

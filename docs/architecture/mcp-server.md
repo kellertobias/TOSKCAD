@@ -300,6 +300,17 @@ G pipe labels are not physical inch diameters. BSPP sealing is outside the
 thread, and the selected table does not establish a pressure-sealing or full
 ISO-compliance result.
 
+BSPT uses explicit saved `pipe` intent with form `r` or `rc`, supported nominal
+size and the pinned gauge convention. Its `bspt_nominal` fit requires one
+right-hand start and zero axial allowance. The `thread_profiles` response
+exposes `bspt_presets` and `bspt_support`; the [pipe reference](threads.md#tapered-pipe-construction)
+owns source coverage, base-plane dimensions and useful-length rules.
+Creation requires a base-plane major diameter and pitch consistent with that
+intent. Omitted or null pipe intent on an edit retains its saved value;
+changing to another family clears it. A pipe object on another family is refused.
+`inspect_thread.resolved.pipe` and nested hardware inspection expose the same
+gauge receipt, source and allowance displacement in turns.
+
 `inspect_thread` reads canonical source and resolved dimensions without
 evaluating a solid. Use `evaluate_model` for native geometry and diagnostics.
 Its `nominal_pitch_diameter_mm` remains the basic-profile value.
