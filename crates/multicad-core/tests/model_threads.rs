@@ -68,7 +68,12 @@ fn sourced_metric_presets_and_basic_dimensions_do_not_imply_fit_classes_or_unive
             .into_iter()
             .filter(|family| family.supported())
             .collect::<Vec<_>>(),
-        [ThreadFamily::IsoMetric, ThreadFamily::Custom]
+        [
+            ThreadFamily::IsoMetric,
+            ThreadFamily::Unc,
+            ThreadFamily::Unf,
+            ThreadFamily::Custom
+        ]
     );
     let unsupported = ThreadParameters {
         major_diameter: length(3.5),

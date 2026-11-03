@@ -6,6 +6,8 @@ use super::*;
 pub enum ThreadFamily {
     IsoMetric,
     Unified,
+    Unc,
+    Unf,
     Whitworth,
     Bspp,
     Bspt,
@@ -17,9 +19,11 @@ pub enum ThreadFamily {
     Custom,
 }
 impl ThreadFamily {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::IsoMetric,
         Self::Unified,
+        Self::Unc,
+        Self::Unf,
         Self::Whitworth,
         Self::Bspp,
         Self::Bspt,
@@ -34,6 +38,8 @@ impl ThreadFamily {
         match self {
             Self::IsoMetric => "ISO metric basic profile",
             Self::Unified => "Unified UNC / UNF",
+            Self::Unc => "Unified UNC",
+            Self::Unf => "Unified UNF",
             Self::Whitworth => "Whitworth BSW / BSF",
             Self::Bspp => "BSPP parallel pipe",
             Self::Bspt => "BSPT tapered pipe",
@@ -46,12 +52,16 @@ impl ThreadFamily {
         }
     }
     pub fn supported(self) -> bool {
-        matches!(self, Self::IsoMetric | Self::Custom)
+        matches!(self, Self::IsoMetric | Self::Unc | Self::Unf | Self::Custom)
+    }
+    pub fn is_unified(self) -> bool {
+        matches!(self, Self::Unc | Self::Unf)
     }
     pub fn source(self) -> &'static str {
         match self {
             Self::IsoMetric => "NBK metric basic profile; JIS B 0205-2/4:2001; data revision 1",
             Self::Custom => "User-defined dimensions; no standard designation or fit class",
+            Self::Unc | Self::Unf => UNIFIED_THREAD_SOURCE,
             _ => "Not implemented; no sourced geometry or tolerance coverage claimed",
         }
     }
@@ -160,9 +170,21 @@ pub(super) fn resolve_profile(
     custom: Option<&CustomThreadProfile>,
     diameter: f64,
     pitch: f64,
+    mode: ThreadMode,
     parameters: &EvaluatedParameters,
 ) -> Result<ResolvedThreadProfile, DocumentError> {
     let profile = match family {
+        ThreadFamily::Unc | ThreadFamily::Unf => ResolvedThreadProfile {
+            depth_mm: if mode == ThreadMode::CutInternal {
+                5. * 3_f64.sqrt() / 16. * pitch
+            } else {
+                17. * 3_f64.sqrt() / 48. * pitch
+            },
+            crest_width_mm: pitch / 8.,
+            lower_flank_deg: 30.,
+            upper_flank_deg: 30.,
+            radial_taper: 0.,
+        },
         ThreadFamily::IsoMetric => {
             if !METRIC_PITCHES.iter().any(|(d, pitches)| {
                 (*d - diameter).abs() < 1e-8 && pitches.iter().any(|p| (*p - pitch).abs() < 1e-8)

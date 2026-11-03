@@ -847,6 +847,25 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    // Saved suppressed features and nested nut recipes need this reader
+    // capability too; visible/evaluated feature iterators omit them.
+    if document.entities().any(|entity| {
+        let EntityData::Feature { definition, .. } = &entity.data else {
+            return false;
+        };
+        let path = match definition.type_id.as_str() {
+            super::THREAD_TYPE => "/parameters/family",
+            super::MECHANICAL_PART_TYPE => "/parameters/thread/family",
+            _ => return false,
+        };
+        definition
+            .data
+            .pointer(path)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|family| matches!(family, "unc" | "unf"))
+    }) {
+        capabilities.insert(super::UNIFIED_THREAD_CAPABILITY.into());
+    }
     if document.entities().any(|entity|matches!(&entity.data,EntityData::Feature {definition,..} if definition.type_id==super::WALL_TYPE && definition.data.pointer("/layer_placement/junctions").and_then(serde_json::Value::as_array).is_some_and(|j|!j.is_empty()))) {
         capabilities.insert(super::WALL_JUNCTION_CAPABILITY.into());
     }

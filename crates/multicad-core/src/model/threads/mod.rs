@@ -2,6 +2,7 @@
 //! receiving geometry and manufactured solids before the UI enables Apply.
 mod prepare;
 mod profiles;
+mod unified;
 use super::{
     BodyInput, BodyOutput, CreatedBody, ModelPrepared, PrimitiveFrame, angle,
     common::*,
@@ -18,6 +19,7 @@ use crate::{
 pub use prepare::*;
 pub use profiles::*;
 use serde::{Deserialize, Serialize};
+pub use unified::*;
 
 pub const THREAD_TYPE: &str = "model.thread";
 pub const THREAD_SCHEMA: u32 = 1;
@@ -53,6 +55,19 @@ impl ThreadRepresentation {
 #[serde(rename_all = "snake_case")]
 pub enum ThreadFit {
     NominalBasic,
+    #[serde(rename = "unified_2a")]
+    Unified2A,
+    #[serde(rename = "unified_2b")]
+    Unified2B,
+}
+impl ThreadFit {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NominalBasic => "Nominal basic profile",
+            Self::Unified2A => "2A external",
+            Self::Unified2B => "2B internal",
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +119,9 @@ impl Default for ThreadParameters {
 pub struct ResolvedThread {
     pub nominal_major_radius_mm: f64,
     pub nominal_pitch_diameter_mm: Option<f64>,
+    /// Intended profile after fit selection and fabrication allowances.
+    pub actual_pitch_diameter_mm: Option<f64>,
+    pub fit: Option<ResolvedThreadFit>,
     pub major_radius_mm: f64,
     pub pitch_mm: f64,
     pub lead_mm: f64,
@@ -160,6 +178,28 @@ impl ThreadParameters {
         if !(1..=8).contains(&self.starts) {
             return Err(invalid("Thread start count must be between 1 and 8"));
         }
+        if self.family.is_unified() {
+            if self.fit == ThreadFit::NominalBasic || self.starts != 1 {
+                return Err(invalid(
+                    "Sourced UNC/UNF require 2A external or 2B internal and one start; other combinations remain unavailable",
+                ));
+            }
+        } else if self.fit != ThreadFit::NominalBasic {
+            return Err(invalid(
+                "Unified 2A/2B fits apply only to the explicitly sourced UNC/UNF families",
+            ));
+        }
+        Ok(())
+    }
+    pub fn validate_for_mode(&self, mode: ThreadMode) -> Result<(), DocumentError> {
+        self.validate()?;
+        if self.family.is_unified()
+            && (mode == ThreadMode::CutInternal) != (self.fit == ThreadFit::Unified2B)
+        {
+            return Err(invalid(
+                "UNC/UNF external threads require 2A; internal threads and nuts require 2B",
+            ));
+        }
         Ok(())
     }
     pub fn resolve(
@@ -167,7 +207,7 @@ impl ThreadParameters {
         parameters: &EvaluatedParameters,
         mode: ThreadMode,
     ) -> Result<ResolvedThread, DocumentError> {
-        self.validate()?;
+        self.validate_for_mode(mode)?;
         let diameter = number(&self.major_diameter, Unit::Millimeter, parameters)?;
         let pitch = number(&self.pitch, Unit::Millimeter, parameters)?;
         let length = number(&self.length, Unit::Millimeter, parameters)?;
@@ -186,11 +226,17 @@ impl ThreadParameters {
                 "Thread dimensions must be positive, allowance nonnegative, pitch ≥0.001 mm and length at least one pitch within the 128-turn budget",
             ));
         }
+        let unified = self
+            .family
+            .is_unified()
+            .then(|| unified::preset(self.family, diameter, pitch))
+            .transpose()?;
         let mut profile = profiles::resolve_profile(
             self.family,
             self.custom.as_ref(),
             diameter,
             pitch,
+            mode,
             parameters,
         )?;
         let slopes =
@@ -203,7 +249,18 @@ impl ThreadParameters {
         } else {
             -1.
         };
-        let radius = diameter / 2. + sign * radial;
+        // The table midpoint is an engineering target, not a prescribed gage
+        // result. Keep the nominal/basic fields independent of this target.
+        let fitted_radius = if let Some(preset) = &unified {
+            let limits = preset.limits(self.fit)?.pitch;
+            let midpoint = (limits.min_mm.expect("sourced pitch minimum")
+                + limits.max_mm.expect("sourced pitch maximum"))
+                / 2.;
+            midpoint / 2. + pitch_drop
+        } else {
+            diameter / 2.
+        };
+        let radius = fitted_radius + sign * radial;
         profile.crest_width_mm += sign * axial;
         let width = profile.crest_width_mm + profile.depth_mm * slopes;
         let root = radius - profile.depth_mm;
@@ -219,9 +276,27 @@ impl ThreadParameters {
                 "Thread allowance or profile leaves no root/crest, overlaps adjacent starts, or crosses the cone apex",
             ));
         }
+        let actual_pitch_drop = (pitch / 2. - profile.crest_width_mm) / slopes;
+        let actual_pitch_diameter_mm = (actual_pitch_drop >= 0.
+            && actual_pitch_drop <= profile.depth_mm)
+            .then_some(2. * (radius - actual_pitch_drop));
+        let fit = unified
+            .map(|preset| {
+                unified::resolve_fit(
+                    preset,
+                    self.fit,
+                    2. * radius,
+                    actual_pitch_diameter_mm,
+                    2. * root,
+                    length,
+                )
+            })
+            .transpose()?;
         Ok(ResolvedThread {
             nominal_major_radius_mm: diameter / 2.,
             nominal_pitch_diameter_mm,
+            actual_pitch_diameter_mm,
+            fit,
             major_radius_mm: radius,
             pitch_mm: pitch,
             lead_mm: lead,
@@ -245,7 +320,7 @@ pub struct ThreadDefinition {
 }
 impl ThreadDefinition {
     pub fn validate(&self) -> Result<(), DocumentError> {
-        self.parameters.validate()?;
+        self.parameters.validate_for_mode(self.mode)?;
         if self.output.body.is_nil() {
             return Err(invalid("Thread output identity is nil"));
         }

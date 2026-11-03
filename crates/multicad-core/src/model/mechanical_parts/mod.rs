@@ -111,7 +111,7 @@ impl MechanicalPartParameters {
                 thread,
             } => {
                 check_dimension(across_flats, Unit::Millimeter)?;
-                thread.validate()?;
+                thread.validate_for_mode(ThreadMode::CutInternal)?;
             }
             _ => {
                 for field in self.dimensions() {
