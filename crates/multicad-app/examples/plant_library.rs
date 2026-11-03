@@ -1,7 +1,7 @@
 //! Generate owned generic planting presets in the existing native Library.
 #[allow(dead_code)]
 #[path = "support/native_preview.rs"]
-mod native_preview;
+pub(crate) mod native_preview;
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     document::{EntityId, Mutation},

@@ -214,9 +214,10 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 38);
+        assert_eq!(entries.len(), 57);
         let mut bearings = 0;
         let mut washers = BTreeSet::new();
+        let mut screws = BTreeSet::new();
         let mut plants = 0;
         let mut equipment = std::collections::BTreeSet::new();
         for entry in entries {
@@ -235,7 +236,21 @@ mod tests {
             assert_eq!(entry.mechanical_parts.len(), 1);
             let card = &entry.mechanical_parts[0];
             assert!(card.matches_reference_dimensions);
-            if card.family == "Plain washer" {
+            if card.family == "Machine screw" {
+                let facts = card.catalog_facts.as_ref().unwrap();
+                let nominal = facts.nominal_fastener_diameter_mm.unwrap();
+                assert_eq!(card.dimensions_mm["Nominal thread diameter"], nominal);
+                assert!(
+                    card.dimensions_mm["Thread length"] <= card.dimensions_mm["Underhead length"]
+                );
+                assert!(facts.material.is_none());
+                assert!(facts.grade.is_none());
+                screws.insert((
+                    (nominal * 1000.) as u32,
+                    (card.dimensions_mm["Underhead length"] * 1000.) as u32,
+                    card.representation.starts_with("Socket-cap head"),
+                ));
+            } else if card.family == "Plain washer" {
                 let facts = card.catalog_facts.as_ref().unwrap();
                 washers.insert((facts.nominal_fastener_diameter_mm.unwrap() * 1000.0) as u32);
                 assert_eq!(
@@ -251,6 +266,11 @@ mod tests {
             }
         }
         assert_eq!((bearings, plants), (4, 2));
+        assert_eq!(screws.len(), 19);
+        assert_eq!(
+            screws.iter().map(|s| s.0).collect::<BTreeSet<_>>(),
+            [2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000].into()
+        );
         assert_eq!(
             washers,
             [2000, 2500, 3000, 3500, 4000, 5000, 6000, 7000, 8000, 10000].into()

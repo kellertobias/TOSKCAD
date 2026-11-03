@@ -1,7 +1,7 @@
 <!-- Kind: reference; Audience: catalog maintainers and reviewers; Purpose: record source, geometry and coverage of the bundled Library; Non-goals: certify manufactured parts or reproduce vendor CAD. -->
 # Included Library definitions
 
-The Library includes normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
+The Library includes metric machine screws, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
 
 ## Mechanical envelopes
 
@@ -10,6 +10,14 @@ The bearing projects contain dynamic, pinned bearing-envelope definitions. Bore,
 The solids describe external mounting envelopes. They omit races, rolling elements, shields, seals and fillets. In particular, an annular envelope's volume is not a real bearing's material volume or mass. They carry no load, life, tolerance or fit certification.
 
 ## Dimensional sources
+
+### Metric machine screws
+
+[machine-screws-curation.json](machine-screws-curation.json) owns nineteen discrete dimensional presets: fourteen socket-cap/internal-hex rows and five external-hex rows, with separate underhead/thread lengths and explicit status for all twelve requested nominal diameters. Socket dimensions combine explicit HPC 2025 SKU rows with NBK's ISO 4762:2004 / JIS B 1176:2015 limits. External-hex rows follow the selected Norelem DIN 933 dimensional matrix; the separate dated Nufast drawing supplies only the documented cross-checks. Material and grade remain unspecified.
+
+[Machine-screw source notices](sources/bolts/MACHINE-SCREW-NOTICES.md) record the pinned LGPL-2.1-or-later BOLTS starting data, engineering targets, source discrepancies and geometry omissions. Internal hex drives are six-sided recesses with a disclosed flat floor; outer socket-cap surfaces are unspecified envelopes. DIN M10 across flats remains 17 mm, distinct from the 16 mm ISO 4017 variant. Head/drive dimensions do not establish ISO 965 thread fits, current-standard compliance or manufactured fit.
+
+Underhead length and thread length are independently editable. The canonical mounting frame is at the underhead plane, with the head behind it and the shaft toward the tip. Source reference dimensions remain literal when a configured instance becomes custom; placed definitions retain their pins until an explicit update. Only listed source rows are presets, and unavailable/custom cases do not assert commercial unavailability.
 
 ### Plain washers
 
@@ -36,15 +44,16 @@ Only the licensed reference dimensions are adapted. No manufacturer CAD, meshes,
 
 ## Generation and revisions
 
-The Rust developer example `mechanical_library` builds washer source through the same typed transactions and native compiler as the application. Saved previews are software renderings of those native solids. It reads the reviewed washer curation, creates dynamic symbol definitions, and writes `.tcd` files plus the bounded `library.json` manifest. Existing non-washer projects are checksum-checked and copied byte for byte from the repository Library, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the generated manifest automatically.
+The Rust developer example `mechanical_library` builds the selected hardware family through the same typed transactions and native compiler as the application. Saved previews render those native solids. The default mode reads the washer curation; `--machine-screws` reads the screw curation. Both create dynamic symbol definitions and `.tcd` files with the bounded `library.json` manifest. Projects outside the selected family are checksum-checked and copied byte for byte, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the result.
 
 Regenerate into an empty review folder:
 
 ```sh
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-hardware-review
+cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-screw-review --machine-screws
 ```
 
-Washer document, feature, Part, parameter and symbol identities use a separate namespace and exact scaled nominal keys, including fractional millimeter sizes. Bearing identities retain their existing designation-derived namespace. Adding a washer does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from the retained native source, never from a lookup in a newer dimension table.
+Washer identities use exact scaled nominal keys. Screw identities add explicit head-family and underhead-length keys in a separate namespace. Bearing identities retain their existing designation-derived namespace. Adding an entry does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from retained native source, never a lookup in a newer dimension table.
 
 ## Generic planting presets
 
@@ -60,6 +69,6 @@ The 22 `equipment-*.tcd` projects supply owned generic electrical/lighting, heat
 
 ## Hardware coverage still open
 
-The washer curation owns its bounded normal-series nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals, stocked screws and sourced hex-nut presets remain outside these entries.
+The washer curation owns its bounded normal-series nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals, sourced hex-nut presets and screw families beyond the listed machine-screw matrix remain outside these entries.
 
-The exact requested fastener nominal matrix remains in the washer curation, with larger sizes extensible through explicit reviewed revisions. Screw head/drive combinations, wood-thread conventions, material variants and fastener-connection integration require their own sourced definitions. No bearing or washer reference metadata asserts stock availability.
+The washer and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Additional head/drive combinations, wood-thread conventions, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.

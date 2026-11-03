@@ -1,10 +1,13 @@
 //! Build the curated offline hardware files using the canonical/native APIs.
 //! `cargo run -p multicad-app --example mechanical_library -- /tmp/library-review`
+//! Add `--machine-screws` after the folder to extend it with sourced screws.
 //! Existing files are refused. Every identity and preview is reproducible;
 //! dimension changes require an explicit new symbol/catalog revision.
 #[allow(dead_code)]
 #[path = "equipment_library.rs"]
 mod equipment_library;
+#[path = "support/machine_screw_catalog.rs"]
+mod machine_screw_catalog;
 use equipment_library::plant_library;
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
@@ -483,6 +486,11 @@ fn main() -> Result<(), Error> {
         );
     }
     std::fs::create_dir_all(output)?;
+    match std::env::args().nth(2).as_deref() {
+        Some("--machine-screws") => return machine_screw_catalog::generate(output),
+        None => {}
+        _ => return Err("Optional catalog mode must be --machine-screws".into()),
+    }
     let curation = curated_washers()?;
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");
     let manifest: serde_json::Value =

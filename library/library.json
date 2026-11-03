@@ -189,6 +189,101 @@
       "document": "cad23300-0000-4000-8000-0000000f4240",
       "file": "washer-normal-m10.tcd",
       "sha256": "9c060915cf414bca99526b8e1201c60a87b4770e5c0096577ac3f76042ddbc6e"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-0946df6fb240",
+      "file": "screw-socket-m2-l10.tcd",
+      "sha256": "6e912341adedfa7f87a6c430f760cbc6c1dd7973f275054a4dba924ef12b42e0"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-095283ae3380",
+      "file": "screw-socket-m2-5-l12.tcd",
+      "sha256": "1bf2301a37369ee00b35885d9fcbc152015338305cfced3dd750477c6316fa8c"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-095e27e69a40",
+      "file": "screw-socket-m3-l10.tcd",
+      "sha256": "8c5731668dd1b2f64d94cf2704d4cfc5466bf85e1c8f02bd3f48e65e193a30ed"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-095e28051ec0",
+      "file": "screw-socket-m3-l30.tcd",
+      "sha256": "d06fe92d354dd546daf0f8bbae4f124cf1fbbb8fa97f6f4369f2a6d6c4041418"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-097570608f80",
+      "file": "screw-socket-m4-l12.tcd",
+      "sha256": "cbd1d829423c2bc054e55308e81b385c6680ebf269b2d1c7c78a3e2dc6a27af0"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-0975707c06c0",
+      "file": "screw-socket-m4-l30.tcd",
+      "sha256": "9e9e765da5a04fd7d9853f38bb3c724567173b19556d5216735be0fe82137bb3"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-098cb8dd9200",
+      "file": "screw-socket-m5-l16.tcd",
+      "sha256": "7f24df8aaae6373428b098dd864546fbd97dcf4726ff3e8dcad894edefff9edf"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-098cb8f2eec0",
+      "file": "screw-socket-m5-l30.tcd",
+      "sha256": "1d8917dc65ed7ffd48cd6e0682f545ca7f93ee8931c14d41eeca98075b581454"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-09a4015a9480",
+      "file": "screw-socket-m6-l20.tcd",
+      "sha256": "d742adb7b3fe455637f2d0c6f0f37a052e44a1792d3d801175739c82c71a85e3"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-09a401791900",
+      "file": "screw-socket-m6-l40.tcd",
+      "sha256": "045d8f397ab1cf4fca43c145cc281e1c2e62ec6e816e8550d2e687803c1d3abf"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-09d2925005a0",
+      "file": "screw-socket-m8-l25.tcd",
+      "sha256": "83a2f1432670003c9329b6cb59e2ab793571c23878e7b9b16681683642cdda33"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-09d29266e900",
+      "file": "screw-socket-m8-l40.tcd",
+      "sha256": "560ea64199624ecb4ac733a65ad3fd2d94037b44c94fd9d9defe06cfc971ab35"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-0a01234576c0",
+      "file": "screw-socket-m10-l30.tcd",
+      "sha256": "4a8179a147c1b58fe4d80512ce832bd4a3f9c407983b24bbc952f0c48547d3b1"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-0a012363fb40",
+      "file": "screw-socket-m10-l50.tcd",
+      "sha256": "6e0fc8cf0e9b31fc718e0c19b9db8e05f8590b574a4ddcccea8976db27a4b3d1"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-128dbed94a00",
+      "file": "screw-hex-m4-l16.tcd",
+      "sha256": "ecff4ef3d2a4fd3e0213b44aa1baab6388a78390984fb723592f4ec8115fa996"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-12a507503200",
+      "file": "screw-hex-m5-l16.tcd",
+      "sha256": "a107ed269eb8eca2ea9da48994fa3036c2c97ad8f11d0e14cc2a463f8a0a680d"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-12bc4fcd3480",
+      "file": "screw-hex-m6-l20.tcd",
+      "sha256": "8d98cf0c75bf87b7933c34a48ca9488af0b3198b494bf83f52f7f85aa3a299cb"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-12eae0c2a5a0",
+      "file": "screw-hex-m8-l25.tcd",
+      "sha256": "90b1f207852f05e5d806931d829430c6d7ab4f5e09be71ba623c3b74ed1b1a00"
+    },
+    {
+      "document": "cad23500-0000-4000-8000-131971b816c0",
+      "file": "screw-hex-m10-l30.tcd",
+      "sha256": "7e9603a34ff4f331e42678ffbae7a2eca2acc6be504c5523a90feac4342af5c0"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -199,8 +294,12 @@
     "README.md",
     "washers-curation.json",
     "sources/bolts/washer.blt",
-    "sources/bolts/WASHER-NOTICES.md"
+    "sources/bolts/WASHER-NOTICES.md",
+    "machine-screws-curation.json",
+    "sources/bolts/hex_socket.blt",
+    "sources/bolts/hex.blt",
+    "sources/bolts/MACHINE-SCREW-NOTICES.md"
   ],
-  "revision": "5",
+  "revision": "6",
   "version": 1
 }

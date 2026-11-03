@@ -59,7 +59,7 @@ fn included_definitions_share_browsing_but_never_enter_or_change_the_original_fi
     let mut library =
         LibraryFileStore::new(library_root.clone()).with_bundled(Some(bundled.clone()));
     let included = library.load().unwrap();
-    assert_eq!(included.len(), 38);
+    assert_eq!(included.len(), 57);
     assert!(included.iter().all(|e| e.origin == LibraryOrigin::Bundled));
     assert!(
         !library_root.join(INDEX).exists(),

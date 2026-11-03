@@ -13,9 +13,18 @@ pub fn render_symbol_preview(
     definition: EntityId,
     color_for: impl Fn(&str) -> [f32; 3],
 ) -> Result<project_file::info::PreviewImage, Error> {
+    render_symbol_preview_with_placement(document, definition, Default::default(), color_for)
+}
+/// Orient only the temporary preview occurrence, preserving the authored frame.
+#[allow(dead_code)]
+pub fn render_symbol_preview_with_placement(
+    document: &Document,
+    definition: EntityId,
+    placement: multicad_core::document::Placement,
+    color_for: impl Fn(&str) -> [f32; 3],
+) -> Result<project_file::info::PreviewImage, Error> {
     use multicad_core::{
         commands::{Actor, Channel, Session},
-        document::Placement,
         symbols::{self, SymbolPlaceRequest},
     };
     let mut session = Session::new(document.clone())?;
@@ -24,7 +33,7 @@ pub fn render_symbol_preview(
         definition,
         "Library preview occurrence",
         Default::default(),
-        Placement::default(),
+        placement,
     )?;
     let id = |role| EntityId::parse(&format!("cadfffff-0000-4000-8000-{role:012x}"));
     request.record = id(1)?;
@@ -40,13 +49,28 @@ pub fn render_symbol_preview(
     )?;
     let model =
         multicad_model::Compiler::default().compile(session.document(), session.revision())?;
-    render_preview_with_color(session.document(), &model, false, color_for)
+    render_preview_filtered(
+        session.document(),
+        &model,
+        false,
+        Some(request.instance),
+        color_for,
+    )
 }
 /// Reuse the native-mesh renderer with an explicit display palette.
 pub fn render_preview_with_color(
     document: &Document,
     model: &Model,
     spread: bool,
+    color_for: impl Fn(&str) -> [f32; 3],
+) -> Result<project_file::info::PreviewImage, Error> {
+    render_preview_filtered(document, model, spread, None, color_for)
+}
+fn render_preview_filtered(
+    document: &Document,
+    model: &Model,
+    spread: bool,
+    root: Option<EntityId>,
     color_for: impl Fn(&str) -> [f32; 3],
 ) -> Result<project_file::info::PreviewImage, Error> {
     use multicad_model::export::mesh::tessellate;
@@ -72,6 +96,9 @@ pub fn render_preview_with_color(
     let mut tris = vec![];
     let mut roots: Vec<EntityId> = vec![];
     for (path, leaf) in &model.snapshot().leaf_occurrences {
+        if root.is_some_and(|root| path.root != root) {
+            continue;
+        }
         let index = roots
             .iter()
             .position(|r| *r == path.root)
