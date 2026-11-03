@@ -57,6 +57,7 @@ mod imports;
 mod levels;
 mod mechanical_parts;
 mod plants;
+mod symbols;
 use plants::{PlantArgs, PlantInspectArgs, inspect_plant, set_plant};
 mod equipment;
 mod fences;
@@ -93,6 +94,8 @@ pub use gears::{GearArgs, InspectGearArgs};
 use gears::{gear_profiles, inspect_gear, set_gear};
 pub use mechanical_parts::{InspectMechanicalPartArgs, MechanicalPartArgs};
 use mechanical_parts::{inspect_mechanical_part, mechanical_part_profiles, set_mechanical_part};
+pub use symbols::{EditSymbolInstanceArgs, ImportSymbolArgs, PlaceSymbolArgs};
+use symbols::{edit_symbol_instance, import_symbol, place_symbol};
 pub use text::{
     AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextAnchorArg, TextFontArg,
     TextStyleArgs,
@@ -315,8 +318,17 @@ tools! {
         "Read retained mechanical Part dimensions, optional reference attribution and representation without native evaluation. A reference match does not certify stock, fit or standards compliance.",
         inspect_mechanical_part;
     "set_mechanical_part" => MechanicalPartArgs, "Create or edit mechanical part", false,
-        "Create a parametric washer, hex nut or bearing mounting envelope, or edit by generator feature ID while retaining Part identity and omitted recipe values. Recipe kind is explicit. Nut thread.length is its height and the thread frame locates the whole nut; the full shared thread recipe is supported. Cosmetic nut threads are refused for manufacturing export until Modeled. Bearings are external mounting envelopes only. Native evaluation precedes one transaction or owner review; stale, invalid, cancelled and failed requests change nothing. No sourced catalog membership or stock availability is implied.",
+        "Create a parametric washer, hex nut, headed machine screw or bearing mounting envelope, or edit by generator feature ID retaining Part identity and omitted fields. Machine-screw underhead_length ends at the tip; thread.length is its threaded extent and thread.frame locates the underhead datum. Head and drive kinds are explicit; switching a kind requires all its dimensions. Socket recesses are real hexagons. Nut thread.length is its height. Cosmetic threads are refused for manufacturing export until Modeled. Symbol-owned features must be changed through edit_symbol_instance. Native evaluation precedes one transaction or owner review; stale, invalid, cancelled and failed requests change nothing. No sourced catalog membership, fitted metric tolerance or stock availability is implied.",
         set_mechanical_part;
+    "import_symbol" => ImportSymbolArgs, "Import pinned symbol", false,
+        "Import one canonical reusable definition from a bare .tcd file inside the exchange folder. source_definition is the source extension ID and is required for ambiguous files. Returns the embedded definition ID, immutable pin and exposed template parameter IDs. Source import does not place or certify native geometry; private template source remains owned.",
+        import_symbol;
+    "place_symbol" => PlaceSymbolArgs, "Place pinned symbol", false,
+        "Instantiate an embedded definition with a required overrides map keyed by exposed TEMPLATE parameter IDs, each with a literal value and unit. Empty inherits pinned defaults. Optional placement has three typed translation lengths and an x/y/z/w unit quaternion. The complete candidate passes cancellation-aware native evaluation before commit or owner review. Architectural paths use their dedicated draw tools.",
+        place_symbol;
+    "edit_symbol_instance" => EditSymbolInstanceArgs, "Configure symbol instance", false,
+        "Configure a placed instance or ownership record through canonical exposed overrides, preserving its pin, identities and placement. overrides is a required REPLACEMENT map, not a partial patch: omitted keys inherit pinned defaults and an empty map restores all defaults. Keys are exposed template IDs, never private materialized IDs. Native preflight, revision, cancellation and owner review guards apply; direct private-source edits remain refused.",
+        edit_symbol_instance;
     "gear_profiles" => NoArgs, "Gear profile coverage", true,
         "Read supported gear families, primary dimension/profile sources and limits. Unsupported families and pair placement are explicit.",
         gear_profiles;

@@ -142,6 +142,9 @@ schema is generated from the Rust argument types with schemars and returned by
 | `document_info` | no | Name, identity, revision, dirty state, undo/redo, entity counts, units and scope |
 | `list_entities` | no | IDs, names, kinds and references, optionally filtered by kind |
 | `get_entity` | no | The complete canonical source record |
+| `import_symbol` | yes | Embed one pinned definition from a scoped `.tcd` Library |
+| `place_symbol` | yes | Native-preflighted placement with exposed parameter overrides |
+| `edit_symbol_instance` | yes | Replace exposed overrides while retaining the pin and identities |
 | `list_parameters` | no | Expression, unit, evaluated value, role and exposure of project parameters; symbol-private parameters are omitted |
 | `set_parameter` | yes | Create a parameter, or edit the one with that name |
 | `create_sketch` | yes | Empty sketch on the `xy`, `xz` or `yz` origin plane |
@@ -355,7 +358,7 @@ geometry. [Planting source and drawing policy](plants.md) defines that behavior.
 ## Mechanical part control
 
 `mechanical_part_profiles` reports generic geometry coverage and its limits.
-`set_mechanical_part` creates or edits a washer, hex nut or bearing mounting
+`set_mechanical_part` creates or edits a washer, hex nut, headed machine screw or bearing mounting
 envelope through the canonical native-checked transaction. These tools do not
 yet provide a verified standard-parts catalog. Generated `tools/list` owns the
 argument schema; [mechanical part tools](../../crates/multicad-mcp/src/tools/mechanical_parts.rs)
@@ -377,7 +380,25 @@ frame locates the whole body; there is no independent second height or axis.
 It accepts no thread transaction controls such as `mode` or `target_part`.
 The existing `set_thread` tool keeps its original flat arguments.
 
-Cosmetic nut threads are refused for STEP, mesh and Print manufacturing output
+Machine screws retain separate head and drive kinds. `socket_cap` heads accept
+diameter and height; `external_hex` heads accept across-flats and height. Drives
+are `hex_socket` with across-flats and depth, or `external_hex`. Omitted edit
+fields retain source. Switching a head or drive kind requires every dimension
+of the new kind. The generated schema owns these argument shapes.
+
+`underhead_length` runs from the bearing plane to the tip. Nested `thread.length`
+is the threaded extent ending at that tip, and `thread.frame` locates the
+underhead bearing plane. The head extends opposite the frame normal. A shorter
+thread leaves a plain shank before its start. Default custom screw dimensions
+are M3 with 10 mm underhead and thread lengths, 3 mm shank, a 5.68 mm diameter
+head of 3 mm height, and a 2.55 mm hex socket of 1.3 mm depth. The recess has a
+flat floor; tooling bottoms, fillets and edge treatments are omitted. These
+editable dimensions do not establish catalog membership or fitted metric
+tolerance compliance. `inspect_mechanical_part` reports head/drive dimensions,
+thread start and extent, representation, and separate nominal/fitted thread
+evidence. Use `evaluate_model` to check native geometry.
+
+Cosmetic nut and screw threads are refused for STEP, mesh and Print manufacturing output
 until their representation is `modeled`. A bearing envelope contains only its
 external annular mounting geometry; exported geometry does not include races,
 rolling elements or seals. No fit, load or standards compliance is implied.
@@ -388,6 +409,37 @@ choice do not alter dimensional attribution. A match establishes neither
 trusted catalog membership nor stock availability; changed dimensions retain
 the reference while becoming a derived/custom variant. Source inspection does
 not evaluate native geometry; use `evaluate_model` for that.
+
+## Pinned symbol control
+
+`import_symbol`, `place_symbol` and `edit_symbol_instance` use the canonical
+[symbol transactions](../../crates/multicad-mcp/src/tools/symbols.rs). The generated
+`tools/list` schema owns their field types. Imported source remains pinned and
+works after the Library file becomes unavailable. `get_entity` reads the raw
+embedded definition and its exposed template parameters.
+
+`import_symbol` reads one reusable definition from a bare `.tcd` file name in
+the configured exchange folder. Paths escaping that folder, including symlink
+targets, are refused. `source_definition` selects the source extension ID;
+omission requires exactly one definition in the file. The result supplies the
+embedded definition ID, pin and exposed template parameter IDs. Import validates
+and embeds source without placing or evaluating the template solid.
+
+`place_symbol` instantiates an embedded definition with a required `overrides`
+map. Each key names an exposed parameter in the pinned template, and each value
+is a finite literal with a compatible unit. An empty map uses pinned defaults.
+Optional placement supplies typed translation lengths and an x/y/z/w unit
+quaternion. Architectural construction paths use their dedicated draw tools.
+
+`edit_symbol_instance` takes an instance or ownership-record ID and replaces its
+complete override map. Omitted keys inherit pinned defaults; `{}` restores every
+default. Preserve all desired overrides when changing one value. Materialized
+private parameter and feature IDs cannot be used as public override keys or
+edited directly through `set_parameter` or `set_mechanical_part`. Configuration
+preserves the pin, placement and materialized identities. Placement and editing
+evaluate the complete candidate natively before one attributable commit or
+owner review. Invalid geometry, stale revisions and cancellation leave source
+unchanged.
 
 ## Gear control
 

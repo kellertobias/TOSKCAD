@@ -141,7 +141,7 @@ fn nut_uses_shared_thread_recipe_and_manufacturing_guard_while_bearing_is_explic
     let profiles = run(&h, "mechanical_part_profiles", json!({}));
     assert_eq!(
         profiles["supported_geometry"],
-        json!(["washer", "hex_nut", "bearing_envelope"])
+        json!(["washer", "hex_nut", "bearing_envelope", "machine_screw"])
     );
     assert!(
         profiles["catalog_status"]
@@ -163,7 +163,7 @@ fn stale_cancelled_unsupported_ambiguous_and_native_invalid_requests_change_noth
         json!({"expected_revision":0,"name":"Unknown","recipe":{"kind":"washer","verified_iso_grade":1}}),
         json!({"expected_revision":0,"name":"Wrong field","recipe":{"kind":"washer","thread":{"length":mm(4.)}}}),
         json!({"expected_revision":0,"name":"Wrong nested field","recipe":{"kind":"hex_nut","thread":{"target_part":"irrelevant"}}}),
-        json!({"expected_revision":0,"name":"Unsupported","recipe":{"kind":"machine_screw"}}),
+        json!({"expected_revision":0,"name":"Unsupported","recipe":{"kind":"unknown_screw"}}),
     ] {
         assert!(dispatch(&h, &call(false), "set_mechanical_part", args).is_err());
         assert_eq!(h.document(), before);
@@ -220,10 +220,7 @@ fn configured_washer_keeps_nominal_facts_through_owner_overrides_mcp_history_and
         },
         parameters::BoundExpression,
         project_file::ProjectFile,
-        symbols::{
-            self, SymbolAuthorRequest, SymbolEditRequest, SymbolKind, SymbolPlaceRequest,
-            SymbolValue,
-        },
+        symbols::{self, SymbolAuthorRequest, SymbolKind, SymbolPlaceRequest, SymbolValue},
     };
     use multicad_mcp::Storage;
     use std::collections::BTreeMap;
@@ -378,41 +375,13 @@ fn configured_washer_keeps_nominal_facts_through_owner_overrides_mcp_history_and
     let error = dispatch(&h, &call(false), "set_mechanical_part", json!({"expected_revision":0,"feature":feature,"recipe":{"kind":"washer","thickness":mm(0.8)}})).unwrap_err();
     assert_eq!(error.code, "invalid_document");
     assert_eq!(h.document(), before_edit);
-    let edit = SymbolEditRequest {
-        record: placement.instance,
-        overrides: BTreeMap::from([
-            (
-                parameter_id,
-                SymbolValue {
-                    value: 8.,
-                    unit: "mm".into(),
-                },
-            ),
-            (
-                thickness_id,
-                SymbolValue {
-                    value: 0.8,
-                    unit: "mm".into(),
-                },
-            ),
-        ]),
-    };
-    let prepared = multicad_mcp::host::with(&h, move |owner| {
-        symbols::prepare_edit(owner.session(), 0, Actor::local(Channel::Ui), &edit)
-    })
-    .unwrap()
-    .unwrap();
-    multicad_model::Compiler {
-        omit_display: true,
-        ..Default::default()
-    }
-    .compile(prepared.prepared.document(), 1)
-    .unwrap();
-    multicad_mcp::host::with(&h, move |owner| {
-        owner.session_mut().commit(prepared.prepared)
-    })
-    .unwrap()
-    .unwrap();
+    run(
+        &h,
+        "edit_symbol_instance",
+        json!({"expected_revision":0,"instance":placement.instance,"overrides":{
+            parameter_id.to_string():mm(8.), thickness_id.to_string():mm(0.8),
+        }}),
+    );
     let after_edit = h.document();
     let changed_instance = symbols::read_instance(&after_edit, placement.instance).unwrap();
     assert_eq!(changed_instance.pin, instance.pin);
@@ -478,26 +447,216 @@ fn configured_washer_keeps_nominal_facts_through_owner_overrides_mcp_history_and
             },
         )]),
     ] {
-        let edit = SymbolEditRequest {
-            record: placement.instance,
-            overrides,
-        };
-        // Preparation may reject resolved invalid source immediately; if a
-        // candidate exists, native preflight must refuse it before commit.
-        let candidate = multicad_mcp::host::with(&reopened, move |owner| {
-            symbols::prepare_edit(owner.session(), 0, Actor::local(Channel::Ui), &edit)
+        assert!(
+            dispatch(
+                &reopened,
+                &call(false),
+                "edit_symbol_instance",
+                json!({"expected_revision":0,"instance":placement.instance,"overrides":overrides})
+            )
+            .is_err()
+        );
+        assert_eq!(reopened.document(), before_invalid);
+    }
+}
+
+fn solid_probe(solid: &multicad_kernel::Solid, center: [f64; 3]) -> f64 {
+    use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform, Solid};
+    let size = 0.005;
+    let cube = Solid::box_solid([size; 3], GeometryPolicy::default())
+        .unwrap()
+        .transformed(RigidTransform {
+            translation_mm: center.map(|v| v - size / 2.),
+            ..Default::default()
         })
         .unwrap();
-        if let Ok(candidate) = candidate {
+    solid
+        .boolean(
+            &cube,
+            BooleanOperation::Intersect,
+            GeometryPolicy::default(),
+        )
+        .unwrap()
+        .map_or(0., |s| s.volume_mm3().unwrap())
+        / size.powi(3)
+}
+
+#[test]
+fn both_machine_screw_heads_and_thread_extents_keep_native_drives_history_saved_source_and_step() {
+    use multicad_core::{document::EntityId, model};
+    use multicad_kernel::{GeometryPolicy, Solid};
+    for external in [false, true] {
+        for threaded in [1.5, 3.] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("screw.tcd");
+            let h = Headless::new(
+                Workspace::project(path.clone(), Box::new(WasherProjectStore)).unwrap(),
+                Some(dir.path().into()),
+                false,
+            );
+            let mut recipe = json!({"kind":"machine_screw","underhead_length":mm(3.),"thread":{"length":mm(threaded)}});
+            if external {
+                recipe["head"] =
+                    json!({"kind":"external_hex","across_flats":mm(5.5),"height":mm(2.)});
+                recipe["drive"] = json!({"kind":"external_hex"});
+            }
+            let created = run(
+                &h,
+                "set_mechanical_part",
+                json!({"expected_revision":0,"name":"M3 headed screw","recipe":recipe}),
+            );
+            let feature = EntityId::parse(created["feature"].as_str().unwrap()).unwrap();
+            let part = created["part"].clone();
+            let initial = model::read_mechanical_part(&h.document(), feature).unwrap();
+            let inspected = run(&h, "inspect_mechanical_part", json!({"feature":feature}));
+            assert_eq!(inspected["resolved"]["thread_length_mm"], threaded);
+            assert_eq!(inspected["resolved"]["thread_start_mm"], 3. - threaded);
+            assert_eq!(inspected["resolved"]["fully_threaded"], threaded == 3.);
+            assert_eq!(inspected["resolved"]["nominal_thread_diameter_mm"], 3.);
+            assert_eq!(inspected["resolved"]["fit"], Value::Null);
+            let edited = run(
+                &h,
+                "set_mechanical_part",
+                json!({"expected_revision":1,"feature":feature,"recipe":{"kind":"machine_screw","head":{"kind":if external {"external_hex"}else{"socket_cap"},"height":mm(3.2)}}}),
+            );
+            assert_eq!(edited["part"], part);
+            let updated = model::read_mechanical_part(&h.document(), feature).unwrap();
+            let mut expected = initial.clone();
+            let model::MechanicalPartParameters::MachineScrew { head, .. } =
+                &mut expected.parameters
+            else {
+                unreachable!()
+            };
+            match head {
+                model::ScrewHead::SocketCap { height, .. }
+                | model::ScrewHead::ExternalHex { height, .. } => *height = model::length(3.2),
+            }
+            assert_eq!(
+                updated, expected,
+                "A partial head edit retains drive, thread, length, units and identities"
+            );
+            let changed = h.document();
+            run(&h, "undo", json!({"expected_revision":2}));
+            assert_eq!(
+                model::read_mechanical_part(&h.document(), feature).unwrap(),
+                initial
+            );
+            run(&h, "redo", json!({"expected_revision":3}));
+            assert_eq!(h.document(), changed);
+            run(&h, "save_project", json!({"expected_revision":4}));
+            let reopened = Headless::new(
+                Workspace::project(path, Box::new(WasherProjectStore)).unwrap(),
+                Some(dir.path().into()),
+                false,
+            );
+            assert_eq!(reopened.document(), changed);
+            let export = run(
+                &reopened,
+                "export_step",
+                json!({"part":part,"file_name":"screw.step"}),
+            );
+            let solid = Solid::read_step(&dir.path().join("screw.step"), GeometryPolicy::default())
+                .unwrap();
+            assert_eq!(solid.solid_count().unwrap(), 1);
             assert!(
-                multicad_model::Compiler {
-                    omit_display: true,
-                    ..Default::default()
-                }
-                .compile(candidate.prepared.document(), 1)
+                (solid.volume_mm3().unwrap() - export["readback_volume_mm3"].as_f64().unwrap())
+                    .abs()
+                    < 1e-6
+            );
+            let bounds = solid.bounds().unwrap();
+            assert!((bounds.min[2] + 3.2).abs() < 1e-6 && (bounds.max[2] - 3.).abs() < 1e-6);
+            if external {
+                assert!((bounds.max[0] - 2.75).abs() < 1e-6);
+                assert!(solid_probe(&solid, [0., 0., -2.7]) > 0.999);
+            } else {
+                assert!((bounds.max[0] - 2.84).abs() < 1e-6);
+                assert!(solid_probe(&solid, [0., 0., -2.7]) < 1e-5);
+                assert!(
+                    solid_probe(&solid, [1.4, 0., -2.7]) > 0.999,
+                    "Outside the socket flat remains head material"
+                );
+                assert!(
+                    solid_probe(&solid, [1.4 * 3_f64.sqrt() / 2., 0.7, -2.7]) < 1e-5,
+                    "Hex corner opens beyond its inscribed circle"
+                );
+                assert!(
+                    solid_probe(&solid, [0., 0., -1.7]) > 0.999,
+                    "Real head floor remains below the recess"
+                );
+            }
+            if threaded < 3. {
+                assert!(
+                    solid_probe(&solid, [1.45, 0., 0.5]) > 0.999,
+                    "Partial thread keeps its plain shank"
+                );
+            }
+            let before = reopened.document();
+            run(
+                &reopened,
+                "set_mechanical_part",
+                json!({"expected_revision":0,"feature":feature,"recipe":{"kind":"machine_screw","thread":{"representation":"cosmetic_envelope"}}}),
+            );
+            assert!(
+                dispatch(
+                    &reopened,
+                    &call(false),
+                    "export_step",
+                    json!({"part":part,"file_name":"cosmetic-screw.step"})
+                )
                 .is_err()
             );
+            assert!(!dir.path().join("cosmetic-screw.step").exists());
+            run(&reopened, "undo", json!({"expected_revision":1}));
+            assert_eq!(reopened.document(), before);
         }
-        assert_eq!(reopened.document(), before_invalid);
+    }
+}
+
+#[test]
+fn invalid_stale_cancelled_and_incomplete_screw_recipes_never_partially_commit() {
+    let h = host(None);
+    let before = h.document();
+    let base =
+        json!({"kind":"machine_screw","underhead_length":mm(3.),"thread":{"length":mm(1.5)}});
+    for (key, value) in [
+        ("underhead_length", mm(1.)),
+        ("shank_diameter", mm(0.)),
+        ("drive", json!({"kind":"hex_socket","depth":mm(3.)})),
+        ("drive", json!({"kind":"hex_socket","across_flats":mm(5.)})),
+        ("head", json!({"kind":"external_hex","height":mm(2.)})),
+        ("head", json!({"kind":"socket_cap","height":mm(1.)})),
+        ("thread", json!({"length":mm(1.5),"pitch":mm(0.)})),
+        (
+            "thread",
+            json!({"length":mm(1.5),"family":"unc","fit":"unified_2a"}),
+        ),
+        ("underhead_length", json!({"value":3.,"unit":"deg"})),
+        ("head", json!({"kind":"torx","height":mm(3.)})),
+    ] {
+        let mut recipe = base.clone();
+        recipe[key] = value;
+        assert!(
+            dispatch(
+                &h,
+                &call(false),
+                "set_mechanical_part",
+                json!({"expected_revision":0,"name":"Invalid screw","recipe":recipe})
+            )
+            .is_err(),
+            "accepted {key}"
+        );
+        assert_eq!(h.document(), before);
+    }
+    for (cancelled, revision) in [(true, 0), (false, 1)] {
+        assert!(
+            dispatch(
+                &h,
+                &call(cancelled),
+                "set_mechanical_part",
+                json!({"expected_revision":revision,"name":"No screw","recipe":base})
+            )
+            .is_err()
+        );
+        assert_eq!(h.document(), before);
     }
 }

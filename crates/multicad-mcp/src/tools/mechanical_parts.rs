@@ -10,8 +10,8 @@ use crate::{
 use multicad_core::{
     document::Document,
     model::{
-        self, MechanicalPartParameters, PrimitiveFrame, ThreadParameters, ThreadRepresentation,
-        length,
+        self, MechanicalPartParameters, PrimitiveFrame, ScrewDrive, ScrewHead, ThreadParameters,
+        ThreadRepresentation, length,
     },
     parameters::EvaluatedParameters,
     sketch::Datum,
@@ -73,6 +73,27 @@ impl MechanicalFrameArgs {
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScrewHeadArgs {
+    SocketCap {
+        diameter: Option<Quantity>,
+        height: Option<Quantity>,
+    },
+    ExternalHex {
+        across_flats: Option<Quantity>,
+        height: Option<Quantity>,
+    },
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScrewDriveArgs {
+    HexSocket {
+        across_flats: Option<Quantity>,
+        depth: Option<Quantity>,
+    },
+    ExternalHex,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MechanicalRecipeArgs {
     Washer {
         #[serde(default)]
@@ -88,6 +109,15 @@ pub enum MechanicalRecipeArgs {
         #[serde(default)]
         across_flats: Option<Quantity>,
         /// Thread length is nut height; its frame locates the whole nut.
+        #[serde(default)]
+        thread: Box<ThreadRecipeArgs>,
+    },
+    MachineScrew {
+        underhead_length: Option<Quantity>,
+        shank_diameter: Option<Quantity>,
+        head: Option<ScrewHeadArgs>,
+        drive: Option<ScrewDriveArgs>,
+        /// Thread length is the threaded extent; frame is the underhead datum.
         #[serde(default)]
         thread: Box<ThreadRecipeArgs>,
     },
@@ -216,13 +246,114 @@ fn parameters(
                 thread: Box::new(thread_parameters(thread, Some(t), doc, eval)?),
             }
         }
+        MechanicalRecipeArgs::MachineScrew {
+            underhead_length,
+            shank_diameter,
+            head,
+            drive,
+            thread,
+        } => {
+            let default = model::default_machine_screw();
+            let MechanicalPartParameters::MachineScrew {
+                underhead_length: l,
+                shank_diameter: d,
+                head: old_head,
+                drive: old_drive,
+                thread: t,
+            } = previous.unwrap_or(&default)
+            else {
+                return Err(mismatch());
+            };
+            let required = |q: &Option<Quantity>,
+                            old: Option<&multicad_core::constraint_sketch::Dimension>,
+                            field: &str| {
+                q.as_ref()
+                    .map(|q| q.dimension(doc, eval).map(|d| d.0))
+                    .transpose()?
+                    .or_else(|| old.cloned())
+                    .ok_or_else(|| {
+                        ToolError::invalid(format!(
+                            "Changing head/drive kind requires explicit {field}"
+                        ))
+                    })
+            };
+            let head = match head {
+                None => old_head.clone(),
+                Some(ScrewHeadArgs::SocketCap { diameter, height }) => {
+                    let old = if let ScrewHead::SocketCap { diameter, height } = old_head {
+                        Some((diameter, height))
+                    } else {
+                        None
+                    };
+                    ScrewHead::SocketCap {
+                        diameter: required(diameter, old.map(|v| v.0), "head diameter")?,
+                        height: required(height, old.map(|v| v.1), "head height")?,
+                    }
+                }
+                Some(ScrewHeadArgs::ExternalHex {
+                    across_flats,
+                    height,
+                }) => {
+                    let old = if let ScrewHead::ExternalHex {
+                        across_flats,
+                        height,
+                    } = old_head
+                    {
+                        Some((across_flats, height))
+                    } else {
+                        None
+                    };
+                    ScrewHead::ExternalHex {
+                        across_flats: required(
+                            across_flats,
+                            old.map(|v| v.0),
+                            "head across_flats",
+                        )?,
+                        height: required(height, old.map(|v| v.1), "head height")?,
+                    }
+                }
+            };
+            let drive = match drive {
+                None => old_drive.clone(),
+                Some(ScrewDriveArgs::ExternalHex) => ScrewDrive::ExternalHex,
+                Some(ScrewDriveArgs::HexSocket {
+                    across_flats,
+                    depth,
+                }) => {
+                    let old = if let ScrewDrive::HexSocket {
+                        across_flats,
+                        depth,
+                    } = old_drive
+                    {
+                        Some((across_flats, depth))
+                    } else {
+                        None
+                    };
+                    ScrewDrive::HexSocket {
+                        across_flats: required(
+                            across_flats,
+                            old.map(|v| v.0),
+                            "socket across_flats",
+                        )?,
+                        depth: required(depth, old.map(|v| v.1), "socket depth")?,
+                    }
+                }
+            };
+            MechanicalPartParameters::MachineScrew {
+                underhead_length: mm(underhead_length, l)?,
+                shank_diameter: mm(shank_diameter, d)?,
+                head,
+                drive,
+                thread: Box::new(thread_parameters(thread, Some(t), doc, eval)?),
+            }
+        }
     };
     p.resolve(eval)?;
     Ok(p)
 }
 pub(super) fn mechanical_part_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     Ok(
-        json!({"supported_geometry":["washer","hex_nut","bearing_envelope"],"catalog_status":"Generic parametric geometry only; verified standard-parts catalog is under development","nut_thread":"Uses the shared thread recipe. thread.length is nut height and thread frame locates its body; creation defaults to a cosmetic envelope. Select modeled for manufacturing export.","bearing":"External mounting envelope only; races, rolling elements and seals are not modeled","limits":"No standard compliance, stock availability, fit, strength or lifetime certification"}),
+        json!({"supported_geometry":["washer","hex_nut","bearing_envelope","machine_screw"],"catalog_status":"Generic parametric geometry only; verified standard-parts catalog is under development","nut_thread":"Uses the shared thread recipe. thread.length is nut height and thread frame locates its body; creation defaults to a cosmetic envelope. Select modeled for manufacturing export.","machine_screw":"Socket-cap/internal-hex or external-hex head and drive. underhead_length ends at the tip; thread.length is threaded extent ending at that tip. thread.frame is the underhead bearing plane; head extends opposite its normal. Modeled uses the shared builder; cosmetic manufacturing export is refused. Head/recess/runout simplifications and nominal-basic metric profile do not imply standards or fit certification.","bearing":"External mounting envelope only; races, rolling elements and seals are not modeled","limits":"No standard compliance, stock availability, fit, strength or lifetime certification"}),
     )
 }
 fn frame_value(frame: multicad_core::sketch::Frame) -> Value {
@@ -258,6 +389,36 @@ pub(super) fn inspect_mechanical_part(
             thread,
         } => {
             json!({"kind":"hex_nut","across_flats_mm":across_flats_mm,"height_mm":thread.length_mm,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
+        }
+        model::ResolvedMechanicalPart::MachineScrew {
+            underhead_length_mm,
+            shank_radius_mm,
+            head,
+            drive,
+            thread,
+        } => {
+            let head = match head {
+                model::ResolvedScrewHead::SocketCap {
+                    radius_mm,
+                    height_mm,
+                } => json!({"kind":"socket_cap","diameter_mm":2.*radius_mm,"height_mm":height_mm}),
+                model::ResolvedScrewHead::ExternalHex {
+                    across_flats_mm,
+                    height_mm,
+                } => {
+                    json!({"kind":"external_hex","across_flats_mm":across_flats_mm,"height_mm":height_mm})
+                }
+            };
+            let drive = match drive {
+                model::ResolvedScrewDrive::HexSocket {
+                    across_flats_mm,
+                    depth_mm,
+                } => {
+                    json!({"kind":"hex_socket","across_flats_mm":across_flats_mm,"depth_mm":depth_mm})
+                }
+                model::ResolvedScrewDrive::ExternalHex => json!({"kind":"external_hex"}),
+            };
+            json!({"kind":"machine_screw","underhead_length_mm":underhead_length_mm,"shank_diameter_mm":2.*shank_radius_mm,"thread_start_mm":underhead_length_mm-thread.length_mm,"thread_length_mm":thread.length_mm,"fully_threaded":underhead_length_mm==thread.length_mm,"head":head,"drive":drive,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
         }
     };
     Ok(
