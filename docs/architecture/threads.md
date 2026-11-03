@@ -362,6 +362,9 @@ capability inventories and serialized values remain unchanged.
 Saved BSPT additionally requires `model.thread.bspt.1`, including suppressed
 features, imported templates, nested hardware and retained literal references.
 Older source omits the optional pipe intent field.
+Saved Buttress requires `model.thread.buttress.1`, including suppressed and
+template-only features, nested hardware and retained literal references.
+Older source omits the optional buttress intent field.
 
 ## Native construction and output
 
@@ -379,6 +382,20 @@ half-turn parallel or quarter-turn tapered edges, preserving the requested
 physical phase and exact fractional endpoint. Boolean ancestry retains
 the two root arcs, crest and flanks. Rounded-only material checks verify the
 circles across the height; legacy flat-profile construction remains separate.
+
+The buttress external builder adds two tangent root-circle sectors to the
+flat asymmetric main ridge. Quarter-turn spine domains preserve valid
+trimmed face wires. Overlap is buried, and exposed closure faces remain
+unnameable and refused. The internal cutter uses the separate flat profile.
+Both source flank angles, source root radius and the exact end planes survive
+these representation boundaries.
+
+Display tessellation operates on a detached native copy. If any face lacks
+triangles, it retries at one quarter of the linear deflection and half the
+angular deflection, for at most three attempts including the original.
+Every exact face must contribute triangles, and the original triangle/index
+budget still applies. Refinement does not alter manufacturing geometry.
+A complete finer result can satisfy the original maximum-deflection request.
 
 Rounded sweeps have trimmed, doubly-curved B-spline faces. Their bounds use
 native directional support queries against six exterior planes, with finite
@@ -420,6 +437,9 @@ The test sources cover
 [canonical transactions and persistence](../../crates/multicad-core/tests/model_threads.rs),
 [Unified limits, fit resolution and reader capabilities](../../crates/multicad-core/tests/model_unified_threads.rs),
 [rounded source limits and compatibility](../../crates/multicad-core/tests/model_rounded_threads.rs),
+[buttress source and reader compatibility](../../crates/multicad-core/tests/model_buttress_threads.rs),
+[native asymmetric circular roots](../../crates/multicad-kernel/tests/asymmetric_root_threads.rs),
+[buttress mating, phase and manufacturing exports](../../crates/multicad-model/tests/buttress_threads.rs),
 [native rounded crest/root sections](../../crates/multicad-kernel/tests/rounded_threads.rs),
 [pipe source, gauge rules and reader compatibility](../../crates/multicad-core/tests/model_pipe_threads.rs),
 [tapered circular sections](../../crates/multicad-kernel/tests/tapered_rounded_threads.rs),
