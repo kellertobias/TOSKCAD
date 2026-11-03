@@ -284,27 +284,26 @@ impl MechanicalPartPanel {
             // authored screw never enters this path or rewrites its lengths.
             if let MechanicalPartParameters::MachineScrew { thread, .. } =
                 model::default_machine_screw()
-            {
-                if let Ok(panel) = ThreadPanel::new(
+                && let Ok(panel) = ThreadPanel::new(
                     ThreadRequest::new("Screw thread recipe", *thread),
                     self.parameters.clone(),
                     vec![],
                     &Default::default(),
                     false,
-                ) {
-                    self.thread = panel;
-                }
+                )
+            {
+                self.thread = panel;
             }
-        } else if kind == Kind::HexNut {
-            if let Ok(panel) = ThreadPanel::new(
+        } else if kind == Kind::HexNut
+            && let Ok(panel) = ThreadPanel::new(
                 ThreadRequest::new("Nut thread recipe", Self::default_thread()),
                 self.parameters.clone(),
                 vec![],
                 &Default::default(),
                 false,
-            ) {
-                self.thread = panel;
-            }
+            )
+        {
+            self.thread = panel;
         }
         for (field, value) in self.fields.iter_mut().zip(values) {
             field.set_literal(value, "mm");
