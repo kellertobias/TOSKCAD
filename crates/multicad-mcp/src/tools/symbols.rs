@@ -81,14 +81,8 @@ fn finish(
     compile(prepared.document(), revision, call)?;
     let owned = call.clone();
     result["revision"] = json!(with(host, move |target| {
-        owned.check()?;
-        super::editable(target)?;
-        // Native evaluation ran outside the owner. Validate the Prepared's
-        // session and revision before a reviewed owner can queue it.
-        target
-            .session()
-            .validate_preview(&prepared)
-            .map_err(|error| ToolError::from(error).at_revision(target.session().revision()))?;
+        // Shared commit validates the prepared owner session and revision
+        // before either trusted commit or review queueing.
         commit(target, &owned, prepared)
     })??);
     result["native_model_preflight"] = json!(true);

@@ -919,6 +919,12 @@ fn editable(target: &dyn Target) -> Result<(), ToolError> {
 fn commit(target: &mut dyn Target, call: &Request, prepared: Prepared) -> Result<u64, ToolError> {
     call.check()?;
     editable(target)?;
+    // Native work may run outside the owner. Check the prepared session and
+    // revision before either trusted commit or review queueing.
+    target
+        .session()
+        .validate_preview(&prepared)
+        .map_err(|error| ToolError::from(error).at_revision(target.session().revision()))?;
     if target.review_policy(&call.actor) == ReviewPolicy::Reviewed {
         let affected = affected(target.session().document(), prepared.document());
         let label = prepared.label().to_owned();
