@@ -74,7 +74,7 @@ struct Shape {
   std::shared_ptr<FaceCache> face_cache=std::make_shared<FaceCache>();
   // Only an original local thread result has this opaque factory identity.
   // Geometry-changing operations/imports never inherit it.
-  std::shared_ptr<const ThreadFactoryTag> thread_factory_tag;
+  std::shared_ptr<const ThreadFactoryTag> thread_factory_tag = {};
 };
 std::unique_ptr<Shape> extrude(double width, double depth, double height);
 std::unique_ptr<Shape> cut(const Shape &, double x, double width, double depth,
