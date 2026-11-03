@@ -68,11 +68,16 @@ impl ThreadFamily {
                 | Self::Bspp
                 | Self::Bspt
                 | Self::Npt
+                | Self::Trapezoidal
+                | Self::Acme
                 | Self::Custom
         )
     }
     pub fn is_rounded(self) -> bool {
         matches!(self, Self::Bsw | Self::Bsf | Self::Bspp)
+    }
+    pub fn is_lead_screw(self) -> bool {
+        matches!(self, Self::Trapezoidal | Self::Acme)
     }
     pub fn is_unified(self) -> bool {
         matches!(self, Self::Unc | Self::Unf)
@@ -86,6 +91,8 @@ impl ThreadFamily {
             Self::Bspp => BSPP_THREAD_SOURCE,
             Self::Bspt => BSPT_THREAD_SOURCE,
             Self::Npt => NPT_THREAD_SOURCE,
+            Self::Trapezoidal => TRAPEZOIDAL_THREAD_SOURCE,
+            Self::Acme => ACME_THREAD_SOURCE,
             _ => "Not implemented; no sourced geometry or tolerance coverage claimed",
         }
     }

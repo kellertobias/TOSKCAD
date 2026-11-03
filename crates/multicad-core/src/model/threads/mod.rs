@@ -1,5 +1,6 @@
 //! Versioned thread intent and transactions. Native receipts must still prove
 //! receiving geometry and manufactured solids before the UI enables Apply.
+mod lead_screw;
 mod npt;
 mod pipe;
 mod prepare;
@@ -19,6 +20,7 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     sketch::Frame,
 };
+pub use lead_screw::*;
 pub use npt::*;
 pub use pipe::*;
 pub use prepare::*;
@@ -141,6 +143,7 @@ impl Default for ThreadParameters {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedThread {
+    pub lead_screw: Option<ResolvedLeadScrew>,
     pub pipe: Option<ResolvedPipeThread>,
     pub npt: Option<ResolvedNptThread>,
     pub nominal_major_radius_mm: f64,
@@ -319,6 +322,12 @@ impl ThreadParameters {
             .npt
             .map(|intent| npt::resolve_npt(intent, mode, diameter, pitch, length, radial, axial))
             .transpose()?;
+        let lead_screw = self
+            .family
+            .is_lead_screw()
+            .then(|| lead_screw::lead_screw_preset(self.family, diameter, pitch))
+            .transpose()?
+            .map(|preset| lead_screw::lead_screw_receipt(preset, mode, self.starts, self.hand));
         if diameter <= 0.
             || pitch < 0.001
             || length < pitch
@@ -346,7 +355,9 @@ impl ThreadParameters {
                 "Axial allowance for true rounded profiles is unsupported; use zero axial allowance",
             ));
         }
-        let mut profile = if let Some(npt) = &npt {
+        let mut profile = if let Some(lead_screw) = &lead_screw {
+            lead_screw.preset.construction(mode).1
+        } else if let Some(npt) = &npt {
             ResolvedThreadProfile {
                 depth_mm: npt.depth_mm,
                 crest_width_mm: npt.flat_width_mm,
@@ -379,8 +390,13 @@ impl ThreadParameters {
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
         };
-        let nominal_pitch_diameter_mm = (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
-            .then_some(diameter - 2. * pitch_drop);
+        let nominal_pitch_diameter_mm = lead_screw
+            .as_ref()
+            .map(|lead| lead.nominal_pitch_diameter_mm)
+            .or_else(|| {
+                (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
+                    .then_some(diameter - 2. * pitch_drop)
+            });
         let sign = if mode == ThreadMode::CutInternal {
             1.
         } else {
@@ -388,7 +404,9 @@ impl ThreadParameters {
         };
         // The table midpoint is an engineering target, not a prescribed gage
         // result. Keep the nominal/basic fields independent of this target.
-        let fitted_radius = if let Some(preset) = &rounded {
+        let fitted_radius = if let Some(lead_screw) = &lead_screw {
+            lead_screw.preset.construction(mode).0
+        } else if let Some(preset) = &rounded {
             (whitworth::fitted_pitch(preset, self.fit, profile.depth_mm)? + profile.depth_mm) / 2.
         } else if let Some(preset) = &unified {
             let limits = preset.limits(self.fit)?.pitch;
@@ -447,6 +465,7 @@ impl ThreadParameters {
                 .transpose()?
         };
         Ok(ResolvedThread {
+            lead_screw,
             pipe,
             npt,
             nominal_major_radius_mm: diameter / 2.,

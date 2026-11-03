@@ -324,6 +324,19 @@ retains an existing edit; changing family clears it. An NPT object on another
 family is refused. The [NPT reference](threads.md#npt-construction-and-source-limits)
 defines the bounded historical conventions and unsupported combinations.
 
+Trapezoidal and Acme use their distinct `trapezoidal` and `acme` families
+with existing `fit: "nominal_basic"`, a listed nominal diameter/pitch, hand,
+starts and fabrication allowances. `thread_profiles.lead_screw_presets`
+returns the four supported source rows; `lead_screw_support` declares the
+engineering start/hand coverage and unavailable tolerance classes. There is
+no extra authored intent object. `inspect_thread.resolved.lead_screw` and
+nested hardware inspection expose the same row and mode-specific construction
+receipt. The canonical nominal major diameter remains the external basic
+size; an internal cutter uses the source internal major diameter. Both
+nominal pitch diameter and post-allowance actual pitch diameter are reported.
+[Lead-screw conventions](threads.md#trapezoidal-and-acme-lead-screw-profiles)
+own units, sharp corners, source clearances and fit limitations.
+
 `inspect_thread` reads canonical source and resolved dimensions without
 evaluating a solid. Use `evaluate_model` for native geometry and diagnostics.
 Its `nominal_pitch_diameter_mm` remains the basic-profile value.

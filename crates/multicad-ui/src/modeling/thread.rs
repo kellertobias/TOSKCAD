@@ -256,6 +256,9 @@ impl ThreadPanel {
                 }
             });
         ui.small(self.family.source());
+        if self.family.is_lead_screw() {
+            changed |= self.lead_screw_controls(ui);
+        }
         if self.family == ThreadFamily::Npt {
             changed |= self.npt_controls(ui, mode);
         }
@@ -484,6 +487,40 @@ impl ThreadPanel {
             }
         }
         changed
+    }
+    fn lead_screw_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut selected = None;
+        controls::inspector_combo(ui, "thread-lead-screw-preset")
+            .selected_text(format!("Choose a sourced {} preset…", self.family.label()))
+            .show_ui(ui, |ui| {
+                for row in model::lead_screw_presets()
+                    .into_iter()
+                    .filter(|p| p.family == self.family)
+                {
+                    if ui.selectable_label(false, row.designation).clicked() {
+                        selected = Some(row);
+                    }
+                }
+            });
+        if let Some(row) = &selected {
+            if let Some(inches) = row.nominal_diameter_inch {
+                self.diameter.set_exact_literal(inches, "in");
+            } else {
+                self.diameter.set_exact_literal(row.diameter_mm, "mm");
+            }
+            if let Some(tpi) = row.threads_per_inch {
+                self.pitch.set_exact_literal(1. / f64::from(tpi), "in");
+            } else {
+                self.pitch.set_exact_literal(row.pitch_mm, "mm");
+            }
+            if self.preset_length_default {
+                self.length.set_exact_literal(3. * row.pitch_mm, "mm");
+            }
+            self.fit = ThreadFit::NominalBasic;
+        }
+        ui.small("Nominal sharp limiting profiles with separate source crest/root clearance. Equal basic pitch diameters have zero theoretical flank allowance; fabrication clearance is separate.");
+        ui.small("RH/LH, 1–8 starts are bounded engineering geometry. Pitch is adjacent thread spacing; lead is pitch × starts. No fit-class or physical-fit certification.");
+        selected.is_some()
     }
     fn rounded_controls(&mut self, ui: &mut egui::Ui, mode: ThreadMode) -> bool {
         let mut changed = false;
@@ -852,6 +889,17 @@ impl ThreadPanel {
                         "Pitch {:.4} mm · lead {:.4} mm · {} starts",
                         resolved.pitch_mm, resolved.lead_mm, resolved.starts
                     ));
+                    if let Some(lead) = &resolved.lead_screw {
+                        ui.strong(&lead.designation);
+                        ui.small(format!(
+                            "{}° axial form · source radial crest/root clearance {:.6} mm",
+                            lead.preset.included_angle_deg, lead.preset.basic_radial_clearance_mm
+                        ));
+                        ui.small(format!("Basic pitch diameter {:.6} mm · construction major {:.6} mm · minor {:.6} mm",lead.nominal_pitch_diameter_mm,lead.nominal_construction_major_diameter_mm,lead.nominal_construction_minor_diameter_mm));
+                        if let Some(tpi) = lead.preset.threads_per_inch {
+                            ui.small(format!("{tpi} adjacent threads per inch"));
+                        }
+                    }
                     if let Some(npt) = &resolved.npt {
                         ui.strong(&npt.designation);
                         ui.small(format!("Pitch diameter at nominal gauge plane {:.6} mm · gauge shift {:.6} turns",npt.actual_pitch_at_nominal_gauge_mm,npt.gauge_displacement_turns));

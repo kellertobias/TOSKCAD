@@ -194,7 +194,57 @@ fn unified_frame(
 }
 fn unified_click(ctx: &egui::Context, c: &mut ModelToolController, s: &mut Session, label: &str) {
     unified_frame(ctx, c, s, vec![]).drop_without_applying_deltas();
-    let out = unified_frame(ctx, c, s, vec![]);
+    let mut out = unified_frame(ctx, c, s, vec![]);
+    // Long family menus paint clipped rows. Scroll the real menu before
+    // clicking, so a hidden row cannot accidentally target the inspector.
+    for _ in 0..4 {
+        let painted = out.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => {
+                Some((shape.clip_rect, text.pos + text.galley.size() * 0.5))
+            }
+            _ => None,
+        });
+        let target = painted.or_else(|| {
+            let clip = out.shapes.iter().rev().find_map(|shape| {
+                matches!(shape.shape, egui::Shape::Text(_)).then_some(shape.clip_rect)
+            })?;
+            let bounds = out
+                .platform_output
+                .accesskit_update
+                .as_ref()?
+                .nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                })?;
+            let center = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.) as f32,
+                ((bounds.y0 + bounds.y1) / 2.) as f32,
+            );
+            Some((clip, center))
+        });
+        let clipped = target.filter(|(clip, center)| !clip.contains(*center));
+        let Some((clip, center)) = clipped else { break };
+        out.drop_without_applying_deltas();
+        unified_frame(
+            ctx,
+            c,
+            s,
+            vec![
+                egui::Event::PointerMoved(clip.center()),
+                egui::Event::MouseWheel {
+                    phase: egui::TouchPhase::Move,
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., clip.center().y - center.y),
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+        out = unified_frame(ctx, c, s, vec![]);
+    }
     let pos = out
         .shapes
         .iter()
@@ -226,7 +276,17 @@ fn unified_click(ctx: &egui::Context, c: &mut ModelToolController, s: &mut Sessi
                     )
                 })
         })
-        .unwrap_or_else(|| panic!("Missing thread control {label}"));
+        .unwrap_or_else(|| {
+            let painted: Vec<_> = out
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            panic!("Missing thread control {label}; painted text: {painted:?}")
+        });
     out.drop_without_applying_deltas();
     for pressed in [true, false] {
         unified_frame(
@@ -1043,4 +1103,140 @@ fn painted_npt_mode_changes_preserve_length_and_native_preview_cancel_apply_hist
         .unwrap();
     c.cancel();
     assert_eq!(s.document(), &saved);
+}
+
+#[test]
+fn painted_lead_screw_presets_keep_literal_length_left_hand_multiple_starts_and_native_history() {
+    for row in model::lead_screw_presets()
+        .into_iter()
+        .filter(|r| r.designation == "Tr10 × 2" || r.designation == "1/2-10 Acme")
+    {
+        let mut s = Session::new(Document::new("Lead screw inspector").unwrap()).unwrap();
+        let before = s.document().clone();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut c = controller();
+        let request = model::ThreadRequest::new(
+            "Authored lead length",
+            model::ThreadParameters {
+                length: model::length(9.5),
+                ..Default::default()
+            },
+        );
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Thread(Box::new(
+                ThreadPanel::new(
+                    request,
+                    s.parameters().clone(),
+                    vec![],
+                    &BTreeSet::new(),
+                    false,
+                )
+                .unwrap(),
+            )),
+        )
+        .unwrap();
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+        unified_click(&ctx, &mut c, &mut s, row.family.label());
+        unified_click(
+            &ctx,
+            &mut c,
+            &mut s,
+            &format!("Choose a sourced {} preset…", row.family.label()),
+        );
+        unified_click(&ctx, &mut c, &mut s, row.designation);
+        unified_click(&ctx, &mut c, &mut s, "Left hand");
+        unified_click(&ctx, &mut c, &mut s, "1");
+        unified_frame(
+            &ctx,
+            &mut c,
+            &mut s,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Text("2".into()),
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+        let request = match c.form.as_ref().unwrap() {
+            ModelForm::Thread(p) => p.request(s.document(), true).unwrap(),
+            _ => panic!(),
+        };
+        assert_eq!(request.parameters.length, model::length(9.5));
+        assert_eq!(request.parameters.hand, model::ThreadHand::Left);
+        assert_eq!(request.parameters.starts, 2);
+        assert_eq!(request.parameters.family, row.family);
+        assert_eq!(request.parameters.fit, model::ThreadFit::NominalBasic);
+        let r = request
+            .parameters
+            .resolve(s.parameters(), request.mode)
+            .unwrap();
+        assert!((r.lead_mm - 2. * row.pitch_mm).abs() < 1e-12);
+        assert_eq!(r.lead_screw.unwrap().preset, row);
+        unified_click(&ctx, &mut c, &mut s, row.family.label());
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+        unified_click(&ctx, &mut c, &mut s, row.family.label());
+        let restored = match c.form.as_ref().unwrap() {
+            ModelForm::Thread(p) => p.request(s.document(), true).unwrap(),
+            _ => panic!(),
+        };
+        assert_eq!(restored.parameters, request.parameters);
+        unified_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &before);
+        unified_click(&ctx, &mut c, &mut s, "Cancel");
+        assert_eq!(s.document(), &before);
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Thread(Box::new(
+                ThreadPanel::new(
+                    request.clone(),
+                    s.parameters().clone(),
+                    vec![],
+                    &BTreeSet::new(),
+                    false,
+                )
+                .unwrap(),
+            )),
+        )
+        .unwrap();
+        unified_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        let outputs = c.apply(&mut s, &Default::default()).unwrap();
+        let feature = outputs[0].feature;
+        assert_eq!(
+            model::read_thread(s.document(), feature)
+                .unwrap()
+                .parameters,
+            request.parameters
+        );
+        let saved = s.document().clone();
+        s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &before);
+        s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &saved);
+        c.begin_existing(&s, &Default::default(), feature, Channel::Ui)
+            .unwrap();
+        c.cancel();
+        assert_eq!(s.document(), &saved);
+    }
 }

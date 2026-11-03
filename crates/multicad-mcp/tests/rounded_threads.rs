@@ -193,7 +193,7 @@ fn rounded_profiles_distinguish_series_pipe_size_semantics_and_explicit_class_co
     );
     assert_eq!(report["bspt_presets"].as_array().unwrap().len(), 2);
     assert_eq!(report["bspt_support"]["hands"], json!(["right"]));
-    for family in ["whitworth", "acme"] {
+    for family in ["whitworth", "buttress"] {
         assert_eq!(
             report["families"]
                 .as_array()
@@ -878,5 +878,178 @@ fn npt_nested_nut_and_screw_inspection_keep_the_shared_gauge_receipt() {
             json!({"feature":feature}),
         );
         assert_eq!(restored["resolved"]["npt"], inspected["resolved"]["npt"]);
+    }
+}
+
+fn lead_screw_args(row: &model::LeadScrewPreset) -> Value {
+    let major = row.nominal_diameter_inch.map_or_else(
+        || mm(row.diameter_mm),
+        |value| json!({"value":value,"unit":"in"}),
+    );
+    let pitch = row.threads_per_inch.map_or_else(
+        || mm(row.pitch_mm),
+        |tpi| json!({"value":1./f64::from(tpi),"unit":"in"}),
+    );
+    json!({"name":"Sourced basic lead screw","family":row.family,"fit":"nominal_basic","major_diameter":major,"pitch":pitch,"length":mm(4.37*row.pitch_mm),"hand":"left","starts":2})
+}
+#[test]
+fn lead_screw_profiles_and_owner_preview_keep_distinct_angles_clearance_units_and_actual_lead() {
+    let h = empty();
+    let before = h.document();
+    let catalog = run(&h, "thread_profiles", json!({}));
+    assert_eq!(catalog["lead_screw_presets"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        catalog["lead_screw_support"]["starts"],
+        json!([1, 2, 3, 4, 5, 6, 7, 8])
+    );
+    assert_eq!(
+        catalog["lead_screw_support"]["tolerance_classes"],
+        "unavailable"
+    );
+    assert_eq!(h.document(), before);
+    for row in model::lead_screw_presets() {
+        let inspected = reviewed_native_thread(row.family, lead_screw_args(&row));
+        assert_eq!(
+            inspected["source"]["parameters"]["family"],
+            json!(row.family)
+        );
+        assert_eq!(inspected["source"]["parameters"]["fit"], "nominal_basic");
+        assert_eq!(inspected["resolved"]["fit"], Value::Null);
+        assert_eq!(inspected["resolved"]["lead_screw"]["preset"], json!(row));
+        assert!(
+            (inspected["resolved"]["lead_mm"].as_f64().unwrap() - 2. * row.pitch_mm).abs() < 1e-12
+        );
+        assert_eq!(
+            inspected["resolved"]["profile"]["lower_flank_deg"],
+            row.included_angle_deg / 2.
+        );
+        assert_eq!(
+            inspected["resolved"]["profile"]["upper_flank_deg"],
+            row.included_angle_deg / 2.
+        );
+        if row.family == model::ThreadFamily::Acme {
+            assert_eq!(inspected["source"]["parameters"]["pitch"]["unit"], "in");
+        }
+    }
+}
+#[test]
+fn lead_screw_mcp_edits_failure_cancel_history_save_and_independent_reopen_keep_basic_intent() {
+    for row in model::lead_screw_presets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lead.tcd");
+        Store
+            .save(
+                &path,
+                &ProjectFile::new(Document::new("Lead MCP").unwrap()).unwrap(),
+            )
+            .unwrap();
+        let h = Headless::new(
+            Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+            Some(dir.path().into()),
+            false,
+        );
+        let mut args = lead_screw_args(&row);
+        args["expected_revision"] = json!(0);
+        assert_eq!(
+            dispatch(&h, &call(true), "set_thread", args.clone())
+                .unwrap_err()
+                .code,
+            "cancelled"
+        );
+        let created = run(&h, "set_thread", args);
+        let feature = created["thread"].clone();
+        let original = h.document();
+        for bad in [
+            json!({"expected_revision":1,"thread":feature,"fit":"unified_2a"}),
+            json!({"expected_revision":1,"thread":feature,"starts":9}),
+            json!({"expected_revision":1,"thread":feature,"pitch":mm(row.pitch_mm+0.1)}),
+            json!({"expected_revision":0,"thread":feature,"radial_allowance":mm(0.005)}),
+        ] {
+            assert!(dispatch(&h, &call(false), "set_thread", bad).is_err());
+            assert_eq!(h.document(), original);
+        }
+        run(
+            &h,
+            "set_thread",
+            json!({"expected_revision":1,"thread":feature,"radial_allowance":mm(0.005)}),
+        );
+        let inspected = run(&h, "inspect_thread", json!({"thread":feature}));
+        assert_eq!(inspected["resolved"]["lead_screw"]["preset"], json!(row));
+        assert_eq!(inspected["source"]["parameters"]["starts"], 2);
+        assert_eq!(inspected["source"]["parameters"]["hand"], "left");
+        assert!(
+            (inspected["resolved"]["actual_pitch_diameter_mm"]
+                .as_f64()
+                .unwrap()
+                - (row.basic_pitch_diameter_mm - 0.01))
+                .abs()
+                < 1e-12
+        );
+        let changed = h.document();
+        run(&h, "undo", json!({"expected_revision":2}));
+        assert_eq!(h.document(), original);
+        run(&h, "redo", json!({"expected_revision":3}));
+        assert_eq!(h.document(), changed);
+        run(&h, "save_project", json!({"expected_revision":4}));
+        drop(h);
+        let reopened = Headless::new(
+            Workspace::project(path, Box::new(Store)).unwrap(),
+            Some(dir.path().into()),
+            false,
+        );
+        assert_eq!(reopened.document(), changed);
+        let restored = run(&reopened, "inspect_thread", json!({"thread":feature}));
+        assert_eq!(restored["source"], inspected["source"]);
+        assert_eq!(restored["resolved"], inspected["resolved"]);
+        let step = run(
+            &reopened,
+            "export_step",
+            json!({"part":created["part"],"file_name":"lead.step"}),
+        );
+        assert!(step["readback_volume_mm3"].as_f64().unwrap() > 0.);
+    }
+}
+#[test]
+fn lead_screw_nested_hardware_exposes_the_same_mode_specific_basic_receipt() {
+    for row in model::lead_screw_presets() {
+        for internal in [false, true] {
+            let h = empty();
+            let mut thread = lead_screw_args(&row);
+            thread.as_object_mut().unwrap().remove("name");
+            let recipe = if internal {
+                json!({"kind":"hex_nut","across_flats":mm(20.),"thread":thread})
+            } else {
+                json!({"kind":"machine_screw","underhead_length":mm(4.37*row.pitch_mm),"shank_diameter":mm(row.diameter_mm),"head":{"kind":"external_hex","across_flats":mm(20.),"height":mm(3.)},"drive":{"kind":"external_hex"},"thread":thread})
+            };
+            let created = run(
+                &h,
+                "set_mechanical_part",
+                json!({"expected_revision":0,"name":"Basic lead hardware","recipe":recipe}),
+            );
+            let inspected = run(
+                &h,
+                "inspect_mechanical_part",
+                json!({"feature":created["feature"]}),
+            );
+            let receipt = &inspected["resolved"]["lead_screw"];
+            assert_eq!(receipt["preset"], json!(row));
+            assert_eq!(
+                receipt["nominal_pitch_diameter_mm"],
+                row.basic_pitch_diameter_mm
+            );
+            let major = if internal {
+                row.internal_major_diameter_mm
+            } else {
+                row.diameter_mm
+            };
+            assert!(
+                (receipt["nominal_construction_major_diameter_mm"]
+                    .as_f64()
+                    .unwrap()
+                    - major)
+                    .abs()
+                    < 1e-12
+            );
+        }
     }
 }

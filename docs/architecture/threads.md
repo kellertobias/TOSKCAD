@@ -26,8 +26,8 @@ disabled in the inspector and refused by the canonical API.
 | Legacy ambiguous Whitworth | Unavailable | Select BSW or BSF explicitly; `whitworth` remains unsupported |
 | BSPT | Right-hand, single-start R external and Rc internal tapered rounded 55-degree form; 1/8-28 and 1/4-19 | ISO 7-1:1994 with Cor 1:2007; nominal gauge convention and bounded position tolerance; Rp unavailable |
 | NPT | Right-hand, single-start external/internal 60-degree axial form; 1/8-27 and 1/4-18 | NBS H28 (1957) Part II, 1959 printing; plain-face nominal gauge, historical one-turn tolerance, explicit midpoint truncation; no NPTF or vanish/runout |
-| Trapezoidal | Unavailable | Standard profile and size coverage unimplemented |
-| Acme | Unavailable | Standard profile and size coverage unimplemented |
+| Trapezoidal | Parallel 30-degree nominal sharp design profile; Tr10x2 and Tr12x3 | ISO 2901:2016 and ISO 2904:2020 basic/design dimensions; source crest/root clearance, no ISO 2903 tolerance class |
+| Acme | Parallel 29-degree nominal sharp profile; 3/8-12 and 1/2-10 | NBS H28 (1957) Part III, issued 1960; basic form plus general-purpose crest/root clearance, no G-class fit |
 | Buttress | Unavailable | Standard asymmetric profile and size coverage unimplemented |
 | Round | Unavailable | Rounded profile and standard size coverage unimplemented |
 
@@ -93,6 +93,69 @@ establish full ISO compliance. The
 [ISO 228-1:2000 abstract](https://committee.iso.org/standard/33777.html?browse=tc)
 identifies parallel fastening threads with any pressure seal outside the
 thread. No pressure-sealing result is claimed.
+
+## Trapezoidal and Acme lead-screw profiles
+
+The [lead-screw registry](../../crates/multicad-core/src/model/threads/lead_screw.rs)
+keeps metric Trapezoidal and inch Acme as separate families. Persisted intent
+uses the existing family, matched nominal diameter/pitch, `nominal_basic`,
+hand, starts and fabrication allowances. No extra authored profile object is
+needed for the single pinned convention in each family. Saved direct, nested,
+suppressed, template and retained-reference sources require
+`model.thread.lead_screw.1`. The resolved `lead_screw` receipt identifies the
+source row, actual mode's basic construction dimensions, source radial
+crest/root clearance, hand, start count and lead.
+
+Metric sources are ISO 2901:2016, third edition 2016-09-15, Figure 2/Table 2
+(printed pages 4-5), and ISO 2904:2020, second edition 2020-01, Table 1
+(printed pages 2-3). The ISO-authored public previews contain the implemented
+[profile equations](https://cdn.standards.iteh.ai/samples/68337/c87112d8e3dc487c95fd964d13101ca4/ISO-2901-2016.pdf)
+and [diameter rows](https://cdn.standards.iteh.ai/samples/78729/7d158726108b478c889fa887d460ba78/ISO-2904-2020.pdf).
+
+| Basic row | Half-angle | Radial clearance c | Basic pitch diameter | External minor | Internal minor | Internal major |
+| --- | --- | --- | --- | --- | --- | --- |
+| Tr10x2, mm | 15 degrees | 0.25 | 9 | 7.5 | 8 | 10.5 |
+| Tr12x3, mm | 15 degrees | 0.25 | 10.5 | 8.5 | 9 | 12.5 |
+| 3/8-12 Acme, inch | 14.5 degrees | 0.005 | 0.375 - 0.5/12 | 0.375 - 1/12 - 0.010 | 0.375 - 1/12 | 0.385 |
+| 1/2-10 Acme, inch | 14.5 degrees | 0.010 | 0.450 | 0.380 | 0.400 | 0.520 |
+
+Acme uses [NBS H28 (1957), Part III](https://nvlpubs.nist.gov/nistpubs/Legacy/hb/nbshandbook28supp1957pt3.pdf),
+issued 7 October 1960, section XII.2 and Figure XII.1 (printed pages 1-2).
+Table XII.3 supplies the diameter/TPI series. Exact inch pitch is `1/TPI`;
+conversion uses 25.4 mm/in. General-purpose minimum crest/root clearance is
+0.020 inch on diameter for 10 TPI and coarser, and 0.010 inch for finer pitches.
+The registry uses half those values on radius. It retains exact basic-formula
+dimensions rather than substituting independently rounded fitted limits.
+
+For nominal external diameter `d`, adjacent pitch `P`, source radial clearance
+`c` and half-angle `a`, both profiles have depth `P/2 + c`. The external
+major/minor are `d` and `d - P - 2c`; the internal cutter major/minor are
+`d + 2c` and `d - P`. Both share basic pitch diameter `d - P/2`.
+At construction major diameter `M`, the cutter/tooth crest width is
+`P/2 - (M - basic_pitch_diameter)*tan(a)`. Internal cutter crest width is the
+nut's root flat; copying the external width would give the wrong pitch
+diameter. Exact trigonometry remains distinct from Acme's printed rounded
+0.3707P basic-flat coefficient. Sharp corners are the limiting design choice;
+source maximum or optional corner rounding is not represented as a fixed arc.
+
+These basic members have zero theoretical flank allowance before fabrication
+adjustments. They are not an ISO 2903 fit or an Acme 2G/3G/4G product. For
+example, the 1/2-10 basic external pitch diameter is 0.450 inch, exceeding
+H28 Table XII.10's 2G maximum 0.4443 inch. Native mating tests use explicitly
+recorded additional fabrication clearance; that is not a sourced fit class
+or a free-running physical-fit result. Stub and Centralizing Acme, other rows,
+fit classes and rounded/runout variants remain unavailable.
+
+The native implementation allows 1-8 starts and either hand within its
+geometry budget. The profile still uses adjacent pitch, while lead magnitude
+is `pitch*starts`; hand controls its direction. Source lead/LH conventions
+appear in H28 XII.6 and historical ISO 2902:1977 clause 4, available in its
+[identical SIST 1995 adoption](https://cdn.standards.iteh.ai/samples/7935/31bcf5ecb73d401687b08ba20569ff17/SIST-ISO-2902-1995.pdf).
+This historical notation evidence is separate from current ISO 2902:2016,
+which delegates designation to ISO 2903. Multi-start coverage here is an
+engineering extension of the sourced basic profile, not certification of
+arbitrary standard lead/fit combinations, load, precision or physical fit.
+The display reports start count, lead and RH/LH explicitly.
 
 ## NPT construction and source limits
 
