@@ -55,6 +55,13 @@ fn profiles_report_supported_presets_and_explicitly_unavailable_families_without
     );
     assert_eq!(
         families.iter().find(|f| f["family"] == "npt").unwrap()["supported"],
+        true
+    );
+    assert_eq!(report["npt_presets"].as_array().unwrap().len(), 2);
+    assert_eq!(report["npt_support"]["gauge"], "nbs1959_plain_face");
+    assert_eq!(report["npt_support"]["nptf"], "unavailable");
+    assert_eq!(
+        families.iter().find(|f| f["family"] == "acme").unwrap()["supported"],
         false
     );
     for diameter in [2., 2.5, 3., 3.5, 4., 4.5, 5., 6., 7., 8., 9., 10.] {

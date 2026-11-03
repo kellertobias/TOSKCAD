@@ -76,6 +76,7 @@ fn sourced_metric_presets_and_basic_dimensions_do_not_imply_fit_classes_or_unive
             ThreadFamily::Bsf,
             ThreadFamily::Bspp,
             ThreadFamily::Bspt,
+            ThreadFamily::Npt,
             ThreadFamily::Custom
         ]
     );
