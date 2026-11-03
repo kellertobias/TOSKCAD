@@ -337,3 +337,250 @@ fn cosmetic_envelopes_are_explicit_and_cannot_publish_as_modeled_step_mesh_or_pr
             .can_write()
     );
 }
+
+fn unified_parameters(family: model::ThreadFamily, internal: bool) -> ThreadParameters {
+    let pitch = 25.4
+        / if family == model::ThreadFamily::Unc {
+            20.
+        } else {
+            28.
+        };
+    ThreadParameters {
+        family,
+        fit: if internal {
+            model::ThreadFit::Unified2B
+        } else {
+            model::ThreadFit::Unified2A
+        },
+        major_diameter: length(6.35),
+        pitch: length(pitch),
+        length: length(4. * pitch),
+        ..Default::default()
+    }
+}
+
+fn material_fraction(solid: &Solid, center: [f64; 3]) -> f64 {
+    let side = 0.005;
+    let probe = Solid::box_solid([side; 3], Default::default())
+        .unwrap()
+        .transformed(multicad_kernel::RigidTransform {
+            translation_mm: center.map(|v| v - side / 2.),
+            ..Default::default()
+        })
+        .unwrap();
+    solid
+        .boolean(&probe, BooleanOperation::Intersect, Default::default())
+        .unwrap()
+        .map_or(0., |s| s.volume_mm3().unwrap())
+        / side.powi(3)
+}
+
+#[test]
+fn unified_unc_and_unf_have_native_pitch_sections_mating_clearance_and_manufacturing_exports() {
+    for family in [model::ThreadFamily::Unc, model::ThreadFamily::Unf] {
+        let mut s = session();
+        let male_parameters = unified_parameters(family, false);
+        let evaluated = multicad_core::parameters::evaluate(s.document()).unwrap();
+        let resolved = male_parameters
+            .resolve(&evaluated, ThreadMode::NewExternal)
+            .unwrap();
+        let male = shaft(&mut s, male_parameters);
+        let blank = PrimitiveRequest::new(
+            "Unified nut stock",
+            PrimitiveParameters::Cylinder {
+                radius: length(5.),
+                height: length(resolved.length_mm),
+                frame: Default::default(),
+            },
+        );
+        primitive(&mut s, &blank);
+        let hole = ThreadRequest::receiving(
+            "Unified 2B nut",
+            ThreadMode::CutInternal,
+            BodyInput {
+                body: blank.body,
+                producer: blank.feature,
+            },
+            unified_parameters(family, true),
+        )
+        .unwrap();
+        thread(&mut s, &hole);
+        let native = compile(&s);
+        let screw = native.solid(male.feature).unwrap();
+        let nut = native.solid(hole.feature).unwrap();
+        assert!(
+            screw
+                .boolean(nut, BooleanOperation::Intersect, Default::default())
+                .unwrap()
+                .is_none()
+        );
+        let radius = resolved.actual_pitch_diameter_mm.unwrap() / 2.;
+        for turn in [1., 2.] {
+            assert!(
+                material_fraction(screw, [radius, 0., (turn + 0.20) * resolved.pitch_mm]) > 0.999
+            );
+            assert!(
+                material_fraction(screw, [radius, 0., (turn + 0.30) * resolved.pitch_mm]) < 1e-5
+            );
+        }
+        assert!(material_fraction(nut, [0., 0., 2. * resolved.pitch_mm]) < 1e-5);
+        assert!(material_fraction(nut, [4.5, 0., 2. * resolved.pitch_mm]) > 0.999);
+        let screw_volume = screw.volume_mm3().unwrap();
+        let envelope_volume = PI * resolved.major_radius_mm.powi(2) * resolved.length_mm;
+        assert!(screw_volume < envelope_volume * 0.98);
+        let set = define_export(&mut s);
+        let exporter = Exporter::default();
+        let preview = exporter
+            .preview(s.document(), s.revision(), set, &actor(), None)
+            .unwrap();
+        assert!(preview.can_run(), "{:?}", preview.recipes);
+        let output = tempfile::tempdir().unwrap();
+        let receipt = exporter
+            .run(
+                s.document(),
+                s.revision(),
+                &preview.key,
+                output.path(),
+                &actor(),
+                None,
+            )
+            .unwrap();
+        let expected_volume = screw_volume + nut.volume_mm3().unwrap();
+        let mut step_files = 0;
+        let mut step_volume = 0.;
+        for file in &receipt.files {
+            let path = Path::new(&receipt.directory).join(&file.artifact.output.filename);
+            if path.extension().is_some_and(|ext| ext == "step") {
+                let readback = Solid::read_step(&path, Default::default()).unwrap();
+                step_volume += readback.volume_mm3().unwrap();
+                step_files += 1;
+            }
+        }
+        assert!(step_files > 0);
+        assert!((step_volume - expected_volume).abs() < 1e-3);
+        let print = PrintRequest {
+            source: PrintSource::Parts {
+                parts: vec![male.body],
+            },
+            aids: AidPolicy::IncludeAll,
+            quality: MeshQuality::default(),
+            stl_per_part: true,
+        };
+        let preview = exporter
+            .print_preview(s.document(), s.revision(), &print, &actor(), None)
+            .unwrap();
+        assert!(preview.can_write());
+        let print_receipt = exporter
+            .write_print(
+                s.document(),
+                s.revision(),
+                &print,
+                &preview.key,
+                &output.path().join("unified-screw.3mf"),
+                &actor(),
+                None,
+            )
+            .unwrap();
+        assert!(!print_receipt.files.is_empty());
+        for file in print_receipt.files {
+            assert!(file.triangles > 100);
+            assert!((file.mesh_volume_mm3 - screw_volume).abs() < screw_volume * 0.02);
+            assert!(file.mesh_volume_mm3 < envelope_volume * 0.98);
+        }
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(s.document().clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let reopened = project_file::read(
+            &mut &bytes[..],
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let reopened = Session::new(reopened.document).unwrap();
+        let source = model::read_thread(reopened.document(), male.feature).unwrap();
+        let readback = source
+            .parameters
+            .resolve(
+                &multicad_core::parameters::evaluate(reopened.document()).unwrap(),
+                source.mode,
+            )
+            .unwrap();
+        assert_eq!(resolved.fit, readback.fit);
+        assert_eq!(
+            resolved.actual_pitch_diameter_mm,
+            readback.actual_pitch_diameter_mm
+        );
+        assert!(
+            (compile(&reopened)
+                .solid(male.feature)
+                .unwrap()
+                .volume_mm3()
+                .unwrap()
+                - screw_volume)
+                .abs()
+                < 1e-3
+        );
+    }
+}
+
+#[test]
+fn unified_internal_wall_uses_fitted_cutter_radius_and_failure_preserves_the_document() {
+    for extra_wall in [0., 0.1] {
+        let mut s = session();
+        let parameters = unified_parameters(model::ThreadFamily::Unc, true);
+        let stock = PrimitiveRequest::new(
+            "Wall-limit stock",
+            PrimitiveParameters::Cylinder {
+                radius: length(6.35 / 2. + 1. + extra_wall),
+                height: length(5.08),
+                frame: Default::default(),
+            },
+        );
+        primitive(&mut s, &stock);
+        let before = s.document().clone();
+        let request = ThreadRequest::receiving(
+            "Fitted 2B wall",
+            ThreadMode::CutInternal,
+            BodyInput {
+                body: stock.body,
+                producer: stock.feature,
+            },
+            parameters,
+        )
+        .unwrap();
+        let prepared = model::prepare_thread(&s, s.revision(), actor(), &request).unwrap();
+        let built = Compiler {
+            omit_display: true,
+            ..Default::default()
+        }
+        .compile(prepared.prepared.document(), s.revision() + 1);
+        assert_eq!(built.is_ok(), extra_wall > 0.);
+        assert_eq!(s.document(), &before);
+    }
+}
+
+#[test]
+fn unified_cosmetic_fit_cannot_be_exported_as_a_manufacturing_thread() {
+    let mut s = session();
+    shaft(
+        &mut s,
+        ThreadParameters {
+            representation: ThreadRepresentation::CosmeticEnvelope,
+            ..unified_parameters(model::ThreadFamily::Unf, false)
+        },
+    );
+    let set = define_export(&mut s);
+    let preview = Exporter::default()
+        .preview(s.document(), s.revision(), set, &actor(), None)
+        .unwrap();
+    assert!(!preview.can_run());
+    assert!(preview.artifacts.is_empty());
+    assert!(preview.recipes.iter().all(
+        |r| matches!(&r.status, RecipeStatus::Unsupported(reason) if reason.contains("cosmetic"))
+    ));
+}
