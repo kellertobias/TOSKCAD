@@ -74,6 +74,8 @@ pub fn source_fingerprint() -> String {
         include_str!("threads.rs"),
         include_str!("threads.cpp"),
         include_str!("bridge.cpp"),
+        include_str!("advanced.cpp"),
+        include_str!("../include/advanced.hpp"),
         include_str!("geometry.rs"),
         include_str!("provenance.rs"),
         include_str!("lib.rs"),

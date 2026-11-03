@@ -289,6 +289,8 @@ mod ffi {
         fn compound_job() -> Result<UniquePtr<CompoundJob>>;
         fn compound_add(job: Pin<&mut CompoundJob>, shape: &Shape) -> Result<()>;
         fn compound_finish(job: Pin<&mut CompoundJob>) -> Result<UniquePtr<Shape>>;
+        #[allow(dead_code)] // Private optional compound property fallback regressions.
+        fn compound_property_fallback_probe(shape: &Shape) -> Result<bool>;
         fn solid_component_at(shape: &Shape, index: u32) -> Result<UniquePtr<Shape>>;
         fn shell_solid(
             shape: &Shape,
@@ -364,6 +366,14 @@ mod ffi {
         #[allow(dead_code)]
         fn thread_factory_contains(data: &ThreadData) -> Result<bool>;
         fn valid(shape: &Shape) -> Result<bool>;
+        #[allow(dead_code)] // Private successful-validation certificate regressions.
+        fn validity_check_count(shape: &Shape) -> Result<u64>;
+        #[allow(dead_code)]
+        fn shares_validity_cache(a: &Shape, b: &Shape) -> bool;
+        #[allow(dead_code)]
+        fn validity_cache_concurrent_probe(shape: &Shape) -> Result<bool>;
+        #[allow(dead_code)]
+        fn validity_cache_rejection_probe() -> Result<bool>;
         fn write_step(shape: &Shape, path: &str) -> Result<()>;
         fn read_step(path: &str) -> Result<UniquePtr<Shape>>;
         fn step_solids(path: &str) -> Result<Vec<StepSolidData>>;
@@ -618,3 +628,6 @@ pub use spline_edits::*;
 
 mod sketch_references;
 pub use sketch_references::*;
+
+#[cfg(test)]
+mod validity_cache_tests;

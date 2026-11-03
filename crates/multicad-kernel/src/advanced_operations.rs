@@ -306,3 +306,135 @@ impl Solid {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod compound_property_tests {
+    use super::*;
+    use crate::{HelicalThread, ffi};
+    use multicad_core::references::TopologyKind;
+    fn faces_count(s: &Solid) -> u64 {
+        ffi::face_integration_count(&s.native.0).unwrap()
+    }
+    fn volumes_count(s: &Solid) -> u64 {
+        ffi::volume_integration_count(&s.native.0).unwrap()
+    }
+    #[test]
+    fn curved_compound_copies_keep_certificates_and_distinct_coincident_members() {
+        let policy = GeometryPolicy::default();
+        let owner = EntityId::new();
+        let source = Solid::helical_thread_named(
+            HelicalThread {
+                major_radius_mm: 1.5,
+                pitch_mm: 0.5,
+                length_mm: 10.,
+                depth_mm: 5. * 3_f64.sqrt() / 32.,
+                crest_width_mm: 0.5 / 8.,
+                lower_flank_deg: 30.,
+                upper_flank_deg: 30.,
+                radial_taper: 0.,
+                starts: 1,
+                left_hand: false,
+            },
+            owner,
+            policy,
+        )
+        .unwrap();
+        let original = source.to_brep().unwrap();
+        let before = source.topology_snapshot(owner, 0).unwrap();
+        let member = source
+            .share()
+            .unwrap()
+            .with_occurrence_origin(EntityId::new(), EntityId::new())
+            .unwrap();
+        let singleton = Solid::compound_named(&[&member], EntityId::new(), policy).unwrap();
+        assert_eq!(singleton.solid_count().unwrap(), 1);
+        assert_eq!(faces_count(&singleton), 0);
+        assert_eq!(volumes_count(&singleton), 0);
+        assert_eq!(
+            singleton.volume_mm3().unwrap(),
+            source.volume_mm3().unwrap()
+        );
+        let nested = Solid::compound_named(&[&singleton], EntityId::new(), policy).unwrap();
+        assert_eq!(faces_count(&nested), 0);
+        assert_eq!(volumes_count(&nested), 0);
+        assert_eq!(nested.volume_mm3().unwrap(), source.volume_mm3().unwrap());
+        let second = source
+            .share()
+            .unwrap()
+            .with_occurrence_origin(EntityId::new(), EntityId::new())
+            .unwrap();
+        let duplicate =
+            Solid::compound_named(&[&member, &second], EntityId::new(), policy).unwrap();
+        assert_eq!(duplicate.solid_count().unwrap(), 2);
+        assert_eq!(faces_count(&duplicate), 0);
+        assert_eq!(
+            volumes_count(&duplicate),
+            1,
+            "Multi-member compounds must retain ordinary native GK integration"
+        );
+        assert_eq!(
+            duplicate.faces().unwrap().len(),
+            source.faces().unwrap().len() * 2
+        );
+        let topology = duplicate.topology_snapshot(owner, 0).unwrap();
+        assert!(
+            topology
+                .elements
+                .iter()
+                .filter(|e| e.key.kind == TopologyKind::Face)
+                .all(|e| !e.origins.is_empty())
+        );
+        let directory = tempfile::tempdir().unwrap();
+        for (index, solid) in [&singleton, &nested, &duplicate].into_iter().enumerate() {
+            let fresh = Solid::from_brep(&solid.to_brep().unwrap(), policy).unwrap();
+            assert_eq!(volumes_count(&fresh), 1);
+            let area: f64 = solid.faces().unwrap().iter().map(|f| f.area_mm2).sum();
+            for (a, b) in solid.faces().unwrap().iter().zip(fresh.faces().unwrap()) {
+                assert_eq!(a.index, b.index);
+                assert_eq!(a.plane, b.plane);
+                assert!((a.area_mm2 - b.area_mm2).abs() < 1e-7 * (a.area_mm2 + b.area_mm2));
+                assert!(
+                    a.center_mm
+                        .into_iter()
+                        .zip(b.center_mm)
+                        .all(|(x, y)| (x - y).abs() < policy.linear_tolerance_mm)
+                );
+            }
+            let path = directory.path().join(format!("compound-{index}.step"));
+            solid.write_step(&path).unwrap();
+            let step = Solid::read_step(&path, policy).unwrap();
+            assert_eq!(step.solid_count().unwrap(), solid.solid_count().unwrap());
+            let budget = policy.linear_tolerance_mm
+                * (area
+                    + step
+                        .faces()
+                        .unwrap()
+                        .iter()
+                        .map(|f| f.area_mm2)
+                        .sum::<f64>())
+                + 1e-7 * (solid.volume_mm3().unwrap().abs() + step.volume_mm3().unwrap().abs());
+            assert!((step.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < budget);
+        }
+        assert!(ffi::compound_property_fallback_probe(&source.native.0).unwrap());
+        let raw = ffi::shape_from_brep(&original).unwrap();
+        let mut job = ffi::compound_job().unwrap();
+        ffi::compound_add(job.pin_mut(), &raw).unwrap();
+        let handle = ffi::compound_finish(job.pin_mut()).unwrap();
+        let cold = Solid::adopt(handle, policy, "cold compound").unwrap();
+        assert_eq!(volumes_count(&cold), 1);
+        assert_eq!(faces_count(&cold), 0);
+        assert_eq!(cold.faces().unwrap().len(), source.faces().unwrap().len());
+        assert_eq!(faces_count(&cold), source.faces().unwrap().len() as u64);
+        assert!(
+            Solid::compound_named_interruptible(
+                &[&source],
+                EntityId::new(),
+                policy,
+                Some(&|| true)
+            )
+            .is_err()
+        );
+        assert_eq!(source.to_brep().unwrap(), original);
+        assert_eq!(source.topology_snapshot(owner, 0).unwrap(), before);
+    }
+}

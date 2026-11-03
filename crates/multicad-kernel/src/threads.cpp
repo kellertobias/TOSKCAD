@@ -80,6 +80,7 @@ std::unique_ptr<Shape> thread_wrapper(const Shape &source) {
   result->bounds_cache=source.bounds_cache;
   result->volume_cache=source.volume_cache;
   result->face_cache=source.face_cache;
+  result->validity_cache=source.validity_cache;
   result->thread_factory_tag=source.thread_factory_tag;
   return result;
 }
@@ -329,6 +330,9 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   trace.stage("physical_guards",measured);
   measured=trace.mark();
   auto result=std::make_unique<Shape>(Shape{solid,{},{}});
+  // The final trimmed solid passed native BRepCheck above; later ancestry
+  // bookkeeping does not modify geometry.
+  record_validated_shape(*result);
   TopTools_IndexedMapOfShape faces;TopExp::MapShapes(solid,TopAbs_FACE,faces);
   for(int i=1;i<=faces.Extent();++i) {
     const BRepAdaptor_Surface surface(TopoDS::Face(faces(i)));

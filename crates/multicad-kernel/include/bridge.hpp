@@ -8,6 +8,8 @@
 #include <mutex>
 #include <optional>
 
+class TopoDS_Face;
+class gp_Pnt;
 namespace multicad::kernel {
 class VolumeIntegrationFailure : public std::runtime_error {
 public:
@@ -54,10 +56,16 @@ struct CachedFace {
   std::array<double,3> origin,normal,centroid;
   double area;
 };
+CachedFace describe_face(const TopoDS_Face &,uint32_t,const gp_Pnt &,double);
 struct FaceCache {
   std::mutex mutex;
   std::optional<std::vector<CachedFace>> value;
   uint64_t integrations=0;
+};
+struct ValidityCache {
+  std::mutex mutex;
+  bool accepted=false;
+  uint64_t checks=0;
 };
 struct Shape {
   TopoDS_Shape value;
@@ -72,6 +80,8 @@ struct Shape {
   // Completed numeric face properties belong to this exact immutable geometry.
   // Memory is bounded by its face count and lifetime; new geometry starts cold.
   std::shared_ptr<FaceCache> face_cache=std::make_shared<FaceCache>();
+  // Only successful native validation of this exact immutable geometry.
+  std::shared_ptr<ValidityCache> validity_cache=std::make_shared<ValidityCache>();
   // Only an original local thread result has this opaque factory identity.
   // Geometry-changing operations/imports never inherit it.
   std::shared_ptr<const ThreadFactoryTag> thread_factory_tag = {};
@@ -94,6 +104,11 @@ void reset_thread_factory_cache();
 void thread_factory_test_limits(uint32_t entries,uint64_t bytes);
 bool thread_factory_contains(const ThreadData &);
 bool valid(const Shape &);
+void record_validated_shape(Shape &);
+uint64_t validity_check_count(const Shape &);
+bool shares_validity_cache(const Shape &,const Shape &);
+bool validity_cache_concurrent_probe(const Shape &);
+bool validity_cache_rejection_probe();
 void write_step(const Shape &, rust::Str path);
 std::unique_ptr<Shape> read_step(rust::Str path);
 rust::Vec<StepSolidData> step_solids(rust::Str path);

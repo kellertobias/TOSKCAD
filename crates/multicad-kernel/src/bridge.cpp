@@ -56,6 +56,8 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Solid.hxx>
+#include <TopoDS_Shell.hxx>
 #include <array>
 #include <iostream>
 #include <thread>
@@ -79,7 +81,9 @@ template <class F> auto guard(F fn) -> decltype(fn()) {
 static std::unique_ptr<Shape> checked(const TopoDS_Shape &s) {
   if (s.IsNull() || !BRepCheck_Analyzer(s).IsValid())
     throw std::runtime_error("OCCT produced an invalid shape");
-  return std::make_unique<Shape>(Shape{s, {}, {}});
+  auto result=std::make_unique<Shape>(Shape{s, {}, {}});
+  record_validated_shape(*result);
+  return result;
 }
 static const std::array<TopAbs_ShapeEnum, 3> topologyKinds = {
     TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX};
@@ -268,10 +272,46 @@ std::unique_ptr<Shape> cut(const Shape &shape, double x, double w, double d,
     return checked(operation.Shape());
   });
 }
+void record_validated_shape(Shape &s) {
+  // Caller has just completed BRepCheck_Analyzer on this new native shape.
+  std::lock_guard<std::mutex> lock(s.validity_cache->mutex);
+  s.validity_cache->accepted=true;++s.validity_cache->checks;
+}
 bool valid(const Shape &s) {
   return guard([&] {
-    return !s.value.IsNull() && BRepCheck_Analyzer(s.value).IsValid();
+    std::lock_guard<std::mutex> lock(s.validity_cache->mutex);
+    if(s.validity_cache->accepted)return true;
+    if(s.value.IsNull())return false;
+    ++s.validity_cache->checks;
+    const bool accepted=BRepCheck_Analyzer(s.value).IsValid();
+    if(accepted)s.validity_cache->accepted=true;
+    return accepted;
   });
+}
+uint64_t validity_check_count(const Shape &s) {
+  std::lock_guard<std::mutex> lock(s.validity_cache->mutex);
+  return s.validity_cache->checks;
+}
+bool shares_validity_cache(const Shape &a,const Shape &b) {return a.validity_cache==b.validity_cache;}
+bool validity_cache_concurrent_probe(const Shape &source) {
+  Shape cold{source.value,{},{}};const auto shared=share_shape(cold);
+  std::array<bool,8> results{};std::array<std::exception_ptr,8> errors{};
+  std::vector<std::thread> workers;std::atomic<bool> start{false};
+  try {for(int i=0;i<8;++i)workers.emplace_back([&,i] {
+    while(!start.load(std::memory_order_acquire))std::this_thread::yield();
+    try {results[i]=valid(i%2?*shared:cold);}catch(...) {errors[i]=std::current_exception();}
+  });}catch(...) {start.store(true,std::memory_order_release);for(auto &w:workers)w.join();throw;}
+  start.store(true,std::memory_order_release);for(auto &w:workers)w.join();
+  for(int i=0;i<8;++i)if(errors[i])std::rethrow_exception(errors[i]);
+  return std::all_of(results.begin(),results.end(),[](bool value){return value;})&&validity_check_count(cold)==1;
+}
+bool validity_cache_rejection_probe() {
+  BRep_Builder builder;TopoDS_Solid solid;TopoDS_Shell shell;
+  builder.MakeSolid(solid);builder.MakeShell(shell);
+  const auto box=BRepPrimAPI_MakeBox(1.,1.,1.).Shape();
+  TopExp_Explorer first(box,TopAbs_FACE);builder.Add(shell,first.Current());builder.Add(solid,shell);
+  Shape bad{solid,{},{}};
+  return !valid(bad)&&!valid(bad)&&validity_check_count(bad)==2&&!bad.validity_cache->accepted;
 }
 double volume(const Shape &s) {
   return guard([&] {
@@ -496,7 +536,7 @@ static gp_Vec vec(const Point3 &p) { return gp_Vec(p.x, p.y, p.z); }
 static Point3 data(const gp_Pnt &p) { return Point3{p.X(), p.Y(), p.Z()}; }
 // Preserve the exact native planar descriptor path independently of numeric
 // quadrature: persistent references consume these output-surface descriptors.
-static CachedFace describe_face(const TopoDS_Face &face,uint32_t index,
+CachedFace describe_face(const TopoDS_Face &face,uint32_t index,
                                 const gp_Pnt &center,double area) {
   CachedFace result{index,false,{0,0,0},{0,0,0},{center.X(),center.Y(),center.Z()},area};
   BRepAdaptor_Surface surface(face,true);
@@ -711,16 +751,26 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
     BRepBuilderAPI_Transform operation(s.value, tr, false);
     if (!operation.IsDone())
       throw std::runtime_error("Rigid transform failed");
-    auto result = checked(operation.Shape());
-    record_history(*result, s, 0, operation);
-    // OCCT may attach a new identity Location datum even when its exact
-    // matrix is identity, so structural IsEqual alone misses this case.
-    // Require exact coefficients plus identical topological partner/orientation;
-    // no epsilon or transformed-centroid approximation is involved.
+    const auto transformed=operation.Shape();
     bool identity=true;
-    for(int row=1;row<=3;++row)for(int col=1;col<=4;++col)
-      identity=identity&&(tr.Value(row,col)==(row==col?1.:0.));
-    if(identity&&result->value.IsPartner(s.value)&&result->value.Orientation()==s.value.Orientation()) {
+    const auto beforeLocation=s.value.Location().Transformation();
+    const auto afterLocation=transformed.Location().Transformation();
+    for(int row=1;row<=3;++row)for(int col=1;col<=4;++col) {
+      identity=identity&&(tr.Value(row,col)==(row==col?1.:0.))&&
+          beforeLocation.Value(row,col)==afterLocation.Value(row,col);
+    }
+    identity=identity&&transformed.IsPartner(s.value)&&transformed.Orientation()==s.value.Orientation();
+    bool acceptedIdentity=false;
+    if(identity) {std::lock_guard<std::mutex> lock(s.validity_cache->mutex);acceptedIdentity=s.validity_cache->accepted;}
+    std::unique_ptr<Shape> result;
+    if(acceptedIdentity) {
+      result=std::make_unique<Shape>(Shape{transformed,{},{}});
+      result->validity_cache=s.validity_cache;
+    } else result=checked(transformed);
+    record_history(*result, s, 0, operation);
+    // Exact identity also preserves face order/world descriptors. All other
+    // new geometries validate independently and retain fresh result caches.
+    if(identity) {
       result->bounds_cache=s.bounds_cache;
       result->face_cache=s.face_cache;
     }
