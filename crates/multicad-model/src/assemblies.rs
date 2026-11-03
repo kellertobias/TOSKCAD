@@ -21,7 +21,74 @@ pub(crate) struct LeafStore {
     pub snapshots: BTreeMap<OccurrencePath, Arc<LeafOccurrenceSnapshot>>,
     pub solids: BTreeMap<OccurrencePath, Solid>,
 }
+pub(crate) struct CachedLeaves {
+    pub snapshots: BTreeMap<OccurrencePath, Arc<LeafOccurrenceSnapshot>>,
+    pub solids: BTreeMap<OccurrencePath, Solid>,
+}
+impl CachedLeaves {
+    pub fn shared(&self, revision: u64) -> Option<Self> {
+        let snapshots = self
+            .snapshots
+            .iter()
+            .map(|(path, leaf)| {
+                let mut leaf = (**leaf).clone();
+                leaf.topology.revision = revision;
+                (path.clone(), Arc::new(leaf))
+            })
+            .collect();
+        let solids = self
+            .solids
+            .iter()
+            .map(|(path, solid)| Some((path.clone(), solid.share().ok()?)))
+            .collect::<Option<_>>()?;
+        Some(Self { snapshots, solids })
+    }
+    pub fn estimated_bytes(&self) -> usize {
+        self.snapshots
+            .values()
+            .map(|leaf| leaf.topology.elements.len().saturating_mul(1280))
+            .sum()
+    }
+}
 impl LeafStore {
+    pub(crate) fn capture(&self, root: EntityId) -> Option<CachedLeaves> {
+        let snapshots = self
+            .snapshots
+            .iter()
+            .filter(|(path, _)| path.root == root)
+            .map(|(path, leaf)| (path.clone(), leaf.clone()))
+            .collect();
+        let solids = self
+            .solids
+            .iter()
+            .filter(|(path, _)| path.root == root)
+            .map(|(path, solid)| Some((path.clone(), solid.share().ok()?)))
+            .collect::<Option<_>>()?;
+        Some(CachedLeaves { snapshots, solids })
+    }
+    pub(crate) fn restore(&mut self, leaves: CachedLeaves) -> Result<(), ModelError> {
+        // Check the entire set before inserting anything: a failed restoration
+        // cannot leave partial paths or bypass ordinary occurrence budgets.
+        if self.snapshots.len().saturating_add(leaves.snapshots.len())
+            > multicad_core::model::MAX_ASSEMBLY_LEAVES
+            || leaves
+                .snapshots
+                .keys()
+                .any(|path| path.members.len() > 32 || self.snapshots.contains_key(path))
+            || leaves
+                .solids
+                .keys()
+                .any(|path| !leaves.snapshots.contains_key(path) || self.solids.contains_key(path))
+        {
+            return Err(error(
+                None,
+                "Cached assembly leaves exceed their budget or duplicate a canonical path",
+            ));
+        }
+        self.snapshots.extend(leaves.snapshots);
+        self.solids.extend(leaves.solids);
+        Ok(())
+    }
     fn insert(
         &mut self,
         snapshot: LeafOccurrenceSnapshot,

@@ -148,11 +148,157 @@ pub struct CompileStats {
     pub reused: BTreeSet<EntityId>,
     /// Evaluated features that are not cacheable (see the module docs).
     pub uncacheable: BTreeSet<EntityId>,
+    /// Same-owner audited literal symbol nodes restored this compile.
+    pub symbol_reused: BTreeSet<EntityId>,
+    /// Audited literal symbol nodes constructed this compile.
+    pub symbol_evaluated: BTreeSet<EntityId>,
     /// Entries evicted after this compile.
     pub evicted: usize,
     /// Entries and their estimated size after eviction.
     pub entries: usize,
     pub estimated_bytes: usize,
+}
+
+pub(crate) struct SymbolNode {
+    pub solid: Solid,
+    pub shape: Option<Arc<ShapeSnapshot>>,
+    pub occurrence: Option<Arc<crate::OccurrenceSnapshot>>,
+    pub leaves: crate::assemblies::CachedLeaves,
+}
+impl SymbolNode {
+    fn shared(&self, revision: u64) -> Option<Self> {
+        let shape = self.shape.as_ref().map(|shape| {
+            let mut copy = (**shape).clone();
+            copy.topology.revision = revision;
+            Arc::new(copy)
+        });
+        let occurrence = self.occurrence.as_ref().map(|occurrence| {
+            let mut copy = (**occurrence).clone();
+            copy.topology.revision = revision;
+            Arc::new(copy)
+        });
+        Some(Self {
+            solid: self.solid.share().ok()?,
+            shape,
+            occurrence,
+            leaves: self.leaves.shared(revision)?,
+        })
+    }
+    fn bytes(&self) -> usize {
+        let primary = self.shape.as_ref().map_or_else(
+            || {
+                self.occurrence
+                    .as_ref()
+                    .map_or(0, |o| o.topology.elements.len().saturating_mul(1280))
+            },
+            |s| estimate(s),
+        );
+        primary.saturating_add(self.leaves.estimated_bytes())
+    }
+}
+struct SymbolEntry {
+    node: SymbolNode,
+    bytes: usize,
+    used: u64,
+}
+#[derive(Clone)]
+struct LiteralSymbol {
+    entities: Vec<EntityId>,
+    feature: EntityId,
+}
+fn literal_symbols(document: &Document) -> BTreeMap<EntityId, LiteralSymbol> {
+    use multicad_core::symbols;
+    let mut output = BTreeMap::new();
+    // The ordinary compiler validates ownership before constructing its cache
+    // session. Keep this additional eligibility check fail-closed as well.
+    if symbols::validate(document).is_err() {
+        return output;
+    }
+    for entity in document.entities() {
+        let EntityData::Extension { definition, .. } = &entity.data else {
+            continue;
+        };
+        if definition.type_id != symbols::INSTANCE_TYPE {
+            continue;
+        }
+        let Ok(instance) = symbols::read_instance(document, entity.id) else {
+            continue;
+        };
+        let Ok(definition) = symbols::read_definition(document, instance.definition) else {
+            continue;
+        };
+        let mut feature = None;
+        let mut parts = 0;
+        let mut eligible = true;
+        for item in definition.template.entities() {
+            match &item.data {
+                EntityData::Parameter { .. } | EntityData::Material { .. } => {}
+                EntityData::Part { .. } => {
+                    parts += 1;
+                    if item.id != definition.root {
+                        eligible = false;
+                    }
+                }
+                EntityData::Feature {
+                    definition: source,
+                    suppressed: false,
+                    ..
+                } if source.type_id == model::MECHANICAL_PART_TYPE => {
+                    if feature.replace(item.id).is_some() {
+                        eligible = false;
+                    }
+                    if !model::read_mechanical_part(&definition.template, item.id).is_ok_and(
+                        |source| {
+                            matches!(
+                                source.parameters,
+                                model::MechanicalPartParameters::MachineScrew { .. }
+                            )
+                        },
+                    ) {
+                        eligible = false;
+                    }
+                }
+                _ => eligible = false,
+            }
+        }
+        let Some(feature) = feature.and_then(|id| instance.ids.get(&id).copied()) else {
+            continue;
+        };
+        let Some(part) = instance.ids.get(&definition.root).copied() else {
+            continue;
+        };
+        if !eligible
+            || parts != 1
+            || !matches!(document.get(part).map(|e|&e.data),Some(EntityData::Part {features,..}) if features==&[feature])
+        {
+            continue;
+        }
+        if !matches!(document.get(instance.instance).map(|e|&e.data),Some(EntityData::Instance {component,placement_source:None,..}) if *component==instance.wrapper)
+            || !matches!(document.get(instance.member).map(|e|&e.data),Some(EntityData::Instance {component,placement_source:None,..}) if *component==part)
+            || !matches!(document.get(instance.wrapper).map(|e|&e.data),Some(EntityData::Assembly {instances}) if instances==&[instance.member])
+        {
+            continue;
+        }
+        let mut entities = instance.ids.values().copied().collect::<Vec<_>>();
+        entities.extend([
+            entity.id,
+            instance.definition,
+            instance.instance,
+            instance.wrapper,
+            instance.wrapper_metadata,
+            instance.member,
+        ]);
+        // Conservatively fingerprint canonical material definitions/assignments
+        // as well as each private Part/material entity in the ownership map.
+        entities.extend(document.entities().filter(|e|matches!(&e.data,EntityData::Material {..})||matches!(&e.data,EntityData::Extension {definition,..} if definition.type_id.contains("material"))).map(|e|e.id));
+        entities.sort();
+        entities.dedup();
+        let graph = LiteralSymbol { entities, feature };
+        for id in [instance.member, instance.wrapper, instance.instance] {
+            output.insert(id, graph.clone());
+        }
+    }
+    output
 }
 
 /// Exact feature results reused across compiles of one model worker.
@@ -167,6 +313,8 @@ pub struct EvaluationCache {
     pending_symbol_proofs: BTreeSet<ContentHash>,
     symbol_proof_hits: usize,
     symbol_native_checks: usize,
+    symbol_nodes: BTreeMap<CacheKey, SymbolEntry>,
+    pending_symbol_nodes: BTreeMap<CacheKey, SymbolEntry>,
 }
 impl Default for EvaluationCache {
     fn default() -> Self {
@@ -186,6 +334,8 @@ impl EvaluationCache {
             pending_symbol_proofs: BTreeSet::new(),
             symbol_proof_hits: 0,
             symbol_native_checks: 0,
+            symbol_nodes: BTreeMap::new(),
+            pending_symbol_nodes: BTreeMap::new(),
         }
     }
     /// Statistics of the most recent cached compile (also when it failed or
@@ -207,6 +357,8 @@ impl EvaluationCache {
         self.gear_pairs.clear();
         self.symbol_proofs.clear();
         self.pending_symbol_proofs.clear();
+        self.symbol_nodes.clear();
+        self.pending_symbol_nodes.clear();
     }
     /// Completed, bounded native template receipts retained by this owner.
     pub fn symbol_template_proofs(&self) -> usize {
@@ -220,12 +372,41 @@ impl EvaluationCache {
     pub fn symbol_template_native_checks(&self) -> usize {
         self.symbol_native_checks
     }
+    /// Successfully committed same-owner literal symbol node results.
+    pub fn symbol_node_entries(&self) -> usize {
+        self.symbol_nodes.len()
+    }
     pub(crate) fn begin_symbol_proofs(&mut self) {
+        self.pending_symbol_nodes.clear();
         self.pending_symbol_proofs.clear();
     }
     pub(crate) fn finish_symbol_proofs(&mut self, success: bool) {
         let pending = std::mem::take(&mut self.pending_symbol_proofs);
+        let nodes = std::mem::take(&mut self.pending_symbol_nodes);
         if success {
+            let limit = self.max_entries.min(768);
+            let budget = self.retained_bytes.min(64 * 1024 * 1024);
+            for (key, entry) in nodes {
+                if limit == 0 || entry.bytes > budget {
+                    continue;
+                }
+                self.symbol_nodes.remove(&key);
+                while self.symbol_nodes.len() >= limit
+                    || self.symbol_nodes.values().map(|e| e.bytes).sum::<usize>()
+                        > budget - entry.bytes
+                {
+                    let Some(oldest) = self
+                        .symbol_nodes
+                        .iter()
+                        .min_by_key(|(_, e)| e.used)
+                        .map(|(key, _)| *key)
+                    else {
+                        break;
+                    };
+                    self.symbol_nodes.remove(&oldest);
+                }
+                self.symbol_nodes.insert(key, entry);
+            }
             let limit = self.max_entries.min(64);
             for key in pending {
                 if limit == 0 {
@@ -307,6 +488,7 @@ pub(crate) struct Session<'a> {
     edges: BTreeMap<EntityId, Option<Edges>>,
     volatile_sketches: BTreeSet<EntityId>,
     stats: CompileStats,
+    literal_symbols: BTreeMap<EntityId, LiteralSymbol>,
 }
 impl<'a> Session<'a> {
     pub(crate) fn new(
@@ -339,6 +521,7 @@ impl<'a> Session<'a> {
             edges: BTreeMap::new(),
             volatile_sketches,
             stats: CompileStats::default(),
+            literal_symbols: literal_symbols(document),
         }
     }
     /// Evaluation-dependency and mention edges of an entity.
@@ -447,6 +630,71 @@ impl<'a> Session<'a> {
             bytes.extend(hash);
         }
         Some(CacheKey(ContentHash::of(&bytes).0))
+    }
+    pub(crate) fn symbol_key(&mut self, id: EntityId) -> Option<CacheKey> {
+        let graph = self.literal_symbols.get(&id)?.clone();
+        // Keep the ordinary audited feature dependency key as an additional
+        // guard: an unsupported or contextual producer cannot enter this path.
+        let feature = self.key(graph.feature)?;
+        let mut bytes = self.salt.clone();
+        bytes.extend(b"literal-machine-screw-symbol/1");
+        bytes.extend(id.to_string().bytes());
+        bytes.extend(feature.0);
+        for entity in graph.entities {
+            bytes.extend(entity.to_string().bytes());
+            bytes.extend(self.hash(entity, Visit::Full)?);
+        }
+        Some(CacheKey(ContentHash::of(&bytes).0))
+    }
+    pub(crate) fn lookup_symbol(
+        &mut self,
+        key: &CacheKey,
+        id: EntityId,
+        revision: u64,
+    ) -> Option<SymbolNode> {
+        let entry = self.cache.symbol_nodes.get_mut(key)?;
+        let node = entry.node.shared(revision)?;
+        entry.used = self.cache.clock;
+        self.stats.symbol_reused.insert(id);
+        Some(node)
+    }
+    pub(crate) fn evaluated_symbol(&mut self, id: EntityId) {
+        self.stats.symbol_evaluated.insert(id);
+    }
+    pub(crate) fn stage_symbol(&mut self, key: CacheKey, node: SymbolNode) {
+        let bytes = node.bytes();
+        let budget = self.cache.retained_bytes.min(64 * 1024 * 1024);
+        if self.cache.max_entries == 0 || bytes > budget {
+            return;
+        }
+        // Stage only complete node+leaf results; promotion happens after the
+        // outer full compile passes its final reference/cancellation checks.
+        let used = self.cache.clock;
+        let limit = self.cache.max_entries.min(768);
+        self.cache.pending_symbol_nodes.remove(&key);
+        while self.cache.pending_symbol_nodes.len() >= limit
+            || self
+                .cache
+                .pending_symbol_nodes
+                .values()
+                .map(|entry| entry.bytes)
+                .sum::<usize>()
+                > budget - bytes
+        {
+            let Some(oldest) = self
+                .cache
+                .pending_symbol_nodes
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            self.cache.pending_symbol_nodes.remove(&oldest);
+        }
+        self.cache
+            .pending_symbol_nodes
+            .insert(key, SymbolEntry { node, bytes, used });
     }
     /// Reuse an earlier exact result, re-stamped for this revision.
     pub(crate) fn lookup(
