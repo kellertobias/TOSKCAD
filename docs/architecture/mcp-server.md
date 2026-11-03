@@ -155,7 +155,7 @@ schema is generated from the Rust argument types with schemars and returned by
 | `inspect_sketch` | no | Solve state, degrees of freedom, conflicts, geometry, constraints, text elements with their contour curve IDs and block corners, measurements, and regions with index and area |
 | `extrude` | yes | Extrude sketch regions, or planar model faces (`faces`: source feature and face ordinal from `reference_candidates`; exact boundary with holes, persistent face reference), by a signed distance as `new_body`, or `join`, `cut` or `intersect` a `target_part`; curved, missing, ambiguous or mixed inputs are refused unchanged |
 | `evaluate_model` | no | Native evaluation of every final part and placed instance, plus reference diagnostics |
-| `thread_profiles` | no | Offline family coverage, metric/UNC/UNF presets, fit limits, primary sources and manufacturing limits; see [threads](threads.md) |
+| `thread_profiles` | no | Offline family coverage, metric/UNC/UNF/BSW/BSF/BSPP presets, fit limits, primary sources and manufacturing limits; see [threads](threads.md) |
 | `inspect_thread` | no | Canonical thread source, separate basic/fitted pitch diameters, applicable fit limits, pitch and lead |
 | `set_thread` | yes | Create or edit a native thread through the shared canonical transaction API; see [thread control](#thread-control) |
 | `undo`, `redo` | yes | The most recent transaction on any channel |
@@ -288,12 +288,27 @@ Limit ranges have `min_mm` and `max_mm` endpoints; `null` means that endpoint
 is unspecified. An external minor-diameter reference is informational and
 must not become an invented acceptance limit.
 
+Rounded series are explicit `bsw`, `bsf` and `bspp`; the ambiguous legacy
+`whitworth` remains unavailable. `rounded_presets` lists six supported rows,
+their physical basic diameter, TPI/pitch, external/internal limits and source
+URLs. BSW/BSF use `whitworth_medium_external` or
+`whitworth_medium_internal`; BSPP uses `bspp_class_b_external` or
+`bspp_internal`. These require one start and zero axial allowance.
+BSW/BSF engagement is bounded to 15 pitches. BSPP's `engagement_limit_mm`
+is null because its source table supplies no bound; native limits still apply.
+G pipe labels are not physical inch diameters. BSPP sealing is outside the
+thread, and the selected table does not establish a pressure-sealing or full
+ISO-compliance result.
+
 `inspect_thread` reads canonical source and resolved dimensions without
 evaluating a solid. Use `evaluate_model` for native geometry and diagnostics.
 Its `nominal_pitch_diameter_mm` remains the basic-profile value.
 `actual_pitch_diameter_mm` and `fit` describe the intended fitted construction
 after allowances, with class, designation, provenance and applicable diameter
 limits. They are not measurements or gage/physical-fit certification.
+`resolved.profile` reports depth, flat crest width, flank angles and
+`rounding_radius_mm`. A positive rounding radius identifies the circular
+crest/root profile; a zero flat crest width is intentional for that form.
 Nested hex nuts expose the same fit evidence through `inspect_mechanical_part`.
 The generated `tools/list` schema owns argument names, types and enum values;
 the [tool implementation](../../crates/multicad-mcp/src/tools/threads.rs) defines
@@ -328,6 +343,9 @@ Pitch, lead, handedness and starts retain their separate source meanings.
 
 The tool prepares a canonical transaction, evaluates its candidate natively,
 then commits or queues it under the owner's review policy.
+After native evaluation, the final exclusive owner operation revalidates the
+prepared session and revision before either action. A stale candidate cannot
+be queued as a new review item following an owner edit or session replacement.
 Unsupported families, invalid dimensions, inadequate receiving walls,
 native failures, cancellation and stale revisions leave the document unchanged.
 Direct `export_step` also refuses a selected producer whose dependency history

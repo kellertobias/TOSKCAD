@@ -8,7 +8,7 @@ use multicad_core::{
 };
 use multicad_kernel::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, HelicalThread, PlaneFrame,
-    RigidTransform, Solid,
+    RigidTransform, RoundedHelicalThread, Solid,
 };
 use std::collections::BTreeMap;
 
@@ -111,22 +111,39 @@ pub(crate) fn build_resolved(
 ) -> Result<Solid, ModelError> {
     let tool = if resolved.representation == ThreadRepresentation::Modeled {
         let profile = resolved.profile;
-        let local = Solid::helical_thread_named(
-            HelicalThread {
-                major_radius_mm: resolved.major_radius_mm,
-                pitch_mm: resolved.pitch_mm,
-                length_mm: resolved.length_mm,
-                depth_mm: profile.depth_mm,
-                crest_width_mm: profile.crest_width_mm,
-                lower_flank_deg: profile.lower_flank_deg,
-                upper_flank_deg: profile.upper_flank_deg,
-                radial_taper: profile.radial_taper,
-                starts: resolved.starts,
-                left_hand: resolved.hand == ThreadHand::Left,
-            },
-            feature,
-            policy,
-        )
+        let local = if let Some(rounding_radius_mm) = profile.rounding_radius_mm {
+            Solid::rounded_helical_thread_named(
+                RoundedHelicalThread {
+                    major_radius_mm: resolved.major_radius_mm,
+                    pitch_mm: resolved.pitch_mm,
+                    length_mm: resolved.length_mm,
+                    depth_mm: profile.depth_mm,
+                    rounding_radius_mm,
+                    flank_angle_deg: profile.lower_flank_deg,
+                    starts: resolved.starts,
+                    left_hand: resolved.hand == ThreadHand::Left,
+                },
+                feature,
+                policy,
+            )
+        } else {
+            Solid::helical_thread_named(
+                HelicalThread {
+                    major_radius_mm: resolved.major_radius_mm,
+                    pitch_mm: resolved.pitch_mm,
+                    length_mm: resolved.length_mm,
+                    depth_mm: profile.depth_mm,
+                    crest_width_mm: profile.crest_width_mm,
+                    lower_flank_deg: profile.lower_flank_deg,
+                    upper_flank_deg: profile.upper_flank_deg,
+                    radial_taper: profile.radial_taper,
+                    starts: resolved.starts,
+                    left_hand: resolved.hand == ThreadHand::Left,
+                },
+                feature,
+                policy,
+            )
+        }
         .map_err(|e| error(Some(feature), e))?;
         local
             .transformed(RigidTransform {

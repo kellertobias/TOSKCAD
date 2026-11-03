@@ -1,4 +1,4 @@
-//! Bounded native helices with an explicit axial trapezoidal profile.
+//! Bounded native helices with flat or circular crest/root axial profiles.
 //! These are geometric inputs; standard families and fit tables belong to core.
 use crate::{GeometryError, GeometryErrorKind, GeometryPolicy, Solid, ffi};
 use multicad_core::document::EntityId;
@@ -17,6 +17,20 @@ pub struct HelicalThread {
     pub upper_flank_deg: f64,
     /// Change of radius per unit axial length, rather than diameter taper.
     pub radial_taper: f64,
+    pub starts: u32,
+    pub left_hand: bool,
+}
+/// Symmetric circular crest/root profile in an axial meridian. The first
+/// bounded implementation accepts the exact single-start, parallel 55° form.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundedHelicalThread {
+    pub major_radius_mm: f64,
+    pub pitch_mm: f64,
+    pub length_mm: f64,
+    pub depth_mm: f64,
+    pub rounding_radius_mm: f64,
+    /// Half of the included angle, measured from the radial direction.
+    pub flank_angle_deg: f64,
     pub starts: u32,
     pub left_hand: bool,
 }
@@ -88,6 +102,7 @@ impl HelicalThread {
             height: self.length_mm,
             depth: self.depth_mm,
             crest_width: self.crest_width_mm,
+            rounding: 0.,
             lower_slope,
             upper_slope,
             taper: self.radial_taper,
@@ -98,7 +113,67 @@ impl HelicalThread {
         })
     }
 }
+impl RoundedHelicalThread {
+    fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
+        let angle = 27.5_f64.to_radians();
+        let depth = self.pitch_mm / (3. * angle.tan());
+        let rounding = self.pitch_mm * angle.cos() / (12. * (1. - angle.sin()));
+        let matches = |actual: f64, expected: f64| {
+            actual.is_finite() && (actual - expected).abs() <= expected.abs() * 1e-12
+        };
+        if self.starts != 1
+            || !self.flank_angle_deg.is_finite()
+            || (self.flank_angle_deg - 27.5).abs() > 1e-10
+            || !matches(self.depth_mm, depth)
+            || !matches(self.rounding_radius_mm, rounding)
+        {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Rounded thread needs the exact symmetric 55-degree single-start parallel profile",
+            ));
+        }
+        policy.length(self.rounding_radius_mm)?;
+        let mut data = HelicalThread {
+            major_radius_mm: self.major_radius_mm,
+            pitch_mm: self.pitch_mm,
+            length_mm: self.length_mm,
+            depth_mm: self.depth_mm,
+            crest_width_mm: 2. * self.rounding_radius_mm * angle.cos(),
+            lower_flank_deg: self.flank_angle_deg,
+            upper_flank_deg: self.flank_angle_deg,
+            radial_taper: 0.,
+            starts: self.starts,
+            left_hand: self.left_hand,
+        }
+        .checked(policy)?;
+        data.rounding = self.rounding_radius_mm;
+        Ok(data)
+    }
+}
 impl Solid {
+    pub fn rounded_helical_thread_named(
+        spec: RoundedHelicalThread,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Thread feature identity must not be nil",
+            ));
+        }
+        let native = ffi::helical_thread(&spec.checked(policy)?)
+            .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+        let mut solid = Self::adopt(native, policy, "rounded thread")?;
+        if solid.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Thread must remain one connected solid",
+            ));
+        }
+        solid.name_thread(feature, spec.starts)?;
+        Ok(solid)
+    }
     /// Build a real helical B-rep around +Z with flat cut ends. Native face
     /// ancestry names each start's flanks/crest, the root and both end caps.
     pub fn helical_thread_named(

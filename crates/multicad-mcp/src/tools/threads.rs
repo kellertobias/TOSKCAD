@@ -27,6 +27,8 @@ pub enum ThreadFamilyArg {
     IsoMetric,
     Unc,
     Unf,
+    Bsw,
+    Bsf,
     /// Legacy ambiguous family; unavailable. Choose unc or unf explicitly.
     Unified,
     Whitworth,
@@ -45,6 +47,8 @@ impl From<ThreadFamilyArg> for ThreadFamily {
             ThreadFamilyArg::IsoMetric => Self::IsoMetric,
             ThreadFamilyArg::Unc => Self::Unc,
             ThreadFamilyArg::Unf => Self::Unf,
+            ThreadFamilyArg::Bsw => Self::Bsw,
+            ThreadFamilyArg::Bsf => Self::Bsf,
             ThreadFamilyArg::Unified => Self::Unified,
             ThreadFamilyArg::Whitworth => Self::Whitworth,
             ThreadFamilyArg::Bspp => Self::Bspp,
@@ -66,6 +70,14 @@ pub enum ThreadFitArg {
     Unified2A,
     #[serde(rename = "unified_2b")]
     Unified2B,
+    #[serde(rename = "whitworth_medium_external")]
+    WhitworthMediumExternal,
+    #[serde(rename = "whitworth_medium_internal")]
+    WhitworthMediumInternal,
+    #[serde(rename = "bspp_class_b_external")]
+    BsppClassBExternal,
+    #[serde(rename = "bspp_internal")]
+    BsppInternal,
 }
 impl From<ThreadFitArg> for ThreadFit {
     fn from(f: ThreadFitArg) -> Self {
@@ -73,6 +85,10 @@ impl From<ThreadFitArg> for ThreadFit {
             ThreadFitArg::NominalBasic => Self::NominalBasic,
             ThreadFitArg::Unified2A => Self::Unified2A,
             ThreadFitArg::Unified2B => Self::Unified2B,
+            ThreadFitArg::WhitworthMediumExternal => Self::WhitworthMediumExternal,
+            ThreadFitArg::WhitworthMediumInternal => Self::WhitworthMediumInternal,
+            ThreadFitArg::BsppClassBExternal => Self::BsppClassBExternal,
+            ThreadFitArg::BsppInternal => Self::BsppInternal,
         }
     }
 }
@@ -182,7 +198,7 @@ pub struct ThreadArgs {
 pub struct ThreadRecipeArgs {
     #[serde(default)]
     pub family: Option<ThreadFamilyArg>,
-    /// UNC/UNF require unified_2a externally or unified_2b internally. Omitted edits retain the saved class.
+    /// Sourced families require their explicit external/internal class. Omitted edits retain the saved class.
     #[serde(default)]
     pub fit: Option<ThreadFitArg>,
     /// Full explicit replacement of a Custom profile, including its angle/taper units.
@@ -326,6 +342,10 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
     let families:Vec<_> = ThreadFamily::ALL.into_iter().map(|family| {
         let fit_classes:Vec<_> = if family.supported() && family.is_unified() {
             vec![ThreadFit::Unified2A, ThreadFit::Unified2B]
+        } else if matches!(family,ThreadFamily::Bsw|ThreadFamily::Bsf) {
+            vec![ThreadFit::WhitworthMediumExternal,ThreadFit::WhitworthMediumInternal]
+        } else if family==ThreadFamily::Bspp {
+            vec![ThreadFit::BsppClassBExternal,ThreadFit::BsppInternal]
         } else if family.supported() {
             vec![ThreadFit::NominalBasic]
         } else {vec![]};
@@ -338,13 +358,23 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "internal":{"class":ThreadFit::Unified2B,"limits":p.internal},
         "engagement_limit_mm":1.5*p.diameter_mm,
     })).collect();
+    let rounded_presets:Vec<_> = model::whitworth_thread_presets().into_iter().map(|p|json!({
+        "family":p.family,"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm,
+        "nominal_diameter_inch":p.nominal_diameter_inch,"threads_per_inch":p.threads_per_inch,
+        "external":{"class":if p.family==ThreadFamily::Bspp {ThreadFit::BsppClassBExternal}else{ThreadFit::WhitworthMediumExternal},"limits":p.external},
+        "internal":{"class":if p.family==ThreadFamily::Bspp {ThreadFit::BsppInternal}else{ThreadFit::WhitworthMediumInternal},"limits":p.internal},
+        "engagement_limit_mm":if p.family==ThreadFamily::Bspp {None}else{Some(15.*p.pitch_mm)},
+        "source":p.source,"source_url":p.source_url,"profile_source_url":p.profile_source_url,
+    })).collect();
     Ok(json!({"families":families,
         "metric_source":model::METRIC_THREAD_SOURCE_URL,
         "metric_presets":model::metric_thread_presets().into_iter().map(|p|json!({"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm})).collect::<Vec<_>>(),
         "unified_source":model::UNIFIED_THREAD_SOURCE,"unified_source_url":model::UNIFIED_THREAD_SOURCE_URL,"unified_profile_source_url":model::UNIFIED_PROFILE_SOURCE_URL,
         "unified_presets":unified_presets,
+        "rounded_presets":rounded_presets,
+        "rounded_support":{"starts":[1],"included_angle_deg":55,"crest_and_root":"tangent_circular_arcs","axial_allowance_mm":[0],"coating":"uncoated","bspp_sealing":"Parallel fastening thread; sealing is outside the thread. G labels are nominal pipe sizes, not physical inch diameters.","claim":"BSW/BSF: bounded BS 84:2007 Medium rows. BSPP: bounded Elesa+Ganter 2018 table and NBK JIS B 0202:1999 basic form; no pressure-seal, full ISO compliance or physical-fit certification."},
         "unified_support":{"starts":[1],"form":"un_flat_root","coating":"uncoated","max_length_nominal_diameters":1.5,"limits":"Null range endpoints are unspecified; an external minor reference is not an acceptance limit","claim":"Historical sourced dimensions; no current ASME, calibrated-gage or physical-fit certification"},
-        "fit":"ISO metric and Custom use nominal basic dimensions; listed UNC/UNF sizes require explicit external 2A or internal 2B",
+        "fit":"ISO metric and Custom use nominal basic dimensions; UNC/UNF require 2A/2B; BSW/BSF require Medium external/internal; BSPP requires Class B external or the sourced internal class",
         "runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"}))
 }
 pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadArgs) -> ToolResult {
@@ -353,7 +383,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {

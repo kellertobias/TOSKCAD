@@ -9,6 +9,8 @@ pub enum ThreadFamily {
     Unc,
     Unf,
     Whitworth,
+    Bsw,
+    Bsf,
     Bspp,
     Bspt,
     Npt,
@@ -19,12 +21,14 @@ pub enum ThreadFamily {
     Custom,
 }
 impl ThreadFamily {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::IsoMetric,
         Self::Unified,
         Self::Unc,
         Self::Unf,
         Self::Whitworth,
+        Self::Bsw,
+        Self::Bsf,
         Self::Bspp,
         Self::Bspt,
         Self::Npt,
@@ -40,7 +44,9 @@ impl ThreadFamily {
             Self::Unified => "Unified UNC / UNF",
             Self::Unc => "Unified UNC",
             Self::Unf => "Unified UNF",
-            Self::Whitworth => "Whitworth BSW / BSF",
+            Self::Whitworth => "Whitworth BSW / BSF (legacy unspecified series)",
+            Self::Bsw => "Whitworth BSW",
+            Self::Bsf => "Whitworth BSF",
             Self::Bspp => "BSPP parallel pipe",
             Self::Bspt => "BSPT tapered pipe",
             Self::Npt => "NPT tapered pipe",
@@ -52,7 +58,19 @@ impl ThreadFamily {
         }
     }
     pub fn supported(self) -> bool {
-        matches!(self, Self::IsoMetric | Self::Unc | Self::Unf | Self::Custom)
+        matches!(
+            self,
+            Self::IsoMetric
+                | Self::Unc
+                | Self::Unf
+                | Self::Bsw
+                | Self::Bsf
+                | Self::Bspp
+                | Self::Custom
+        )
+    }
+    pub fn is_rounded(self) -> bool {
+        matches!(self, Self::Bsw | Self::Bsf | Self::Bspp)
     }
     pub fn is_unified(self) -> bool {
         matches!(self, Self::Unc | Self::Unf)
@@ -62,6 +80,8 @@ impl ThreadFamily {
             Self::IsoMetric => "NBK metric basic profile; JIS B 0205-2/4:2001; data revision 1",
             Self::Custom => "User-defined dimensions; no standard designation or fit class",
             Self::Unc | Self::Unf => UNIFIED_THREAD_SOURCE,
+            Self::Bsw | Self::Bsf => WHITWORTH_THREAD_SOURCE,
+            Self::Bspp => BSPP_THREAD_SOURCE,
             _ => "Not implemented; no sourced geometry or tolerance coverage claimed",
         }
     }
@@ -164,6 +184,7 @@ pub struct ResolvedThreadProfile {
     pub lower_flank_deg: f64,
     pub upper_flank_deg: f64,
     pub radial_taper: f64,
+    pub rounding_radius_mm: Option<f64>,
 }
 pub(super) fn resolve_profile(
     family: ThreadFamily,
@@ -174,6 +195,17 @@ pub(super) fn resolve_profile(
     parameters: &EvaluatedParameters,
 ) -> Result<ResolvedThreadProfile, DocumentError> {
     let profile = match family {
+        ThreadFamily::Bsw | ThreadFamily::Bsf | ThreadFamily::Bspp => {
+            let (depth_mm, radius_mm) = whitworth::profile_dimensions(pitch);
+            ResolvedThreadProfile {
+                depth_mm,
+                crest_width_mm: 0.,
+                lower_flank_deg: 27.5,
+                upper_flank_deg: 27.5,
+                radial_taper: 0.,
+                rounding_radius_mm: Some(radius_mm),
+            }
+        }
         ThreadFamily::Unc | ThreadFamily::Unf => ResolvedThreadProfile {
             depth_mm: if mode == ThreadMode::CutInternal {
                 5. * 3_f64.sqrt() / 16. * pitch
@@ -184,6 +216,7 @@ pub(super) fn resolve_profile(
             lower_flank_deg: 30.,
             upper_flank_deg: 30.,
             radial_taper: 0.,
+            rounding_radius_mm: None,
         },
         ThreadFamily::IsoMetric => {
             if !METRIC_PITCHES.iter().any(|(d, pitches)| {
@@ -199,6 +232,7 @@ pub(super) fn resolve_profile(
                 lower_flank_deg: 30.,
                 upper_flank_deg: 30.,
                 radial_taper: 0.,
+                rounding_radius_mm: None,
             }
         }
         ThreadFamily::Custom => {
@@ -211,6 +245,7 @@ pub(super) fn resolve_profile(
                 lower_flank_deg: number(&p.lower_flank, Unit::Degree, parameters)?,
                 upper_flank_deg: number(&p.upper_flank, Unit::Degree, parameters)?,
                 radial_taper: number(&p.radial_taper, Unit::Ratio, parameters)?,
+                rounding_radius_mm: None,
             }
         }
         _ => {
@@ -221,7 +256,7 @@ pub(super) fn resolve_profile(
         }
     };
     if profile.depth_mm <= 0.
-        || profile.crest_width_mm <= 0.
+        || (profile.rounding_radius_mm.is_none() && profile.crest_width_mm <= 0.)
         || ![profile.lower_flank_deg, profile.upper_flank_deg]
             .into_iter()
             .all(|v| (1. ..=80.).contains(&v))

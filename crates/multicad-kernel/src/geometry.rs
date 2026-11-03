@@ -781,3 +781,122 @@ impl Solid {
         )
     }
 }
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+    use crate::{AffineTransform, CurvedEdge2d, CurvedProfile, RevolutionAxis};
+    use multicad_core::{document::EntityId, references::Origin};
+
+    #[test]
+    fn legacy_cut_preserves_populated_source_and_shared_bounds_volume_and_validity() {
+        let policy = GeometryPolicy::default();
+        let original = Solid::cylinder(
+            PlaneFrame {
+                origin: [0., 3., 0.],
+                ..Default::default()
+            },
+            3.,
+            4.,
+            policy,
+        )
+        .unwrap();
+        let shared = original.share().unwrap();
+        let bounds = original.bounds().unwrap();
+        let volume = original.volume_mm3().unwrap();
+        assert_eq!(shared.bounds().unwrap(), bounds);
+        assert!((volume - 36. * std::f64::consts::PI).abs() < 1e-9);
+        assert!(ffi::valid(&original.native.0).unwrap());
+        assert!(ffi::valid(&shared.native.0).unwrap());
+
+        // Exercise the legacy entry point, rather than the newer boolean API.
+        // This removes the complete positive-X half of the offset cylinder.
+        let cut = Solid::adopt(
+            ffi::cut(&shared.native.0, 0., 4., 6., 4.).unwrap(),
+            policy,
+            "legacy cut regression",
+        )
+        .unwrap();
+        assert!((cut.volume_mm3().unwrap() - 18. * std::f64::consts::PI).abs() < 1e-9);
+        assert!(cut.bounds().unwrap().max[0].abs() < 1e-6);
+        for source in [&original, &shared] {
+            assert_eq!(source.bounds().unwrap(), bounds);
+            assert!((source.volume_mm3().unwrap() - volume).abs() < 1e-9);
+            assert!(ffi::valid(&source.native.0).unwrap());
+            assert_eq!(source.solid_count().unwrap(), 1);
+        }
+        // A fresh reader has no shared cache, so unchanged cached numbers
+        // cannot conceal an accidentally modified source B-rep.
+        let fresh = Solid::from_brep(&original.to_brep().unwrap(), policy).unwrap();
+        assert!((fresh.volume_mm3().unwrap() - volume).abs() < 1e-9);
+        let fresh_bounds = fresh.bounds().unwrap();
+        for axis in 0..3 {
+            assert!((fresh_bounds.min[axis] - bounds.min[axis]).abs() < 1e-6);
+            assert!((fresh_bounds.max[axis] - bounds.max[axis]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn cold_trimmed_bounds_cache_is_consistent_across_concurrent_shared_native_owners() {
+        let profile = CurvedProfile {
+            frame: PlaneFrame {
+                origin: [0.; 3],
+                u: [1., 0., 0.],
+                v: [0., 0., 1.],
+            },
+            outer: vec![
+                CurvedEdge2d::Arc {
+                    center: [0., 0.],
+                    a: [0., -1.],
+                    b: [0., 1.],
+                    clockwise: false,
+                },
+                CurvedEdge2d::Line {
+                    a: [0., 1.],
+                    b: [0., -1.],
+                },
+            ],
+            holes: vec![],
+        };
+        let feature = EntityId::new();
+        let sphere = Solid::revolve_curved_profile_named(
+            &profile,
+            RevolutionAxis {
+                origin_mm: [0.; 3],
+                direction: [0., 0., 1.],
+            },
+            std::f64::consts::TAU,
+            feature,
+            &[
+                Origin {
+                    source: feature,
+                    role: "arc".into(),
+                },
+                Origin {
+                    source: feature,
+                    role: "axis".into(),
+                },
+            ],
+            Default::default(),
+        )
+        .unwrap();
+        let ellipsoid = sphere
+            .affine_transformed_named(
+                AffineTransform {
+                    matrix: [[1.2, 0., 0.], [0., 1.4, 0.], [0., 0., 1.6]],
+                    translation_mm: [0.; 3],
+                },
+                EntityId::new(),
+                Default::default(),
+            )
+            .unwrap();
+        assert!(ffi::bounds_cache_concurrent_probe(&ellipsoid.native.0).unwrap());
+        let bounds = ellipsoid.bounds().unwrap();
+        for (axis, radius) in [1.2, 1.4, 1.6].into_iter().enumerate() {
+            assert!((bounds.min[axis] + radius).abs() < 1e-6);
+            assert!((bounds.max[axis] - radius).abs() < 1e-6);
+        }
+        let shared = ellipsoid.share().unwrap();
+        assert_eq!(ellipsoid.bounds().unwrap(), shared.bounds().unwrap());
+    }
+}

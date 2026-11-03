@@ -52,6 +52,7 @@ mod ffi {
         height: f64,
         depth: f64,
         crest_width: f64,
+        rounding: f64,
         lower_slope: f64,
         upper_slope: f64,
         taper: f64,
@@ -379,6 +380,8 @@ mod ffi {
             second: f64,
         ) -> Result<UniquePtr<Shape>>;
         fn bounds(shape: &Shape) -> Result<Bounds3>;
+        #[allow(dead_code)] // Called only by the native cache concurrency unit test.
+        fn bounds_cache_concurrent_probe(shape: &Shape) -> Result<bool>;
         fn faces(shape: &Shape) -> Result<Vec<FaceInfo>>;
         fn topology(shape: &Shape) -> Result<Vec<TopologyNode>>;
         fn ancestry(shape: &Shape) -> Result<Vec<Ancestry>>;
@@ -486,7 +489,7 @@ pub use advanced::TreatmentFace;
 mod advanced_operations;
 mod advanced_profiles;
 mod threads;
-pub use threads::HelicalThread;
+pub use threads::{HelicalThread, RoundedHelicalThread};
 mod gears;
 pub use gears::{GearSweep, InvoluteGear};
 mod edge_treatment;

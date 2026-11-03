@@ -15,7 +15,7 @@ pub struct ThreadDiameterRange {
     pub max_mm: Option<f64>,
 }
 impl ThreadDiameterRange {
-    fn contains(self, value: f64) -> bool {
+    pub(super) fn contains(self, value: f64) -> bool {
         value.is_finite()
             && self.min_mm.is_none_or(|min| value >= min - 1e-9)
             && self.max_mm.is_none_or(|max| value <= max + 1e-9)
@@ -46,7 +46,7 @@ impl UnifiedThreadPreset {
         match class {
             ThreadFit::Unified2A => Ok(self.external),
             ThreadFit::Unified2B => Ok(self.internal),
-            ThreadFit::NominalBasic => Err(invalid("UNC/UNF require an explicit 2A or 2B fit")),
+            _ => Err(invalid("UNC/UNF require an explicit 2A or 2B fit")),
         }
     }
 }
@@ -63,7 +63,7 @@ pub struct ResolvedThreadFit {
     pub pitch_diameter_mm: f64,
     pub minor_diameter_mm: f64,
     pub external_minor_reference_mm: Option<f64>,
-    pub engagement_limit_mm: f64,
+    pub engagement_limit_mm: Option<f64>,
 }
 
 struct Row {
@@ -215,6 +215,6 @@ pub(super) fn resolve_fit(
         minor_diameter_mm: minor,
         external_minor_reference_mm: (class == ThreadFit::Unified2A)
             .then_some(preset.external_minor_reference_mm),
-        engagement_limit_mm: engagement_limit,
+        engagement_limit_mm: Some(engagement_limit),
     })
 }

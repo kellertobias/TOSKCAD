@@ -3,6 +3,7 @@
 mod prepare;
 mod profiles;
 mod unified;
+mod whitworth;
 use super::{
     BodyInput, BodyOutput, CreatedBody, ModelPrepared, PrimitiveFrame, angle,
     common::*,
@@ -20,6 +21,7 @@ pub use prepare::*;
 pub use profiles::*;
 use serde::{Deserialize, Serialize};
 pub use unified::*;
+pub use whitworth::*;
 
 pub const THREAD_TYPE: &str = "model.thread";
 pub const THREAD_SCHEMA: u32 = 1;
@@ -59,6 +61,10 @@ pub enum ThreadFit {
     Unified2A,
     #[serde(rename = "unified_2b")]
     Unified2B,
+    WhitworthMediumExternal,
+    WhitworthMediumInternal,
+    BsppClassBExternal,
+    BsppInternal,
 }
 impl ThreadFit {
     pub fn label(self) -> &'static str {
@@ -66,6 +72,10 @@ impl ThreadFit {
             Self::NominalBasic => "Nominal basic profile",
             Self::Unified2A => "2A external",
             Self::Unified2B => "2B internal",
+            Self::WhitworthMediumExternal => "Medium external (BS 84:2007)",
+            Self::WhitworthMediumInternal => "Medium internal (BS 84:2007)",
+            Self::BsppClassBExternal => "Class B external (2018 source table)",
+            Self::BsppInternal => "Internal (2018 source table)",
         }
     }
 }
@@ -179,14 +189,32 @@ impl ThreadParameters {
             return Err(invalid("Thread start count must be between 1 and 8"));
         }
         if self.family.is_unified() {
-            if self.fit == ThreadFit::NominalBasic || self.starts != 1 {
+            if !matches!(self.fit, ThreadFit::Unified2A | ThreadFit::Unified2B) || self.starts != 1
+            {
                 return Err(invalid(
                     "Sourced UNC/UNF require 2A external or 2B internal and one start; other combinations remain unavailable",
                 ));
             }
+        } else if self.family.is_rounded() {
+            let valid = match self.family {
+                ThreadFamily::Bsw | ThreadFamily::Bsf => matches!(
+                    self.fit,
+                    ThreadFit::WhitworthMediumExternal | ThreadFit::WhitworthMediumInternal
+                ),
+                ThreadFamily::Bspp => matches!(
+                    self.fit,
+                    ThreadFit::BsppClassBExternal | ThreadFit::BsppInternal
+                ),
+                _ => false,
+            };
+            if !valid || self.starts != 1 {
+                return Err(invalid(
+                    "Rounded sourced threads require the explicit family/mode fit and one start",
+                ));
+            }
         } else if self.fit != ThreadFit::NominalBasic {
             return Err(invalid(
-                "Unified 2A/2B fits apply only to the explicitly sourced UNC/UNF families",
+                "Sourced fit classes apply only to their explicitly supported thread families",
             ));
         }
         Ok(())
@@ -199,6 +227,17 @@ impl ThreadParameters {
             return Err(invalid(
                 "UNC/UNF external threads require 2A; internal threads and nuts require 2B",
             ));
+        }
+        if self.family.is_rounded() {
+            let internal = matches!(
+                self.fit,
+                ThreadFit::WhitworthMediumInternal | ThreadFit::BsppInternal
+            );
+            if (mode == ThreadMode::CutInternal) != internal {
+                return Err(invalid(
+                    "Rounded external/internal thread mode must match its explicit sourced fit class",
+                ));
+            }
         }
         Ok(())
     }
@@ -231,6 +270,16 @@ impl ThreadParameters {
             .is_unified()
             .then(|| unified::preset(self.family, diameter, pitch))
             .transpose()?;
+        let rounded = self
+            .family
+            .is_rounded()
+            .then(|| whitworth::rounded_preset(self.family, diameter, pitch))
+            .transpose()?;
+        if rounded.is_some() && axial != 0. {
+            return Err(invalid(
+                "Axial allowance for true rounded profiles is unsupported; use zero axial allowance",
+            ));
+        }
         let mut profile = profiles::resolve_profile(
             self.family,
             self.custom.as_ref(),
@@ -241,7 +290,11 @@ impl ThreadParameters {
         )?;
         let slopes =
             profile.lower_flank_deg.to_radians().tan() + profile.upper_flank_deg.to_radians().tan();
-        let pitch_drop = (pitch / 2. - profile.crest_width_mm) / slopes;
+        let pitch_drop = if rounded.is_some() {
+            profile.depth_mm / 2.
+        } else {
+            (pitch / 2. - profile.crest_width_mm) / slopes
+        };
         let nominal_pitch_diameter_mm = (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
             .then_some(diameter - 2. * pitch_drop);
         let sign = if mode == ThreadMode::CutInternal {
@@ -251,7 +304,9 @@ impl ThreadParameters {
         };
         // The table midpoint is an engineering target, not a prescribed gage
         // result. Keep the nominal/basic fields independent of this target.
-        let fitted_radius = if let Some(preset) = &unified {
+        let fitted_radius = if let Some(preset) = &rounded {
+            (whitworth::fitted_pitch(preset, self.fit, profile.depth_mm)? + profile.depth_mm) / 2.
+        } else if let Some(preset) = &unified {
             let limits = preset.limits(self.fit)?.pitch;
             let midpoint = (limits.min_mm.expect("sourced pitch minimum")
                 + limits.max_mm.expect("sourced pitch maximum"))
@@ -265,8 +320,7 @@ impl ThreadParameters {
         let width = profile.crest_width_mm + profile.depth_mm * slopes;
         let root = radius - profile.depth_mm;
         let lead = pitch * f64::from(self.starts);
-        if profile.crest_width_mm <= 0.
-            || width >= pitch
+        if (rounded.is_none() && (profile.crest_width_mm <= 0. || width >= pitch))
             || root <= 0.
             || [-2. * lead, length + 2. * lead]
                 .into_iter()
@@ -276,22 +330,38 @@ impl ThreadParameters {
                 "Thread allowance or profile leaves no root/crest, overlaps adjacent starts, or crosses the cone apex",
             ));
         }
-        let actual_pitch_drop = (pitch / 2. - profile.crest_width_mm) / slopes;
+        let actual_pitch_drop = if rounded.is_some() {
+            profile.depth_mm / 2.
+        } else {
+            (pitch / 2. - profile.crest_width_mm) / slopes
+        };
         let actual_pitch_diameter_mm = (actual_pitch_drop >= 0.
             && actual_pitch_drop <= profile.depth_mm)
             .then_some(2. * (radius - actual_pitch_drop));
-        let fit = unified
-            .map(|preset| {
-                unified::resolve_fit(
-                    preset,
-                    self.fit,
-                    2. * radius,
-                    actual_pitch_diameter_mm,
-                    2. * root,
-                    length,
-                )
-            })
-            .transpose()?;
+        let fit = if let Some(preset) = rounded {
+            Some(whitworth::resolve_rounded_fit(
+                preset,
+                self.fit,
+                2. * radius,
+                actual_pitch_diameter_mm
+                    .ok_or_else(|| invalid("Rounded profile needs a pitch diameter"))?,
+                2. * root,
+                length,
+            )?)
+        } else {
+            unified
+                .map(|preset| {
+                    unified::resolve_fit(
+                        preset,
+                        self.fit,
+                        2. * radius,
+                        actual_pitch_diameter_mm,
+                        2. * root,
+                        length,
+                    )
+                })
+                .transpose()?
+        };
         Ok(ResolvedThread {
             nominal_major_radius_mm: diameter / 2.,
             nominal_pitch_diameter_mm,

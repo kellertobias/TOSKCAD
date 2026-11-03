@@ -15,6 +15,8 @@
 #include <Geom2d_Line.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -83,11 +85,12 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     const double phase=2*pi*start/s.starts,z=-lead;
     Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,z/c),gp_Dir2d(sign*2*pi,lead/c));
     const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
-    // Preserve the established continuous representation when it passes the
-    // physical guards. A failed clipping result may be rebuilt with bounded
-    // per-turn faces on the same helix, without changing its extent or phase.
+    // Keep the exact authored helix, extent and phase. New rounded sweeps use
+    // half-turn domains: full-turn trimmed circular sweeps can retain the exact
+    // boundary yet fail native classification/Booleans. Flat profiles preserve
+    // their established continuous representation and per-turn fallback.
     BRepBuilderAPI_MakeWire spineBuilder;
-    const double turn=segmented?std::hypot(2*pi,lead/c):end;
+    const double turn=segmented?std::hypot(2*pi,lead/c)*(s.rounding>0?.5:1.):end;
     for(uint32_t span=0;;++span) {
       const double begin=span*turn;
       if(begin>=end)break;
@@ -106,29 +109,71 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       const double r=radius+s.taper*(z+dz);
       return gp_Pnt(r*std::cos(phase),r*std::sin(phase),z+dz);
     };
-    const gp_Pnt points[]={
-      point(root-s.overlap,-s.crest_width/2-(s.depth+s.overlap)*s.lower_slope),
-      point(s.radius,-s.crest_width/2),
-      point(s.radius,s.crest_width/2),
-      point(root-s.overlap,s.crest_width/2+(s.depth+s.overlap)*s.upper_slope)
+    const auto sweep=[&](const std::vector<TopoDS_Edge> &source,int rootHalf) {
+      BRepBuilderAPI_MakeWire profile;std::vector<TopoDS_Edge> edges;
+      for(const auto &edge:source){profile.Add(edge);edges.push_back(profile.Edge());}
+      if(!profile.IsDone())throw std::runtime_error("Native thread profile is disconnected");
+      BRepOffsetAPI_MakePipeShell pipe(spine);
+      pipe.SetMode(gp_Dir(0,0,1));pipe.SetTolerance(s.tolerance,s.tolerance,1e-9);
+      pipe.Add(profile.Wire(),false,false);pipe.Build();
+      if(!pipe.IsDone()||!pipe.MakeSolid()||!BRepCheck_Analyzer(pipe.Shape()).IsValid())
+        throw std::runtime_error("Native helical ridge is not a valid solid");
+      for(uint32_t i=0;i<edges.size();++i)for(const auto &face:pipe.Generated(edges[i]))
+        if(face.ShapeType()==TopAbs_FACE) {
+          if(rootHalf>=0&&i==0)ancestry.push_back({face,static_cast<uint32_t>(rootHalf),4});
+          else ancestry.push_back({face,start*4+(rootHalf>=0?3:i),2});
+        }
+      BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,pipe.Shape());
+      ancestry=carry_thread_faces(join,ancestry);solid=join.Shape();
     };
-    BRepBuilderAPI_MakeWire profile;std::vector<TopoDS_Edge> edges;
-    for(uint32_t i=0;i<4;++i){auto e=BRepBuilderAPI_MakeEdge(points[i],points[(i+1)%4]).Edge();profile.Add(e);edges.push_back(profile.Edge());}
-    if(!profile.IsDone())throw std::runtime_error("Native thread profile is disconnected");
-    BRepOffsetAPI_MakePipeShell pipe(spine);
-    pipe.SetMode(gp_Dir(0,0,1));pipe.SetTolerance(s.tolerance,s.tolerance,1e-9);
-    pipe.Add(profile.Wire(),false,false);pipe.Build();
-    if(!pipe.IsDone()||!pipe.MakeSolid()||!BRepCheck_Analyzer(pipe.Shape()).IsValid())
-      throw std::runtime_error("Native helical ridge is not a valid solid");
-    for(uint32_t i=0;i<4;++i)for(const auto &face:pipe.Generated(edges[i]))
-      if(face.ShapeType()==TopAbs_FACE)ancestry.push_back({face,start*4+i,2});
-    BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,pipe.Shape());
-    ancestry=carry_thread_faces(join,ancestry);solid=join.Shape();
+    const auto edge=[](const gp_Pnt &a,const gp_Pnt &b){return BRepBuilderAPI_MakeEdge(a,b).Edge();};
+    const auto arc=[](const gp_Pnt &a,const gp_Pnt &mid,const gp_Pnt &b){
+      GC_MakeArcOfCircle circle(a,mid,b);
+      if(!circle.IsDone())throw std::runtime_error("Native rounded thread arc construction failed");
+      return BRepBuilderAPI_MakeEdge(circle.Value()).Edge();
+    };
+    if(s.rounding==0) {
+      const gp_Pnt points[]={
+        point(root-s.overlap,-s.crest_width/2-(s.depth+s.overlap)*s.lower_slope),
+        point(s.radius,-s.crest_width/2),
+        point(s.radius,s.crest_width/2),
+        point(root-s.overlap,s.crest_width/2+(s.depth+s.overlap)*s.upper_slope)
+      };
+      std::vector<TopoDS_Edge> edges;
+      for(uint32_t i=0;i<4;++i)edges.push_back(edge(points[i],points[(i+1)%4]));
+      sweep(edges,-1);
+    } else {
+      // Full-period closed profiles self-contact at their valley seam. Sweep
+      // three narrower exact profiles instead: the crest/flanks and the two
+      // circular root shoulders. All closure edges are buried in the core.
+      const double theta=std::atan(s.lower_slope),r=s.rounding;
+      const double half=r*std::cos(theta),drop=r*(1-std::sin(theta));
+      const double foot=half+(s.depth-drop+s.overlap)*s.lower_slope;
+      const auto a=point(root-s.overlap,-foot),b=point(s.radius-drop,-half);
+      const auto c=point(s.radius-drop,half),d=point(root-s.overlap,foot);
+      sweep({edge(a,b),arc(b,point(s.radius,0),c),edge(c,d),edge(d,a)},-1);
+      const double midAngle=(pi/2-theta)/2;
+      for(int side=0;side<2;++side) {
+        const double sign=side==0?-1.:1.,valley=sign*s.pitch/2;
+        const auto low=point(root,valley);
+        const auto high=point(root+drop,valley-sign*half);
+        const auto middle=point(root+r*(1-std::cos(midAngle)),valley-sign*r*std::sin(midAngle));
+        const auto start=side==0?low:high,finish=side==0?high:low;
+        const double startZ=side==0?valley:valley-half,finishZ=side==0?valley+half:valley;
+        const auto underEnd=point(root-s.overlap,finishZ),underStart=point(root-s.overlap,startZ);
+        sweep({arc(start,middle,finish),edge(finish,underEnd),edge(underEnd,underStart),edge(underStart,start)},side);
+      }
+    }
   }
   // Joining before trimming is essential: a separately trimmed ridge can be
   // silently lost by a later union despite a valid, one-solid core result.
   const double bound=s.radius+std::abs(s.taper)*(s.height+3*lead)+s.pitch;
   const auto limit=BRepPrimAPI_MakeBox(gp_Pnt(-bound,-bound,0),2*bound,2*bound,s.height).Shape();
+  if(s.rounding>0) {
+    int count=0;for(TopExp_Explorer it(solid,TopAbs_SOLID);it.More();it.Next())++count;
+    if(count!=1||!BRepCheck_Analyzer(solid).IsValid())
+      throw std::runtime_error("Untrimmed rounded thread is not one valid solid");
+  }
   BRepAlgoAPI_Common trim;boolean_inputs(trim,solid,limit);
   ancestry=carry_thread_faces(trim,ancestry);solid=trim.Shape();
   if(!BRepCheck_Analyzer(solid).IsValid())throw std::runtime_error("Finished thread is invalid");
@@ -147,6 +192,21 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       const auto state=[&](double a){classifier.Perform(gp_Pnt(radius*std::cos(a),radius*std::sin(a),sampleZ),s.tolerance*4);return classifier.State();};
       if(state(angle)!=TopAbs_IN||state(angle+pi/s.starts)!=TopAbs_OUT)
         throw ThreadRidgeLoss();
+      if(s.rounding>0) {
+        const double half=s.rounding*std::cos(std::atan(s.lower_slope));
+        const double epsilon=std::max(s.tolerance*8,s.rounding*.01);
+        for(double direction:{-1.,1.}) {
+          const double dz=direction*.65*half;
+          const double circle=std::sqrt(s.rounding*s.rounding-dz*dz);
+          for(int valley=0;valley<2;++valley) {
+            const double boundary=valley?root+s.rounding-circle:s.radius-s.rounding+circle;
+            const double phase=sign*2*pi*(sampleZ-dz-valley*s.pitch/2)/lead;
+            const auto material=[&](double r){classifier.Perform(gp_Pnt(r*std::cos(phase),r*std::sin(phase),sampleZ),s.tolerance*4);return classifier.State();};
+            if(material(boundary-epsilon)!=TopAbs_IN||material(boundary+epsilon)!=TopAbs_OUT)
+              throw ThreadRidgeLoss();
+          }
+        }
+      }
     }
   }
   auto result=std::make_unique<Shape>(Shape{solid,{},{}});
@@ -173,6 +233,15 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
  }
 }
 std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
+  // Rounded profiles are new geometry. Use bounded half-turn faces from the
+  // outset, avoiding invalid continuous unions and false trimmed-solid native
+  // classification. Flat profiles retain their established representation and
+  // narrowly typed reconstruction rules below.
+  if(s.rounding>0) {
+    auto result=build_helical_thread(s,true);
+    volume(*result);
+    return result;
+  }
   try {
     auto result=build_helical_thread(s,false);
     volume(*result);

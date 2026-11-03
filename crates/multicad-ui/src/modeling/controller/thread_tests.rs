@@ -572,3 +572,244 @@ fn reopening_a_default_valued_native_nut_keeps_its_authored_height_when_selectin
         assert_eq!(s.document(), &saved);
     }
 }
+
+fn choose_rounded(
+    ctx: &egui::Context,
+    c: &mut ModelToolController,
+    s: &mut Session,
+    preset: &model::WhitworthThreadPreset,
+) {
+    unified_click(ctx, c, s, model::ThreadFamily::IsoMetric.label());
+    unified_click(ctx, c, s, preset.family.label());
+    unified_click(
+        ctx,
+        c,
+        s,
+        &format!("Choose a sourced {} preset…", preset.family.label()),
+    );
+    unified_click(ctx, c, s, &preset.designation);
+}
+#[test]
+fn painted_bsw_bsf_and_bspp_presets_keep_physical_units_fit_rounding_and_native_cancel_apply_history_reopen()
+ {
+    for family in [
+        model::ThreadFamily::Bsw,
+        model::ThreadFamily::Bsf,
+        model::ThreadFamily::Bspp,
+    ] {
+        let preset = model::whitworth_thread_presets()
+            .into_iter()
+            .find(|p| p.family == family)
+            .unwrap();
+        let mut s = Session::new(Document::new("Rounded thread UI").unwrap()).unwrap();
+        let before = s.document().clone();
+        let mut c = controller();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        c.begin_thread(&s, &Default::default(), None, &BTreeSet::new(), Channel::Ui)
+            .unwrap();
+        choose_rounded(&ctx, &mut c, &mut s, &preset);
+        let request = match c.form.as_ref().unwrap() {
+            ModelForm::Thread(panel) => panel.request(s.document(), true).unwrap(),
+            _ => panic!("Expected Thread inspector"),
+        };
+        assert_eq!(request.parameters.family, family);
+        assert_eq!(
+            request.parameters.fit,
+            if family == model::ThreadFamily::Bspp {
+                model::ThreadFit::BsppClassBExternal
+            } else {
+                model::ThreadFit::WhitworthMediumExternal
+            }
+        );
+        assert_eq!(
+            request.parameters.major_diameter,
+            if let Some(inches) = preset.nominal_diameter_inch {
+                multicad_core::constraint_sketch::Dimension::Literal {
+                    value: inches,
+                    unit: "in".into(),
+                }
+            } else {
+                model::length(preset.diameter_mm)
+            }
+        );
+        assert_eq!(
+            request.parameters.pitch,
+            model::length(25.4 / f64::from(preset.threads_per_inch))
+        );
+        assert_eq!(
+            request.parameters.length,
+            model::length(3. * preset.pitch_mm)
+        );
+        let resolved = request
+            .parameters
+            .resolve(s.parameters(), request.mode)
+            .unwrap();
+        let a = 27.5_f64.to_radians();
+        assert!(
+            (resolved.profile.rounding_radius_mm.unwrap()
+                - preset.pitch_mm * a.cos() / (12. * (1. - a.sin())))
+            .abs()
+                < 1e-12
+        );
+        assert_eq!(resolved.profile.crest_width_mm, 0.);
+        unified_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &before);
+        unified_click(&ctx, &mut c, &mut s, "Cancel");
+        assert!(!c.active());
+        assert_eq!(s.document(), &before);
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Thread(Box::new(
+                ThreadPanel::new(
+                    request.clone(),
+                    s.parameters().clone(),
+                    vec![],
+                    &BTreeSet::new(),
+                    false,
+                )
+                .unwrap(),
+            )),
+        )
+        .unwrap();
+        unified_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        unified_click(&ctx, &mut c, &mut s, "Apply");
+        assert_eq!(s.revision(), 1);
+        let source = model::read_thread(s.document(), request.feature).unwrap();
+        assert_eq!(source.parameters, request.parameters);
+        assert_eq!(source.output.body, request.body);
+        let saved = s.document().clone();
+        s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &before);
+        s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &saved);
+        let mut bytes = vec![];
+        multicad_core::project_file::write(
+            &multicad_core::project_file::ProjectFile::new(saved.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let reopened = multicad_core::project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let mut independent = Session::new(reopened.document).unwrap();
+        assert_eq!(independent.revision(), 0);
+        c.begin_existing(
+            &independent,
+            &Default::default(),
+            request.feature,
+            Channel::Ui,
+        )
+        .unwrap();
+        unified_click(&ctx, &mut c, &mut independent, "Preview");
+        wait(&mut c, &independent);
+        assert!(
+            c.can_apply(&independent, &Default::default()),
+            "{:?}",
+            c.error()
+        );
+        unified_click(&ctx, &mut c, &mut independent, "Cancel");
+        assert_eq!(independent.document(), &saved);
+    }
+}
+
+#[test]
+fn rounded_preset_selection_preserves_explicit_authored_length_and_invalid_recipes_stay_atomic() {
+    for family in [
+        model::ThreadFamily::Bsw,
+        model::ThreadFamily::Bsf,
+        model::ThreadFamily::Bspp,
+    ] {
+        let preset = model::whitworth_thread_presets()
+            .into_iter()
+            .find(|p| p.family == family)
+            .unwrap();
+        let mut s = Session::new(Document::new("Authored rounded lengths").unwrap()).unwrap();
+        let before = s.document().clone();
+        let mut c = controller();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let authored = model::ThreadRequest::new(
+            "Authored length",
+            model::ThreadParameters {
+                length: model::length(7.25),
+                ..Default::default()
+            },
+        );
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Thread(Box::new(
+                ThreadPanel::new(
+                    authored,
+                    s.parameters().clone(),
+                    vec![],
+                    &BTreeSet::new(),
+                    true,
+                )
+                .unwrap(),
+            )),
+        )
+        .unwrap();
+        choose_rounded(&ctx, &mut c, &mut s, &preset);
+        let valid = match c.form.as_ref().unwrap() {
+            ModelForm::Thread(panel) => panel.request(s.document(), true).unwrap(),
+            _ => panic!(),
+        };
+        assert_eq!(valid.parameters.length, model::length(7.25));
+        c.cancel();
+        for p in [
+            model::ThreadParameters {
+                family: model::ThreadFamily::Whitworth,
+                ..valid.parameters.clone()
+            },
+            model::ThreadParameters {
+                axial_allowance: model::length(0.001),
+                ..valid.parameters.clone()
+            },
+            model::ThreadParameters {
+                fit: model::ThreadFit::NominalBasic,
+                ..valid.parameters.clone()
+            },
+            model::ThreadParameters {
+                pitch: model::length(preset.pitch_mm * 1.01),
+                ..valid.parameters.clone()
+            },
+        ] {
+            c.begin_form(
+                &s,
+                &Default::default(),
+                Channel::Ui,
+                ModelForm::Thread(Box::new(
+                    ThreadPanel::new(
+                        model::ThreadRequest::new("Invalid rounded", p),
+                        s.parameters().clone(),
+                        vec![],
+                        &BTreeSet::new(),
+                        false,
+                    )
+                    .unwrap(),
+                )),
+            )
+            .unwrap();
+            assert!(c.preview(&s, &Default::default(), Channel::Ui).is_err());
+            assert!(!c.can_apply(&s, &Default::default()));
+            assert!(c.apply(&mut s, &Default::default()).is_err());
+            c.cancel();
+            assert_eq!(s.document(), &before);
+            assert_eq!(s.revision(), 0);
+        }
+    }
+}

@@ -17,6 +17,8 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <Precision.hxx>
 #include <Bnd_Box.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -55,6 +57,10 @@
 #include <TopoDS.hxx>
 #include <array>
 #include <iostream>
+#include <thread>
+#include <atomic>
+#include <algorithm>
+#include <exception>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -248,7 +254,14 @@ std::unique_ptr<Shape> cut(const Shape &shape, double x, double w, double d,
                            double h) {
   return guard([&] {
     auto tool = BRepPrimAPI_MakeBox(gp_Pnt(x, 0, 0), w, d, h).Shape();
-    BRepAlgoAPI_Cut operation(shape.value, tool);
+    BRepAlgoAPI_Cut operation;
+    TopTools_ListOfShape arguments, tools;
+    arguments.Append(shape.value);
+    tools.Append(tool);
+    operation.SetArguments(arguments);
+    operation.SetTools(tools);
+    operation.SetNonDestructive(true);
+    operation.Build();
     if (!operation.IsDone())
       throw std::runtime_error("Boolean failed");
     return checked(operation.Shape());
@@ -574,7 +587,11 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
     gp_Trsf tr;
     tr.SetValues(r[0], r[1], r[2], t.x, r[3], r[4], r[5], t.y,
                  r[6], r[7], r[8], t.z);
-    BRepBuilderAPI_Transform operation(s.value, tr, true);
+    // Validated proper rigid transforms use OCCT's exact location path. Avoid
+    // recopying BSpline geometry/pcurves, which can change STEP trim behavior
+    // even for an identity pose. Shared geometry remains immutable; the result
+    // still receives its own world-space bounds cache and native face history.
+    BRepBuilderAPI_Transform operation(s.value, tr, false);
     if (!operation.IsDone())
       throw std::runtime_error("Rigid transform failed");
     auto result = checked(operation.Shape());
@@ -670,16 +687,109 @@ std::unique_ptr<Shape> mirror_shape(const Shape &s, const Frame3 &f) {
     return result;
   });
 }
+namespace {
+bool needs_trimmed_support(const TopoDS_Shape &shape) {
+  // Bounded coverage for the observed curved-profile sweep failure. Preserve
+  // established analytic and ruled-surface paths; this is not a claim that
+  // polynomial degree characterizes every possible trimming-domain problem.
+  for(TopExp_Explorer it(shape,TopAbs_FACE);it.More();it.Next()) {
+    BRepAdaptor_Surface surface(TopoDS::Face(it.Current()));
+    if((surface.GetType()==GeomAbs_BSplineSurface||surface.GetType()==GeomAbs_BezierSurface)
+        &&surface.UDegree()>1&&surface.VDegree()>1)return true;
+  }
+  return false;
+}
+std::array<double,6> trimmed_support_bounds(const TopoDS_Shape &shape) {
+  // Add (not AddOptimal) gives a conservative, non-triangulated enclosure.
+  // Finite planes beyond it cover the complete orthogonal projection. Thus
+  // nearest distance to each plane measures a directional support coordinate,
+  // including trimming curves rather than the underlying surface's UV box.
+  Bnd_Box box;BRepBndLib::Add(shape,box,false);
+  if(box.IsVoid()||box.IsOpen())throw std::runtime_error("Shape has no finite support enclosure");
+  double lo[3],hi[3];box.Get(lo[0],lo[1],lo[2],hi[0],hi[1],hi[2]);
+  for(int i=0;i<3;++i)if(!std::isfinite(lo[i])||!std::isfinite(hi[i])||lo[i]>hi[i])
+    throw std::runtime_error("Shape support enclosure is nonfinite");
+  const double tolerance=Precision::Confusion();
+  std::array<double,6> result;
+  for(int axis=0;axis<3;++axis)for(int side=0;side<2;++side) {
+    const int u=(axis+1)%3,v=(axis+2)%3;
+    double center[3],normal[3]={0,0,0},udir[3]={0,0,0};
+    for(int i=0;i<3;++i)center[i]=(lo[i]+hi[i])/2;
+    center[axis]=side?hi[axis]+1:lo[axis]-1;normal[axis]=1;udir[u]=1;
+    const auto plane=BRepBuilderAPI_MakeFace(gp_Pln(gp_Ax3(gp_Pnt(center[0],center[1],center[2]),gp_Dir(normal[0],normal[1],normal[2]),gp_Dir(udir[0],udir[1],udir[2]))),-(hi[u]-lo[u])/2-1,(hi[u]-lo[u])/2+1,-(hi[v]-lo[v])/2-1,(hi[v]-lo[v])/2+1).Face();
+    BRepExtrema_DistShapeShape query(shape,plane,tolerance);
+    if(!query.IsDone()||query.NbSolution()<1||!std::isfinite(query.Value())||query.Value()<=0)
+      throw std::runtime_error("Trimmed support query did not converge");
+    const double extent=center[axis]+(side?-query.Value():query.Value());
+    double residual=0;
+    for(int i=1;i<=query.NbSolution();++i) {
+      const auto a=query.PointOnShape1(i),b=query.PointOnShape2(i);
+      for(int coordinate=1;coordinate<=3;++coordinate)
+        if(!std::isfinite(a.Coord(coordinate))||!std::isfinite(b.Coord(coordinate)))
+          throw std::runtime_error("Trimmed support witness is nonfinite");
+      if(std::abs(b.Coord(u+1)-center[u])>(hi[u]-lo[u])/2+1+tolerance||
+          std::abs(b.Coord(v+1)-center[v])>(hi[v]-lo[v])/2+1+tolerance)
+        throw std::runtime_error("Trimmed support witness is outside its finite plane");
+      // Equal minima on a flat plane can differ tangentially by more than the
+      // distance deflection. Validate the directional support and actual
+      // witness distance, rather than unrelated tangent coordinates.
+      residual=std::max({residual,std::abs(a.Coord(axis+1)-extent),std::abs(b.Coord(axis+1)-center[axis]),std::abs(a.Distance(b)-query.Value())});
+    }
+    if(!std::isfinite(extent)||residual>tolerance)
+      throw std::runtime_error("Trimmed support witnesses are inconsistent");
+    // Outward numerical enclosure: solver deflection plus measured witness
+    // projection residual. This does not replace the underlying exact solid.
+    result[axis+side*3]=extent+(side?1:-1)*(tolerance+residual);
+  }
+  for(int axis=0;axis<3;++axis)if(result[axis]>result[axis+3])
+    throw std::runtime_error("Trimmed support bounds are inverted");
+  return result;
+}
+}
 Bounds3 bounds(const Shape &s) {
   return guard([&] {
-    Bnd_Box b;
-    BRepBndLib::AddOptimal(s.value, b, false, false);
-    if (b.IsVoid() || b.IsOpen())
-      throw std::runtime_error("Shape has no finite bounds");
-    double x, y, z, a, c, d;
-    b.Get(x, y, z, a, c, d);
-    return Bounds3{Point3{x, y, z}, Point3{a, c, d}};
+    std::lock_guard<std::mutex> lock(s.bounds_cache->mutex);
+    if(!s.bounds_cache->value) {
+      if(needs_trimmed_support(s.value))s.bounds_cache->value=trimmed_support_bounds(s.value);
+      else {
+        Bnd_Box b;BRepBndLib::AddOptimal(s.value,b,false,false);
+        if(b.IsVoid()||b.IsOpen())throw std::runtime_error("Shape has no finite bounds");
+        std::array<double,6> values;
+        b.Get(values[0],values[1],values[2],values[3],values[4],values[5]);
+        s.bounds_cache->value=values;
+      }
+    }
+    const auto &b=*s.bounds_cache->value;
+    return Bounds3{Point3{b[0],b[1],b[2]},Point3{b[3],b[4],b[5]}};
   });
+}
+// Private FFI unit-test support: race the cold cache through identical owners.
+// Rust Solid remains !Send/!Sync; no cross-thread native handle escapes here.
+bool bounds_cache_concurrent_probe(const Shape &s) {
+  Shape cold{s.value,{},{}};
+  const auto shared=share_shape(cold);
+  if(shared->bounds_cache!=cold.bounds_cache)return false;
+  std::array<std::array<double,6>,8> values;
+  std::array<std::exception_ptr,8> errors;
+  std::vector<std::thread> workers;std::atomic<bool> start{false};
+  try {for(int i=0;i<8;++i)workers.emplace_back([&,i] {
+    while(!start.load(std::memory_order_acquire))std::this_thread::yield();
+    try {
+      for(int repeat=0;repeat<16;++repeat) {
+        const auto b=bounds(i%2?*shared:cold);
+        values[i]={b.min.x,b.min.y,b.min.z,b.max.x,b.max.y,b.max.z};
+      }
+    } catch(...) {errors[i]=std::current_exception();}
+  });} catch(...) {
+    start.store(true,std::memory_order_release);
+    for(auto &worker:workers)worker.join();
+    throw;
+  }
+  start.store(true,std::memory_order_release);
+  for(auto &worker:workers)worker.join();
+  for(int i=0;i<8;++i)if(errors[i])std::rethrow_exception(errors[i]);
+  for(int i=1;i<8;++i)if(values[i]!=values[0])return false;
+  return true;
 }
 uint32_t solid_count(const Shape &s) {
   return guard([&] {

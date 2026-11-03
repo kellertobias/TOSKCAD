@@ -44,7 +44,7 @@ fn profiles_report_supported_presets_and_explicitly_unavailable_families_without
     let before = h.document();
     let report = run(&h, "thread_profiles", json!({}));
     let families = report["families"].as_array().unwrap();
-    assert_eq!(families.len(), 13);
+    assert_eq!(families.len(), 15);
     assert!(
         families
             .iter()
@@ -75,6 +75,35 @@ fn profiles_report_supported_presets_and_explicitly_unavailable_families_without
         assert_eq!(entry["supported"], true);
         assert_eq!(entry["fit_classes"], json!(["unified_2a", "unified_2b"]));
     }
+    for family in ["bsw", "bsf", "bspp"] {
+        let entry = families.iter().find(|f| f["family"] == family).unwrap();
+        assert_eq!(entry["supported"], true);
+        let expected = if family == "bspp" {
+            json!(["bspp_class_b_external", "bspp_internal"])
+        } else {
+            json!(["whitworth_medium_external", "whitworth_medium_internal"])
+        };
+        assert_eq!(entry["fit_classes"], expected);
+    }
+    assert_eq!(
+        families
+            .iter()
+            .find(|f| f["family"] == "whitworth")
+            .unwrap()["supported"],
+        false
+    );
+    let rounded = report["rounded_presets"].as_array().unwrap();
+    assert_eq!(rounded.len(), 6);
+    let pipe = rounded.iter().find(|p| p["designation"] == "G1/8").unwrap();
+    assert_eq!(pipe["diameter_mm"], 9.728);
+    assert_eq!(pipe["nominal_diameter_inch"], Value::Null);
+    assert_eq!(pipe["engagement_limit_mm"], Value::Null);
+    assert!(
+        report["rounded_support"]["bspp_sealing"]
+            .as_str()
+            .unwrap()
+            .contains("outside")
+    );
     let unified = report["unified_presets"].as_array().unwrap();
     assert_eq!(unified.len(), 4);
     for (family, diameter, tpi) in [

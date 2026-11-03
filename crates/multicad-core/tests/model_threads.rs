@@ -72,6 +72,9 @@ fn sourced_metric_presets_and_basic_dimensions_do_not_imply_fit_classes_or_unive
             ThreadFamily::IsoMetric,
             ThreadFamily::Unc,
             ThreadFamily::Unf,
+            ThreadFamily::Bsw,
+            ThreadFamily::Bsf,
+            ThreadFamily::Bspp,
             ThreadFamily::Custom
         ]
     );

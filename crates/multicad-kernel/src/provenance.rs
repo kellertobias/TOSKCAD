@@ -185,6 +185,14 @@ impl Solid {
                     format!("thread/start/{}/{flank}", seed.source_index / 4)
                 }
                 3 if seed.source_index == 0 => "thread.root".into(),
+                4 if seed.source_index < 2 && starts == 1 => {
+                    let side = if seed.source_index == 0 {
+                        "lower"
+                    } else {
+                        "upper"
+                    };
+                    format!("thread/start/0/root/{side}")
+                }
                 _ => return Err(failure("Unknown native thread face source")),
             };
             let element = elements
@@ -195,6 +203,12 @@ impl Solid {
                 role,
             };
             element.origins.insert(origin.clone());
+            if seed.role == 4 {
+                element.origins.insert(Origin {
+                    source: feature,
+                    role: "thread.root".into(),
+                });
+            }
             if let Some(AnalyticGeometry::Plane { frame }) = element.geometry
                 && !element.frames.iter().any(|known| known.origin == origin)
             {

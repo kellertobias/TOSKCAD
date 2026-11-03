@@ -207,13 +207,16 @@ impl ThreadPanel {
                         changed |= self.family != family;
                         self.family = family;
                         self.fit = Self::fit_for(family, mode);
-                        if family.is_unified() {
+                        if family.is_unified() || family.is_rounded() {
                             self.starts = 1;
                         }
                     }
                 }
             });
         ui.small(self.family.source());
+        if self.family.is_rounded() {
+            changed |= self.rounded_controls(ui, mode);
+        }
         if self.family == ThreadFamily::IsoMetric {
             let mut preset = None;
             controls::inspector_combo(ui, "thread-preset")
@@ -323,7 +326,7 @@ impl ThreadPanel {
             ui.label("Starts");
             changed |= ui
                 .add_enabled(
-                    !self.family.is_unified(),
+                    !self.family.is_unified() && !self.family.is_rounded(),
                     egui::DragValue::new(&mut self.starts).range(1..=8),
                 )
                 .changed();
@@ -364,6 +367,9 @@ impl ThreadPanel {
             "Axial clearance",
             "Total tooth-width allowance in millimetres",
         );
+        if self.family.is_rounded() {
+            ui.small("Rounded profiles currently require zero axial clearance; radial clearance must remain within the selected fit limits.");
+        }
         if mode == ThreadMode::CutInternal {
             changed |= self.wall.show(
                 ui,
@@ -418,8 +424,107 @@ impl ThreadPanel {
         }
         changed
     }
+    fn rounded_controls(&mut self, ui: &mut egui::Ui, mode: ThreadMode) -> bool {
+        let mut changed = false;
+        let fit = Self::fit_for(self.family, mode);
+        let classes = if self.family == ThreadFamily::Bspp {
+            [ThreadFit::BsppClassBExternal, ThreadFit::BsppInternal]
+        } else {
+            [
+                ThreadFit::WhitworthMediumExternal,
+                ThreadFit::WhitworthMediumInternal,
+            ]
+        };
+        ui.label("Fit class");
+        controls::inspector_combo(ui, "thread-rounded-fit")
+            .selected_text(self.fit.label())
+            .show_ui(ui, |ui| {
+                for class in classes {
+                    if ui
+                        .add_enabled(
+                            class == fit,
+                            egui::Button::selectable(self.fit == class, class.label()),
+                        )
+                        .on_disabled_hover_text(
+                            "Choose the corresponding external or internal thread mode",
+                        )
+                        .clicked()
+                    {
+                        changed |= self.fit != class;
+                        self.fit = class;
+                    }
+                }
+            });
+        let presets: Vec<_> = model::whitworth_thread_presets()
+            .into_iter()
+            .filter(|p| p.family == self.family)
+            .collect();
+        let mut selected = None;
+        controls::inspector_combo(ui, "thread-rounded-preset")
+            .selected_text(format!("Choose a sourced {} preset…", self.family.label()))
+            .show_ui(ui, |ui| {
+                for p in &presets {
+                    if ui
+                        .selectable_label(false, &p.designation)
+                        .on_hover_text(format!(
+                            "Physical major {:.6} mm · {} TPI · {:.9} mm pitch",
+                            p.diameter_mm, p.threads_per_inch, p.pitch_mm
+                        ))
+                        .clicked()
+                    {
+                        selected = Some(p.clone());
+                    }
+                }
+            });
+        if let Some(p) = selected {
+            if let Some(inches) = p.nominal_diameter_inch {
+                self.diameter.set_exact_literal(inches, "in");
+            } else {
+                self.diameter.set_exact_literal(p.diameter_mm, "mm");
+            }
+            self.pitch.set_exact_literal(p.pitch_mm, "mm");
+            if self.preset_length_default {
+                self.length.set_exact_literal(3. * p.pitch_mm, "mm");
+            }
+            self.starts = 1;
+            self.fit = fit;
+            changed = true;
+        }
+        ui.small("55° profile with circular crests and roots. Listed sizes support one start and zero axial relief.");
+        if self.family == ThreadFamily::Bspp {
+            ui.small("G pipe-size labels are nominal; use the listed physical major diameter. A BSPP joint seals outside the thread.");
+        } else {
+            ui.small("Uncoated Medium limits from BS 84:2007; supported engagement is at most 15 pitches.");
+        }
+        ui.collapsing("Published size and fit limits", |ui| {
+            for p in &presets {
+                ui.strong(format!("{} · {} TPI", p.designation, p.threads_per_inch));
+                Self::show_limits(
+                    ui,
+                    if mode == ThreadMode::CutInternal {
+                        &p.internal
+                    } else {
+                        &p.external
+                    },
+                );
+            }
+        });
+        changed
+    }
     fn fit_for(family: ThreadFamily, mode: ThreadMode) -> ThreadFit {
-        if !family.is_unified() {
+        if matches!(family, ThreadFamily::Bsw | ThreadFamily::Bsf) {
+            if mode == ThreadMode::CutInternal {
+                ThreadFit::WhitworthMediumInternal
+            } else {
+                ThreadFit::WhitworthMediumExternal
+            }
+        } else if family == ThreadFamily::Bspp {
+            if mode == ThreadMode::CutInternal {
+                ThreadFit::BsppInternal
+            } else {
+                ThreadFit::BsppClassBExternal
+            }
+        } else if !family.is_unified() {
             ThreadFit::NominalBasic
         } else if mode == ThreadMode::CutInternal {
             ThreadFit::Unified2B
@@ -508,7 +613,7 @@ impl ThreadPanel {
                 }
             }
         });
-        if previous_mode != self.mode && self.family.is_unified() {
+        if previous_mode != self.mode && (self.family.is_unified() || self.family.is_rounded()) {
             self.fit = Self::fit_for(self.family, self.mode);
         }
         if self.editing
@@ -532,19 +637,31 @@ impl ThreadPanel {
                     ));
                     if let Some(fit) = &resolved.fit {
                         ui.strong(format!("{} · {}", fit.designation, fit.class.label()));
-                        ui.small(format!(
-                            "Nominal {:.4} in · {:.0} TPI",
-                            2. * resolved.nominal_major_radius_mm / 25.4,
-                            25.4 / resolved.pitch_mm
-                        ));
+                        if self.family == ThreadFamily::Bspp {
+                            ui.small(format!(
+                                "Basic physical major {:.6} mm · {:.0} TPI",
+                                2. * resolved.nominal_major_radius_mm,
+                                25.4 / resolved.pitch_mm
+                            ));
+                        } else {
+                            ui.small(format!(
+                                "Nominal {:.4} in · {:.0} TPI",
+                                2. * resolved.nominal_major_radius_mm / 25.4,
+                                25.4 / resolved.pitch_mm
+                            ));
+                        }
                         ui.small(format!(
                             "Resolved major {:.6} mm · pitch {:.6} mm · minor {:.6} mm",
                             fit.major_diameter_mm, fit.pitch_diameter_mm, fit.minor_diameter_mm
                         ));
-                        ui.small(format!(
-                            "Maximum supported thread length {:.6} mm",
-                            fit.engagement_limit_mm
-                        ));
+                        if let Some(limit) = fit.engagement_limit_mm {
+                            ui.small(format!("Maximum sourced engagement length {limit:.6} mm"));
+                        } else {
+                            ui.small("The source table specifies no engagement-length bound; native construction limits still apply.");
+                        }
+                        if let Some(radius) = resolved.profile.rounding_radius_mm {
+                            ui.small(format!("Rounded crest and root · radius {radius:.6} mm · 55° included angle"));
+                        }
                         Self::show_limits(ui, &fit.limits);
                         if let Some(reference) = fit.external_minor_reference_mm {
                             ui.small(format!("Published external minor reference {reference:.6} mm; not a fit limit"));
