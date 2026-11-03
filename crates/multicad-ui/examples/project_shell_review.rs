@@ -3,6 +3,12 @@
 #[allow(dead_code)]
 #[path = "../../multicad-app/src/modeling.rs"]
 mod modeling;
+#[allow(dead_code)]
+#[path = "../../multicad-app/src/drawings.rs"]
+mod native_drawings;
+#[allow(dead_code)]
+#[path = "../../multicad-app/src/exchange.rs"]
+mod native_exchange;
 use eframe::{egui, egui_wgpu, wgpu};
 use multicad_core::{
     document::{Document, EntityId},
@@ -78,11 +84,18 @@ enum Review {
     WoodBox(bool),
     FdmAid,
     Materials(u8),
+    Drawings(u8),
 }
 impl Review {
     fn name(self) -> String {
         match self {
             Self::Project => "project".into(),
+            Self::Drawings(kind) => [
+                "drawing-sidebar",
+                "drawing-other-book",
+                "drawing-pdf-dialog",
+            ][kind as usize]
+                .into(),
             Self::FdmAid => "fdm-aid".into(),
             Self::Materials(kind) => {
                 ["materials-sheet", "materials-profile", "materials-preview"][kind as usize].into()
@@ -173,6 +186,15 @@ fn render(
             | Review::FdmAid
     );
     let materials = matches!(review, Review::Materials(_));
+    let drawing = matches!(review, Review::Drawings(_));
+    if drawing {
+        app.mode = Mode::Drawings;
+        app.set_drawing_backends(Arc::new(|| Box::new(native_drawings::Backend::new())));
+        app.set_export_backends(Arc::new(|| Box::new(native_exchange::Backend::new())))?;
+        app.current_mut()
+            .exchange
+            .set_directory(std::env::temp_dir().to_str().unwrap());
+    }
     if architecture || materials {
         if architecture {
             app.mode = Mode::Model;
@@ -183,6 +205,11 @@ fn render(
     let source_hash = project_file::ContentHash::document(app.current().session.document())?;
     let mut routes: std::collections::VecDeque<_> = match review {
         Review::Project => [].into_iter().collect(),
+        Review::Drawings(0) => ["A1 · Plate overview"].into_iter().collect(),
+        Review::Drawings(1) => ["H1 · Fastener schedule"].into_iter().collect(),
+        Review::Drawings(_) => ["A1 · Plate overview", "Export as PDF"]
+            .into_iter()
+            .collect(),
         Review::Materials(0) => ["Materials", "Steel sheet 2"].into_iter().collect(),
         Review::Materials(1) => ["Materials", "Steel tube 30x20x2"].into_iter().collect(),
         Review::Materials(_) => ["Materials", "New material"].into_iter().collect(),
@@ -207,6 +234,7 @@ fn render(
     let mut tool_opened = false;
     let mut tool_preview_requested = false;
     let mut material_preview_frame = None;
+    let mut drawing_settled_at = None;
     let started = Instant::now();
     let context = egui::Context::default();
     multicad_ui::theme::configure(&context);
@@ -551,11 +579,13 @@ fn render(
                 return Err(error);
             }
         }
-        let ready = !architecture
-            || app.current().scene.is_current(
-                app.current().session.document().id(),
-                app.current().session.revision(),
-            ) && app.current().scene.visible().is_some();
+        let drawing_ready = !drawing || (started.elapsed() >= Duration::from_secs(1) && !output.shapes.iter().any(|s| matches!(&s.shape, egui::epaint::Shape::Text(t) if t.galley.job.text == "Generating drawing…")));
+        let ready = drawing_ready
+            && (!architecture
+                || app.current().scene.is_current(
+                    app.current().session.document().id(),
+                    app.current().session.revision(),
+                ) && app.current().scene.visible().is_some());
         if architecture && ready && !fitted {
             app.current_mut().sketch.request_fit();
             fitted = true;
@@ -655,7 +685,15 @@ fn render(
                 if stable == 0 {
                     events = vec![egui::Event::PointerGone];
                 }
-                if matches!(review, Review::Materials(2)) {
+                if drawing {
+                    if drawing_settled_at
+                        .get_or_insert_with(Instant::now)
+                        .elapsed()
+                        >= Duration::from_millis(500)
+                    {
+                        stable += 1;
+                    }
+                } else if matches!(review, Review::Materials(2)) {
                     if app
                         .current()
                         .sketch
@@ -802,9 +840,10 @@ fn main() -> Result<(), Error> {
         Some(arg) if arg == "--wood-box" => 4,
         Some(arg) if arg == "--fdm-aid" => 5,
         Some(arg) if arg == "--materials" => 6,
+        Some(arg) if arg == "--drawings" => 7,
         _ => {
             return Err(
-                "Expected optional --architecture, --architecture-views, --compound-cutout, --wood-box, --fdm-aid or --materials"
+                "Expected optional --architecture, --architecture-views, --compound-cutout, --wood-box, --fdm-aid, --materials or --drawings"
                     .into(),
             );
         }
@@ -835,6 +874,12 @@ fn main() -> Result<(), Error> {
         vec![Review::WoodBox(false), Review::WoodBox(true)]
     } else if review_mode == 5 {
         vec![Review::FdmAid]
+    } else if review_mode == 7 {
+        vec![
+            Review::Drawings(0),
+            Review::Drawings(1),
+            Review::Drawings(2),
+        ]
     } else if review_mode == 6 {
         vec![
             Review::Materials(0),
