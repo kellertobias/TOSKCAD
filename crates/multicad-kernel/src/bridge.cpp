@@ -274,6 +274,14 @@ bool valid(const Shape &s) {
 }
 double volume(const Shape &s) {
   return guard([&] {
+    std::lock_guard<std::mutex> lock(s.volume_cache->mutex);
+    if(s.volume_cache->certificate) {
+      const auto &certificate=*s.volume_cache->certificate;
+      if(!std::isfinite(certificate.relative_error)||certificate.relative_error<0.||certificate.relative_error>1e-7)
+        throw VolumeIntegrationFailure();
+      return certificate.mass;
+    }
+    ++s.volume_cache->integrations;
     GProp_GProps p;
     // Clipped curved faces need adaptive integration; the default overload
     // uses a fixed rule and can lose visible precision on valid exact B-reps.
@@ -282,8 +290,46 @@ double volume(const Shape &s) {
     const double relativeError = BRepGProp::VolumePropertiesGK(s.value, p, 1e-10, true, true);
     if (!std::isfinite(relativeError) || relativeError < 0. || relativeError > 1e-7)
       throw VolumeIntegrationFailure();
-    return p.Mass();
+    const double mass=p.Mass();
+    if(std::isfinite(mass)&&mass>0.)s.volume_cache->certificate=VolumeCertificate{mass,relativeError};
+    return mass;
   });
+}
+uint64_t volume_integration_count(const Shape &s) {
+  std::lock_guard<std::mutex> lock(s.volume_cache->mutex);
+  return s.volume_cache->integrations;
+}
+bool shares_volume_cache(const Shape &a,const Shape &b) {
+  return a.volume_cache==b.volume_cache;
+}
+// Private regression support: native resources remain inside the audited
+// adapter. Rust Solid remains !Send/!Sync and never crosses worker threads.
+bool volume_cache_concurrent_probe(const Shape &source) {
+  Shape cold{source.value,{},{}};
+  const auto shared=share_shape(cold);
+  std::array<double,8> values;
+  std::array<std::exception_ptr,8> errors;
+  std::vector<std::thread> workers;std::atomic<bool> start{false};
+  try {for(int i=0;i<8;++i)workers.emplace_back([&,i] {
+    while(!start.load(std::memory_order_acquire))std::this_thread::yield();
+    try {
+      for(int repeat=0;repeat<16;++repeat) {
+        const double value=volume(i%2?*shared:cold);
+        if(repeat&&value!=values[i])throw std::runtime_error("Shared native volume changed");
+        values[i]=value;
+      }
+    } catch(...) {errors[i]=std::current_exception();}
+  });} catch(...) {
+    start.store(true,std::memory_order_release);
+    for(auto &worker:workers)worker.join();
+    throw;
+  }
+  start.store(true,std::memory_order_release);
+  for(auto &worker:workers)worker.join();
+  for(int i=0;i<8;++i)if(errors[i])std::rethrow_exception(errors[i]);
+  for(int i=1;i<8;++i)if(values[i]!=values[0])return false;
+  return shares_volume_cache(cold,*shared)&&volume_integration_count(cold)==1&&
+      std::isfinite(values[0])&&values[0]>0.;
 }
 Mesh mesh(const Shape &s, double tolerance) {
   return tessellate(s, tolerance, 0.5, 1000000);
@@ -596,6 +642,13 @@ std::unique_ptr<Shape> transform_shape(const Shape &s,
       throw std::runtime_error("Rigid transform failed");
     auto result = checked(operation.Shape());
     record_history(*result, s, 0, operation);
+    // A completed native mass certificate is invariant under this exact
+    // unit-scale proper isometry. Other transforms and all new geometry keep
+    // fresh caches; imported STEP/BRep must independently integrate again.
+    if(tr.ScaleFactor()==1.&&!tr.IsNegative()) {
+      std::lock_guard<std::mutex> lock(s.volume_cache->mutex);
+      if(s.volume_cache->certificate)result->volume_cache=s.volume_cache;
+    }
     return result;
   });
 }

@@ -25,6 +25,9 @@ struct Seed;
 struct EdgeInfo;
 struct VertexInfo;
 struct StepSolidData;
+struct ThreadData;
+struct ThreadFactoryStats;
+struct ThreadFactoryTag;
 struct NativeAncestry {
   uint8_t kind, operand;
   uint32_t output, input;
@@ -37,6 +40,14 @@ struct BoundsCache {
   std::mutex mutex;
   std::optional<std::array<double,6>> value;
 };
+struct VolumeCertificate {
+  double mass,relative_error;
+};
+struct VolumeCache {
+  std::mutex mutex;
+  std::optional<VolumeCertificate> certificate;
+  uint64_t integrations=0;
+};
 struct Shape {
   TopoDS_Shape value;
   std::vector<NativeAncestry> ancestry;
@@ -44,12 +55,26 @@ struct Shape {
   // New geometry gets a fresh cache; sharing the same immutable B-rep shares
   // its lock and result. Bounds can also be queried by native worker threads.
   std::shared_ptr<BoundsCache> bounds_cache=std::make_shared<BoundsCache>();
+  // Only completed positive, finite native integrations are memoized. New
+  // geometry/imports start empty; identical immutable owners share the cache.
+  std::shared_ptr<VolumeCache> volume_cache=std::make_shared<VolumeCache>();
+  // Only an original local thread result has this opaque factory identity.
+  // Geometry-changing operations/imports never inherit it.
+  std::shared_ptr<const ThreadFactoryTag> thread_factory_tag;
 };
 std::unique_ptr<Shape> extrude(double width, double depth, double height);
 std::unique_ptr<Shape> cut(const Shape &, double x, double width, double depth,
                            double height);
 Mesh mesh(const Shape &, double deflection);
 double volume(const Shape &);
+uint64_t volume_integration_count(const Shape &);
+bool shares_volume_cache(const Shape &,const Shape &);
+bool volume_cache_concurrent_probe(const Shape &);
+ThreadFactoryStats thread_factory_stats();
+bool remember_validated_thread(const Shape &);
+void reset_thread_factory_cache();
+void thread_factory_test_limits(uint32_t entries,uint64_t bytes);
+bool thread_factory_contains(const ThreadData &);
 bool valid(const Shape &);
 void write_step(const Shape &, rust::Str path);
 std::unique_ptr<Shape> read_step(rust::Str path);

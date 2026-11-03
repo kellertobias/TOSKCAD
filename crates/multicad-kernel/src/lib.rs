@@ -46,6 +46,7 @@ mod ffi {
         minimum_feature: f64,
         maximum_length: f64,
     }
+    #[derive(Clone, Copy, Debug)]
     pub struct ThreadData {
         radius: f64,
         pitch: f64,
@@ -60,6 +61,18 @@ mod ffi {
         tolerance: f64,
         starts: u32,
         left: bool,
+    }
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct ThreadFactoryStats {
+        pub requests: u64,
+        pub hits: u64,
+        pub constructions: u64,
+        pub continuous_attempts: u64,
+        pub bounded_attempts: u64,
+        pub entries: u64,
+        pub serialized_bytes: u64,
+        pub evictions: u64,
+        pub unretained: u64,
     }
     pub struct GearData {
         teeth: u32,
@@ -326,6 +339,20 @@ mod ffi {
         ) -> Result<UniquePtr<Shape>>;
         fn mesh(shape: &Shape, deflection: f64) -> Result<Mesh>;
         fn volume(shape: &Shape) -> Result<f64>;
+        #[allow(dead_code)] // Private immutable-property cache regressions.
+        fn volume_integration_count(shape: &Shape) -> Result<u64>;
+        #[allow(dead_code)]
+        fn shares_volume_cache(a: &Shape, b: &Shape) -> bool;
+        #[allow(dead_code)]
+        fn volume_cache_concurrent_probe(shape: &Shape) -> Result<bool>;
+        fn thread_factory_stats() -> Result<ThreadFactoryStats>;
+        fn remember_validated_thread(shape: &Shape) -> Result<bool>;
+        #[allow(dead_code)] // Private bounded factory lifetime/invalidation tests.
+        fn reset_thread_factory_cache() -> Result<()>;
+        #[allow(dead_code)]
+        fn thread_factory_test_limits(entries: u32, bytes: u64) -> Result<()>;
+        #[allow(dead_code)]
+        fn thread_factory_contains(data: &ThreadData) -> Result<bool>;
         fn valid(shape: &Shape) -> Result<bool>;
         fn write_step(shape: &Shape, path: &str) -> Result<()>;
         fn read_step(path: &str) -> Result<UniquePtr<Shape>>;
@@ -489,7 +516,7 @@ pub use advanced::TreatmentFace;
 mod advanced_operations;
 mod advanced_profiles;
 mod threads;
-pub use threads::{HelicalThread, RoundedHelicalThread};
+pub use threads::{HelicalThread, RoundedHelicalThread, ThreadFactoryStats, thread_factory_stats};
 mod gears;
 pub use gears::{GearSweep, InvoluteGear};
 mod edge_treatment;

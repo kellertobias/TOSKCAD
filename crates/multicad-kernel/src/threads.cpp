@@ -8,6 +8,7 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepLib.hxx>
+#include <BRepTools.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -27,9 +28,107 @@
 #include <vector>
 #include <algorithm>
 #include <limits>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <ostream>
+#include <streambuf>
+#include <tuple>
 
 namespace multicad::kernel {
+using ThreadKey=std::tuple<std::array<uint64_t,11>,uint32_t,bool>;
+struct ThreadFactoryTag {
+  ThreadKey key;
+  TopoDS_Shape original;
+};
 namespace {
+constexpr size_t maxThreadEntries=16;
+constexpr uint64_t maxThreadBytes=32*1024*1024;
+uint64_t exact_bits(double value) {
+  static_assert(sizeof(value)==sizeof(uint64_t));
+  uint64_t bits;std::memcpy(&bits,&value,sizeof(bits));return bits;
+}
+ThreadKey thread_key(const ThreadData &s) {
+  // No padding bytes, approximate equality, input normalization or owner IDs.
+  return {{exact_bits(s.radius),exact_bits(s.pitch),exact_bits(s.height),
+      exact_bits(s.depth),exact_bits(s.crest_width),exact_bits(s.rounding),
+      exact_bits(s.lower_slope),exact_bits(s.upper_slope),exact_bits(s.taper),
+      exact_bits(s.overlap),exact_bits(s.tolerance)},s.starts,s.left};
+}
+struct ThreadEntry {
+  std::unique_ptr<Shape> shape;
+  uint64_t bytes,used;
+};
+struct ThreadCache {
+  std::map<ThreadKey,ThreadEntry> entries;
+  ThreadFactoryStats stats{};
+  uint64_t clock=0,bytes=0,byte_limit=maxThreadBytes;
+  size_t entry_limit=maxThreadEntries;
+};
+ThreadCache &thread_cache() {
+  // Native handles are retained and destroyed on their owning thread only.
+  thread_local ThreadCache cache;
+  return cache;
+}
+std::unique_ptr<Shape> thread_wrapper(const Shape &source) {
+  // All persistent owner naming lives in Rust, never in this neutral wrapper.
+  // Numeric source-seed roles survive; inherited operand history does not.
+  auto result=std::make_unique<Shape>(Shape{source.value,{},source.seeds});
+  result->bounds_cache=source.bounds_cache;
+  result->volume_cache=source.volume_cache;
+  result->thread_factory_tag=source.thread_factory_tag;
+  return result;
+}
+class CountingStream : public std::streambuf {
+public:
+  explicit CountingStream(uint64_t limit):limit_(limit){}
+  uint64_t bytes()const{return bytes_;}
+protected:
+  std::streamsize xsputn(const char *,std::streamsize count) override {
+    if(count>0)add(static_cast<uint64_t>(count));
+    return count;
+  }
+  int_type overflow(int_type value) override {
+    if(!traits_type::eq_int_type(value,traits_type::eof()))add(1);
+    return traits_type::not_eof(value);
+  }
+private:
+  void add(uint64_t count){bytes_=count>limit_||bytes_>limit_-count?limit_+1:bytes_+count;}
+  uint64_t limit_,bytes_=0;
+};
+// Developer-only bounded timings; never write into the MCP stdout transport.
+struct ThreadProfile {
+  using Clock=std::chrono::steady_clock;
+  bool enabled=false;
+  uint64_t id=0;
+  const char *mode="none";
+  Clock::time_point total,attempt;
+  explicit ThreadProfile(const ThreadData &s) {
+    const auto flag=std::getenv("MULTICAD_NATIVE_THREAD_PROFILE");
+    if(!flag||std::strcmp(flag,"1")!=0)return;
+    static std::atomic<uint64_t> calls{0};
+    id=calls.fetch_add(1,std::memory_order_relaxed);
+    enabled=id<64;
+    if(!enabled)return;
+    total=Clock::now();
+    std::fprintf(stderr,"multicad.native.thread id=%llu R=%.17g P=%.17g L=%.17g rounding=%.17g\n",static_cast<unsigned long long>(id),s.radius,s.pitch,s.height,s.rounding);
+  }
+  Clock::time_point mark()const{return enabled?Clock::now():Clock::time_point{};}
+  void stage(const char *name,Clock::time_point begin)const {
+    if(enabled)std::fprintf(stderr,"multicad.native.thread id=%llu mode=%s stage=%s milliseconds=%.6f\n",static_cast<unsigned long long>(id),mode,name,std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+  }
+  void start(bool segmented){mode=segmented?"bounded":"continuous";attempt=mark();}
+  void retry(const char *reason)const {
+    if(enabled)std::fprintf(stderr,"multicad.native.thread id=%llu mode=%s retry=%s milliseconds=%.6f\n",static_cast<unsigned long long>(id),mode,reason,std::chrono::duration<double,std::milli>(Clock::now()-attempt).count());
+  }
+  void probe(const char *kind,double z,double angle,double radius,TopAbs_State inside,TopAbs_State outside)const {
+    if(enabled)std::fprintf(stderr,"multicad.native.thread id=%llu mode=%s failed_probe=%s z=%.17g angle=%.17g radius=%.17g inside=%d outside=%d\n",static_cast<unsigned long long>(id),mode,kind,z,angle,radius,int(inside),int(outside));
+  }
+  ~ThreadProfile(){stage("total",total);}
+};
 struct ThreadFace { TopoDS_Shape face; uint32_t source; uint8_t role; };
 class ThreadRidgeLoss : public std::runtime_error {
 public:
@@ -61,8 +160,10 @@ void boolean_inputs(BRepAlgoAPI_BooleanOperation &operation,
     throw std::runtime_error("Native thread Boolean failed");
 }
 }
-static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segmented) {
+static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segmented,ThreadProfile &trace) {
  try {
+  trace.start(segmented);
+  auto measured=trace.mark();
   const double pi=std::acos(-1.),lead=s.pitch*s.starts;
   const double root=s.radius-s.depth,z0=-2*lead,z1=s.height+2*lead;
   if(s.starts<1||s.starts>8||!std::isfinite(lead)||lead<=0||s.height<s.pitch||
@@ -77,11 +178,13 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     const auto type=BRepAdaptor_Surface(TopoDS::Face(it.Current())).GetType();
     if(type==GeomAbs_Cylinder||type==GeomAbs_Cone)ancestry.push_back({it.Current(),0,3});
   }
+  trace.stage("core",measured);
   const double alpha=std::atan(s.taper),c=std::cos(alpha),sign=s.left?-1.:1.;
   Handle(Geom_Surface) surface;
   if(s.taper==0)surface=new Geom_CylindricalSurface(gp_Ax3(),root);
   else surface=new Geom_ConicalSurface(gp_Ax3(),alpha,root);
   for(uint32_t start=0;start<s.starts;++start) {
+    measured=trace.mark();
     const double phase=2*pi*start/s.starts,z=-lead;
     Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,z/c),gp_Dir2d(sign*2*pi,lead/c));
     const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
@@ -105,11 +208,13 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       if(finish==end)break;
     }
     const auto spine=spineBuilder.Wire();
+    trace.stage("spine",measured);
     const auto point=[&](double radius,double dz) {
       const double r=radius+s.taper*(z+dz);
       return gp_Pnt(r*std::cos(phase),r*std::sin(phase),z+dz);
     };
     const auto sweep=[&](const std::vector<TopoDS_Edge> &source,int rootHalf) {
+      auto measured=trace.mark();
       BRepBuilderAPI_MakeWire profile;std::vector<TopoDS_Edge> edges;
       for(const auto &edge:source){profile.Add(edge);edges.push_back(profile.Edge());}
       if(!profile.IsDone())throw std::runtime_error("Native thread profile is disconnected");
@@ -118,6 +223,8 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       pipe.Add(profile.Wire(),false,false);pipe.Build();
       if(!pipe.IsDone()||!pipe.MakeSolid()||!BRepCheck_Analyzer(pipe.Shape()).IsValid())
         throw std::runtime_error("Native helical ridge is not a valid solid");
+      trace.stage("sweep_and_validity",measured);
+      measured=trace.mark();
       for(uint32_t i=0;i<edges.size();++i)for(const auto &face:pipe.Generated(edges[i]))
         if(face.ShapeType()==TopAbs_FACE) {
           if(rootHalf>=0&&i==0)ancestry.push_back({face,static_cast<uint32_t>(rootHalf),4});
@@ -125,6 +232,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
         }
       BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,pipe.Shape());
       ancestry=carry_thread_faces(join,ancestry);solid=join.Shape();
+      trace.stage("ridge_fuse_and_history",measured);
     };
     const auto edge=[](const gp_Pnt &a,const gp_Pnt &b){return BRepBuilderAPI_MakeEdge(a,b).Edge();};
     const auto arc=[](const gp_Pnt &a,const gp_Pnt &mid,const gp_Pnt &b){
@@ -168,6 +276,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   // Joining before trimming is essential: a separately trimmed ridge can be
   // silently lost by a later union despite a valid, one-solid core result.
   const double bound=s.radius+std::abs(s.taper)*(s.height+3*lead)+s.pitch;
+  measured=trace.mark();
   const auto limit=BRepPrimAPI_MakeBox(gp_Pnt(-bound,-bound,0),2*bound,2*bound,s.height).Shape();
   if(s.rounding>0) {
     int count=0;for(TopExp_Explorer it(solid,TopAbs_SOLID);it.More();it.Next())++count;
@@ -179,6 +288,8 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   if(!BRepCheck_Analyzer(solid).IsValid())throw std::runtime_error("Finished thread is invalid");
   int count=0;for(TopExp_Explorer it(solid,TopAbs_SOLID);it.More();it.Next())++count;
   if(count!=1)throw std::runtime_error("Thread must remain one connected solid");
+  trace.stage("trim_and_validity",measured);
+  measured=trace.mark();
   // Validate physical crests and gaps, not merely a successful Boolean call.
   // Probe every quarter-pitch band and the original regression sample. This
   // checks the whole axial extent, rather than accepting one surviving crest.
@@ -190,8 +301,13 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       const double angle=sign*2*pi*sampleZ/lead+2*pi*start/s.starts;
       const double radius=s.radius+s.taper*sampleZ-std::min(s.depth*.05,s.crest_width*.1);
       const auto state=[&](double a){classifier.Perform(gp_Pnt(radius*std::cos(a),radius*std::sin(a),sampleZ),s.tolerance*4);return classifier.State();};
-      if(state(angle)!=TopAbs_IN||state(angle+pi/s.starts)!=TopAbs_OUT)
+      const auto inside=state(angle);
+      const auto outside=inside==TopAbs_IN?state(angle+pi/s.starts):TopAbs_UNKNOWN;
+      if(inside!=TopAbs_IN||outside!=TopAbs_OUT) {
+        trace.probe("crest_gap",sampleZ,angle,radius,inside,outside);
+        trace.stage("physical_guards_failed",measured);
         throw ThreadRidgeLoss();
+      }
       if(s.rounding>0) {
         const double half=s.rounding*std::cos(std::atan(s.lower_slope));
         const double epsilon=std::max(s.tolerance*8,s.rounding*.01);
@@ -209,6 +325,8 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       }
     }
   }
+  trace.stage("physical_guards",measured);
+  measured=trace.mark();
   auto result=std::make_unique<Shape>(Shape{solid,{},{}});
   TopTools_IndexedMapOfShape faces;TopExp::MapShapes(solid,TopAbs_FACE,faces);
   for(int i=1;i<=faces.Extent();++i) {
@@ -227,34 +345,99 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       if(!found)throw std::runtime_error("Thread face has no exact native ancestry");
     }
   }
+  trace.stage("ancestry",measured);
   return result;
  } catch(const Standard_Failure &e) {
   throw std::runtime_error(e.GetMessageString()?e.GetMessageString():"Native thread operation failed");
  }
 }
 std::unique_ptr<Shape> helical_thread(const ThreadData &s) {
+  auto &cache=thread_cache();
+  ++cache.stats.requests;
+  const auto key=thread_key(s);
+  if(auto found=cache.entries.find(key);found!=cache.entries.end()) {
+    ++cache.stats.hits;
+    found->second.used=++cache.clock;
+    return thread_wrapper(*found->second.shape);
+  }
+  ++cache.stats.constructions;
+  ThreadProfile trace(s);
+  const auto completed=[&](std::unique_ptr<Shape> result) {
+    // A tag is only eligibility for later retention, not an acceptance proof.
+    // Rust must still adopt, validate its policy and bind all owner names.
+    try {result->thread_factory_tag=std::make_shared<ThreadFactoryTag>(ThreadFactoryTag{key,result->value});}
+    catch(const std::bad_alloc &) {++cache.stats.unretained;}
+    return result;
+  };
   // Rounded profiles are new geometry. Use bounded half-turn faces from the
   // outset, avoiding invalid continuous unions and false trimmed-solid native
   // classification. Flat profiles retain their established representation and
   // narrowly typed reconstruction rules below.
   if(s.rounding>0) {
-    auto result=build_helical_thread(s,true);
+    ++cache.stats.bounded_attempts;
+    auto result=build_helical_thread(s,true,trace);
+    const auto measured=trace.mark();
     volume(*result);
-    return result;
+    trace.stage("volume_guard",measured);
+    return completed(std::move(result));
   }
   try {
-    auto result=build_helical_thread(s,false);
+    ++cache.stats.continuous_attempts;
+    auto result=build_helical_thread(s,false,trace);
+    const auto measured=trace.mark();
     volume(*result);
-    return result;
+    trace.stage("volume_guard",measured);
+    return completed(std::move(result));
   } catch(const ThreadRidgeLoss &) {
+    trace.retry("ridge_loss");
     // Retry a proven physical clipping failure on the same authored helix.
   } catch(const VolumeIntegrationFailure &) {
+    trace.retry("volume_nonconvergence");
     // The continuous B-rep passed the physical guards but cannot satisfy the
     // shared volume integration guard. Reconstruct the same helix with bounded
     // faces. Other native, validity and ancestry errors are never retried.
   }
-  auto result=build_helical_thread(s,true);
+  ++cache.stats.bounded_attempts;
+  auto result=build_helical_thread(s,true,trace);
+  const auto measured=trace.mark();
   volume(*result);
-  return result;
+  trace.stage("volume_guard",measured);
+  return completed(std::move(result));
 }
+ThreadFactoryStats thread_factory_stats() {
+  const auto &cache=thread_cache();
+  auto stats=cache.stats;
+  stats.entries=cache.entries.size();stats.serialized_bytes=cache.bytes;
+  return stats;
+}
+bool remember_validated_thread(const Shape &shape) {
+  auto &cache=thread_cache();
+  const auto &tag=shape.thread_factory_tag;
+  if(!tag||!shape.value.IsEqual(tag->original))return false;
+  if(auto found=cache.entries.find(tag->key);found!=cache.entries.end()) {
+    found->second.used=++cache.clock;return true;
+  }
+  if(!cache.entry_limit||!cache.byte_limit){++cache.stats.unretained;return false;}
+  CountingStream buffer(cache.byte_limit);std::ostream stream(&buffer);
+  try {BRepTools::Write(shape.value,stream);}
+  catch(const Standard_Failure &) {++cache.stats.unretained;return false;}
+  const uint64_t bytes=buffer.bytes();
+  if(!stream.good()||!bytes||bytes>cache.byte_limit){++cache.stats.unretained;return false;}
+  // Prepare the independent wrapper before evicting any successful entry.
+  auto neutral=thread_wrapper(shape);
+  while(cache.entries.size()>=cache.entry_limit||cache.bytes>cache.byte_limit-bytes) {
+    auto oldest=std::min_element(cache.entries.begin(),cache.entries.end(),[](const auto &a,const auto &b){return a.second.used<b.second.used;});
+    cache.bytes-=oldest->second.bytes;cache.entries.erase(oldest);++cache.stats.evictions;
+  }
+  cache.entries.emplace(tag->key,ThreadEntry{std::move(neutral),bytes,++cache.clock});
+  cache.bytes+=bytes;
+  return true;
+}
+void reset_thread_factory_cache() {thread_cache()=ThreadCache{};}
+void thread_factory_test_limits(uint32_t entries,uint64_t bytes) {
+  if(entries>maxThreadEntries||bytes>maxThreadBytes)throw std::runtime_error("Thread test cache cannot exceed production limits");
+  reset_thread_factory_cache();
+  auto &cache=thread_cache();cache.entry_limit=entries;cache.byte_limit=bytes;
+}
+bool thread_factory_contains(const ThreadData &s) {return thread_cache().entries.find(thread_key(s))!=thread_cache().entries.end();}
 }

@@ -900,3 +900,143 @@ mod bounds_tests {
         assert_eq!(ellipsoid.bounds().unwrap(), shared.bounds().unwrap());
     }
 }
+
+#[cfg(test)]
+mod volume_cache_tests {
+    use super::*;
+    use crate::{AffineTransform, HelicalThread};
+    use multicad_core::document::EntityId;
+
+    fn integrations(solid: &Solid) -> u64 {
+        ffi::volume_integration_count(&solid.native.0).unwrap()
+    }
+    fn shares(a: &Solid, b: &Solid) -> bool {
+        ffi::shares_volume_cache(&a.native.0, &b.native.0)
+    }
+
+    #[test]
+    fn completed_volume_certificates_follow_only_identical_or_exact_rigid_geometry() {
+        let policy = GeometryPolicy::default();
+        let source = Solid::box_solid([4., 5., 6.], policy).unwrap();
+        let initial_bounds = source.bounds().unwrap();
+        let shared = source.share().unwrap();
+        let moved = shared
+            .transformed(RigidTransform {
+                rotation: [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]],
+                translation_mm: [9., -3., 7.],
+            })
+            .unwrap();
+        assert!(shares(&source, &shared));
+        assert!(shares(&source, &moved));
+        for solid in [&source, &shared, &moved] {
+            for _ in 0..100 {
+                assert!((solid.volume_mm3().unwrap() - 120.).abs() < 1e-10);
+            }
+            assert_eq!(integrations(solid), 1);
+        }
+        let fresh = Solid::from_brep(&moved.to_brep().unwrap(), policy).unwrap();
+        assert!(!shares(&moved, &fresh));
+        assert_eq!(integrations(&fresh), 1);
+        assert!((fresh.volume_mm3().unwrap() - 120.).abs() < 1e-10);
+        let path = tempfile::tempdir().unwrap();
+        let step = path.path().join("independent-volume.step");
+        moved.write_step(&step).unwrap();
+        let readback = Solid::read_step(&step, policy).unwrap();
+        assert!(!shares(&moved, &readback));
+        assert_eq!(integrations(&readback), 1);
+        assert!((readback.volume_mm3().unwrap() - 120.).abs() < 1e-10);
+
+        let tool = Solid::box_solid([2., 5., 6.], policy).unwrap();
+        let cut = source
+            .boolean(&tool, BooleanOperation::Subtract, policy)
+            .unwrap()
+            .unwrap();
+        assert!(!shares(&source, &cut));
+        assert_eq!(integrations(&cut), 1);
+        assert!((cut.volume_mm3().unwrap() - 60.).abs() < 1e-10);
+        let scaled = source
+            .affine_transformed_named(
+                AffineTransform {
+                    matrix: [[2., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                    translation_mm: [0.; 3],
+                },
+                EntityId::new(),
+                policy,
+            )
+            .unwrap();
+        assert!(!shares(&source, &scaled));
+        assert_eq!(integrations(&scaled), 1);
+        assert!((scaled.volume_mm3().unwrap() - 240.).abs() < 1e-9);
+        let mirrored = source
+            .mirrored_named(
+                PlaneFrame {
+                    origin: [0.; 3],
+                    u: [0., 1., 0.],
+                    v: [0., 0., 1.],
+                },
+                EntityId::new(),
+                policy,
+            )
+            .unwrap();
+        assert!(!shares(&source, &mirrored));
+        assert_eq!(integrations(&mirrored), 1);
+        assert!((mirrored.volume_mm3().unwrap() - 120.).abs() < 1e-10);
+        assert_eq!(source.bounds().unwrap(), initial_bounds);
+        assert_eq!(integrations(&source), 1);
+        assert!((source.volume_mm3().unwrap() - 120.).abs() < 1e-10);
+        assert!(ffi::valid(&source.native.0).unwrap());
+    }
+
+    #[test]
+    fn cold_native_volume_cache_integrates_once_across_concurrent_shared_owners() {
+        let cylinder = Solid::cylinder(Default::default(), 3., 4., Default::default()).unwrap();
+        assert!(ffi::volume_cache_concurrent_probe(&cylinder.native.0).unwrap());
+        assert_eq!(integrations(&cylinder), 1);
+        assert!((cylinder.volume_mm3().unwrap() - 36. * std::f64::consts::PI).abs() < 1e-9);
+    }
+
+    #[test]
+    fn default_metric_thread_reuses_its_converged_native_volume_certificate() {
+        let spec = HelicalThread {
+            major_radius_mm: 1.5,
+            pitch_mm: 0.5,
+            length_mm: 10.,
+            depth_mm: 5. * 3_f64.sqrt() / 32.,
+            crest_width_mm: 0.5 / 8.,
+            lower_flank_deg: 30.,
+            upper_flank_deg: 30.,
+            radial_taper: 0.,
+            starts: 1,
+            left_hand: false,
+        };
+        let solid = Solid::helical_thread_named(spec, EntityId::new(), Default::default()).unwrap();
+        assert_eq!(
+            integrations(&solid),
+            1,
+            "Native guard and adopt share one completed integration"
+        );
+        let initial = solid.volume_mm3().unwrap();
+        let shared = solid.share().unwrap();
+        let moved = shared.transformed(Default::default()).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..10_000 {
+            assert_eq!(moved.volume_mm3().unwrap(), initial);
+        }
+        if std::env::var_os("MULTICAD_NATIVE_THREAD_PROFILE").is_some() {
+            eprintln!(
+                "cached metric volume: 10000 queries {:?}, one native integration",
+                started.elapsed()
+            );
+        }
+        assert_eq!(integrations(&solid), 1);
+        assert_eq!(integrations(&moved), 1);
+        let fresh = Solid::from_brep(&solid.to_brep().unwrap(), Default::default()).unwrap();
+        assert!(!shares(&solid, &fresh));
+        let actual = fresh.volume_mm3().unwrap();
+        let area: f64 = fresh.faces().unwrap().iter().map(|f| f.area_mm2).sum();
+        assert!(
+            (actual - initial).abs()
+                <= GeometryPolicy::default().linear_tolerance_mm * area + 1e-7 * (actual + initial)
+        );
+    }
+}
