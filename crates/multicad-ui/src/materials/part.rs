@@ -4,7 +4,7 @@ use super::{
 };
 use eframe::egui::{self, Color32};
 use multicad_core::{
-    commands::{Actor, Channel, Prepared, Request, Session},
+    commands::{Actor, Channel, Request, Session, SessionStamp},
     document::{Document, EntityData, EntityId, Mutation},
     materials::*,
 };
@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 struct Draft {
     document: EntityId,
     revision: u64,
-    guard: Prepared,
+    guard: SessionStamp,
     parts: Vec<EntityId>,
     assignment: Assignment,
     original: Assignment,
@@ -27,16 +27,6 @@ pub struct PartEditor {
     draft: Option<Draft>,
     error: Option<String>,
     cached: Option<DisplayCache>,
-}
-fn guard(session: &Session) -> Result<Prepared, String> {
-    session
-        .prepare(Request {
-            expected_revision: session.revision(),
-            actor: Actor::local(Channel::Ui),
-            label: "Open Part Inspector".into(),
-            edits: vec![],
-        })
-        .map_err(|e| e.to_string())
 }
 impl PartEditor {
     pub fn dirty(&self) -> bool {
@@ -73,7 +63,7 @@ impl PartEditor {
             Ok::<_, String>(Draft {
                 document: s.document().id(),
                 revision: s.revision(),
-                guard: guard(s)?,
+                guard: s.stamp(),
                 parts: parts.to_vec(),
                 original: assignment.clone(),
                 assignment,
@@ -93,7 +83,7 @@ impl PartEditor {
         if d.document != s.document().id()
             || d.revision != s.revision()
             || d.parts != parts
-            || s.validate_preview(&d.guard).is_err()
+            || s.validate_stamp(&d.guard).is_err()
         {
             return Err("Source or selection changed. Discard tag edits before editing the current selection.".into());
         }
@@ -197,7 +187,7 @@ impl PartEditor {
             })
             .map_err(|e| e.to_string())?;
         s.commit(prepared).map_err(|e| e.to_string())?;
-        let next = guard(s)?;
+        let next = s.stamp();
         let d = self.draft.as_mut().expect("current draft");
         d.revision = s.revision();
         d.guard = next;
@@ -216,7 +206,7 @@ impl PartEditor {
         let prepared = prepare_tags(s, d.revision, Actor::local(Channel::Ui), &d.parts, &edit)
             .map_err(|e| e.to_string())?;
         s.commit(prepared).map_err(|e| e.to_string())?;
-        let next = guard(s)?;
+        let next = s.stamp();
         let d = self.draft.as_mut().expect("current draft");
         d.revision = s.revision();
         d.guard = next;
