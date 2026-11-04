@@ -100,6 +100,33 @@ impl DimensionField {
         .on_hover_text(help)
         .changed()
     }
+    /// Two-column Inspector grids reserve room for their label instead of
+    /// requesting the entire row for the value. The caller supplies an
+    /// owner/field identity, independent of validation text or preceding widgets.
+    pub fn show_compact(
+        &mut self,
+        ui: &mut egui::Ui,
+        id_salt: impl egui::AsIdSalt,
+        label: &str,
+        help: &str,
+    ) -> bool {
+        let row_width = ui.max_rect().width().min(ui.clip_rect().width()).max(0.);
+        let width = (row_width * 0.4).min(120.);
+        let label_width = (row_width - width - ui.spacing().item_spacing.x - 4.).clamp(0., 160.);
+        ui.add_sized(
+            [label_width, 0.],
+            egui::Label::new(format!("{label} ({})", self.unit)).wrap(),
+        );
+        let id = ui.make_persistent_id(id_salt);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.text)
+                .id(id)
+                .desired_width(width)
+                .hint_text(format!("Value or =$parameter · {}", self.unit)),
+        )
+        .on_hover_text(help)
+        .changed()
+    }
     pub fn resolve(&self, document: &Document) -> Result<Dimension, String> {
         if self.text.trim_start().starts_with('=') {
             return BoundExpression::bind(

@@ -325,15 +325,21 @@ impl ConstructionEditor {
     }
     fn diagram(&mut self, ui: &mut egui::Ui, document: &Document) {
         self.refresh_example(document);
+        ui.small("Representative bay · elevation");
+        // Validation can change after each typed character. Keep the same
+        // footprint so fields, focus and the enclosing scroll position stay put.
+        let (preview, _) = ui.allocate_exact_size(vec2(ui.available_width(), 280.), Sense::hover());
         let Some(Ok(layout)) = self.example.as_ref() else {
             if let Some(Err(error)) = &self.example {
-                ui.colored_label(Color32::LIGHT_RED, error);
+                ui.place(
+                    preview.shrink(12.),
+                    egui::Label::new(egui::RichText::new(error).color(Color32::LIGHT_RED)).wrap(),
+                );
             }
             return;
         };
         let layout = Arc::clone(layout);
-        ui.small("Representative bay · elevation");
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 230.), Sense::hover());
+        let rect = Rect::from_min_max(preview.min, preview.max - vec2(0., 50.));
         let post_width = match layout.construction.post {
             ResolvedFencePostProfile::Rectangular { width_mm, .. } => width_mm,
             ResolvedFencePostProfile::Round { diameter_mm } => diameter_mm,
@@ -428,12 +434,16 @@ impl ConstructionEditor {
             ],
             Stroke::new(1., ui.visuals().weak_text_color()),
         );
-        ui.small(format!(
-            "Center spacing {} · clear bay {}",
+        let status = format!(
+            "Center spacing {}\nClear bay {}",
             crate::preferences::format_mm(layout.construction.preferred_post_spacing_mm),
             crate::preferences::format_mm(layout.bays[0].clear_width_mm)
-        ));
-        ui.small("Click a post or infill, or use the labeled list below.");
+        );
+        ui.place(
+            Rect::from_min_max(pos2(preview.left(), rect.bottom()), preview.max),
+            egui::Label::new(egui::RichText::new(status).small().weak()).wrap(),
+        )
+        .on_hover_text("Click a post or infill, or use the labeled list below.");
     }
     fn show_post(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
@@ -457,23 +467,28 @@ impl ConstructionEditor {
             .num_columns(2)
             .show(ui, |ui| match self.post {
                 PostKind::Rectangular => {
-                    changed |= self.post_width.show(
+                    changed |= self.post_width.show_compact(
                         ui,
+                        ("fence-construction", "post-width"),
                         "Along-run width",
                         "Width along the local path direction",
                     );
                     ui.end_row();
-                    changed |= self.post_depth.show(
+                    changed |= self.post_depth.show_compact(
                         ui,
+                        ("fence-construction", "post-depth"),
                         "Across-run depth",
                         "Depth across the local path direction",
                     );
                     ui.end_row();
                 }
                 PostKind::Round => {
-                    changed |=
-                        self.diameter
-                            .show(ui, "Diameter", "Physical circular post diameter");
+                    changed |= self.diameter.show_compact(
+                        ui,
+                        ("fence-construction", "post-diameter"),
+                        "Diameter",
+                        "Physical circular post diameter",
+                    );
                     ui.end_row();
                 }
             });
@@ -499,18 +514,18 @@ impl ConstructionEditor {
         ui.label("Infill material");
         changed |= Self::material(ui, &self.materials, &mut row.material);
         egui::Grid::new("infill-dimensions").num_columns(2).show(ui, |ui| {
-            changed |= row.bottom.show(ui, "Bottom above base", "Physical bottom measured from the run base");
+            changed |= row.bottom.show_compact(ui, ("fence-infill", row.id, "bottom"), "Bottom above base", "Physical bottom measured from the run base");
             ui.end_row();
-            changed |= row.height.show(ui, "Height", "Physical height of this panel, rail or picket");
+            changed |= row.height.show_compact(ui, ("fence-infill", row.id, "height"), "Height", "Physical height of this panel, rail or picket");
             ui.end_row();
-            changed |= row.normal.show(ui, "Across-run offset", "Positive moves left of the drawn direction. Place rail faces against picket faces to avoid overlap.");
+            changed |= row.normal.show_compact(ui, ("fence-infill", row.id, "normal"), "Across-run offset", "Positive moves left of the drawn direction. Place rail faces against picket faces to avoid overlap.");
             ui.end_row();
-            changed |= row.depth.show(ui, if row.kind == InfillKind::Panel { "Thickness" } else { "Depth" }, "Physical material depth across the path");
+            changed |= row.depth.show_compact(ui, ("fence-infill", row.id, "depth"), if row.kind == InfillKind::Panel { "Thickness" } else { "Depth" }, "Physical material depth across the path");
             ui.end_row();
             if row.kind == InfillKind::Pickets {
-                changed |= row.width.show(ui, "Picket width", "Repeated members retain this width");
+                changed |= row.width.show_compact(ui, ("fence-infill", row.id, "width"), "Picket width", "Repeated members retain this width");
                 ui.end_row();
-                changed |= row.maximum_gap.show(ui, "Maximum clear gap", "Equal end and interior gaps stay within this limit");
+                changed |= row.maximum_gap.show_compact(ui, ("fence-infill", row.id, "maximum_gap"), "Maximum clear gap", "Equal end and interior gaps stay within this limit");
                 ui.end_row();
             }
         });
@@ -522,8 +537,9 @@ impl ConstructionEditor {
                 egui::Grid::new("purchased-panel")
                     .num_columns(2)
                     .show(ui, |ui| {
-                        changed |= row.panel_width.show(
+                        changed |= row.panel_width.show_compact(
                             ui,
+                            ("fence-infill", row.id, "panel_width"),
                             "Purchased width",
                             "Choose post spacing that fits this physical panel",
                         );
@@ -603,14 +619,16 @@ impl ConstructionEditor {
             egui::Grid::new("construction-global")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    changed |= self.height.show(
+                    changed |= self.height.show_compact(
                         ui,
+                        ("fence-construction", "post-height"),
                         "Post height",
                         "Infill keeps its own height when post height changes",
                     );
                     ui.end_row();
-                    changed |= self.spacing.show(
+                    changed |= self.spacing.show_compact(
                         ui,
+                        ("fence-construction", "post-spacing"),
                         "Preferred spacing",
                         "Center-to-center pitch; the run preview shows actual bay widths",
                     );
@@ -786,6 +804,249 @@ mod tests {
                 }
             })
             .unwrap_or_else(|| panic!("Missing control {label}"))
+    }
+
+    fn inspector_frame(
+        editor: &mut ConstructionEditor,
+        ctx: &egui::Context,
+        document: &Document,
+        width: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut fits = true;
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1200., 1000.))),
+                events,
+                focused: true,
+                ..Default::default()
+            },
+            |ui| {
+                let panel = egui::Panel::right("fence-fields-review")
+                    .exact_size(width)
+                    .show(ui, |ui| {
+                        controls::inspector_layout(ui);
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let available = ui.available_width();
+                            editor.show(ui, document, true);
+                            fits &= ui.min_rect().width() <= available + 1.;
+                        });
+                    });
+                fits &= panel.response.rect.width() <= width + 1.;
+            },
+        );
+        if !fits {
+            output.drop_without_applying_deltas();
+            panic!("Fence inspector content exceeds {width}px");
+        }
+        output
+    }
+
+    #[test]
+    fn compact_fields_keep_readable_labels_and_focus_through_invalid_bay_edits() {
+        let (session, value, _, _) = fixture();
+        let original = session.document().clone();
+        for width in [480., 250., 160.] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut editor = ConstructionEditor::existing(session.document(), &value).unwrap();
+            editor.sync_source(&session);
+            for _ in 0..4 {
+                inspector_frame(&mut editor, &ctx, session.document(), width, vec![])
+                    .drop_without_applying_deltas();
+            }
+            let output = inspector_frame(&mut editor, &ctx, session.document(), width, vec![]);
+            for label in [
+                "Post height (mm)",
+                "Preferred spacing (mm)",
+                "Along-run width (mm)",
+                "Across-run depth (mm)",
+            ] {
+                let galley = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => {
+                            Some(&text.galley)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("Missing {label}"));
+                assert!(
+                    galley.rows.len() <= if width < 200. { 3 } else { 2 },
+                    "{width}px: {label} wraps into {} rows",
+                    galley.rows.len()
+                );
+            }
+            let status_bottom = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.text().starts_with("Center spacing ") =>
+                    {
+                        Some(text.pos.y + text.galley.size().y)
+                    }
+                    _ => None,
+                })
+                .expect("Visible actual bay dimensions");
+            assert!(
+                status_bottom < text(&output, "Posts").y,
+                "Bay summary overlaps controls at {width}px"
+            );
+            let at = text(&output, "1800");
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                inspector_frame(
+                    &mut editor,
+                    &ctx,
+                    session.document(),
+                    width,
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                )
+                .drop_without_applying_deltas();
+            }
+            let focused = ctx.memory(|m| m.focused()).expect("height field focused");
+            let field_rect = ctx.read_response(focused).unwrap().rect;
+            assert!(field_rect.width() <= 130.);
+            for digits in ["1600", "1800"] {
+                let command = egui::Modifiers {
+                    command: true,
+                    ctrl: true,
+                    ..Default::default()
+                };
+                inspector_frame(
+                    &mut editor,
+                    &ctx,
+                    session.document(),
+                    width,
+                    vec![egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: command,
+                    }],
+                )
+                .drop_without_applying_deltas();
+                let mut expected = String::new();
+                for digit in digits.chars() {
+                    expected.push(digit);
+                    inspector_frame(
+                        &mut editor,
+                        &ctx,
+                        session.document(),
+                        width,
+                        vec![egui::Event::Text(digit.to_string())],
+                    )
+                    .drop_without_applying_deltas();
+                    // Repaint the newly invalid/valid representative bay too.
+                    let updated =
+                        inspector_frame(&mut editor, &ctx, session.document(), width, vec![]);
+                    let diagnostic = if let Some(Err(error)) = &editor.example {
+                        Some((
+                            error.clone(),
+                            updated
+                                .platform_output
+                                .accesskit_update
+                                .as_ref()
+                                .unwrap()
+                                .nodes
+                                .iter()
+                                .any(|(_, node)| {
+                                    node.label() == Some(error.as_str())
+                                        || node.value() == Some(error.as_str())
+                                }),
+                        ))
+                    } else {
+                        None
+                    };
+                    updated.drop_without_applying_deltas();
+                    if let Some((error, accessible)) = diagnostic {
+                        assert!(
+                            accessible,
+                            "invalid diagnostic {error} must remain accessible"
+                        );
+                    }
+                    assert_eq!(editor.height.text, expected);
+                    assert_eq!(ctx.memory(|m| m.focused()), Some(focused));
+                    let current = ctx.read_response(focused).unwrap().rect;
+                    assert!(
+                        (current.min.y - field_rect.min.y).abs() < 0.1,
+                        "field moved during invalid edit"
+                    );
+                    assert!(current.right() <= 1200. && current.left() >= 1200. - width);
+                    assert_eq!(editor.post_width.text, "90");
+                    assert_eq!(editor.post_depth.text, "90");
+                    assert_eq!(editor.spacing.text, "2000");
+                }
+                assert_eq!(editor.example.as_ref().unwrap().is_ok(), digits == "1800");
+            }
+            assert_eq!(editor.value(session.document()).unwrap(), value);
+        }
+        assert_eq!(session.document(), &original);
+        assert_eq!(session.revision(), 0);
+    }
+
+    #[test]
+    fn compact_infill_fields_keep_semantic_identity_when_recipe_selection_changes() {
+        let (session, value, _, _) = fixture();
+        let mut editor = ConstructionEditor::existing(session.document(), &value).unwrap();
+        editor.sync_source(&session);
+        let first = editor.rows[0].id;
+        let mut second = editor.rows[0].clone();
+        second.id = EntityId::new();
+        second.name = "Second panel".into();
+        second.height.text = "1333".into();
+        let second_id = second.id;
+        editor.rows.push(second);
+        let ctx = egui::Context::default();
+        let mut ids = Vec::new();
+        for (id, contents) in [(first, "1600"), (second_id, "1333"), (first, "1600")] {
+            editor.selected = Selection::Infill(id);
+            for _ in 0..3 {
+                inspector_frame(&mut editor, &ctx, session.document(), 250., vec![])
+                    .drop_without_applying_deltas();
+            }
+            let output = inspector_frame(&mut editor, &ctx, session.document(), 250., vec![]);
+            let at = text(&output, contents);
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                inspector_frame(
+                    &mut editor,
+                    &ctx,
+                    session.document(),
+                    250.,
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                )
+                .drop_without_applying_deltas();
+            }
+            ids.push(
+                ctx.memory(|memory| memory.focused())
+                    .expect("infill height focused"),
+            );
+        }
+        assert_ne!(ids[0], ids[1]);
+        assert_eq!(ids[0], ids[2]);
+        assert_eq!(editor.rows[0].height.text, "1600");
+        assert_eq!(editor.rows[1].height.text, "1333");
+        assert_eq!(session.revision(), 0);
     }
 
     #[test]
