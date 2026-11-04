@@ -1,5 +1,9 @@
 # Project shell verification, 2026-11-02
 
+> Historical checkpoint. Later actual native Project layout, save/Library and
+> fresh-process reopen evidence is recorded in
+> [Project shell verification, 2026-11-04](project-shell-2026-11-04.md).
+
 CAD-220 renames the visible Parameters mode to Project, removes its ribbon and
 places its five draft/history actions in a left column. The parameter table and
 single file-metadata sidebar retain their existing transactional handlers.
