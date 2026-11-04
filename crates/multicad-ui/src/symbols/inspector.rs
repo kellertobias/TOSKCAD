@@ -193,7 +193,7 @@ pub(super) fn show(
                 ui.small(format!("Old pin: {}",report.old_pin));ui.small(format!("New pin: {}",report.new_pin));
                 ui.label(format!("{} changed entities · {} affected instance(s)",report.changed_entities.len(),report.affected_instances.len()));
                 let old=definition.and_then(|id|definitions.iter().find(|(key,_)|*key==id).map(|(_,d)|d));
-                for (heading,ids) in [("Added inputs",&report.added_parameters),("Removed inputs",&report.removed_parameters),("Changed inputs/defaults",&report.changed_parameters)] {
+                for (heading,ids) in [("Added numeric parameters",&report.added_parameters),("Removed numeric parameters",&report.removed_parameters),("Changed numeric parameters/defaults",&report.changed_parameters)] {
                     ui.strong(heading);
                     if ids.is_empty(){ui.small("None");}
                     for id in ids {
@@ -214,7 +214,7 @@ pub(super) fn show(
                         for layer in &change.removed_layers { ui.label(format!("Removed layer: {}",layer.name)); }
                         for recipe in &change.changed_recipes { ui.label(format!("Replaced infill: {}",recipe.name)); }
                         if !change.removed_members.is_empty() { ui.label(format!("{} physical members will be removed",change.removed_members.len())); }
-                        if let Some(fields)=architecture_values.get_mut(&change.record) { changed|=fields.show(ui); }
+                        if let Some(fields)=architecture_values.get_mut(&change.record) { fields.show_changes(ui,change); changed|=fields.show(ui); }
                     });
                 }
                 if let Some(error)=&report.architecture_error { ui.colored_label(egui::Color32::LIGHT_YELLOW,error); }
@@ -271,11 +271,12 @@ fn summary(ui: &mut egui::Ui, definition: &SymbolDefinition) {
     ));
     ui.small(format!(
         "{} exposed inputs · {}",
-        definition.exposed.len(),
-        if definition.plan.is_some() {
-            "Linked 2D/3D"
-        } else {
-            "3D"
+        super::architecture::input_count(definition),
+        match super::architecture::role(definition) {
+            Some(symbols::architecture::ArchitectureRole::Wall) => "Path-driven wall",
+            Some(symbols::architecture::ArchitectureRole::Fence) => "Path-driven fence",
+            None if definition.plan.is_some() => "Linked 2D/3D",
+            None => "3D",
         }
     ));
 }

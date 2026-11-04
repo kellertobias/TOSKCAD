@@ -41,6 +41,8 @@ pub(crate) struct Fields {
     options: Vec<OptionRow>,
     unavailable: ArchitectureInputs,
     old_names: BTreeMap<EntityId, String>,
+    previous_defaults: BTreeMap<EntityId, (String, String)>,
+    current_defaults: BTreeMap<EntityId, (String, String)>,
 }
 fn label(document: &Document, id: EntityId) -> String {
     document
@@ -223,7 +225,7 @@ impl Fields {
             old_names.extend(old.materials.into_iter().map(|s| (s.id, s.name)));
             old_names.extend(old.options.into_iter().map(|s| (s.id, s.name)));
         }
-        Ok(Self {
+        let mut fields = Self {
             definition: definition.clone(),
             numeric,
             dimensions,
@@ -231,7 +233,61 @@ impl Fields {
             options,
             unavailable,
             old_names,
-        })
+            previous_defaults: previous
+                .map(|definition| {
+                    Self::new(definition, &ArchitectureInputs::default(), receiving, None)
+                        .map(|fields| fields.input_defaults())
+                })
+                .transpose()?
+                .unwrap_or_default(),
+            current_defaults: BTreeMap::new(),
+        };
+        fields.current_defaults = fields.input_defaults();
+        Ok(fields)
+    }
+    fn input_defaults(&self) -> BTreeMap<EntityId, (String, String)> {
+        self.dimensions
+            .iter()
+            .map(|row| (row.id, (row.name.clone(), row.default.clone())))
+            .chain(
+                self.materials
+                    .iter()
+                    .map(|row| (row.slot.id, (row.slot.name.clone(), row.default.clone()))),
+            )
+            .chain(
+                self.options
+                    .iter()
+                    .map(|row| (row.slot.id, (row.slot.name.clone(), row.default.clone()))),
+            )
+            .collect()
+    }
+    pub(crate) fn show_changes(&self, ui: &mut egui::Ui, change: &ArchitectureUpgradeChange) {
+        let current = &self.current_defaults;
+        for (heading, ids) in [
+            ("Added construction inputs", &change.added_inputs),
+            ("Removed construction inputs", &change.removed_inputs),
+            (
+                "Changed construction inputs/defaults",
+                &change.changed_inputs,
+            ),
+        ] {
+            ui.strong(heading);
+            if ids.is_empty() {
+                ui.small("None");
+            }
+            for id in ids {
+                if let Some((name, _)) = current.get(id).or_else(|| self.previous_defaults.get(id))
+                {
+                    ui.label(name);
+                }
+                if let Some((_, value)) = self.previous_defaults.get(id) {
+                    ui.small(format!("Before default: {value}"));
+                }
+                if let Some((_, value)) = current.get(id) {
+                    ui.small(format!("After default: {value}"));
+                }
+            }
+        }
     }
     pub(crate) fn resolve(&self, receiving: &Document) -> Result<ArchitectureInputs, String> {
         if self.unavailable.input_count() != 0 {

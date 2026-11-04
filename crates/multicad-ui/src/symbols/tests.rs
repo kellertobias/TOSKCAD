@@ -1092,6 +1092,135 @@ fn graphical_architectural_authoring_keeps_live_construction_and_public_slot_ids
 }
 
 #[test]
+fn library_cards_count_typed_construction_inputs_and_preserve_ordinary_symbol_summaries() {
+    use super::architecture::test_support;
+    use multicad_core::symbols::architecture::*;
+    let (mut wall, mut blueprint) = test_support::definition(ArchitectureRole::Wall);
+    blueprint.materials.clear();
+    let mut root = wall.template.get(wall.root).unwrap().clone();
+    root.data = EntityData::Extension {
+        definition: blueprint.definition().unwrap(),
+        inputs: blueprint.inputs(),
+    };
+    wall.template = wall.template.edited(&[Mutation::Replace(root)]).unwrap();
+    wall.validate().unwrap();
+    let (fence, _) = test_support::definition(ArchitectureRole::Fence);
+    let (mut session, part, width) = fixture();
+    let ordinary_id = embed(&mut session, part.body, width);
+    let ordinary = symbols::read_definition(session.document(), ordinary_id).unwrap();
+    let mut c = controller();
+    c.set_library_snapshot(vec![wall, fence, ordinary]).unwrap();
+    begin(&mut c, &session, SymbolTool::Library, Default::default());
+    let before = session.document().clone();
+    let (output, _) = frame(
+        &egui::Context::default(),
+        &mut c,
+        &mut session,
+        vec![],
+        2400.,
+    );
+    for label in [
+        "1 exposed inputs · Path-driven wall",
+        "3 exposed inputs · Path-driven fence",
+        "1 exposed inputs · 3D",
+    ] {
+        point(&output, label);
+    }
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn wall_update_paints_changed_typed_defaults_and_keeps_the_receiving_override() {
+    use super::architecture::test_support;
+    use multicad_core::symbols::architecture::*;
+    let (old, blueprint) = test_support::definition(ArchitectureRole::Wall);
+    let (mut session, definition) = test_support::consumer(&old);
+    let mut inputs = ArchitectureInputs::default();
+    inputs
+        .dimensions
+        .insert(blueprint.dimensions[0].id, length(2800.));
+    let place = ArchitecturePlaceRequest::new(
+        session.document(),
+        definition,
+        "Receiving wall",
+        inputs.clone(),
+        ArchitectureContext::Wall {
+            path: vec![[length(0.), length(0.)], [length(4000.), length(0.)]],
+            closed: false,
+            level: None,
+            base_z: length(0.),
+            flipped: false,
+            details: None,
+        },
+    )
+    .unwrap();
+    session
+        .commit(
+            prepare_architecture_place(&session, session.revision(), actor(), &place)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let baseline = session.document().clone();
+    let mut next = old.clone();
+    next.revision = "2".into();
+    let model::WallTypeConstruction::Layered(mut construction) =
+        model::read_wall_construction(&next.template, blueprint.construction).unwrap()
+    else {
+        unreachable!()
+    };
+    construction.height = length(2900.);
+    let mut entity = next.template.get(blueprint.construction).unwrap().clone();
+    let EntityData::Extension { definition, .. } = &mut entity.data else {
+        unreachable!()
+    };
+    definition.data = serde_json::to_value(construction).unwrap();
+    next.template = next.template.edited(&[Mutation::Replace(entity)]).unwrap();
+    let mut c = controller();
+    begin(
+        &mut c,
+        &session,
+        SymbolTool::Update,
+        SymbolSelection {
+            instance: Some(place.output.anchors()[1]),
+            ..Default::default()
+        },
+    );
+    c.form
+        .as_mut()
+        .unwrap()
+        .set_replacement(session.document(), next)
+        .unwrap();
+    let (output, _) = frame(
+        &egui::Context::default(),
+        &mut c,
+        &mut session,
+        vec![],
+        2400.,
+    );
+    for label in [
+        "Changed construction inputs/defaults",
+        "Height",
+        "Before default: 2700 mm",
+        "After default: 2900 mm",
+        "Override Height",
+        "Authored default: 2900 mm",
+    ] {
+        point(&output, label);
+    }
+    assert_eq!(session.document(), &baseline);
+    c.preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    wait(&mut c, &session, &Default::default());
+    c.apply(&mut session, &Default::default()).unwrap();
+    let record = read_architecture_instance(session.document(), place.record).unwrap();
+    assert_eq!(record.inputs, inputs);
+    assert_eq!(record.ids, place.ids);
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &baseline);
+}
+
+#[test]
 fn painted_architectural_exposure_toggles_only_the_interface_and_native_apply_is_atomic() {
     use super::architecture::test_support;
     use multicad_core::symbols::architecture::*;

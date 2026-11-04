@@ -30,3 +30,23 @@ pub(crate) fn role(
         _ => None,
     }
 }
+
+pub(crate) fn input_count(definition: &multicad_core::symbols::SymbolDefinition) -> usize {
+    let numeric = definition.exposed.len();
+    if role(definition).is_none() {
+        return numeric;
+    }
+    let Some(multicad_core::document::Entity {
+        data: multicad_core::document::EntityData::Extension { definition, .. },
+        ..
+    }) = definition.template.get(definition.root)
+    else {
+        return numeric;
+    };
+    numeric
+        + ["dimensions", "materials", "options"]
+            .iter()
+            .filter_map(|key| definition.data.get(*key)?.as_array())
+            .map(Vec::len)
+            .sum::<usize>()
+}
