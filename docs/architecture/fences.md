@@ -3,7 +3,11 @@
 Fences use one canonical construction, a placed path and named independent
 member Parts. The native editor, core source API and native evaluator share
 these records. MCP uses the same source transaction and exact native preflight.
-Cross-project Library integration is still pending. The source lives in
+Cross-project Library integration uses the implemented CAD-206 path/context
+contract. The [2026-11-04 fence verification](../verification/fences-2026-11-04.md)
+records graphical placement, pinned revision updates and retained overrides;
+that scoped proof does not establish every architectural symbol combination.
+The source lives in
 [core/model/fence](../../crates/multicad-core/src/model/fence/mod.rs); the exact
 provider is [model/fences.rs](../../crates/multicad-model/src/fences.rs).
 
