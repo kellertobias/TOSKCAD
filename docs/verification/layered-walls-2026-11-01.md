@@ -1,5 +1,9 @@
 # Layered-wall verification checkpoint
 
+> Historical checkpoint: actual macOS authoring, editing and wall Library reuse
+> are recorded in [the 2026-11-04 verification](layered-walls-2026-11-04.md).
+> The remaining-gap statements below describe their original checkpoint.
+
 The sections below retain evidence from successive implementation checkpoints.
 The final status is recorded in the last section; earlier pending statements
 apply only to their named checkpoint.
