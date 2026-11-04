@@ -280,13 +280,23 @@ impl EquipmentPanel {
         Ok(())
     }
     pub fn request(&self, document: &Document) -> Result<EquipmentCommand, String> {
+        let floor = self.floor.ok_or(
+            "Create a Level in Model / Architecture, then select it as the equipment Floor datum before placing equipment.",
+        )?;
+        let parameters = multicad_core::parameters::evaluate(document).map_err(|error| {
+            format!(
+                "Cannot resolve the equipment Floor datum. Repair the project parameters: {error}"
+            )
+        })?;
+        model::resolve_level(document, &parameters, floor).map_err(|error| {
+            format!(
+                "The selected equipment Floor datum is missing or invalid. Select a valid Level in Floor datum before placing equipment: {error}"
+            )
+        })?;
         if !self.placed {
             return Err("Click in the apartment view to position the equipment".into());
         }
         let session = Session::new(document.clone()).map_err(|e| e.to_string())?;
-        let floor = self
-            .floor
-            .ok_or("Create or choose a labeled floor level first")?;
         let host = self.host(document)?;
         let (record, owner, mut settings, attachment, mut envelopes) =
             if let Some(record) = self.existing {
@@ -760,6 +770,121 @@ fn picker(
 mod tests {
     use super::*;
     use multicad_core::{commands::Channel, model::LevelDefinition};
+    #[test]
+    fn missing_or_invalid_floor_reports_the_repair_before_requesting_a_viewport_pick() {
+        use multicad_core::document::{Definition, Entity, Mutation};
+        let document = Document::new("Missing equipment floor").unwrap();
+        let mut panel = EquipmentPanel::new(&document);
+        let error = panel.request(&document).unwrap_err();
+        assert!(error.contains("Create a Level in Model / Architecture"));
+        assert!(error.contains("Floor datum"));
+        assert!(!error.contains("Click in the apartment view"));
+        panel.floor = Some(EntityId::new());
+        let error = panel.request(&document).unwrap_err();
+        assert!(error.contains("missing or invalid"));
+        assert!(error.contains("Select a valid Level"));
+        let level = Entity::new(
+            "Invalid floor",
+            EntityData::Extension {
+                definition: Definition {
+                    type_id: model::LEVEL_KIND.into(),
+                    schema_version: 1,
+                    data: serde_json::to_value(LevelDefinition {
+                        elevation: length(0.),
+                        height: length(0.),
+                        slab_thickness: length(200.),
+                    })
+                    .unwrap(),
+                },
+                inputs: vec![],
+            },
+        );
+        panel.floor = Some(level.id);
+        let invalid = document.edited(&[Mutation::Insert(level)]).unwrap();
+        let before = invalid.clone();
+        let error = panel.request(&invalid).unwrap_err();
+        assert!(error.contains("Select a valid Level"));
+        assert!(error.contains("Level height and slab thickness must be positive"));
+        assert_eq!(invalid, before);
+        assert!(!panel.placed);
+        assert!(panel.seed.borrow().is_none());
+    }
+
+    #[test]
+    fn a_valid_explicit_floor_keeps_pick_feedback_and_drives_the_prepared_attachment() {
+        let mut session = Session::new(Document::new("Equipment floor choice").unwrap()).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let mut floors = Vec::new();
+        for elevation in [100., 500.] {
+            let (id, prepared) = model::prepare_level(
+                &session,
+                session.revision(),
+                actor.clone(),
+                "Floor",
+                &LevelDefinition {
+                    elevation: length(elevation),
+                    height: length(2800.),
+                    slab_thickness: length(200.),
+                },
+            )
+            .unwrap();
+            session.commit(prepared).unwrap();
+            floors.push(id);
+        }
+        let before = session.document().clone();
+        let revision = session.revision();
+        let mut panel = EquipmentPanel::new(session.document());
+        panel.select(Kind::WashingMachine);
+        panel.floor = Some(floors[1]);
+        assert_eq!(
+            panel.request(session.document()).unwrap_err(),
+            "Click in the apartment view to position the equipment"
+        );
+        let camera = crate::camera::Camera {
+            yaw: 0.,
+            pitch: std::f32::consts::FRAC_PI_2,
+            scale: 0.5,
+            target: [1000., 2000., 500.],
+            perspective: false,
+        };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600., 600.));
+        let point = camera.project([1000., 2000., 500.], rect);
+        let mut picked = false;
+        egui::Context::default()
+            .run_ui(Default::default(), |ui| {
+                picked = panel.viewport(
+                    session.document(),
+                    TerminationViewport {
+                        scene: None,
+                        report: None,
+                        camera,
+                        rect,
+                        pointer: Some(egui::pos2(point[0], point[1])),
+                        clicked: true,
+                        painter: ui.painter(),
+                        section: None,
+                    },
+                );
+            })
+            .drop_without_applying_deltas();
+        assert!(picked);
+        let command = panel.request(session.document()).unwrap();
+        let EquipmentCommand::Place(request) = &command else {
+            panic!("New equipment must prepare placement");
+        };
+        assert_eq!(request.attachment.floor, floors[1]);
+        let resolved = request
+            .attachment
+            .resolve(session.document(), session.parameters())
+            .unwrap();
+        assert_eq!(resolved.pose.translation_mm, [1000., 2000., 500.]);
+        let prepared = command.prepare(&session, actor).unwrap();
+        session.validate_preview(&prepared.prepared).unwrap();
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
+        assert!(panel.placed);
+    }
+
     #[test]
     fn inspector_reuses_preview_identity_and_restores_hosted_equipment_for_editing() {
         let mut s = Session::new(Document::new("Inspector equipment").unwrap()).unwrap();
