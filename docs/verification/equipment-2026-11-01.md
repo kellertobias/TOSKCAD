@@ -1,6 +1,8 @@
 <!-- Kind: verification checkpoint; Audience: CAD reviewers and maintainers; Purpose: record CAD-203 implementation evidence and remaining graphical checks; Non-goals: human acceptance, installation certification or cross-platform runtime claims. -->
 # Apartment equipment checkpoint — 2026-11-01
 
+> Historical checkpoint. See [the 2026-11-04 native verification](equipment-2026-11-04.md) for resumed graphical furnishing, fixes and final checks.
+
 CAD-203 remains in progress. Commits `4dd3ea7` and `f640d39` implement hosted equipment and its shared offline Library. The [equipment contract](../architecture/equipment.md) describes canonical source, hosting, plan symbols and clearance envelopes. The later quit-dialog change is recorded separately under CAD-239.
 
 ## Verified source and native output
