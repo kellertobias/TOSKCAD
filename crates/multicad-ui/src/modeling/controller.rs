@@ -93,6 +93,7 @@ pub struct ModelToolController {
     backend: Option<Box<dyn SceneBackend>>,
     scope: Option<Scope>,
     candidate: Option<Candidate>,
+    preparation: preparation::Lane,
     discovery: Option<Discovery>,
     operations: Option<OperationControls>,
     identities: BooleanIdentities,
@@ -549,7 +550,8 @@ impl ModelToolController {
         Ok(())
     }
     pub fn pending(&self) -> bool {
-        self.discovery.is_some()
+        self.preparation.pending()
+            || self.discovery.is_some()
             || self
                 .candidate
                 .as_ref()
@@ -1510,6 +1512,7 @@ impl ModelToolController {
         )
     }
     pub fn cancel(&mut self) {
+        self.preparation.cancel();
         self.placement_interaction = Default::default();
         self.scale_interaction = Default::default();
         self.scale_host_basis = None;
@@ -1553,6 +1556,7 @@ impl ModelToolController {
         Ok(())
     }
     fn invalidate(&mut self) {
+        self.preparation.cancel();
         self.placement_confirm = None;
         self.scale_confirm = None;
         self.candidate = None;
@@ -1624,6 +1628,21 @@ impl ModelToolController {
             },
             _ => self.scope.as_ref().expect("current scope").execution,
         };
+        if matches!(execution, Execution::Create)
+            && matches!(request, ModelRequest::Thread(_) | ModelRequest::Gear(_))
+        {
+            self.generation = self
+                .generation
+                .checked_add(1)
+                .ok_or("Model preview generation limit reached")?;
+            return self.preparation.submit(preparation::Job {
+                source: session.preparation_snapshot(),
+                request: request.clone(),
+                channel,
+                form,
+                generation: self.generation,
+            });
+        }
         let (prepared, proof) = match execution {
             Execution::Create => {
                 let prepared = request.prepare(session, Actor::local(channel))?;
@@ -1670,10 +1689,30 @@ impl ModelToolController {
                 self.prepare_legacy_extrusion(session, channel, feature, group, request)?
             }
         };
+        let content = ContentHash::document(prepared.prepared.document())?;
+        self.publish_prepared(
+            session, resources, form, request, execution, prepared, proof, content,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn publish_prepared(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        form: FormStamp,
+        request: &ModelRequest,
+        execution: Execution,
+        prepared: model::ModelPrepared,
+        proof: SceneProof,
+        content: ContentHash,
+    ) -> Result<(), String> {
+        self.current(session, resources, true)?;
+        if self.stamp() != Some(form) {
+            return Err("Modeling inputs changed; preview the current values".into());
+        }
         session
             .validate_preview(&prepared.prepared)
             .map_err(|error| error.to_string())?;
-        let content = ContentHash::document(prepared.prepared.document())?;
         let tools = match execution {
             Execution::Create => request.tool_proof(prepared.prepared.document())?,
             Execution::Edit { .. }
@@ -1754,12 +1793,32 @@ impl ModelToolController {
         if self.active()
             && let Err(error) = self.current(session, resources, false)
         {
+            self.preparation.cancel();
             self.candidate = None;
             self.discovery = None;
             if let Some(operations) = &mut self.operations {
                 operations.invalidate();
             }
             self.error = Some(error);
+        }
+        if let Some(reply) = self.preparation.poll() {
+            let result = (|| {
+                self.current(session, resources, true)?;
+                let (prepared, content) = reply.result?;
+                self.publish_prepared(
+                    session,
+                    resources,
+                    reply.form,
+                    &reply.request,
+                    Execution::Create,
+                    prepared,
+                    SceneProof::Create,
+                    content,
+                )
+            })();
+            if let Err(error) = result {
+                self.error = Some(error);
+            }
         }
         for _ in 0..16 {
             let Some(reply) = self.backend.as_mut().and_then(|backend| backend.poll()) else {
@@ -2055,7 +2114,9 @@ impl ModelToolController {
             (_, Some(candidate), _) if candidate.scene.is_some() => PreviewState::Ready {
                 stamp: candidate.form,
             },
-            (_, _, Some(stamp)) if self.discovery.is_some() => PreviewState::Pending { stamp },
+            (_, _, Some(stamp)) if self.discovery.is_some() || self.preparation.pending() => {
+                PreviewState::Pending { stamp }
+            }
             _ => PreviewState::Idle,
         };
         let capabilities = if self.backend.is_some() {
@@ -2159,6 +2220,7 @@ mod legacy;
 mod operation_interaction;
 mod operations;
 mod placement_interaction;
+mod preparation;
 pub use operation_interaction::OperationViewport;
 mod scale_interaction;
 pub use placement_interaction::PlacementViewportResult;
