@@ -133,6 +133,10 @@ and minor targets are their independent midpoints, with a flat root.
 The new symmetric circular root uses the native explicit meridian sweep with
 quarter-turn domains and a checked surface-approximation error. The existing
 asymmetric buttress representation remains separate.
+The symmetric root retains its three measured unions and ancestry transfers,
+with OCCT parallel work enabled inside each union through its existing shared
+pool. Other thread construction keeps its existing execution policy. A single
+combined union failed the analytic volume regression and is not used.
 
 Nominal basic pitch diameter remains `d-3*sqrt(3)*P/8`. Target dimensions and
 source limits stay in `resolved.metric_fit`; `resolved.fit` reports actual

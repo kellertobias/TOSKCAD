@@ -164,10 +164,10 @@ std::vector<ThreadFace> carry_thread_faces(Operation &operation,
   return result;
 }
 void boolean_inputs(BRepAlgoAPI_BooleanOperation &operation,
-    const TopoDS_Shape &a,const TopoDS_Shape &b) {
+    const TopoDS_Shape &a,const TopoDS_Shape &b,bool parallel=false) {
   TopTools_ListOfShape arguments,tools;arguments.Append(a);tools.Append(b);
   operation.SetArguments(arguments);operation.SetTools(tools);
-  operation.SetNonDestructive(true);operation.SetRunParallel(false);
+  operation.SetNonDestructive(true);operation.SetRunParallel(parallel);
   operation.Build();
   if(!operation.IsDone()||operation.HasErrors()||operation.Shape().IsNull())
     throw std::runtime_error("Native thread Boolean failed");
@@ -335,6 +335,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   auto measured=trace.mark();
   const double pi=std::acos(-1.),lead=s.pitch*s.starts;
   const double root=s.radius-s.depth,z0=-2*lead,z1=s.height+2*lead;
+  const bool symmetricRoot=s.root_rounding>0&&std::abs(s.lower_slope-s.upper_slope)<1e-14;
   double rootCenterZ=0,rootCenterRadius=0;
   const double lowerAngle=std::atan(s.lower_slope),upperAngle=std::atan(s.upper_slope);
   if(s.knuckle_root_radius>0) {
@@ -410,7 +411,6 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       for(const auto &edge:source){profile.Add(edge);edges.push_back(profile.Edge());}
       if(!profile.IsDone())throw std::runtime_error("Native thread profile is disconnected");
       TopoDS_Shape ridge;std::vector<std::vector<TopoDS_Shape>> generated;
-      const bool symmetricRoot=s.root_rounding>0&&std::abs(s.lower_slope-s.upper_slope)<1e-14;
       if(((s.rounding>0||s.axial_flat)&&s.taper!=0)||symmetricRoot) {
         auto exact=sweep_meridian(spine,profile.Wire(),edges,phase,
           sign*2*pi/std::hypot(2*pi,lead/c),root+s.taper*z,z,s.tolerance);
@@ -446,7 +446,9 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
             ancestry.push_back({face,start*4+(rootHalf>=0?3:mapped),2});
           }
         }
-      BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,ridge);
+      // Retain the measured union sequence and ancestry; parallelize only
+      // the new symmetric root's intersections through OCCT's existing pool.
+      BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,ridge,symmetricRoot);
       ancestry=carry_thread_faces(join,ancestry);solid=join.Shape();
       trace.stage("ridge_fuse_and_history",measured);
     };
