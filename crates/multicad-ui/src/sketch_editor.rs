@@ -1092,7 +1092,9 @@ impl SketchEditor {
         self.tree_selection = outputs.into_iter().map(|output| output.body).collect();
         self.selected = None;
         self.solid.clear();
-        self.fit_requested |= fit;
+        // A retained repeat-placement form must keep the operator's view for
+        // the next pick instead of fitting the scene after every occurrence.
+        self.fit_requested |= fit && !self.model.active();
         self.message = format!("{label} applied · one undoable source edit");
     }
     pub fn cancel_model(&mut self) {
