@@ -1,5 +1,7 @@
 # Native UI input latency investigation
 
+> Historical checkpoint. See [the 2026-11-04 native verification](ui-input-latency-2026-11-04.md) for resumed graphical checks and remaining measured gaps.
+
 Status: in progress for CAD-243. Fresh macOS idle and busy interaction traces remain required. The original reported running build is unknown. No claim that the proposed input-feedback budget is met.
 
 The saved equivalent is `artifacts/equipment-review-20261101/readable/apartment-equipment.tcd`. The tested machine is a Mac17,6 MacBook Pro, Apple M5 Max, 64 GB, macOS 26.6.2 (25G83), with a 1360 × 860 point QA window. Displays were 3456 × 2234 Retina, 1920 × 1200 at 60 Hz, and 5120 × 1440 at 60 Hz. Native QA copies had separate bundle identities; no installed application replacement was performed.
