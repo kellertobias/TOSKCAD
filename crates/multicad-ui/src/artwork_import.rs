@@ -410,7 +410,8 @@ impl Ready {
         ui.separator();
         ui.strong("Scale and placement");
         let units = self.options.units;
-        egui::ComboBox::from_label("Source units")
+        let units_label = ui.label("Source units");
+        crate::controls::inspector_combo(ui, "artwork-source-units")
             .selected_text(unit_label(units, self.file.format))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
@@ -425,7 +426,10 @@ impl Ready {
                         unit.label(),
                     );
                 }
-            });
+            })
+            .response
+            .labelled_by(units_label.id)
+            .on_hover_text(unit_label(units, self.file.format));
         if self.options.units != units {
             self.artwork =
                 sketch_import::parse(self.file.format, &self.file.bytes, self.options.units)
@@ -638,6 +642,108 @@ mod tests {
             outcome = value.or(outcome);
         }
         outcome
+    }
+
+    #[test]
+    fn source_units_fit_the_native_narrow_inspector_and_keep_the_report_visible() {
+        for width in [244., 250.] {
+            let mut session = session();
+            let baseline = session.document().clone();
+            let mut controller = ImportController::default();
+            controller
+                .begin_bytes("badge.svg", SVG.to_vec(), None)
+                .unwrap();
+            let expected_bounds = controller.preview().unwrap().bounds_mm;
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut shown = None;
+            for _ in 0..4 {
+                if let Some(previous) = shown.take() {
+                    egui::FullOutput::drop_without_applying_deltas(previous);
+                }
+                shown = Some(ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1360., 860.),
+                        )),
+                        focused: true,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        crate::controls::inspector_panel(ui, "source-inspector")
+                            .exact_size(width)
+                            .show(ui, |ui| {
+                                crate::controls::inspector_layout(ui);
+                                ui.heading("Inspector");
+                                ui.separator();
+                                inspector_actions::scope(
+                                    ui,
+                                    Some(Owner::Import),
+                                    egui::Color32::BLUE,
+                                    |ui| {
+                                        assert!(controller.show(ui, &mut session, None).is_none());
+                                        assert!(
+                                            ui.min_rect().right() <= ui.clip_rect().right() + 1.,
+                                            "Import controls exceed the inspector's horizontal bounds"
+                                        );
+                                    },
+                                );
+                            });
+                    },
+                ));
+            }
+            let output = shown.unwrap();
+            let text = |prefix: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text().starts_with(prefix) => {
+                            Some((text, shape.clip_rect))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("Missing painted {prefix}"))
+            };
+            let (label, clip) = text("Source units");
+            assert!(
+                label.galley.rows.len() <= 2,
+                "{width}pt: Source units wraps into {} rows",
+                label.galley.rows.len()
+            );
+            let label_rect = egui::Rect::from_min_size(label.pos, label.galley.size());
+            assert!(clip.contains_rect(label_rect), "Units label is clipped");
+            let (selected, clip) = text("From file");
+            assert!(
+                clip.contains_rect(egui::Rect::from_min_size(
+                    selected.pos,
+                    selected.galley.size()
+                )),
+                "Selected units text exceeds the inspector"
+            );
+            let (scale, _) = text("Scale factor");
+            assert!(
+                scale.pos.y - label.pos.y < 70.,
+                "Units row pushes the scale control down"
+            );
+            for prefix in ["Preview", "Bounds X", "4 lines"] {
+                let (report, clip) = text(prefix);
+                assert!(
+                    clip.contains_rect(egui::Rect::from_min_size(report.pos, report.galley.size())),
+                    "{width}pt: {prefix} is clipped or pushed below the inspector"
+                );
+            }
+            output.drop_without_applying_deltas();
+            assert_eq!(controller.preview().unwrap().bounds_mm, expected_bounds);
+            assert_eq!(controller.target(), Some(Target::New(Datum::Xy)));
+            assert!(controller.can_apply());
+            assert_eq!(session.document(), &baseline);
+            assert_eq!(session.revision(), 0);
+            controller.cancel();
+            assert!(!controller.active());
+            assert_eq!(session.document(), &baseline);
+        }
     }
 
     #[test]
