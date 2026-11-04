@@ -597,9 +597,11 @@ native failures, cancellation and stale revisions leave the document unchanged.
 
 `set_gear_pair` creates two named gear Parts, a reusable Assembly, its internal
 relationships and one placed occurrence in a single transaction. Creation
-requires a name. The first member defaults to 20 teeth. The second inherits
-the first recipe with 30 teeth and opposite helix hand, then applies explicit
-second-member overrides. Spur members use hand `none`.
+requires a name. The first member defaults to 20 teeth. For external pairs,
+the second inherits the first recipe with 30 teeth and opposite helix hand,
+then applies explicit second-member overrides. An internal-ring first member
+instead defaults its second member to a 24-tooth spur pinion without an
+outside-diameter field. Spur members use hand `none`.
 
 An edit retains omitted fields independently for each member. Supplying both
 recipes changes them atomically, so a shared module change can keep the pair
@@ -614,9 +616,12 @@ placement when those local frames change. The returned occurrence supports
 normal component Move/Copy. Copies share the definition's internal drive angle
 and keep independent outer placements.
 
-Pairs require matching external family, transverse module and pressure angle,
+External pairs require matching family, transverse module and pressure angle,
 face width and center gap, with equal helix magnitude and opposite hands where
-applicable. Their current Part heads must remain the gear generators. Native
+applicable. The bounded internal-ring/spur subset requires matching transverse
+module, 20-degree pressure angle and face width, with zero helix/gap. Its centers
+use the pitch-radius difference and its members rotate in the same direction.
+Their current Part heads must remain the gear generators. Native
 evaluation checks the current pose and nine phases over one pinion tooth cycle.
 Unchanged geometry can reuse a completed cycle check; the current pose is always
 checked. These samples do not establish continuous collision-free motion, load
