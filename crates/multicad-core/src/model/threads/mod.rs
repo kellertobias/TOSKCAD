@@ -1,7 +1,9 @@
 //! Versioned thread intent and transactions. Native receipts must still prove
 //! receiving geometry and manufactured solids before the UI enables Apply.
 mod buttress;
+mod end_treatments;
 mod lead_screw;
+mod metric_fit;
 mod npt;
 mod pipe;
 mod prepare;
@@ -23,7 +25,9 @@ use crate::{
     sketch::Frame,
 };
 pub use buttress::*;
+pub use end_treatments::*;
 pub use lead_screw::*;
+pub use metric_fit::*;
 pub use npt::*;
 pub use pipe::*;
 pub use prepare::*;
@@ -67,6 +71,10 @@ impl ThreadRepresentation {
 #[serde(rename_all = "snake_case")]
 pub enum ThreadFit {
     NominalBasic,
+    #[serde(rename = "metric_6g_external")]
+    Metric6gExternal,
+    #[serde(rename = "metric_6h_internal")]
+    Metric6HInternal,
     #[serde(rename = "unified_2a")]
     Unified2A,
     #[serde(rename = "unified_2b")]
@@ -82,6 +90,8 @@ impl ThreadFit {
     pub fn label(self) -> &'static str {
         match self {
             Self::NominalBasic => "Nominal basic profile",
+            Self::Metric6gExternal => "6g external (2001/1998 source)",
+            Self::Metric6HInternal => "6H internal (2001/1998 source)",
             Self::Unified2A => "2A external",
             Self::Unified2B => "2B internal",
             Self::WhitworthMediumExternal => "Medium external (BS 84:2007)",
@@ -123,6 +133,8 @@ pub struct ThreadParameters {
     pub minimum_wall: Dimension,
     pub representation: ThreadRepresentation,
     pub runout: ThreadRunout,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_treatments: Option<ThreadEndTreatments>,
     pub frame: PrimitiveFrame,
 }
 impl Default for ThreadParameters {
@@ -144,12 +156,15 @@ impl Default for ThreadParameters {
             minimum_wall: length(1.),
             representation: ThreadRepresentation::Modeled,
             runout: ThreadRunout::FlatCutEnds,
+            end_treatments: None,
             frame: PrimitiveFrame::default(),
         }
     }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedThread {
+    pub end_treatments: Option<ResolvedThreadEndTreatments>,
+    pub metric_fit: Option<ResolvedMetricFit>,
     pub buttress: Option<ResolvedButtressThread>,
     pub round: Option<ResolvedRoundThread>,
     pub lead_screw: Option<ResolvedLeadScrew>,
@@ -182,6 +197,9 @@ impl ThreadParameters {
             &self.minimum_wall,
         ];
         dimensions.extend(self.frame.origin.iter());
+        if let Some(treatments) = &self.end_treatments {
+            dimensions.extend(treatments.dimensions());
+        }
         if let Some(profile) = &self.custom {
             dimensions.extend(profile.inputs());
         }
@@ -189,6 +207,17 @@ impl ThreadParameters {
     }
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame.validate()?;
+        if let Some(treatments) = &self.end_treatments {
+            treatments.validate()?;
+            if self.family != ThreadFamily::IsoMetric
+                || self.starts != 1
+                || self.representation != ThreadRepresentation::Modeled
+            {
+                return Err(invalid(
+                    "Custom end treatments currently require a modeled parallel single-start metric thread",
+                ));
+            }
+        }
         for d in [
             &self.major_diameter,
             &self.pitch,
@@ -283,6 +312,16 @@ impl ThreadParameters {
                     "Rounded sourced threads require the explicit family/mode fit and one start",
                 ));
             }
+        } else if self.family == ThreadFamily::IsoMetric {
+            if !matches!(
+                self.fit,
+                ThreadFit::NominalBasic | ThreadFit::Metric6gExternal | ThreadFit::Metric6HInternal
+            ) || (self.fit != ThreadFit::NominalBasic && self.starts != 1)
+            {
+                return Err(invalid(
+                    "Metric sourced fits require 6g external or 6H internal and one start",
+                ));
+            }
         } else if self.fit != ThreadFit::NominalBasic {
             return Err(invalid(
                 "Sourced fit classes apply only to their explicitly supported thread families",
@@ -292,6 +331,15 @@ impl ThreadParameters {
     }
     pub fn validate_for_mode(&self, mode: ThreadMode) -> Result<(), DocumentError> {
         self.validate()?;
+        if matches!(
+            self.fit,
+            ThreadFit::Metric6gExternal | ThreadFit::Metric6HInternal
+        ) && (mode == ThreadMode::CutInternal) != (self.fit == ThreadFit::Metric6HInternal)
+        {
+            return Err(invalid(
+                "Metric external threads require 6g; metric internal threads require 6H",
+            ));
+        }
         if let Some(npt) = self.npt
             && (mode == ThreadMode::CutInternal) != (npt.form == NptThreadForm::Internal)
         {
@@ -338,6 +386,12 @@ impl ThreadParameters {
         let radial = number(&self.radial_allowance, Unit::Millimeter, parameters)?;
         let axial = number(&self.axial_allowance, Unit::Millimeter, parameters)?;
         let wall = number(&self.minimum_wall, Unit::Millimeter, parameters)?;
+        let metric = matches!(
+            self.fit,
+            ThreadFit::Metric6gExternal | ThreadFit::Metric6HInternal
+        )
+        .then(|| metric_fit::metric_fit_construction(self.fit, diameter, pitch))
+        .transpose()?;
         let pipe = self
             .pipe
             .map(|intent| pipe::resolve_pipe(intent, mode, diameter, pitch, length, radial, axial))
@@ -388,7 +442,9 @@ impl ThreadParameters {
                 "Axial allowance for true rounded profiles is unsupported; use zero axial allowance",
             ));
         }
-        let mut profile = if let Some(round) = &round {
+        let mut profile = if let Some((_, profile)) = &metric {
+            *profile
+        } else if let Some(round) = &round {
             ResolvedThreadProfile {
                 depth_mm: round.profile_depth_mm,
                 crest_width_mm: 0.,
@@ -443,20 +499,25 @@ impl ThreadParameters {
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
         };
-        let nominal_pitch_diameter_mm = round
+        let nominal_pitch_diameter_mm = metric
             .as_ref()
-            .map(|r| r.nominal_pitch_diameter_mm)
+            .map(|(m, _)| m.nominal_basic_pitch_diameter_mm)
             .or_else(|| {
-                buttress
+                round
                     .as_ref()
-                    .map(|b| b.basic_pitch_diameter_mm)
+                    .map(|r| r.nominal_pitch_diameter_mm)
                     .or_else(|| {
-                        lead_screw
+                        buttress
                             .as_ref()
-                            .map(|lead| lead.nominal_pitch_diameter_mm)
+                            .map(|b| b.basic_pitch_diameter_mm)
                             .or_else(|| {
-                                (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
-                                    .then_some(diameter - 2. * pitch_drop)
+                                lead_screw
+                                    .as_ref()
+                                    .map(|lead| lead.nominal_pitch_diameter_mm)
+                                    .or_else(|| {
+                                        (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
+                                            .then_some(diameter - 2. * pitch_drop)
+                                    })
                             })
                     })
             });
@@ -467,7 +528,9 @@ impl ThreadParameters {
         };
         // The table midpoint is an engineering target, not a prescribed gage
         // result. Keep the nominal/basic fields independent of this target.
-        let fitted_radius = if let Some(round) = &round {
+        let fitted_radius = if let Some((metric, _)) = &metric {
+            metric.target_major_diameter_mm / 2.
+        } else if let Some(round) = &round {
             round.nominal_construction_major_diameter_mm / 2.
         } else if let Some(lead_screw) = &lead_screw {
             lead_screw.preset.construction(mode).0
@@ -484,6 +547,9 @@ impl ThreadParameters {
         };
         let radius = fitted_radius + sign * radial;
         profile.crest_width_mm += sign * axial;
+        if let Some(root_radius) = metric.as_ref().and_then(|(m, _)| m.external_root_radius_mm) {
+            profile.depth_mm = (pitch - profile.crest_width_mm) / slopes - root_radius;
+        }
         let width = profile.crest_width_mm + profile.depth_mm * slopes;
         let root = radius - profile.depth_mm;
         let lead = pitch * f64::from(self.starts);
@@ -507,7 +573,25 @@ impl ThreadParameters {
         let actual_pitch_diameter_mm = (actual_pitch_drop >= 0.
             && actual_pitch_drop <= profile.depth_mm)
             .then_some(2. * (radius - actual_pitch_drop));
-        let fit = if let Some(preset) = rounded {
+        let end_treatments = self
+            .end_treatments
+            .as_ref()
+            .map(|t| t.resolve(parameters, radius, root, pitch, length, mode))
+            .transpose()?;
+        let full_profile_length = end_treatments
+            .as_ref()
+            .map_or(length, |t| t.full_profile_length_mm);
+        let fit = if let Some((metric, _)) = &metric {
+            Some(metric_fit::resolve_metric_fit(
+                metric,
+                self.fit,
+                2. * radius,
+                actual_pitch_diameter_mm
+                    .ok_or_else(|| invalid("Metric fit requires a pitch diameter"))?,
+                2. * root,
+                full_profile_length,
+            )?)
+        } else if let Some(preset) = rounded {
             Some(whitworth::resolve_rounded_fit(
                 preset,
                 self.fit,
@@ -532,6 +616,8 @@ impl ThreadParameters {
                 .transpose()?
         };
         Ok(ResolvedThread {
+            end_treatments,
+            metric_fit: metric.map(|(m, _)| m),
             round,
             buttress,
             lead_screw,

@@ -410,7 +410,8 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       for(const auto &edge:source){profile.Add(edge);edges.push_back(profile.Edge());}
       if(!profile.IsDone())throw std::runtime_error("Native thread profile is disconnected");
       TopoDS_Shape ridge;std::vector<std::vector<TopoDS_Shape>> generated;
-      if((s.rounding>0||s.axial_flat)&&s.taper!=0) {
+      const bool symmetricRoot=s.root_rounding>0&&std::abs(s.lower_slope-s.upper_slope)<1e-14;
+      if(((s.rounding>0||s.axial_flat)&&s.taper!=0)||symmetricRoot) {
         auto exact=sweep_meridian(spine,profile.Wire(),edges,phase,
           sign*2*pi/std::hypot(2*pi,lead/c),root+s.taper*z,z,s.tolerance);
         ridge=exact.solid;generated=std::move(exact.faces);

@@ -1193,6 +1193,169 @@ fn buttress_nested_hardware_exposes_distinct_internal_phase_and_flat_root() {
 fn round_args(row: &model::RoundThreadPreset) -> Value {
     json!({"name":"Sourced nominal Rd","family":"round","fit":"nominal_basic","major_diameter":mm(row.diameter_mm),"pitch":{"value":1./f64::from(row.threads_per_inch),"unit":"in"},"length":mm(3.37*row.pitch_mm),"hand":"left"})
 }
+
+fn metric_fit_args(row: &model::MetricFitPreset) -> Value {
+    json!({"name":"Historical fitted metric","family":"iso_metric","fit":"metric_6g_external","major_diameter":mm(row.diameter_mm),"pitch":mm(row.pitch_mm),"length":mm(1.1*row.diameter_mm),"hand":"left","end_treatments":{"start":{"chamfer45":{"radial_depth":mm(0.2)}},"end":{"cylindrical_relief":{"length":mm(0.5),"radial_depth":mm(0.1)}}}})
+}
+#[test]
+fn metric_fit_catalog_owner_preview_and_receipts_keep_standard_limits_separate_from_custom_ends() {
+    let h = empty();
+    let before = h.document();
+    let catalog = run(&h, "thread_profiles", json!({}));
+    assert_eq!(catalog["metric_fit_presets"].as_array().unwrap().len(), 2);
+    assert_eq!(catalog["end_treatments"]["standalone_thread_only"], true);
+    assert_eq!(h.document(), before);
+    for row in model::metric_fit_presets() {
+        let report = reviewed_native_thread(model::ThreadFamily::IsoMetric, metric_fit_args(&row));
+        assert_eq!(report["source"]["parameters"]["fit"], "metric_6g_external");
+        assert_eq!(report["resolved"]["metric_fit"]["preset"], json!(row));
+        assert_eq!(report["resolved"]["fit"]["limits"], json!(row.external));
+        assert_eq!(
+            report["resolved"]["end_treatments"]["start_chamfer_radial_depth_mm"],
+            0.2
+        );
+    }
+}
+#[test]
+fn metric_fit_mcp_partial_edits_clear_cancel_atomic_failures_history_and_saved_reopen() {
+    let row = model::metric_fit_presets().remove(0);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("metric-fit.tcd");
+    Store
+        .save(
+            &path,
+            &ProjectFile::new(Document::new("Fit MCP").unwrap()).unwrap(),
+        )
+        .unwrap();
+    let h = Headless::new(
+        Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    let mut args = metric_fit_args(&row);
+    args["expected_revision"] = json!(0);
+    assert_eq!(
+        dispatch(&h, &call(true), "set_thread", args.clone())
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    let created = run(&h, "set_thread", args);
+    let feature = created["thread"].clone();
+    let original = h.document();
+    for bad in [
+        json!({"expected_revision":1,"thread":feature,"fit":"metric_6h_internal"}),
+        json!({"expected_revision":1,"thread":feature,"radial_allowance":mm(0.1)}),
+        json!({"expected_revision":1,"thread":feature,"length":mm(1.8)}),
+        json!({"expected_revision":1,"thread":feature,"major_diameter":mm(8.)}),
+        json!({"expected_revision":1,"thread":feature,"clear_end_treatments":true,"end_treatments":{"start":"flat_cut","end":"flat_cut"}}),
+        json!({"expected_revision":1,"thread":feature,"end_treatments":{"start":{"chamfer45":{"radial_depth":mm(0.)}},"end":"flat_cut"}}),
+    ] {
+        assert!(dispatch(&h, &call(false), "set_thread", bad).is_err());
+        assert_eq!(h.document(), original);
+    }
+    let prior = run(&h, "inspect_thread", json!({"thread":feature}));
+    run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":1,"thread":feature,"radial_allowance":mm(0.002)}),
+    );
+    let report = run(&h, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(
+        report["source"]["parameters"]["end_treatments"],
+        prior["source"]["parameters"]["end_treatments"]
+    );
+    assert_eq!(
+        report["resolved"]["fit"]["limits"],
+        prior["resolved"]["fit"]["limits"]
+    );
+    assert_eq!(
+        report["resolved"]["metric_fit"],
+        prior["resolved"]["metric_fit"]
+    );
+    let changed = h.document();
+    run(&h, "undo", json!({"expected_revision":2}));
+    assert_eq!(h.document(), original);
+    run(&h, "redo", json!({"expected_revision":3}));
+    assert_eq!(h.document(), changed);
+    run(&h, "save_project", json!({"expected_revision":4}));
+    drop(h);
+    let reopened = Headless::new(
+        Workspace::project(path, Box::new(Store)).unwrap(),
+        Some(dir.path().into()),
+        false,
+    );
+    assert_eq!(reopened.document(), changed);
+    let restored = run(&reopened, "inspect_thread", json!({"thread":feature}));
+    assert_eq!(restored["source"], report["source"]);
+    assert_eq!(restored["resolved"], report["resolved"]);
+    let step = run(
+        &reopened,
+        "export_step",
+        json!({"part":created["part"],"file_name":"metric-fit.step"}),
+    );
+    assert!(step["readback_volume_mm3"].as_f64().unwrap() > 0.);
+    run(
+        &reopened,
+        "set_thread",
+        json!({"expected_revision":0,"thread":feature,"clear_end_treatments":true}),
+    );
+    let cleared = run(&reopened, "inspect_thread", json!({"thread":feature}));
+    assert!(
+        cleared["source"]["parameters"]
+            .get("end_treatments")
+            .is_none()
+    );
+    assert_eq!(cleared["source"]["parameters"]["fit"], "metric_6g_external");
+}
+
+#[test]
+fn metric_fit_nested_hardware_uses_shared_class_receipts_and_refuses_endpoint_junctions() {
+    for row in model::metric_fit_presets() {
+        for internal in [false, true] {
+            let h = empty();
+            let mut thread = metric_fit_args(&row);
+            let object = thread.as_object_mut().unwrap();
+            object.remove("name");
+            object.remove("end_treatments");
+            object.insert(
+                "fit".into(),
+                json!(if internal {
+                    "metric_6h_internal"
+                } else {
+                    "metric_6g_external"
+                }),
+            );
+            let recipe = if internal {
+                json!({"kind":"hex_nut","across_flats":mm(row.diameter_mm+4.),"thread":thread})
+            } else {
+                json!({"kind":"machine_screw","underhead_length":mm(1.1*row.diameter_mm),"shank_diameter":mm(row.diameter_mm),"head":{"kind":"external_hex","across_flats":mm(row.diameter_mm+4.),"height":mm(1.5)},"drive":{"kind":"external_hex"},"thread":thread})
+            };
+            let created = run(
+                &h,
+                "set_mechanical_part",
+                json!({"expected_revision":0,"name":"Fitted hardware","recipe":recipe}),
+            );
+            let report = run(
+                &h,
+                "inspect_mechanical_part",
+                json!({"feature":created["feature"]}),
+            );
+            assert_eq!(report["resolved"]["metric_fit"]["preset"], json!(row));
+            assert_eq!(
+                report["resolved"]["fit"]["class"],
+                if internal {
+                    "metric_6h_internal"
+                } else {
+                    "metric_6g_external"
+                }
+            );
+            let before = h.document();
+            assert!(dispatch(&h,&call(false),"set_mechanical_part",json!({"expected_revision":1,"feature":created["feature"],"recipe":{"kind":if internal {"hex_nut"}else{"machine_screw"},"thread":{"end_treatments":{"start":"flat_cut","end":"flat_cut"}}}})).is_err());
+            assert_eq!(h.document(), before);
+        }
+    }
+}
 #[test]
 fn round_catalog_and_owner_preview_preserve_metric_diameter_inch_pitch_and_distinct_circles() {
     let h = empty();

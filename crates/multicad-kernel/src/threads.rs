@@ -55,7 +55,7 @@ pub struct AxialFlatHelicalThread {
     /// changes the nominal cone or its pitch diameter.
     pub crest_radius_limit_mm: Option<f64>,
 }
-/// Parallel 3/30-degree axial flanks with a flat crest and tangent circular
+/// Parallel 3/30 or 30/30-degree axial flanks with a flat crest and tangent circular
 /// valley. The external source family and load direction belong to core.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RootRoundedHelicalThread {
@@ -200,11 +200,11 @@ impl RootRoundedHelicalThread {
         policy.length(self.root_radius_mm)?;
         if p.starts != 1
             || p.radial_taper != 0.
-            || ![(3., 30.), (30., 3.)].contains(&(p.lower_flank_deg, p.upper_flank_deg))
+            || ![(3., 30.), (30., 3.), (30., 30.)].contains(&(p.lower_flank_deg, p.upper_flank_deg))
         {
             return Err(failure(
                 GeometryErrorKind::Input,
-                "Root-rounded construction requires a parallel single-start 3/30-degree profile",
+                "Root-rounded construction requires a parallel single-start 3/30 or 30/30-degree profile",
             ));
         }
         let lower = p.lower_flank_deg.to_radians();

@@ -40,7 +40,7 @@ impl ThreadFamily {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::IsoMetric => "ISO metric basic profile",
+            Self::IsoMetric => "ISO metric",
             Self::Unified => "Unified UNC / UNF",
             Self::Unc => "Unified UNC",
             Self::Unf => "Unified UNF",

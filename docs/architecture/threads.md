@@ -16,6 +16,7 @@ disabled in the inspector and refused by the canonical API.
 | Family | Implemented geometry | Dimensional basis and limits |
 | --- | --- | --- |
 | ISO metric basic profile | Straight, truncated 60-degree profile; listed coarse and fine pitches | NBK basic-profile table citing JIS B 0205-2/4:2001; nominal dimensions only |
+| ISO metric fitted subset | M3x0.5 and M6x1; single-start 60-degree profile, circular external root, flat internal cutter | BIS IS 14962 Parts 1/2:2001, identical ISO 965-1/2:1998; uncoated 6g external / 6H internal, bounded normal engagement |
 | Custom | Straight or tapered axial profile with explicit depth, crest width and two flank angles | User-defined dimensions; no standard designation or tolerance class |
 | Unified UNC | Single-start, uncoated UN flat-root profile; 1/4-20 and 5/16-18 | Historical H28 (1969) limits; 2A external and 2B internal; threaded length at most 1.5 nominal diameters |
 | Unified UNF | Single-start, uncoated UN flat-root profile; 1/4-28 and 5/16-24 | Historical H28 (1969) limits; 2A external and 2B internal; threaded length at most 1.5 nominal diameters |
@@ -39,8 +40,9 @@ The registry contains only explicitly listed diameter/pitch pairs.
 It includes nominal diameters 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8, 9 and 10 mm,
 plus selected larger sizes through 30 mm.
 
-This basic profile does not implement ISO 965 tolerance classes or certify
-compliance with the current ISO 724 edition. A Custom tapered profile does
+The unchanged Nominal basic selection does not implement ISO 965 tolerance
+classes or certify compliance with the current ISO 724 edition. The separate
+[metric fitted subset](#metric-fit-classes) has explicit limits. A Custom tapered profile does
 not establish NPT or BSPT compliance. Each pipe family requires its own sourced
 profile, gauge-plane and tolerance rules.
 
@@ -93,6 +95,91 @@ establish full ISO compliance. The
 [ISO 228-1:2000 abstract](https://committee.iso.org/standard/33777.html?browse=tc)
 identifies parallel fastening threads with any pressure seal outside the
 thread. No pressure-sealing result is claimed.
+
+## Metric fit classes
+
+The [fit registry](../../crates/multicad-core/src/model/threads/metric_fit.rs)
+supports `metric_6g_external` and `metric_6h_internal` for M3x0.5 and M6x1.
+Its primary basis is BIS IS 14962 Part 1:2001, December 2001, and Part 2:2001,
+August 2001, national adoptions identical to ISO 965-1/2:1998 without deviations.
+The [Part 2 tables](https://law.resource.org/pub/in/bis/S01/is.14962.2.2001.pdf)
+are printed pages 2 and 3; [Part 1](https://law.resource.org/pub/in/bis/S01/is.14962.1.2001.pdf)
+clause 11, Figure 6 and Table 7 are printed pages 14 and 15. These public
+research copies are not redistributed. This is historical uncoated dimensional
+coverage; it does not establish current-standard, gage, strength or physical-fit
+certification. Other sizes and classes remain unavailable for these selections.
+
+| Size | Normal complete-profile engagement (mm) | 6g major (mm) | 6g pitch (mm) | Printed minimum external root radius (mm) | 6H pitch (mm) | 6H minor (mm) |
+| --- | --- | --- | --- | --- | --- | --- |
+| M3x0.5 | >1.5 and <=4.5 | 2.874-2.980 | 2.580-2.655 | 0.063 | 2.675-2.775 | 2.459-2.599 |
+| M6x1 | >3 and <=9 | 5.794-5.974 | 5.212-5.324 | 0.125 | 5.350-5.500 | 4.917-5.153 |
+
+The tables supply no two-sided external minor or internal major interval.
+Those fields remain unspecified in `fit.limits`; no stress-calculation diameter
+from Part 3 is substituted as a manufacturing limit. The internal cutter's
+major diameter starts at nominal `d`, and a separate basic-profile envelope
+check protects the root contour.
+
+Targets are explicit engineering choices inside the simultaneous limits.
+External major and pitch diameters use their table midpoints. With
+`H=sqrt(3)*P/2`, external root radius is `R=P/(4*sqrt(3))`, matching Part 1's
+recommended H/6 truncation. It exceeds both `0.125P` and the rounded tabulated
+minimum. For major diameter `M` and pitch diameter `Q`, the axial crest is
+`W=P/2-(M-Q)/sqrt(3)`, and radial depth is `(P-W)/(2*tan(30 degrees))-R`.
+This gives a true tangent circular root and `minor=Q-H+2R`. The invariant test
+also checks the source minimum/maximum truncation envelope across each
+supported pitch-diameter interval. Internal major is nominal; internal pitch
+and minor targets are their independent midpoints, with a flat root.
+The new symmetric circular root uses the native explicit meridian sweep with
+quarter-turn domains and a checked surface-approximation error. The existing
+asymmetric buttress representation remains separate.
+
+Nominal basic pitch diameter remains `d-3*sqrt(3)*P/8`. Target dimensions and
+source limits stay in `resolved.metric_fit`; `resolved.fit` reports actual
+diameters after fabrication allowance. Positive radial allowance shrinks
+external material or enlarges the internal cutter. Axial allowance changes
+tooth width; the external tangent root depth is recomputed with its fixed
+radius. Every applicable class limit is checked again. An invalid allowance
+fails atomically rather than changing the selected class or widening limits.
+
+The saved fit enum uses existing canonical fields. The conditional
+`model.thread.metric_fit.1` reader capability also covers suppressed features,
+template-only sources, nested hardware and retained reference recipes.
+Existing Nominal basic shapes and literal catalog references are unchanged.
+
+## Custom metric endpoint geometry
+
+Optional `end_treatments` names a start treatment at local z=0 and an end
+treatment at z=authored length, independently of hand. Start is `flat_cut` or
+`chamfer45 { radial_depth }`; end is `flat_cut` or
+`cylindrical_relief { length, radial_depth }`. Dimensions can retain parameter
+expressions. Omission preserves legacy serialization and geometry.
+
+These are custom engineering treatments for modeled, parallel, single-start
+standalone metric threads. A 45-degree entry consumes axial length equal to
+its radial depth. A square cylindrical relief consumes the final authored
+axial extent. External relief radius is the thread root radius minus its
+radial depth; internal relief enlarges the cutter beyond its major radius.
+Authored total length stays unchanged. The receipt reports the complete
+central profile interval and length; at least one pitch must remain, and a
+selected fitted class must satisfy its engagement interval there.
+
+The evaluator intersects the external thread with an exact revolved mask or
+unites the internal cutter with it before the receiving-body operation.
+Positive shaft core, connected solids and minimum receiving wall remain
+mandatory. Internal wall proof uses the largest of ordinary major radius,
+minor radius plus entry depth, and major radius plus end-relief depth.
+Nested screw junction and nut-mouth treatments remain explicitly unavailable.
+Saved endpoint intent requires `model.thread.end_treatments.1`, including
+suppressed and embedded sources.
+
+These treatments do not claim DIN 76 shoulder relief or natural incomplete-thread
+runout. Schaeffler's [Technical Pocket Guide STT](https://www.schaeffler.com/remotemedien/media/_shared_media/08_media_library/01_publications/schaeffler_2/catalogue_1/downloads_6/stt_de_en.pdf),
+fourth expanded edition March 2025, printed pages 508-510, distinguishes
+shoulder grooves from runout lengths. Those diagrams require shoulder context
+and do not prescribe one complete helical ramp. Its historical handbook rows
+also precede the [DIN 76-1:2025-10 revision](https://www.dinmedia.de/en/standard/din-76-1/394715258).
+No such standard treatment is inferred from the custom terminal recess.
 
 ## Metric buttress profile
 
@@ -420,8 +507,9 @@ The [native adapter](../../crates/multicad-kernel/src/threads.cpp) sweeps a
 profile along a cylindrical or conical helix, joins each ridge to the core,
 and clips the joined result to flat ends. Both hands use the same construction;
 the kernel's multiple-start support remains restricted to the families that
-allow it. Flat cut ends are the only supported runout;
-automatic relief grooves and chamfers are unimplemented.
+allow it. Flat cut ends remain the default. Standalone modeled metric threads
+can use the explicit [custom endpoint treatments](#custom-metric-endpoint-geometry).
+Natural helical runout and DIN 76 shoulder relief remain unavailable.
 
 The rounded builder sweeps a circular crest with tangent flanks and two
 separate root-arc shoulders. Narrow profiles avoid full-period sweep

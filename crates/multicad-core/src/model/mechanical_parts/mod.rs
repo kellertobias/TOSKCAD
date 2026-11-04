@@ -154,6 +154,11 @@ impl MechanicalPartParameters {
                     check_dimension(d, Unit::Millimeter)?;
                 }
                 thread.validate_for_mode(ThreadMode::NewExternal)?;
+                if thread.end_treatments.is_some() {
+                    return Err(invalid(
+                        "Thread end treatments currently require a standalone thread feature; machine-screw junction treatments are unavailable",
+                    ));
+                }
                 if !matches!(
                     (head, drive),
                     (ScrewHead::SocketCap { .. }, ScrewDrive::HexSocket { .. })
@@ -170,6 +175,11 @@ impl MechanicalPartParameters {
             } => {
                 check_dimension(across_flats, Unit::Millimeter)?;
                 thread.validate_for_mode(ThreadMode::CutInternal)?;
+                if thread.end_treatments.is_some() {
+                    return Err(invalid(
+                        "Thread end treatments currently require a standalone thread feature; hex-nut mouth treatments are unavailable",
+                    ));
+                }
             }
             _ => {
                 for field in self.dimensions() {

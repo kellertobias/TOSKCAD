@@ -66,6 +66,10 @@ impl From<ThreadFamilyArg> for ThreadFamily {
 pub enum ThreadFitArg {
     #[serde(rename = "nominal_basic")]
     NominalBasic,
+    #[serde(rename = "metric_6g_external")]
+    Metric6gExternal,
+    #[serde(rename = "metric_6h_internal")]
+    Metric6HInternal,
     #[serde(rename = "unified_2a")]
     Unified2A,
     #[serde(rename = "unified_2b")]
@@ -87,6 +91,8 @@ impl From<ThreadFitArg> for ThreadFit {
     fn from(f: ThreadFitArg) -> Self {
         match f {
             ThreadFitArg::NominalBasic => Self::NominalBasic,
+            ThreadFitArg::Metric6gExternal => Self::Metric6gExternal,
+            ThreadFitArg::Metric6HInternal => Self::Metric6HInternal,
             ThreadFitArg::Unified2A => Self::Unified2A,
             ThreadFitArg::Unified2B => Self::Unified2B,
             ThreadFitArg::WhitworthMediumExternal => Self::WhitworthMediumExternal,
@@ -202,6 +208,12 @@ pub struct ThreadArgs {
 #[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadRecipeArgs {
+    /// Replace custom metric endpoint geometry. Omitted edits retain it.
+    #[serde(default)]
+    pub end_treatments: Option<ThreadEndTreatmentsArgs>,
+    /// Clear saved endpoint geometry; cannot be combined with end_treatments.
+    #[serde(default)]
+    pub clear_end_treatments: bool,
     #[serde(default)]
     pub family: Option<ThreadFamilyArg>,
     /// Sourced families require their explicit external/internal class. Omitted edits retain the saved class.
@@ -246,6 +258,28 @@ pub struct ThreadRecipeArgs {
     pub axis_u: Option<[f64; 3]>,
     #[serde(default)]
     pub axis_v: Option<[f64; 3]>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ThreadStartTreatmentArgs {
+    FlatCut,
+    Chamfer45 { radial_depth: Quantity },
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ThreadEndTreatmentArgs {
+    FlatCut,
+    CylindricalRelief {
+        length: Quantity,
+        radial_depth: Quantity,
+    },
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadEndTreatmentsArgs {
+    pub start: ThreadStartTreatmentArgs,
+    pub end: ThreadEndTreatmentArgs,
 }
 
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
@@ -374,6 +408,36 @@ pub(super) fn parameters(
     evaluated: &EvaluatedParameters,
 ) -> Result<ThreadParameters, ToolError> {
     let mut p = previous.cloned().unwrap_or_default();
+    if args.clear_end_treatments && args.end_treatments.is_some() {
+        return Err(ToolError::invalid(
+            "Choose replacement end_treatments or clear_end_treatments, not both",
+        ));
+    }
+    if args.clear_end_treatments {
+        p.end_treatments = None;
+    }
+    if let Some(t) = &args.end_treatments {
+        p.end_treatments = Some(model::ThreadEndTreatments {
+            start: match &t.start {
+                ThreadStartTreatmentArgs::FlatCut => model::ThreadStartTreatment::FlatCut,
+                ThreadStartTreatmentArgs::Chamfer45 { radial_depth } => {
+                    model::ThreadStartTreatment::Chamfer45 {
+                        radial_depth: radial_depth.dimension(document, evaluated)?.0,
+                    }
+                }
+            },
+            end: match &t.end {
+                ThreadEndTreatmentArgs::FlatCut => model::ThreadEndTreatment::FlatCut,
+                ThreadEndTreatmentArgs::CylindricalRelief {
+                    length,
+                    radial_depth,
+                } => model::ThreadEndTreatment::CylindricalRelief {
+                    length: length.dimension(document, evaluated)?.0,
+                    radial_depth: radial_depth.dimension(document, evaluated)?.0,
+                },
+            },
+        });
+    }
     if let Some(family) = args.family {
         p.family = family.into();
     }
@@ -508,6 +572,8 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
             vec![ThreadFit::BsptNominal]
         } else if family==ThreadFamily::Npt {
             vec![ThreadFit::NptHistoricalMidpoint]
+        } else if family==ThreadFamily::IsoMetric {
+            vec![ThreadFit::NominalBasic,ThreadFit::Metric6gExternal,ThreadFit::Metric6HInternal]
         } else if family.supported() {
             vec![ThreadFit::NominalBasic]
         } else {vec![]};
@@ -530,6 +596,9 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
     })).collect();
     Ok(json!({"families":families,
         "metric_source":model::METRIC_THREAD_SOURCE_URL,
+        "metric_fit_source":model::METRIC_FIT_SOURCE,"metric_fit_source_url":model::METRIC_FIT_SOURCE_URL,"metric_root_source_url":model::METRIC_ROOT_SOURCE_URL,
+        "metric_fit_presets":model::metric_fit_presets(),
+        "end_treatments":{"family":"iso_metric","starts":[1],"representation":"modeled","standalone_thread_only":true,"start":["flat_cut","chamfer45"],"end":["flat_cut","cylindrical_relief"],"scope":"Custom engineering dimensions inside unchanged authored length; retains at least one full pitch. No DIN76 shoulder relief or natural helical runout."},
         "metric_presets":model::metric_thread_presets().into_iter().map(|p|json!({"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm})).collect::<Vec<_>>(),
         "unified_source":model::UNIFIED_THREAD_SOURCE,"unified_source_url":model::UNIFIED_THREAD_SOURCE_URL,"unified_profile_source_url":model::UNIFIED_PROFILE_SOURCE_URL,
         "unified_presets":unified_presets,
@@ -546,7 +615,7 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "bspt_support":{"forms":["r","rc"],"hands":["right"],"gauge":"iso7_nominal1994","source":model::BSPT_THREAD_SOURCE,"source_url":model::BSPT_THREAD_SOURCE_URL,"diameter_taper":"1:16","radial_taper":{"r":0.03125,"rc":-0.03125},"reference":{"r":"small end","rc":"fitting face; gauge half a pitch inward"},"starts":[1],"axial_allowance_mm":[0],"rp":"unavailable","sealing":"Appropriate jointing medium required; no pressure, physical fit or gage certification"},
         "rounded_support":{"starts":[1],"included_angle_deg":55,"crest_and_root":"tangent_circular_arcs","axial_allowance_mm":[0],"coating":"uncoated","bspp_sealing":"Parallel fastening thread; sealing is outside the thread. G labels are nominal pipe sizes, not physical inch diameters.","claim":"BSW/BSF: bounded BS 84:2007 Medium rows. BSPP: bounded Elesa+Ganter 2018 table and NBK JIS B 0202:1999 basic form; no pressure-seal, full ISO compliance or physical-fit certification."},
         "unified_support":{"starts":[1],"form":"un_flat_root","coating":"uncoated","max_length_nominal_diameters":1.5,"limits":"Null range endpoints are unspecified; an external minor reference is not an acceptance limit","claim":"Historical sourced dimensions; no current ASME, calibrated-gage or physical-fit certification"},
-        "fit":"ISO metric, Custom, Trapezoidal and Acme use nominal basic dimensions; lead-screw crest/root clearance is separate from a fit class. UNC/UNF require 2A/2B; BSW/BSF require Medium external/internal; BSPP requires Class B external or the sourced internal class",
+        "fit":"ISO metric supports nominal basic or listed historical 6g/6H fits; Custom, Trapezoidal and Acme use nominal basic dimensions; lead-screw crest/root clearance is separate from a fit class. UNC/UNF require 2A/2B; BSW/BSF require Medium external/internal; BSPP requires Class B external or the sourced internal class",
         "runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"}))
 }
 pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadArgs) -> ToolResult {
@@ -555,7 +624,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"metric_fit":resolved.metric_fit,"end_treatments":resolved.end_treatments,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {

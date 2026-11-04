@@ -288,6 +288,33 @@ Limit ranges have `min_mm` and `max_mm` endpoints; `null` means that endpoint
 is unspecified. An external minor-diameter reference is informational and
 must not become an invented acceptance limit.
 
+Metric `nominal_basic` remains unchanged. `metric_6g_external` and
+`metric_6h_internal` select the bounded historical M3/M6 fitted subset.
+`thread_profiles.metric_fit_presets` provides source diameter limits and
+exclusive-lower/inclusive-upper normal-engagement bounds; the
+[fit reference](threads.md#metric-fit-classes) owns edition and equations.
+`inspect_thread.resolved.metric_fit` retains construction targets, basic pitch
+diameter and external circular-root radius; `resolved.fit` contains actual
+diameters after fabrication allowances and unchanged source limits.
+Unsupported classes, sizes, modes, multiple starts and out-of-class allowances
+fail before commit. Nested mechanical-part inspection exposes the same
+`metric_fit` receipt; existing catalog definitions are not upgraded silently.
+
+Standalone metric `end_treatments` is an explicit replacement object with
+`start` and `end` entries. Start is `"flat_cut"` or
+`{"chamfer45":{"radial_depth":{"value":0.2,"unit":"mm"}}}`. End is
+`"flat_cut"` or `{"cylindrical_relief":{"length":{"value":0.5,"unit":"mm"},
+"radial_depth":{"value":0.1,"unit":"mm"}}}`. Quantities can retain parameter
+expressions. Omission or null retains an edit's saved object;
+`clear_end_treatments:true` removes it and cannot accompany a replacement.
+`resolved.end_treatments` reports consumed/full-profile intervals and the
+complete maximum cutter radius used for receiving-wall validation.
+Authored total length is unchanged. These named custom operations are neither
+DIN 76 shoulder relief nor natural helical runout; nested hardware endpoint
+treatments are explicitly unavailable. The
+[endpoint reference](threads.md#custom-metric-endpoint-geometry) owns geometry
+and material constraints.
+
 Rounded series are explicit `bsw`, `bsf` and `bspp`; the ambiguous legacy
 `whitworth` remains unavailable. `rounded_presets` lists six supported rows,
 their physical basic diameter, TPI/pitch, external/internal limits and source

@@ -903,6 +903,39 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }
     if saved_feature_matches(document, |type_id, data| {
         let paths: &[&str] = match type_id {
+            super::THREAD_TYPE => &["/parameters/end_treatments"],
+            super::MECHANICAL_PART_TYPE => &[
+                "/parameters/thread/end_treatments",
+                "/provenance/reference_geometry/thread/end_treatments",
+            ],
+            _ => return false,
+        };
+        paths
+            .iter()
+            .any(|path| data.pointer(path).is_some_and(|v| !v.is_null()))
+    }) {
+        capabilities.insert(super::THREAD_END_TREATMENT_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
+        let paths: &[&str] = match type_id {
+            super::THREAD_TYPE => &["/parameters/fit"],
+            super::MECHANICAL_PART_TYPE => &[
+                "/parameters/thread/fit",
+                "/provenance/reference_geometry/thread/fit",
+            ],
+            _ => return false,
+        };
+        paths.iter().any(|path| {
+            matches!(
+                data.pointer(path).and_then(serde_json::Value::as_str),
+                Some("metric_6g_external" | "metric_6h_internal")
+            )
+        })
+    }) {
+        capabilities.insert(super::METRIC_FIT_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
+        let paths: &[&str] = match type_id {
             super::THREAD_TYPE => &["/parameters/family"],
             super::MECHANICAL_PART_TYPE => &[
                 "/parameters/thread/family",

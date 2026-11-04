@@ -25,6 +25,12 @@ pub(super) struct ThreadPanel {
     mode: ThreadMode,
     family: ThreadFamily,
     fit: ThreadFit,
+    end_treatments_enabled: bool,
+    start_chamfer: bool,
+    end_relief: bool,
+    start_depth: DimensionField,
+    end_length: DimensionField,
+    end_depth: DimensionField,
     pipe: Option<model::PipeThreadIntent>,
     npt: Option<model::NptThreadIntent>,
     buttress: Option<model::ButtressIntent>,
@@ -62,6 +68,17 @@ impl ThreadPanel {
                 .map(|c| c.input.body)
         });
         let field = |dimension, unit| DimensionField::from_dimension(dimension, unit);
+        let start = p.end_treatments.as_ref().and_then(|t| match &t.start {
+            model::ThreadStartTreatment::Chamfer45 { radial_depth } => Some(radial_depth),
+            _ => None,
+        });
+        let end = p.end_treatments.as_ref().and_then(|t| match &t.end {
+            model::ThreadEndTreatment::CylindricalRelief {
+                length,
+                radial_depth,
+            } => Some((length, radial_depth)),
+            _ => None,
+        });
         Ok(Self {
             parameters,
             stamp: FormStamp::new(),
@@ -70,6 +87,12 @@ impl ThreadPanel {
             mode: request.mode,
             family: p.family,
             fit: p.fit,
+            end_treatments_enabled: p.end_treatments.is_some(),
+            start_chamfer: start.is_some(),
+            end_relief: end.is_some(),
+            start_depth: field(start.unwrap_or(&model::length(0.2)), "mm")?,
+            end_length: field(end.map_or(&model::length(0.5), |e| e.0), "mm")?,
+            end_depth: field(end.map_or(&model::length(0.1), |e| e.1), "mm")?,
             pipe: p.pipe,
             npt: p.npt,
             buttress: p.buttress,
@@ -195,6 +218,27 @@ impl ThreadPanel {
             },
             fit: self.fit,
             runout: self.request.parameters.runout,
+            end_treatments: if self.end_treatments_enabled {
+                Some(model::ThreadEndTreatments {
+                    start: if self.start_chamfer {
+                        model::ThreadStartTreatment::Chamfer45 {
+                            radial_depth: self.start_depth.resolve(document)?,
+                        }
+                    } else {
+                        model::ThreadStartTreatment::FlatCut
+                    },
+                    end: if self.end_relief {
+                        model::ThreadEndTreatment::CylindricalRelief {
+                            length: self.end_length.resolve(document)?,
+                            radial_depth: self.end_depth.resolve(document)?,
+                        }
+                    } else {
+                        model::ThreadEndTreatment::FlatCut
+                    },
+                })
+            } else {
+                None
+            },
         };
         parameters
             .resolve(&self.parameters, mode)
@@ -224,10 +268,13 @@ impl ThreadPanel {
                         .on_disabled_hover_text(
                             "Not implemented; no standard-family geometry is claimed",
                         );
-                    if response.clicked() {
-                        changed |= self.family != family;
+                    if response.clicked() && self.family != family {
+                        changed = true;
                         self.family = family;
                         self.fit = Self::fit_for(family, mode);
+                        if family != ThreadFamily::IsoMetric {
+                            self.end_treatments_enabled = false;
+                        }
                         if family == ThreadFamily::Buttress {
                             self.starts = 1;
                             if self.buttress.is_some() {
@@ -310,7 +357,7 @@ impl ThreadPanel {
                     .expect("finite preset");
                 changed = true;
             }
-            ui.small("Basic profile only; no ISO 965 tolerance class. Multiple starts use this profile as custom geometry, not a standard fastening designation.");
+            changed |= self.metric_fit_controls(ui, mode);
         }
         if self.family.is_unified() {
             let fit = Self::fit_for(self.family, mode);
@@ -401,7 +448,9 @@ impl ThreadPanel {
             ui.label("Starts");
             changed |= ui
                 .add_enabled(
-                    !self.family.is_unified()
+                    !(self.family == ThreadFamily::IsoMetric
+                        && (self.fit != ThreadFit::NominalBasic || self.end_treatments_enabled))
+                        && !self.family.is_unified()
                         && !self.family.is_rounded()
                         && !matches!(
                             self.family,
@@ -490,6 +539,43 @@ impl ThreadPanel {
                 egui::Color32::YELLOW,
                 "Display only. Switch to Modeled before STEP, mesh or print export.",
             );
+        }
+        if show_frame && self.family == ThreadFamily::IsoMetric {
+            changed |= ui
+                .checkbox(
+                    &mut self.end_treatments_enabled,
+                    "Custom entry and end relief",
+                )
+                .changed();
+            if self.end_treatments_enabled {
+                self.starts = 1;
+                changed |= ui
+                    .checkbox(&mut self.start_chamfer, "45° entry chamfer at z = 0")
+                    .changed();
+                if self.start_chamfer {
+                    changed |= self.start_depth.show(
+                        ui,
+                        "Entry radial depth",
+                        "Authored millimetres on radius; axial extent equals radial depth",
+                    );
+                }
+                changed |= ui
+                    .checkbox(&mut self.end_relief, "Cylindrical relief at z = length")
+                    .changed();
+                if self.end_relief {
+                    changed |= self.end_length.show(
+                        ui,
+                        "Relief axial length",
+                        "Consumes the end of the authored length",
+                    );
+                    changed |= self.end_depth.show(
+                        ui,
+                        "Relief radial depth",
+                        "Beyond the external root or internal major radius",
+                    );
+                }
+                ui.small("Custom geometry inside unchanged length. Retains at least one full pitch. Not DIN 76 shoulder relief or natural runout. Modeled geometry required.");
+            }
         }
         if show_frame {
             ui.separator();
@@ -864,6 +950,84 @@ impl ThreadPanel {
         ui.small("Right-hand R/Rc 1/8 and 1/4 only; Rp unavailable. Suitable jointing medium is required; geometry does not certify sealing or pressure rating.");
         selected.is_some()
     }
+    fn metric_fit_controls(&mut self, ui: &mut egui::Ui, mode: ThreadMode) -> bool {
+        let mut changed = false;
+        let mode_fit = if mode == ThreadMode::CutInternal {
+            ThreadFit::Metric6HInternal
+        } else {
+            ThreadFit::Metric6gExternal
+        };
+        ui.label("Fit class");
+        controls::inspector_combo(ui, "thread-metric-fit")
+            .selected_text(self.fit.label())
+            .show_ui(ui, |ui| {
+                for class in [
+                    ThreadFit::NominalBasic,
+                    ThreadFit::Metric6gExternal,
+                    ThreadFit::Metric6HInternal,
+                ] {
+                    if ui
+                        .add_enabled(
+                            class == ThreadFit::NominalBasic || class == mode_fit,
+                            egui::Button::selectable(self.fit == class, class.label()),
+                        )
+                        .on_disabled_hover_text("Choose the matching external/internal mode")
+                        .clicked()
+                    {
+                        changed |= self.fit != class;
+                        self.fit = class;
+                        if class != ThreadFit::NominalBasic {
+                            self.starts = 1;
+                        }
+                    }
+                }
+            });
+        let mut selected = None;
+        controls::inspector_combo(ui, "thread-metric-fit-preset")
+            .selected_text("Choose a sourced M3/M6 fit preset…")
+            .show_ui(ui, |ui| {
+                for p in model::metric_fit_presets() {
+                    if ui
+                        .selectable_label(
+                            false,
+                            format!("{} · {}", p.designation, mode_fit.label()),
+                        )
+                        .clicked()
+                    {
+                        selected = Some(p);
+                    }
+                }
+            });
+        if let Some(p) = selected {
+            self.diameter.set_exact_literal(p.diameter_mm, "mm");
+            self.pitch.set_exact_literal(p.pitch_mm, "mm");
+            self.fit = mode_fit;
+            self.starts = 1;
+            if self.preset_length_default {
+                self.length.set_exact_literal(p.diameter_mm, "mm");
+            }
+            changed = true;
+        }
+        ui.small("6g/6H: historical 2001/1998 source, M3×0.5 and M6×1 only, one start. Other metric sizes retain Nominal basic. Fabrication allowance cannot change the selected class or its limits.");
+        ui.collapsing("Published metric fit limits", |ui| {
+            for p in model::metric_fit_presets() {
+                ui.strong(p.designation);
+                ui.small(format!(
+                    "Complete profile engagement > {} and ≤ {} mm",
+                    p.engagement_over_mm, p.engagement_up_to_mm
+                ));
+                Self::show_limits(
+                    ui,
+                    &if mode == ThreadMode::CutInternal {
+                        p.internal
+                    } else {
+                        p.external
+                    },
+                );
+            }
+        });
+        changed
+    }
     fn show_limits(ui: &mut egui::Ui, limits: &model::ThreadFitLimits) {
         for (label, range) in [
             ("Major", &limits.major),
@@ -888,7 +1052,7 @@ impl ThreadPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong("Thread");
-        ui.small("Preview checks the complete native solid before one undoable Apply. Flat cut ends; no automatic runout or relief.");
+        ui.small("Preview checks the complete native solid before one undoable Apply. End geometry is explicit; no automatic runout.");
         ui.label(if self.mode == ThreadMode::NewExternal {
             "Part name"
         } else {
@@ -947,6 +1111,16 @@ impl ThreadPanel {
         });
         if previous_mode != self.mode && (self.family.is_unified() || self.family.is_rounded()) {
             self.fit = Self::fit_for(self.family, self.mode);
+        }
+        if previous_mode != self.mode
+            && self.family == ThreadFamily::IsoMetric
+            && self.fit != ThreadFit::NominalBasic
+        {
+            self.fit = if self.mode == ThreadMode::CutInternal {
+                ThreadFit::Metric6HInternal
+            } else {
+                ThreadFit::Metric6gExternal
+            };
         }
         if previous_mode != self.mode
             && self.family == ThreadFamily::Bspt
@@ -1049,7 +1223,13 @@ impl ThreadPanel {
                     }
                     if let Some(fit) = &resolved.fit {
                         ui.strong(format!("{} · {}", fit.designation, fit.class.label()));
-                        if self.family == ThreadFamily::Bspp {
+                        if self.family == ThreadFamily::IsoMetric {
+                            ui.small(format!(
+                                "Nominal {:.6} mm · pitch {:.6} mm",
+                                2. * resolved.nominal_major_radius_mm,
+                                resolved.pitch_mm
+                            ));
+                        } else if self.family == ThreadFamily::Bspp {
                             ui.small(format!(
                                 "Basic physical major {:.6} mm · {:.0} TPI",
                                 2. * resolved.nominal_major_radius_mm,
@@ -1073,6 +1253,13 @@ impl ThreadPanel {
                         }
                         if let Some(radius) = resolved.profile.rounding_radius_mm {
                             ui.small(format!("Rounded crest and root · radius {radius:.6} mm · 55° included angle"));
+                        }
+                        if let Some(metric) = &resolved.metric_fit
+                            && let Some(radius) = metric.external_root_radius_mm
+                        {
+                            ui.small(format!(
+                                "Tangent external root radius {radius:.6} mm · 60° included angle"
+                            ));
                         }
                         Self::show_limits(ui, &fit.limits);
                         if let Some(reference) = fit.external_minor_reference_mm {

@@ -1,4 +1,5 @@
 //! Thread solids and receiving cuts use the same versioned source for UI/MCP.
+mod end_treatments;
 use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
@@ -112,11 +113,17 @@ pub(crate) fn build_resolved(
 ) -> Result<Solid, ModelError> {
     let tool = if resolved.representation == ThreadRepresentation::Modeled {
         let profile = resolved.profile;
-        let local = if let Some(circle) = resolved
+        let local = if let Some(root_radius_mm) = resolved
             .buttress
             .as_ref()
             .and_then(|b| b.root_circle.as_ref())
-        {
+            .map(|c| c.radius_mm)
+            .or_else(|| {
+                resolved
+                    .metric_fit
+                    .as_ref()
+                    .and_then(|m| m.external_root_radius_mm)
+            }) {
             Solid::root_rounded_helical_thread_named(
                 RootRoundedHelicalThread {
                     profile: HelicalThread {
@@ -131,7 +138,7 @@ pub(crate) fn build_resolved(
                         starts: resolved.starts,
                         left_hand: resolved.hand == ThreadHand::Left,
                     },
-                    root_radius_mm: circle.radius_mm,
+                    root_radius_mm,
                 },
                 feature,
                 policy,
@@ -204,6 +211,7 @@ pub(crate) fn build_resolved(
             )
         }
         .map_err(|e| error(Some(feature), e))?;
+        let local = end_treatments::apply(feature, local, &resolved, mode, policy)?;
         let phase = resolved
             .buttress
             .as_ref()
@@ -355,7 +363,11 @@ pub(crate) fn build_resolved(
         ThreadMode::CutInternal => {
             let outer = envelope(
                 feature,
-                resolved.major_radius_mm + resolved.minimum_wall_mm,
+                resolved
+                    .end_treatments
+                    .as_ref()
+                    .map_or(resolved.major_radius_mm, |t| t.maximum_cutter_radius_mm)
+                    + resolved.minimum_wall_mm,
                 &resolved,
                 "thread.wall.limit",
                 policy,
