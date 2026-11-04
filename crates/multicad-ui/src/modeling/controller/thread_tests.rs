@@ -1350,3 +1350,131 @@ fn painted_buttress_preset_keeps_literal_length_and_independent_hand_load_side_w
         assert_eq!(s.document(), &saved);
     }
 }
+
+#[test]
+fn painted_round_presets_keep_metric_diameter_inch_pitch_authored_length_and_native_history() {
+    for row in model::round_thread_presets() {
+        let mut s = Session::new(Document::new("Lead screw inspector").unwrap()).unwrap();
+        let before = s.document().clone();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut c = controller();
+        let request = model::ThreadRequest::new(
+            "Authored lead length",
+            model::ThreadParameters {
+                length: model::length(9.5),
+                ..Default::default()
+            },
+        );
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Thread(Box::new(
+                ThreadPanel::new(
+                    request,
+                    s.parameters().clone(),
+                    vec![],
+                    &BTreeSet::new(),
+                    false,
+                )
+                .unwrap(),
+            )),
+        )
+        .unwrap();
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::Round.label());
+        unified_click(&ctx, &mut c, &mut s, "Choose a sourced Rd preset…");
+        unified_click(&ctx, &mut c, &mut s, row.designation);
+        unified_click(&ctx, &mut c, &mut s, "Left hand");
+        let request = match c.form.as_ref().unwrap() {
+            ModelForm::Thread(p) => p.request(s.document(), true).unwrap(),
+            _ => panic!(),
+        };
+        assert_eq!(request.parameters.length, model::length(9.5));
+        assert_eq!(request.parameters.hand, model::ThreadHand::Left);
+        assert_eq!(request.parameters.starts, 1);
+        assert_eq!(request.parameters.family, model::ThreadFamily::Round);
+        assert_eq!(request.parameters.fit, model::ThreadFit::NominalBasic);
+        let r = request
+            .parameters
+            .resolve(s.parameters(), request.mode)
+            .unwrap();
+        assert!((r.lead_mm - row.pitch_mm).abs() < 1e-12);
+        assert_eq!(r.round.unwrap().preset, row);
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::Round.label());
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::IsoMetric.label());
+        unified_click(&ctx, &mut c, &mut s, model::ThreadFamily::Round.label());
+        let restored = match c.form.as_ref().unwrap() {
+            ModelForm::Thread(p) => p.request(s.document(), true).unwrap(),
+            _ => panic!(),
+        };
+        assert_eq!(restored.parameters, request.parameters);
+        unified_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &before);
+        unified_click(&ctx, &mut c, &mut s, "Cancel");
+        assert_eq!(s.document(), &before);
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Thread(Box::new(
+                ThreadPanel::new(
+                    request.clone(),
+                    s.parameters().clone(),
+                    vec![],
+                    &BTreeSet::new(),
+                    false,
+                )
+                .unwrap(),
+            )),
+        )
+        .unwrap();
+        unified_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        let outputs = c.apply(&mut s, &Default::default()).unwrap();
+        let feature = outputs[0].feature;
+        assert_eq!(
+            model::read_thread(s.document(), feature)
+                .unwrap()
+                .parameters,
+            request.parameters
+        );
+        let saved = s.document().clone();
+        s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &before);
+        s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &saved);
+        c.begin_existing(&s, &Default::default(), feature, Channel::Ui)
+            .unwrap();
+        c.cancel();
+        assert_eq!(s.document(), &saved);
+        let mut bytes = vec![];
+        multicad_core::project_file::write(
+            &multicad_core::project_file::ProjectFile::new(saved.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let reopened = multicad_core::project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let reopened = Session::new(reopened.project.document).unwrap();
+        let mut fresh = controller();
+        fresh
+            .begin_existing(&reopened, &Default::default(), feature, Channel::Ui)
+            .unwrap();
+        let restored = match fresh.form.as_ref().unwrap() {
+            ModelForm::Thread(p) => p.request(reopened.document(), true).unwrap(),
+            _ => panic!(),
+        };
+        assert_eq!(restored.parameters, request.parameters);
+        fresh.cancel();
+    }
+}

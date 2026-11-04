@@ -62,6 +62,54 @@ pub struct RootRoundedHelicalThread {
     pub profile: HelicalThread,
     pub root_radius_mm: f64,
 }
+/// Parallel 30-degree knuckle form with distinct tangent crest/root circles.
+/// The material/cutter convention and nominal source diameter belong to core.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KnuckleHelicalThread {
+    pub major_radius_mm: f64,
+    pub pitch_mm: f64,
+    pub length_mm: f64,
+    pub crest_radius_mm: f64,
+    pub root_radius_mm: f64,
+    pub left_hand: bool,
+}
+impl KnuckleHelicalThread {
+    fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
+        let angle = 15_f64.to_radians();
+        let basic = self.pitch_mm * (angle.cos() - angle.sin()) / (4. * (1. - angle.sin()));
+        let delta = self.pitch_mm * 0.05 * angle.sin() / (1. - angle.sin());
+        let matches = |actual: f64, expected: f64| {
+            actual.is_finite() && (actual - expected).abs() <= expected.abs() * 1e-12
+        };
+        let external = matches(self.crest_radius_mm, basic) && matches(self.root_radius_mm, basic);
+        let internal = matches(self.crest_radius_mm, basic - delta)
+            && matches(self.root_radius_mm, basic + delta);
+        if !(external || internal) {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Knuckle thread needs the exact 30-degree tangent external or internal circle pair",
+            ));
+        }
+        policy.length(self.crest_radius_mm)?;
+        policy.length(self.root_radius_mm)?;
+        let mut data = HelicalThread {
+            major_radius_mm: self.major_radius_mm,
+            pitch_mm: self.pitch_mm,
+            length_mm: self.length_mm,
+            depth_mm: self.pitch_mm / 2.,
+            crest_width_mm: 2. * self.crest_radius_mm * angle.cos(),
+            lower_flank_deg: 15.,
+            upper_flank_deg: 15.,
+            radial_taper: 0.,
+            starts: 1,
+            left_hand: self.left_hand,
+        }
+        .checked(policy)?;
+        data.rounding = self.crest_radius_mm;
+        data.knuckle_root_radius = self.root_radius_mm;
+        Ok(data)
+    }
+}
 fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError {
     GeometryError {
         operation: "thread",
@@ -138,6 +186,7 @@ impl HelicalThread {
             tolerance: policy.linear_tolerance_mm,
             crest_limit: 0.,
             root_rounding: 0.,
+            knuckle_root_radius: 0.,
             starts: self.starts,
             left: self.left_hand,
             axial_flat: false,
@@ -282,6 +331,30 @@ impl RoundedHelicalThread {
     }
 }
 impl Solid {
+    pub fn knuckle_helical_thread_named(
+        spec: KnuckleHelicalThread,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Thread feature identity must not be nil",
+            ));
+        }
+        let native = ffi::helical_thread(&spec.checked(policy)?)
+            .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+        let mut solid = Self::adopt(native, policy, "knuckle thread")?;
+        if solid.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Thread must remain one connected solid",
+            ));
+        }
+        solid.name_thread(feature, 1)?;
+        let _ = ffi::remember_validated_thread(&solid.native.0);
+        Ok(solid)
+    }
     pub fn root_rounded_helical_thread_named(
         spec: RootRoundedHelicalThread,
         feature: EntityId,
@@ -638,6 +711,7 @@ mod factory_tests {
         changed!(tolerance);
         changed!(crest_limit);
         changed!(root_rounding);
+        changed!(knuckle_root_radius);
         let mut candidate = original;
         candidate.starts += 1;
         assert!(!ffi::thread_factory_contains(&candidate).unwrap());

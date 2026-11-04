@@ -49,7 +49,7 @@
 #include <tuple>
 
 namespace multicad::kernel {
-using ThreadKey=std::tuple<std::array<uint64_t,13>,uint32_t,bool,bool>;
+using ThreadKey=std::tuple<std::array<uint64_t,14>,uint32_t,bool,bool>;
 struct ThreadFactoryTag {
   ThreadKey key;
   TopoDS_Shape original;
@@ -66,7 +66,7 @@ ThreadKey thread_key(const ThreadData &s) {
   return {{exact_bits(s.radius),exact_bits(s.pitch),exact_bits(s.height),
       exact_bits(s.depth),exact_bits(s.crest_width),exact_bits(s.rounding),
       exact_bits(s.lower_slope),exact_bits(s.upper_slope),exact_bits(s.taper),
-      exact_bits(s.overlap),exact_bits(s.tolerance),exact_bits(s.crest_limit),exact_bits(s.root_rounding)},s.starts,s.left,s.axial_flat};
+      exact_bits(s.overlap),exact_bits(s.tolerance),exact_bits(s.crest_limit),exact_bits(s.root_rounding),exact_bits(s.knuckle_root_radius)},s.starts,s.left,s.axial_flat};
 }
 struct ThreadEntry {
   std::unique_ptr<Shape> shape;
@@ -337,6 +337,14 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   const double root=s.radius-s.depth,z0=-2*lead,z1=s.height+2*lead;
   double rootCenterZ=0,rootCenterRadius=0;
   const double lowerAngle=std::atan(s.lower_slope),upperAngle=std::atan(s.upper_slope);
+  if(s.knuckle_root_radius>0) {
+    if(s.rounding<=0||s.root_rounding!=0||s.taper!=0||s.starts!=1||s.axial_flat||s.crest_limit!=0)
+      throw std::runtime_error("Knuckle circles require an unclipped parallel single-start rounded helix");
+    const double angle=std::atan(s.lower_slope);
+    const double depth=s.pitch/(2*s.lower_slope)-(s.rounding+s.knuckle_root_radius)*(1/std::sin(angle)-1);
+    if(std::abs(s.lower_slope-s.upper_slope)>1e-14||std::abs(depth-s.depth)>s.tolerance*16)
+      throw std::runtime_error("Knuckle circles and flanks must be exactly tangent");
+  }
   if(s.root_rounding>0) {
     if(s.rounding!=0||s.taper!=0||s.starts!=1||s.axial_flat||s.crest_limit!=0)
       throw std::runtime_error("Root-only rounding requires an unclipped parallel single-start flat-crest helix");
@@ -371,12 +379,12 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
     // Keep the exact authored helix, extent and phase. New rounded sweeps use
     // half-turn parallel and quarter-turn tapered domains. Root-only asymmetric
-    // sectors use quarter-turn domains to keep fused face wires valid. Wider trimmed
+    // and knuckle sectors use quarter-turn domains to keep fused face wires valid. Wider trimmed
     // circular faces can fail native classification and Booleans despite
     // correct surfaces and volume. Flat profiles preserve
     // their established continuous representation and per-turn fallback.
     BRepBuilderAPI_MakeWire spineBuilder;
-    const double turn=segmented?std::hypot(2*pi,lead/c)*((s.axial_flat||s.root_rounding>0)?.25:s.rounding>0?(s.taper==0?.5:.25):1.):end;
+    const double turn=segmented?std::hypot(2*pi,lead/c)*((s.axial_flat||s.root_rounding>0||s.knuckle_root_radius>0)?.25:s.rounding>0?(s.taper==0?.5:.25):1.):end;
     for(uint32_t span=0;;++span) {
       const double begin=span*turn;
       if(begin>=end)break;
@@ -432,7 +440,10 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
             else ancestry.push_back({face,start*4+3,2});
           }
           else if(rootHalf>=0&&i==0)ancestry.push_back({face,static_cast<uint32_t>(rootHalf),4});
-          else ancestry.push_back({face,start*4+(rootHalf>=0?3:i),2});
+          else {
+            const uint32_t mapped=s.knuckle_root_radius>0&&rootHalf<0?(i==2?1:i>2?i-1:i):i;
+            ancestry.push_back({face,start*4+(rootHalf>=0?3:mapped),2});
+          }
         }
       BRepAlgoAPI_Fuse join;boolean_inputs(join,solid,ridge);
       ancestry=carry_thread_faces(join,ancestry);solid=join.Shape();
@@ -478,15 +489,25 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       const double foot=half+(s.depth-drop+s.overlap)*s.lower_slope;
       const auto a=point(root-s.overlap,-foot),b=point(s.radius-drop,-half);
       const auto c=point(s.radius-drop,half),d=point(root-s.overlap,foot);
-      sweep({edge(a,b),arc(b,point(s.radius,0),c),edge(c,d),edge(d,a)},-1);
+      if(s.knuckle_root_radius>0) {
+        // Two exact arcs retain the same tangent circle while bounding the
+        // new knuckle crest's curved face domains for native intersection.
+        const double middle=(pi/2-theta)/2;
+        const auto peak=point(s.radius,0);
+        const auto low=point(s.radius-r+r*std::cos(middle),-r*std::sin(middle));
+        const auto high=point(s.radius-r+r*std::cos(middle),r*std::sin(middle));
+        sweep({edge(a,b),arc(b,low,peak),arc(peak,high,c),edge(c,d),edge(d,a)},-1);
+      } else sweep({edge(a,b),arc(b,point(s.radius,0),c),edge(c,d),edge(d,a)},-1);
+      const double rootRadius=s.knuckle_root_radius>0?s.knuckle_root_radius:r;
+      const double rootHalf=rootRadius*std::cos(theta),rootDrop=rootRadius*(1-std::sin(theta));
       const double midAngle=(pi/2-theta)/2;
       for(int side=0;side<2;++side) {
         const double sign=side==0?-1.:1.,valley=sign*s.pitch/2;
         const auto low=point(root,valley);
-        const auto high=point(root+drop,valley-sign*half);
-        const auto middle=point(root+r*(1-std::cos(midAngle)),valley-sign*r*std::sin(midAngle));
+        const auto high=point(root+rootDrop,valley-sign*rootHalf);
+        const auto middle=point(root+rootRadius*(1-std::cos(midAngle)),valley-sign*rootRadius*std::sin(midAngle));
         const auto start=side==0?low:high,finish=side==0?high:low;
-        const double startZ=side==0?valley:valley-half,finishZ=side==0?valley+half:valley;
+        const double startZ=side==0?valley:valley-rootHalf,finishZ=side==0?valley+rootHalf:valley;
         const auto underEnd=point(root-s.overlap,finishZ),underStart=point(root-s.overlap,startZ);
         sweep({arc(start,middle,finish),edge(finish,underEnd),edge(underEnd,underStart),edge(underStart,start)},side);
       }
@@ -571,16 +592,17 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
         throw ThreadRidgeLoss();
       }
       if(s.rounding>0) {
-        const double half=s.rounding*std::cos(std::atan(s.lower_slope));
-        const double epsilon=s.taper==0?std::max(s.tolerance*8,s.rounding*.01):s.tolerance*16;
         for(double direction:{-1.,1.}) {
-          const double dz=direction*.65*half;
-          const double circle=std::sqrt(s.rounding*s.rounding-dz*dz);
           for(int valley=0;valley<2;++valley) {
+            const double radius=valley&&s.knuckle_root_radius>0?s.knuckle_root_radius:s.rounding;
+            const double half=radius*std::cos(std::atan(s.lower_slope));
+            const double epsilon=s.taper==0?std::max(s.tolerance*8,radius*.01):s.tolerance*16;
+            const double dz=direction*.65*half;
+            const double circle=std::sqrt(radius*radius-dz*dz);
             const double m=1/s.lower_slope,k=s.taper;
             const double q=std::sqrt(1+k*k),H=s.pitch*(m*m-k*k)/(2*m);
-            const double boundary=valley?root+k*(sampleZ-dz)+s.rounding*q-circle:
-              s.radius+k*(sampleZ-dz)-s.rounding*q+circle;
+            const double boundary=valley?root+k*(sampleZ-dz)+radius*q-circle:
+              s.radius+k*(sampleZ-dz)-radius*q+circle;
             const double phase=sign*2*pi*(sampleZ-dz-valley*H/(m+k))/lead;
             const auto material=[&](double r){classifier.Perform(gp_Pnt(r*std::cos(phase),r*std::sin(phase),sampleZ),s.tolerance*4);return classifier.State();};
             const auto circleInside=material(boundary-epsilon),circleOutside=material(boundary+epsilon);

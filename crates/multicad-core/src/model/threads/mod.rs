@@ -6,6 +6,7 @@ mod npt;
 mod pipe;
 mod prepare;
 mod profiles;
+mod round;
 mod unified;
 mod whitworth;
 use super::{
@@ -27,6 +28,7 @@ pub use npt::*;
 pub use pipe::*;
 pub use prepare::*;
 pub use profiles::*;
+pub use round::*;
 use serde::{Deserialize, Serialize};
 pub use unified::*;
 pub use whitworth::*;
@@ -149,6 +151,7 @@ impl Default for ThreadParameters {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedThread {
     pub buttress: Option<ResolvedButtressThread>,
+    pub round: Option<ResolvedRoundThread>,
     pub lead_screw: Option<ResolvedLeadScrew>,
     pub pipe: Option<ResolvedPipeThread>,
     pub npt: Option<ResolvedNptThread>,
@@ -225,6 +228,11 @@ impl ThreadParameters {
         if self.family == ThreadFamily::Buttress && self.starts != 1 {
             return Err(invalid(
                 "The sourced circular-root buttress subset currently supports one start",
+            ));
+        }
+        if self.family == ThreadFamily::Round && self.starts != 1 {
+            return Err(invalid(
+                "The sourced Rd subset currently supports one start",
             ));
         }
         if let Some(profile) = &self.custom {
@@ -344,6 +352,9 @@ impl ThreadParameters {
             .then(|| lead_screw::lead_screw_preset(self.family, diameter, pitch))
             .transpose()?
             .map(|preset| lead_screw::lead_screw_receipt(preset, mode, self.starts, self.hand));
+        let round = (self.family == ThreadFamily::Round)
+            .then(|| round::resolve_round(diameter, pitch, mode, radial, axial, self.hand))
+            .transpose()?;
         let buttress = self
             .buttress
             .map(|intent| {
@@ -377,7 +388,16 @@ impl ThreadParameters {
                 "Axial allowance for true rounded profiles is unsupported; use zero axial allowance",
             ));
         }
-        let mut profile = if let Some(buttress) = &buttress {
+        let mut profile = if let Some(round) = &round {
+            ResolvedThreadProfile {
+                depth_mm: round.profile_depth_mm,
+                crest_width_mm: 0.,
+                lower_flank_deg: 15.,
+                upper_flank_deg: 15.,
+                radial_taper: 0.,
+                rounding_radius_mm: Some(round.cutter_crest_radius_mm),
+            }
+        } else if let Some(buttress) = &buttress {
             ResolvedThreadProfile {
                 depth_mm: buttress.depth_mm,
                 crest_width_mm: buttress.crest_width_mm,
@@ -416,21 +436,28 @@ impl ThreadParameters {
         let true_rounded = profile.rounding_radius_mm.is_some();
         let slopes =
             profile.lower_flank_deg.to_radians().tan() + profile.upper_flank_deg.to_radians().tan();
-        let pitch_drop = if true_rounded || npt.is_some() {
+        let pitch_drop = if let Some(round) = &round {
+            (round.nominal_construction_major_diameter_mm - round.nominal_pitch_diameter_mm) / 2.
+        } else if true_rounded || npt.is_some() {
             profile.depth_mm / 2.
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
         };
-        let nominal_pitch_diameter_mm = buttress
+        let nominal_pitch_diameter_mm = round
             .as_ref()
-            .map(|b| b.basic_pitch_diameter_mm)
+            .map(|r| r.nominal_pitch_diameter_mm)
             .or_else(|| {
-                lead_screw
+                buttress
                     .as_ref()
-                    .map(|lead| lead.nominal_pitch_diameter_mm)
+                    .map(|b| b.basic_pitch_diameter_mm)
                     .or_else(|| {
-                        (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
-                            .then_some(diameter - 2. * pitch_drop)
+                        lead_screw
+                            .as_ref()
+                            .map(|lead| lead.nominal_pitch_diameter_mm)
+                            .or_else(|| {
+                                (pitch_drop >= 0. && pitch_drop <= profile.depth_mm)
+                                    .then_some(diameter - 2. * pitch_drop)
+                            })
                     })
             });
         let sign = if mode == ThreadMode::CutInternal {
@@ -440,7 +467,9 @@ impl ThreadParameters {
         };
         // The table midpoint is an engineering target, not a prescribed gage
         // result. Keep the nominal/basic fields independent of this target.
-        let fitted_radius = if let Some(lead_screw) = &lead_screw {
+        let fitted_radius = if let Some(round) = &round {
+            round.nominal_construction_major_diameter_mm / 2.
+        } else if let Some(lead_screw) = &lead_screw {
             lead_screw.preset.construction(mode).0
         } else if let Some(preset) = &rounded {
             (whitworth::fitted_pitch(preset, self.fit, profile.depth_mm)? + profile.depth_mm) / 2.
@@ -468,7 +497,9 @@ impl ThreadParameters {
                 "Thread allowance or profile leaves no root/crest, overlaps adjacent starts, or crosses the cone apex",
             ));
         }
-        let actual_pitch_drop = if true_rounded || npt.is_some() {
+        let actual_pitch_drop = if round.is_some() {
+            pitch_drop
+        } else if true_rounded || npt.is_some() {
             profile.depth_mm / 2.
         } else {
             (pitch / 2. - profile.crest_width_mm) / slopes
@@ -501,6 +532,7 @@ impl ThreadParameters {
                 .transpose()?
         };
         Ok(ResolvedThread {
+            round,
             buttress,
             lead_screw,
             pipe,

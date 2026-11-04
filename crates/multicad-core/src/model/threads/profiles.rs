@@ -71,6 +71,7 @@ impl ThreadFamily {
                 | Self::Trapezoidal
                 | Self::Acme
                 | Self::Buttress
+                | Self::Round
                 | Self::Custom
         )
     }
@@ -95,6 +96,7 @@ impl ThreadFamily {
             Self::Trapezoidal => TRAPEZOIDAL_THREAD_SOURCE,
             Self::Acme => ACME_THREAD_SOURCE,
             Self::Buttress => BUTTRESS_THREAD_SOURCE,
+            Self::Round => ROUND_THREAD_SOURCE,
             _ => "Not implemented; no sourced geometry or tolerance coverage claimed",
         }
     }

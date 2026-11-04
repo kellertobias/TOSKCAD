@@ -29,7 +29,7 @@ disabled in the inspector and refused by the canonical API.
 | Trapezoidal | Parallel 30-degree nominal sharp design profile; Tr10x2 and Tr12x3 | ISO 2901:2016 and ISO 2904:2020 basic/design dimensions; source crest/root clearance, no ISO 2903 tolerance class |
 | Acme | Parallel 29-degree nominal sharp profile; 3/8-12 and 1/2-10 | NBS H28 (1957) Part III, issued 1960; basic form plus general-purpose crest/root clearance, no G-class fit |
 | Buttress | Parallel ST20x4 nominal profile; 3/30-degree flanks, circular external root and flat internal cutter; RH/LH, single start | BIS IS 4696 Parts 1/2/3:2004; explicit steep-flank axial side, source relief clearance, no 7e/7H fit class |
-| Round | Unavailable | Rounded profile and standard size coverage unimplemented |
+| Round | Parallel 30-degree nominal Rd10x1/10 and Rd20x1/8; true circular crests/roots with distinct internal radii; RH/LH, single start | Mitsubishi Materials C010B G009 profile and BAER 2022 named sizes; source radial crest clearance, no DIN 405-2 fitted class |
 
 The metric data comes from the
 [NBK metric-thread technical reference](https://www.nbk1560.com/images/en-US/product/technical_data/meternezi_NBK/meternezi_NBK_1.pdf),
@@ -134,6 +134,51 @@ of `-hand_sign*2*pi*offset/lead` implements this phase without moving the end
 planes. It aligns the pressure flank and puts the source clearance on the
 opposing flank. The resolved receipt exposes the signed phase, actual root
 circle, nominal construction dimensions and source dimensions separately.
+
+## Round profiles
+
+The [Round registry](../../crates/multicad-core/src/model/threads/round.rs)
+bounds coverage to Rd10x1/10 and Rd20x1/8. Nominal diameter is in millimetres;
+pitch is a reciprocal inch, converted as `P = 25.4/TPI`. The
+[BAER 2022 catalog](https://www.gewindebohrer.de/_Resources/Persistent/281607539e8454e0872443e825ba712c98d64b82/Gewindebohrer_Katalog_2022_DE.pdf)
+prints these size/pitch designations on page 134. Its tool diameters, drill
+sizes and die-blank recommendations are not normative product-limit targets.
+
+[Mitsubishi Materials GENERAL CATALOGUE C010B / THREADING](https://data.mmc-carbide.com/4116/8197/5012/catalog_c010b_threading.pdf),
+printed G009 (PDF page 10), supplies the nominal 30-degree profile, radial
+crest clearance `ac = 0.05P`, equal external/internal profile depth `0.5P`
+and separately rounded radius coefficients. C010B is the verified version
+identifier; this chapter has no verified printed publication year. Walter's
+[Special Edition 2026](https://cdn2.walter-tools.com/files/a5ea48ae-5fa6-0161-3cb3-0ac22248a0fb/adc1bdc1-e1ce-456c-8408-fd9ccf0c860f/flyer-small-part-auto-2026-en.pdf),
+imprint 11/2025, page 59 independently confirms the distinct internal radii.
+These manufacturer sources do not establish a complete DIN 405-2 fit class,
+calibrated gage acceptance or current full DIN compliance.
+
+For half-angle `a = 15 degrees`, the exact tangent external crest/root radius
+is `Re = P*(cos(a)-sin(a))/(4*(1-sin(a)))`. The internal material radii are
+`R2 = Re+delta` at the crest and `R3 = Re-delta` at the root, where
+`delta = ac*sin(a)/(1-sin(a))`. They round to the C010B coefficients
+`R1 = 0.238507P`, `R2 = 0.255967P` and `R3 = 0.221047P`. The construction
+retains actual exact radii and these independently rounded source coefficients
+separately. A positive internal cutter reverses the material terminology:
+its outer crest uses `R3` and its root uses `R2`.
+
+The source dimension arrows give external major `d`, external minor `d-P`,
+common basic pitch diameter `d-0.5P`, internal construction major `d+0.1P`
+and internal minor `d-0.9P`. These are derived nominal dimensions, not unseen
+DIN table transcriptions. Internal pitch diameter is not the midpoint of
+its construction major/minor diameters. The two profiles align their straight
+flanks without an additional axial phase; source radial crest clearance is
+separate from any saved fabrication allowance.
+
+Saved intent uses the existing Round family, listed nominal diameter/pitch,
+NominalBasic, hand and allowances. One start, zero taper and zero axial
+fabrication allowance are supported. Both hands are checked engineering
+geometry, not a claim that the cited right-cutting tool rows prescribe every
+handed product. No extra authored `round` object is needed. Direct and nested
+resolved receipts distinguish material and cutter radii, actual circle centres,
+basic pitch diameter and construction dimensions. Physical fit, load capacity
+and sealing performance remain unverified.
 
 ## Trapezoidal and Acme lead-screw profiles
 
@@ -365,6 +410,9 @@ Older source omits the optional pipe intent field.
 Saved Buttress requires `model.thread.buttress.1`, including suppressed and
 template-only features, nested hardware and retained literal references.
 Older source omits the optional buttress intent field.
+Saved Round requires `model.thread.round.1`, including suppressed and
+template-only features, nested hardware and retained reference geometry.
+The receipt is resolved data; it introduces no additional saved intent object.
 
 ## Native construction and output
 
@@ -389,6 +437,14 @@ trimmed face wires. Overlap is buried, and exposed closure faces remain
 unnameable and refused. The internal cutter uses the separate flat profile.
 Both source flank angles, source root radius and the exact end planes survive
 these representation boundaries.
+
+The separate knuckle input keeps the 30-degree source form independent of
+the 55-degree rounded adapter. Internal cutter crest/root circles have their
+own radii. Two exact 75-degree arcs retain the same tangent crest circle,
+with bounded face domains for native intersection. Root shoulders remain
+separate exact arcs. Quarter-turn spine domains preserve authored phase,
+profile dimensions and exact fractional ends; ordinary validity, physical,
+volume and ancestry guards apply.
 
 Display tessellation operates on a detached native copy. If any face lacks
 triangles, it retries at one quarter of the linear deflection and half the
@@ -439,6 +495,9 @@ The test sources cover
 [rounded source limits and compatibility](../../crates/multicad-core/tests/model_rounded_threads.rs),
 [buttress source and reader compatibility](../../crates/multicad-core/tests/model_buttress_threads.rs),
 [native asymmetric circular roots](../../crates/multicad-kernel/tests/asymmetric_root_threads.rs),
+[Round source dimensions and reader gates](../../crates/multicad-core/tests/model_round_threads.rs),
+[native knuckle circles and small-size material regression](../../crates/multicad-kernel/tests/knuckle_threads.rs),
+[Round mating pairs and actual manufacturing sections](../../crates/multicad-model/tests/round_threads.rs),
 [buttress mating, phase and manufacturing exports](../../crates/multicad-model/tests/buttress_threads.rs),
 [native rounded crest/root sections](../../crates/multicad-kernel/tests/rounded_threads.rs),
 [pipe source, gauge rules and reader compatibility](../../crates/multicad-core/tests/model_pipe_threads.rs),

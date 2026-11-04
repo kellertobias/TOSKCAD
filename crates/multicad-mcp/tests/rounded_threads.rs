@@ -193,7 +193,7 @@ fn rounded_profiles_distinguish_series_pipe_size_semantics_and_explicit_class_co
     );
     assert_eq!(report["bspt_presets"].as_array().unwrap().len(), 2);
     assert_eq!(report["bspt_support"]["hands"], json!(["right"]));
-    for family in ["whitworth", "round"] {
+    for family in ["whitworth", "unified"] {
         assert_eq!(
             report["families"]
                 .as_array()
@@ -1187,5 +1187,165 @@ fn buttress_nested_hardware_exposes_distinct_internal_phase_and_flat_root() {
             (b["crest_phase_axial_mm"].as_f64().unwrap() - if internal { 0.1 } else { 0. }).abs()
                 < 1e-12
         );
+    }
+}
+
+fn round_args(row: &model::RoundThreadPreset) -> Value {
+    json!({"name":"Sourced nominal Rd","family":"round","fit":"nominal_basic","major_diameter":mm(row.diameter_mm),"pitch":{"value":1./f64::from(row.threads_per_inch),"unit":"in"},"length":mm(3.37*row.pitch_mm),"hand":"left"})
+}
+#[test]
+fn round_catalog_and_owner_preview_preserve_metric_diameter_inch_pitch_and_distinct_circles() {
+    let h = empty();
+    let before = h.document();
+    let catalog = run(&h, "thread_profiles", json!({}));
+    assert_eq!(catalog["round_presets"].as_array().unwrap().len(), 2);
+    assert_eq!(catalog["round_support"]["starts"], json!([1]));
+    assert_eq!(h.document(), before);
+    for row in model::round_thread_presets() {
+        for hand in ["right", "left"] {
+            let mut args = round_args(&row);
+            args["hand"] = json!(hand);
+            let report = reviewed_native_thread(model::ThreadFamily::Round, args);
+            assert_eq!(
+                report["source"]["parameters"]["major_diameter"]["unit"],
+                "mm"
+            );
+            assert_eq!(report["source"]["parameters"]["pitch"]["unit"], "in");
+            assert_eq!(report["source"]["parameters"]["hand"], hand);
+            let q = &report["resolved"]["round"];
+            assert_eq!(q["preset"], json!(row));
+            assert_eq!(q["cutter_crest_radius_mm"], q["cutter_root_radius_mm"]);
+            assert_eq!(report["resolved"]["profile"]["lower_flank_deg"], 15.);
+            assert!(
+                (report["resolved"]["actual_pitch_diameter_mm"]
+                    .as_f64()
+                    .unwrap()
+                    - (row.diameter_mm - row.pitch_mm / 2.))
+                    .abs()
+                    < 1e-12
+            );
+        }
+    }
+}
+#[test]
+fn round_mcp_omitted_edits_invalid_inputs_cancel_history_and_independent_saved_reopen() {
+    for row in model::round_thread_presets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("round.tcd");
+        Store
+            .save(
+                &path,
+                &ProjectFile::new(Document::new("Round MCP").unwrap()).unwrap(),
+            )
+            .unwrap();
+        let h = Headless::new(
+            Workspace::project(path.clone(), Box::new(Store)).unwrap(),
+            Some(dir.path().into()),
+            false,
+        );
+        let mut args = round_args(&row);
+        args["expected_revision"] = json!(0);
+        assert_eq!(
+            dispatch(&h, &call(true), "set_thread", args.clone())
+                .unwrap_err()
+                .code,
+            "cancelled"
+        );
+        let created = run(&h, "set_thread", args);
+        let feature = created["thread"].clone();
+        let original = h.document();
+        for bad in [
+            json!({"expected_revision":1,"thread":feature,"starts":2}),
+            json!({"expected_revision":1,"thread":feature,"axial_allowance":mm(0.001)}),
+            json!({"expected_revision":1,"thread":feature,"major_diameter":mm(row.diameter_mm+0.1)}),
+            json!({"expected_revision":1,"thread":feature,"fit":"unified_2a"}),
+            json!({"expected_revision":1,"thread":feature,"custom_profile":{"depth":mm(1.),"crest_width":mm(0.1),"lower_flank":{"value":15.,"unit":"deg"},"upper_flank":{"value":15.,"unit":"deg"},"radial_taper":{"value":0.,"unit":"ratio"}}}),
+            json!({"expected_revision":0,"thread":feature,"radial_allowance":mm(0.005)}),
+        ] {
+            assert!(dispatch(&h, &call(false), "set_thread", bad).is_err());
+            assert_eq!(h.document(), original);
+        }
+        run(
+            &h,
+            "set_thread",
+            json!({"expected_revision":1,"thread":feature,"radial_allowance":mm(0.005)}),
+        );
+        let report = run(&h, "inspect_thread", json!({"thread":feature}));
+        assert_eq!(report["source"]["parameters"]["hand"], "left");
+        assert_eq!(report["source"]["parameters"]["starts"], 1);
+        assert!(
+            (report["resolved"]["actual_pitch_diameter_mm"]
+                .as_f64()
+                .unwrap()
+                - (row.diameter_mm - row.pitch_mm / 2. - 0.01))
+                .abs()
+                < 1e-12
+        );
+        let changed = h.document();
+        run(&h, "undo", json!({"expected_revision":2}));
+        assert_eq!(h.document(), original);
+        run(&h, "redo", json!({"expected_revision":3}));
+        assert_eq!(h.document(), changed);
+        run(&h, "save_project", json!({"expected_revision":4}));
+        drop(h);
+        let reopened = Headless::new(
+            Workspace::project(path, Box::new(Store)).unwrap(),
+            Some(dir.path().into()),
+            false,
+        );
+        assert_eq!(reopened.document(), changed);
+        let restored = run(&reopened, "inspect_thread", json!({"thread":feature}));
+        assert_eq!(restored["source"], report["source"]);
+        assert_eq!(restored["resolved"], report["resolved"]);
+        let step = run(
+            &reopened,
+            "export_step",
+            json!({"part":created["part"],"file_name":"round.step"}),
+        );
+        assert!(step["readback_volume_mm3"].as_f64().unwrap() > 0.);
+    }
+}
+#[test]
+fn round_nested_hardware_exposes_common_pd_and_distinct_internal_material_and_cutter_circles() {
+    for row in model::round_thread_presets() {
+        for internal in [false, true] {
+            let h = empty();
+            let mut thread = round_args(&row);
+            thread.as_object_mut().unwrap().remove("name");
+            let recipe = if internal {
+                json!({"kind":"hex_nut","across_flats":mm(30.),"thread":thread})
+            } else {
+                json!({"kind":"machine_screw","underhead_length":mm(3.37*row.pitch_mm),"shank_diameter":mm(row.diameter_mm),"head":{"kind":"external_hex","across_flats":mm(30.),"height":mm(3.)},"drive":{"kind":"external_hex"},"thread":thread})
+            };
+            let created = run(
+                &h,
+                "set_mechanical_part",
+                json!({"expected_revision":0,"name":"Round hardware","recipe":recipe}),
+            );
+            let report = run(
+                &h,
+                "inspect_mechanical_part",
+                json!({"feature":created["feature"]}),
+            );
+            let q = &report["resolved"]["round"];
+            assert!(
+                (report["resolved"]["actual_pitch_diameter_mm"]
+                    .as_f64()
+                    .unwrap()
+                    - (row.diameter_mm - row.pitch_mm / 2.))
+                    .abs()
+                    < 1e-12
+            );
+            if internal {
+                assert!(
+                    q["cutter_crest_radius_mm"].as_f64().unwrap()
+                        < q["cutter_root_radius_mm"].as_f64().unwrap()
+                );
+                assert_eq!(q["cutter_crest_radius_mm"], q["material_root_radius_mm"]);
+                assert_eq!(q["cutter_root_radius_mm"], q["material_crest_radius_mm"]);
+            } else {
+                assert_eq!(q["cutter_crest_radius_mm"], q["cutter_root_radius_mm"]);
+            }
+        }
     }
 }

@@ -264,7 +264,10 @@ impl ThreadPanel {
                             self.starts = 1;
                             self.hand = ThreadHand::Right;
                         }
-                        if family.is_unified() || family.is_rounded() {
+                        if family.is_unified()
+                            || family.is_rounded()
+                            || family == ThreadFamily::Round
+                        {
                             self.starts = 1;
                         }
                     }
@@ -273,6 +276,9 @@ impl ThreadPanel {
         ui.small(self.family.source());
         if self.family == ThreadFamily::Buttress {
             changed |= self.buttress_controls(ui);
+        }
+        if self.family == ThreadFamily::Round {
+            changed |= self.round_controls(ui);
         }
         if self.family.is_lead_screw() {
             changed |= self.lead_screw_controls(ui);
@@ -399,7 +405,10 @@ impl ThreadPanel {
                         && !self.family.is_rounded()
                         && !matches!(
                             self.family,
-                            ThreadFamily::Bspt | ThreadFamily::Npt | ThreadFamily::Buttress
+                            ThreadFamily::Bspt
+                                | ThreadFamily::Npt
+                                | ThreadFamily::Buttress
+                                | ThreadFamily::Round
                         ),
                     egui::DragValue::new(&mut self.starts).range(1..=8),
                 )
@@ -560,6 +569,31 @@ impl ThreadPanel {
         ui.small("The side names the external tooth's 3° face, independently of RH/LH. It does not name applied force; the mating material normal reverses.");
         ui.small("BIS 2004 nominal ST20×4 only, one start. External roots are circular; the internal cutter is flat. Axial fabrication allowance is zero. No default 7e/7H fit class is claimed.");
         changed
+    }
+    fn round_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut selected = None;
+        controls::inspector_combo(ui, "thread-round-preset")
+            .selected_text("Choose a sourced Rd preset…")
+            .show_ui(ui, |ui| {
+                for row in model::round_thread_presets() {
+                    if ui.selectable_label(false, row.designation).clicked() {
+                        selected = Some(row);
+                    }
+                }
+            });
+        if let Some(row) = &selected {
+            self.diameter.set_exact_literal(row.diameter_mm, "mm");
+            self.pitch
+                .set_exact_literal(1. / f64::from(row.threads_per_inch), "in");
+            if self.preset_length_default {
+                self.length.set_exact_literal(3. * row.pitch_mm, "mm");
+            }
+            self.fit = ThreadFit::NominalBasic;
+            self.starts = 1;
+        }
+        ui.small("Metric nominal diameter with reciprocal-inch pitch. True 30° circular crest/root profiles; external and internal threads use different radii.");
+        ui.small("Nominal source contour and radial crest clearance; RH/LH, one start, zero axial fabrication allowance. No fit-class or physical-fit certification.");
+        selected.is_some()
     }
     fn lead_screw_controls(&mut self, ui: &mut egui::Ui) -> bool {
         let mut selected = None;
@@ -962,6 +996,11 @@ impl ThreadPanel {
                         "Pitch {:.4} mm · lead {:.4} mm · {} starts",
                         resolved.pitch_mm, resolved.lead_mm, resolved.starts
                     ));
+                    if let Some(round) = &resolved.round {
+                        ui.strong(&round.designation);
+                        ui.small(format!("Thread crest R {:.6} mm · root R {:.6} mm · source radial crest clearance {:.6} mm",round.material_crest_radius_mm,round.material_root_radius_mm,round.source_radial_crest_clearance_mm));
+                        ui.small(round.scope);
+                    }
                     if let Some(buttress) = &resolved.buttress {
                         ui.strong(&buttress.designation);
                         ui.small(format!(

@@ -337,6 +337,17 @@ family, omitting it on new Buttress creation, unsupported sizes/starts/fit
 or nonzero axial fabrication allowance fails before commit. See the
 [buttress construction](threads.md#metric-buttress-profile) for phase and source limits.
 
+Round uses `family: "round"`, `fit: "nominal_basic"`, a listed metric
+nominal diameter and reciprocal-inch pitch. `thread_profiles.round_presets`
+and `round_support` declare size, hand/start and allowance bounds. No extra
+authored intent object is needed. Direct and nested inspection expose the
+same mode-specific `resolved.round` receipt, distinguishing material from
+positive-cutter circle radii. Omitted fields retain the saved canonical
+values on edits. Unsupported rows, starts, classes and nonzero axial
+fabrication allowance fail before commit. The
+[Round reference](threads.md#round-profiles) owns source editions, exact
+construction, nominal pitch-diameter semantics and limits.
+
 Trapezoidal and Acme use their distinct `trapezoidal` and `acme` families
 with existing `fit: "nominal_basic"`, a listed nominal diameter/pitch, hand,
 starts and fabrication allowances. `thread_profiles.lead_screw_presets`

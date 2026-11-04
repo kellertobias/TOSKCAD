@@ -8,8 +8,8 @@ use multicad_core::{
 };
 use multicad_kernel::{
     AxialFlatHelicalThread, BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy,
-    HelicalThread, PlaneFrame, RigidTransform, RootRoundedHelicalThread, RoundedHelicalThread,
-    Solid,
+    HelicalThread, KnuckleHelicalThread, PlaneFrame, RigidTransform, RootRoundedHelicalThread,
+    RoundedHelicalThread, Solid,
 };
 use std::collections::BTreeMap;
 
@@ -152,6 +152,19 @@ pub(crate) fn build_resolved(
                         left_hand: resolved.hand == ThreadHand::Left,
                     },
                     crest_radius_limit_mm: npt.stock_crest_radius_limit_mm,
+                },
+                feature,
+                policy,
+            )
+        } else if let Some(round) = &resolved.round {
+            Solid::knuckle_helical_thread_named(
+                KnuckleHelicalThread {
+                    major_radius_mm: resolved.major_radius_mm,
+                    pitch_mm: resolved.pitch_mm,
+                    length_mm: resolved.length_mm,
+                    crest_radius_mm: round.cutter_crest_radius_mm,
+                    root_radius_mm: round.cutter_root_radius_mm,
+                    left_hand: resolved.hand == ThreadHand::Left,
                 },
                 feature,
                 policy,
