@@ -34,9 +34,11 @@ External minor diameter is reference information; internal major diameter has
 a one-sided minimum. Applicable bounds are checked after allowances.
 
 Metric and Custom saved definitions retain their serialized schema, canonical
-parameters and nominal/basic fit semantics. Native behavior still awaits the
-metric regression repair and fresh full verification below.
-Metric profiles remain nominal/basic; ISO 965 fit classes are unimplemented.
+parameters and nominal/basic fit semantics. At the initial checkpoint, native
+behavior still awaited the metric regression repair and full verification
+recorded below. Metric profiles were then nominal/basic; the later
+[CAD-219 metric fit increment](metric-thread-fits-2026-11-04.md) adds its
+explicitly bounded historical 6g/6H subset.
 These checks do not certify current ASME compliance, calibrated-gage acceptance
 or physical fit. The external test shafts have no screw heads or drives.
 

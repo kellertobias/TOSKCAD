@@ -275,8 +275,9 @@ creation measured 499 ms, unchanged reevaluation 2.4 ms and a second new screw
 scope and remaining verification are in the separate fastener performance
 report. CAD-253's build-cache fix is committed in
 `54dedf3`, with verification report `c330b85`, and submitted for Review/test.
-CAD-213 has resumed for the reviewed-MCP regression and final verification;
-the item has not advanced to Review.
+At that resumption checkpoint, CAD-213 had not advanced to Review; the
+reviewed-MCP regression and final verification were still pending. Subsequent
+results are recorded below.
 
 Actual macOS OS-window interaction, Windows/Linux
 CI/runtime and human acceptance remain unverified. This report records no
