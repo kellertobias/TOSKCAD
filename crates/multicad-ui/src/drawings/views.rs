@@ -242,6 +242,7 @@ impl DrawingEditor {
         let Some(page) = self.draft.as_mut() else {
             return;
         };
+        let page_id = page.id;
         ui.heading("Drawing views");
         for view in &page.views {
             if ui
@@ -301,18 +302,26 @@ impl DrawingEditor {
             });
         custom_direction(ui, view);
         ui.label("View origin X / Y / Z (model mm)");
-        ui.horizontal_wrapped(|ui| {
-            for x in &mut view.frame.origin_mm {
-                ui.add(egui::DragValue::new(x).speed(1.))
-                    .on_hover_text("World-space origin of the projection frame");
-            }
+        ui.push_id(("drawing-view-origin", page_id, id), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (axis, x) in view.frame.origin_mm.iter_mut().enumerate() {
+                    ui.push_id(axis, |ui| {
+                        ui.add(egui::DragValue::new(x).speed(1.))
+                            .on_hover_text("World-space origin of the projection frame");
+                    });
+                }
+            });
         });
         ui.label("Paper position X / Y (mm)");
-        ui.horizontal_wrapped(|ui| {
-            for x in &mut view.position_mm {
-                ui.add(egui::DragValue::new(x).speed(1.))
-                    .on_hover_text("View anchor measured from the page's top left");
-            }
+        ui.push_id(("drawing-view-paper-position", page_id, id), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (axis, x) in view.position_mm.iter_mut().enumerate() {
+                    ui.push_id(axis, |ui| {
+                        ui.add(egui::DragValue::new(x).speed(1.))
+                            .on_hover_text("View anchor measured from the page's top left");
+                    });
+                }
+            });
         });
         ui.label("View scale (paper : model)");
         crate::controls::inspector_combo(ui, "view-standard-scale")

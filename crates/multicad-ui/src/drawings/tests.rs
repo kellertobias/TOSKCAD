@@ -356,6 +356,172 @@ pub(super) fn view_editor(fail: bool) -> (DrawingEditor, Session, EntityId) {
         .unwrap();
     (editor, session, id)
 }
+
+#[test]
+fn paper_position_typing_keeps_focus_across_drawing_status_transitions() {
+    fn frame(
+        ctx: &egui::Context,
+        editor: &mut DrawingEditor,
+        session: &mut Session,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200., 1100.),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::Panel::right("drawing-focus-inspector")
+                    .exact_size(350.)
+                    .show(ui, |ui| editor.inspector(ui, session));
+            },
+        )
+    }
+    let (mut editor, mut session, source) = view_editor(false);
+    for position in [[38., 71.], [63., 84.]] {
+        editor.add_view(drawings::ViewKind::Projection).unwrap();
+        let view = editor.draft.as_mut().unwrap().views.last_mut().unwrap();
+        view.source = drawings::ViewSource::Model {
+            entities: vec![source],
+        };
+        view.position_mm = position;
+    }
+    let original = session.document().clone();
+    let revision = session.revision();
+    // Keep the intermediate numeric prefixes valid so each backend state can
+    // be exercised independently of the separate printable-margin guard.
+    editor.draft.as_mut().unwrap().settings.margin_mm = 0.;
+    let untouched = editor.draft.as_ref().unwrap().views[0].clone();
+    let mut expected = editor.draft.as_ref().unwrap().views[1].clone();
+    expected.position_mm[1] = 160.;
+    publish_editor(&mut editor, &session);
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        frame(&ctx, &mut editor, &mut session, vec![]).drop_without_applying_deltas();
+    }
+    let output = frame(&ctx, &mut editor, &mut session, vec![]);
+    let at = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "84" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .expect("Painted second view paper Y");
+    output.drop_without_applying_deltas();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            frame(
+                &ctx,
+                &mut editor,
+                &mut session,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+    }
+    let focused = ctx.memory(|m| m.focused()).expect("Paper Y text entry");
+    let initial = ctx.read_response(focused).unwrap().rect;
+    let command = egui::Modifiers {
+        command: true,
+        ctrl: true,
+        ..Default::default()
+    };
+    frame(
+        &ctx,
+        &mut editor,
+        &mut session,
+        vec![
+            egui::Event::ModifiersChanged(command),
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: command,
+            },
+        ],
+    )
+    .drop_without_applying_deltas();
+    for (index, digit) in ["1", "6", "0"].into_iter().enumerate() {
+        frame(
+            &ctx,
+            &mut editor,
+            &mut session,
+            vec![
+                egui::Event::ModifiersChanged(Default::default()),
+                egui::Event::Text(digit.into()),
+            ],
+        )
+        .drop_without_applying_deltas();
+        assert_eq!(
+            editor.draft.as_ref().unwrap().views[1].position_mm[1],
+            [1., 16., 160.][index],
+            "Every typed digit must reach the selected paper Y field"
+        );
+        match index {
+            0 => {
+                editor.tick_views(&ctx, &session);
+                assert!(editor.feed.pending());
+            }
+            1 => {
+                editor.feed.tick(100.);
+                assert!(!editor.feed.pending());
+                assert!(editor.feed.result.is_some());
+            }
+            _ => {
+                editor.feed.error =
+                    Some("Drawing provider failed while updating the preview".into());
+                editor.error =
+                    Some("Preview is unavailable; the authored draft is retained".into());
+            }
+        }
+        frame(&ctx, &mut editor, &mut session, vec![]).drop_without_applying_deltas();
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(focused),
+            "Paper Y lost focus after status transition {index}"
+        );
+        let current = ctx.read_response(focused).unwrap().rect;
+        assert!(
+            (current.min.y - initial.min.y).abs() < 0.1,
+            "Paper Y moved after status transition {index}"
+        );
+    }
+    frame(
+        &ctx,
+        &mut editor,
+        &mut session,
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+    )
+    .drop_without_applying_deltas();
+    let views = &editor.draft.as_ref().unwrap().views;
+    assert_eq!(views[0], untouched);
+    assert_eq!(views[1], expected);
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision(), revision);
+}
 #[test]
 fn view_apply_requires_current_publication_and_fitting_is_one_undoable_page_edit() {
     let (mut editor, mut session, source) = view_editor(false);

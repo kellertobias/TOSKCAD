@@ -10,18 +10,33 @@ impl DrawingEditor {
                 .and_then(|id| session.document().get(id))
                 .map_or("No drawing", |entity| entity.name.as_str()),
         );
-        if let Some(error) = &self.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
-        }
-        if let Some(error) = &self.feed.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
-        }
-        if self.feed.pending() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Building this drawing page…");
+        // Async errors and progress must not move fields or change their IDs
+        // while the user types. Long diagnostics remain readable by scrolling.
+        let (status_rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 64.), egui::Sense::hover());
+        let mut status = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("drawing-inspector-status", self.book, self.selected))
+                .max_rect(status_rect),
+        );
+        status.set_clip_rect(status_rect.intersect(ui.clip_rect()));
+        egui::ScrollArea::vertical()
+            .id_salt("drawing-status-scroll")
+            .max_height(status_rect.height())
+            .show(&mut status, |ui| {
+                if let Some(error) = &self.error {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                }
+                if let Some(error) = &self.feed.error {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                }
+                if self.feed.pending() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Building this drawing page…");
+                    });
+                }
             });
-        }
         self.note_inspector(ui);
         self.draft_placement_inspector(ui);
         if self.selected_view.is_some() {
