@@ -19,6 +19,7 @@ pub(super) struct GearPanel {
     request: GearRequest,
     parameters: EvaluatedParameters,
     fields: [DimensionField; 11],
+    outside: DimensionField,
     origin: [DimensionField; 3],
     family: GearFamily,
     system: GearModuleSystem,
@@ -37,6 +38,12 @@ impl GearPanel {
         let p = &request.parameters;
         let field = DimensionField::from_dimension;
         Ok(Self {
+            outside: field(
+                p.outer_diameter
+                    .as_ref()
+                    .unwrap_or(&multicad_core::model::length(112.)),
+                "mm",
+            )?,
             fields: [
                 field(&p.module, "mm")?,
                 field(&p.teeth, "count")?,
@@ -126,6 +133,11 @@ impl GearPanel {
         p.helix_angle = self.fields[4].resolve(document)?;
         p.center_gap = self.fields[5].resolve(document)?;
         p.bore_diameter = self.fields[6].resolve(document)?;
+        p.outer_diameter = if self.family == GearFamily::InternalRing {
+            Some(self.outside.resolve(document)?)
+        } else {
+            None
+        };
         p.backlash = self.fields[7].resolve(document)?;
         p.fabrication_allowance = self.fields[8].resolve(document)?;
         p.root_fillet_ratio = self.fields[9].resolve(document)?;
@@ -161,7 +173,7 @@ impl GearPanel {
                     {
                         self.family = family;
                         changed = true;
-                        if family == GearFamily::Spur {
+                        if matches!(family, GearFamily::Spur | GearFamily::InternalRing) {
                             self.hand = GearHand::None;
                             self.fields[4] = DimensionField::from_dimension(&angle(0.), "deg")
                                 .expect("zero angle");
@@ -169,6 +181,23 @@ impl GearPanel {
                             self.hand = GearHand::Right;
                             self.fields[4] = DimensionField::from_dimension(&angle(15.), "deg")
                                 .expect("preset angle");
+                        }
+                        if family == GearFamily::InternalRing {
+                            self.fields[1] = DimensionField::from_dimension(
+                                &multicad_core::constraint_sketch::Dimension::Literal {
+                                    value: 48.,
+                                    unit: "count".into(),
+                                },
+                                "count",
+                            )
+                            .expect("ring teeth");
+                            self.fields[2] = DimensionField::from_dimension(&angle(20.), "deg")
+                                .expect("ring pressure");
+                            self.fields[6] = DimensionField::from_dimension(
+                                &multicad_core::model::length(0.),
+                                "mm",
+                            )
+                            .expect("derived opening");
                         }
                         self.fields[5] = DimensionField::from_dimension(
                             &multicad_core::model::length(if family == GearFamily::DoubleHelical {
@@ -220,7 +249,7 @@ impl GearPanel {
         ] {
             changed |= self.fields[i].show(ui, label, help);
         }
-        if self.family != GearFamily::Spur {
+        if !matches!(self.family, GearFamily::Spur | GearFamily::InternalRing) {
             changed |= self.fields[4].show(
                 ui,
                 "Helix angle",
@@ -277,7 +306,22 @@ impl GearPanel {
                 "Minimum radial material between bore and tooth roots",
             ),
         ] {
+            if i == 6 && self.family == GearFamily::InternalRing {
+                continue;
+            }
+            if i == 10 && self.family == GearFamily::InternalRing {
+                changed |= self.fields[i].show(
+                    ui,
+                    "Minimum rim wall",
+                    "Minimum radial material beyond the outward tooth roots",
+                );
+                continue;
+            }
             changed |= self.fields[i].show(ui, label, help);
+        }
+        if self.family == GearFamily::InternalRing {
+            changed |= self.outside.show(ui, "Ring outside diameter", "Explicit outside diameter; minimum radial wall is measured beyond the outward tooth roots");
+            ui.small("48 or 60 teeth · 20° spur · derived inward opening · compatible 24-tooth pinion. Custom root circles are not a generated cutter trochoid.");
         }
         changed
     }

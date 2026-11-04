@@ -15,6 +15,154 @@ fn wait(c: &mut ModelToolController, s: &Session) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+fn ring_frame(
+    ctx: &egui::Context,
+    c: &mut ModelToolController,
+    s: &mut Session,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    c.poll(s, &Default::default());
+    ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(650., 2400.),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            crate::inspector_actions::scope(
+                ui,
+                Some(crate::inspector_actions::Owner::Model),
+                crate::registry::Mode::Model.color(),
+                |ui| {
+                    c.show(ui, s, &Default::default()).unwrap();
+                },
+            );
+        },
+    )
+}
+fn ring_click(ctx: &egui::Context, c: &mut ModelToolController, s: &mut Session, label: &str) {
+    ring_frame(ctx, c, s, vec![]).drop_without_applying_deltas();
+    let out = ring_frame(ctx, c, s, vec![]);
+    let pos = out
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.job.text == label => {
+                let p = t.pos + t.galley.size() * 0.5;
+                shape.clip_rect.contains(p).then_some(p)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("Missing visible gear control {label}"));
+    out.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        ring_frame(
+            ctx,
+            c,
+            s,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+}
+#[test]
+fn painted_internal_pair_roles_feed_native_preview_cancel_apply_history_and_saved_reopen() {
+    for ring_first in [false, true] {
+        let mut s = Session::new(Document::new("Painted internal pair").unwrap()).unwrap();
+        let before = s.document().clone();
+        let mut c = controller();
+        let request = model::GearRequest::new(
+            "Pair",
+            model::GearParameters {
+                module: model::length(1.),
+                face_width: model::length(2.),
+                ..Default::default()
+            },
+        );
+        let panel = GearPanel::new(request, s.parameters().clone(), false).unwrap();
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Gear(Box::new(panel)),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        if ring_first {
+            ring_click(&ctx, &mut c, &mut s, "Spur");
+            ring_click(&ctx, &mut c, &mut s, "Internal ring");
+        }
+        ring_click(&ctx, &mut c, &mut s, "Create mating pair");
+        if !ring_first {
+            ring_click(&ctx, &mut c, &mut s, "Internal ring as second member");
+        }
+        let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
+            panic!()
+        };
+        let saved = panel.clone();
+        let ModelRequest::GearPair(command) = panel.model_request(s.document(), true).unwrap()
+        else {
+            panic!()
+        };
+        let resolved = command.resolved(s.document(), s.parameters()).unwrap();
+        assert_eq!(resolved.center_distance_mm, 12.);
+        assert_eq!(
+            resolved.gears[usize::from(!ring_first)].family,
+            model::GearFamily::InternalRing
+        );
+        let pair = command.pair();
+        c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &before);
+        c.cancel();
+        assert_eq!(s.document(), &before);
+        c.begin_form(&s, &Default::default(), Channel::Ui, ModelForm::Gear(saved))
+            .unwrap();
+        c.preview(&s, &Default::default(), Channel::Ui).unwrap();
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        let output = c.apply(&mut s, &Default::default()).unwrap();
+        assert_eq!(output.len(), 2);
+        let committed = s.document().clone();
+        s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &before);
+        s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &committed);
+        let mut bytes = vec![];
+        multicad_core::project_file::write(
+            &multicad_core::project_file::ProjectFile::new(committed.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let opened = multicad_core::project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let reopened = Session::new(opened.project.document).unwrap();
+        assert_eq!(reopened.document(), &committed);
+        c.begin_existing(&reopened, &Default::default(), pair, Channel::Ui)
+            .unwrap();
+        assert_eq!(c.label(), "Gear pair");
+        c.cancel();
+    }
+}
 #[test]
 fn native_gear_preview_cancel_apply_history_and_historical_edit_use_the_real_gate() {
     let mut s = Session::new(Document::new("Native gear UI").unwrap()).unwrap();

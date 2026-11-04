@@ -13,6 +13,11 @@ pub(crate) fn specification(
 ) -> Result<InvoluteGear, ModelError> {
     let sweep = match r.family {
         GearFamily::Spur => GearSweep::Spur,
+        GearFamily::InternalRing => GearSweep::InternalSpur {
+            outer_radius_mm: r
+                .outer_radius_mm
+                .ok_or_else(|| error(Some(feature), "Internal ring outside diameter is missing"))?,
+        },
         GearFamily::Helical => GearSweep::Helical,
         GearFamily::Herringbone => GearSweep::Chevron,
         GearFamily::DoubleHelical => GearSweep::GappedChevron {

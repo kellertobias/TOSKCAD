@@ -264,7 +264,12 @@ impl GearPairParameters {
             recipes[1].resolve(evaluated)?,
         ];
         let [a, b] = &gears;
-        if a.family != b.family
+        let internal = matches!(
+            (a.family, b.family),
+            (GearFamily::Spur, GearFamily::InternalRing)
+                | (GearFamily::InternalRing, GearFamily::Spur)
+        );
+        if (!internal && a.family != b.family)
             || !close(a.transverse_module_mm, b.transverse_module_mm)
             || !close(
                 a.transverse_pressure_angle_rad,
@@ -273,11 +278,50 @@ impl GearPairParameters {
             || !close(a.face_width_mm, b.face_width_mm)
             || !close(a.center_gap_mm, b.center_gap_mm)
             || !close(a.helix_angle_rad, b.helix_angle_rad)
-            || (a.family != GearFamily::Spur && a.twist_rad_per_mm * b.twist_rad_per_mm >= 0.)
+            || (!internal
+                && a.family != GearFamily::Spur
+                && a.twist_rad_per_mm * b.twist_rad_per_mm >= 0.)
         {
             return Err(invalid(
                 "This external parallel-axis pair needs matching family, transverse module/pressure angle, face width and center gap, plus equal helix magnitude and opposite hands",
             ));
+        }
+        if internal {
+            let (pinion, ring) = if a.family == GearFamily::Spur {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            if pinion.teeth != 24
+                || (pinion.transverse_pressure_angle_rad.to_degrees() - 20.).abs() > 1e-9
+            {
+                return Err(invalid(
+                    "Internal pairs currently need a 24-tooth, unshifted 20-degree spur pinion and a 48/60-tooth ring",
+                ));
+            }
+            // KHK internal-gear equations 4.4 and 4.11–4.12, plus its
+            // explicit standard 20-degree tooth-difference >9 condition.
+            let aa1 = (pinion.base_radius_mm / pinion.tip_radius_mm).acos();
+            let aa2 = (ring.base_radius_mm / ring.tip_radius_mm).acos();
+            let alpha = ring.transverse_pressure_angle_rad;
+            let ratio = f64::from(pinion.teeth) / f64::from(ring.teeth);
+            let inv = |angle: f64| angle.tan() - angle;
+            let theta1 = ((1. - (aa1.cos() / aa2.cos()).powi(2)) / (1. - ratio.powi(2)))
+                .sqrt()
+                .asin();
+            let theta2 = (((aa2.cos() / aa1.cos()).powi(2) - 1.) / (ratio.recip().powi(2) - 1.))
+                .sqrt()
+                .asin();
+            if !theta1.is_finite()
+                || !theta2.is_finite()
+                || ring.teeth <= pinion.teeth + 9
+                || ratio < 1. - aa2.tan() / alpha.tan()
+                || theta1 + inv(aa1) - inv(alpha) < (theta2 + inv(aa2) - inv(alpha)) / ratio
+            {
+                return Err(invalid(
+                    "Internal gear pair violates the bounded KHK involute, trochoid or trimming interference policy",
+                ));
+            }
         }
         let drive = number(&self.drive_angle, Unit::Radian, evaluated)?;
         if drive.abs() > 2000. * PI {
@@ -285,11 +329,27 @@ impl GearPairParameters {
                 "Gear pair drive angle exceeds the bounded 1000-turn coordinate",
             ));
         }
-        let center = a.pitch_radius_mm + b.pitch_radius_mm;
-        let phases = [
-            drive,
-            PI + PI / f64::from(b.teeth) - drive * f64::from(a.teeth) / f64::from(b.teeth),
-        ];
+        let center = if internal {
+            (a.pitch_radius_mm - b.pitch_radius_mm).abs()
+        } else {
+            a.pitch_radius_mm + b.pitch_radius_mm
+        };
+        let phases = if internal {
+            [
+                drive,
+                if a.family == GearFamily::InternalRing {
+                    PI / f64::from(b.teeth) + drive * f64::from(a.teeth) / f64::from(b.teeth)
+                } else {
+                    PI * (1. - f64::from(a.teeth) / f64::from(b.teeth)) - PI / f64::from(b.teeth)
+                        + drive * f64::from(a.teeth) / f64::from(b.teeth)
+                },
+            ]
+        } else {
+            [
+                drive,
+                PI + PI / f64::from(b.teeth) - drive * f64::from(a.teeth) / f64::from(b.teeth),
+            ]
+        };
         let base = self.frame.resolve(evaluated)?;
         let mating = std::array::from_fn(|index| {
             let (sin, cos) = phases[index].rem_euclid(2. * PI).sin_cos();

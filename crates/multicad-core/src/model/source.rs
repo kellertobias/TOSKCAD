@@ -882,6 +882,16 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    if saved_feature_matches(document, |type_id, data| {
+        type_id == super::GEAR_TYPE
+            && data
+                .pointer("/parameters/family")
+                .and_then(serde_json::Value::as_str)
+                == Some("internal_ring")
+    }) {
+        capabilities.insert(super::INTERNAL_GEAR_CAPABILITY.into());
+        capabilities.insert(super::GEAR_CAPABILITY.into());
+    }
     // Reusable symbol templates retain provider source without active features.
     for (type_id, capability) in [
         (super::THREAD_TYPE, super::THREAD_CAPABILITY),

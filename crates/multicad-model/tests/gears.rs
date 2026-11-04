@@ -137,11 +137,18 @@ fn native_gear_candidate_cancel_edit_history_and_reopen_preserve_one_body() {
 fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readback() {
     for family in GearFamily::ALL.into_iter().filter(|f| f.supported()) {
         let mut s = Session::new(Document::new("Framed gear").unwrap()).unwrap();
-        let helical = family != GearFamily::Spur;
+        let internal = family == GearFamily::InternalRing;
+        let helical = !matches!(family, GearFamily::Spur | GearFamily::InternalRing);
         let request = GearRequest::new(
             "Gear",
             GearParameters {
                 family,
+                teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                    value: if internal { 48. } else { 24. },
+                    unit: "count".into(),
+                },
+                bore_diameter: length(if internal { 0. } else { 8. }),
+                outer_diameter: internal.then(|| length(112.)),
                 face_width: length(4.),
                 helix_angle: angle(if helical { 15. } else { 0. }),
                 hand: if helical {

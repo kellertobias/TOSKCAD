@@ -6,6 +6,7 @@ use multicad_core::document::EntityId;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GearSweep {
     Spur,
+    InternalSpur { outer_radius_mm: f64 },
     Helical,
     Chevron,
     GappedChevron { gap_mm: f64 },
@@ -38,6 +39,9 @@ fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError
 impl InvoluteGear {
     fn checked(self, policy: GeometryPolicy) -> Result<ffi::GearData, GeometryError> {
         policy.validate()?;
+        if let GearSweep::InternalSpur { outer_radius_mm } = self.sweep {
+            return self.checked_internal(outer_radius_mm, policy);
+        }
         for value in [
             self.pitch_radius_mm,
             self.base_radius_mm,
@@ -71,6 +75,7 @@ impl InvoluteGear {
             GearSweep::Helical => (1, 0.),
             GearSweep::Chevron => (2, 0.),
             GearSweep::GappedChevron { gap_mm } => (3, gap_mm),
+            GearSweep::InternalSpur { .. } => unreachable!("checked separately"),
         };
         if !gap.is_finite()
             || gap < 0.
@@ -105,9 +110,69 @@ impl InvoluteGear {
             half_base: self.half_base_angle_rad,
             height: self.face_width_mm,
             bore: self.bore_radius_mm,
+            outer: 0.,
             twist: self.twist_rad_per_mm,
             gap,
             style,
+            tolerance: policy.linear_tolerance_mm,
+        })
+    }
+    fn checked_internal(
+        self,
+        outer: f64,
+        policy: GeometryPolicy,
+    ) -> Result<ffi::GearData, GeometryError> {
+        for value in [
+            self.pitch_radius_mm,
+            self.base_radius_mm,
+            self.tip_radius_mm,
+            self.root_radius_mm,
+            self.root_fillet_radius_mm,
+            self.face_width_mm,
+            outer,
+        ] {
+            policy.length(value)?;
+        }
+        if !(4..=128).contains(&self.teeth)
+            || !self.half_base_angle_rad.is_finite()
+            || self.twist_rad_per_mm != 0.
+            || self.bore_radius_mm != 0.
+            || self.base_radius_mm >= self.tip_radius_mm
+            || self.tip_radius_mm >= self.pitch_radius_mm
+            || self.root_radius_mm <= self.pitch_radius_mm
+            || outer - self.root_radius_mm < policy.minimum_feature_mm
+            || self.root_radius_mm - self.root_fillet_radius_mm <= self.base_radius_mm
+        {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Internal spur needs base < inward tip < pitch < outward root < outside rim, zero twist and no separate bore",
+            ));
+        }
+        let t = (self.tip_radius_mm.powi(2) / self.base_radius_mm.powi(2) - 1.).sqrt();
+        let half = self.half_base_angle_rad + t - t.atan();
+        if half * self.tip_radius_mm < policy.minimum_feature_mm
+            || half >= std::f64::consts::PI / f64::from(self.teeth)
+        {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Internal ring has an unresolved inward tooth or space",
+            ));
+        }
+        policy.point([outer, outer, self.face_width_mm])?;
+        Ok(ffi::GearData {
+            teeth: self.teeth,
+            pitch_radius: self.pitch_radius_mm,
+            base_radius: self.base_radius_mm,
+            tip_radius: self.tip_radius_mm,
+            root_radius: self.root_radius_mm,
+            fillet_radius: self.root_fillet_radius_mm,
+            half_base: self.half_base_angle_rad,
+            height: self.face_width_mm,
+            bore: 0.,
+            outer,
+            twist: 0.,
+            gap: 0.,
+            style: 4,
             tolerance: policy.linear_tolerance_mm,
         })
     }

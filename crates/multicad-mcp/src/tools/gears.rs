@@ -125,6 +125,12 @@ pub struct GearRecipeArgs {
     pub center_gap: Option<Quantity>,
     #[serde(default)]
     pub bore_diameter: Option<Quantity>,
+    /// Explicit outside diameter for an internal ring; omitted edits retain it.
+    #[serde(default)]
+    pub outer_diameter: Option<Quantity>,
+    /// Clear the optional outside diameter when switching to an external family.
+    #[serde(default)]
+    pub clear_outer_diameter: bool,
     /// Per-gear tangential tooth-thickness reduction at its reference circle.
     #[serde(default)]
     pub backlash: Option<Quantity>,
@@ -159,6 +165,17 @@ pub(super) fn parameters(
     evaluated: &EvaluatedParameters,
 ) -> Result<GearParameters, ToolError> {
     let mut p = previous.cloned().unwrap_or_default();
+    if args.clear_outer_diameter && args.outer_diameter.is_some() {
+        return Err(ToolError::invalid(
+            "Choose outside diameter replacement or clearing",
+        ));
+    }
+    if args.clear_outer_diameter {
+        p.outer_diameter = None;
+    }
+    if let Some(outer) = &args.outer_diameter {
+        p.outer_diameter = Some(outer.dimension(document, evaluated)?.0);
+    }
     if let Some(value) = args.family {
         p.family = value.into();
     }
@@ -232,8 +249,9 @@ pub(super) fn gear_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult 
     Ok(
         json!({"families":GearFamily::ALL.map(|f| json!({"family":f,"label":f.label(),"supported":f.supported(),"source":f.source()})),
         "sources":[model::GEAR_DIMENSIONS_SOURCE_URL,model::GEAR_PROFILE_SOURCE_URL,model::GEAR_FILLET_SOURCE_URL],
-        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family, transverse module/pressure angle, width/gap and compatible opposite helix hands; unmodified periodic generator Parts only"},
-        "scope":"Unshifted external gears and parallel-axis pairs, custom circular root fillets; no strength, fit or accuracy certification. Conservative normal-angle tooth-count policy; unsupported families fail closed."}),
+        "internal_ring":{"teeth":[48,60],"pressure_angle_degrees":20,"pinion_teeth":24,"helix":false,"profile_shift":0,"outer_diameter":"Explicit; rim beyond root must meet minimum_wall","bore_diameter":"Zero; inward toothed opening is derived","root":"Custom circular fillet, not a simulated cutter trochoid"},
+        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family or bounded internal ring/spur pinion; matching transverse module/pressure angle and width; external helical hands opposite. Internal centers use radius difference and same-direction rotation. Unmodified periodic generator Parts only"},
+        "scope":"Bounded unshifted involute gears and parallel-axis pairs, custom circular root fillets; no strength, fit or accuracy certification. Unsupported families/combinations fail closed."}),
     )
 }
 pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) -> ToolResult {
@@ -246,6 +264,7 @@ pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) 
         "resolved":{"normal_module_mm":r.normal_module_mm,"transverse_module_mm":r.transverse_module_mm,"teeth":r.teeth,
         "normal_pressure_angle_rad":r.normal_pressure_angle_rad,"transverse_pressure_angle_rad":r.transverse_pressure_angle_rad,
         "pitch_diameter_mm":2.*r.pitch_radius_mm,"base_diameter_mm":2.*r.base_radius_mm,"tip_diameter_mm":2.*r.tip_radius_mm,"root_diameter_mm":2.*r.root_radius_mm,
+        "outer_diameter_mm":r.outer_radius_mm.map(|v|2.*v),"rim_thickness_mm":r.outer_radius_mm.map(|v|v-r.root_radius_mm),
         "nominal_tooth_thickness_mm":r.nominal_tooth_thickness_mm,"design_tooth_thickness_mm":r.design_tooth_thickness_mm,"physical_tooth_thickness_mm":r.physical_tooth_thickness_mm,"twist_rad_per_mm":r.twist_rad_per_mm},
         "scope":"Canonical source and resolved dimensions; use evaluate_model for native geometry"}),
     )

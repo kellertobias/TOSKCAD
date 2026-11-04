@@ -572,8 +572,15 @@ a single gear's setting.
 
 Current geometry covers unshifted external spur, helical, continuous-center
 herringbone and gapped double-helical gears with a through bore. Root fillets
-are custom circular arcs, not a generated cutter trochoid. Internal rings,
-racks, bevel gears, worms and nonzero profile shift are
+are custom circular arcs, not a generated cutter trochoid. The separate
+[internal-ring subset](gears.md#internal-ring-subset) supports unshifted
+20-degree 48/60-tooth spur rings with a 24-tooth pinion. `outer_diameter` is
+required for a ring and omitted for external recipes. Omitted/null edits
+retain it; `clear_outer_diameter: true` explicitly clears it when switching to
+an external family. Clearing and replacement together fail. Ring
+`bore_diameter` must be zero; the toothed opening is derived from module and
+count. `inspect_gear` reports outside diameter and remaining radial rim.
+Racks, bevel gears, worms and nonzero profile shift are
 unavailable. The conservative tooth-count policy uses the normal pressure angle
 without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
 or cutter-generation certification follows from a successful preview.

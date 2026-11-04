@@ -182,9 +182,94 @@ double phase_at(const GearData&s,double z) {
   const double band=(s.height-s.gap)/2;
   return s.twist*std::min({z,s.height-z,band});
 }
+// Internal material widens toward its outward root. The complementary void
+// has involute flanks but its circular fillet belongs at the OUTER end,
+// unlike an external gear's root fillet at the inner end.
+std::unique_ptr<Shape> internal_ring(const GearData&s) {
+  for(double v:{s.pitch_radius,s.base_radius,s.tip_radius,s.root_radius,s.fillet_radius,
+      s.half_base,s.height,s.bore,s.outer,s.twist,s.gap,s.tolerance})
+    if(!std::isfinite(v))throw std::runtime_error("Nonfinite internal gear input");
+  if(s.teeth<4||s.teeth>128||s.base_radius<=0||s.tip_radius<=s.base_radius||
+      s.tip_radius>=s.pitch_radius||s.root_radius<=s.pitch_radius||s.outer<=s.root_radius||
+      s.fillet_radius<=0||s.root_radius-s.fillet_radius<=s.base_radius||s.height<=0||
+      s.bore!=0||s.twist!=0||s.gap!=0||s.tolerance<=0)
+    throw std::runtime_error("Internal spur exceeds validated radius, rim or sweep bounds");
+  GearData cavity=s;
+  cavity.half_base=pi/s.teeth-s.half_base;
+  Dims d;
+  d.t0=std::sqrt(std::pow(s.tip_radius/s.base_radius,2)-1);
+  d.ta=(std::sqrt(std::pow(s.root_radius-s.fillet_radius,2)-s.base_radius*s.base_radius)+s.fillet_radius)/s.base_radius;
+  d.radial=false;
+  d.foot=involute(cavity,d.ta);
+  d.center=d.foot+polar(s.fillet_radius,d.ta-cavity.half_base+pi/2);
+  d.root=d.center*(s.root_radius/radius(d.center));
+  const double rootHalf=-std::atan2(d.root.y,d.root.x);
+  const double tipHalf=cavity.half_base-(d.t0-std::atan(d.t0));
+  if(!std::isfinite(d.ta)||d.ta<=d.t0||radius(d.foot)>=s.root_radius||
+      rootHalf<=s.tolerance/s.root_radius||rootHalf>=pi/s.teeth||
+      tipHalf<=0||tipHalf>=pi/s.teeth-s.tolerance/s.tip_radius||
+      std::abs(radius(d.center)-(s.root_radius-s.fillet_radius))>s.tolerance)
+    throw std::runtime_error("Internal fillet leaves an unresolved root space, flank or tooth tip");
+  Profile outline;BRepBuilderAPI_MakeWire wire;
+  const auto add=[&](const TopoDS_Edge&e,uint32_t source) {
+    wire.Add(e);if(!wire.IsDone())throw std::runtime_error("Internal cavity profile is disconnected");
+    outline.edges.push_back({wire.Edge(),source});
+  };
+  const V start=involute(cavity,d.t0);
+  for(uint32_t i=0;i<s.teeth;++i) {
+    // Phase zero always denotes a MATERIAL tooth on +X, for either family.
+    const double a=(2*pi*i+pi)/s.teeth;
+    const uint32_t next=(i+1)%s.teeth;
+    add(BRepBuilderAPI_MakeEdge(flank(cavity,d,a,0,false)).Edge(),i*8+4);
+    add(arc(d.center,d.foot,d.root,false,a,0),i*8+6);
+    add(arc({0,0},d.root,mirror(d.root),false,a,0),i*8+7);
+    add(arc(mirror(d.center),mirror(d.root),mirror(d.foot),false,a,0),next*8);
+    add(TopoDS::Edge(BRepBuilderAPI_MakeEdge(flank(cavity,d,a,0,true)).Edge().Reversed()),next*8+2);
+    add(arc({0,0},mirror(start),rotate(start,2*pi/s.teeth),false,a,0),next*8+3);
+  }
+  outline.wire=wire.Wire();
+  BRepPrimAPI_MakePrism prism(BRepBuilderAPI_MakeFace(outline.wire).Face(),gp_Vec(0,0,s.height));
+  Built tool{prism.Shape(),{}};generated(tool,prism,outline,6);
+  Built rim{BRepPrimAPI_MakeCylinder(s.outer,s.height).Shape(),{}};
+  for(TopExp_Explorer it(rim.shape,TopAbs_FACE);it.More();it.Next())
+    if(BRepAdaptor_Surface(TopoDS::Face(it.Current())).GetType()==GeomAbs_Cylinder)
+      rim.faces.push_back({it.Current(),0,8});
+  BRepAlgoAPI_Cut cut;Built built=boolean(cut,rim,tool);
+  if(!BRepCheck_Analyzer(built.shape).IsValid())throw std::runtime_error("Internal ring is invalid");
+  int count=0;for(TopExp_Explorer it(built.shape,TopAbs_SOLID);it.More();it.Next())++count;
+  if(count!=1)throw std::runtime_error("Internal ring must retain one connected rim");
+  BRepClass3d_SolidClassifier classifier;classifier.Load(built.shape);
+  for(uint32_t i=0;i<s.teeth;++i)for(double fraction:{.2,.5,.8}) {
+    const double a=2*pi*i/s.teeth,z=s.height*fraction;
+    const auto inside=[&](double r,double angle) {
+      classifier.Perform(gp_Pnt(r*std::cos(angle),r*std::sin(angle),z),s.tolerance*4);
+      return classifier.State()==TopAbs_IN;
+    };
+    if(!inside(s.pitch_radius,a)||inside(s.pitch_radius,a+pi/s.teeth)||
+        !inside((s.outer+s.root_radius)/2,a+pi/s.teeth)||inside(s.tip_radius*.99,a))
+      throw std::runtime_error("Internal ring lost inward teeth, opening, spaces or rim");
+  }
+  auto result=std::make_unique<Shape>(Shape{built.shape,{},{}});
+  TopTools_IndexedMapOfShape faces;TopExp::MapShapes(built.shape,TopAbs_FACE,faces);
+  for(int i=1;i<=faces.Extent();++i) {
+    const BRepAdaptor_Surface surface(TopoDS::Face(faces(i)));
+    if(surface.GetType()==GeomAbs_Plane&&std::abs(surface.Plane().Axis().Direction().Z())>1-1e-10) {
+      const double z=surface.Plane().Location().Z();
+      if(std::abs(z)<s.tolerance*16||std::abs(z-s.height)<s.tolerance*16) {
+        result->seeds.push_back({static_cast<uint32_t>(i-1),0,static_cast<uint8_t>(std::abs(z)<s.tolerance*16?0:1)});continue;
+      }
+    }
+    bool found=false;for(const auto &source:built.faces)if(source.face.IsSame(faces(i))) {
+      result->seeds.push_back({static_cast<uint32_t>(i-1),source.source,source.role});found=true;
+    }
+    if(!found)throw std::runtime_error("Internal ring face has no exact native ancestry");
+  }
+  return result;
+}
 }
 std::unique_ptr<Shape> involute_gear(const GearData&s) {
   try {
+    if(s.style==4)return internal_ring(s);
     for(double v:{s.pitch_radius,s.base_radius,s.tip_radius,s.root_radius,s.fillet_radius,
         s.half_base,s.height,s.bore,s.twist,s.gap,s.tolerance})
       if(!std::isfinite(v))throw std::runtime_error("Nonfinite native gear input");

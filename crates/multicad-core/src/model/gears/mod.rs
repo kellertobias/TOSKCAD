@@ -25,6 +25,7 @@ use std::f64::consts::PI;
 pub const GEAR_TYPE: &str = "model.gear";
 pub const GEAR_SCHEMA: u32 = 1;
 pub const GEAR_CAPABILITY: &str = "model.gear.1";
+pub const INTERNAL_GEAR_CAPABILITY: &str = "model.gear.internal.1";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GearModuleSystem {
@@ -53,6 +54,9 @@ pub struct GearParameters {
     pub hand: GearHand,
     pub center_gap: Dimension,
     pub bore_diameter: Dimension,
+    /// Internal-ring outside diameter. Absent for legacy external recipes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer_diameter: Option<Dimension>,
     /// Tangential tooth-thickness reduction per gear at the reference circle.
     pub backlash: Dimension,
     /// Additional tangential thinning, independent of nominal design backlash.
@@ -81,6 +85,7 @@ impl Default for GearParameters {
             hand: GearHand::None,
             center_gap: length(0.),
             bore_diameter: length(8.),
+            outer_diameter: None,
             backlash: length(0.05),
             fabrication_allowance: length(0.),
             root_fillet_ratio: ratio(0.2),
@@ -116,6 +121,7 @@ pub struct ResolvedGear {
     pub physical_tooth_thickness_mm: f64,
     pub face_width_mm: f64,
     pub bore_radius_mm: f64,
+    pub outer_radius_mm: Option<f64>,
     pub center_gap_mm: f64,
     pub twist_rad_per_mm: f64,
     pub minimum_unshifted_teeth: u32,
@@ -137,6 +143,9 @@ impl GearParameters {
             (&self.minimum_wall, Unit::Millimeter),
             (&self.profile_shift, Unit::Ratio),
         ];
+        if let Some(outer) = &self.outer_diameter {
+            dimensions.push((outer, Unit::Millimeter));
+        }
         dimensions.extend(self.frame.origin.iter().map(|d| (d, Unit::Millimeter)));
         dimensions
     }
@@ -150,6 +159,11 @@ impl GearParameters {
                 "{} is not implemented",
                 self.family.label()
             )));
+        }
+        if (self.family == GearFamily::InternalRing) != self.outer_diameter.is_some() {
+            return Err(invalid(
+                "Internal rings require an outside diameter; external gear recipes must omit it",
+            ));
         }
         Ok(())
     }
@@ -189,9 +203,11 @@ impl GearParameters {
                 "Nonzero gear profile shift is not implemented; select an unshifted profile",
             ));
         }
-        if self.family == GearFamily::Spur {
+        if matches!(self.family, GearFamily::Spur | GearFamily::InternalRing) {
             if beta != 0. || self.hand != GearHand::None {
-                return Err(invalid("Spur gears need zero helix angle and hand none"));
+                return Err(invalid(
+                    "Spur and internal-ring gears need zero helix angle and hand none",
+                ));
             }
         } else if beta <= 0. || self.hand == GearHand::None {
             return Err(invalid(
@@ -232,17 +248,58 @@ impl GearParameters {
             )));
         }
         let teeth = count as u32;
+        let internal = self.family == GearFamily::InternalRing;
+        if internal
+            && (!matches!(teeth, 48 | 60)
+                || (pressure.to_degrees() - 20.).abs() > 1e-9
+                || bore != 0.)
+        {
+            return Err(invalid(
+                "Internal rings currently support unshifted 20-degree spur profiles with 48 or 60 teeth; bore_diameter must be zero because the toothed opening is derived from module and teeth",
+            ));
+        }
         let pitch = mt * count / 2.;
         let base = pitch * at.cos();
-        let tip = pitch + module;
-        let root = pitch - 1.25 * module;
+        let tip = pitch + if internal { -module } else { module };
+        let root = pitch
+            + if internal {
+                1.25 * module
+            } else {
+                -1.25 * module
+            };
         let nominal = PI * mt / 2.;
         let design = nominal - backlash;
         let physical = design - allowance;
-        let half_base = physical / (2. * pitch) + at.tan() - at;
+        let half_base = physical / (2. * pitch)
+            + if internal {
+                at - at.tan()
+            } else {
+                at.tan() - at
+            };
         let ta = (tip.powi(2) / base.powi(2) - 1.).sqrt();
         let root_fillet = fillet * module;
-        if root - bore / 2. < wall || physical <= 0. || half_base - (ta - ta.atan()) <= 1e-5 / tip {
+        let outer = self
+            .outer_diameter
+            .as_ref()
+            .map(|d| number(d, Unit::Millimeter, parameters).map(|v| v / 2.))
+            .transpose()?;
+        if internal {
+            let outer =
+                outer.ok_or_else(|| invalid("Internal rings need an explicit outside diameter"))?;
+            if tip <= base
+                || outer - root < wall
+                || physical <= 0.
+                || half_base + ta - ta.atan() <= 1e-5 / tip
+                || root - root_fillet <= base
+            {
+                return Err(invalid(
+                    "Internal ring needs involute tip above base circle, positive teeth and sufficient outside rim beyond its roots",
+                ));
+            }
+        } else if root - bore / 2. < wall
+            || physical <= 0.
+            || half_base - (ta - ta.atan()) <= 1e-5 / tip
+        {
             return Err(invalid(
                 "Gear bore leaves insufficient root wall, or clearance leaves a pointed/missing tooth",
             ));
@@ -273,6 +330,7 @@ impl GearParameters {
             physical_tooth_thickness_mm: physical,
             face_width_mm: width,
             bore_radius_mm: bore / 2.,
+            outer_radius_mm: outer,
             center_gap_mm: gap,
             twist_rad_per_mm: twist,
             minimum_unshifted_teeth: minimum,

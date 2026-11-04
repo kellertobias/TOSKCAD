@@ -22,7 +22,7 @@ inspector and refused by canonical preparation and MCP.
 | External helical | Native twisted involute solid | Matching helix magnitude, opposite hands | Unshifted; through bore |
 | Herringbone | Continuous center, opposite-handed tooth bands | Matching external family and width | Hand names the lower band; no center groove |
 | Double-helical | Two tooth bands separated by a root-core center gap | Matching external family, width and gap | Distinct from continuous-center herringbone |
-| Internal ring | Unavailable | Unavailable | [CAD-227](https://plans.tokenet.de/CAD/227) |
+| Internal ring | Native inward involute teeth and connected outer rim | 24-tooth spur pinion with 48/60-tooth ring; either member order | Unshifted 20-degree spur subset; explicit outside diameter |
 | Rack and pinion | Unavailable | Unavailable | [CAD-228](https://plans.tokenet.de/CAD/228) |
 | Bevel | Unavailable | Unavailable | [CAD-229](https://plans.tokenet.de/CAD/229) |
 | Worm and wheel | Unavailable | Unavailable | [CAD-230](https://plans.tokenet.de/CAD/230) |
@@ -69,7 +69,8 @@ occurrence. Definition Parts do not become extra physical outputs. Normal
 component Move/Copy controls outer placement; copies share the pair definition's
 internal drive coordinate.
 
-The native pair guard requires matching external family, transverse module and
+The native pair guard accepts matching external families or the bounded
+internal-ring/spur combination described below. It requires matching transverse module and
 pressure angle, face width, gap and applicable helix magnitude/opposite hands.
 The Part heads must remain the gear generators. It checks actual B-reps at
 nine phases over one pinion tooth cycle and at the current pose. Completed cycle
@@ -77,6 +78,52 @@ checks have a bounded worker-owned cache keyed by actual geometry inputs,
 frames, identities and policy. Current pose is always checked; a partial or
 cancelled cycle is never reusable. These finite samples do not establish
 continuous collision-free motion or manufacturing fit.
+
+## Internal ring subset
+
+The [canonical source](../../crates/multicad-core/src/model/gears/mod.rs)
+supports 48- and 60-tooth unshifted 20-degree spur rings. Normal/transverse
+module coincide at zero helix. For module `m` and ring count `z`, pitch diameter
+is `mz`, inward tip diameter `m(z-2)` and outward root diameter `m(z+2.5)`.
+`outer_diameter` is an explicit independent dimension; radial material beyond
+the outward roots must meet `minimum_wall`. `bore_diameter` must be zero because
+the inward toothed opening is derived. External recipes omit the optional
+outside field and retain their previous serialization.
+
+The dimensional basis is KHK section 4.2, Tables 4.6/4.7 and equations
+4.4–4.12, corroborated by Brian Dengel's KHK-USA article
+[Internal ring gears, December 2019, printed pages 28–30](https://khkgears.us/media/beqhhrye/gear-solutions_khk_internal-ring-gears-design-and-considerations.pdf).
+The live table's external-root plus sign contradicts its example; the dated
+article prints the consistent subtraction. An ambiguous operator in the live
+trochoid equation is not implemented. The supported pair uses exactly a
+24-tooth unshifted 20-degree spur pinion. Canonical checks evaluate KHK's
+involute and trimming inequalities and its explicit standard-20-degree
+tooth-count difference greater than nine. Other ring/pinion counts, pressure
+angles, profile shifts and internal helices remain unavailable. These bounds
+are an implementation subset, not a published KHK product range or cutter
+accessibility certificate.
+
+Internal material tooth half-width grows with radius as
+`physical_thickness/(2*pitch_radius) - inv(alpha) + inv(acos(base_radius/r))`,
+where `inv(a)=tan(a)-a`. Backlash and fabrication allowance independently
+reduce material thickness. The native adapter constructs the complementary
+void with a custom circular fillet at the outward material root; it does not
+subtract an unchanged external gear or simulate a generated cutter trochoid.
+Phase zero denotes a material tooth on +X for both families. Internal pair
+center distance is `m*(z_ring-z_pinion)/2`, with parallel axes and same-direction
+rotation at the tooth-count ratio. The first member owns the drive coordinate;
+either ring/pinion order is supported. Existing assembly identities and typed
+transactions own both recipes and placements.
+
+`model.gear.internal.1` gates saved ring source, including suppressed features
+and template-only reusable symbols. Reader refusal and independent project
+reopen are covered by the [core tests](../../crates/multicad-core/tests/model_internal_gears.rs).
+The [kernel matrix](../../crates/multicad-kernel/tests/internal_gears.rs) checks
+actual inward sections, custom circles, rim, ancestry, independent analytic
+volume and STEP. The [model matrix](../../crates/multicad-model/tests/internal_gears.rs)
+checks both sizes/orders, known wrong-phase overlap, native sampled clearance,
+associative edits, history and saved reopen. Samples do not prove continuous
+collision-free motion, physical fit, load capacity or manufacturing conformity.
 
 ## Editing and verification boundaries
 

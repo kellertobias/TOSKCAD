@@ -102,6 +102,9 @@ impl Solid {
                 }
                 2 => "gear/bore".into(),
                 3 => "gear/root.core".into(),
+                8 if matches!(sweep, crate::GearSweep::InternalSpur { .. }) => {
+                    "gear/rim.outer".into()
+                }
                 4 | 5 if matches!(sweep, crate::GearSweep::GappedChevron { .. }) => {
                     if seed.role == 4 {
                         "gear/gap.lower"

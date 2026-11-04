@@ -91,6 +91,8 @@ pub(super) struct GearPairPanel {
     template: GearPairRequest,
     name: String,
     secondary: [DimensionField; 4],
+    secondary_ring: bool,
+    secondary_outside: DimensionField,
     origin: [DimensionField; 3],
     plane: Option<Datum>,
     drive: DimensionField,
@@ -113,7 +115,11 @@ impl GearPairPanel {
         second.feature = EntityId::new();
         second.body = EntityId::new();
         second.parameters.teeth = multicad_core::constraint_sketch::Dimension::Literal {
-            value: 36.,
+            value: if primary.family == GearFamily::InternalRing {
+                24.
+            } else {
+                36.
+            },
             unit: "count".into(),
         };
         let mut template =
@@ -131,6 +137,9 @@ impl GearPairPanel {
             primary,
             template,
             secondary,
+            secondary_ring: false,
+            secondary_outside: DimensionField::from_dimension(&model::length(112.), "mm")
+                .expect("ring outside"),
             origin,
             plane,
             drive: DimensionField::from_dimension(&angle(0.), "deg").expect("zero drive"),
@@ -171,6 +180,11 @@ impl GearPairPanel {
         let field = DimensionField::from_dimension;
         let b = &template.gears[1].parameters;
         Ok(Self {
+            secondary_ring: b.family == GearFamily::InternalRing,
+            secondary_outside: field(
+                b.outer_diameter.as_ref().unwrap_or(&model::length(112.)),
+                "mm",
+            )?,
             name: document
                 .get(pair)
                 .ok_or("Gear pair is missing")?
@@ -247,6 +261,18 @@ impl GearPairPanel {
         } else {
             let first = self.primary.request(document, enabled)?.parameters;
             let second = GearParameters {
+                family: if first.family == GearFamily::InternalRing {
+                    GearFamily::Spur
+                } else if self.secondary_ring && first.family == GearFamily::Spur {
+                    GearFamily::InternalRing
+                } else {
+                    first.family
+                },
+                outer_diameter: if self.secondary_ring && first.family == GearFamily::Spur {
+                    Some(self.secondary_outside.resolve(document)?)
+                } else {
+                    None
+                },
                 teeth: self.secondary[0].resolve(document)?,
                 bore_diameter: self.secondary[1].resolve(document)?,
                 backlash: self.secondary[2].resolve(document)?,
@@ -314,23 +340,74 @@ impl GearPairPanel {
             ui.small("Leave this off to change only the drive or pair layout. Enabling it applies the shared geometry controls to both gears.");
         }
         if self.update_geometry {
-            ui.strong("Shared geometry and pinion");
+            ui.strong("Shared geometry and first member");
+            let previous_family = self.primary.family;
             changed |= self.primary.geometry_controls(ui);
+            if self.primary.family == GearFamily::InternalRing
+                && previous_family != self.primary.family
+            {
+                self.secondary_ring = false;
+                self.secondary[0] = DimensionField::from_dimension(
+                    &multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 24.,
+                        unit: "count".into(),
+                    },
+                    "count",
+                )
+                .expect("pinion teeth");
+            }
             ui.separator();
-            ui.strong("Mating wheel");
+            if self.primary.family == GearFamily::Spur
+                && ui
+                    .checkbox(&mut self.secondary_ring, "Internal ring as second member")
+                    .changed()
+            {
+                changed = true;
+                self.secondary[0] = DimensionField::from_dimension(
+                    &multicad_core::constraint_sketch::Dimension::Literal {
+                        value: if self.secondary_ring { 48. } else { 36. },
+                        unit: "count".into(),
+                    },
+                    "count",
+                )
+                .expect("mating teeth");
+                self.secondary[1] = DimensionField::from_dimension(
+                    &model::length(if self.secondary_ring { 0. } else { 8. }),
+                    "mm",
+                )
+                .expect("mating bore");
+            }
+            let ring = self.primary.family == GearFamily::Spur && self.secondary_ring;
+            ui.strong(if ring {
+                "Mating internal ring"
+            } else if self.primary.family == GearFamily::InternalRing {
+                "Mating pinion"
+            } else {
+                "Mating wheel"
+            });
             for (field, label) in self.secondary.iter_mut().zip([
                 "Wheel teeth",
                 "Wheel bore diameter",
                 "Wheel design backlash",
                 "Wheel fabrication clearance",
             ]) {
+                if ring && label == "Wheel bore diameter" {
+                    continue;
+                }
                 changed |= field.show(
                     ui,
                     label,
                     "Independent wheel value; formulas may reference project parameters",
                 );
             }
-            ui.small("The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite.");
+            if ring {
+                changed |= self.secondary_outside.show(
+                    ui,
+                    "Mating ring outside diameter",
+                    "Outside rim must meet the shared minimum-wall requirement",
+                );
+            }
+            ui.small(if ring || self.primary.family == GearFamily::InternalRing {"Ring/pinion share module, 20° pressure angle and face width. Centers use the radius difference; both rotate in the same direction."} else {"The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite."});
         } else {
             for gear in &self.template.gears {
                 ui.small(&gear.name);
@@ -338,7 +415,7 @@ impl GearPairPanel {
         }
         ui.separator();
         ui.strong("Pair layout and drive");
-        changed|=self.drive.show(ui,"Pinion drive angle","The wheel phase follows the tooth-count ratio; copies share this definition's drive coordinate");
+        changed|=self.drive.show(ui,if self.primary.family == GearFamily::InternalRing {"Ring drive angle"}else{"Pinion drive angle"},"The second member follows the tooth-count ratio; copies share this definition's drive coordinate");
         controls::inspector_combo(ui, "gear-pair-plane")
             .selected_text(self.plane.map_or("Stored orientation", Datum::label))
             .show_ui(ui, |ui| {

@@ -41,11 +41,17 @@ impl GearFamily {
     pub fn supported(self) -> bool {
         matches!(
             self,
-            Self::Spur | Self::Helical | Self::Herringbone | Self::DoubleHelical
+            Self::Spur
+                | Self::Helical
+                | Self::Herringbone
+                | Self::DoubleHelical
+                | Self::InternalRing
         )
     }
     pub fn source(self) -> &'static str {
-        if self.supported() {
+        if self == Self::InternalRing {
+            "KHK unshifted 20-degree internal spur geometry; 48/60 teeth, custom circular root fillets; source revision 1"
+        } else if self.supported() {
             "KHK unshifted full-depth involute dimensions; custom circular root fillet; source revision 1"
         } else {
             "Not implemented; no family-correct geometry or compatibility coverage claimed"

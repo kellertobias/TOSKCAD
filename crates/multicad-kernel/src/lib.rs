@@ -98,6 +98,7 @@ mod ffi {
         half_base: f64,
         height: f64,
         bore: f64,
+        outer: f64,
         twist: f64,
         gap: f64,
         style: u8,

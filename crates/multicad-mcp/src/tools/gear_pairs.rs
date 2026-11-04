@@ -161,8 +161,23 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
         &evaluated,
     )?;
     let default_second = GearParameters {
+        family: if first.family == model::GearFamily::InternalRing {
+            model::GearFamily::Spur
+        } else {
+            first.family
+        },
+        outer_diameter: None,
+        bore_diameter: if first.family == model::GearFamily::InternalRing {
+            model::length(0.)
+        } else {
+            first.bore_diameter.clone()
+        },
         teeth: Dimension::Literal {
-            value: 30.,
+            value: if first.family == model::GearFamily::InternalRing {
+                24.
+            } else {
+                30.
+            },
             unit: "count".into(),
         },
         hand: match first.hand {
