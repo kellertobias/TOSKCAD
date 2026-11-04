@@ -1280,8 +1280,18 @@ impl ModelToolController {
         &mut self,
         session: &Session,
         resources: &ProjectResources,
+        channel: Channel,
+        form: ModelForm,
+    ) -> Result<(), String> {
+        self.begin_form_with_level_seed(session, resources, channel, form, true)
+    }
+    fn begin_form_with_level_seed(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
         _channel: Channel,
         mut form: ModelForm,
+        seed_level: bool,
     ) -> Result<(), String> {
         if !self.has_backend() {
             return Err("The native modeling preview provider is unavailable".into());
@@ -1289,7 +1299,7 @@ impl ModelToolController {
         if self.active() {
             return Err("Apply or cancel the active modeling tool first".into());
         }
-        if let Some(level) = self.architecture_level {
+        if seed_level && let Some(level) = self.architecture_level {
             match &mut form {
                 ModelForm::Wall(panel) => panel.seed_new_level(level),
                 ModelForm::Opening(panel) => panel.seed_new_level(session.document(), level),
@@ -2029,7 +2039,9 @@ impl ModelToolController {
             }
             self.cancel();
             if let Some(form) = repeat {
-                self.begin_form(session, resources, channel, form)?;
+                // This is the user's retained placement form, not a new tool:
+                // keep its chosen floor and wall instead of reseeding them.
+                self.begin_form_with_level_seed(session, resources, channel, form, false)?;
             }
             // Keep the same checked geometry visible while the canonical lane
             // rebuilds the new revision. It remains noninteractive/display-only.

@@ -24,6 +24,133 @@ fn controller() -> (ModelToolController, Arc<Mutex<Option<Document>>>) {
     controller.set_backend(Box::new(capture));
     (controller, sent)
 }
+
+#[test]
+fn repeated_equipment_keeps_its_chosen_floor_when_the_active_level_changes() {
+    use crate::egui::{self, Event, Pos2, Rect, Vec2};
+    use multicad_core::equipment;
+    let (mut session, levels, _, _) = crate::architecture_view::tests::building();
+    let resources = ProjectResources::default();
+    let mut controller = ModelToolController::default();
+    controller.set_backend(Box::new(super::super::native_fixture::NativeBackend::new()));
+    controller.set_architecture_level(Some(levels[0]));
+    controller
+        .begin_equipment_preset(
+            &session,
+            &resources,
+            Channel::Ui,
+            equipment::Kind::Refrigerator,
+        )
+        .unwrap();
+    let ctx = egui::Context::default();
+    let mut paint = |controller: &mut ModelToolController, events: Vec<Event>| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600., 2400.))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                controller.show(ui, &mut session, &resources).unwrap();
+            },
+        )
+    };
+    paint(&mut controller, vec![]).drop_without_applying_deltas();
+    let output = paint(&mut controller, vec![]);
+    let at = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "Keep placing this type" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .expect("repeat checkbox is painted");
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        paint(
+            &mut controller,
+            vec![
+                Event::PointerMoved(at),
+                Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    for (index, x) in [400., 800.].into_iter().enumerate() {
+        assert!(
+            controller
+                .preview(&session, &resources, Channel::Ui)
+                .is_err(),
+            "every repeated occurrence requires a fresh viewport pick"
+        );
+        ctx.run_ui(Default::default(), |ui| {
+            let camera = crate::camera::Camera {
+                yaw: 0.,
+                pitch: std::f32::consts::FRAC_PI_2,
+                target: [x, 400., 0.],
+                scale: 0.1,
+                perspective: false,
+            };
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 600.));
+            assert!(controller.outline_viewport(
+                &session,
+                super::super::TerminationViewport {
+                    scene: None,
+                    report: None,
+                    camera,
+                    rect,
+                    pointer: Some(rect.center()),
+                    clicked: true,
+                    painter: ui.painter(),
+                    section: None,
+                }
+            ));
+        })
+        .drop_without_applying_deltas();
+        controller
+            .preview(&session, &resources, Channel::Ui)
+            .unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !controller.can_apply(&session, &resources) && std::time::Instant::now() < until {
+            controller.poll(&session, &resources);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(controller.can_apply(&session, &resources));
+        controller.set_architecture_level(Some(levels[1]));
+        controller.apply(&mut session, &resources).unwrap();
+        let attachments: Vec<_> = session
+            .document()
+            .entities()
+            .filter_map(|entity| equipment::read_attachment(session.document(), entity.id).ok())
+            .collect();
+        assert_eq!(attachments.len(), index + 1);
+        assert!(
+            attachments
+                .iter()
+                .all(|attachment| attachment.floor == levels[0]),
+            "repetition preserves the chosen floor instead of reseeding from the active level"
+        );
+    }
+    session
+        .undo(session.revision(), Actor::local(Channel::Ui))
+        .unwrap();
+    assert_eq!(
+        session
+            .document()
+            .entities()
+            .filter(|entity| equipment::read_attachment(session.document(), entity.id).is_ok())
+            .count(),
+        1,
+        "the repeated occurrence has a separate undo step"
+    );
+}
 #[test]
 fn active_level_seeds_new_wall_stair_slab_and_equipment_but_never_reassigns_saved_features() {
     let (session, levels, _, features) = crate::architecture_view::tests::building();
