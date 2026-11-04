@@ -123,7 +123,12 @@ fn scopes_use_shared_preview_and_run_without_source_or_saved_set_edits() {
         };
         service.borrow_mut().replies.push_back(reply);
         w.poll(&s);
-        assert!(w.writing());
+        assert!(
+            w.writing(),
+            "scope={scope:?} error={:?} status={:?}",
+            w.drawing_pdf.error,
+            w.drawing_pdf.status
+        );
         let reply = finish(&service, index + 1, key);
         service.borrow_mut().replies.push_back(reply);
         w.poll(&s);

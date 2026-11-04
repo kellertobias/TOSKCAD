@@ -35,12 +35,9 @@ pub fn diagnose(directory: &str) -> Option<String> {
             "“{directory}” is a file, not a folder. Choose a folder."
         ));
     }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
     let probe = path.join(format!(
-        ".toskcad-write-check-{}-{nanos}",
-        std::process::id()
+        ".toskcad-write-check-{}",
+        multicad_core::document::EntityId::new()
     ));
     match std::fs::OpenOptions::new()
         .write(true)
@@ -61,6 +58,25 @@ pub fn diagnose(directory: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_checks_accept_one_writable_directory_and_leave_no_probes() {
+        let directory = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                let directory = directory.path();
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..128 {
+                        assert_eq!(diagnose(directory.to_str().unwrap()), None);
+                    }
+                });
+            }
+        });
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn missing_relative_file_and_read_only_destinations_are_explained() {
