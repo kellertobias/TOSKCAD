@@ -40,12 +40,12 @@ Launch that QA executable directly with child-only `DYLD_INSERT_LIBRARIES` point
 Analyze a documented measurement interval with:
 
 ```sh
-node tools/measure-native-input.mjs /absolute/path/trace.jsonl LAST_MEASURED_SEQUENCE
+node tools/measure-native-input.mjs /absolute/path/trace.jsonl LAST_MEASURED_SEQUENCE FIRST_MEASURED_SEQUENCE
 node --test tools/measure-native-input.test.mjs
 cargo run -p multicad-ui --example ui_frame_profile --locked -- /absolute/path/project.tcd 3
 ```
 
-The cutoff excludes only later terminal/unknown actions, never slow samples inside the chosen interval. The analyzer rejects corrupt clocks, mismatched input/presentation records and duplicate records, counts missing/dropped/overflowed inputs explicitly, and cannot pass the budget with incomplete coverage. The offline example reports source-hash preparation wall time and continuation-frame CPU cost separately from the first frame.
+Both sequence arguments are optional: the default interval starts at 1 and includes all inputs. Record workload boundaries before analyzing idle and busy intervals, preserve the full raw trace and report the aggregate alongside individual intervals. Bounds exclude only actions outside the documented workload, never slow samples inside it. Later drawable records remain available to recover a dropped candidate even when their inputs fall outside the interval. The analyzer rejects corrupt clocks, mismatched input/presentation records and duplicate records, counts missing/dropped/overflowed inputs explicitly, and cannot pass the budget with incomplete coverage. The offline example reports source-hash preparation wall time and continuation-frame CPU cost separately from the first frame.
 
 ## Remaining verification
 

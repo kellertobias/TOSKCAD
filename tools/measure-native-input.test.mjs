@@ -38,3 +38,35 @@ test('v3 candidate records must match the drawable and cannot omit its presentat
   assert.deepEqual(summarizeInputTrace(trace([input(1),candidate],3)).unpresentedSequences,[1]);
   assert.throws(()=>summarizeInputTrace(trace([input(1),candidate,{phase:'frame-presented',frame:1,acquired:1.002,presented:1.06}],3)),/does not match its drawable/);
 });
+
+test('documented disjoint workload intervals retain every slow sample inside the interval',()=>{
+  const text=trace([input(1),frame(1,.4),input(2),frame(2,.05),input(3),frame(3,.3),input(4),frame(4,.06)]);
+  const busy=summarizeInputTrace(text,4,2);
+  assert.equal(busy.inputCount,3);
+  assert.equal(busy.excludedBeforeSequence,1);
+  assert.equal(busy.excludedAfterSequence,0);
+  assert.ok(Math.abs(busy.overallMs.max-300)<1e-6);
+  assert.equal(busy.budgetPassed,false);
+  const idle=summarizeInputTrace(text,2,2);
+  assert.equal(idle.inputCount,1);
+  assert.equal(idle.excludedAfterSequence,2);
+  assert.equal(idle.budgetPassed,true);
+  assert.throws(()=>summarizeInputTrace(text,2,3),/measurement start/);
+  assert.throws(()=>summarizeInputTrace(text,2,0),/measurement start/);
+});
+
+test('interval analysis retains later drawable records for dropped-candidate recovery',()=>{
+  const text=trace([input(1),input(2),{...frame(2,.05),presented:0},
+    {phase:'frame-presented',frame:2,acquired:2.002,presented:0},
+    {phase:'frame-presented',frame:3,acquired:2.04,presented:2.08}],3);
+  const report=summarizeInputTrace(text,2,2);
+  assert.deepEqual(report.recoveredDroppedCandidateSequences,[2]);
+  assert.ok(Math.abs(report.overallMs.max-80)<1e-6);
+  assert.equal(report.budgetPassed,true);
+});
+
+test('missing presentations and overflow in a selected workload cannot pass',()=>{
+  const rows=[input(1),frame(1,.05),input(2),frame(2,.05),{phase:'overflow',sequence:2}];
+  assert.equal(summarizeInputTrace(trace(rows),2,2).budgetPassed,false);
+  assert.deepEqual(summarizeInputTrace(trace([input(1),frame(1,.05),input(2)]),2,2).unpresentedSequences,[2]);
+});

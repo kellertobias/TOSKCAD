@@ -7,8 +7,9 @@ const distribution = values => {
   const sorted = [...values].sort((a,b)=>a-b);
   return {count:sorted.length,p50:sorted[Math.ceil(sorted.length*.5)-1],p95:sorted[Math.ceil(sorted.length*.95)-1],max:sorted.at(-1)};
 };
-export function summarizeInputTrace(text, throughSequence = Infinity) {
+export function summarizeInputTrace(text, throughSequence = Infinity, fromSequence = 1) {
   if (throughSequence !== Infinity && (!Number.isSafeInteger(throughSequence) || throughSequence < 1)) throw new Error('Invalid measurement cutoff');
+  if (!Number.isSafeInteger(fromSequence) || fromSequence < 1 || fromSequence > throughSequence) throw new Error('Invalid measurement start');
   const rows = text.trim().split('\n').filter(Boolean).map((line,index)=>{
     try { return JSON.parse(line); } catch { throw new Error(`Invalid JSON at line ${index+1}`); }
   });
@@ -30,7 +31,7 @@ export function summarizeInputTrace(text, throughSequence = Infinity) {
       if (frames.has(row.frame) || !Number.isSafeInteger(row.frame) || row.frame<1 || !Number.isFinite(row.presented) || !Number.isFinite(row.acquired) || (row.presented!==0 && row.presented<row.acquired)) throw new Error('Invalid frame presentation');
       frames.set(row.frame,row);
     }
-    if (row.phase==='overflow' && row.sequence<=throughSequence) overflow++;
+    if (row.phase==='overflow' && row.sequence>=fromSequence && row.sequence<=throughSequence) overflow++;
   }
   for (const [sequence,row] of presented) {
     const input = inputs.get(sequence);
@@ -38,7 +39,7 @@ export function summarizeInputTrace(text, throughSequence = Infinity) {
     const actual=frames.get(row.frame);
     if (start.version===3 && actual && (actual.acquired!==row.acquired || actual.presented!==row.presented)) throw new Error('Candidate does not match its drawable presentation');
   }
-  const selected = [...inputs.values()].filter(row=>row.sequence<=throughSequence);
+  const selected = [...inputs.values()].filter(row=>row.sequence>=fromSequence && row.sequence<=throughSequence);
   if (!selected.length) throw new Error('No native input samples in measurement interval');
   const missing = [], dropped = [], recovered = [], delays = [], grouped = {};
   for (const input of selected) {
@@ -56,10 +57,10 @@ export function summarizeInputTrace(text, throughSequence = Infinity) {
     (grouped[kinds[input.kind]]??=[]).push(ms);
   }
   const overall = distribution(delays);
-  return {scope:'native event occurrence to a subsequent Metal drawable presentation after input delivery; coalesced inputs share a frame',throughSequence:throughSequence===Infinity?null:throughSequence,inputCount:selected.length,excludedAfterSequence:inputs.size-selected.length,unpresentedSequences:missing,droppedSequences:dropped,recoveredDroppedCandidateSequences:recovered,overflow,overallMs:overall,byKindMs:Object.fromEntries(Object.entries(grouped).map(([kind,values])=>[kind,distribution(values)])),budgetPassed:!!overall && !missing.length && !dropped.length && !overflow && overall.p95<=100 && overall.max<=250};
+  return {scope:'native event occurrence to a subsequent Metal drawable presentation after input delivery; coalesced inputs share a frame',fromSequence,throughSequence:throughSequence===Infinity?null:throughSequence,inputCount:selected.length,excludedBeforeSequence:[...inputs.keys()].filter(sequence=>sequence<fromSequence).length,excludedAfterSequence:[...inputs.keys()].filter(sequence=>sequence>throughSequence).length,unpresentedSequences:missing,droppedSequences:dropped,recoveredDroppedCandidateSequences:recovered,overflow,overallMs:overall,byKindMs:Object.fromEntries(Object.entries(grouped).map(([kind,values])=>[kind,distribution(values)])),budgetPassed:!!overall && !missing.length && !dropped.length && !overflow && overall.p95<=100 && overall.max<=250};
 }
 if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
-  const [file,cutoff] = process.argv.slice(2);
-  if (!file) throw new Error('Usage: node tools/measure-native-input.mjs TRACE.jsonl [LAST_MEASURED_SEQUENCE]');
-  console.log(JSON.stringify(summarizeInputTrace(readFileSync(file,'utf8'),cutoff===undefined?Infinity:Number(cutoff)),null,2));
+  const [file,cutoff,first] = process.argv.slice(2);
+  if (!file) throw new Error('Usage: node tools/measure-native-input.mjs TRACE.jsonl [LAST_MEASURED_SEQUENCE] [FIRST_MEASURED_SEQUENCE]');
+  console.log(JSON.stringify(summarizeInputTrace(readFileSync(file,'utf8'),cutoff===undefined?Infinity:Number(cutoff),first===undefined?1:Number(first)),null,2));
 }
