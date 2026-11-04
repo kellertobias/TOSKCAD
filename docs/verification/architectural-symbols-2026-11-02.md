@@ -1,8 +1,8 @@
 # Architectural symbol verification, 2026-11-02
 
-> Historical checkpoint: the wall authoring, registration, receiving placement
-> and explicit update subset has [native interaction evidence from 2026-11-04](layered-walls-2026-11-04.md).
-> The broader fence and architectural workflow below still needs graphical verification.
+> Historical checkpoint. Recovered graphical wall/fence placement, pinned updates,
+> receiving details and local-author-file-unavailable evidence are recorded in
+> [Architectural symbol verification, 2026-11-04](architectural-symbols-2026-11-04.md).
 
 CAD-206 adds project-authored layered-wall and fence blueprints, selected typed
 public inputs, real receiving architectural outputs, embedded pins and explicit

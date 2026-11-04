@@ -170,9 +170,11 @@ transaction/history behavior, native role geometry, offline pins, interface
 controls and external control. Native coverage includes wall openings, joined
 faces, material section hatches and attached equipment, plus fence regeneration.
 
-Painted egui interactions and native compiler tests do not demonstrate the
-complete actual macOS workflow for authoring, Library registration, drawing,
-editing and updating. That interaction
-remains a separate acceptance check. Existing wall and fence provider limits
-continue to apply, including supported wall junctions and bounded flat fence
-paths.
+Painted egui interactions and native compiler tests remain separate from actual
+macOS interaction. The [2026-11-04 verification](../verification/architectural-symbols-2026-11-04.md)
+records recovered wall/fence authoring, Library placement and explicit updates,
+receiving details and drawing output, with scoped evidence and repository checks.
+Its unavailable-source check covers the registered local author file, not
+network isolation. Existing wall and fence provider limits continue to apply,
+including supported wall junctions and bounded flat fence paths. Human acceptance
+remains separate.
