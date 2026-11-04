@@ -4,6 +4,7 @@ use multicad_core::{
     document::{Document, EntityData, Mutation},
     model::*,
     project_file::{self, ProjectFile},
+    symbols::{self, SymbolAuthorRequest, SymbolKind},
 };
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
@@ -269,4 +270,140 @@ fn direct_and_suppressed_nested_unified_sources_require_reader_capability_and_ro
     );
     let legacy = ProjectFile::new(Document::new("No Unified source").unwrap()).unwrap();
     assert!(!legacy.capabilities().contains(UNIFIED_THREAD_CAPABILITY));
+}
+
+fn assert_reader(s: &Session, capability: &str) {
+    let project = ProjectFile::new(s.document().clone()).unwrap();
+    assert!(
+        project.capabilities().contains(capability),
+        "Every saved source needs its reader even when not currently instantiated"
+    );
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let mut older = project_file::supported_capabilities();
+    older.remove(capability);
+    assert!(
+        project_file::read(&mut bytes.as_slice(), Default::default(), &older)
+            .unwrap_err()
+            .contains(capability)
+    );
+    let read = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(read.project.document, *s.document());
+}
+fn assert_unified_reader(s: &Session) {
+    assert_reader(s, UNIFIED_THREAD_CAPABILITY);
+}
+fn embedded_only(s: &mut Session, body: multicad_core::document::EntityId) -> Session {
+    let author = SymbolAuthorRequest::new(
+        "Unified source template",
+        body,
+        SymbolKind::Static,
+        vec![],
+        None,
+    );
+    let p = symbols::prepare_author(s, s.revision(), actor(), &author).unwrap();
+    s.commit(p.prepared).unwrap();
+    let definition = symbols::read_definition(s.document(), author.definition).unwrap();
+    let mut imported = session();
+    let p = symbols::prepare_import(&imported, 0, actor(), &definition).unwrap();
+    imported.commit(p.prepared).unwrap();
+    assert!(
+        !imported
+            .document()
+            .entities()
+            .any(|e| matches!(e.data, EntityData::Feature { .. }))
+    );
+    imported
+}
+#[test]
+fn hidden_unified_thread_templates_require_the_reader_without_active_features() {
+    for family in [ThreadFamily::Unc, ThreadFamily::Unf] {
+        let preset = unified_thread_presets()
+            .into_iter()
+            .find(|p| p.family == family)
+            .unwrap();
+        let mut s = session();
+        let request = ThreadRequest::new(
+            "Embedded Unified shaft",
+            parameters(&preset, ThreadFit::Unified2A),
+        );
+        let p = prepare_thread(&s, 0, actor(), &request).unwrap();
+        s.commit(p.prepared).unwrap();
+        assert_unified_reader(&embedded_only(&mut s, request.body));
+    }
+}
+#[test]
+fn hidden_unified_retained_hardware_references_require_reader_directly_and_in_templates() {
+    for family in [ThreadFamily::Unc, ThreadFamily::Unf] {
+        let preset = unified_thread_presets()
+            .into_iter()
+            .find(|p| p.family == family)
+            .unwrap();
+        let mut s = session();
+        let reference = MechanicalPartParameters::HexNut {
+            across_flats: length(18.),
+            thread: Box::new(parameters(&preset, ThreadFit::Unified2B)),
+        };
+        let mut request = MechanicalPartRequest::new(
+            "Metric actual, Unified reference",
+            MechanicalPartParameters::HexNut {
+                across_flats: length(18.),
+                thread: Box::default(),
+            },
+        );
+        request.provenance = Some(MechanicalPartProvenance {
+            catalog_id: "test-only-retained-unified".into(),
+            revision: "1".into(),
+            designation: preset.designation,
+            source_url: UNIFIED_THREAD_SOURCE_URL.into(),
+            reference_geometry: reference,
+            catalog_facts: None,
+        });
+        let p = prepare_mechanical_part(&s, 0, actor(), &request).unwrap();
+        s.commit(p.prepared).unwrap();
+        assert_unified_reader(&s);
+        assert_unified_reader(&embedded_only(&mut s, request.body));
+    }
+}
+
+#[test]
+fn template_only_nominal_and_custom_threads_require_the_base_thread_reader() {
+    for p in [
+        ThreadParameters::default(),
+        ThreadParameters {
+            family: ThreadFamily::Custom,
+            custom: Some(Default::default()),
+            ..Default::default()
+        },
+    ] {
+        let mut s = session();
+        let request = ThreadRequest::new("Embedded basic source", p);
+        let p = prepare_thread(&s, 0, actor(), &request).unwrap();
+        s.commit(p.prepared).unwrap();
+        assert_reader(&embedded_only(&mut s, request.body), THREAD_CAPABILITY);
+    }
+}
+#[test]
+fn template_only_basic_hardware_requires_its_base_provider_reader() {
+    let mut s = session();
+    let request = MechanicalPartRequest::new(
+        "Embedded basic nut",
+        MechanicalPartParameters::HexNut {
+            across_flats: length(18.),
+            thread: Box::default(),
+        },
+    );
+    let p = prepare_mechanical_part(&s, 0, actor(), &request).unwrap();
+    s.commit(p.prepared).unwrap();
+    let embedded = embedded_only(&mut s, request.body);
+    assert_reader(&embedded, MECHANICAL_PART_CAPABILITY);
+    assert!(
+        !required_capabilities(embedded.document()).contains(THREAD_CAPABILITY),
+        "Nested thread parameters belong to their mechanical provider, not a standalone thread feature"
+    );
 }

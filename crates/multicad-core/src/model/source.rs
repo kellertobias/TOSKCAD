@@ -882,22 +882,34 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    // Reusable symbol templates retain provider source without active features.
+    for (type_id, capability) in [
+        (super::THREAD_TYPE, super::THREAD_CAPABILITY),
+        (
+            super::MECHANICAL_PART_TYPE,
+            super::MECHANICAL_PART_CAPABILITY,
+        ),
+    ] {
+        if saved_feature_matches(document, |saved_type, _| saved_type == type_id) {
+            capabilities.insert(capability.into());
+        }
+    }
     // Saved suppressed features and nested nut recipes need this reader
     // capability too; visible/evaluated feature iterators omit them.
-    if document.entities().any(|entity| {
-        let EntityData::Feature { definition, .. } = &entity.data else {
-            return false;
-        };
-        let path = match definition.type_id.as_str() {
-            super::THREAD_TYPE => "/parameters/family",
-            super::MECHANICAL_PART_TYPE => "/parameters/thread/family",
+    if saved_feature_matches(document, |type_id, data| {
+        let paths: &[&str] = match type_id {
+            super::THREAD_TYPE => &["/parameters/family"],
+            super::MECHANICAL_PART_TYPE => &[
+                "/parameters/thread/family",
+                "/provenance/reference_geometry/thread/family",
+            ],
             _ => return false,
         };
-        definition
-            .data
-            .pointer(path)
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|family| matches!(family, "unc" | "unf"))
+        paths.iter().any(|path| {
+            data.pointer(path)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|family| matches!(family, "unc" | "unf"))
+        })
     }) {
         capabilities.insert(super::UNIFIED_THREAD_CAPABILITY.into());
     }
