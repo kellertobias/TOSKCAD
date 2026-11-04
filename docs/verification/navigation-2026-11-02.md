@@ -1,5 +1,9 @@
 # Native navigation verification, 2026-11-02
 
+> Historical checkpoint. Actual native mode/sketch/import workflows and the later
+> units-control fix are recorded in
+> [Navigation verification, 2026-11-04](navigation-2026-11-04.md).
+
 CAD-221 replaces the top-level Sketch tab with contextual sketch editing in
 Model, exposes Motion, and gives every mode a shared right-side Add Sketch,
 Import, Library, Measure and MCP history row. Project retains its left draft
