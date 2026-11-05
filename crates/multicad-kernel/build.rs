@@ -18,6 +18,7 @@ fn main() {
         .file("src/threads.cpp")
         .file("src/gears.cpp")
         .file("src/bevel.cpp")
+        .file("src/worm.cpp")
         .include("include")
         .include(root.join("include"))
         .std("c++17")
@@ -61,6 +62,9 @@ fn main() {
         "include/gears.hpp",
         "src/bevel.cpp",
         "include/bevel.hpp",
+        "src/worm.cpp",
+        "include/worm.hpp",
+        "include/worm_verification.hpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

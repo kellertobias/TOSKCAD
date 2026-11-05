@@ -581,6 +581,25 @@ impl Solid {
         result.inherit_provenance(&[self, other], None)?;
         Ok(Some(result))
     }
+    /// Native COMMON query using OCCT's internal worker pool. Rust handles stay
+    /// on their owner thread; the non-destructive operation owns its workers.
+    /// Native validity, fuzzy tolerance and provenance rules match `boolean`.
+    pub fn intersect_parallel(
+        &self,
+        other: &Self,
+        policy: GeometryPolicy,
+    ) -> Result<Option<Self>, GeometryError> {
+        policy.validate()?;
+        let handle =
+            ffi::intersect_parallel(&self.native.0, &other.native.0, policy.boolean_fuzzy_mm)
+                .map_err(|e| native("parallel intersection", e))?;
+        if handle.is_null() {
+            return Ok(None);
+        }
+        let mut result = Self::adopt(handle, policy, "parallel intersection")?;
+        result.inherit_provenance(&[self, other], None)?;
+        Ok(Some(result))
+    }
     pub fn transformed(&self, transform: RigidTransform) -> Result<Self, GeometryError> {
         transform.validate(self.policy)?;
         let r: Vec<_> = transform.rotation.into_iter().flatten().collect();

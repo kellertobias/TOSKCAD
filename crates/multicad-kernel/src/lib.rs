@@ -88,6 +88,15 @@ mod ffi {
         pub evictions: u64,
         pub unretained: u64,
     }
+    pub struct WormWheelData {
+        teeth: u32,
+        module: f64,
+        width: f64,
+        bore: f64,
+        thinning: f64,
+        tolerance: f64,
+        minimum: f64,
+    }
     pub struct BevelData {
         teeth: u32,
         pitch: f64,
@@ -306,6 +315,9 @@ mod ffi {
         fn helical_thread_after_miss(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
         include!("bevel.hpp");
         fn spherical_bevel_gear(spec: &BevelData) -> Result<UniquePtr<Shape>>;
+        include!("worm.hpp");
+        fn za_worm(spec: &ThreadData, bore: f64) -> Result<UniquePtr<Shape>>;
+        fn za_worm_wheel(spec: &WormWheelData) -> Result<UniquePtr<Shape>>;
         include!("gears.hpp");
         fn involute_gear(spec: &GearData) -> Result<UniquePtr<Shape>>;
         fn sketch_reference_geometry(
@@ -427,6 +439,7 @@ mod ffi {
             operation: u8,
             fuzzy: f64,
         ) -> Result<UniquePtr<Shape>>;
+        fn intersect_parallel(a: &Shape, b: &Shape, fuzzy: f64) -> Result<UniquePtr<Shape>>;
         fn clip_half_space(
             shape: &Shape,
             plane: &Frame3,
@@ -602,6 +615,8 @@ mod gears;
 pub use gears::{GearSweep, InvoluteGear};
 mod bevel;
 pub use bevel::SphericalBevelGear;
+mod worm;
+pub use worm::{GeneratedZaWormWheel, ZaWorm};
 mod rack;
 pub use rack::StraightRack;
 mod edge_treatment;

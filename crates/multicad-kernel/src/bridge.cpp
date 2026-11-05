@@ -368,6 +368,38 @@ static std::pair<double,double> point_equivalent_volume(const TopoDS_Shape &shap
   if(!closed||!std::isfinite(total_mass)||total_mass<=0||!std::isfinite(total_absolute_error))throw VolumeIntegrationFailure();
   return {static_cast<double>(total_mass),static_cast<double>(total_absolute_error/total_mass)};
 }
+static std::pair<double,double> point_volume(const TopoDS_Shape &shape) {
+  GProp_GProps properties;
+  const double error=BRepGProp::VolumePropertiesGK(shape,properties,1e-10,true,true);
+  return {properties.Mass(),error};
+}
+static bool accepted_volume(const std::pair<double,double> &value) {
+  return std::isfinite(value.first)&&value.first>0.&&std::isfinite(value.second)&&value.second>=0.&&value.second<=1e-7;
+}
+void prime_point_volume(const Shape &s) {
+  if(!valid(s))throw std::runtime_error("Point volume priming needs valid final geometry");
+  int solids=0;for(TopExp_Explorer e(s.value,TopAbs_SOLID);e.More();e.Next())++solids;
+  if(solids!=1)throw std::runtime_error("Point volume priming needs one final solid");
+  for(TopExp_Explorer e(s.value,TopAbs_SHELL);e.More();e.Next()) {
+    BRepCheck_Shell shell(TopoDS::Shell(e.Current()));
+    if(shell.Closed(false)!=BRepCheck_NoError)throw std::runtime_error("Point volume priming needs closed shells");
+  }
+  std::lock_guard<std::mutex> lock(s.volume_cache->mutex);
+  if(s.volume_cache->certificate)return;
+  ++s.volume_cache->integrations;
+  auto measured=point_volume(s.value);
+  const char *method="point_primed";
+  // The other native formulation remains an independent numerical fallback.
+  // Do not rescue nonfinite, nonpositive or negative-error results.
+  if(std::isfinite(measured.first)&&measured.first>0.&&std::isfinite(measured.second)&&measured.second>1e-7) {
+    measured=point_equivalent_volume(s.value);
+    method="basis_primed";
+  }
+  if(!accepted_volume(measured))throw VolumeIntegrationFailure();
+  if(const auto *profile=std::getenv("MULTICAD_PROFILE_NATIVE_VOLUME");profile&&std::strcmp(profile,"0")!=0)
+    std::fprintf(stderr,"multicad.native.volume method=%s relative_error=%.17g\n",method,measured.second);
+  s.volume_cache->certificate=VolumeCertificate{measured.first,measured.second};
+}
 double volume(const Shape &s) {
   return guard([&] {
     std::lock_guard<std::mutex> lock(s.volume_cache->mutex);
@@ -390,12 +422,12 @@ double volume(const Shape &s) {
       // Independent directional solves can report a larger quadrature error
       // than the original point formulation on the same closed native solid.
       // Retry that original integration, never the rejected mass or its guard.
-      GProp_GProps properties;
-      const double pointError=BRepGProp::VolumePropertiesGK(s.value,properties,1e-10,true,true);
+      const auto point=point_volume(s.value);
+      const double pointError=point.second;
       if(const auto *profile=std::getenv("MULTICAD_PROFILE_NATIVE_VOLUME");profile&&std::strcmp(profile,"0")!=0)
         std::fprintf(stderr,"multicad.native.volume method=point_retry basis_error=%.17g point_error=%.17g\n",relativeError,pointError);
-      mass=properties.Mass();relativeError=pointError;
-      if(!std::isfinite(mass)||mass<=0.||!std::isfinite(relativeError)||relativeError<0.||relativeError>1e-7)
+      mass=point.first;relativeError=pointError;
+      if(!accepted_volume(point))
         throw VolumeIntegrationFailure();
     }
     if(std::isfinite(mass)&&mass>0.)s.volume_cache->certificate=VolumeCertificate{mass,relativeError};
@@ -820,8 +852,8 @@ std::unique_ptr<Shape> profile_extrude(
     return result;
   });
 }
-std::unique_ptr<Shape> boolean_shapes(const Shape &a, const Shape &b,
-                                      uint8_t operation, double fuzzy) {
+static std::unique_ptr<Shape> boolean_shapes_impl(const Shape &a, const Shape &b,
+                                      uint8_t operation, double fuzzy, bool parallel) {
   return guard([&]() -> std::unique_ptr<Shape> {
     BRepAlgoAPI_BooleanOperation op;
     TopTools_ListOfShape arguments, tools;
@@ -838,7 +870,7 @@ std::unique_ptr<Shape> boolean_shapes(const Shape &a, const Shape &b,
     else
       throw std::runtime_error("Unknown Boolean operation");
     op.SetNonDestructive(true);
-    op.SetRunParallel(false);
+    op.SetRunParallel(parallel);
     op.SetFuzzyValue(fuzzy);
     op.Build();
     if (!op.IsDone() || op.HasErrors())
@@ -851,6 +883,12 @@ std::unique_ptr<Shape> boolean_shapes(const Shape &a, const Shape &b,
     record_history(*owned, b, 1, op);
     return owned;
   });
+}
+std::unique_ptr<Shape> boolean_shapes(const Shape &a,const Shape &b,uint8_t operation,double fuzzy) {
+  return boolean_shapes_impl(a,b,operation,fuzzy,false);
+}
+std::unique_ptr<Shape> intersect_parallel(const Shape &a,const Shape &b,double fuzzy) {
+  return boolean_shapes_impl(a,b,2,fuzzy,true);
 }
 // Exact bounded target material on one side of an infinite authored plane.
 // The half-space is an operand only; no artificial cutting box enters a model.

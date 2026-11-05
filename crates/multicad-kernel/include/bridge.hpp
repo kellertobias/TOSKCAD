@@ -101,6 +101,9 @@ struct Shape {
   // Geometry-changing operations/imports never inherit it.
   std::shared_ptr<const ThreadFactoryTag> thread_factory_tag = {};
 };
+// Constructor choice of native integration order, never an analytic receipt.
+// Only a validated final closed solid can publish a completed mass.
+void prime_point_volume(const Shape &);
 std::unique_ptr<Shape> extrude(double width, double depth, double height);
 std::unique_ptr<Shape> cut(const Shape &, double x, double width, double depth,
                            double height);
@@ -141,6 +144,7 @@ void route_native_output_to_stderr();
 std::unique_ptr<Shape> cylinder(const Frame3 &,double radius,double height);
 std::unique_ptr<Shape> profile_extrude(const Frame3 &,rust::Slice<const CurveEdge>,rust::Slice<const uint32_t>,double height);
 std::unique_ptr<Shape> boolean_shapes(const Shape &,const Shape &,uint8_t operation,double fuzzy);
+std::unique_ptr<Shape> intersect_parallel(const Shape &,const Shape &,double fuzzy);
 std::unique_ptr<Shape> clip_half_space(const Shape &,const Frame3 &,bool positive,double fuzzy);
 std::unique_ptr<Shape> inspection_union(const Shape &);
 std::unique_ptr<Shape> share_shape(const Shape &);

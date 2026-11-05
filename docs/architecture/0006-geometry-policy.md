@@ -52,7 +52,12 @@ wrapper validation does not promise that every accepted profile can be built.
 There is no automatic retry with a wider Boolean fuzz value or silent repair.
 Callers receive an explicit error if native construction or validation fails.
 
-Use non-destructive, single-threaded Boolean calls on immutable operands.
+Use non-destructive, single-threaded Boolean calls on immutable operands by
+default. The explicit `Solid::intersect_parallel` query permits OCCT's internal
+workers for COMMON with the same immutable inputs, tolerance, native validity,
+error and provenance checks. It does not move Rust handles between threads or
+change other Boolean operations. OCCT owns its process-wide worker pool;
+queries must not resize or reconfigure that pool around an operation.
 Tessellation copies the B-rep before attaching display triangulations and applies a
 triangle budget. Changing display deflection must preserve the original solid's
 volume, bounds and analytic face queries. STEP exchange explicitly uses millimeters.
