@@ -1,5 +1,8 @@
 # Architecture authoring verification, 2026-11-02
 
+> Historical evidence. The [native review of 2026-11-05](architecture-authoring-2026-11-05.md)
+> records actual macOS authoring, linked drawing exports and saved context checks.
+
 CAD-246 connects Architecture authoring in Model to selectable canonical levels
 and linked 2D/3D representations. Implementation source is frozen at `7c492d0`
 on `main`; required Rust checks and the native build passed on that source.

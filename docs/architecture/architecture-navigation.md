@@ -34,6 +34,10 @@ They neither place a default object nor discard an open operation. Pending form
 controls remain in the Inspector until Apply or Cancel. Unavailable modeling
 buttons retain the normal pending-edit and native-backend guards.
 
+Creation-tool highlights describe the open creation form. Generic saved-feature
+editing shows its own Inspector context without selecting a retained creation
+command. The shared Library highlights its actual browser while open.
+
 Category state belongs to each open project. The existing recent-view workspace
 string stores a subpath such as `Architecture / Electrical`; it is not added to
 the canonical document or Undo. Existing `Architecture` records restore the root.
