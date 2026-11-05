@@ -162,8 +162,29 @@ pub fn obj(objects: &[MeshObject], unit: LengthUnit) -> Vec<u8> {
 }
 
 /// The 3MF core model XML: one resource object per mesh and one build item
-/// per placement, in the declared unit.
-pub fn model_xml(objects: &[MeshObject], items: &[BuildItem], unit: LengthUnit) -> String {
+/// per placement, in the declared unit. Exact-coordinate indexing closes
+/// face-local seams; ambiguous or open indexed topology returns an error.
+pub fn model_xml(
+    objects: &[MeshObject],
+    items: &[BuildItem],
+    unit: LengthUnit,
+) -> Result<String, String> {
+    let objects = objects
+        .iter()
+        .map(super::mesh_indexing::closed_indexed)
+        .collect::<Result<Vec<_>, _>>()?;
+    for item in items {
+        if item.object >= objects.len()
+            || item
+                .rotation
+                .iter()
+                .flatten()
+                .chain(item.translation_mm.iter())
+                .any(|c| !c.is_finite())
+        {
+            return Err("3MF build item references an absent object or nonfinite placement".into());
+        }
+    }
     let s = scale(unit);
     let mut out = String::new();
     let _ = writeln!(out, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
@@ -220,23 +241,25 @@ pub fn model_xml(objects: &[MeshObject], items: &[BuildItem], unit: LengthUnit) 
     }
     let _ = writeln!(out, "</build>");
     let _ = writeln!(out, "</model>");
-    out
+    Ok(out)
 }
 
 /// A 3MF package: content types, relationships and the core model.
-pub fn three_mf(objects: &[MeshObject], items: &[BuildItem], unit: LengthUnit) -> Vec<u8> {
+pub fn three_mf(
+    objects: &[MeshObject],
+    items: &[BuildItem],
+    unit: LengthUnit,
+) -> Result<Vec<u8>, String> {
+    let model = model_xml(objects, items, unit)?;
     let content_types = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>"#;
     let relationships = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>"#;
-    stored_zip(&[
+    Ok(stored_zip(&[
         ("[Content_Types].xml", content_types.as_bytes()),
         ("_rels/.rels", relationships.as_bytes()),
-        (
-            "3D/3dmodel.model",
-            model_xml(objects, items, unit).as_bytes(),
-        ),
-    ])
+        ("3D/3dmodel.model", model.as_bytes()),
+    ]))
 }
 
 /// A ZIP archive with stored entries and a fixed timestamp, so identical

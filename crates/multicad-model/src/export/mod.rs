@@ -2,6 +2,7 @@
 //! mesh, retained viewport state or foreign native handle is an export input.
 pub mod dxf;
 pub mod mesh;
+mod mesh_indexing;
 mod render;
 pub use render::{RenderManifest, RenderPackage};
 mod planar;
@@ -529,7 +530,8 @@ fn mesh_output(
         .sum();
     let bytes = match format {
         MeshFormat::Obj => mesh::obj(&objects, *units),
-        MeshFormat::ThreeMf => mesh::three_mf(&objects, &items, *units),
+        MeshFormat::ThreeMf => mesh::three_mf(&objects, &items, *units)
+            .map_err(|e| failure(ErrorKind::Invalid, None, e))?,
         MeshFormat::Stl => mesh::stl(&objects, &items, *units, &named.filename),
         MeshFormat::Glb => {
             let (nodes, appearances) = scene(document, &items, &leaves)?;

@@ -450,7 +450,10 @@ impl Exporter {
                 items: items.len(),
                 triangles: objects.iter().map(|o| o.triangles).sum(),
             });
-            generated.push(mesh::three_mf(&meshes, &items, LengthUnit::Millimeter));
+            generated.push(
+                mesh::three_mf(&meshes, &items, LengthUnit::Millimeter)
+                    .map_err(|e| failure(ErrorKind::Invalid, None, e))?,
+            );
             if request.stl_per_part {
                 let names: Vec<&str> = objects.iter().map(|o| o.name.as_str()).collect();
                 for ((object, item), suffix) in objects.iter().zip(&items).zip(stl_suffixes(&names))
@@ -1024,7 +1027,8 @@ mod tests {
             ..mesh::BuildItem::identity(0)
         };
         let items = [mesh::BuildItem::identity(0), moved];
-        let bytes = mesh::three_mf(std::slice::from_ref(&cube), &items, LengthUnit::Millimeter);
+        let bytes =
+            mesh::three_mf(std::slice::from_ref(&cube), &items, LengthUnit::Millimeter).unwrap();
         let object = |x: f64, volume: f64| PrintObject {
             part: EntityId::new(),
             occurrence_path: vec![],

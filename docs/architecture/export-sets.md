@@ -52,6 +52,22 @@ The [mesh writers](../../crates/multicad-model/src/export/mesh.rs) tessellate ex
   - 3MF declares `unit` on the model. Translations in 3MF build items use the same unit.
 - **Names.** Product names use the Part and occurrence names; filename-only naming writes `object-N`.
 - **Packaging.** 3MF packages contain `[Content_Types].xml`, `_rels/.rels` and `3D/3dmodel.model` as stored ZIP entries with a fixed timestamp, so identical source produces identical bytes.
+
+3MF adjacency uses shared vertex indices, as required by
+[Core 1.3, section 4.1](https://3mf.io/wp-content/uploads/sites/106/2025/02/3MF_Core_Specification_v1.3.0.pdf).
+The shared writer preserves an already closed, consistently oriented index
+graph, including separately indexed coincident closed components. For native
+face meshes with duplicated seam vertices, it reuses exactly equal coordinates
+within each object and remaps triangle indices. It applies no distance weld and
+changes no triangle positions, order, winding, object names or build transforms.
+
+Every resulting indexed edge must have two opposite uses. Disconnected vertex
+fans receive separate indices at the same position. Open, degenerate or
+ambiguous shared-edge input fails before publication; the writer does not guess
+which faces to pair. Vertex identity remains local to each mesh object. The
+[indexed-mesh regressions](../../crates/multicad-model/tests/three_mf_indexed_manifold.rs)
+parse stored XML independently of the production reader and cover native boxes,
+ZA worm gearing, rigid instances, point-touching fans and coincident components.
 - **Evidence.** Each artifact records objects, build items, triangles, chord deviation and the placed tessellated volume.
 - **Readback.** Publication reads every OBJ, 3MF, STL and GLB back and requires:
   - the same bytes as generated, and the same objects, build items and triangles (STL keeps no objects, so only its triangles are compared);

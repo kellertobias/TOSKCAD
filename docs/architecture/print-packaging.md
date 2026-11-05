@@ -71,6 +71,12 @@ An empty package cannot be written. The preview says why: nothing was chosen in 
 - **STL per object** (optional). One binary STL per packaged world Part or placed occurrence, beside the 3MF. Each is in world millimeters at its placement. STL has no unit field; the header states the unit. A label is cleaned of path separators and reserved characters, and repeated names get `-2`, `-3` and so on.
 - **Tessellation.** Meshes come from current exact solids at the chosen chord deviation (default 0.1 mm, angular 15°). Display meshes are never used.
 
+3MF files use the shared writer's
+[indexed mesh validation](export-sets.md#mesh-output). Equal seam coordinates
+share indices where needed for closed adjacency; valid coincident components
+keep their own connectivity. No distance-based position repair is applied.
+Invalid indexed topology stops writing before existing targets are replaced.
+
 ## Writing
 
 **Write 3MF package** first checks that the preview is current and writable. It then opens the native save dialog with `<document name>.3mf` suggested. The dialog adds `.3mf` when no extension is given.
