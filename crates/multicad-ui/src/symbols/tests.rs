@@ -59,7 +59,16 @@ fn installed_library_load_is_explicit_filtered_and_source_neutral() {
     click(&ctx, &mut c, &mut session, button, 1800.);
     assert_eq!(
         c.take_action(),
-        Some(SymbolAction::OpenInstalled(entry.path))
+        Some(SymbolAction::OpenInstalled(entry.path.clone()))
+    );
+    assert_eq!(c.take_action(), None);
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+    let place = point(&output, "Place");
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut session, place, 1800.);
+    assert_eq!(
+        c.take_action(),
+        Some(SymbolAction::OpenInstalledForPlace(entry.path))
     );
     assert_eq!(c.take_action(), None);
     assert_eq!(session.document(), &before);
@@ -1291,3 +1300,91 @@ fn painted_architectural_exposure_toggles_only_the_interface_and_native_apply_is
     session.undo(session.revision(), actor()).unwrap();
     assert_eq!(session.document(), &before);
 }
+
+#[test]
+fn loaded_library_direct_place_selects_detached_pin_and_cancel_then_apply_in_explicit_parent() {
+    let (mut author, part, width) = fixture();
+    let id = embed(&mut author, part.body, width);
+    let definition = symbols::read_definition(author.document(), id).unwrap();
+    let mut other = definition.clone();
+    other.symbol = EntityId::new();
+    other.name = "Different reusable definition".into();
+    let parent = Entity::new(
+        "Receiving assembly",
+        EntityData::Assembly { instances: vec![] },
+    );
+    let parent_id = parent.id;
+    let document = Document::new("Receiver")
+        .unwrap()
+        .edited(&[Mutation::Insert(parent)])
+        .unwrap();
+    let mut session = Session::new(document.clone()).unwrap();
+    let mut c = controller();
+    c.set_library_snapshot(vec![other, definition.clone()])
+        .unwrap();
+    let ctx = egui::Context::default();
+    for apply in [false, true] {
+        begin(
+            &mut c,
+            &session,
+            SymbolTool::Library,
+            SymbolSelection {
+                parent: Some(parent_id),
+                ..Default::default()
+            },
+        );
+        c.form.as_mut().unwrap().filter = "Cabinet symbol".into();
+        let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+        let place = point(&output, "Place");
+        output.drop_without_applying_deltas();
+        click(&ctx, &mut c, &mut session, place, 1800.);
+        assert!(
+            matches!(&c.form.as_ref().unwrap().operation, Operation::Place { library: Some(source), parent: Some(parent), .. } if source == &definition && *parent == parent_id)
+        );
+        assert_eq!(session.document(), &document);
+        assert!(symbols::definitions(session.document()).unwrap().is_empty());
+        let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+        point(&output, "Parent: Receiver / Receiving assembly");
+        let preview = point(&output, "Preview");
+        output.drop_without_applying_deltas();
+        click(&ctx, &mut c, &mut session, preview, 1800.);
+        wait(&mut c, &session, &Default::default());
+        assert!(c.can_apply(&session, &Default::default()), "{:?}", c.error);
+        assert_eq!(session.document(), &document);
+        let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+        let button = point(&output, if apply { "Apply" } else { "Cancel" });
+        output.drop_without_applying_deltas();
+        let outcome = click(&ctx, &mut c, &mut session, button, 1800.).unwrap();
+        if apply {
+            let SymbolOutcome::Applied { selected, .. } = outcome else {
+                panic!("expected applied placement")
+            };
+            assert_eq!(session.revision(), 1);
+            let instance = symbols::read_instance(session.document(), selected[0]).unwrap();
+            assert_eq!(
+                symbols::read_definition(session.document(), instance.definition).unwrap(),
+                definition
+            );
+            assert_eq!(
+                multicad_core::hierarchy::Index::new(session.document())
+                    .unwrap()
+                    .parent(instance.instance)
+                    .unwrap(),
+                Some(parent_id)
+            );
+            session.undo(1, actor()).unwrap();
+            assert_eq!(session.document(), &document);
+            assert!(!session.can_undo());
+            session.redo(2, actor()).unwrap();
+            assert!(symbols::read_instance(session.document(), selected[0]).is_ok());
+        } else {
+            assert!(matches!(outcome, SymbolOutcome::Cancelled));
+            assert_eq!(session.document(), &document);
+            assert_eq!(session.revision(), 0);
+            assert!(!session.can_undo());
+        }
+    }
+}
+
+#[path = "placement_gizmo_tests.rs"]
+mod placement_gizmo;

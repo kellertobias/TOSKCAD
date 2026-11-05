@@ -21,7 +21,7 @@ mod wood_box;
 pub(crate) use fence::fence_target;
 mod form;
 mod gear;
-mod gizmo;
+pub(crate) mod gizmo;
 mod group_edit;
 #[cfg(test)]
 mod group_fixture;

@@ -4276,6 +4276,27 @@ impl SketchEditor {
                         .request_repaint_after(std::time::Duration::from_millis(16));
                 }
             }
+            if self.symbols.active() {
+                match self.symbols.placement_viewport(
+                    ui,
+                    session,
+                    context.resources,
+                    crate::modeling::PlacementViewport {
+                        scene: None,
+                        camera: self.camera,
+                        rect,
+                        basis: Default::default(),
+                        start_allowed: response.hovered()
+                            || response.dragged_by(egui::PointerButton::Primary),
+                    },
+                ) {
+                    Ok(input_owned) => owned |= input_owned,
+                    Err(error) => {
+                        owned = true;
+                        self.message = error;
+                    }
+                }
+            }
             if self.model.operation_gizmo_active() {
                 owned |= self.operation_viewport(ui, &response, session, context.resources, rect);
             }

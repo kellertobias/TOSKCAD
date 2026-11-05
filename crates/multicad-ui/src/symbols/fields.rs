@@ -279,6 +279,32 @@ impl Default for PoseInputs {
     }
 }
 impl PoseInputs {
+    pub fn numeric(&self) -> Result<multicad_core::model::NumericTransform, String> {
+        self.resolve()?;
+        Ok(multicad_core::model::NumericTransform {
+            translation: [0, 1, 2].map(|i| {
+                multicad_core::model::length(
+                    number(&self.translation[i], "Translation").expect("validated pose"),
+                )
+            }),
+            axis: [0, 1, 2]
+                .map(|i| number(&self.axis[i], "Rotation axis").expect("validated pose")),
+            angle: multicad_core::model::angle(number(&self.angle, "Rotation")?),
+            ..Default::default()
+        })
+    }
+    pub fn set_numeric(
+        &mut self,
+        value: &multicad_core::model::NumericTransform,
+        parameters: &multicad_core::parameters::EvaluatedParameters,
+    ) -> Result<(), String> {
+        let values = crate::modeling::gizmo::math::Values::read(value, parameters)?;
+        // Gizmo rotation uses the world origin as pivot, matching symbol placement.
+        self.translation = values.translation.map(|v| v.to_string());
+        self.axis = values.axis.map(|v| v.to_string());
+        self.angle = values.angle_deg.to_string();
+        Ok(())
+    }
     pub fn show(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.strong("Placement · world coordinates");

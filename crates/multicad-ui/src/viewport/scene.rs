@@ -991,6 +991,97 @@ impl Scene {
         view.reference_aliases = self.reference_aliases.clone();
         Ok(Arc::new(view))
     }
+    /// Move one candidate occurrence for illustration only. Native receipts and
+    /// assembled semantic references never become proof of the illustrated pose.
+    pub fn presentation_placement(
+        &self,
+        instance: EntityId,
+        delta: multicad_core::model::RigidPose,
+    ) -> Result<Arc<Self>, String> {
+        use multicad_core::model::RigidPose;
+        if !self.is_full_model() || instance.is_nil() {
+            return Err(
+                "Placement display needs a complete source scene and a valid instance".into(),
+            );
+        }
+        delta.validate().map_err(|error| error.to_string())?;
+        let matches = |leaf: &multicad_core::model::AssemblyLeafReceipt| {
+            leaf.path.root == instance || leaf.path.members.contains(&instance)
+        };
+        // A displayed root already contains its complete native aggregate mesh.
+        // Only a nested occurrence needs expansion into individual leaf meshes.
+        let direct = self.instances.iter().any(|item| item.id == instance);
+        let receipt = self.assembly_evaluation().filter(|_| !direct);
+        let roots: BTreeSet<_> = receipt
+            .into_iter()
+            .flat_map(|info| &info.leaves)
+            .filter(|leaf| matches(leaf))
+            .map(|leaf| leaf.path.root)
+            .collect();
+        if !direct && roots.is_empty() {
+            return Err("Placement display contains an unknown instance".into());
+        }
+        let mut instances = Vec::with_capacity(self.instances.len());
+        for item in self
+            .instances
+            .iter()
+            .filter(|item| !roots.contains(&item.id))
+        {
+            let mut item = item.clone();
+            if item.id == instance {
+                let pose = RigidPose {
+                    rotation: item.transform.rotation,
+                    translation_mm: item.transform.translation,
+                };
+                item.transform = Transform::from_rigid_pose(
+                    pose.then(delta).map_err(|error| error.to_string())?,
+                )?;
+            }
+            instances.push(item);
+        }
+        if let Some(receipt) = receipt {
+            let leaves: Vec<_> = receipt
+                .leaves
+                .iter()
+                .filter(|leaf| roots.contains(&leaf.path.root))
+                .collect();
+            if leaves.len() > multicad_core::model::MAX_ASSEMBLY_LEAVES {
+                return Err(
+                    "Nested placement display exceeds the native assembly leaf budget".into(),
+                );
+            }
+            for leaf in leaves {
+                let root = self
+                    .instances
+                    .iter()
+                    .find(|item| item.id == leaf.path.root)
+                    .ok_or("Placement display requires every affected aggregate root")?;
+                if !self.geometries.contains_key(&leaf.producer) {
+                    return Err("Placement display is missing native leaf geometry".into());
+                }
+                let pose = if matches(leaf) {
+                    leaf.pose.then(delta).map_err(|error| error.to_string())?
+                } else {
+                    leaf.pose
+                };
+                instances.push(Instance {
+                    id: EntityId::new(),
+                    geometry: leaf.producer,
+                    transform: Transform::from_rigid_pose(pose)?,
+                    color: root.color,
+                });
+            }
+        }
+        let mut view = Self::new(
+            self.stamp,
+            self.geometries.values().cloned().collect(),
+            instances,
+        )?;
+        view.scope = SceneScope::Presentation;
+        view.reference_instances = self.reference_instances.clone();
+        view.reference_aliases = self.reference_aliases.clone();
+        Ok(Arc::new(view))
+    }
     /// Expand selected native leaf paths into an exploded illustration. View
     /// object IDs are ephemeral and never enter the canonical document.
     pub fn presentation_leaf_offsets(
@@ -1442,3 +1533,7 @@ impl SceneStore {
             .is_some_and(|s| Some(s.stamp) == self.wanted)
     }
 }
+
+#[cfg(test)]
+#[path = "scene/placement_tests.rs"]
+mod placement_tests;

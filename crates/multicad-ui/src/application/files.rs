@@ -22,6 +22,8 @@ pub(super) enum PendingFile {
         expected: Option<RecoveryInfo>,
     },
     SymbolOpen {
+        place: bool,
+        placement_intent: Option<u64>,
         local: EntityId,
         guard: multicad_core::commands::Prepared,
         resources: ProjectResources,
@@ -238,6 +240,8 @@ impl Application {
         match (pending, reply) {
             (
                 PendingFile::SymbolOpen {
+                    place,
+                    placement_intent,
                     local,
                     guard,
                     resources,
@@ -256,6 +260,15 @@ impl Application {
                 if p.resources != resources {
                     return Err("Project resources changed while loading the symbol library".into());
                 }
+                if place
+                    && (placement_intent.is_none()
+                        || p.sketch.library_placement_intent() != placement_intent)
+                {
+                    return Err(
+                        "This Library placement was cancelled or replaced; choose Place again"
+                            .into(),
+                    );
+                }
                 let definitions = multicad_core::symbols::definitions(&loaded.file.document)
                     .map_err(|e| e.to_string())?
                     .into_iter()
@@ -265,9 +278,16 @@ impl Application {
                     return Err("This project contains no authored symbol definitions".into());
                 }
                 p.sketch.set_symbol_library(definitions)?;
+                if place {
+                    p.sketch.place_loaded_library(&p.session, &p.resources)?;
+                }
                 self.file_action = None;
                 self.file_document = None;
-                self.message="Library loaded · select a definition and explicitly import or review its update".into();
+                self.message = if place {
+                    "Library loaded · place the component in the viewer, then Apply; choose a definition when the file contains several"
+                } else {
+                    "Library loaded · select a definition to Place, import or review its update"
+                }.into();
                 self.message_error = false;
             }
             (PendingFile::SymbolSave, FileResult::Saved(result)) => {

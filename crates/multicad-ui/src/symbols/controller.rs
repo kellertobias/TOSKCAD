@@ -50,6 +50,10 @@ pub struct SymbolController {
     library_search: Vec<super::installed::SearchIndex>,
     actions: VecDeque<SymbolAction>,
     generation: u64,
+    library_epoch: u64,
+    placement: crate::modeling::gizmo::Interaction,
+    placement_source: Option<(Arc<Scene>, multicad_core::document::Placement, EntityId)>,
+    placement_display: Option<Arc<Scene>>,
     pub(super) error: Option<String>,
 }
 impl SymbolController {
@@ -96,6 +100,12 @@ impl SymbolController {
     }
     pub fn active(&self) -> bool {
         self.form.is_some()
+    }
+    pub(crate) fn library_placement_intent(&self) -> Option<u64> {
+        self.form
+            .as_ref()
+            .filter(|form| matches!(form.operation, super::forms::Operation::Library))
+            .map(|_| self.library_epoch)
     }
     pub(crate) fn library_active(&self) -> bool {
         self.form
@@ -182,6 +192,10 @@ impl SymbolController {
             source: ContentHash::document(session.document())?,
             resources: resources.clone(),
         });
+        self.library_epoch = self
+            .library_epoch
+            .checked_add(1)
+            .ok_or("Library request limit reached")?;
         self.form = Some(form);
         self.candidate = None;
         self.handoff = None;
@@ -323,6 +337,7 @@ impl SymbolController {
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
         self.dirty()
+            && !self.placement.active()
             && self.current(session, resources).is_ok()
             && self.error.is_none()
             && self.candidate.as_ref().is_some_and(|c| {
@@ -372,6 +387,19 @@ impl SymbolController {
         if self.can_apply(session, resources) {
             return self.candidate.as_ref().and_then(|c| c.scene.clone());
         }
+        if self.placement.active()
+            && self.current(session, resources).is_ok()
+            && let Some(candidate) = &self.candidate
+            && !candidate.pending
+            && self.form.as_ref().map(|form| form.version) == Some(candidate.version)
+        {
+            return candidate.scene.clone();
+        }
+        if self.current(session, resources).is_ok()
+            && let Some(display) = &self.placement_display
+        {
+            return Some(display.clone());
+        }
         self.handoff
             .as_ref()
             .filter(|h| {
@@ -393,14 +421,110 @@ impl SymbolController {
             backend.cancel();
         }
         self.candidate = None;
+        self.placement_source = None;
+        self.placement_display = None;
         self.error = None;
     }
     pub fn cancel(&mut self) {
         self.invalidate();
         self.form = None;
+        self.placement = Default::default();
         self.scope = None;
         self.handoff = None;
         self.actions.clear();
+    }
+    pub fn place_loaded_library(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> Result<(), String> {
+        self.current(session, resources)?;
+        if self.library_placement_intent().is_none() {
+            return Err("Open Library before placing a listed component".into());
+        }
+        if self.library.len() == 1 {
+            let content = &self.library[0];
+            self.form
+                .as_mut()
+                .expect("open Library")
+                .place_library(session.document(), content)?;
+            self.preview(session, resources, Channel::Ui)?;
+        }
+        Ok(())
+    }
+    /// Display handles only edit the retained draft. Releasing requests native
+    /// validation; committing still requires the explicit Inspector Apply.
+    pub(crate) fn placement_viewport(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &Session,
+        resources: &ProjectResources,
+        viewport: crate::modeling::PlacementViewport<'_>,
+    ) -> Result<bool, String> {
+        if self
+            .form
+            .as_mut()
+            .and_then(Form::placement_pose_mut)
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.current(session, resources)?;
+        let parameters = session.parameters();
+        let form = self.form.as_mut().expect("placement form");
+        let source = form
+            .placement_pose_mut()
+            .expect("placement pose")
+            .numeric()?;
+        let gesture = match self.placement.show_with_help(
+            ui,
+            &viewport,
+            &source,
+            parameters,
+            "drag to adjust the component; release to validate; choose Apply to place",
+        ) {
+            Ok(gesture) => gesture,
+            Err(error) => {
+                self.placement = Default::default();
+                self.invalidate();
+                self.error = Some(error.clone());
+                return Err(error);
+            }
+        };
+        if gesture.started {
+            self.placement_source = self.candidate.as_ref().and_then(|candidate| {
+                let instance = *candidate.selected.first()?;
+                let multicad_core::document::EntityData::Instance { placement, .. } =
+                    &candidate.prepared.document().get(instance)?.data
+                else {
+                    return None;
+                };
+                Some((candidate.scene.clone()?, *placement, instance))
+            });
+        }
+        if let Some(value) = gesture.changed {
+            let pose = form.placement_pose_mut().expect("placement pose");
+            pose.set_numeric(&value, parameters)?;
+            let new_pose = multicad_core::model::RigidPose::from_placement(pose.resolve()?)
+                .map_err(|e| e.to_string())?;
+            form.changed();
+            let base = self.placement_source.take();
+            self.invalidate();
+            if let Some((scene, old_pose, instance)) = &base {
+                let delta = multicad_core::model::RigidPose::from_placement(*old_pose)
+                    .and_then(|old| old.inverse())
+                    .and_then(|old| old.then(new_pose))
+                    .map_err(|e| e.to_string())?;
+                self.placement_display = Some(scene.presentation_placement(*instance, delta)?);
+            }
+            self.placement_source = base;
+        }
+        if gesture.released && gesture.moved {
+            let display = self.placement_display.take();
+            self.preview(session, resources, Channel::Ui)?;
+            self.placement_display = display;
+        }
+        Ok(gesture.input_owned)
     }
     pub fn take_action(&mut self) -> Option<SymbolAction> {
         self.actions.pop_front()
@@ -415,6 +539,7 @@ impl SymbolController {
         let current = self.current(session, resources).is_ok();
         let pending = self.pending();
         let version = self.form.as_ref().map(|f| f.version);
+        let was_library = self.library_active();
         let (action, error) = super::inspector::show(
             self.form.as_mut()?,
             ui,
@@ -438,6 +563,15 @@ impl SymbolController {
         }
         if let Some(error) = error {
             self.error = Some(error);
+        }
+        if was_library
+            && self
+                .form
+                .as_mut()
+                .and_then(Form::placement_pose_mut)
+                .is_some()
+        {
+            let _ = self.preview(session, resources, Channel::Ui);
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);

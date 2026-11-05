@@ -24,6 +24,8 @@ pub(super) enum Operation {
     Import(SymbolDefinition),
     Place {
         definition: Option<EntityId>,
+        library: Option<SymbolDefinition>,
+        parent: Option<EntityId>,
         name: String,
         request: Option<Box<SymbolPlaceRequest>>,
         values: Overrides,
@@ -54,6 +56,7 @@ pub(super) struct Form {
     pub operation: Operation,
     pub version: u64,
     pub filter: String,
+    pub parent: Option<EntityId>,
 }
 impl Form {
     pub fn new(
@@ -93,6 +96,8 @@ impl Form {
             }
             SymbolTool::Place => Operation::Place {
                 definition: None,
+                library: None,
+                parent: selection.parent,
                 name: "Placed symbol".into(),
                 request: None,
                 values: Overrides::default(),
@@ -132,6 +137,7 @@ impl Form {
             operation,
             version: 0,
             filter: String::new(),
+            parent: selection.parent,
         };
         if tool == SymbolTool::Create {
             let constructor = selection.component.and_then(|id| {
@@ -258,6 +264,7 @@ impl Form {
                 },
                 version: 0,
                 filter: String::new(),
+                parent: None,
             });
         }
         let instance = symbols::read_instance(document, id).map_err(|e| e.to_string())?;
@@ -277,6 +284,7 @@ impl Form {
             },
             version: 0,
             filter: String::new(),
+            parent: None,
         })
     }
     pub fn changed(&mut self) {
@@ -290,6 +298,8 @@ impl Form {
         self.tool = SymbolTool::Place;
         self.operation = Operation::Place {
             definition: Some(id),
+            library: None,
+            parent: self.parent,
             name: definition.name.clone(),
             request: None,
             values: Overrides::new(&definition, &BTreeMap::new())?,
@@ -297,6 +307,43 @@ impl Form {
         };
         self.changed();
         Ok(())
+    }
+    pub fn place_library(
+        &mut self,
+        document: &Document,
+        definition: &SymbolDefinition,
+    ) -> Result<(), String> {
+        let id = symbols::library_placement_definition(document, definition)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(EntityId::new);
+        // Validate generic-placement eligibility before replacing the current form.
+        let request = SymbolPlaceRequest::from_definition(
+            id,
+            definition,
+            definition.name.clone(),
+            BTreeMap::new(),
+            Default::default(),
+        )
+        .map_err(|e| e.to_string())?;
+        let values = Overrides::new(definition, &BTreeMap::new())?;
+        self.tool = SymbolTool::Place;
+        self.operation = Operation::Place {
+            definition: Some(id),
+            library: Some(definition.clone()),
+            parent: self.parent,
+            name: definition.name.clone(),
+            request: Some(Box::new(request)),
+            values,
+            pose: PoseInputs::default(),
+        };
+        self.changed();
+        Ok(())
+    }
+    pub(super) fn placement_pose_mut(&mut self) -> Option<&mut PoseInputs> {
+        match &mut self.operation {
+            Operation::Place { pose, .. } => Some(pose),
+            _ => None,
+        }
     }
     pub fn import(&mut self, definition: SymbolDefinition) {
         self.tool = SymbolTool::Library;
@@ -368,14 +415,19 @@ impl Form {
             }
             Operation::Place {
                 definition,
+                library,
+                parent,
                 name,
                 request,
                 values,
                 pose,
             } => {
-                let id = definition.ok_or("Choose an embedded symbol definition")?;
-                let source =
-                    symbols::read_definition(session.document(), id).map_err(|e| e.to_string())?;
+                let id = definition.ok_or("Choose a symbol definition")?;
+                let source = match library.as_ref() {
+                    Some(content) => content.clone(),
+                    None => symbols::read_definition(session.document(), id)
+                        .map_err(|e| e.to_string())?,
+                };
                 let overrides = values.resolve(&source)?;
                 let placement = pose.resolve()?;
                 if let Some(request) = request {
@@ -384,9 +436,9 @@ impl Form {
                     request.placement = placement;
                 } else {
                     *request = Some(Box::new(
-                        SymbolPlaceRequest::new(
-                            session.document(),
+                        SymbolPlaceRequest::from_definition(
                             id,
+                            &source,
                             name.clone(),
                             overrides,
                             placement,
@@ -394,12 +446,13 @@ impl Form {
                         .map_err(|e| e.to_string())?,
                     ));
                 }
-                symbols::prepare_place(
-                    session,
-                    revision,
-                    actor,
-                    request.as_ref().expect("allocated placement"),
-                )
+                let request = request.as_ref().expect("allocated placement");
+                match library.as_ref() {
+                    Some(content) => symbols::prepare_library_place(
+                        session, revision, actor, content, request, *parent,
+                    ),
+                    None => symbols::prepare_place_in(session, revision, actor, request, *parent),
+                }
             }
             Operation::ArchitecturalEdit {
                 record,
@@ -464,5 +517,185 @@ impl Form {
             }
         };
         prepared.map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use multicad_core::{
+        commands::{Channel, Request},
+        document::{Entity, Mutation},
+        model::{self, PrimitiveParameters, PrimitiveRequest, length},
+        parameters::BoundExpression,
+    };
+    fn actor() -> Actor {
+        Actor::local(Channel::Ui)
+    }
+    fn definition() -> (SymbolDefinition, EntityId) {
+        let parameter = Entity::new(
+            "width",
+            EntityData::Parameter {
+                expression: "10 mm".into(),
+                unit: "mm".into(),
+                exposed: false,
+                inputs: vec![],
+            },
+        );
+        let width = parameter.id;
+        let document = Document::new("Author")
+            .unwrap()
+            .edited(&[Mutation::Insert(parameter)])
+            .unwrap();
+        let mut author = Session::new(document).unwrap();
+        let part = PrimitiveRequest::new(
+            "Source box",
+            PrimitiveParameters::Box {
+                size: [
+                    multicad_core::constraint_sketch::Dimension::Expression {
+                        expression: BoundExpression::bind(author.document(), "=$width", "mm", None)
+                            .unwrap(),
+                    },
+                    length(20.),
+                    length(30.),
+                ],
+                frame: Default::default(),
+            },
+        );
+        let prepared = model::prepare_primitive(&author, 0, actor(), &part).unwrap();
+        author.commit(prepared.prepared).unwrap();
+        let request = SymbolAuthorRequest::new(
+            "Reusable box",
+            part.body,
+            SymbolKind::Dynamic,
+            vec![width],
+            None,
+        );
+        let prepared =
+            symbols::prepare_author(&author, author.revision(), actor(), &request).unwrap();
+        author.commit(prepared.prepared).unwrap();
+        (
+            symbols::read_definition(author.document(), request.definition).unwrap(),
+            width,
+        )
+    }
+    #[test]
+    fn detached_library_placement_keeps_ids_through_pose_and_override_edits_and_commits_once_in_parent()
+     {
+        let (definition, width) = definition();
+        let parent = Entity::new("Assembly", EntityData::Assembly { instances: vec![] });
+        let parent_id = parent.id;
+        let document = Document::new("Receiver")
+            .unwrap()
+            .edited(&[Mutation::Insert(parent)])
+            .unwrap();
+        let mut session = Session::new(document.clone()).unwrap();
+        let mut form = Form::new(
+            SymbolTool::Library,
+            session.document(),
+            SymbolSelection {
+                parent: Some(parent_id),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        form.place_library(session.document(), &definition).unwrap();
+        let first = form.prepare(&session, actor()).unwrap();
+        let original = match &form.operation {
+            Operation::Place {
+                request: Some(request),
+                ..
+            } => (**request).clone(),
+            _ => panic!("placement"),
+        };
+        assert_eq!(session.document(), &document);
+        assert!(symbols::definitions(session.document()).unwrap().is_empty());
+        if let Operation::Place { values, pose, .. } = &mut form.operation {
+            values.0.get_mut(&width).unwrap().enabled = true;
+            values.0.get_mut(&width).unwrap().text = "14".into();
+            pose.translation[0] = "25".into();
+        }
+        form.changed();
+        let next = form.prepare(&session, actor()).unwrap();
+        let updated = match &form.operation {
+            Operation::Place {
+                request: Some(request),
+                ..
+            } => (**request).clone(),
+            _ => panic!("placement"),
+        };
+        assert_eq!(first.definition, next.definition);
+        assert_eq!(first.instances, next.instances);
+        assert_eq!(original.ids, updated.ids);
+        assert_eq!(original.record, updated.record);
+        assert_eq!(original.wrapper, updated.wrapper);
+        assert_eq!(original.member, updated.member);
+        assert_eq!(updated.placement.translation_mm, [25., 0., 0.]);
+        assert_eq!(updated.overrides[&width].value, 14.);
+        session.commit(next.prepared).unwrap();
+        assert_eq!(session.revision(), 1);
+        assert_eq!(
+            symbols::read_definition(session.document(), updated.definition).unwrap(),
+            definition
+        );
+        let placed = symbols::read_instance(session.document(), updated.record).unwrap();
+        assert_eq!(placed.overrides[&width].value, 14.);
+        assert_eq!(
+            multicad_core::hierarchy::Index::new(session.document())
+                .unwrap()
+                .parent(updated.instance)
+                .unwrap(),
+            Some(parent_id)
+        );
+        session.undo(1, actor()).unwrap();
+        assert_eq!(session.document(), &document);
+        assert!(!session.can_undo());
+        session.redo(2, actor()).unwrap();
+        assert!(symbols::read_instance(session.document(), updated.record).is_ok());
+    }
+    #[test]
+    fn detached_place_cancel_is_neutral_and_exact_embedded_pin_reuses_definition() {
+        let (definition, _) = definition();
+        let mut session = Session::new(Document::new("Receiver").unwrap()).unwrap();
+        let before = session.document().clone();
+        let mut form =
+            Form::new(SymbolTool::Library, session.document(), Default::default()).unwrap();
+        form.place_library(session.document(), &definition).unwrap();
+        let prepared = form.prepare(&session, actor()).unwrap();
+        drop(prepared);
+        drop(form);
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), 0);
+        assert!(!session.can_undo());
+        session
+            .commit(
+                symbols::prepare_import(&session, 0, actor(), &definition)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let embedded = symbols::definitions(session.document()).unwrap()[0].0;
+        let mut form =
+            Form::new(SymbolTool::Library, session.document(), Default::default()).unwrap();
+        form.place_library(session.document(), &definition).unwrap();
+        let prepared = form.prepare(&session, actor()).unwrap();
+        assert_eq!(prepared.definition, embedded);
+        session.commit(prepared.prepared).unwrap();
+        assert_eq!(symbols::definitions(session.document()).unwrap().len(), 1);
+        // A stale review cannot be committed after another owner edit.
+        form.place_library(session.document(), &definition).unwrap();
+        let stale = form.prepare(&session, actor()).unwrap();
+        let edit = session
+            .prepare(Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Owner edit".into(),
+                edits: vec![Mutation::RenameDocument("Changed receiver".into())],
+            })
+            .unwrap();
+        session.commit(edit).unwrap();
+        let changed = session.document().clone();
+        assert!(session.commit(stale.prepared).is_err());
+        assert_eq!(session.document(), &changed);
     }
 }

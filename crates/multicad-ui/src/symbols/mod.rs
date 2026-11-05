@@ -35,6 +35,7 @@ pub struct SymbolSelection {
     pub component: Option<EntityId>,
     pub instance: Option<EntityId>,
     pub plan_sketch: Option<EntityId>,
+    pub parent: Option<EntityId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SymbolAction {
@@ -44,6 +45,7 @@ pub enum SymbolAction {
     },
     ImportLibrary,
     OpenInstalled(std::path::PathBuf),
+    OpenInstalledForPlace(std::path::PathBuf),
     SaveDefinition(EntityId),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

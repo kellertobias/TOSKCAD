@@ -636,26 +636,8 @@ impl Default for Registry {
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     tab("Other", &["fdm-aid", "fdm-bridge", "fdm-support"]),
-                    RibbonTab {
-                        title: "Relationships",
-                        tools: crate::assembly::AssemblyTool::ALL
-                            .into_iter()
-                            .filter(|tool| !tool.motion_workspace())
-                            .map(|tool| tool.id())
-                            .chain(["align"])
-                            .collect(),
-                        requires_active_sketch: false,
-                    },
-                    tab(
-                        "Mechanical",
-                        &[
-                            "thread",
-                            "gear",
-                            "mechanical-part",
-                            "library",
-                            "place-component",
-                        ],
-                    ),
+                    tab("Relationships", &["align"]),
+                    tab("Mechanical", &["thread", "gear", "mechanical-part"]),
                 ],
             },
             Workspace {
@@ -919,6 +901,48 @@ impl Registry {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    #[test]
+    fn assembly_and_library_compatibility_commands_are_not_specialist_ribbon_homes() {
+        let registry = Registry::default();
+        for tab in &registry.workspace(Mode::Model).tabs {
+            for id in ["create-assembly", "place-component"] {
+                assert!(
+                    !tab.tools.contains(&id),
+                    "{id} belongs to tree/global Library, not {}",
+                    tab.title
+                );
+            }
+        }
+        assert!(
+            !registry
+                .workspace(Mode::Model)
+                .tabs
+                .iter()
+                .find(|tab| tab.title == "Mechanical")
+                .unwrap()
+                .tools
+                .contains(&"library")
+        );
+        assert_eq!(
+            registry.tool("create-assembly").unwrap().action,
+            Command::Assembly(crate::assembly::AssemblyTool::CreateAssembly)
+        );
+        assert_eq!(
+            registry.tool("place-component").unwrap().action,
+            Command::Assembly(crate::assembly::AssemblyTool::Place)
+        );
+        assert_eq!(
+            registry.tool("library").unwrap().action,
+            Command::Extension("library")
+        );
+        let motion = registry.workspace(Mode::Motion);
+        for tool in crate::assembly::AssemblyTool::ALL
+            .into_iter()
+            .filter(|tool| tool.motion_workspace())
+        {
+            assert!(motion.tabs.iter().any(|tab| tab.tools.contains(&tool.id())));
+        }
+    }
     #[test]
     fn associative_transfer_is_discoverable_in_model_common() {
         let registry = Registry::default();

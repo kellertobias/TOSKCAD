@@ -39,8 +39,11 @@ impl Application {
             }
             return;
         }
-        if let SymbolAction::OpenInstalled(path) = action {
-            if let Err(error) = self.load_symbol_library(path) {
+        if let SymbolAction::OpenInstalled(path) | SymbolAction::OpenInstalledForPlace(path) =
+            &action
+        {
+            let place = matches!(action, SymbolAction::OpenInstalledForPlace(_));
+            if let Err(error) = self.load_symbol_library_intent(path.clone(), place) {
                 self.message = error;
                 self.message_error = true;
             }
@@ -49,7 +52,9 @@ impl Application {
         self.file_action = Some(match action {
             SymbolAction::ImportLibrary => FileAction::SymbolOpen,
             SymbolAction::SaveDefinition(id) => FileAction::SymbolSave(id),
-            SymbolAction::OpenInstalled(_) | SymbolAction::DrawConstruction { .. } => {
+            SymbolAction::OpenInstalled(_)
+            | SymbolAction::OpenInstalledForPlace(_)
+            | SymbolAction::DrawConstruction { .. } => {
                 unreachable!("handled above")
             }
         });
@@ -87,11 +92,23 @@ impl Application {
         Ok(multicad_core::project_path::project_file_name(&name))
     }
     pub(super) fn load_symbol_library(&mut self, path: PathBuf) -> Result<(), String> {
+        self.load_symbol_library_intent(path, false)
+    }
+    fn load_symbol_library_intent(&mut self, path: PathBuf, place: bool) -> Result<(), String> {
         if self.file_busy() {
             return Err("A file operation is still running".into());
         }
         let p = self.current();
         let local = p.local_id;
+        let placement_intent = if place {
+            Some(
+                p.sketch
+                    .library_placement_intent()
+                    .ok_or("Open Library before choosing Place")?,
+            )
+        } else {
+            None
+        };
         let guard = p
             .session
             .prepare(Request {
@@ -106,6 +123,8 @@ impl Application {
         self.pending_files.insert(
             id,
             PendingFile::SymbolOpen {
+                place,
+                placement_intent,
                 local,
                 guard,
                 resources,

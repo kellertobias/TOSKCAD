@@ -374,7 +374,7 @@ impl ModelTree {
             revision: session.revision(),
             kind,
             name: match kind {
-                ContainerKind::Component => "Component",
+                ContainerKind::Component => "Assembly",
                 ContainerKind::Group => "Group",
             }
             .into(),
@@ -541,23 +541,25 @@ impl ModelTree {
         let mut toggle = None;
         ui.horizontal(|ui| {
             ui.strong("Model");
+            if ui
+                .add_enabled(mutations_enabled, egui::Button::new("Create Assembly").small())
+                .on_hover_text("Create an assembly in the active modeling scope; review its parent in the Inspector")
+                .clicked()
+            {
+                create = Some((ContainerKind::Component, session.document().hierarchy().active_component));
+            }
             let response = ui
                 .add_enabled_ui(mutations_enabled, |ui| {
-                    icons::compact_button(ui, Icon::New, "Create component or group")
+                    icons::compact_button(ui, Icon::New, "Create group")
                 })
                 .inner;
             egui::Popup::menu(&response).show(|ui| {
-                for (kind, label) in [
-                    (ContainerKind::Component, "New component"),
-                    (ContainerKind::Group, "New group"),
-                ] {
-                    if ui
-                        .add_enabled(mutations_enabled, egui::Button::new(label))
-                        .clicked()
-                    {
-                        create = Some((kind, session.document().hierarchy().active_component));
-                        ui.close();
-                    }
+                if ui
+                    .add_enabled(mutations_enabled, egui::Button::new("New group"))
+                    .clicked()
+                {
+                    create = Some((ContainerKind::Group, session.document().hierarchy().active_component));
+                    ui.close();
                 }
             });
         });
@@ -683,7 +685,7 @@ impl ModelTree {
                                         ui.close();
                                     }
                                     if row.kind.container() {
-                                        for (kind, label) in [(ContainerKind::Component, "New child component"), (ContainerKind::Group, "New child group")] {
+                                        for (kind, label) in [(ContainerKind::Component, "Create Assembly"), (ContainerKind::Group, "New child group")] {
                                             if ui.button(label).clicked() {
                                                 create = Some((kind, if row.kind == NodeKind::Root { None } else { Some(row.id) }));
                                                 ui.close();
@@ -765,7 +767,7 @@ impl ModelTree {
             ui.add_enabled_ui(enabled, |ui| {
                 match tool {
                     Tool::Create { kind, name, parent, .. } => {
-                        ui.strong(match kind { ContainerKind::Component => "New component", ContainerKind::Group => "New group" });
+                        ui.strong(match kind { ContainerKind::Component => "Create Assembly", ContainerKind::Group => "New group" });
                         ui.label("Name");
                         ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY)).on_hover_text("Name for the new model container");
                         parent_choice(ui, "create-parent", parent, &view.destinations);
@@ -1379,6 +1381,277 @@ mod tests {
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), 0);
     }
+    /// Paint the production tree and Inspector together: every create action
+    /// below is dispatched by a real pointer event, not by opening its tool.
+    struct AssemblyTreeHarness {
+        context: egui::Context,
+        tree: ModelTree,
+        session: Session,
+        selected: BTreeSet<EntityId>,
+    }
+    impl AssemblyTreeHarness {
+        fn new(session: Session) -> Self {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            Self {
+                context,
+                tree: ModelTree::default(),
+                session,
+                selected: BTreeSet::new(),
+            }
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.context.run_ui(
+                egui::RawInput {
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100., 700.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Panel::left("assembly-tree")
+                        .exact_size(225.)
+                        .show(ui, |ui| {
+                            let event = self.tree.show(
+                                ui,
+                                &mut self.session,
+                                &self.selected,
+                                TreeOptions::default(),
+                            );
+                            assert!(event.error.is_none(), "{:?}", event.error);
+                            if let Some(selected) = event.selection {
+                                self.selected = selected;
+                            }
+                        });
+                    egui::Panel::right("assembly-inspector")
+                        .exact_size(250.)
+                        .show(ui, |ui| {
+                            let event = self.tree.inspector(
+                                ui,
+                                &mut self.session,
+                                &self.selected,
+                                TreeOptions::default(),
+                            );
+                            assert!(event.error.is_none(), "{:?}", event.error);
+                            if let Some(selected) = event.selection {
+                                self.selected = selected;
+                            }
+                        });
+                    egui::CentralPanel::default().show(ui, |_| {});
+                },
+            )
+        }
+        fn bounds(&mut self, label: &str, last: bool) -> egui::Rect {
+            self.frame(vec![]).drop_without_applying_deltas();
+            let output = self.frame(vec![]);
+            fn painted(shape: &egui::Shape, label: &str, matches: &mut Vec<egui::Rect>) {
+                match shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        matches.push(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            painted(shape, label, matches);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut matches = vec![];
+            for shape in &output.shapes {
+                painted(&shape.shape, label, &mut matches);
+            }
+            let rect = if let Some(rect) = if last {
+                matches.last()
+            } else {
+                matches.first()
+            } {
+                *rect
+            } else {
+                let ax = output.platform_output.accesskit_update.as_ref().unwrap();
+                let mut matches = ax
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.label() == Some(label));
+                let (_, node) = if last {
+                    matches.next_back()
+                } else {
+                    matches.next()
+                }
+                .unwrap_or_else(|| panic!("Missing painted {label}"));
+                let bounds = node.bounds().unwrap();
+                egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                )
+            };
+            output.drop_without_applying_deltas();
+            rect
+        }
+        fn pointer(&mut self, pos: egui::Pos2, button: egui::PointerButton) {
+            for pressed in [true, false] {
+                self.frame(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ])
+                .drop_without_applying_deltas();
+            }
+        }
+        fn click(&mut self, label: &str, last: bool) {
+            let pos = self.bounds(label, last).center();
+            self.pointer(pos, egui::PointerButton::Primary);
+        }
+        fn draft_parent(&self) -> Option<EntityId> {
+            match self.tree.tool.as_ref().expect("create form") {
+                Tool::Create {
+                    kind: ContainerKind::Component,
+                    name,
+                    parent,
+                    ..
+                } => {
+                    assert_eq!(name, "Assembly");
+                    *parent
+                }
+                _ => panic!("expected canonical assembly create"),
+            }
+        }
+    }
+    #[test]
+    fn painted_create_assembly_preserves_active_scope_cancel_root_choice_history_and_reopen() {
+        use multicad_core::project_file::{self, FileLimits, ProjectFile};
+        let (session, component, _, _) = fixture();
+        let before = session.document().clone();
+        let mut h = AssemblyTreeHarness::new(session);
+        let header = h.bounds("Create Assembly", false);
+        assert!(
+            header.left() >= 0. && header.right() <= 225.,
+            "assembly action must remain in the tree"
+        );
+        h.click("Create Assembly", false);
+        assert_eq!(h.draft_parent(), Some(component));
+        assert_eq!(h.session.document(), &before);
+        h.click("Cancel", false);
+        assert!(!h.tree.tool_active());
+        assert_eq!(h.session.revision(), 0);
+        assert_eq!(h.session.document(), &before);
+
+        h.click("Create Assembly", false);
+        h.click("Apply", false);
+        assert_eq!(h.session.revision(), 1);
+        let child = *h.selected.iter().next().unwrap();
+        assert!(matches!(
+            h.session.document().get(child).unwrap().data,
+            EntityData::Assembly { .. }
+        ));
+        assert_eq!(
+            Index::new(h.session.document())
+                .unwrap()
+                .parent(child)
+                .unwrap(),
+            Some(component)
+        );
+        assert_eq!(
+            h.session.document().hierarchy().active_component,
+            Some(component)
+        );
+        let applied = h.session.document().clone();
+        h.session.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(h.session.document(), &before);
+        assert!(!h.session.can_undo());
+        h.session.redo(2, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(h.session.document(), &applied);
+        assert!(h.session.document().get(child).is_some());
+
+        h.click("Create Assembly", false);
+        h.click("Workshop / Cabinet", false);
+        h.click("Workshop (root)", true);
+        assert_eq!(h.draft_parent(), None);
+        h.click("Apply", false);
+        assert_eq!(h.session.revision(), 4);
+        let root_child = *h.selected.iter().next().unwrap();
+        assert_ne!(root_child, child);
+        assert_eq!(
+            Index::new(h.session.document())
+                .unwrap()
+                .parent(root_child)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            h.session.document().hierarchy().active_component,
+            Some(component)
+        );
+        let final_document = h.session.document().clone();
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(final_document.clone()).unwrap(),
+            &mut bytes,
+            FileLimits::default(),
+        )
+        .unwrap();
+        let opened = project_file::read(
+            &mut bytes.as_slice(),
+            FileLimits::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let reopened = Session::new(opened.project.document).unwrap();
+        assert_eq!(reopened.document(), &final_document);
+        assert_eq!(reopened.revision(), 0);
+        assert!(!reopened.can_undo());
+        assert!(!reopened.can_redo());
+        assert!(reopened.document().get(child).is_some());
+        assert!(reopened.document().get(root_child).is_some());
+    }
+    #[test]
+    fn painted_create_assembly_context_parent_and_stale_revision_refuse_partial_creation() {
+        let (session, _, group, _) = fixture();
+        let mut h = AssemblyTreeHarness::new(session);
+        let group_pos = h.bounds("Panels", false).center();
+        h.pointer(group_pos, egui::PointerButton::Secondary);
+        h.click("Create Assembly", true);
+        assert_eq!(h.draft_parent(), Some(group));
+        h.click("Apply", false);
+        let created = *h.selected.iter().next().unwrap();
+        assert_eq!(
+            Index::new(h.session.document())
+                .unwrap()
+                .parent(created)
+                .unwrap(),
+            Some(group)
+        );
+        h.click("Create Assembly", false);
+        let pending = h
+            .session
+            .prepare(Request {
+                expected_revision: h.session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Concurrent owner edit".into(),
+                edits: vec![Mutation::RenameDocument("Updated workshop".into())],
+            })
+            .unwrap();
+        h.session.commit(pending).unwrap();
+        let before = h.session.document().clone();
+        let revision = h.session.revision();
+        h.bounds(
+            "The document changed. Cancel and reopen this tool to review the current state.",
+            false,
+        );
+        h.click("Apply", false);
+        assert_eq!(h.session.revision(), revision);
+        assert_eq!(h.session.document(), &before);
+        h.click("Cancel", false);
+        assert!(!h.tree.tool_active());
+        assert_eq!(h.session.document(), &before);
+    }
     struct TargetTreeHarness {
         context: egui::Context,
         tree: ModelTree,
@@ -1527,7 +1800,14 @@ mod tests {
             h.session.document().hierarchy().active_component,
             Some(component)
         );
-        let create = h.bounds("Create component or group").center();
+        let assembly = h.bounds("Create Assembly").center();
+        h.click(
+            assembly,
+            egui::Modifiers::NONE,
+            egui::PointerButton::Primary,
+        );
+        assert!(!h.tree.tool_active());
+        let create = h.bounds("Create group").center();
         h.click(create, egui::Modifiers::NONE, egui::PointerButton::Primary);
         assert!(!h.tree.tool_active());
         let body = h.bounds("Side");

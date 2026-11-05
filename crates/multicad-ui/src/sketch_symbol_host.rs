@@ -10,6 +10,26 @@ pub(super) struct ArchitectureSelectionCache {
 }
 
 impl SketchEditor {
+    pub(crate) fn hierarchy_tool_active(&self) -> bool {
+        self.tree.tool_active()
+    }
+    pub(crate) fn cancel_hierarchy_tool(&mut self) {
+        self.tree.cancel_tool();
+        self.message = "Assembly draft discarded · document unchanged".into();
+    }
+    pub(crate) fn begin_create_assembly(&mut self, session: &Session) -> Result<(), String> {
+        if self.has_pending_edits() || self.symbols.active() || self.measurement.active() {
+            return Err("Apply or cancel the active tool before creating an assembly".into());
+        }
+        self.finish()?;
+        self.tree.begin_create(
+            session,
+            multicad_core::hierarchy::ContainerKind::Component,
+            session.document().hierarchy().active_component,
+        );
+        self.message = "Create Assembly · review the name and parent in the Inspector".into();
+        Ok(())
+    }
     pub fn set_installed_symbol_library(
         &mut self,
         entries: std::sync::Arc<Vec<crate::library::LibraryEntry>>,
@@ -66,6 +86,16 @@ impl SketchEditor {
         definitions: Vec<multicad_core::symbols::SymbolDefinition>,
     ) -> Result<(), String> {
         self.symbols.set_library_snapshot(definitions)
+    }
+    pub(crate) fn library_placement_intent(&self) -> Option<u64> {
+        self.symbols.library_placement_intent()
+    }
+    pub fn place_loaded_library(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> Result<(), String> {
+        self.symbols.place_loaded_library(session, resources)
     }
     pub fn take_symbol_action(&mut self) -> Option<SymbolAction> {
         self.symbols.take_action()
@@ -125,6 +155,7 @@ impl SketchEditor {
                 component,
                 instance,
                 plan_sketch,
+                parent: session.document().hierarchy().active_component,
             },
             channel,
         )?;

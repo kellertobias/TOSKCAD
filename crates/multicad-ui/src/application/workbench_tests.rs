@@ -333,3 +333,61 @@ fn legacy_fdm_recall_and_type_specific_aliases_route_to_other_without_source_edi
         assert_eq!(app.current().session.document(), &before);
     }
 }
+
+#[test]
+fn compatibility_placement_uses_global_library_on_each_model_workbench_without_edits() {
+    for title in ["Common", "Wood", "Mechanical"] {
+        let mut app = app();
+        app.mode = Mode::Model;
+        let tab = tab_index(&app, Mode::Model, title);
+        app.tab = tab;
+        let before = app.current().session.document().clone();
+        app.invoke(action(&app, "place-component"), &[], Channel::CommandLine)
+            .unwrap();
+        assert!(app.current().sketch.symbol_library_active(), "{title}");
+        assert!(!app.current().sketch.hierarchy_tool_active());
+        assert!(
+            !app.current().sketch.has_pending_edits(),
+            "Library is source neutral"
+        );
+        assert_eq!((app.mode, app.tab), (Mode::Model, tab));
+        assert_eq!(app.current().session.document(), &before);
+        assert!(app.enabled(Command::Discard));
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert!(!app.current().sketch.symbol_active());
+        assert_eq!((app.mode, app.tab), (Mode::Model, tab));
+        assert_eq!(app.current().session.document(), &before);
+        assert_eq!(app.current().session.revision(), 0);
+        assert!(!app.current().session.can_undo());
+    }
+}
+#[test]
+fn compatibility_create_assembly_uses_same_tree_inspector_and_global_discard_on_each_workbench() {
+    for title in ["Common", "Wood", "Mechanical"] {
+        let mut app = app();
+        app.mode = Mode::Model;
+        let tab = tab_index(&app, Mode::Model, title);
+        app.tab = tab;
+        let before = app.current().session.document().clone();
+        app.invoke(action(&app, "create-assembly"), &[], Channel::CommandLine)
+            .unwrap();
+        assert!(app.current().sketch.hierarchy_tool_active(), "{title}");
+        assert!(
+            !app.current().sketch.model_active(),
+            "no parallel AssemblyController form"
+        );
+        assert!(app.current().sketch.has_pending_edits());
+        assert!(!app.enabled(Command::Parameter));
+        assert!(app.invoke(Command::Parameter, &[], Channel::Ui).is_err());
+        assert!(app.enabled(Command::Discard));
+        assert_eq!((app.mode, app.tab), (Mode::Model, tab));
+        assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert!(!app.current().sketch.hierarchy_tool_active());
+        assert!(!app.current().sketch.has_pending_edits());
+        assert_eq!((app.mode, app.tab), (Mode::Model, tab));
+        assert_eq!(app.current().session.document(), &before);
+        assert_eq!(app.current().session.revision(), 0);
+        assert!(!app.current().session.can_undo());
+    }
+}

@@ -24,7 +24,7 @@ impl Installed {
     }
     pub fn show(&mut self, ui: &mut egui::Ui, query: &SearchQuery) -> Option<SymbolAction> {
         ui.strong("Installation Library");
-        ui.small("Included definitions and files listed with Add to Library. Load a file, then explicitly import and place its pinned definitions.");
+        ui.small("Included definitions and files listed with Add to Library. Place a pinned definition directly, or load a file to inspect and choose its definitions.");
         let families = self
             .entries
             .iter()
@@ -60,13 +60,18 @@ impl Installed {
                 if !entry.description.is_empty() { ui.add(egui::Label::new(egui::RichText::new(&entry.description).small()).truncate()).on_hover_text(&entry.description); }
                 ui.small(entry.path.display().to_string());
                 search.show_cards(ui, query, &self.family);
-                if let Some(problem) = &entry.problem {
+                let unavailable = entry.problem.as_deref().or_else(|| (entry.symbol_definitions == 0).then_some("No reusable definitions. Open this file and use Create symbol before placing it here."));
+                if let Some(problem) = unavailable {
                     ui.colored_label(egui::Color32::LIGHT_RED, problem);
-                } else if entry.symbol_definitions == 0 {
-                    ui.small("No reusable definitions. Open this file and use Create symbol before placing it here.");
-                } else if ui.button("Load definitions").clicked() {
-                    action = Some(SymbolAction::OpenInstalled(entry.path.clone()));
                 }
+                ui.horizontal_wrapped(|ui| {
+                    let place = ui.add_enabled(unavailable.is_none(), egui::Button::new("Place"));
+                    let place = if let Some(reason) = unavailable { place.on_disabled_hover_text(reason) } else { place.on_hover_text("Choose this file's pinned definition and placement; Preview and Apply embed and place it together") };
+                    if place.clicked() { action = Some(SymbolAction::OpenInstalledForPlace(entry.path.clone())); }
+                    if ui.add_enabled(unavailable.is_none(), egui::Button::new("Load definitions")).clicked() {
+                        action = Some(SymbolAction::OpenInstalled(entry.path.clone()));
+                    }
+                });
             }));
         }
         if shown == 0 {

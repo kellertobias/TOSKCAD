@@ -281,7 +281,9 @@ impl Application {
                 .and_then(|w| w.remove(id)),
             Some(SidebarAction::UseLibraryEntry(path)) => {
                 self.load_symbol_library(path).map(|()| {
-                    self.message = "Reading library symbols · then use Sketch › Symbols to import or review an update".into();
+                    self.message =
+                        "Reading library symbols · open Library to Place or review an update"
+                            .into();
                 })
             }
         };

@@ -13,6 +13,7 @@ use multicad_core::{
 use std::collections::{BTreeMap, BTreeSet};
 enum Next {
     Place(EntityId),
+    PlaceLibrary(Box<SymbolDefinition>),
     Import(Box<SymbolDefinition>),
     Update(EntityId),
     Replacement(Box<SymbolDefinition>),
@@ -71,7 +72,7 @@ pub(super) fn show(
                 });
             }
             if shown==0{ui.label("No matching embedded symbols");}
-            ui.separator();ui.strong("Loaded library · import before placing");
+            ui.separator();ui.strong("Loaded library · choose a definition to place");
             let mut shown=0;
             for ((definition,pin),search) in library.iter().zip(catalogue.library_pins).zip(catalogue.library_search) {
                 if !search.matches(&filter, ""){continue;}
@@ -80,7 +81,15 @@ pub(super) fn show(
                     summary(ui,definition);
                     search.show_cards(ui,&filter,"");
                     let embedded=definitions.iter().any(|(id,def)|def.symbol==definition.symbol&&catalogue.embedded_pins.get(id)==Some(pin));
-                    if embedded {ui.small("This exact revision is embedded");}else if ui.button("Import definition").on_hover_text("Preview and explicitly embed this immutable definition before placing it").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
+                    if embedded {ui.small("This exact revision is embedded");}
+                    let unavailable = if super::architecture::role(definition).is_some() {
+                        Some("Architectural construction needs a path and level. Import explicitly, then Draw wall or Draw fence.".to_string())
+                    } else {
+                        symbols::library_placement_definition(document, definition).err().map(|e| e.to_string())
+                    };
+                    if let Some(reason) = &unavailable { ui.colored_label(egui::Color32::LIGHT_RED, reason); }
+                    if ui.add_enabled(unavailable.is_none(), egui::Button::new("Place")).on_hover_text("Preview and Apply embed this exact pin and place one occurrence in one transaction").clicked(){next=Some(Next::PlaceLibrary(Box::new(definition.clone())));}
+                    if !embedded && ui.button("Import definition").on_hover_text("Explicitly embed this immutable definition without placing an occurrence").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
                 });
             }
             if shown==0{ui.label("No matching library symbols loaded");}
@@ -153,15 +162,25 @@ pub(super) fn show(
             summary(ui,definition);
             ui.label("Preview and Apply to embed this immutable revision. Then use Library to place it.");
         }
-        Operation::Place{definition,name,values,pose,..}=>{
-            let entries=definitions.iter().filter(|(_,def)|super::architecture::role(def).is_none()).map(|(id,def)|(*id,format!("{} · revision {}",def.name,def.revision))).collect::<Vec<_>>();
-            if entity_choice(ui,"symbol-place-definition","Embedded definition",definition,&entries,false)&&let Some(id)=definition{next=Some(Next::Place(*id));}
-            if let Some((_,source))=definitions.iter().find(|(id,_)|Some(*id)==*definition){
+        Operation::Place{definition,library,parent,name,values,pose,..}=>{
+            if library.is_none() {
+                let entries=definitions.iter().filter(|(_,def)|super::architecture::role(def).is_none()).map(|(id,def)|(*id,format!("{} · revision {}",def.name,def.revision))).collect::<Vec<_>>();
+                if entity_choice(ui,"symbol-place-definition","Embedded definition",definition,&entries,false)&&let Some(id)=definition{next=Some(Next::Place(*id));}
+            } else { ui.small("Library pin · embedded together with this occurrence on Apply"); }
+            let source = library.as_ref().or_else(|| definitions.iter().find(|(id,_)|Some(*id)==*definition).map(|(_,source)| source));
+            if let Some(source)=source{
                 summary(ui,source);
+                let parent_label = parent.map_or_else(|| format!("{} (root)", document.name()), |id| {
+                    if id != document.id() && document.get(id).is_none() { return "Missing parent · reopen placement".into(); }
+                    multicad_core::hierarchy::Index::new(document)
+                        .map(|index| crate::model_tree::container_path(document, &index, Some(id)))
+                        .unwrap_or_else(|_| "Unavailable parent".into())
+                });
+                ui.label(format!("Parent: {parent_label}"));
                 changed|=fields::text(ui,"Instance name",name,"Name for this occurrence; the source definition and other instances are unchanged");
                 changed|=values.show(ui,source);
                 changed|=pose.show(ui);
-            }else{ui.small("Choose an embedded definition. Import a library file through Library first.");}
+            }else{ui.small("Choose an embedded definition or use Place on a Library card.");}
         }
         Operation::ArchitecturalEdit{values,..}=>{
             ui.label("Pinned architectural construction");
@@ -229,6 +248,7 @@ pub(super) fn show(
     if let Some(next) = next {
         let result = match next {
             Next::Place(id) => form.place(document, id),
+            Next::PlaceLibrary(definition) => form.place_library(document, &definition),
             Next::AuthorConstruction(id) => form.author_construction(document, id),
             Next::Import(definition) => {
                 form.import(*definition);

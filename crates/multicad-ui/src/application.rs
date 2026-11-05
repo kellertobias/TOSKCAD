@@ -686,7 +686,8 @@ impl Application {
         {
             return Err(tool.usage().into());
         }
-        if self.current().sketch.model_interaction_active()
+        if (self.current().sketch.model_interaction_active()
+            || self.current().sketch.hierarchy_tool_active())
             && matches!(
                 command,
                 Command::Parameter
@@ -923,6 +924,16 @@ impl Application {
                 );
             }
             Command::Discard => {
+                if self.current().sketch.hierarchy_tool_active() {
+                    self.current_mut().sketch.cancel_hierarchy_tool();
+                    self.message = "Assembly draft discarded · document unchanged".into();
+                    return Ok(());
+                }
+                if self.current().sketch.symbol_library_active() {
+                    self.current_mut().sketch.close_symbol_browser();
+                    self.message = "Symbol library closed · document unchanged".into();
+                    return Ok(());
+                }
                 if self.current().sketch.material_library().dirty() {
                     let p = self.current_mut();
                     p.sketch.material_library_mut().discard(&p.session);
@@ -1371,6 +1382,26 @@ impl Application {
                     wood_preset.map_or(tool.label(), |preset| preset.label())
                 );
             }
+            Command::Assembly(crate::assembly::AssemblyTool::Place) => {
+                // Retained command ID shares the global Library home.
+                self.invoke(Command::Extension("library"), args, channel)?;
+            }
+            Command::Assembly(crate::assembly::AssemblyTool::CreateAssembly) => {
+                if self.current().editor.dirty() {
+                    return Err(
+                        "Apply or discard parameter edits before creating an assembly".into(),
+                    );
+                }
+                if !matches!(self.mode, Mode::Sketch | Mode::Model | Mode::Motion) {
+                    return Err("Open Model or Motion before creating an assembly".into());
+                }
+                let p = self.current_mut();
+                p.sketch.begin_create_assembly(&p.session)?;
+                self.tab = self.workbench_tab(Mode::Model, command);
+                self.mode = Mode::Model;
+                self.message =
+                    "Create Assembly · review the name and parent in the Inspector".into();
+            }
             Command::Assembly(tool) => {
                 if self.current().editor.dirty() {
                     return Err(
@@ -1562,6 +1593,12 @@ impl Application {
                 .sketch
                 .material_library()
                 .can_apply(&self.current().session, &self.current().resources),
+            Command::Discard
+                if self.current().sketch.hierarchy_tool_active()
+                    || self.current().sketch.symbol_library_active() =>
+            {
+                true
+            }
             Command::Discard if self.current().sketch.material_library().dirty() => true,
             Command::Preview if self.current().sketch.material_library().dirty() => self
                 .current()
@@ -1591,10 +1628,18 @@ impl Application {
                     && self.current().sketch.has_transfer_backend()
                     && self.current().sketch.modeling_available()
             }
-            Command::Mode(mode) if self.current().sketch.model_interaction_active() => {
+            Command::Mode(mode)
+                if self.current().sketch.model_interaction_active()
+                    || self.current().sketch.hierarchy_tool_active() =>
+            {
                 matches!(mode, Mode::Model | Mode::Motion)
             }
-            Command::Parameter if self.current().sketch.model_interaction_active() => false,
+            Command::Parameter
+                if self.current().sketch.model_interaction_active()
+                    || self.current().sketch.hierarchy_tool_active() =>
+            {
+                false
+            }
             Command::Undo => self.current().session.can_undo() && !pending(),
             Command::Redo => self.current().session.can_redo() && !pending(),
             Command::Save | Command::SaveAs | Command::RecoverySnapshot => {
@@ -4028,9 +4073,16 @@ mod tests {
             let command = Command::Assembly(tool);
             assert!(app.enabled(command));
             app.invoke(command, &[], Channel::CommandLine).unwrap();
-            assert!(app.current().sketch.model_active());
-            assert_eq!(app.current().sketch.has_pending_edits(), tool.authoring());
-            assert!(!app.enabled(Command::Parameter));
+            assert!(
+                app.current().sketch.model_active() || app.current().sketch.hierarchy_tool_active()
+            );
+            assert_eq!(
+                app.current().sketch.has_pending_edits(),
+                tool.authoring() && tool != crate::assembly::AssemblyTool::Place
+            );
+            if tool != crate::assembly::AssemblyTool::Place {
+                assert!(!app.enabled(Command::Parameter));
+            }
             app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
             assert_eq!(app.current().session.document(), &before);
         }

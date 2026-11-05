@@ -1,6 +1,6 @@
 //! Display handles produce typed rigid-placement controls. They never edit a
 //! mesh or commit a document; the controller requires a complete native receipt.
-pub(super) mod math;
+pub(crate) mod math;
 use crate::{camera::Camera, egui, viewport::Scene};
 use egui::{Color32, Pos2, Rect, Stroke};
 use math::*;
@@ -310,10 +310,10 @@ impl Drag {
     }
 }
 #[derive(Default)]
-pub(super) struct Interaction {
+pub(crate) struct Interaction {
     drag: Option<Drag>,
 }
-pub(super) struct Gesture {
+pub(crate) struct Gesture {
     pub input_owned: bool,
     pub started: bool,
     pub changed: Option<NumericTransform>,
@@ -331,6 +331,22 @@ impl Interaction {
         input: &PlacementViewport<'_>,
         source: &NumericTransform,
         parameters: &EvaluatedParameters,
+    ) -> Result<Gesture, String> {
+        self.show_with_help(
+            ui,
+            input,
+            source,
+            parameters,
+            "drag to apply one exact placement; Option / Alt copies; Esc cancels",
+        )
+    }
+    pub fn show_with_help(
+        &mut self,
+        ui: &mut egui::Ui,
+        input: &PlacementViewport<'_>,
+        source: &NumericTransform,
+        parameters: &EvaluatedParameters,
+        help: &str,
     ) -> Result<Gesture, String> {
         input.basis.validate()?;
         if let Some(drag) = &self.drag
@@ -478,10 +494,7 @@ impl Interaction {
                     ui.id().with("placement-handle-tooltip"),
                     egui::Sense::hover(),
                 )
-                .on_hover_text(format!(
-                    "{} · drag to apply one exact placement; Option / Alt copies; Esc cancels",
-                    handle.label()
-                ));
+                .on_hover_text(format!("{} · {help}", handle.label()));
             }
         }
         let mut changed = None;
