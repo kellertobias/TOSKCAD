@@ -51,7 +51,7 @@ The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow
 
 [Parametric threads](docs/architecture/threads.md) documents the Mechanical thread feature, sourced basic metric presets, explicit Custom profiles and unavailable families. Cosmetic envelopes require a switch to Modeled before manufacturing export.
 
-[Parametric gears](docs/architecture/gears.md) records the external involute single/pair foundation, native validation limits and unfinished family and parameter coverage.
+[Parametric gears](docs/architecture/gears.md) records supported families, canonical single/pair editing, native validation limits and remaining coverage. The [volume integration decision](docs/architecture/0033-oblique-volume-integration.md) records the native mass calculation and its numerical limits.
 
 Mechanical catalog work follows the [retained hardware dimensions decision](docs/architecture/0026-retained-hardware-dimensions.md). The shared Library includes [four curated bearing mounting envelopes](library/README.md) with editable dimensions and pinned definitions. Complete fastener catalog coverage and connection integration remain under development.
 

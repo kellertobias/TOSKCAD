@@ -1125,7 +1125,7 @@ impl Solid {
         let nodes = ffi::topology(&self.native.0).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
-    fn finish_provenance(
+    pub(crate) fn finish_provenance(
         &mut self,
         mut elements: BTreeMap<TopologyKey, TopologyElement>,
         nodes: &[ffi::TopologyNode],

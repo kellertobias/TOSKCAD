@@ -88,6 +88,20 @@ mod ffi {
         pub evictions: u64,
         pub unretained: u64,
     }
+    pub struct BevelData {
+        teeth: u32,
+        pitch: f64,
+        base: f64,
+        tip: f64,
+        root: f64,
+        distance: f64,
+        width: f64,
+        bore: f64,
+        half_base: f64,
+        fillet: f64,
+        tolerance: f64,
+        minimum: f64,
+    }
     pub struct GearData {
         teeth: u32,
         pitch_radius: f64,
@@ -290,6 +304,8 @@ mod ffi {
         fn helical_thread_fresh(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
         fn cached_helical_thread(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
         fn helical_thread_after_miss(spec: &ThreadData) -> Result<UniquePtr<Shape>>;
+        include!("bevel.hpp");
+        fn spherical_bevel_gear(spec: &BevelData) -> Result<UniquePtr<Shape>>;
         include!("gears.hpp");
         fn involute_gear(spec: &GearData) -> Result<UniquePtr<Shape>>;
         fn sketch_reference_geometry(
@@ -584,6 +600,8 @@ pub use threads::{
 };
 mod gears;
 pub use gears::{GearSweep, InvoluteGear};
+mod bevel;
+pub use bevel::SphericalBevelGear;
 mod rack;
 pub use rack::StraightRack;
 mod edge_treatment;

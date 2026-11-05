@@ -17,6 +17,7 @@ fn main() {
         .file("src/sketch_references.cpp")
         .file("src/threads.cpp")
         .file("src/gears.cpp")
+        .file("src/bevel.cpp")
         .include("include")
         .include(root.join("include"))
         .std("c++17")
@@ -58,6 +59,8 @@ fn main() {
         "include/threads.hpp",
         "src/gears.cpp",
         "include/gears.hpp",
+        "src/bevel.cpp",
+        "include/bevel.hpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

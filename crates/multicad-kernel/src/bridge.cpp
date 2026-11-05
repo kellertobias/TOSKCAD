@@ -34,6 +34,10 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepCheck_Shell.hxx>
+#include <Poly_Triangulation.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -315,6 +319,53 @@ bool validity_cache_rejection_probe() {
   Shape bad{solid,{},{}};
   return !valid(bad)&&!valid(bad)&&validity_check_count(bad)==2&&!bad.validity_cache->accepted;
 }
+// Match the pinned public GK wrapper's per-shell reference, including repeated
+// vertex occurrences and its no-vertex triangulation fallback.
+static gp_Pnt volume_shell_reference(const TopoDS_Shape &shell) {
+  gp_XYZ sum(0,0,0);size_t count=0;
+  for(TopExp_Explorer vertices(shell,TopAbs_VERTEX);vertices.More();vertices.Next()) {
+    sum+=BRep_Tool::Pnt(TopoDS::Vertex(vertices.Current())).XYZ();++count;
+  }
+  if(count)sum/=static_cast<double>(count);
+  else for(TopExp_Explorer faces(shell,TopAbs_FACE);faces.More();faces.Next()) {
+    TopLoc_Location location;
+    const auto &triangulation=BRep_Tool::Triangulation(TopoDS::Face(faces.Current()),location);
+    if(!triangulation.IsNull()&&triangulation->NbNodes()>0) {
+      sum=triangulation->Node(1).XYZ();
+      if(!location.IsIdentity())location.Transformation().Transforms(sum);
+      break;
+    }
+  }
+  return gp_Pnt(sum);
+}
+static std::pair<double,double> point_equivalent_volume(const TopoDS_Shape &shape) {
+  const gp_Dir first(1.,std::sqrt(2.),std::sqrt(3.)),second(-std::sqrt(2.),1.,0.);
+  const std::array<gp_Dir,3> directions={first,second,first.Crossed(second)};
+  long double total_mass=0,total_absolute_error=0;bool closed=false;
+  // Keep the original closed-shell selection, orientation and multiplicity.
+  for(TopExp_Explorer shells(shape,TopAbs_SHELL);shells.More();shells.Next()) {
+    const auto &shell=shells.Current();BRepCheck_Shell checker(TopoDS::Shell(shell));
+    if(checker.Closed(false)!=BRepCheck_NoError)continue;
+    closed=true;const auto reference=volume_shell_reference(shell);
+    long double shell_mass=0,shell_absolute_error=0;
+    for(const auto &direction:directions) {
+      // In pinned VinertGK, gp_Pln coefficient D gives flux n.dot(x)-D.
+      const double coefficient=direction.X()*reference.X()+direction.Y()*reference.Y()+direction.Z()*reference.Z();
+      GProp_GProps properties;
+      const double reported=BRepGProp::VolumePropertiesGK(shell,properties,gp_Pln(direction.X(),direction.Y(),direction.Z(),coefficient),1e-10,true,true);
+      const double mass=properties.Mass();
+      if(!std::isfinite(reported)||reported<0||!std::isfinite(mass))throw VolumeIntegrationFailure();
+      // The public wrapper divides by mass only when mass>Epsilon(1).
+      // An inward void shell keeps its signed mass and absolute error.
+      const long double absolute_error=mass>Epsilon(1.)?static_cast<long double>(reported)*mass:reported;
+      shell_mass+=static_cast<long double>(mass)/3;
+      shell_absolute_error+=absolute_error/3;
+    }
+    total_mass+=shell_mass;total_absolute_error+=shell_absolute_error;
+  }
+  if(!closed||!std::isfinite(total_mass)||total_mass<=0||!std::isfinite(total_absolute_error))throw VolumeIntegrationFailure();
+  return {static_cast<double>(total_mass),static_cast<double>(total_absolute_error/total_mass)};
+}
 double volume(const Shape &s) {
   return guard([&] {
     std::lock_guard<std::mutex> lock(s.volume_cache->mutex);
@@ -325,15 +376,14 @@ double volume(const Shape &s) {
       return certificate.mass;
     }
     ++s.volume_cache->integrations;
-    GProp_GProps p;
-    // Clipped curved faces need adaptive integration; the default overload
-    // uses a fixed rule and can lose visible precision on valid exact B-reps.
-    // Gauss-Kronrod reports whole-solid relative error, avoiding false failures
-    // from near-zero individual face contributions. Spline spans are enabled.
-    const double relativeError = BRepGProp::VolumePropertiesGK(s.value, p, 1e-10, true, true);
+    // Three orthonormal fluxes at the SAME per-shell reference average to
+    // (x-reference).N/3, preserving the original point integrand even when
+    // the actual trimmed boundary has a small residual directional flux.
+    // Requested tolerance, spline spans and the accepted error remain fixed.
+    const auto measured=point_equivalent_volume(s.value);
+    const double mass=measured.first,relativeError=measured.second;
     if (!std::isfinite(relativeError) || relativeError < 0. || relativeError > 1e-7)
       throw VolumeIntegrationFailure();
-    const double mass=p.Mass();
     if(std::isfinite(mass)&&mass>0.)s.volume_cache->certificate=VolumeCertificate{mass,relativeError};
     return mass;
   });
