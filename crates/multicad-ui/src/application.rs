@@ -459,7 +459,7 @@ impl Application {
         self.active_tool == Some((self.active, command))
             && match command {
                 Command::Modeling(_) | Command::EquipmentPreset(_) => {
-                    self.current().sketch.model_form_active()
+                    self.current().sketch.model_creation_form_active()
                 }
                 Command::Drawing(_) => {
                     let drawings = &self.current().drawings;

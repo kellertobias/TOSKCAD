@@ -538,6 +538,72 @@ fn preset_commands_open_the_chosen_native_form_and_navigation_preserves_it_until
 }
 
 #[test]
+fn saved_feature_edit_does_not_highlight_the_previous_creation_tool() {
+    use crate::modeling::native_fixture::NativeBackend;
+    let bytes = include_bytes!("../../../../examples/apartment.tcd");
+    let project = multicad_core::project_file::read(
+        &mut &bytes[..],
+        multicad_core::project_file::FileLimits::default(),
+        &multicad_core::project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    let before = project.document;
+    let feature = multicad_core::model::walls(&before).next().unwrap().id;
+    let mut app = app();
+    *app.current_mut() = Project::new(before.clone()).unwrap();
+    app.set_model_backends(std::sync::Arc::new(|| Box::new(NativeBackend::new())));
+    let ctx = context(1.);
+    let size = egui::vec2(1100., 700.);
+    let window = Command::Modeling(ModelingTool::Window);
+    let wall = Command::Modeling(ModelingTool::Wall);
+    app.invoke(window, &[], Channel::Ui).unwrap();
+    assert!(app.tool_active(window));
+    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    let project = app.current_mut();
+    project
+        .sketch
+        .begin_feature_edit(
+            &project.session,
+            &project.resources,
+            &project.scene,
+            feature,
+            Channel::Ui,
+        )
+        .unwrap();
+    assert_eq!(app.current().sketch.model_label(), "Feature edit");
+    for _ in 0..3 {
+        paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+    }
+    let output = paint(&mut app, &ctx, size, vec![]);
+    let nodes = &output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes;
+    for label in ["Window", "Wall"] {
+        let selected = nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.toggled())
+                    .flatten()
+            })
+            .unwrap();
+        assert_eq!(selected, egui::accesskit::Toggled::False, "{label}");
+    }
+    output.drop_without_applying_deltas();
+    assert_eq!(app.current().session.document(), &before);
+    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    assert_eq!(app.current().session.document(), &before);
+    assert_eq!(app.current().session.revision(), 0);
+    app.invoke(wall, &[], Channel::Ui).unwrap();
+    assert!(app.tool_active(wall));
+    assert!(!app.tool_active(window));
+}
+
+#[test]
 fn library_browser_highlight_does_not_revive_a_cancelled_equipment_preset() {
     use crate::modeling::native_fixture::NativeBackend;
     use multicad_core::equipment::Kind;
