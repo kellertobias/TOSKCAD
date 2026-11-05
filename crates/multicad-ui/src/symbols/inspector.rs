@@ -60,7 +60,6 @@ pub(super) fn show(
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
-                    catalogue.embedded_search[id].show_cards(ui,&filter,"");
                     if let Some(role)=super::architecture::role(definition) {
                         let label=match role { symbols::architecture::ArchitectureRole::Wall=>"Draw wall", symbols::architecture::ArchitectureRole::Fence=>"Draw fence" };
                         if ui.button(label).clicked(){action=Some(SymbolAction::DrawConstruction{definition:*id,role});}
@@ -69,6 +68,7 @@ pub(super) fn show(
                         if ui.small_button("Save definition…").clicked(){action=Some(SymbolAction::SaveDefinition(*id));}
                         if ui.small_button("Compare update").on_hover_text("Choose a revision explicitly; this never upgrades instances automatically").clicked(){next=Some(Next::Update(*id));}
                     });
+                    catalogue.embedded_search[id].show_cards(ui,&filter,"");
                 });
             }
             if shown==0{ui.label("No matching embedded symbols");}
@@ -79,7 +79,6 @@ pub(super) fn show(
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
-                    search.show_cards(ui,&filter,"");
                     let embedded=definitions.iter().any(|(id,def)|def.symbol==definition.symbol&&catalogue.embedded_pins.get(id)==Some(pin));
                     if embedded {ui.small("This exact revision is embedded");}
                     let unavailable = if super::architecture::role(definition).is_some() {
@@ -90,6 +89,7 @@ pub(super) fn show(
                     if let Some(reason) = &unavailable { ui.colored_label(egui::Color32::LIGHT_RED, reason); }
                     if ui.add_enabled(unavailable.is_none(), egui::Button::new("Place")).on_hover_text("Preview and Apply embed this exact pin and place one occurrence in one transaction").clicked(){next=Some(Next::PlaceLibrary(Box::new(definition.clone())));}
                     if !embedded && ui.button("Import definition").on_hover_text("Explicitly embed this immutable definition without placing an occurrence").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
+                    search.show_cards(ui,&filter,"");
                 });
             }
             if shown==0{ui.label("No matching library symbols loaded");}
@@ -176,7 +176,7 @@ pub(super) fn show(
                         .map(|index| crate::model_tree::container_path(document, &index, Some(id)))
                         .unwrap_or_else(|_| "Unavailable parent".into())
                 });
-                ui.label(format!("Parent: {parent_label}"));
+                ui.add(egui::Label::new(format!("Parent: {parent_label}")).wrap());
                 changed|=fields::text(ui,"Instance name",name,"Name for this occurrence; the source definition and other instances are unchanged");
                 changed|=values.show(ui,source);
                 changed|=pose.show(ui);

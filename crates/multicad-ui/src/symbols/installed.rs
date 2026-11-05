@@ -56,10 +56,6 @@ impl Installed {
             ui.push_id(entry.id, |ui| ui.group(|ui| {
                 ui.strong(&entry.name);
                 if entry.origin == crate::library::LibraryOrigin::Bundled { ui.small("Included with ToskCAD"); }
-                self.previews.show(ui, entry.preview.as_ref(), egui::vec2(140., 80.), &entry.name);
-                if !entry.description.is_empty() { ui.add(egui::Label::new(egui::RichText::new(&entry.description).small()).truncate()).on_hover_text(&entry.description); }
-                ui.small(entry.path.display().to_string());
-                search.show_cards(ui, query, &self.family);
                 let unavailable = entry.problem.as_deref().or_else(|| (entry.symbol_definitions == 0).then_some("No reusable definitions. Open this file and use Create symbol before placing it here."));
                 if let Some(problem) = unavailable {
                     ui.colored_label(egui::Color32::LIGHT_RED, problem);
@@ -72,6 +68,10 @@ impl Installed {
                         action = Some(SymbolAction::OpenInstalled(entry.path.clone()));
                     }
                 });
+                self.previews.show(ui, entry.preview.as_ref(), egui::vec2(140., 80.), &entry.name);
+                if !entry.description.is_empty() { ui.add(egui::Label::new(egui::RichText::new(&entry.description).small()).truncate()).on_hover_text(&entry.description); }
+                ui.small(entry.path.display().to_string());
+                search.show_cards(ui, query, &self.family);
             }));
         }
         if shown == 0 {
@@ -267,6 +267,82 @@ mod tests {
     use multicad_core::{document::EntityId, model::MechanicalPartCard};
     fn matches(entry: &LibraryEntry, filter: &str, family: &str) -> bool {
         entry_search(entry).matches(&SearchQuery::new(filter), family)
+    }
+    #[test]
+    fn installed_place_actions_precede_long_metadata_and_dimensions_without_scrolling() {
+        let card = MechanicalPartCard {
+            feature: EntityId::new(),
+            name: "Detailed hardware".into(),
+            family: "Fixture".into(),
+            symbol: Some((EntityId::new(), "1".into())),
+            dimensions_mm: (0..48)
+                .map(|index| (format!("Dimension {index:02}"), index as f64))
+                .collect(),
+            representation: "Modeled fixture".into(),
+            designation: None,
+            source_url: None,
+            catalog_facts: None,
+            matches_reference_dimensions: true,
+            problem: None,
+        };
+        let entry = LibraryEntry {
+            origin: crate::library::LibraryOrigin::Bundled,
+            id: EntityId::new(),
+            document: EntityId::new(),
+            path: "/library/detailed-fixture.tcd".into(),
+            name: "Detailed fixture".into(),
+            description: "Long descriptive metadata ".repeat(40),
+            preview: None,
+            registered_unix_ms: 1,
+            symbol_definitions: 1,
+            mechanical_parts: vec![card],
+            problem: None,
+        };
+        let mut installed = Installed::default();
+        installed.set_entries(Arc::new(vec![entry]));
+        let ctx = egui::Context::default();
+        let frame = |installed: &mut Installed| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(250., 700.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    installed.show(ui, &SearchQuery::new(""));
+                },
+            )
+        };
+        frame(&mut installed).drop_without_applying_deltas();
+        let output = frame(&mut installed);
+        fn painted(shape: &egui::Shape, text: &str) -> Option<egui::Rect> {
+            match shape {
+                egui::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(egui::Rect::from_min_size(shape.pos, shape.galley.size()))
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| painted(shape, text)),
+                _ => None,
+            }
+        }
+        let rect = |text| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| painted(&shape.shape, text))
+                .unwrap_or_else(|| panic!("Missing painted {text}"))
+        };
+        let place = rect("Place");
+        let load = rect("Load definitions");
+        let title = rect("Detailed fixture");
+        assert!(place.top() > title.bottom());
+        assert!(
+            place.bottom() < 350. && load.bottom() < 350.,
+            "card actions must be immediately reachable before details"
+        );
+        assert!(place.left() >= 0. && load.right() <= 250.);
+        output.drop_without_applying_deltas();
     }
     #[test]
     fn hardware_search_keeps_family_and_dimensions_on_the_same_source_recipe() {

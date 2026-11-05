@@ -119,6 +119,16 @@ fn loaded_hardware_definitions_remain_findable_by_their_source_dimensions() {
     let ctx = egui::Context::default();
     let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
     let import = point(&output, "Import definition");
+    let place = point(&output, "Place");
+    let dimensions = point(&output, "Bore: 3.2 mm");
+    assert!(
+        place.y < dimensions.y,
+        "Place must precede the card's dimension details"
+    );
+    assert!(
+        import.y < dimensions.y,
+        "Explicit Import must remain beside the card actions"
+    );
     output.drop_without_applying_deltas();
     click(&ctx, &mut c, &mut session, import, 1800.);
     assert!(matches!(
@@ -1388,3 +1398,67 @@ fn loaded_library_direct_place_selects_detached_pin_and_cancel_then_apply_in_exp
 
 #[path = "placement_gizmo_tests.rs"]
 mod placement_gizmo;
+
+#[test]
+fn embedded_place_precedes_source_dimensions_and_long_placement_parent_wraps_inside_inspector() {
+    let definition =
+        catalog_search_fixture("Detailed embedded ring", Some(3.), 3.2, "Fixture steel");
+    let parent_name = "Assembly with a long explicit receiving context ".repeat(6);
+    let parent = Entity::new(&parent_name, EntityData::Assembly { instances: vec![] });
+    let parent_id = parent.id;
+    let document = Document::new("Receiver")
+        .unwrap()
+        .edited(&[Mutation::Insert(parent)])
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    session
+        .commit(
+            symbols::prepare_import(&session, 0, actor(), &definition)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let before = session.document().clone();
+    let mut c = controller();
+    begin(
+        &mut c,
+        &session,
+        SymbolTool::Library,
+        SymbolSelection {
+            parent: Some(parent_id),
+            ..Default::default()
+        },
+    );
+    let ctx = egui::Context::default();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+    let place = point(&output, "Place");
+    assert!(place.y < point(&output, "Bore: 3.2 mm").y);
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut session, place, 1800.);
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 1800.);
+    let label = format!("Parent: Receiver / {parent_name}");
+    fn rect(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Text(shape) if shape.galley.text() == label => {
+                Some(egui::Rect::from_min_size(shape.pos, shape.galley.size()))
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| rect(shape, label)),
+            _ => None,
+        }
+    }
+    let parent = output
+        .shapes
+        .iter()
+        .find_map(|shape| rect(&shape.shape, &label))
+        .expect("full parent label painted");
+    assert!(
+        parent.height() > 30.,
+        "long parent must wrap onto multiple lines"
+    );
+    assert!(
+        parent.left() >= 0. && parent.right() <= 250.,
+        "parent path must stay inside Inspector: {parent:?}"
+    );
+    output.drop_without_applying_deltas();
+    assert_eq!(session.document(), &before);
+}
