@@ -12,6 +12,8 @@ The locked workspace command completed 279 passing groups, then stopped at one o
 
 Checks use the pinned toolchain and committed lockfile. The original workspace run and documentation rerun use test optimization level 3 with debug assertions and overflow checks enabled; the complete UI rerun uses the ordinary test profile.
 
+Subsequent full validation on 2026-11-05, after the metric-thread kernel/cache commits `dd50334` and `06f831f`, ran the entire locked workspace successfully: **2600 passed, zero failed, four intentional ignores across 296 groups, exit 0**. This includes the corrected Transfer host test and all Transfer production code, which remains unchanged. The later complete run is retained at `artifacts/thread-performance-followup-20261105/checks/workspace.log`; the original composite evidence above remains recorded accurately.
+
 ## Actual macOS authoring
 
 The fixture was prepared through public typed Rust APIs and initially contained no Transfer features. Its source is a 130 × 20 × 4 mm plate with two 6 mm holes, placed above separate Wood, Printed, and Sheet receivers. The enclosing occurrence has a 30° rotation and translation [300, 500, 100] mm. Reproduction source, preparation receipts, native files, screenshots, accessibility snapshots, and their hashes are retained under `artifacts/transfer-common-review-20261105/`.
