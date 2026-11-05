@@ -530,3 +530,35 @@ fn controller_exposes_marker_only_while_the_interference_tool_holds_a_current_re
     controller.cancel();
     assert!(controller.clearance_marker(&f.session, &scene).is_none());
 }
+
+#[test]
+fn long_requirement_label_wraps_and_stays_inside_a_small_viewport() {
+    let f = fixture([10., 0., 0.]);
+    let scene = scene(&f.session);
+    let mut marker = inspected(&f, &scene)
+        .marker(&f.session, &scene)
+        .unwrap()
+        .unwrap();
+    marker.required_minimum_mm = Some(1.);
+    let area = egui::Rect::from_min_size(egui::pos2(10., 20.), egui::vec2(300., 200.));
+    let ctx = egui::Context::default();
+    let mut camera = Camera::default();
+    camera.fit(&marker.fit_points(), area);
+    let output = ctx.run_ui(Default::default(), |ui| {
+        marker.paint(ui.painter(), area, camera, true, None);
+    });
+    let text = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == marker.label() => Some(text),
+            _ => None,
+        })
+        .expect("native result label must be painted");
+    assert!(area.contains_rect(egui::Rect::from_min_size(text.pos, text.galley.size())));
+    assert!(
+        text.galley.rows.len() > 1,
+        "long result must wrap instead of clipping"
+    );
+    output.drop_without_applying_deltas();
+}

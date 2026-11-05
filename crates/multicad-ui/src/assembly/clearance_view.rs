@@ -265,14 +265,26 @@ impl ClearanceMarker {
         }
         let text = self.label();
         let anchor = project(middle) + egui::vec2(10., -10.);
-        let galley = painter.layout_no_wrap(
+        let galley = painter.layout(
             text.clone(),
             egui::FontId::proportional(12.),
             egui::Color32::WHITE,
+            (rect.width() - 16.).max(1.),
         );
-        let frame =
+        let desired =
             egui::Rect::from_min_size(anchor - egui::vec2(0., galley.size().y), galley.size())
                 .expand(3.);
+        let min = egui::pos2(
+            desired.min.x.clamp(
+                rect.min.x + 4.,
+                (rect.max.x - desired.width() - 4.).max(rect.min.x + 4.),
+            ),
+            desired.min.y.clamp(
+                rect.min.y + 4.,
+                (rect.max.y - desired.height() - 4.).max(rect.min.y + 4.),
+            ),
+        );
+        let frame = egui::Rect::from_min_size(min, desired.size());
         painter.rect_filled(frame, 3., egui::Color32::from_black_alpha(190));
         painter.rect_stroke(
             frame,
