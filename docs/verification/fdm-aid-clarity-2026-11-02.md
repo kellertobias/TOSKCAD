@@ -1,5 +1,7 @@
 # FDM aid choice and category verification, 2026-11-02
 
+> Historical implementation evidence. The [2026-11-05 native verification](fdm-aid-clarity-2026-11-05.md) supplies the later actual macOS window checks.
+
 CAD-225 exposes separate Tab, Bridge and Support choices in Model → Other,
 with distinct reviewed artwork, type-specific search aliases and guidance.
 Native representative projects and nine production UI captures passed their
