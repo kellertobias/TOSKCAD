@@ -1,5 +1,7 @@
 # Drawing navigation and direct PDF verification, 2026-11-03
 
+> Historical implementation evidence. The [2026-11-05 native verification](drawing-navigation-2026-11-05.md) supplies the later actual macOS window checks.
+
 CAD-226 adds a project-wide drawing/sheet sidebar and scoped PDF export inside
 Drawings. Automated UI, native PDF and offscreen layout evidence is recorded
 below. The required actual macOS window interaction check remains unverified;
