@@ -1,5 +1,9 @@
 # CAD-247: Compound cutout verification
 
+Historical implementation evidence. The
+[2026-11-05 native-window report](compound-cutouts-2026-11-05.md) closes the
+macOS interaction gap recorded below and adds actual saved geometry/PDF checks.
+
 Status: implementation, full workspace tests, visual checks and desktop build/CLI
 verification complete. Actual macOS window interaction remains unverified.
 
