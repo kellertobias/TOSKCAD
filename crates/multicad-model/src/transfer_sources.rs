@@ -16,6 +16,7 @@ use multicad_kernel::{CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, S
 use std::collections::BTreeSet;
 pub(super) struct Inputs<'a> {
     pub feature: EntityId,
+    pub threads: &'a super::threads::ThreadSources,
     pub source: &'a TransferSource,
     pub target: &'a TransferTarget,
     pub settings: ResolvedTransferTarget,
@@ -251,9 +252,20 @@ pub(super) fn profiles(input: Inputs<'_>) -> Result<Vec<Cut>, ModelError> {
             for id in references {
                 let capture = capture(input.captures, *id, input.source.component, input.feature)?;
                 let (key, _) = resolve(capture, input.topology, input.revision, input.feature)?;
-                let axis = input
-                    .hardware
-                    .transfer_hole_axis(key)
+                let axis = input.hardware.transfer_hole_axis(key).map_err(|e| {
+                    input.fail(if input.threads.has_threads() {
+                        format!("{e}. {}", input.threads.diagnostic())
+                    } else {
+                        e.to_string()
+                    })
+                })?;
+                input
+                    .threads
+                    .check_axis(axis.origin_mm, axis.axis, input.policy.linear_tolerance_mm)
+                    .map_err(|e| input.fail(e))?;
+                input
+                    .threads
+                    .check_provenance(input.topology, &[key])
                     .map_err(|e| input.fail(e))?;
                 input.parity(axis.axis)?;
                 cuts.push(input.hole(*id, "circle", input.uv(axis.origin_mm), axis.radius_mm)?);
@@ -272,7 +284,25 @@ pub(super) fn profiles(input: Inputs<'_>) -> Result<Vec<Cut>, ModelError> {
                 if cuts.len() >= MAX_TRANSFER_SOURCES {
                     return Err(input.fail("Source face exceeds the 256-hole transfer budget"));
                 }
-                let (center, radius) = input.circle_loop(wire)?;
+                let (center, radius) = input.circle_loop(wire).map_err(|e| {
+                    if input.threads.has_threads() {
+                        input.fail(format!("{e}. {}", input.threads.diagnostic()))
+                    } else {
+                        e
+                    }
+                })?;
+                input
+                    .threads
+                    .check_axis(
+                        frame.point(center),
+                        frame.normal(),
+                        input.policy.linear_tolerance_mm,
+                    )
+                    .map_err(|e| input.fail(e))?;
+                input
+                    .threads
+                    .check_provenance(input.topology, keys)
+                    .map_err(|e| input.fail(e))?;
                 let signature = input.signature(keys)?;
                 if !seen.insert(signature) {
                     return Err(input.fail("Current source holes have ambiguous duplicate provenance; explicit repair is required"));
@@ -430,7 +460,9 @@ mod tests {
             u: [1., 0., 0.],
             v: [0., -1., 0.],
         };
+        let threads = super::super::threads::ThreadSources::default();
         let input = |relative| Inputs {
+            threads: &threads,
             feature: target.feature,
             source: &source,
             target: &target,

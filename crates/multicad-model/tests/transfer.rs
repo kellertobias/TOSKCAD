@@ -584,3 +584,168 @@ fn source_outer_boundary_is_an_exact_editable_cutout_with_per_material_clearance
         130. * 30. * 18. - 120.5 * 20.5 * 12.,
     );
 }
+
+#[test]
+fn threaded_mouth_outside_axial_span_is_refused_but_same_part_plain_hole_transfers() {
+    for representation in [
+        ThreadRepresentation::Modeled,
+        ThreadRepresentation::CosmeticEnvelope,
+    ] {
+        let mut f = fixture();
+        let thread = ThreadRequest::receiving(
+            "Internal M8 transfer refusal source",
+            ThreadMode::CutInternal,
+            BodyInput {
+                body: f.rail.body,
+                producer: f.rail_head,
+            },
+            ThreadParameters {
+                major_diameter: length(8.),
+                pitch: length(1.25),
+                length: length(3.),
+                frame: PrimitiveFrame {
+                    origin: [20., 10., 0.5].map(length),
+                    ..Default::default()
+                },
+                representation,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let prepared = prepare_thread(&f.s, f.s.revision(), actor(), &thread).unwrap();
+        let compiler = Compiler {
+            omit_display: true,
+            ..Default::default()
+        };
+        // Prove that the authored threaded source itself is valid native geometry.
+        compiler
+            .compile(prepared.prepared.document(), f.s.revision())
+            .unwrap();
+        f.s.commit(prepared.prepared).unwrap();
+        let baseline = compiler.compile(f.s.document(), f.s.revision()).unwrap();
+        let original = f.s.document().clone();
+        let revision = f.s.revision();
+        let source_face = top(&baseline, thread.feature, f.rail.body, 4.);
+        let mut source_topology = baseline.snapshot().shapes[&thread.feature].topology.clone();
+        source_topology.owner = f.rail.body;
+        let mouth = |x: f64| {
+            let edge = source_topology
+                .elements
+                .iter()
+                .find(|e| {
+                    matches!(e.geometry, Some(AnalyticGeometry::CircularArc {
+                        frame, radius_mm, sweep_rad, ..
+                    }) if e.key.kind == TopologyKind::Edge
+                        && (frame.origin_mm[0] - x).abs() < 1e-7
+                        && (frame.origin_mm[1] - 10.).abs() < 1e-7
+                        && (frame.origin_mm[2] - 4.).abs() < 1e-7
+                        && (radius_mm - 3.).abs() < 1e-7
+                        && (sweep_rad.abs() - 2. * PI).abs() < 1e-7)
+                })
+                .expect("unthreaded collar retains its original complete circular mouth");
+            AlignmentInput {
+                source: f.rail.body,
+                intent: GeometryIntent::capture(&source_topology, edge.key).unwrap(),
+            }
+        };
+        // Both circles are above the thread's z=0.5..3.5 span. The first is
+        // coaxial with its M8 thread; the second is an unrelated ordinary hole.
+        let threaded_mouth = mouth(20.);
+        let ordinary_mouth = mouth(52.);
+        let target_captures = f.request.references[1..].to_vec();
+        for (selection, capture) in [
+            (
+                TransferSelection::FaceHoles {
+                    face: source_face.intent.id,
+                },
+                source_face,
+            ),
+            (
+                TransferSelection::Circles {
+                    references: vec![threaded_mouth.intent.id],
+                },
+                threaded_mouth,
+            ),
+        ] {
+            let mut request = f.request.clone();
+            request.source.selection = selection;
+            request.references = std::iter::once(capture)
+                .chain(target_captures.clone())
+                .collect();
+            let candidate = prepare_transfer(&f.s, revision, actor(), &request).unwrap();
+            let error = compiler
+                .compile(candidate.prepared.document(), revision)
+                .err()
+                .expect("threaded transfer must fail before any transaction is committed");
+            assert!(
+                error
+                    .message
+                    .contains("Threaded-hole transfer is unsupported"),
+                "{representation:?}: {error}"
+            );
+            assert!(
+                error
+                    .message
+                    .contains("Internal M8 transfer refusal source")
+            );
+            assert_eq!(f.s.document(), &original);
+            assert_eq!(f.s.revision(), revision);
+            assert!(baseline.snapshot().transfer_counts.is_empty());
+        }
+        let mut request = f.request.clone();
+        request.source.selection = TransferSelection::Circles {
+            references: vec![ordinary_mouth.intent.id],
+        };
+        request.references = std::iter::once(ordinary_mouth)
+            .chain(target_captures)
+            .collect();
+        let candidate = prepare_transfer(&f.s, revision, actor(), &request).unwrap();
+        let transferred = compiler
+            .compile(candidate.prepared.document(), revision)
+            .expect("an ordinary noncoaxial hole on the same threaded Part remains transferable");
+        for (target, (height, radius, depth)) in
+            request
+                .targets
+                .iter()
+                .zip([(18., 2.5, 12.), (8., 3.2, 8.), (2., 3.25, 2.)])
+        {
+            assert_eq!(
+                transferred.snapshot().transfer_counts.get(&target.feature),
+                Some(&1)
+            );
+            near(
+                transferred
+                    .solid(target.input.body)
+                    .unwrap()
+                    .volume_mm3()
+                    .unwrap(),
+                130. * 30. * height - PI * radius * radius * depth,
+            );
+            let circles = transferred.snapshot().shapes[&target.feature]
+                .topology
+                .elements
+                .iter()
+                .filter_map(|e| match e.geometry {
+                    Some(AnalyticGeometry::CircularArc {
+                        frame,
+                        radius_mm,
+                        sweep_rad,
+                        ..
+                    }) if (frame.origin_mm[2] - height).abs() < 1e-7
+                        && (radius_mm - radius).abs() < 1e-7
+                        && (sweep_rad.abs() - 2. * PI).abs() < 1e-7 =>
+                    {
+                        Some(frame.origin_mm)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(!circles.is_empty());
+            assert!(circles.iter().all(|center| {
+                (center[0] - 62.).abs() < 1e-7 && (center[1] - 10.).abs() < 1e-7
+            }));
+        }
+        assert_eq!(f.s.document(), &original);
+        assert_eq!(f.s.revision(), revision);
+    }
+}

@@ -453,6 +453,42 @@ fn click(
     frame(ctx, c, s, vec![], height)
 }
 #[test]
+fn empty_selection_exposes_receiving_options_before_any_capture() {
+    let mut f = fixture();
+    let original = f.session.document().clone();
+    let mut c = TransferController::default();
+    c.set_backend(Box::new(Backend::new()));
+    c.begin(
+        &f.session,
+        &Default::default(),
+        Some(&f.scene),
+        Default::default(),
+        Channel::Ui,
+    )
+    .unwrap();
+    let form = c.form.as_ref().unwrap();
+    assert_eq!(form.targets.len(), 1);
+    assert!(form.source.is_none());
+    assert!(form.targets[0].input.is_none());
+    let out = frame(
+        &egui::Context::default(),
+        &mut c,
+        &mut f.session,
+        vec![],
+        1700.,
+    );
+    for label in [
+        "Source occurrence",
+        "Receiving Part 1",
+        "Override source diameter",
+        "Radial clearance (mm)",
+        "Through receiving body",
+    ] {
+        text(&out, label);
+    }
+    assert_eq!(f.session.document(), &original);
+}
+#[test]
 fn real_source_mode_controls_and_short_fixed_cancel_are_source_neutral() {
     let mut f = fixture();
     let original = f.session.document().clone();

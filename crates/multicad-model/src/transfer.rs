@@ -12,6 +12,8 @@ use multicad_kernel::{GeometryPolicy, PlaneFrame, Solid};
 use std::collections::BTreeMap;
 #[path = "transfer_sources.rs"]
 mod sources;
+#[path = "transfer_threads.rs"]
+mod threads;
 pub(crate) struct Inputs<'a> {
     pub document: &'a Document,
     pub revision: u64,
@@ -121,7 +123,10 @@ pub(crate) fn build(
                 "Current source Part alias topology is missing or stale",
             )
         })?;
+    let threads = threads::ThreadSources::inspect(inputs.document, inputs.parameters, producer)
+        .map_err(|e| error(Some(feature), e))?;
     let cuts = sources::profiles(sources::Inputs {
+        threads: &threads,
         feature,
         source: &source.source,
         target,

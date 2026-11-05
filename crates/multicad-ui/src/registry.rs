@@ -619,7 +619,7 @@ impl Default for Registry {
                             })
                             .map(ModelingTool::id)
                             .chain(BOOLEAN_OPERATIONS.map(|(id, ..)| id))
-                            .chain(["symbol"])
+                            .chain(["symbol", "transfer"])
                             .collect(),
                         requires_active_sketch: false,
                     },
@@ -642,7 +642,7 @@ impl Default for Registry {
                             .into_iter()
                             .filter(|tool| !tool.motion_workspace())
                             .map(|tool| tool.id())
-                            .chain(["align", "transfer"])
+                            .chain(["align"])
                             .collect(),
                         requires_active_sketch: false,
                     },
@@ -919,6 +919,30 @@ impl Registry {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    #[test]
+    fn associative_transfer_is_discoverable_in_model_common() {
+        let registry = Registry::default();
+        let model = registry.workspace(Mode::Model);
+        let common = model
+            .tabs
+            .iter()
+            .position(|tab| tab.title == "Common")
+            .unwrap();
+        assert!(model.tabs[common].tools.contains(&"transfer"));
+        assert_eq!(
+            registry.workbench_tab(Mode::Model, registry.tool("transfer").unwrap().action, None),
+            Some(common)
+        );
+        assert!(
+            !model
+                .tabs
+                .iter()
+                .find(|tab| tab.title == "Relationships")
+                .unwrap()
+                .tools
+                .contains(&"transfer")
+        );
+    }
     #[test]
     fn project_mode_keeps_legacy_commands_while_search_and_labels_use_project() {
         let registry = Registry::default();

@@ -107,6 +107,9 @@ impl Form {
                 target.path = Some(choice.path);
             }
         }
+        if form.targets.is_empty() {
+            form.add_target();
+        }
         Ok(form)
     }
     pub fn from_request(
@@ -460,6 +463,7 @@ impl Form {
             }
             changed = true;
         }
+        ui.small("Threaded-hole transfer is not supported. Native Preview refuses known thread references before Apply; create the receiving thread explicitly.");
         ui.separator();
         ui.strong("Receiving Parts");
         ui.colored_label(
