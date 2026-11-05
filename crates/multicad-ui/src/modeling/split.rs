@@ -357,7 +357,9 @@ impl SplitPanel {
         enabled: bool,
         preview: PreviewState<'_>,
     ) -> Option<SplitEvent> {
-        let enter = ui.is_enabled() && !egui::Popup::is_any_open(ui.ctx()) && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if *modifiers == egui::Modifiers::NONE)));
+        // Single-line editors surrender focus while handling Return. Capture the
+        // original text focus before drawing them so that key cannot also execute Split.
+        let enter = ui.is_enabled() && !ui.ctx().text_edit_focused() && !egui::Popup::is_any_open(ui.ctx()) && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if *modifiers == egui::Modifiers::NONE)));
         controls::inspector_layout(ui);
         ui.strong("Split");
         ui.small("Select target bodies and a separate model or plane. Enter advances from Targets to Splitting tool, then executes after native validation.");

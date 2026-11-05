@@ -332,6 +332,144 @@ fn input_focus_clicks_and_enter_keep_target_and_cutter_roles_separate() {
     assert!(matches!(event, Some(SplitEvent::Apply)));
 }
 #[test]
+fn return_finishes_plane_offset_edit_without_requesting_split() {
+    let (session, outputs, scene) = fixture();
+    let before = session.document().clone();
+    let mut panel = complete(&session, &outputs, &scene);
+    panel.tool_kind = ToolKind::Plane;
+    panel.plane = Some(PlaneChoice::Datum(Datum::Xy));
+    panel.focus(SplitInputField::Tool);
+    let ctx = context();
+    for _ in 0..3 {
+        paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Idle,
+            vec![],
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    let (out, _) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![],
+    );
+    let offset = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            (node.role() == egui::accesskit::Role::TextInput && node.value() == Some("0")).then(
+                || {
+                    egui::pos2(
+                        ((bounds.x0 + bounds.x1) * 0.5) as f32,
+                        ((bounds.y0 + bounds.y1) * 0.5) as f32,
+                    )
+                },
+            )
+        })
+        .expect("plane offset input");
+    out.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Idle,
+            pointer(offset, pressed),
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    assert!(ctx.text_edit_focused());
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: Some(egui::Key::A),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text("2.5 mm".into()),
+        ],
+    );
+    out.drop_without_applying_deltas();
+    assert!(matches!(event, Some(SplitEvent::Changed)));
+    assert!(ctx.text_edit_focused());
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![key_enter()],
+    );
+    out.drop_without_applying_deltas();
+    assert!(
+        event.is_none(),
+        "Return in the offset editor must not request native execution"
+    );
+    assert!(!panel.auto_apply);
+    assert!(!panel.execute_requested);
+    assert_eq!(session.document(), &before);
+    let mut released = key_enter();
+    if let egui::Event::Key { pressed, .. } = &mut released {
+        *pressed = false;
+    }
+    paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![released],
+    )
+    .0
+    .drop_without_applying_deltas();
+    let (out, _) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![],
+    );
+    let tool = button(&out, "Splitting tool · 1 selected · active").center();
+    out.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        paint(
+            &ctx,
+            &mut panel,
+            session.document(),
+            PreviewState::Idle,
+            pointer(tool, pressed),
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    let (out, event) = paint(
+        &ctx,
+        &mut panel,
+        session.document(),
+        PreviewState::Idle,
+        vec![key_enter()],
+    );
+    out.drop_without_applying_deltas();
+    assert!(matches!(event, Some(SplitEvent::Preview { .. })));
+    assert!(panel.auto_apply);
+    assert_eq!(session.document(), &before);
+}
+#[test]
 fn explicit_plane_choice_has_no_default_cut_and_names_and_ids_survive_role_changes() {
     let (session, outputs, scene) = fixture();
     let mut panel = complete(&session, &outputs, &scene);

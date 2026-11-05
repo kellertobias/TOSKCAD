@@ -1632,6 +1632,14 @@ mod tests {
         };
         assert_eq!(request.targets.len(), 2);
         assert_eq!(session.document(), &before);
+        // Finish the offset edit by explicitly returning focus to the tool role.
+        split_click(
+            &ctx,
+            &mut editor,
+            &mut session,
+            &mut feed,
+            "Splitting tool · 1 selected · active",
+        );
         split_frame(
             &ctx,
             &mut editor,
