@@ -6,13 +6,15 @@ use multicad_core::{
     parameters::EvaluatedParameters,
 };
 use multicad_kernel::{
-    GearSweep, GeometryPolicy, InvoluteGear, RigidTransform, Solid, StraightRack,
+    GearSweep, GeometryPolicy, InvoluteGear, RigidTransform, Solid, SphericalBevelGear,
+    StraightRack,
 };
 
 #[derive(Clone, Debug)]
 pub(crate) enum NativeSpecification {
     Rotary(InvoluteGear),
     Rack(StraightRack),
+    Bevel(SphericalBevelGear),
 }
 
 pub(crate) fn specification(
@@ -32,6 +34,20 @@ pub(crate) fn specification(
                 root_fillet_radius_mm: r.root_fillet_radius_mm,
                 backing_thickness_mm: r.backing_thickness_mm,
                 face_width_mm: r.face_width_mm,
+            }));
+        }
+        ResolvedGearGeometry::Bevel(r) => {
+            return Ok(NativeSpecification::Bevel(SphericalBevelGear {
+                teeth: r.teeth,
+                pitch_cone_angle_rad: r.pitch_cone_angle_rad,
+                base_cone_angle_rad: r.base_cone_angle_rad,
+                tip_cone_angle_rad: r.tip_cone_angle_rad,
+                root_cone_angle_rad: r.root_cone_angle_rad,
+                outer_cone_distance_mm: r.outer_cone_distance_mm,
+                face_width_mm: r.face_width_mm,
+                bore_radius_mm: r.bore_radius_mm,
+                half_base_tooth_angle_rad: r.half_base_angle_rad,
+                root_fillet_radius_mm: r.root_fillet_radius_mm,
             }));
         }
     };
@@ -76,6 +92,9 @@ pub(crate) fn build(
     let solid = match specification(feature, &r)? {
         NativeSpecification::Rotary(spec) => Solid::involute_gear_named(spec, feature, policy),
         NativeSpecification::Rack(spec) => Solid::straight_rack_named(spec, feature, policy),
+        NativeSpecification::Bevel(spec) => {
+            Solid::spherical_bevel_gear_named(spec, feature, policy)
+        }
     };
     let frame = r.frame();
     solid

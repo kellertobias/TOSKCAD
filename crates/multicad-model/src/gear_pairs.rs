@@ -5,10 +5,14 @@ use multicad_core::{
     document::{Document, EntityData, EntityId, Mutation},
     model::{self, GearPairDefinition},
     parameters::EvaluatedParameters,
+    references::TopologyKind,
 };
 use multicad_kernel::{BRepSelection, BooleanOperation, GeometryPolicy, RigidTransform, Solid};
 use serde::Serialize;
-use std::{collections::BTreeMap, f64::consts::TAU};
+use std::{
+    collections::BTreeMap,
+    f64::consts::{PI, TAU},
+};
 const SAMPLES: usize = 9;
 const MAX_PAIRS: usize = 64;
 pub(crate) fn validate_parameters(
@@ -36,9 +40,21 @@ pub(crate) fn validate_parameters(
     Ok(())
 }
 #[derive(Clone, Debug, Serialize)]
+pub struct GearEngagementWitness {
+    pub distance_mm: f64,
+    pub kind: &'static str,
+    /// Evaluation-local native face ordinals, never persistent source identity.
+    pub faces: Option<[u32; 2]>,
+    pub points_mm: [[f64; 3]; 2],
+}
+#[derive(Clone, Debug, Serialize)]
 pub struct GearPairCheck {
     pub pair: EntityId,
     pub center_distance_mm: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bevel: Option<model::ResolvedBevelPair>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_engagement: Option<GearEngagementWitness>,
     pub cycle_drive_angles_rad: Vec<f64>,
     pub cycle_reused: bool,
     pub current_drive_angle_rad: f64,
@@ -96,6 +112,124 @@ fn overlap(
     }
     Ok(())
 }
+fn bevel_flanks(
+    solid: &Solid,
+    feature: EntityId,
+    teeth: u32,
+    phase: f64,
+    meridian: f64,
+    pair: EntityId,
+) -> Result<Vec<u32>, ModelError> {
+    let center = ((meridian - phase).rem_euclid(TAU) * f64::from(teeth) / TAU).round() as i64;
+    let topology = solid
+        .topology_snapshot(feature, 0)
+        .map_err(|e| error(Some(pair), e))?;
+    let mut faces = vec![];
+    for offset in [0, -1, 1, -2, 2] {
+        let tooth = (center + offset).rem_euclid(i64::from(teeth));
+        let prefix = format!("bevel/tooth/{tooth}/spherical_involute.");
+        let mut found = [false; 2];
+        for face in &topology.elements {
+            if face.key.kind != TopologyKind::Face {
+                continue;
+            }
+            for (i, suffix) in ["left", "right"].iter().enumerate() {
+                if face.origins.iter().any(|origin| {
+                    origin.source == feature && origin.role == format!("{prefix}{suffix}")
+                }) {
+                    found[i] = true;
+                    if !faces.contains(&face.key.ordinal) {
+                        faces.push(face.key.ordinal);
+                    }
+                }
+            }
+        }
+        if !found.into_iter().all(|value| value) || faces.len() > 32 {
+            return Err(error(
+                Some(pair),
+                "Bevel engagement needs bounded native tooth-flank ancestry",
+            ));
+        }
+    }
+    Ok(faces)
+}
+fn bevel_engagement(
+    pair: EntityId,
+    features: [EntityId; 2],
+    resolved: &model::ResolvedGearPair,
+    solids: [&Solid; 2],
+    policy: GeometryPolicy,
+) -> Result<GearEngagementWitness, ModelError> {
+    let members = resolved
+        .gears
+        .each_ref()
+        .map(|gear| gear.bevel().expect("resolved bevel pair"));
+    let faces = [
+        bevel_flanks(
+            solids[0],
+            features[0],
+            members[0].teeth,
+            resolved.phases_rad[0],
+            0.,
+            pair,
+        )?,
+        bevel_flanks(
+            solids[1],
+            features[1],
+            members[1].teeth,
+            resolved.phases_rad[1],
+            PI,
+            pair,
+        )?,
+    ];
+    let clearance = members
+        .iter()
+        .map(|gear| gear.nominal_tooth_thickness_mm - gear.physical_tooth_thickness_mm)
+        .sum::<f64>();
+    let mut nearest = f64::INFINITY;
+    // Whole-solid intersection was checked before entering this function.
+    // We need an existence witness of close native flanks, not the global
+    // filled-solid minimum (whose containment work would duplicate that check).
+    // Every fast-path witness comes from actual named BRep faces. A miss falls
+    // back to the original whole-solid query, preserving acceptance outside
+    // this small search window and recording the different witness scope.
+    for &a in &faces[0] {
+        for &b in &faces[1] {
+            let distance = solids[0]
+                .minimum_distance(BRepSelection::Face(a), solids[1], BRepSelection::Face(b))
+                .map_err(|e| error(Some(pair), e))?;
+            nearest = nearest.min(distance.distance_mm);
+            if distance.distance_mm <= clearance + policy.linear_tolerance_mm * 10. {
+                let witness = &distance.witnesses[0];
+                return Ok(GearEngagementWitness {
+                    distance_mm: distance.distance_mm,
+                    kind: "bevel_flank_faces",
+                    faces: Some([a, b]),
+                    points_mm: [witness.a_mm, witness.b_mm],
+                });
+            }
+        }
+    }
+    let distance = solids[0]
+        .minimum_distance(BRepSelection::Whole, solids[1], BRepSelection::Whole)
+        .map_err(|e| error(Some(pair), e))?;
+    if distance.distance_mm <= clearance + policy.linear_tolerance_mm * 10. {
+        let witness = &distance.witnesses[0];
+        return Ok(GearEngagementWitness {
+            distance_mm: distance.distance_mm,
+            kind: "whole_solid_fallback",
+            faces: None,
+            points_mm: [witness.a_mm, witness.b_mm],
+        });
+    }
+    Err(error(
+        Some(pair),
+        format!(
+            "Gear members have no native engagement proximity: whole-solid gap {} mm and nearest candidate flank gap {nearest} mm exceed authored total thinning {clearance} mm",
+            distance.distance_mm
+        ),
+    ))
+}
 fn check_pose(
     document: &Document,
     evaluated: &EvaluatedParameters,
@@ -104,7 +238,7 @@ fn check_pose(
     solids: [&Solid; 2],
     drive: f64,
     policy: GeometryPolicy,
-) -> Result<(), ModelError> {
+) -> Result<Option<GearEngagementWitness>, ModelError> {
     let mut placed_solids = Vec::with_capacity(2);
     for (index, solid) in solids.into_iter().enumerate() {
         let pose =
@@ -115,7 +249,17 @@ fn check_pose(
     overlap(pair, &placed_solids[0], &placed_solids[1], drive, policy)?;
     let resolved = model::resolve_gear_pair_parameters(document, evaluated, &source.parameters)
         .map_err(|e| error(Some(pair), e))?;
-    if let Some(travel) = &resolved.rack_travel {
+    if resolved.bevel.is_some() {
+        return bevel_engagement(
+            pair,
+            source.parameters.gears,
+            &resolved,
+            [&placed_solids[0], &placed_solids[1]],
+            policy,
+        )
+        .map(Some);
+    }
+    let engagement_clearance = if let Some(travel) = &resolved.rack_travel {
         let rack = resolved.gears[travel.rack_member.index()]
             .rack()
             .expect("rack member");
@@ -125,9 +269,15 @@ fn check_pose(
         // A no-overlap result alone also accepts separated bodies. Require an
         // actual native proximity witness bounded by the total authored thinning.
         // This is sampled engagement evidence, never a contact/load certificate.
-        let clearance = rack.nominal_tooth_thickness_mm - rack.physical_tooth_thickness_mm
-            + pinion.nominal_tooth_thickness_mm
-            - pinion.physical_tooth_thickness_mm;
+        Some(
+            rack.nominal_tooth_thickness_mm - rack.physical_tooth_thickness_mm
+                + pinion.nominal_tooth_thickness_mm
+                - pinion.physical_tooth_thickness_mm,
+        )
+    } else {
+        None
+    };
+    if let Some(clearance) = engagement_clearance {
         let distance = placed_solids[0]
             .minimum_distance(
                 BRepSelection::Whole,
@@ -139,13 +289,13 @@ fn check_pose(
             return Err(error(
                 Some(pair),
                 format!(
-                    "Rack and pinion have no native engagement proximity: gap {} mm exceeds authored total thinning {} mm",
+                    "Gear members have no native engagement proximity: gap {} mm exceeds authored total thinning {} mm",
                     distance.distance_mm, clearance
                 ),
             ));
         }
     }
-    Ok(())
+    Ok(None)
 }
 fn sample_document(
     document: &Document,
@@ -269,11 +419,16 @@ pub(crate) fn validate(
             .drive_angle
             .value_in(multicad_core::parameters::Unit::Radian, Some(evaluated))
             .map_err(|e| error(Some(pair), e))?;
-        check_pose(document, evaluated, &source, pair, [a, b], current, policy)?;
-        reports.insert(pair,GearPairCheck{pair,center_distance_mm:resolved.center_distance_mm,cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
+        let current_engagement =
+            check_pose(document, evaluated, &source, pair, [a, b], current, policy)?;
+        reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
     }
     Ok(reports)
 }
+
+#[cfg(test)]
+#[path = "gear_pairs/bevel_tests.rs"]
+mod bevel_tests;
 
 #[cfg(test)]
 mod tests {

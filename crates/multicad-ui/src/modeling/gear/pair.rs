@@ -130,8 +130,12 @@ impl GearPairPanel {
         let rack_member = (primary.family == GearFamily::Rack).then_some(0);
         let secondary_backing = primary.rack_backing.clone();
         let secondary = [
-            DimensionField::from_dimension(&template.gears[1].parameters.teeth, "count")
-                .expect("preset count"),
+            if primary.family == GearFamily::Bevel {
+                primary.bevel_mate.clone()
+            } else {
+                DimensionField::from_dimension(&template.gears[1].parameters.teeth, "count")
+                    .expect("preset count")
+            },
             primary.fields[6].clone(),
             primary.fields[7].clone(),
             primary.fields[8].clone(),
@@ -250,6 +254,9 @@ impl GearPairPanel {
         p.request.parameters.frame = self.template.parameters.frame.clone();
         p.origin = self.origin.clone();
         p.plane = self.plane;
+        if p.family == GearFamily::Bevel {
+            p.bevel_mate = self.secondary[0].clone();
+        }
         p.stamp = FormStamp::new();
         p
     }
@@ -306,7 +313,7 @@ impl GearPairPanel {
                 gears: None,
             }
         } else {
-            let first = self.primary.request(document, enabled)?.parameters;
+            let first = self.primary.authored_request(document, enabled)?.parameters;
             let second = GearParameters {
                 family: if let Some(index) = self.rack_member {
                     if index == 1 {
@@ -352,6 +359,15 @@ impl GearPairPanel {
                 frame: self.template.gears[1].parameters.frame.clone(),
                 ..first.clone()
             };
+            let [first, second] = if first.family == GearFamily::Bevel {
+                model::couple_bevel_pair_recipes(
+                    &[first, second],
+                    &self.primary.bevel_shaft.resolve(document)?,
+                )
+                .map_err(|e| e.to_string())?
+            } else {
+                [first, second]
+            };
             if self.editing {
                 GearPairCommand::Edit {
                     pair: self.template.pair,
@@ -390,6 +406,19 @@ impl GearPairPanel {
                 travel.rack_member, travel.pinion_member, travel.translation_mm
             ));
             Self::show_travel_limits(ui, travel);
+        } else if let Some(bevel) = &resolved.bevel {
+            ui.small(format!(
+                "Shared pitch apex · shaft {:.4}° · pitch cones {:.4}° / {:.4}° · ratio {} : {}",
+                bevel.shaft_angle_rad.to_degrees(),
+                bevel.pitch_cone_angles_rad[0].to_degrees(),
+                bevel.pitch_cone_angles_rad[1].to_degrees(),
+                resolved.gears[0].teeth(),
+                resolved.gears[1].teeth()
+            ));
+            ui.small(format!(
+                "Outer cone distance {:.4} mm · pitch-cone face width {:.4} mm",
+                bevel.cone_distance_mm, bevel.face_width_mm
+            ));
         } else {
             ui.small(format!(
                 "Center distance {:.4} mm · {} : {} teeth",
@@ -473,9 +502,9 @@ impl GearPairPanel {
                 });
             }
             let previous_family = self.primary.family;
-            changed |= self
-                .primary
-                .geometry_controls_with_family(ui, self.rack_member.is_none());
+            changed |=
+                self.primary
+                    .geometry_controls_with_family(ui, self.rack_member.is_none(), true);
             if self.primary.family == GearFamily::Rack && self.rack_member.is_none() {
                 self.set_rack_member(Some(0));
                 changed = true;
@@ -573,7 +602,7 @@ impl GearPairPanel {
                     "Outside rim must meet the shared minimum-wall requirement",
                 );
             }
-            ui.small(if self.rack_member.is_some() { "Straight rack and spur pinion share module, pressure angle, face width and custom root ratio. The pinion stays at +Y × pitch radius; the rack translates on local X." } else if ring || self.primary.family == GearFamily::InternalRing {"Ring/pinion share module, 20° pressure angle and face width. Centers use the radius difference; both rotate in the same direction."} else {"The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite."});
+            ui.small(if self.primary.family == GearFamily::Bevel { "Both spherical-involute members share the pitch apex and typed shaft angle. Each mate count follows the opposite authored tooth-count dimension; source geometry updates atomically." } else if self.rack_member.is_some() { "Straight rack and spur pinion share module, pressure angle, face width and custom root ratio. The pinion stays at +Y × pitch radius; the rack translates on local X." } else if ring || self.primary.family == GearFamily::InternalRing {"Ring/pinion share module, 20° pressure angle and face width. Centers use the radius difference; both rotate in the same direction."} else {"The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite."});
         } else {
             for gear in &self.template.gears {
                 ui.small(&gear.name);
@@ -594,7 +623,15 @@ impl GearPairPanel {
         for (index, (field, label)) in self
             .origin
             .iter_mut()
-            .zip(["Pair origin X", "Pair origin Y", "Pair origin Z"])
+            .zip(if self.primary.family == GearFamily::Bevel {
+                [
+                    "Shared pitch apex X",
+                    "Shared pitch apex Y",
+                    "Shared pitch apex Z",
+                ]
+            } else {
+                ["Pair origin X", "Pair origin Y", "Pair origin Z"]
+            })
             .enumerate()
         {
             changed |= field.show_named(
@@ -900,6 +937,127 @@ mod rack_roles_tests {
                 .unwrap_err()
                 .contains("finite end travel")
         );
+        assert_eq!(session.revision(), 0);
+        assert!(!session.can_undo());
+    }
+}
+
+#[cfg(test)]
+mod bevel_pair_fields_tests {
+    use super::*;
+    use multicad_core::{
+        constraint_sketch::Dimension,
+        document::{Entity, Mutation},
+        parameters::BoundExpression,
+    };
+    #[test]
+    fn bevel_pair_clones_opposite_authored_counts_and_shared_shaft_before_resolution() {
+        let entities = [
+            ("teeth_a", "24", "count"),
+            ("teeth_b", "36", "count"),
+            ("shaft", "90 deg", "deg"),
+        ]
+        .map(|(name, expression, unit)| {
+            Entity::new(
+                name,
+                EntityData::Parameter {
+                    expression: expression.into(),
+                    unit: unit.into(),
+                    exposed: false,
+                    inputs: vec![],
+                },
+            )
+        });
+        let document = Document::new("Typed bevel pair")
+            .unwrap()
+            .edited(
+                &entities
+                    .into_iter()
+                    .map(Mutation::Insert)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let session = Session::new(document.clone()).unwrap();
+        let expression = |text, unit| Dimension::Expression {
+            expression: BoundExpression::bind(&document, text, unit, None).unwrap(),
+        };
+        let a = expression("=$teeth_a", "count");
+        let b = expression("=$teeth_b", "count");
+        let shaft = expression("=$shaft", "deg");
+        let primary = GearPanel::new(
+            GearRequest::new(
+                "Pair",
+                GearParameters {
+                    family: GearFamily::Bevel,
+                    module: model::length(1.),
+                    face_width: model::length(2.),
+                    bore_diameter: model::length(2.),
+                    teeth: a.clone(),
+                    bevel: Some(model::BevelDimensions {
+                        tooth_system: model::BevelToothSystem::SphericalInvoluteStraight,
+                        mate_teeth: b.clone(),
+                        shaft_angle: shaft.clone(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            session.parameters().clone(),
+            false,
+        )
+        .unwrap();
+        let mut panel = GearPairPanel::from_single(primary);
+        let GearPairCommand::Create(first) = panel.request(&document, true).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(first.gears[0].parameters.teeth, a);
+        assert_eq!(first.gears[1].parameters.teeth, b);
+        for (i, mate) in [b.clone(), a.clone()].iter().enumerate() {
+            let bevel = first.gears[i].parameters.bevel.as_ref().unwrap();
+            assert_eq!(&bevel.mate_teeth, mate);
+            assert_eq!(bevel.shaft_angle, shaft);
+        }
+        panel.secondary[0].set_literal(48., "count");
+        let GearPairCommand::Create(edited) = panel.request(&document, true).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(
+            edited.gears[0]
+                .parameters
+                .bevel
+                .as_ref()
+                .unwrap()
+                .mate_teeth,
+            edited.gears[1].parameters.teeth
+        );
+        assert_eq!(
+            edited.gears[1]
+                .parameters
+                .bevel
+                .as_ref()
+                .unwrap()
+                .mate_teeth,
+            a
+        );
+        assert_eq!(edited.pair, first.pair);
+        assert_eq!(edited.outputs, first.outputs);
+        assert_eq!(edited.placement, first.placement);
+        assert_eq!(edited.gears[0].feature, first.gears[0].feature);
+        assert_eq!(edited.gears[1].feature, first.gears[1].feature);
+        let single = panel.as_single();
+        assert_eq!(
+            single
+                .request(&document, true)
+                .unwrap()
+                .parameters
+                .bevel
+                .as_ref()
+                .unwrap()
+                .mate_teeth,
+            edited.gears[1].parameters.teeth
+        );
+        panel.primary.bevel_shaft.set_literal(80., "deg");
+        assert!(panel.request(&document, true).is_err());
+        assert_eq!(session.document(), &document);
         assert_eq!(session.revision(), 0);
         assert!(!session.can_undo());
     }

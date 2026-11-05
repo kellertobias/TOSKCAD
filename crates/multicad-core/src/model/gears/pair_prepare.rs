@@ -255,7 +255,7 @@ fn pair_edit(
             // Derived Sessions combine checked source edits only. The caller
             // receives one transaction tied to the original live Session.
             let stage = Session::new(candidate)?;
-            let edit = prepare_gear_edit(
+            let edit = super::prepare::prepare_gear_edit_in_pair(
                 &stage,
                 stage.revision(),
                 actor.clone(),

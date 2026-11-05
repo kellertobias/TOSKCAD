@@ -75,10 +75,53 @@ pub fn prepare_gear_edit(
     feature: EntityId,
     parameters: &GearParameters,
 ) -> Result<ModelPrepared, CommandError> {
+    prepare_gear_edit_impl(
+        session,
+        expected_revision,
+        actor,
+        feature,
+        parameters,
+        false,
+    )
+}
+pub(super) fn prepare_gear_edit_in_pair(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    feature: EntityId,
+    parameters: &GearParameters,
+) -> Result<ModelPrepared, CommandError> {
+    prepare_gear_edit_impl(session, expected_revision, actor, feature, parameters, true)
+}
+fn prepare_gear_edit_impl(
+    session: &Session,
+    expected_revision: u64,
+    actor: Actor,
+    feature: EntityId,
+    parameters: &GearParameters,
+    pair_edit: bool,
+) -> Result<ModelPrepared, CommandError> {
     revision(session, expected_revision)?;
     super::super::extrude_group::reject_individual_edit(session.document(), feature)?;
     let mut source = read_gear(session.document(), feature)?;
     parameters.resolve_geometry(session.parameters())?;
+    if !pair_edit
+        && (source.parameters.family == GearFamily::Bevel || parameters.family == GearFamily::Bevel)
+    {
+        let old = &source.parameters;
+        let coupled_changed = old.family != parameters.family
+            || old.teeth != parameters.teeth
+            || old.bevel != parameters.bevel
+            || old.module != parameters.module
+            || old.pressure_angle != parameters.pressure_angle
+            || old.face_width != parameters.face_width;
+        if coupled_changed && session.document().entities().any(|entity| {
+            matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == GEAR_PAIR_TYPE)
+                && read_gear_pair(session.document(), entity.id).is_ok_and(|pair| pair.parameters.gears.contains(&feature))
+        }) {
+            return Err(crate::model::common::error("Edit coupled bevel dimensions through the complete pair so both recipes and cone placements update atomically"));
+        }
+    }
     source.parameters = parameters.clone();
     prepare_edit(
         session,

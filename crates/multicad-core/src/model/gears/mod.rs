@@ -1,4 +1,5 @@
 //! Canonical involute gear intent. Native receipts still gate geometry Apply.
+mod bevel;
 mod pair;
 mod pair_prepare;
 mod prepare;
@@ -16,6 +17,7 @@ use crate::{
     parameters::{EvaluatedParameters, Unit},
     sketch::Frame,
 };
+pub use bevel::*;
 pub use pair::*;
 pub use pair_prepare::*;
 pub use prepare::*;
@@ -47,6 +49,8 @@ pub struct GearParameters {
     pub family: GearFamily,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rack: Option<RackDimensions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bevel: Option<BevelDimensions>,
     pub module_system: GearModuleSystem,
     pub module: Dimension,
     pub teeth: Dimension,
@@ -78,6 +82,7 @@ impl Default for GearParameters {
         Self {
             family: GearFamily::Spur,
             rack: None,
+            bevel: None,
             module_system: GearModuleSystem::Normal,
             module: length(2.),
             teeth: Dimension::Literal {
@@ -154,6 +159,10 @@ impl GearParameters {
         if let Some(rack) = &self.rack {
             dimensions.push((&rack.backing_thickness, Unit::Millimeter));
         }
+        if let Some(bevel) = &self.bevel {
+            dimensions.push((&bevel.mate_teeth, Unit::Count));
+            dimensions.push((&bevel.shaft_angle, Unit::Degree));
+        }
         dimensions.extend(self.frame.origin.iter().map(|d| (d, Unit::Millimeter)));
         dimensions
     }
@@ -162,11 +171,27 @@ impl GearParameters {
         for (dimension, unit) in self.dimensions() {
             check_dimension(dimension, unit)?;
         }
-        if !self.family.supported() {
+        // Native support is advertised only after its verification gate. The
+        // canonical Bevel path may prepare candidates while that gate runs.
+        if !self.family.supported() && self.family != GearFamily::Bevel {
             return Err(invalid(format!(
                 "{} is not implemented",
                 self.family.label()
             )));
+        }
+        if (self.family == GearFamily::Bevel) != self.bevel.is_some() {
+            return Err(invalid(
+                "Bevel recipes require declared tooth/cone dimensions; other families must omit them",
+            ));
+        }
+        if self
+            .bevel
+            .as_ref()
+            .is_some_and(|bevel| !bevel.tooth_system.supported())
+        {
+            return Err(invalid(
+                "Only declared spherical-involute straight bevels are available; Gleason/octoid, spiral and zerol are unsupported",
+            ));
         }
         if (self.family == GearFamily::Rack) != self.rack.is_some() {
             return Err(invalid(
@@ -185,6 +210,11 @@ impl GearParameters {
         if self.family == GearFamily::Rack {
             return Err(invalid(
                 "Rack geometry has no rotary radii; use resolve_geometry",
+            ));
+        }
+        if self.family == GearFamily::Bevel {
+            return Err(invalid(
+                "Bevel geometry has no cylindrical rotary radii; use resolve_geometry",
             ));
         }
         let module = number(&self.module, Unit::Millimeter, parameters)?;

@@ -235,6 +235,7 @@ pub fn read_gear_pair(
 pub struct ResolvedGearPair {
     pub gears: [ResolvedGearGeometry; 2],
     pub rack_travel: Option<ResolvedRackTravel>,
+    pub bevel: Option<ResolvedBevelPair>,
     pub center_distance_mm: f64,
     pub phases_rad: [f64; 2],
     pub mating: [ReferenceFrame; 2],
@@ -260,10 +261,14 @@ impl GearPairParameters {
         evaluated: &EvaluatedParameters,
     ) -> Result<ResolvedGearPair, DocumentError> {
         self.validate()?;
+        super::bevel::validate_bevel_pair_sources(recipes)?;
         let gears = [
             recipes[0].resolve_geometry(evaluated)?,
             recipes[1].resolve_geometry(evaluated)?,
         ];
+        if gears.iter().any(|gear| gear.family() == GearFamily::Bevel) {
+            return self.resolve_bevel_pair(gears, evaluated);
+        }
         if gears.iter().any(|gear| gear.family() == GearFamily::Rack) {
             return self.resolve_rack_pair(gears, evaluated);
         }
@@ -368,6 +373,7 @@ impl GearPairParameters {
         });
         Ok(ResolvedGearPair {
             rack_travel: None,
+            bevel: None,
             gears,
             center_distance_mm: center,
             phases_rad: phases,

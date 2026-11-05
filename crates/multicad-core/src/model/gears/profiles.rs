@@ -47,10 +47,13 @@ impl GearFamily {
                 | Self::DoubleHelical
                 | Self::InternalRing
                 | Self::Rack
+                | Self::Bevel
         )
     }
     pub fn source(self) -> &'static str {
-        if self == Self::Rack {
+        if self == Self::Bevel {
+            super::BEVEL_PROFILE_SOURCE
+        } else if self == Self::Rack {
             super::RACK_PROFILE_SOURCE
         } else if self == Self::InternalRing {
             "KHK unshifted 20-degree internal spur geometry; 48/60 teeth, custom circular root fillets; source revision 1"

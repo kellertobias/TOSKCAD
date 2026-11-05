@@ -139,6 +139,7 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
         let mut s = Session::new(Document::new("Framed gear").unwrap()).unwrap();
         let internal = family == GearFamily::InternalRing;
         let rack = family == GearFamily::Rack;
+        let bevel = family == GearFamily::Bevel;
         let helical = matches!(
             family,
             GearFamily::Helical | GearFamily::Herringbone | GearFamily::DoubleHelical
@@ -151,7 +152,15 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
                     value: if internal { 48. } else { 24. },
                     unit: "count".into(),
                 },
-                bore_diameter: length(if internal || rack { 0. } else { 8. }),
+                bore_diameter: length(if internal || rack || bevel { 0. } else { 8. }),
+                bevel: bevel.then(|| model::BevelDimensions {
+                    tooth_system: model::BevelToothSystem::SphericalInvoluteStraight,
+                    mate_teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 32.,
+                        unit: "count".into(),
+                    },
+                    shaft_angle: angle(90.),
+                }),
                 rack: rack.then(|| model::RackDimensions {
                     backing_thickness: length(4.),
                 }),
@@ -182,8 +191,23 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
         let solid = built.solid(request.feature).unwrap();
         assert_eq!(solid.solid_count().unwrap(), 1);
         let bounds = solid.bounds().unwrap();
-        assert!((bounds.min[0] - 10.).abs() < 1e-6);
-        assert!((bounds.max[0] - 14.).abs() < 1e-6);
+        if bevel {
+            let geometry = request.parameters.resolve_geometry(s.parameters()).unwrap();
+            let cone = geometry.bevel().unwrap();
+            // Source frame maps local shaft Z to world X. Back cones, rather
+            // than planar extrusion caps, set the two axial limits.
+            assert!((bounds.min[0] - (10. + cone.toe_tip_axial_mm)).abs() < 1e-4);
+            assert!(
+                (bounds.max[0]
+                    - (10. + cone.outer_cone_distance_mm / cone.pitch_cone_angle_rad.cos()))
+                .abs()
+                    < 1e-4
+            );
+            assert!((bounds.max[1] - (20. + cone.heel_tip_radius_mm)).abs() < 1e-4);
+        } else {
+            assert!((bounds.min[0] - 10.).abs() < 1e-6);
+            assert!((bounds.max[0] - 14.).abs() < 1e-6);
+        }
         if rack {
             let half_length = 24. * std::f64::consts::PI;
             assert!((bounds.min[1] - (20. - half_length)).abs() < 1e-6);

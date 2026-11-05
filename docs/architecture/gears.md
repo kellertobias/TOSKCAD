@@ -24,7 +24,7 @@ inspector and refused by canonical preparation and MCP.
 | Double-helical | Two tooth bands separated by a root-core center gap | Matching external family, width and gap | Distinct from continuous-center herringbone |
 | Internal ring | Native inward involute teeth and connected outer rim | 24-tooth spur pinion with 48/60-tooth ring; either member order | Unshifted 20-degree spur subset; explicit outside diameter |
 | Rack | Native straight flanks, circular root transitions and connected backing | One matching unshifted spur pinion; either member order | 4-64 whole centered pitch cells, zero helix, conservative finite travel |
-| Bevel | Unavailable | Unavailable | [CAD-229](https://plans.tokenet.de/CAD/229) |
+| Straight bevel | Spherical-involute flanks, back-cone heel/toe boundaries and custom spherical-circle root transitions | Intersecting 90-degree shafts with a shared pitch apex and derived tooth-count ratio | Declared 20-degree, zero-shift subset; 24-64 teeth per member; availability follows the registry |
 | Worm and wheel | Unavailable | Unavailable | [CAD-230](https://plans.tokenet.de/CAD/230) |
 
 Intrinsic hubs, nonzero profile shift and explicit diametral-pitch input remain
@@ -35,9 +35,9 @@ root wall and two separate tangential thinning inputs. Design backlash applies
 per gear at its reference circle; fabrication allowance adds further thinning.
 Neither is a strength, standardized fit or printer calibration setting.
 
-The canonical policy bounds module to at least 0.01 mm, rotary count to 4–128 whole
-teeth (rack count is 4-64 cells), the selected pressure angle to 14.5–35 degrees and helix magnitude to
-0–45 degrees. Additional resolved geometry checks can refuse a recipe within
+The canonical policy bounds module to at least 0.01 mm, rotary count to 4-128 whole
+teeth (rack count is 4-64 cells; the bevel subset has separate limits below), the selected pressure angle to 14.5-35 degrees and helix magnitude to
+0-45 degrees. Additional resolved geometry checks can refuse a recipe within
 those input ranges. In particular, the conservative unshifted rotary gear/pinion tooth-count
 policy uses `ceil(2 / sin(normal_pressure_angle)^2)` without virtual-tooth
 credit for a helix. This is the supported envelope, not a universal cutting or
@@ -53,7 +53,7 @@ implied by these geometric conventions.
 
 ## Native geometry and paired placement
 
-The [native adapter](../../crates/multicad-kernel/src/gears.cpp) constructs a
+The [rotary involute adapter](../../crates/multicad-kernel/src/gears.cpp) constructs a
 C1 cubic Hermite approximation to analytic involutes under a conservative
 linear-tolerance error bound, with native circular tip/root arcs and fillets.
 Helical faces follow a continuous auxiliary-spine sweep. Continuous herringbone
@@ -70,7 +70,7 @@ component Move/Copy controls outer placement; copies share the pair definition's
 internal drive coordinate.
 
 The native pair guard accepts matching external families or the bounded
-internal-ring/spur or finite rack/spur combinations described below. It requires matching transverse module and
+internal-ring/spur, finite rack/spur or intersecting-axis bevel combinations described below. It requires matching transverse module and
 pressure angle, face width, gap and applicable helix magnitude/opposite hands.
 The Part heads must remain the gear generators. It checks actual B-reps at
 nine phases over one pinion tooth cycle and at the current pose. Completed cycle
@@ -176,6 +176,103 @@ The [core tests](../../crates/multicad-core/tests/model_rack_gears.rs),
 [kernel section/STEP matrix](../../crates/multicad-kernel/tests/straight_rack.rs)
 and [native pair/export tests](../../crates/multicad-model/tests/rack_gears.rs)
 own the corresponding executable checks.
+
+## Spherical-involute straight bevel subset
+
+The [bevel source](../../crates/multicad-core/src/model/gears/bevel.rs)
+defines a bounded straight-bevel system with a separate resolved cone geometry.
+This section states the declared implementation contract; it does not record
+completed native or interactive verification. The registry controls advertised
+availability. Gleason/octoid, spiral and Zerol systems remain unavailable.
+
+A bevel recipe adds optional `bevel` dimensions: `tooth_system`, `mate_teeth`
+and `shaft_angle`. Other families omit the object. The supported system is
+`spherical_involute_straight`, with 20-degree pressure, 90-degree intersecting
+shafts and 24-64 whole teeth on each member. Outer module must be at least
+0.01 mm. Face width follows the pitch-cone generator and must not exceed
+`min(R/3,10*m)`. Helix, center gap and profile shift are zero, hand is `none`
+and outside diameter is absent; intrinsic hubs are unavailable. Normal and transverse
+module coincide at zero helix. The source frame origin is the pitch apex.
+The toe root envelope must retain the authored minimum wall around the bore.
+
+The active flank follows Ligata and Zhang's
+[2011 IAJC-ASEE paper, PDF page 2, equations 1-3](https://ijme.us/cd_11/PDF/Paper%20163%20ENG%20107.pdf).
+For base half-cone angle beta and roll parameter t, let
+`B=(sin(beta)*cos(t),sin(beta)*sin(t),cos(beta))` and
+`T=(-sin(t),cos(t),0)`.
+The unit spherical flank is
+`C=cos(t*sin(beta))*B-sin(t*sin(beta))*T`, with
+`sin(beta)=sin(delta)*cos(alpha)`.
+Multiplying C by distance from the apex generates the flank surface.
+Its centering uses the spherical involute at the pitch cone.
+The paper distinguishes octoidal cutting approximations on PDF page 3 and
+uses a separately designed smooth root transition on PDF page 6.
+
+Blank dimensions follow
+[KHK Table 4.17, PDF page 31, printed page 623](https://khkgears.us/media/izojpong/gear_guide1.pdf)
+and the [KG standard straight-bevel table, PDF page 1, printed page 113](https://www.kggear.co.jp/en/wp-content/themes/bizvektor-global-edition/pdf/9.7_Calculation-for-Standard-straight-bevel-gear_TechnicalData_KGSTOCKGEARS.pdf).
+Neither retrieved manufacturer excerpt identifies a publication revision.
+The [source manifest](../../artifacts/bevel-review-20261105/source-file-manifest.json)
+retains their byte hashes. These blank conventions combined with the academic
+flank form define the declared engineering system; they do
+not establish Gleason or Klingelnberg cutter conformity.
+
+For module m and tooth counts z and zm, `delta=atan(z/zm)` and
+`R=m*z/(2*sin(delta))`. Heel addendum is m and dedendum is 1.25m.
+The tip and root cone angles are `delta+atan(m/R)` and
+`delta-atan(1.25*m/R)`.
+In a radial meridian, heel and toe satisfy
+`r*sin(delta)+z_axial*cos(delta)=R` and `R-b` respectively.
+A direction at polar angle gamma therefore reaches the heel at
+`rho=R/cos(gamma-delta)` and the toe at `(R-b)/cos(gamma-delta)`.
+These back-cone boundaries determine the reported diameters and axial limits.
+Spherical caps or flat axial caps would give different dimensions.
+
+The [native adapter](../../crates/multicad-kernel/src/bevel.cpp) uses these
+spherical-involute directions and cone boundaries. Roots use explicitly custom
+tangent small circles on the outer reference sphere, projected onto the back
+cones. Their radius is `module*root_fillet_ratio`; they connect the root cone
+to the active flank or its bounded meridian extension below the base cone.
+They are engineering transitions without a cutter-generated root claim.
+[Fuentes-Aznar, Gonzalez-Perez and Pasapula, March 2017, printed pages 28-29](https://thermalprocessing.com/wp-content/uploads/2017/201703/0317-Forging.pdf)
+corroborate spherical flank orientation and cone dimensions, but their radial
+surface parameter does not define the manufacturer's back-cone trimming.
+
+A bevel pair clones each member's opposite original typed tooth-count dimension
+into its `mate_teeth`. Both recipes share one typed `shaft_angle`; an expression
+remains an expression with its existing bindings. Canonical preparation refuses
+conflicting complete recipes. Updating both recipes is atomic, and a single
+member edit cannot break the pair's coupling. Existing assembly anchors remove
+local definition frames before applying the common apex and shaft layout.
+
+In the pair basis, member A's shaft is +Z and member B's shaft is rotated about
++Y through the shared shaft angle. Their mating meridians are A=0 and B=pi.
+For drive theta, phases are `theta` and `pi-pi/zB-theta*zA/zB`.
+The second member follows the negative tooth-count ratio. Pair inspection
+returns a separate `bevel` cone context; its center-distance field is zero
+because the pitch apices coincide.
+
+The [native pair guard](../../crates/multicad-model/src/gear_pairs.rs) checks
+whole-solid no-overlap before seeking engagement proximity. All nine tooth-cycle
+samples and the current pose retain these checks. Completed cycle reuse excludes
+the drive coordinate only; current pose still runs on every compile.
+`current_engagement` records `distance_mm`, `kind`, `faces` and `points_mm`.
+`bevel_flank_faces` identifies an actual close named-face pair within the sum
+of authored thinning plus ten linear tolerances. It is an existence witness,
+not the global minimum distance. If the bounded face search misses, the guard
+runs the whole-solid query and records `whole_solid_fallback` with null `faces`.
+Face ordinals are evaluation-local and cannot serve as persistent references.
+The points use the evaluated pair layout coordinates before any independent
+outer occurrence placement. This report does not certify continuous motion,
+loaded contact or physical fit.
+
+`model.gear.bevel.1` is required when direct, suppressed or template-only saved
+source contains a bevel recipe. A reader lacking this capability refuses the
+project instead of interpreting it as a spur gear. The
+[core reader checks](../../crates/multicad-core/tests/model_bevel_gears.rs),
+[native adapter tests](../../crates/multicad-kernel/tests/spherical_bevel.rs) and
+[model pair tests](../../crates/multicad-model/tests/bevel_gears.rs) define the
+executable checks; their presence alone does not record a passing run.
 
 ## Editing and verification boundaries
 

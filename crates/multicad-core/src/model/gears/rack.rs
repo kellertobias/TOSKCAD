@@ -36,36 +36,46 @@ pub struct ResolvedRack {
 pub enum ResolvedGearGeometry {
     Rotary(ResolvedGear),
     Rack(ResolvedRack),
+    Bevel(ResolvedBevel),
 }
 impl ResolvedGearGeometry {
     pub fn frame(&self) -> Frame {
         match self {
             Self::Rotary(r) => r.frame,
             Self::Rack(r) => r.frame,
+            Self::Bevel(r) => r.frame,
         }
     }
     pub fn teeth(&self) -> u32 {
         match self {
             Self::Rotary(r) => r.teeth,
             Self::Rack(r) => r.teeth,
+            Self::Bevel(r) => r.teeth,
         }
     }
     pub fn family(&self) -> GearFamily {
         match self {
             Self::Rotary(r) => r.family,
             Self::Rack(_) => GearFamily::Rack,
+            Self::Bevel(_) => GearFamily::Bevel,
         }
     }
     pub fn rotary(&self) -> Option<&ResolvedGear> {
         match self {
             Self::Rotary(r) => Some(r),
-            Self::Rack(_) => None,
+            Self::Rack(_) | Self::Bevel(_) => None,
+        }
+    }
+    pub fn bevel(&self) -> Option<&ResolvedBevel> {
+        match self {
+            Self::Bevel(r) => Some(r),
+            _ => None,
         }
     }
     pub fn rack(&self) -> Option<&ResolvedRack> {
         match self {
             Self::Rack(r) => Some(r),
-            Self::Rotary(_) => None,
+            Self::Rotary(_) | Self::Bevel(_) => None,
         }
     }
 }
@@ -74,6 +84,11 @@ impl GearParameters {
         &self,
         parameters: &EvaluatedParameters,
     ) -> Result<ResolvedGearGeometry, DocumentError> {
+        if self.family == GearFamily::Bevel {
+            return self
+                .resolve_bevel(parameters)
+                .map(ResolvedGearGeometry::Bevel);
+        }
         if self.family != GearFamily::Rack {
             return self.resolve(parameters).map(ResolvedGearGeometry::Rotary);
         }
@@ -281,6 +296,7 @@ impl GearPairParameters {
             phases_rad: phases,
             mating,
             rack_travel: Some(travel),
+            bevel: None,
         })
     }
 }

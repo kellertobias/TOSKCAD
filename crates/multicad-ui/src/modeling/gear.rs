@@ -8,11 +8,45 @@ use super::{
 use crate::{controls, egui};
 use multicad_core::{
     document::Document,
-    model::{GearFamily, GearHand, GearModuleSystem, GearRequest, PrimitiveFrame, angle},
+    model::{
+        BevelDimensions, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearRequest,
+        PrimitiveFrame, angle,
+    },
     parameters::EvaluatedParameters,
     sketch::Datum,
 };
 pub use pair::GearPairCommand;
+
+fn bevel_system_label(system: BevelToothSystem) -> &'static str {
+    match system {
+        BevelToothSystem::SphericalInvoluteStraight => "Spherical-involute straight",
+        BevelToothSystem::GleasonOctoid => "Gleason / octoid (unavailable)",
+        BevelToothSystem::Spiral => "Spiral bevel (unavailable)",
+        BevelToothSystem::Zerol => "Zerol (unavailable)",
+    }
+}
+
+fn show_bevel_summary(ui: &mut egui::Ui, r: &multicad_core::model::ResolvedBevel) {
+    ui.small(format!(
+        "Pitch cone {:.4}° · base cone {:.4}° · outer cone distance R {:.4} mm",
+        r.pitch_cone_angle_rad.to_degrees(),
+        r.base_cone_angle_rad.to_degrees(),
+        r.outer_cone_distance_mm
+    ));
+    ui.small(format!(
+        "Back-cone heel / toe tip Ø {:.4} / {:.4} mm · root Ø {:.4} / {:.4} mm",
+        2. * r.heel_tip_radius_mm,
+        2. * r.toe_tip_radius_mm,
+        2. * r.heel_root_radius_mm,
+        2. * r.toe_root_radius_mm
+    ));
+    ui.small(format!(
+        "Pitch-cone face width {:.4} mm · toe bore wall {:.4} mm (minimum {:.4} mm)",
+        r.face_width_mm,
+        r.toe_root_radius_mm - r.bore_radius_mm,
+        r.minimum_wall_mm
+    ));
+}
 
 #[derive(Clone)]
 pub(super) struct GearPanel {
@@ -21,6 +55,9 @@ pub(super) struct GearPanel {
     fields: [DimensionField; 11],
     outside: DimensionField,
     rack_backing: DimensionField,
+    bevel_mate: DimensionField,
+    bevel_shaft: DimensionField,
+    bevel_system: BevelToothSystem,
     origin: [DimensionField; 3],
     family: GearFamily,
     system: GearModuleSystem,
@@ -39,6 +76,23 @@ impl GearPanel {
         let p = &request.parameters;
         let field = DimensionField::from_dimension;
         Ok(Self {
+            bevel_mate: field(
+                p.bevel.as_ref().map(|b| &b.mate_teeth).unwrap_or(&p.teeth),
+                "count",
+            )?,
+            bevel_shaft: field(
+                p.bevel
+                    .as_ref()
+                    .map(|b| &b.shaft_angle)
+                    .unwrap_or(&angle(90.)),
+                "deg",
+            )?,
+            bevel_system: p
+                .bevel
+                .as_ref()
+                .map_or(BevelToothSystem::SphericalInvoluteStraight, |b| {
+                    b.tooth_system
+                }),
             rack_backing: field(
                 p.rack
                     .as_ref()
@@ -123,6 +177,15 @@ impl GearPanel {
         }
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<GearRequest, String> {
+        let request = self.authored_request(document, enabled)?;
+        request
+            .parameters
+            .resolve_geometry(&self.parameters)
+            .map_err(|e| e.to_string())?;
+        Ok(request)
+    }
+    // Pairs couple typed mate dimensions before resolving either member.
+    fn authored_request(&self, document: &Document, enabled: bool) -> Result<GearRequest, String> {
         if !enabled {
             return Err("The native modeling preview provider is unavailable".into());
         }
@@ -157,6 +220,15 @@ impl GearPanel {
         } else {
             None
         };
+        p.bevel = if self.family == GearFamily::Bevel {
+            Some(BevelDimensions {
+                tooth_system: self.bevel_system,
+                mate_teeth: self.bevel_mate.resolve(document)?,
+                shaft_angle: self.bevel_shaft.resolve(document)?,
+            })
+        } else {
+            None
+        };
         let basis = self.plane.map(Datum::frame);
         p.frame = PrimitiveFrame {
             origin: [
@@ -167,8 +239,6 @@ impl GearPanel {
             u: basis.map_or(p.frame.u, |f| f.u),
             v: basis.map_or(p.frame.v, |f| f.v),
         };
-        p.resolve_geometry(&self.parameters)
-            .map_err(|e| e.to_string())?;
         Ok(request)
     }
     fn select_family(&mut self, family: GearFamily) {
@@ -178,7 +248,7 @@ impl GearPanel {
         self.family = family;
         if matches!(
             family,
-            GearFamily::Spur | GearFamily::InternalRing | GearFamily::Rack
+            GearFamily::Spur | GearFamily::InternalRing | GearFamily::Rack | GearFamily::Bevel
         ) {
             self.hand = GearHand::None;
             self.fields[4] = DimensionField::from_dimension(&angle(0.), "deg").expect("zero angle");
@@ -186,6 +256,10 @@ impl GearPanel {
             self.hand = GearHand::Right;
             self.fields[4] =
                 DimensionField::from_dimension(&angle(15.), "deg").expect("preset angle");
+        }
+        if family == GearFamily::Bevel {
+            self.fields[2] =
+                DimensionField::from_dimension(&angle(20.), "deg").expect("bevel pressure");
         }
         if family == GearFamily::InternalRing {
             self.fields[1] = DimensionField::from_dimension(
@@ -218,9 +292,14 @@ impl GearPanel {
         }
     }
     fn geometry_controls(&mut self, ui: &mut egui::Ui) -> bool {
-        self.geometry_controls_with_family(ui, true)
+        self.geometry_controls_with_family(ui, true, false)
     }
-    fn geometry_controls_with_family(&mut self, ui: &mut egui::Ui, choose_family: bool) -> bool {
+    fn geometry_controls_with_family(
+        &mut self,
+        ui: &mut egui::Ui,
+        choose_family: bool,
+        paired: bool,
+    ) -> bool {
         let mut changed = false;
         if choose_family {
             ui.label("Gear family");
@@ -243,16 +322,35 @@ impl GearPanel {
                     }
                 });
         }
-        if self.family == GearFamily::Rack {
+        if self.family == GearFamily::Bevel {
+            ui.small("Spherical-involute straight bevel · KG/KHK back-cone boundaries · custom tangent spherical-circle roots. No Gleason, octoid, spiral, Zerol, cutter or strength certification.");
+            ui.small("20° pressure · 90° intersecting shafts · 24–64 teeth per member · face width along the pitch cone, at most min(R/3, 10 × module).");
+            controls::inspector_combo(ui, (self.request.feature, "bevel-tooth-system"))
+                .selected_text(bevel_system_label(self.bevel_system))
+                .show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut self.bevel_system, BevelToothSystem::SphericalInvoluteStraight, "Spherical-involute straight").changed();
+                    for label in ["Gleason / octoid", "Spiral bevel", "Zerol"] {
+                        ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text("This tooth system has no supported native geometry or mating verification");
+                    }
+                });
+            if !paired {
+                changed |= self.bevel_mate.show_named(ui, (self.request.feature, "bevel-mate-teeth"), "Mating gear teeth", "The explicit mate tooth count determines this gear's pitch-cone angle; preserved as a typed project expression");
+            }
+            changed |= self.bevel_shaft.show_named(ui, (self.request.feature, "bevel-shaft-angle"), "Shared shaft angle", "Only 90° intersecting shafts are supported. A pair shares this same authored dimension.");
+        } else if self.family == GearFamily::Rack {
             ui.small("Straight basic rack · custom circular root fillets, not generated cutter runout. 4–64 complete pitch cells; 14.5–35° pressure; root radius/module 0.01–0.2. No accuracy or strength certification.");
             ui.small("Centered local X length = cells × π × module. Pitch line Y = 0; teeth point toward +Y; face width follows +Z. Zero helix, bore, center gap and profile shift.");
         } else {
             ui.small("Unshifted involute profile with circular root fillets. No accuracy, strength or cutter-generation certification.");
         }
         controls::inspector_combo(ui, "gear-module-system")
-            .selected_text(match self.system {
-                GearModuleSystem::Normal => "Normal module and pressure angle",
-                GearModuleSystem::Transverse => "Transverse module and pressure angle",
+            .selected_text(if self.family == GearFamily::Bevel {
+                "Outer module (normal = transverse)"
+            } else {
+                match self.system {
+                    GearModuleSystem::Normal => "Normal module and pressure angle",
+                    GearModuleSystem::Transverse => "Transverse module and pressure angle",
+                }
             })
             .show_ui(ui, |ui| {
                 changed |= ui
@@ -265,7 +363,11 @@ impl GearPanel {
         for (i, label, help) in [
             (
                 0,
-                "Module",
+                if self.family == GearFamily::Bevel {
+                    "Outer module"
+                } else {
+                    "Module"
+                },
                 "Basic module in the selected normal/transverse system",
             ),
             (
@@ -288,8 +390,16 @@ impl GearPanel {
             ),
             (
                 3,
-                "Face width",
-                "Total axial width including any center gap",
+                if self.family == GearFamily::Bevel {
+                    "Pitch-cone face width"
+                } else {
+                    "Face width"
+                },
+                if self.family == GearFamily::Bevel {
+                    "Distance along the pitch-cone generator from heel to toe, not axial Z width"
+                } else {
+                    "Total axial width including any center gap"
+                },
             ),
         ] {
             changed |= self.fields[i].show_named(
@@ -301,7 +411,7 @@ impl GearPanel {
         }
         if !matches!(
             self.family,
-            GearFamily::Spur | GearFamily::InternalRing | GearFamily::Rack
+            GearFamily::Spur | GearFamily::InternalRing | GearFamily::Rack | GearFamily::Bevel
         ) {
             changed |= self.fields[4].show_named(
                 ui,
@@ -353,12 +463,20 @@ impl GearPanel {
             (
                 9,
                 "Root fillet / module",
-                "Custom circular fillet radius divided by the selected module",
+                if self.family == GearFamily::Bevel {
+                    "Custom tangent small-circle radius on the outer reference sphere divided by outer module; not a cutter-generated root"
+                } else {
+                    "Custom circular fillet radius divided by the selected module"
+                },
             ),
             (
                 10,
                 "Minimum root wall",
-                "Minimum radial material between bore and tooth roots",
+                if self.family == GearFamily::Bevel {
+                    "Minimum bore wall checked against the toe root envelope"
+                } else {
+                    "Minimum radial material between bore and tooth roots"
+                },
             ),
         ] {
             if i == 6 && matches!(self.family, GearFamily::InternalRing | GearFamily::Rack) {
@@ -443,14 +561,22 @@ impl GearPanel {
         for (index, (field, label)) in self
             .origin
             .iter_mut()
-            .zip(["Base center X", "Base center Y", "Base center Z"])
+            .zip(if self.family == GearFamily::Bevel {
+                ["Pitch apex X", "Pitch apex Y", "Pitch apex Z"]
+            } else {
+                ["Base center X", "Base center Y", "Base center Z"]
+            })
             .enumerate()
         {
             changed |= field.show_named(
                 ui,
                 (self.request.feature, "gear-origin", index),
                 label,
-                "Axis follows the plane normal",
+                if self.family == GearFamily::Bevel {
+                    "The pitch-cone apex is the origin; shaft follows the plane normal"
+                } else {
+                    "Axis follows the plane normal"
+                },
             );
         }
         let validation = self.request(document, enabled);
@@ -469,6 +595,9 @@ impl GearPanel {
                         "Rack pitch {:.4} mm · finite length {:.4} mm · {} complete cells",
                         r.pitch_mm, r.length_mm, r.teeth
                     ));
+                }
+                Ok(multicad_core::model::ResolvedGearGeometry::Bevel(r)) => {
+                    show_bevel_summary(ui, &r)
                 }
                 Err(_) => {}
             },
@@ -609,6 +738,135 @@ mod rack_fields_tests {
                 .unwrap_err()
                 .contains("zero helix")
         );
+        assert_eq!(session.revision(), 0);
+    }
+}
+
+#[cfg(test)]
+mod bevel_fields_tests {
+    use super::*;
+    use multicad_core::{
+        commands::Session,
+        constraint_sketch::Dimension,
+        document::{Entity, EntityData, Mutation},
+        model::{self, GearParameters},
+        parameters::BoundExpression,
+    };
+    #[test]
+    fn bevel_fields_keep_typed_mate_shaft_and_outer_module_without_rotary_radius_claims() {
+        let entities = [
+            ("module", "1 mm", "mm"),
+            ("teeth", "24", "count"),
+            ("mate", "36", "count"),
+            ("shaft", "90 deg", "deg"),
+        ]
+        .map(|(name, expression, unit)| {
+            Entity::new(
+                name,
+                EntityData::Parameter {
+                    expression: expression.into(),
+                    unit: unit.into(),
+                    exposed: false,
+                    inputs: vec![],
+                },
+            )
+        });
+        let document = Document::new("Bevel typed fields")
+            .unwrap()
+            .edited(
+                &entities
+                    .into_iter()
+                    .map(Mutation::Insert)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let session = Session::new(document.clone()).unwrap();
+        let expression = |text, unit| Dimension::Expression {
+            expression: BoundExpression::bind(&document, text, unit, None).unwrap(),
+        };
+        let recipe = GearParameters {
+            family: GearFamily::Bevel,
+            module: expression("=$module", "mm"),
+            teeth: expression("=$teeth", "count"),
+            face_width: model::length(4.),
+            bore_diameter: model::length(2.),
+            bevel: Some(BevelDimensions {
+                tooth_system: BevelToothSystem::SphericalInvoluteStraight,
+                mate_teeth: expression("=$mate", "count"),
+                shaft_angle: expression("=$shaft", "deg"),
+            }),
+            ..Default::default()
+        };
+        let original = GearRequest::new("Typed bevel", recipe);
+        let mut panel =
+            GearPanel::new(original.clone(), session.parameters().clone(), true).unwrap();
+        assert_eq!(panel.request(&document, true).unwrap(), original);
+        let normal = panel
+            .request(&document, true)
+            .unwrap()
+            .parameters
+            .resolve_geometry(session.parameters())
+            .unwrap();
+        panel.system = GearModuleSystem::Transverse;
+        let transverse = panel
+            .request(&document, true)
+            .unwrap()
+            .parameters
+            .resolve_geometry(session.parameters())
+            .unwrap();
+        assert_eq!(normal, transverse);
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(650., 2400.),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                panel.show(ui, &document, true, PreviewState::Idle);
+            },
+        );
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| {
+                if let egui::Shape::Text(t) = &s.shape {
+                    Some(t.galley.text())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("Pitch cone") && t.contains("base cone"))
+        );
+        assert!(texts.iter().any(|t| t.contains("Back-cone heel / toe tip")));
+        assert!(texts.iter().any(|t| t.contains("Pitch apex X")));
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.contains("base Ø") || t.contains("Reference Ø"))
+        );
+        output.drop_without_applying_deltas();
+        for unsupported in [
+            BevelToothSystem::GleasonOctoid,
+            BevelToothSystem::Spiral,
+            BevelToothSystem::Zerol,
+        ] {
+            panel.bevel_system = unsupported;
+            assert!(panel.request(&document, true).is_err());
+        }
+        panel.bevel_system = BevelToothSystem::SphericalInvoluteStraight;
+        panel.bevel_shaft.set_literal(80., "deg");
+        assert!(panel.request(&document, true).is_err());
+        panel.bevel_shaft.set_literal(90., "deg");
+        panel.bevel_mate.set_literal(23., "count");
+        assert!(panel.request(&document, true).is_err());
+        assert_eq!(session.document(), &document);
         assert_eq!(session.revision(), 0);
     }
 }

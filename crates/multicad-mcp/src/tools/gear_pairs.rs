@@ -1,6 +1,6 @@
 use super::{
     Plane, Quantity, Request, ToolResult, commit, compile,
-    gears::{GearRecipeArgs, GearScalarArg, parameters as gear_parameters},
+    gears::{GearRecipeArgs, GearScalarArg, patched_parameters as gear_parameters},
     id, revision_guard, snapshot,
 };
 use crate::{
@@ -31,7 +31,7 @@ pub struct GearPairArgs {
     /// First member recipe. Frames here describe the local Part definition.
     #[serde(default)]
     pub first: Option<GearRecipeArgs>,
-    /// Creation inherits the first member's settings with 30 teeth and opposite hand, then applies these overrides. Edits preserve omitted member fields independently.
+    /// Creation inherits the first member settings with 30 teeth (24 for ring/rack mates) and opposite hand. First bevel defaults to 24 teeth. Edits preserve omitted member fields; bevel mate counts follow opposite typed tooth sources.
     #[serde(default)]
     pub second: Option<GearRecipeArgs>,
     #[serde(default)]
@@ -112,10 +112,66 @@ pub(super) fn inspect_gear_pair(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(
         json!({"revision":revision,"pair":pair,"source":source,"members":members,
-        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel},
+        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel,"bevel":r.bevel},
         "scope":"Canonical source and resolved placement only. evaluate_model reports actual native pair checks and physical leaves."}),
     )
 }
+/// Pair-specific omitted fields derive from their typed sources, while explicit
+/// conflicting sources fail before native work. Equal evaluated numbers do not
+/// make two distinct canonical expressions interchangeable.
+fn couple_bevel_intent(
+    recipes: [GearParameters; 2],
+    supplied: [Option<&GearRecipeArgs>; 2],
+) -> Result<[GearParameters; 2], ToolError> {
+    if !recipes.iter().any(|r| r.family == model::GearFamily::Bevel) {
+        return Ok(recipes);
+    }
+    if recipes
+        .iter()
+        .any(|r| r.family != model::GearFamily::Bevel || r.bevel.is_none())
+    {
+        return Err(ToolError::invalid(
+            "A bevel pair needs two spherical-involute straight bevel recipes",
+        ));
+    }
+    for member in 0..2 {
+        if supplied[member].is_some_and(|r| r.mate_teeth.is_some())
+            && recipes[member]
+                .bevel
+                .as_ref()
+                .expect("checked bevel")
+                .mate_teeth
+                != recipes[1 - member].teeth
+        {
+            return Err(ToolError::invalid(
+                "Explicit bevel mate_teeth must match the opposite original typed teeth source; omit it to derive that source",
+            ));
+        }
+    }
+    let explicit_shaft = supplied.map(|r| r.is_some_and(|r| r.shaft_angle.is_some()));
+    let shaft_a = &recipes[0]
+        .bevel
+        .as_ref()
+        .expect("checked bevel")
+        .shaft_angle;
+    let shaft_b = &recipes[1]
+        .bevel
+        .as_ref()
+        .expect("checked bevel")
+        .shaft_angle;
+    if explicit_shaft[0] && explicit_shaft[1] && shaft_a != shaft_b {
+        return Err(ToolError::invalid(
+            "Explicit bevel shaft angles must share one identical typed source; omit either member's shaft_angle to derive it",
+        ));
+    }
+    let shaft = if explicit_shaft[1] && !explicit_shaft[0] {
+        shaft_b
+    } else {
+        shaft_a
+    };
+    model::couple_bevel_pair_recipes(&recipes, shaft).map_err(Into::into)
+}
+
 pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs) -> ToolResult {
     let (document, revision, evaluated) = snapshot(host)?;
     if revision != args.expected_revision {
@@ -145,7 +201,16 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
     let empty = GearRecipeArgs::default();
     let default_first = GearParameters {
         teeth: Dimension::Literal {
-            value: 20.,
+            value: if args
+                .first
+                .as_ref()
+                .and_then(|r| r.family)
+                .is_some_and(|f| model::GearFamily::from(f) == model::GearFamily::Bevel)
+            {
+                24.
+            } else {
+                20.
+            },
             unit: "count".into(),
         },
         ..Default::default()
@@ -204,6 +269,8 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
         &document,
         &evaluated,
     )?;
+    let [first, second] =
+        couple_bevel_intent([first, second], [args.first.as_ref(), args.second.as_ref()])?;
     let request = if edit.is_none() {
         let name = args
             .name

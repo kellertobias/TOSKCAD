@@ -22,7 +22,7 @@ mod gear_pairs;
 mod gears;
 mod mechanical_parts;
 mod worker_cache;
-pub use gear_pairs::GearPairCheck;
+pub use gear_pairs::{GearEngagementWitness, GearPairCheck};
 mod equipment_plans;
 pub mod imports;
 pub mod inspection;

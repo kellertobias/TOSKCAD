@@ -43,7 +43,7 @@ fn coverage_source_edit_and_native_geometry_share_one_attributable_transaction()
             .iter()
             .filter(|f| f["supported"] == true)
             .count(),
-        6
+        7
     );
     let before = h.document();
     let created = run(

@@ -9,7 +9,7 @@ use crate::{
 use multicad_core::{
     constraint_sketch::Dimension,
     document::Document,
-    model::{self, GearFamily, GearHand, GearModuleSystem, GearParameters},
+    model::{self, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearParameters},
     parameters::{BoundExpression, EvaluatedParameters, Unit},
     sketch::Datum,
 };
@@ -42,6 +42,11 @@ argument_enum!(
     ]
 );
 argument_enum!(GearHandArg, GearHand, [None, Right, Left]);
+argument_enum!(
+    BevelToothSystemArg,
+    BevelToothSystem,
+    [SphericalInvoluteStraight, GleasonOctoid, Spiral, Zerol]
+);
 argument_enum!(GearModuleSystemArg, GearModuleSystem, [Normal, Transverse]);
 
 #[derive(Deserialize, JsonSchema)]
@@ -128,6 +133,16 @@ pub struct GearRecipeArgs {
     /// Rack-only connected backing below the root line; omission retains edits.
     #[serde(default)]
     pub backing_thickness: Option<Quantity>,
+    /// Bevel tooth system; only spherical_involute_straight is implemented.
+    #[serde(default)]
+    pub bevel_system: Option<BevelToothSystemArg>,
+    /// Standalone bevel creation requires the intended mate count. Pairs derive
+    /// this from the opposite member's original typed tooth-count source.
+    #[serde(default)]
+    pub mate_teeth: Option<GearScalarArg>,
+    /// Bevel shaft angle. Standalone creation requires it; pairs share one source.
+    #[serde(default)]
+    pub shaft_angle: Option<GearScalarArg>,
     /// Explicit outside diameter for an internal ring; omitted edits retain it.
     #[serde(default)]
     pub outer_diameter: Option<Quantity>,
@@ -161,7 +176,7 @@ pub struct GearRecipeArgs {
 pub struct InspectGearArgs {
     pub gear: String,
 }
-pub(super) fn parameters(
+pub(super) fn patched_parameters(
     args: &GearRecipeArgs,
     previous: Option<&GearParameters>,
     document: &Document,
@@ -179,7 +194,14 @@ pub(super) fn parameters(
     if let Some(value) = args.family {
         let family = GearFamily::from(value);
         if family != p.family {
-            if family == GearFamily::Rack {
+            p.bevel = None;
+            if family == GearFamily::Bevel {
+                p.rack = None;
+                p.helix_angle = model::angle(0.);
+                p.hand = GearHand::None;
+                p.center_gap = model::length(0.);
+                p.outer_diameter = None;
+            } else if family == GearFamily::Rack {
                 p.bore_diameter = model::length(0.);
                 p.helix_angle = Dimension::Literal {
                     value: 0.,
@@ -271,17 +293,61 @@ pub(super) fn parameters(
             ));
         }
     }
+    let has_bevel_args =
+        args.bevel_system.is_some() || args.mate_teeth.is_some() || args.shaft_angle.is_some();
+    if p.family == GearFamily::Bevel {
+        let mut bevel = p.bevel.take().unwrap_or(model::BevelDimensions {
+            tooth_system: BevelToothSystem::SphericalInvoluteStraight,
+            mate_teeth: p.teeth.clone(),
+            shaft_angle: model::angle(90.),
+        });
+        if let Some(system) = args.bevel_system {
+            bevel.tooth_system = system.into();
+        }
+        if let Some(value) = &args.mate_teeth {
+            bevel.mate_teeth = value.dimension(document, evaluated, Unit::Count)?;
+        }
+        if let Some(value) = &args.shaft_angle {
+            bevel.shaft_angle = value.dimension(document, evaluated, Unit::Degree)?;
+        }
+        p.bevel = Some(bevel);
+    } else if has_bevel_args {
+        return Err(ToolError::invalid(
+            "Bevel system, mate teeth and shaft angle belong to a bevel recipe",
+        ));
+    }
+    Ok(p)
+}
+pub(super) fn parameters(
+    args: &GearRecipeArgs,
+    previous: Option<&GearParameters>,
+    document: &Document,
+    evaluated: &EvaluatedParameters,
+) -> Result<GearParameters, ToolError> {
+    let p = patched_parameters(args, previous, document, evaluated)?;
+    if p.family == GearFamily::Bevel
+        && previous.is_none_or(|old| old.family != GearFamily::Bevel)
+        && (args.mate_teeth.is_none() || args.shaft_angle.is_none())
+    {
+        return Err(ToolError::invalid(
+            "A standalone bevel needs explicit mate_teeth and shaft_angle; set_gear_pair derives paired mate counts",
+        ));
+    }
     p.resolve_geometry(evaluated)?;
     Ok(p)
 }
 pub(super) fn gear_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     Ok(
         json!({"families":GearFamily::ALL.map(|f| json!({"family":f,"label":f.label(),"supported":f.supported(),"source":f.source()})),
-        "sources":[model::GEAR_DIMENSIONS_SOURCE_URL,model::GEAR_PROFILE_SOURCE_URL,model::GEAR_FILLET_SOURCE_URL],
+        "sources":[model::GEAR_DIMENSIONS_SOURCE_URL,model::GEAR_PROFILE_SOURCE_URL,model::GEAR_FILLET_SOURCE_URL,model::BEVEL_PROFILE_SOURCE_URL,model::BEVEL_DIMENSIONS_SOURCE_URL],
         "internal_ring":{"teeth":[48,60],"pressure_angle_degrees":20,"pinion_teeth":24,"helix":false,"profile_shift":0,"outer_diameter":"Explicit; rim beyond root must meet minimum_wall","bore_diameter":"Zero; inward toothed opening is derived","root":"Custom circular fillet, not a simulated cutter trochoid"},
         "rack":{"teeth":[4,64],"length":"Derived as teeth*pi*module; whole centered pitch cells","backing_thickness":"Explicit connected base below root line","root":"Custom tangent circular fillet, not a cutter trochoid","pair":"One rack and one matching unshifted non-undercut spur pinion; conservative finite travel keeps full pinion tip-circle projection within rack ends","drive":"Positive pinion CCW advances rack along positive local X"},
-        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family, bounded internal ring/spur pinion, or finite straight rack/spur pinion; matching transverse module/pressure angle and width; external helical hands opposite. Internal centers use radius difference and same-direction rotation. Unmodified periodic generator Parts only"},
-        "scope":"Bounded unshifted involute gears and parallel-axis pairs, custom circular root fillets; no strength, fit or accuracy certification. Unsupported families/combinations fail closed."}),
+        "bevel":{"tooth_system":"spherical_involute_straight","teeth":[24,64],"pressure_angle_degrees":20,"shaft_angle_degrees":90,
+        "face_width":"Along pitch cone; at most min(outer cone distance/3,10*module)","datum":"Source frame origin is the pitch apex; paired axes intersect there",
+        "blank":"KG standard heel/toe backcones","root":"Custom tangent small circle on the outer reference sphere; not a cutter-generated root",
+        "unavailable_systems":["gleason_octoid","spiral","zerol"],"limits":"No hubs, helix, profile shift, load or fit certification; bore and wall checked at toe root"},
+        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family, bounded internal ring/spur pinion, finite straight rack/spur pinion, or bounded intersecting-axis spherical-involute bevels; matching transverse module/pressure angle and width; external helical hands opposite. Internal centers use radius difference and same-direction rotation. Unmodified periodic generator Parts only"},
+        "scope":"Bounded rotary involute gears, finite straight racks and compatible parallel/intersecting-axis pairs, with declared custom root blends; no strength, fit or accuracy certification. Unsupported families/combinations fail closed."}),
     )
 }
 pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) -> ToolResult {
@@ -301,6 +367,24 @@ pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) 
                 "design_tooth_thickness_mm":r.design_tooth_thickness_mm,
                 "physical_tooth_thickness_mm":r.physical_tooth_thickness_mm},
             "scope":"Whole pitch cells, straight flanks and custom tangent circular root fillets; canonical dimensions, use evaluate_model for native geometry"}),
+        );
+    }
+    if let Some(r) = geometry.bevel() {
+        return Ok(
+            json!({"revision":revision,"gear":feature,"part":source.output.body,"source":source,
+            "resolved":{"tooth_system":"spherical_involute_straight","teeth":r.teeth,"mate_teeth":r.mate_teeth,
+            "module_mm":r.module_mm,"pressure_angle_rad":r.pressure_angle_rad,"shaft_angle_rad":r.shaft_angle_rad,
+            "pitch_cone_angle_rad":r.pitch_cone_angle_rad,"base_cone_angle_rad":r.base_cone_angle_rad,
+            "tip_cone_angle_rad":r.tip_cone_angle_rad,"root_cone_angle_rad":r.root_cone_angle_rad,
+            "outer_cone_distance_mm":r.outer_cone_distance_mm,"inner_cone_distance_mm":r.inner_cone_distance_mm,
+            "face_width_along_cone_mm":r.face_width_mm,"bore_radius_mm":r.bore_radius_mm,
+            "heel_tip_radius_mm":r.heel_tip_radius_mm,"toe_tip_radius_mm":r.toe_tip_radius_mm,
+            "heel_root_radius_mm":r.heel_root_radius_mm,"toe_root_radius_mm":r.toe_root_radius_mm,
+            "toe_bore_wall_mm":r.toe_root_radius_mm-r.bore_radius_mm,"minimum_wall_mm":r.minimum_wall_mm,
+            "nominal_tooth_thickness_mm":r.nominal_tooth_thickness_mm,
+            "design_tooth_thickness_mm":r.design_tooth_thickness_mm,"physical_tooth_thickness_mm":r.physical_tooth_thickness_mm,
+            "root_fillet_radius_mm":r.root_fillet_radius_mm,"half_base_angle_rad":r.half_base_angle_rad},
+            "scope":"Spherical-involute straight flanks, declared backcone blank and custom spherical-circle roots; source dimensions only, use evaluate_model for native geometry"}),
         );
     }
     let r = geometry.rotary().expect("rotary geometry");

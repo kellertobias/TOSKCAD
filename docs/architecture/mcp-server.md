@@ -586,10 +586,20 @@ Creating or switching to Rack defaults backing to 4 mm and clears inapplicable
 rotary defaults before applying explicit arguments. Explicit unsupported bore,
 helix or outside diameter still refuses. Omitted/null backing edits retain the
 saved value. Inspection reports actual rack pitch, length and backing, with
-no invented rotary diameters. Bevel gears, worms and nonzero profile shift are
-unavailable. The conservative rotary gear/pinion tooth-count policy uses the normal pressure angle
-without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
+no invented rotary diameters. Worms and nonzero profile shift remain unavailable.
+The conservative rotary gear/pinion tooth-count policy uses the normal pressure
+angle without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
 or cutter-generation certification follows from a successful preview.
+
+The [spherical-involute straight bevel subset](gears.md#spherical-involute-straight-bevel-subset)
+uses `family: "bevel"` and `bevel_system: "spherical_involute_straight"`.
+Standalone creation requires explicit `mate_teeth` and `shaft_angle`.
+The origin denotes the pitch apex, and `face_width` is measured along the pitch
+cone. Inspection returns cone angles, cone distances, heel/toe radii and toe
+bore wall, with nominal, design and physical tooth thickness reported separately.
+It does not synthesize cylindrical spur base or tip diameters.
+The architecture reference owns the bounded envelope and primary source pages;
+Gleason/octoid, spiral and Zerol values are rejected.
 
 Rotary involute profiles use a C1 cubic Hermite approximation to the analytic
 involute, bounded by the active geometry policy's linear tolerance. Tip and
@@ -603,8 +613,8 @@ native failures, cancellation and stale revisions leave the document unchanged.
 
 `set_gear_pair` creates two named gear Parts, a reusable Assembly, its internal
 relationships and one placed occurrence in a single transaction. Creation
-requires a name. The first member defaults to 20 teeth. For external pairs,
-the second inherits the first recipe with 30 teeth and opposite helix hand,
+requires a name. The first member defaults to 20 teeth, or 24 when its requested
+family is bevel. For external pairs, the second inherits the first recipe with 30 teeth and opposite helix hand,
 then applies explicit second-member overrides. An internal-ring first member
 instead defaults its second member to a 24-tooth spur pinion without an
 outside-diameter field. A first rack also defaults its second member to a
@@ -618,8 +628,26 @@ compatible. A drive-only edit preserves the gear definitions exactly. Explicit
 `inspect_gear_pair` reads source and derived center distance, phases and frames;
 for racks, `rack_travel` supplies member roles, allowed translation/drive ranges,
 current translation and the pinion tooth period. Here center distance means
-pitch-line-to-pinion-center distance;
+pitch-line-to-pinion-center distance.
+For bevels, `resolved.bevel` reports the shared shaft angle, cone distance,
+cone face width and both pitch-cone angles. Their shared apex makes
+`center_distance_mm` zero.
 `evaluate_model` reports actual native pair checks and physical leaf paths.
+
+Bevel pairs derive each member's `mate_teeth` from the opposite original typed
+`teeth` source. Omitted or null mate counts follow that source, including changes
+to the opposite count during a geometry edit. An explicit mate count must match
+the opposite typed source exactly; equal evaluated values from different
+expressions do not match. A literal cannot replace an expression implicitly.
+
+An explicit `shaft_angle` on either member supplies the shared typed shaft
+source. Two explicit shaft arguments must be identical typed sources; conflicting
+bindings are refused even when both evaluate to the same angle. With both omitted
+or null, edits retain the saved shared source and creation defaults to 90 degrees.
+After reconciling intent, the tool clones the coupled dimensions into both
+recipes and validates them before native work. A conflict leaves source,
+transaction history and Undo state unchanged. Unsupported systems and mixed
+bevel/non-bevel pairs also fail without a partial update.
 
 Pair origin and axes control layout within the Assembly definition. Member
 frames describe their local Part definitions; derived anchors maintain mating
@@ -634,12 +662,25 @@ module, 20-degree pressure angle and face width, with zero helix/gap. Its center
 use the pitch-radius difference and its members rotate in the same direction.
 A rack/spur pair requires matching module, pressure and width and zero helix,
 with the finite travel and drive convention defined in the rack reference.
-Rack pairs add both finite endpoints and native proximity checks.
+Rack pairs add both finite endpoints and native proximity checks. Bevel pairs
+share their pitch apex and use the shaft/ratio convention in the bevel reference.
+They retain no-overlap and engagement proximity checks at every sample.
 Their current Part heads must remain the gear generators. Native
 evaluation checks the current pose and nine phases over one pinion tooth cycle.
 Unchanged geometry can reuse a completed cycle check; the current pose is always
 checked. These samples do not establish continuous collision-free motion, load
 capacity or manufacturing fit.
+
+For bevel checks, `current_engagement` records an actual native witness with
+`distance_mm`, `kind`, `faces` and `points_mm`. The usual `bevel_flank_faces`
+kind identifies a close pair of named flank faces after whole-solid no-overlap.
+This is an existence witness within total authored thinning plus ten linear
+tolerances; it does not report the global minimum distance. A candidate-face miss invokes `whole_solid_fallback`, whose `faces`
+field is null. Face ordinals are evaluation-local; persistent references use
+source ancestry instead. The two points use the evaluated pair layout frame
+before independent outer occurrence placement. These witnesses retain the
+same nine sampled phases and current-pose checks; they do not establish
+continuous contact, loaded behavior or manufacturing fit.
 
 Direct `export_step` accepts an Assembly's definition-only gear Part as well as
 a standalone Part. It exports that Part's definition coordinates. Export sets

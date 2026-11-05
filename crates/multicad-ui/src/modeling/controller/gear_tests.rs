@@ -551,3 +551,215 @@ fn painted_rack_roles_use_native_preview_cancel_apply_edit_history_and_independe
         assert_eq!(reopened.revision(), 1);
     }
 }
+
+#[test]
+fn painted_bevel_typing_preview_cancel_apply_history_and_reopen_use_native_gate() {
+    for paired in [false, true] {
+        let mut session = Session::new(Document::new("Painted bevel").unwrap()).unwrap();
+        let before = session.document().clone();
+        let mut controller = controller();
+        let request = model::GearRequest::new(
+            "Spherical-involute bevel",
+            model::GearParameters {
+                family: model::GearFamily::Bevel,
+                module: model::length(1.),
+                face_width: model::length(2.),
+                bore_diameter: model::length(2.),
+                bevel: Some(model::BevelDimensions {
+                    tooth_system: model::BevelToothSystem::SphericalInvoluteStraight,
+                    mate_teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 24.,
+                        unit: "count".into(),
+                    },
+                    shaft_angle: model::angle(90.),
+                }),
+                ..Default::default()
+            },
+        );
+        let panel = GearPanel::new(request, session.parameters().clone(), false).unwrap();
+        controller
+            .begin_form(
+                &session,
+                &Default::default(),
+                Channel::Ui,
+                ModelForm::Gear(Box::new(panel)),
+            )
+            .unwrap();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        if paired {
+            ring_click(&ctx, &mut controller, &mut session, "Create mating pair");
+        }
+        ring_frame(&ctx, &mut controller, &mut session, vec![]).drop_without_applying_deltas();
+        let output = ring_frame(&ctx, &mut controller, &mut session, vec![]);
+        let label = if paired {
+            "Wheel teeth (count)"
+        } else {
+            "Mating gear teeth (count)"
+        };
+        let label_y = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos.y),
+                _ => None,
+            })
+            .expect("Visible explicit mate-count label");
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| {
+                (node.role() == egui::accesskit::Role::TextInput)
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .filter(|b| b.y0 > f64::from(label_y))
+            .min_by(|a, b| a.y0.total_cmp(&b.y0))
+            .unwrap();
+        let pos = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.) as f32,
+            ((bounds.y0 + bounds.y1) / 2.) as f32,
+        );
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            ring_frame(
+                &ctx,
+                &mut controller,
+                &mut session,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+        let focused = ctx.memory(|m| m.focused()).expect("Mate input focused");
+        ring_frame(
+            &ctx,
+            &mut controller,
+            &mut session,
+            vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        )
+        .drop_without_applying_deltas();
+        for text in ["3", "2"] {
+            ring_frame(
+                &ctx,
+                &mut controller,
+                &mut session,
+                vec![egui::Event::Text(text.into())],
+            )
+            .drop_without_applying_deltas();
+            assert_eq!(ctx.memory(|m| m.focused()), Some(focused));
+            if text == "3" {
+                let ModelForm::Gear(panel) = controller.form.as_ref().unwrap() else {
+                    panic!("gear")
+                };
+                assert!(panel.model_request(session.document(), true).is_err());
+                assert!(!controller.can_apply(&session, &Default::default()));
+            }
+        }
+        let ModelForm::Gear(panel) = controller.form.as_ref().unwrap() else {
+            panic!("gear")
+        };
+        let saved = panel.clone();
+        let model_request = panel.model_request(session.document(), true).unwrap();
+        let target = match &model_request {
+            ModelRequest::Gear(request) => {
+                assert_eq!(
+                    request.parameters.bevel.as_ref().unwrap().mate_teeth,
+                    multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 32.,
+                        unit: "count".into()
+                    }
+                );
+                request.feature
+            }
+            ModelRequest::GearPair(command) => {
+                let resolved = command
+                    .resolved(session.document(), session.parameters())
+                    .unwrap();
+                assert!(resolved.bevel.is_some());
+                assert_eq!(resolved.gears[1].teeth(), 32);
+                command.pair()
+            }
+            _ => panic!("gear intent"),
+        };
+        assert_eq!(session.document(), &before);
+        ring_click(&ctx, &mut controller, &mut session, "Preview");
+        wait(&mut controller, &session);
+        assert!(
+            controller.can_apply(&session, &Default::default()),
+            "{:?}",
+            controller.error()
+        );
+        assert_eq!(session.document(), &before);
+        ring_click(&ctx, &mut controller, &mut session, "Cancel");
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), 0);
+        controller
+            .begin_form(
+                &session,
+                &Default::default(),
+                Channel::Ui,
+                ModelForm::Gear(saved),
+            )
+            .unwrap();
+        ring_click(&ctx, &mut controller, &mut session, "Preview");
+        wait(&mut controller, &session);
+        assert!(
+            controller.can_apply(&session, &Default::default()),
+            "{:?}",
+            controller.error()
+        );
+        ring_click(&ctx, &mut controller, &mut session, "Apply");
+        assert_eq!(session.revision(), 1);
+        let committed = session.document().clone();
+        session
+            .undo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &before);
+        session
+            .redo(session.revision(), Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(session.document(), &committed);
+        let mut bytes = vec![];
+        multicad_core::project_file::write(
+            &multicad_core::project_file::ProjectFile::new(committed.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let opened = multicad_core::project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let reopened = Session::new(opened.project.document).unwrap();
+        assert_eq!(reopened.document(), &committed);
+        controller
+            .begin_existing(&reopened, &Default::default(), target, Channel::Ui)
+            .unwrap();
+        let ModelForm::Gear(panel) = controller.form.as_ref().unwrap() else {
+            panic!("reopened gear")
+        };
+        assert!(panel.model_request(reopened.document(), true).is_ok());
+        controller.cancel();
+    }
+}
