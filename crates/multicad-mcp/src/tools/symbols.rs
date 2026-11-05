@@ -4,7 +4,11 @@ use crate::{
     error::ToolError,
     host::{Host, with},
 };
-use multicad_core::{commands::Prepared, document::Placement, project_file, symbols};
+use multicad_core::{
+    commands::Prepared,
+    document::{EntityId, Placement},
+    project_file, symbols,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -42,6 +46,22 @@ pub struct PlaceSymbolArgs {
     pub overrides: BTreeMap<String, SymbolValueArgs>,
     #[serde(default)]
     pub placement: SymbolPlacementArgs,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlaceLibrarySymbolArgs {
+    pub expected_revision: u64,
+    /// Bare .tcd file name in the authorized exchange folder.
+    pub file_name: String,
+    /// Required when the source file has multiple reusable definitions.
+    pub source_definition: Option<String>,
+    pub name: String,
+    /// Complete exposed-template override map; empty inherits pinned defaults.
+    pub overrides: BTreeMap<String, SymbolValueArgs>,
+    #[serde(default)]
+    pub placement: SymbolPlacementArgs,
+    /// Canonical receiving container; omission explicitly chooses project root.
+    pub parent: Option<String>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -88,8 +108,12 @@ fn finish(
     result["native_model_preflight"] = json!(true);
     Ok(result)
 }
-pub(super) fn import_symbol(host: &dyn Host, call: &Request, args: ImportSymbolArgs) -> ToolResult {
-    let path = imports::scoped(host, &args.file_name, &[".tcd"])?
+fn library_definition(
+    host: &dyn Host,
+    file_name: &str,
+    source_definition: Option<&str>,
+) -> Result<(EntityId, symbols::SymbolDefinition), ToolError> {
+    let path = imports::scoped(host, file_name, &[".tcd"])?
         .canonicalize()
         .map_err(|e| ToolError::invalid(e.to_string()))?;
     let folder = host
@@ -111,7 +135,7 @@ pub(super) fn import_symbol(host: &dyn Host, call: &Request, args: ImportSymbolA
     )
     .map_err(|e| ToolError::invalid(e.to_string()))?
     .project;
-    let selected = args.source_definition.as_deref().map(id).transpose()?;
+    let selected = source_definition.map(id).transpose()?;
     let mut definitions: Vec<_> = symbols::definitions(&project.document)?
         .into_iter()
         .filter(|(key, _)| selected.is_none_or(|id| id == *key))
@@ -121,7 +145,12 @@ pub(super) fn import_symbol(host: &dyn Host, call: &Request, args: ImportSymbolA
             "Choose exactly one source definition from the library file",
         ));
     }
-    let (source_id, definition) = definitions.remove(0);
+    Ok(definitions.remove(0))
+}
+
+pub(super) fn import_symbol(host: &dyn Host, call: &Request, args: ImportSymbolArgs) -> ToolResult {
+    let (source_id, definition) =
+        library_definition(host, &args.file_name, args.source_definition.as_deref())?;
     let pin = definition.pin()?;
     let symbol = definition.symbol;
     let exposed = definition.exposed.clone();
@@ -191,6 +220,70 @@ pub(super) fn place_symbol(host: &dyn Host, call: &Request, args: PlaceSymbolArg
         prepared,
         revision,
         json!({"definition":definition,"record":record,"instance":instance,"member":member,"native_geometry_checked":true}),
+    )
+}
+pub(super) fn place_library_symbol(
+    host: &dyn Host,
+    call: &Request,
+    args: PlaceLibrarySymbolArgs,
+) -> ToolResult {
+    call.check()?;
+    let (source_id, content) =
+        library_definition(host, &args.file_name, args.source_definition.as_deref())?;
+    call.check()?;
+    let pin = content.pin()?;
+    let symbol = content.symbol;
+    let parent = args.parent.as_deref().map(id).transpose()?;
+    let values = overrides(args.overrides)?;
+    let revision = args.expected_revision;
+    let owned = call.clone();
+    let (prepared, definition, record, instance, member) = with(host, move |target| {
+        revision_guard(target, revision)?;
+        let session = target.session();
+        let definition = symbols::library_placement_definition(session.document(), &content)?
+            .unwrap_or_else(EntityId::new);
+        let mut placement = Placement::default();
+        if let Some(translation) = args.placement.translation {
+            placement.translation_mm = [
+                translation[0]
+                    .dimension(session.document(), session.parameters())?
+                    .1,
+                translation[1]
+                    .dimension(session.document(), session.parameters())?
+                    .1,
+                translation[2]
+                    .dimension(session.document(), session.parameters())?
+                    .1,
+            ];
+        }
+        if let Some(rotation) = args.placement.rotation_xyzw {
+            placement.rotation_xyzw = rotation;
+        }
+        let request = symbols::SymbolPlaceRequest::from_definition(
+            definition, &content, args.name, values, placement,
+        )?;
+        let prepared = symbols::prepare_library_place(
+            session,
+            revision,
+            owned.actor.clone(),
+            &content,
+            &request,
+            parent,
+        )?;
+        Ok::<_, ToolError>((
+            prepared.prepared,
+            definition,
+            request.record,
+            request.instance,
+            request.member,
+        ))
+    })??;
+    finish(
+        host,
+        call,
+        prepared,
+        revision,
+        json!({"definition":definition,"source_file":args.file_name,"source_definition":source_id,"symbol":symbol,"pin":pin,"record":record,"instance":instance,"member":member,"parent":parent,"native_geometry_checked":true}),
     )
 }
 pub(super) fn edit_symbol_instance(

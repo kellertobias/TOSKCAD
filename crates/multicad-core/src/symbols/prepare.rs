@@ -56,8 +56,22 @@ impl SymbolPlaceRequest {
         overrides: BTreeMap<EntityId, SymbolValue>,
         placement: Placement,
     ) -> Result<Self, DocumentError> {
-        let def = read_definition(doc, definition)?;
-        if super::architecture::blueprint_for_definition(&def)?.is_some() {
+        let content = read_definition(doc, definition)?;
+        Self::from_definition(definition, &content, name, overrides, placement)
+    }
+    /// Allocate stable placement identities before an immutable Library pin is embedded.
+    pub fn from_definition(
+        definition: EntityId,
+        content: &SymbolDefinition,
+        name: impl Into<String>,
+        overrides: BTreeMap<EntityId, SymbolValue>,
+        placement: Placement,
+    ) -> Result<Self, DocumentError> {
+        content.validate()?;
+        if definition.is_nil() {
+            return Err(invalid("A placement needs a non-nil definition identity"));
+        }
+        if super::architecture::blueprint_for_definition(content)?.is_some() {
             return Err(invalid(
                 "Draw a wall or fence to supply the architectural symbol's path and placement context",
             ));
@@ -69,7 +83,7 @@ impl SymbolPlaceRequest {
             wrapper: EntityId::new(),
             wrapper_metadata: EntityId::new(),
             member: EntityId::new(),
-            ids: super::remap::identities(&def)?
+            ids: super::remap::identities(content)?
                 .into_iter()
                 .map(|id| (id, EntityId::new()))
                 .collect(),
@@ -189,19 +203,46 @@ pub fn prepare_author(
     let value = author(session.document(), request)?;
     embed(session, revision, actor, &value, request.definition)
 }
-pub fn prepare_place(
-    session: &Session,
-    revision: u64,
-    actor: Actor,
+/// Find an exact embedded pin without implicitly upgrading another revision.
+pub fn library_placement_definition(
+    document: &Document,
+    content: &SymbolDefinition,
+) -> Result<Option<EntityId>, DocumentError> {
+    content.validate()?;
+    let pin = content.pin()?;
+    let mut older = false;
+    for (id, existing) in definitions(document)? {
+        if existing.symbol != content.symbol {
+            continue;
+        }
+        if existing.pin()? == pin {
+            return Ok(Some(id));
+        }
+        older = true;
+    }
+    if older {
+        return Err(invalid(
+            "Another revision of this symbol is embedded; explicitly compare and update its pin before placing this Library revision",
+        ));
+    }
+    Ok(None)
+}
+
+fn placement_edits(
+    document: &Document,
+    definition: &SymbolDefinition,
     request: &SymbolPlaceRequest,
-) -> Result<SymbolPrepared, CommandError> {
-    stale(session, revision)?;
-    super::validate(session.document())?;
-    let def = read_definition(session.document(), request.definition)?;
+    parent: Option<EntityId>,
+) -> Result<(Vec<Mutation>, SymbolInstance), DocumentError> {
+    if super::architecture::blueprint_for_definition(definition)?.is_some() {
+        return Err(invalid(
+            "Draw a wall or fence to supply the architectural symbol's path and placement context",
+        ));
+    }
     crate::model::RigidPose::from_placement(request.placement)?;
     let value = SymbolInstance {
         definition: request.definition,
-        pin: def.pin()?,
+        pin: definition.pin()?,
         instance: request.instance,
         wrapper: request.wrapper,
         wrapper_metadata: request.wrapper_metadata,
@@ -209,7 +250,7 @@ pub fn prepare_place(
         ids: request.ids.clone(),
         overrides: request.overrides.clone(),
     };
-    let mut edits = generated(&def, &value)?
+    let mut edits = generated(definition, &value)?
         .into_values()
         .map(Mutation::Insert)
         .collect::<Vec<_>>();
@@ -223,6 +264,55 @@ pub fn prepare_place(
         },
     )));
     edits.push(Mutation::Insert(record_entity(request.record, &value)?));
+    if let Some(parent) = parent {
+        if parent != document.id() {
+            let container = document.get(parent).ok_or_else(|| {
+                invalid("The placement parent is missing; choose a current assembly, group or root")
+            })?;
+            if crate::hierarchy::container_kind(&container.data).is_none() {
+                return Err(invalid(
+                    "The placement parent must be an assembly, group or root",
+                ));
+            }
+            if owned_entities(document)?.contains(&parent) {
+                return Err(invalid(
+                    "A symbol's private container cannot own a new Library placement",
+                ));
+            }
+        }
+        let mut hierarchy = document.hierarchy().clone();
+        hierarchy
+            .members
+            .entry(parent)
+            .or_default()
+            .push(request.instance);
+        edits.push(Mutation::SetHierarchy(hierarchy));
+    }
+    Ok((edits, value))
+}
+
+/// Place an embedded definition at root, preserving the original public contract.
+pub fn prepare_place(
+    session: &Session,
+    revision: u64,
+    actor: Actor,
+    request: &SymbolPlaceRequest,
+) -> Result<SymbolPrepared, CommandError> {
+    prepare_place_in(session, revision, actor, request, None)
+}
+
+/// Place one visible instance in an explicit parent without exposing private members.
+pub fn prepare_place_in(
+    session: &Session,
+    revision: u64,
+    actor: Actor,
+    request: &SymbolPlaceRequest,
+    parent: Option<EntityId>,
+) -> Result<SymbolPrepared, CommandError> {
+    stale(session, revision)?;
+    super::validate(session.document())?;
+    let definition = read_definition(session.document(), request.definition)?;
+    let (edits, value) = placement_edits(session.document(), &definition, request, parent)?;
     finish(
         session,
         revision,
@@ -233,6 +323,47 @@ pub fn prepare_place(
         &[value],
     )
 }
+
+/// Embed a selected immutable Library revision and place it in one transaction.
+pub fn prepare_library_place(
+    session: &Session,
+    revision: u64,
+    actor: Actor,
+    content: &SymbolDefinition,
+    request: &SymbolPlaceRequest,
+    parent: Option<EntityId>,
+) -> Result<SymbolPrepared, CommandError> {
+    stale(session, revision)?;
+    super::validate(session.document())?;
+    let existing = library_placement_definition(session.document(), content)?;
+    if existing.is_some_and(|id| id != request.definition) {
+        return Err(invalid("Placement must reuse the exact embedded definition identity").into());
+    }
+    let (mut edits, value) = placement_edits(session.document(), content, request, parent)?;
+    if existing.is_none() {
+        edits.insert(
+            0,
+            Mutation::Insert(entity(
+                request.definition,
+                content.name.clone(),
+                EntityData::Extension {
+                    definition: content.definition()?,
+                    inputs: vec![],
+                },
+            )),
+        );
+    }
+    finish(
+        session,
+        revision,
+        actor,
+        "Place Library symbol",
+        edits,
+        request.definition,
+        &[value],
+    )
+}
+
 fn record_id(doc: &Document, id: EntityId) -> Result<EntityId, DocumentError> {
     if matches!(
         doc.get(id).map(|e| &e.data),

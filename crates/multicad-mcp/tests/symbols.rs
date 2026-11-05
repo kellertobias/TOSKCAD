@@ -736,3 +736,303 @@ fn symbol_review_queue_refuses_owner_changes_session_switches_cancellation_and_d
         .unwrap();
     }
 }
+
+#[test]
+fn direct_library_place_embeds_and_places_once_with_parent_units_pin_reuse_and_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixture(false, false);
+    write_fixture(dir.path(), "direct.tcd", &f);
+    let original_file = std::fs::read(dir.path().join("direct.tcd")).unwrap();
+    let h = host(dir.path());
+    let parent = Entity::new(
+        "Receiving assembly",
+        EntityData::Assembly { instances: vec![] },
+    );
+    let parent_id = parent.id;
+    multicad_mcp::host::with(&h, move |owner| {
+        let session = owner.control().0;
+        session.apply(Request {
+            expected_revision: 0,
+            actor: actor(),
+            label: "Create receiving context".into(),
+            edits: vec![Mutation::Insert(parent)],
+        })
+    })
+    .unwrap()
+    .unwrap();
+    let before = h.document();
+    let args = json!({"expected_revision":1,"file_name":"direct.tcd","name":"Direct M3","overrides":{f.length.to_string():{"value":0.4,"unit":"cm"}},"parent":parent_id,"placement":{"translation":[mm(10.),mm(20.),mm(30.)]}});
+    let placed = run(&h, "place_library_symbol", args);
+    assert_eq!(placed["revision"], 2);
+    assert_eq!(placed["source_file"], "direct.tcd");
+    assert_eq!(placed["source_definition"], json!(f.source_definition));
+    assert_eq!(placed["parent"], json!(parent_id));
+    assert_eq!(placed["native_geometry_checked"], true);
+    assert_eq!(placed["native_model_preflight"], true);
+    let instance = EntityId::parse(placed["instance"].as_str().unwrap()).unwrap();
+    let record = symbols::read_instance(&h.document(), instance).unwrap();
+    assert_eq!(record.overrides[&f.length].value, 0.4);
+    assert_eq!(record.overrides[&f.length].unit, "cm");
+    assert_eq!(symbols::definitions(&h.document()).unwrap().len(), 1);
+    assert_eq!(
+        multicad_core::hierarchy::Index::new(&h.document())
+            .unwrap()
+            .parent(instance)
+            .unwrap(),
+        Some(parent_id)
+    );
+    let feature = record.ids[&f.feature];
+    assert_eq!(
+        run(&h, "inspect_mechanical_part", json!({"feature":feature}))["resolved"]["underhead_length_mm"],
+        4.
+    );
+    let model = run(&h, "evaluate_model", json!({}));
+    assert_eq!(model["physical_leaves"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        model["physical_leaves"][0]["pose"]["translation_mm"],
+        json!([10., 20., 30.])
+    );
+    let after = h.document();
+    run(&h, "undo", json!({"expected_revision":2}));
+    assert_eq!(
+        h.document(),
+        before,
+        "one Undo removes both import and placement"
+    );
+    run(&h, "redo", json!({"expected_revision":3}));
+    assert_eq!(h.document(), after);
+    let second = run(
+        &h,
+        "place_library_symbol",
+        json!({"expected_revision":4,"file_name":"direct.tcd","name":"Second direct M3","overrides":{}}),
+    );
+    assert_eq!(second["definition"], placed["definition"]);
+    assert_eq!(second["pin"], placed["pin"]);
+    assert_ne!(second["instance"], placed["instance"]);
+    assert_eq!(symbols::definitions(&h.document()).unwrap().len(), 1);
+    let second_id = EntityId::parse(second["instance"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        multicad_core::hierarchy::Index::new(&h.document())
+            .unwrap()
+            .parent(second_id)
+            .unwrap(),
+        None
+    );
+    run(&h, "save_project", json!({"expected_revision":5}));
+    assert_eq!(
+        std::fs::read(dir.path().join("direct.tcd")).unwrap(),
+        original_file
+    );
+    std::fs::remove_file(dir.path().join("direct.tcd")).unwrap();
+    let reopened = host(dir.path());
+    assert_eq!(reopened.document(), h.document());
+    assert_eq!(
+        symbols::read_instance(&reopened.document(), instance).unwrap(),
+        record
+    );
+    assert_eq!(
+        run(&reopened, "evaluate_model", json!({}))["physical_leaves"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn direct_library_place_refuses_missing_ambiguous_invalid_cancelled_and_conflicting_pins_atomically()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixture(true, false);
+    write_fixture(dir.path(), "direct.tcd", &f);
+    let h = host(dir.path());
+    let before = h.document();
+    let base = json!({"expected_revision":0,"file_name":"direct.tcd","source_definition":f.source_definition,"name":"Direct","overrides":{}});
+    for patch in [
+        json!({"file_name":"missing.tcd"}),
+        json!({"file_name":"../direct.tcd"}),
+        json!({"source_definition":null}),
+        json!({"source_definition":f.feature}),
+        json!({"expected_revision":1}),
+        json!({"parent":EntityId::new()}),
+        json!({"overrides":{f.feature.to_string():mm(4.)}}),
+        json!({"overrides":{f.length.to_string():{"value":4.,"unit":"deg"}}}),
+        json!({"overrides":{f.length.to_string():mm(0.5)}}),
+        json!({"placement":{"rotation_xyzw":[0.,0.,0.,0.]}}),
+    ] {
+        let mut args = base.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            args[key] = value.clone();
+        }
+        assert!(dispatch(&h, &call(false), "place_library_symbol", args).is_err());
+        assert_eq!(h.document(), before);
+    }
+    #[cfg(unix)]
+    {
+        let outside = tempfile::tempdir().unwrap();
+        write_fixture(outside.path(), "outside.tcd", &f);
+        std::os::unix::fs::symlink(
+            outside.path().join("outside.tcd"),
+            dir.path().join("escape.tcd"),
+        )
+        .unwrap();
+        let mut escaped = base.clone();
+        escaped["file_name"] = json!("escape.tcd");
+        assert_eq!(
+            dispatch(&h, &call(false), "place_library_symbol", escaped)
+                .unwrap_err()
+                .code,
+            "out_of_scope"
+        );
+        assert_eq!(h.document(), before);
+    }
+    assert!(dispatch(&h, &call(true), "place_library_symbol", base.clone()).is_err());
+    assert_eq!(h.document(), before);
+    let placed = run(&h, "place_library_symbol", base);
+    let stable = h.document();
+    let mut newer = symbols::read_definition(&f.project.document, f.source_definition).unwrap();
+    newer.revision = "2".into();
+    let mut library = Document::new("New revision only").unwrap();
+    let definition = Entity::new(
+        "Incoming revision",
+        EntityData::Extension {
+            definition: newer.definition().unwrap(),
+            inputs: vec![],
+        },
+    );
+    library.insert(definition).unwrap();
+    Store
+        .save(
+            &dir.path().join("incoming.tcd"),
+            &ProjectFile::new(library).unwrap(),
+        )
+        .unwrap();
+    let error=dispatch(&h,&call(false),"place_library_symbol",json!({"expected_revision":1,"file_name":"incoming.tcd","name":"Must compare update","overrides":{}})).unwrap_err();
+    assert!(error.message.to_lowercase().contains("update"), "{error}");
+    assert_eq!(h.document(), stable);
+    assert_eq!(
+        symbols::read_instance(
+            &stable,
+            EntityId::parse(placed["instance"].as_str().unwrap()).unwrap()
+        )
+        .unwrap()
+        .pin,
+        symbols::read_definition(
+            &stable,
+            EntityId::parse(placed["definition"].as_str().unwrap()).unwrap()
+        )
+        .unwrap()
+        .pin()
+        .unwrap()
+    );
+}
+
+#[test]
+fn direct_library_place_owner_review_rejects_everything_then_accepts_one_attributable_transaction()
+{
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixture(false, false);
+    write_fixture(dir.path(), "direct.tcd", &f);
+    let h = ReviewedHost(host(dir.path()));
+    let original = h.0.document();
+    let args = json!({"expected_revision":0,"file_name":"direct.tcd","name":"Reviewed direct M3","overrides":{}});
+    let first = dispatch(&h, &call(false), "place_library_symbol", args.clone()).unwrap();
+    assert_eq!(first["status"], "pending_review");
+    assert_eq!(first["native_model_preflight"], true);
+    assert_eq!(h.0.document(), original);
+    let review = first["review"].as_u64().unwrap();
+    multicad_mcp::host::with(&h, move |owner| {
+        owner.control().1.reject(review, "Cancel direct placement")
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(h.0.document(), original);
+    assert!(dispatch(&h, &call(false), "undo", json!({"expected_revision":0})).is_err());
+    let pending = dispatch(&h, &call(false), "place_library_symbol", args).unwrap();
+    assert_eq!(h.0.document(), original);
+    let review = pending["review"].as_u64().unwrap();
+    let (revision, actors) = multicad_mcp::host::with(&h, move |owner| {
+        let (s, ledger) = owner.control();
+        let revision = ledger.accept(review, s)?;
+        Ok::<_, String>((
+            revision,
+            s.activity()
+                .map(|entry| entry.actor.clone())
+                .collect::<Vec<_>>(),
+        ))
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(actors, vec![actor()]);
+    assert_eq!(revision, 1);
+    assert!(
+        multicad_mcp::host::with(&h, move |owner| {
+            let (s, ledger) = owner.control();
+            ledger.accept(review, s)
+        })
+        .unwrap()
+        .is_err()
+    );
+    assert_eq!(symbols::definitions(&h.0.document()).unwrap().len(), 1);
+    run(&h.0, "undo", json!({"expected_revision":1}));
+    assert_eq!(h.0.document(), original);
+}
+
+#[test]
+fn direct_library_place_rechecks_owner_session_cancel_and_draft_after_native_preflight() {
+    for (race, code) in [
+        (OwnerRace::Edit, "stale_revision"),
+        (OwnerRace::SwitchSession, "stale_preview"),
+        (OwnerRace::Cancel, "cancelled"),
+        (OwnerRace::Draft, "busy"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixture(false, false);
+        write_fixture(dir.path(), "interleaved.tcd", &f);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let h = InterleavedReviewedHost {
+            owner: host(dir.path()),
+            race,
+            submissions: std::sync::atomic::AtomicUsize::new(0),
+            cancellation: cancellation.clone(),
+            after_owner_change: Arc::default(),
+        };
+        let call = Call {
+            actor: actor(),
+            cancel: cancellation,
+        };
+        let error = dispatch(
+            &h,
+            &call,
+            "place_library_symbol",
+            json!({"expected_revision":0,"file_name":"interleaved.tcd","name":"Atomic reviewed placement","overrides":{}}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, code);
+        let (expected, revision) = h
+            .after_owner_change
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Owner interleaving ran after preparation");
+        assert_eq!(
+            h.owner.document(),
+            expected,
+            "Only the independent owner action may change source"
+        );
+        multicad_mcp::host::with(&h, move |owner| {
+            assert_eq!(owner.session().revision(), revision);
+            assert!(
+                owner.ledger().pending().is_empty(),
+                "Stale candidates must never become pending reviews"
+            );
+            assert!(
+                symbols::definitions(owner.session().document())
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(owner.session().document(), &expected);
+        })
+        .unwrap();
+    }
+}

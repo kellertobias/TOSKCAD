@@ -94,8 +94,10 @@ pub use gears::{GearArgs, InspectGearArgs};
 use gears::{gear_profiles, inspect_gear, set_gear};
 pub use mechanical_parts::{InspectMechanicalPartArgs, MechanicalPartArgs};
 use mechanical_parts::{inspect_mechanical_part, mechanical_part_profiles, set_mechanical_part};
-pub use symbols::{EditSymbolInstanceArgs, ImportSymbolArgs, PlaceSymbolArgs};
-use symbols::{edit_symbol_instance, import_symbol, place_symbol};
+pub use symbols::{
+    EditSymbolInstanceArgs, ImportSymbolArgs, PlaceLibrarySymbolArgs, PlaceSymbolArgs,
+};
+use symbols::{edit_symbol_instance, import_symbol, place_library_symbol, place_symbol};
 pub use text::{
     AddTextArgs, EditTextArgs, RemoveTextArgs, TextAlignmentArg, TextAnchorArg, TextFontArg,
     TextStyleArgs,
@@ -333,6 +335,9 @@ tools! {
     "import_symbol" => ImportSymbolArgs, "Import pinned symbol", false,
         "Import one canonical reusable definition from a bare .tcd file inside the exchange folder. source_definition is the source extension ID and is required for ambiguous files. Returns the embedded definition ID, immutable pin and exposed template parameter IDs. Source import does not place or certify native geometry; private template source remains owned.",
         import_symbol;
+    "place_library_symbol" => PlaceLibrarySymbolArgs, "Place component from library", false,
+        "Atomically embed or reuse one exact pinned reusable definition from an authorized exchange-folder .tcd file and place one instance. source_definition is required for files with multiple definitions. Required overrides use exposed template IDs; empty inherits defaults. Optional typed placement and canonical parent container choose the receiving context; omitted parent means project root. A conflicting embedded revision requires an explicit update. Native preflight precedes one attributable transaction or owner review; missing, incompatible, cancelled and rejected candidates change nothing. Architectural constructions use dedicated draw tools.",
+        place_library_symbol;
     "place_symbol" => PlaceSymbolArgs, "Place pinned symbol", false,
         "Instantiate an embedded definition with a required overrides map keyed by exposed TEMPLATE parameter IDs, each with a literal value and unit. Empty inherits pinned defaults. Optional placement has three typed translation lengths and an x/y/z/w unit quaternion. The complete candidate passes cancellation-aware native evaluation before commit or owner review. Architectural paths use their dedicated draw tools.",
         place_symbol;
