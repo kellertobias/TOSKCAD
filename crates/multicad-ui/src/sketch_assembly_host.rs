@@ -411,9 +411,13 @@ impl SketchEditor {
     ) {
         let Some(pick) = self.assembly.anchor_pick() else {
             self.assembly_anchor = None;
-            if let Some(marker) = feed
-                .visible()
-                .filter(|_| feed.is_current(session.document().id(), session.revision()))
+            let displayed = self.assembly.display_scene(session, resources).or_else(|| {
+                feed.visible()
+                    .filter(|_| feed.is_current(session.document().id(), session.revision()))
+                    .cloned()
+            });
+            if let Some(marker) = displayed
+                .as_ref()
                 .and_then(|scene| self.assembly.clearance_marker(session, scene))
             {
                 self.solid.highlight_reference(Some(marker.highlight()));

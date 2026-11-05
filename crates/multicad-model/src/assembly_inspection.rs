@@ -4,9 +4,8 @@ mod worker;
 use crate::{Compiler, EvaluationScope, Model};
 use multicad_core::{
     assembly_inspection::*,
-    commands::{Actor, Channel, Session},
     document::Document,
-    model::{self, JointCoordinate, JointRequest},
+    model::{self, JointRequest},
 };
 use multicad_kernel::{GeometryErrorKind, SolidPairRelation};
 pub use worker::AssemblyInspectionWorker;
@@ -160,36 +159,13 @@ pub fn sample_assembly_range(
         .map_err(|e| failure(InspectionFailureKind::Invalid, e.to_string()))?;
     inspect_assembly_interruptible(&baseline, &query.pair_query(), interrupt)?;
     drop(baseline);
-    let session = Session::new(document.clone())
-        .map_err(|e| failure(InspectionFailureKind::Invalid, e.to_string()))?;
     let values = query
         .sample_values()
         .map_err(|e| failure(InspectionFailureKind::Invalid, e))?;
     let mut samples = Vec::with_capacity(values.len());
-    for value in &values {
+    for (index, value) in values.iter().enumerate() {
         check_cancel(interrupt)?;
-        let mut request = request.clone();
-        match query.coordinate {
-            JointCoordinate::X => request.parameters.values.translation[0] = model::length(*value),
-            JointCoordinate::Y => request.parameters.values.translation[1] = model::length(*value),
-            JointCoordinate::Z => request.parameters.values.translation[2] = model::length(*value),
-            JointCoordinate::Rotation => {
-                request.parameters.values.rotation =
-                    multicad_core::constraint_sketch::Dimension::Literal {
-                        value: *value,
-                        unit: "rad".into(),
-                    };
-            }
-        }
-        let candidate = model::prepare_joint_edit(
-            &session,
-            session.revision(),
-            Actor {
-                id: "read-only-assembly-inspection".into(),
-                channel: Channel::Ui,
-            },
-            &request,
-        );
+        let candidate = query.prepare_sample(document, index);
         let sample = match candidate {
             Err(error) => RangeSample {
                 value: *value,

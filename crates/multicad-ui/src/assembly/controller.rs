@@ -79,7 +79,10 @@ impl AssemblyController {
     }
     pub fn pending(&self) -> bool {
         self.candidate.as_ref().is_some_and(|c| c.pending)
-            || self.inspection.as_ref().is_some_and(|p| p.pending)
+            || self
+                .inspection
+                .as_ref()
+                .is_some_and(|p| p.pending || p.sample_pending())
     }
     pub fn begin(
         &mut self,
@@ -284,11 +287,21 @@ impl AssemblyController {
             && let Some(p) = &mut self.inspection
         {
             p.poll(session);
+            if let Some(backend) = &mut self.backend
+                && let Err(error) =
+                    p.sync_sample(session, resources, backend.as_mut(), &mut self.generation)
+            {
+                p.error = Some(error);
+            }
         }
         for _ in 0..16 {
             let Some(reply) = self.backend.as_mut().and_then(|b| b.poll()) else {
                 break;
             };
+            if let Some(p) = &mut self.inspection {
+                p.accept_scene(session, reply);
+                continue;
+            }
             let Some(candidate) = &self.candidate else {
                 continue;
             };
@@ -387,6 +400,14 @@ impl AssemblyController {
         session: &Session,
         resources: &ProjectResources,
     ) -> Option<Arc<Scene>> {
+        if self.current(session, resources).is_ok()
+            && let Some(scene) = self
+                .inspection
+                .as_ref()
+                .and_then(|p| p.display_scene(session))
+        {
+            return Some(scene);
+        }
         if self.can_apply(session, resources) {
             return self.candidate.as_ref().and_then(|c| c.scene.clone());
         }

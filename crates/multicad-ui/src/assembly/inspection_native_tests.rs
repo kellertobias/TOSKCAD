@@ -297,3 +297,224 @@ fn completed_native_inspection_is_invalidated_by_current_source_change() {
     assert!(panel.report.is_none());
     assert!(panel.error.as_deref().unwrap().contains("stale source"));
 }
+
+#[test]
+fn clearance_requirement_distinguishes_small_gap_contact_and_overlap() {
+    use super::clearance_view::clearance_status;
+    let status = |relation, distance, required| clearance_status(relation, distance, required).0;
+    assert!(status(PairRelation::Separated, 0.5, 1.).starts_with("Below required"));
+    assert_eq!(
+        status(PairRelation::Separated, 1., 1.),
+        "Meets required clearance"
+    );
+    assert_eq!(
+        status(PairRelation::Separated, 2., 1.),
+        "Meets required clearance"
+    );
+    assert!(status(PairRelation::ContactWithinTolerance, 0., 1.).starts_with("Below required"));
+    assert_eq!(status(PairRelation::Overlapping, 0., 0.), "Interference");
+    for invalid in [-1., f64::NAN, f64::INFINITY] {
+        assert!(status(PairRelation::Separated, 2., invalid).starts_with("Unknown"));
+    }
+    let (session, scene, selection) = setup();
+    let mut panel = InspectionPanel::new(false, session.document(), Some(&scene), &selection, None);
+    panel.required = length(-1.);
+    assert!(panel.query(&session).unwrap_err().contains("nonnegative"));
+    panel.required = length(f64::NAN);
+    assert!(panel.query(&session).is_err());
+}
+
+#[test]
+fn selected_sample_requires_its_real_native_scene_and_rejects_late_wrong_or_stale_replies() {
+    use crate::viewport::{SceneBackend, SceneReply, SceneStamp};
+    struct Capture(Option<(Document, SceneStamp)>);
+    impl SceneBackend for Capture {
+        fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
+            self.0 = Some((document.clone(), stamp));
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<SceneReply> {
+            None
+        }
+    }
+    fn evaluated(document: &Document, stamp: SceneStamp) -> Arc<Scene> {
+        let model = Compiler::default()
+            .compile(document, stamp.revision)
+            .unwrap();
+        let scene = Arc::try_unwrap(
+            native_fixture::scene(document, model.snapshot(), stamp.generation).unwrap(),
+        )
+        .ok()
+        .unwrap();
+        Arc::new(
+            scene
+                .with_assembly_evaluation(Arc::new(model.assembly_evaluation()))
+                .unwrap(),
+        )
+    }
+    let (mut session, baseline, selection) = setup();
+    let original = session.document().clone();
+    let revision = session.revision();
+    let factory: AssemblyInspectionBackendFactory =
+        Arc::new(|| Box::new(WorkerBackend::new(false)));
+    let mut panel = InspectionPanel::new(
+        true,
+        session.document(),
+        Some(&baseline),
+        &selection,
+        Some(&factory),
+    );
+    panel.end = length(15.);
+    panel.step = length(6.);
+    panel.required = length(31.);
+    panel.request(&session).unwrap();
+    wait(&mut panel, &session);
+    let mut backend = Capture(None);
+    let mut generation = 20;
+    panel.selected_sample = Some(0);
+    panel.selected = Some(0);
+    panel
+        .sync_sample(&session, &Default::default(), &mut backend, &mut generation)
+        .unwrap();
+    let (first_document, first_stamp) = backend.0.take().unwrap();
+    let first_scene = evaluated(&first_document, first_stamp);
+    assert!(panel.marker(&session, &baseline).unwrap().is_err());
+    assert!(panel.display_scene(&session).is_none());
+    panel.accept_scene(
+        &session,
+        SceneReply {
+            stamp: first_stamp,
+            result: Ok(first_scene.clone()),
+        },
+    );
+    let marker = panel.marker(&session, &first_scene).unwrap().unwrap();
+    assert!(marker.label().contains("Below required"));
+    assert!(panel.display_scene(&session).is_some());
+    panel.selected_sample = Some(1);
+    assert!(
+        panel.display_scene(&session).is_none(),
+        "old pose must disappear immediately"
+    );
+    panel
+        .sync_sample(&session, &Default::default(), &mut backend, &mut generation)
+        .unwrap();
+    let (second_document, second_stamp) = backend.0.take().unwrap();
+    let second_scene = evaluated(&second_document, second_stamp);
+    assert_ne!(
+        first_scene.model_evaluation().unwrap().source_hash,
+        second_scene.model_evaluation().unwrap().source_hash
+    );
+    let path = &selection.occurrences[1];
+    assert_ne!(
+        first_scene.leaf_display_bounds(path),
+        second_scene.leaf_display_bounds(path)
+    );
+    panel.accept_scene(
+        &session,
+        SceneReply {
+            stamp: first_stamp,
+            result: Ok(first_scene.clone()),
+        },
+    );
+    assert!(
+        panel.sample_pending(),
+        "late previous pose must not replace the requested one"
+    );
+    panel.accept_scene(
+        &session,
+        SceneReply {
+            stamp: second_stamp,
+            result: Ok(first_scene),
+        },
+    );
+    assert!(panel.display_scene(&session).is_none());
+    assert!(panel.error.as_deref().unwrap().contains("does not match"));
+    assert!(panel.selected_sample.is_none());
+    assert!(panel.sample_view.is_none());
+    // The same sample button can explicitly retry a rejected native display.
+    panel.selected_sample = Some(1);
+    panel.selected = Some(0);
+    panel
+        .sync_sample(&session, &Default::default(), &mut backend, &mut generation)
+        .unwrap();
+    let (_, stamp) = backend.0.take().unwrap();
+    let valid_scene = evaluated(&second_document, stamp);
+    panel.accept_scene(
+        &session,
+        SceneReply {
+            stamp,
+            result: Ok(valid_scene.clone()),
+        },
+    );
+    assert!(panel.marker(&session, &valid_scene).unwrap().is_ok());
+    panel.selected_sample = Some(3); // Outside the joint's inclusive limits.
+    assert!(panel.display_scene(&session).is_none());
+    assert!(
+        panel
+            .sync_sample(&session, &Default::default(), &mut backend, &mut generation)
+            .is_err()
+    );
+    assert!(panel.sample_view.is_none());
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision(), revision);
+    panel.invalidate();
+    panel.accept_scene(
+        &session,
+        SceneReply {
+            stamp: second_stamp,
+            result: Ok(second_scene),
+        },
+    );
+    assert!(panel.display_scene(&session).is_none());
+    assert!(panel.selected_sample.is_none());
+    session.undo(session.revision(), actor()).unwrap();
+    assert!(panel.display_scene(&session).is_none());
+}
+
+#[test]
+fn failed_sample_submission_requires_explicit_retry() {
+    struct Failing(usize);
+    impl crate::viewport::SceneBackend for Failing {
+        fn request(&mut self, _: &Document, _: crate::viewport::SceneStamp) -> Result<(), String> {
+            self.0 += 1;
+            Err("Native display unavailable".into())
+        }
+        fn poll(&mut self) -> Option<crate::viewport::SceneReply> {
+            None
+        }
+    }
+    let (session, baseline, selection) = setup();
+    let factory: AssemblyInspectionBackendFactory =
+        Arc::new(|| Box::new(WorkerBackend::new(false)));
+    let mut panel = InspectionPanel::new(
+        true,
+        session.document(),
+        Some(&baseline),
+        &selection,
+        Some(&factory),
+    );
+    panel.end = length(6.);
+    panel.step = length(6.);
+    panel.request(&session).unwrap();
+    wait(&mut panel, &session);
+    panel.selected_sample = Some(1);
+    panel.selected = Some(0);
+    let mut backend = Failing(0);
+    let mut generation = 0;
+    assert!(
+        panel
+            .sync_sample(&session, &Default::default(), &mut backend, &mut generation)
+            .is_err()
+    );
+    for _ in 0..3 {
+        panel
+            .sync_sample(&session, &Default::default(), &mut backend, &mut generation)
+            .unwrap();
+    }
+    assert_eq!(
+        backend.0, 1,
+        "failed submissions must not spin/retry every frame"
+    );
+    assert!(panel.selected_sample.is_none());
+    assert!(panel.display_scene(&session).is_none());
+}

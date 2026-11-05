@@ -273,7 +273,10 @@ fn selected_result_marks_both_occurrences_exact_witnesses_and_labeled_distance()
     let marker = panel.marker(&f.session, &scene).unwrap().unwrap();
     assert_eq!(marker.relation, PairRelation::Separated);
     assert_eq!(marker.minimum_clearance_mm, 30.);
-    assert_eq!(marker.label(), "30.000 mm");
+    assert_eq!(
+        marker.label(),
+        "Meets required clearance · measured 30.000 mm · required 0.000 mm"
+    );
     // Witnesses are exactly the native report points, not display geometry.
     assert_eq!(marker.witnesses, values.witnesses);
     assert_eq!(marker.stamp, report.stamp);
@@ -303,7 +306,7 @@ fn selected_result_marks_both_occurrences_exact_witnesses_and_labeled_distance()
     let mut camera = Camera::default();
     camera.fit(&marker.fit_points(), rect());
     let shapes = painted(&marker, camera, false);
-    assert!(shape_texts(&shapes).contains(&"30.000 mm".to_string()));
+    assert!(shape_texts(&shapes).contains(&marker.label()));
     assert!(filled_circles(&shapes, A_COLOR) >= 1);
     assert!(filled_circles(&shapes, B_COLOR) >= 1);
     let (_, separated) = relation_style(PairRelation::Separated);
@@ -393,11 +396,11 @@ fn overlap_and_contact_have_distinct_viewport_feedback() {
         assert!(shape_texts(&shapes).contains(&label));
         if relation == PairRelation::Overlapping {
             assert!((marker.overlap_volume_mm3 - 3000.).abs() < 1e-3);
-            assert_eq!(label, "Interference · 3000.000 mm³ overlap");
+            assert!(label.starts_with("Interference · 3000.000 mm³ overlap"));
             // Cross mark plus the witness segment in the interference color.
             assert!(segments(&shapes, color) >= 3);
         } else {
-            assert!(label.starts_with("Contact · ≤ "));
+            assert!(label.starts_with("Contact · meets required clearance"));
         }
         styles.push(color);
     }

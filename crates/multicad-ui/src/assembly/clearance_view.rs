@@ -24,6 +24,7 @@ pub struct ClearanceMarker {
     pub minimum_clearance_mm: f64,
     pub overlap_volume_mm3: f64,
     pub tolerance_mm: f64,
+    pub required_minimum_mm: Option<f64>,
     /// Exact native closest-point pairs, A side first.
     pub witnesses: Vec<InspectionWitness>,
     /// Display-mesh world boxes of the A and B leaf occurrences.
@@ -51,6 +52,42 @@ pub fn relation_style(relation: PairRelation) -> (&'static str, egui::Color32) {
         ),
         PairRelation::Overlapping => ("Interference", egui::Color32::from_rgb(240, 96, 96)),
     }
+}
+
+/// A policy result is separate from the exact native geometric relation.
+pub(super) fn clearance_status(
+    relation: PairRelation,
+    measured: f64,
+    required: f64,
+) -> (String, egui::Color32) {
+    if !required.is_finite() || required < 0. || !measured.is_finite() || measured < 0. {
+        return (
+            "Unknown: invalid clearance requirement or measurement".into(),
+            egui::Color32::LIGHT_RED,
+        );
+    }
+    if relation == PairRelation::Overlapping {
+        return ("Interference".into(), relation_style(relation).1);
+    }
+    if measured < required {
+        return (
+            format!(
+                "Below required clearance by {}",
+                crate::preferences::format_mm(required - measured)
+            ),
+            egui::Color32::from_rgb(242, 160, 76),
+        );
+    }
+    if relation == PairRelation::ContactWithinTolerance {
+        return (
+            "Contact · meets required clearance".into(),
+            relation_style(relation).1,
+        );
+    }
+    (
+        "Meets required clearance".into(),
+        egui::Color32::from_rgb(120, 214, 150),
+    )
 }
 
 impl ClearanceMarker {
@@ -85,6 +122,7 @@ impl ClearanceMarker {
             minimum_clearance_mm: values.minimum_clearance_mm,
             overlap_volume_mm3: values.overlap_volume_mm3,
             tolerance_mm: values.tolerance_mm,
+            required_minimum_mm: None,
             witnesses: values.witnesses.clone(),
             bounds: [
                 scene.leaf_display_bounds(&pair.a),
@@ -106,6 +144,22 @@ impl ClearanceMarker {
         ])))
     }
     pub fn label(&self) -> String {
+        if let Some(required) = self.required_minimum_mm {
+            let (status, _) = clearance_status(self.relation, self.minimum_clearance_mm, required);
+            let geometry = match self.relation {
+                PairRelation::Overlapping => {
+                    format!(" · {:.3} mm³ overlap", self.overlap_volume_mm3)
+                }
+                PairRelation::ContactWithinTolerance => {
+                    format!(" · contact tolerance {} mm", self.tolerance_mm)
+                }
+                PairRelation::Separated => String::new(),
+            };
+            return format!(
+                "{status}{geometry} · measured {:.3} mm · required {:.3} mm",
+                self.minimum_clearance_mm, required
+            );
+        }
         match self.relation {
             PairRelation::Separated => format!("{:.3} mm", self.minimum_clearance_mm),
             PairRelation::ContactWithinTolerance => {
@@ -148,7 +202,13 @@ impl ClearanceMarker {
         reveal: bool,
         section: Option<SectionPlane>,
     ) {
-        let (_, relation_color) = relation_style(self.relation);
+        let (_, relation_color) = self.required_minimum_mm.map_or_else(
+            || {
+                let (label, color) = relation_style(self.relation);
+                (label.to_owned(), color)
+            },
+            |required| clearance_status(self.relation, self.minimum_clearance_mm, required),
+        );
         // Explicit reveal draws both occurrence boxes over occluding geometry;
         // a hidden occurrence is always outlined so the pair stays locatable.
         for (side, bounds) in self.bounds.iter().enumerate() {

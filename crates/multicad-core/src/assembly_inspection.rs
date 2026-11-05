@@ -244,6 +244,51 @@ pub enum RangeCoverage {
     SamplesOnly,
 }
 impl MotionRangeQuery {
+    /// Prepare exactly one requested sample without committing or moving the source.
+    /// Native range inspection and display evaluation share this candidate path.
+    pub fn prepare_sample(
+        &self,
+        document: &Document,
+        index: usize,
+    ) -> Result<crate::model::AssemblyPrepared, String> {
+        use crate::{
+            commands::{Actor, Channel, Session},
+            model::{self, JointRequest},
+        };
+        self.validate()?;
+        self.expected.check(document, self.expected.revision)?;
+        let value = *self
+            .sample_values()?
+            .get(index)
+            .ok_or("Sample index is outside this range")?;
+        let mut request =
+            JointRequest::existing(document, self.joint).map_err(|e| e.to_string())?;
+        if !request.parameters.kind.allows(self.coordinate) {
+            return Err("The selected joint kind does not drive this coordinate".into());
+        }
+        match self.coordinate {
+            JointCoordinate::X => request.parameters.values.translation[0] = model::length(value),
+            JointCoordinate::Y => request.parameters.values.translation[1] = model::length(value),
+            JointCoordinate::Z => request.parameters.values.translation[2] = model::length(value),
+            JointCoordinate::Rotation => {
+                request.parameters.values.rotation = crate::constraint_sketch::Dimension::Literal {
+                    value,
+                    unit: "rad".into(),
+                }
+            }
+        }
+        let session = Session::new(document.clone()).map_err(|e| e.to_string())?;
+        model::prepare_joint_edit(
+            &session,
+            session.revision(),
+            Actor {
+                id: "read-only-assembly-inspection".into(),
+                channel: Channel::Ui,
+            },
+            &request,
+        )
+        .map_err(|e| e.to_string())
+    }
     pub fn pair_query(&self) -> PairQuery {
         PairQuery {
             expected: self.expected,

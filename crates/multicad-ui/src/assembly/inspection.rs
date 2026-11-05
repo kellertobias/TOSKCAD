@@ -6,15 +6,16 @@ use super::{
 use crate::{
     controls, egui,
     icons::{self, Icon},
-    viewport::Scene,
+    viewport::{Scene, SceneBackend, SceneReply, SceneStamp, VisibilityFilter},
 };
 use multicad_core::{
     assembly_inspection::*,
-    commands::Session,
+    commands::{Prepared, Session},
     constraint_sketch::Dimension,
     document::{Document, EntityId},
     model::{self, JointCoordinate, OccurrencePath},
     parameters::Unit,
+    project_file::ProjectResources,
 };
 use std::sync::Arc;
 pub trait AssemblyInspectionBackend {
@@ -28,6 +29,13 @@ pub trait AssemblyInspectionBackend {
 }
 pub type AssemblyInspectionBackendFactory =
     Arc<dyn Fn() -> Box<dyn AssemblyInspectionBackend> + Send + Sync>;
+struct SampleView {
+    index: usize,
+    stamp: SceneStamp,
+    prepared: Prepared,
+    scene: Option<Arc<Scene>>,
+    pending: bool,
+}
 pub(super) struct InspectionPanel {
     range: bool,
     catalog: Vec<(OccurrencePath, String)>,
@@ -40,12 +48,16 @@ pub(super) struct InspectionPanel {
     end: Dimension,
     step: Dimension,
     tolerance: f64,
+    required: Dimension,
     fields: Fields,
     backend: Option<Box<dyn AssemblyInspectionBackend>>,
     expected: Option<(u64, AssemblyInspectionQuery)>,
     report: Option<AssemblyInspectionReport>,
     /// Current-pose result shown in the viewport (index into the report).
     selected: Option<usize>,
+    selected_sample: Option<usize>,
+    sample_view: Option<SampleView>,
+    reset_sample_backend: bool,
     reveal: bool,
     fit_requested: bool,
     pub error: Option<String>,
@@ -89,11 +101,15 @@ impl InspectionPanel {
             end: widgets::literal(100., "mm"),
             step: widgets::literal(10., "mm"),
             tolerance: 1e-7,
+            required: widgets::literal(0., "mm"),
             fields: Fields::default(),
             backend: factory.map(|f| f()),
             expected: None,
             report: None,
             selected: None,
+            selected_sample: None,
+            sample_view: None,
+            reset_sample_backend: false,
             reveal: false,
             fit_requested: false,
             error: None,
@@ -108,18 +124,191 @@ impl InspectionPanel {
         session: &Session,
         scene: &Scene,
     ) -> Option<Result<ClearanceMarker, String>> {
-        let Some(AssemblyInspectionReport::Current(report)) = &self.report else {
+        let report = match self.report.as_ref()? {
+            AssemblyInspectionReport::Current(report) => {
+                if let Err(error) = report.stamp.check(session.document(), session.revision()) {
+                    return Some(Err(error));
+                }
+                report
+            }
+            AssemblyInspectionReport::Range(report) => {
+                if !self.sample_view.as_ref().is_some_and(|view| {
+                    Some(view.index) == self.selected_sample
+                        && view.scene.is_some()
+                        && view.stamp == scene.stamp()
+                }) {
+                    return Some(Err(
+                        "Wait for the selected sampled pose's native display".into()
+                    ));
+                }
+                if let Err(error) = report.stamp.check(session.document(), session.revision()) {
+                    return Some(Err(error));
+                }
+                report
+                    .samples
+                    .get(self.selected_sample?)?
+                    .result
+                    .as_ref()
+                    .ok()?
+            }
+        };
+        let required = match self.required_mm(session) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(
+            ClearanceMarker::build(report, self.selected?, scene).map(|mut marker| {
+                marker.required_minimum_mm = Some(required);
+                marker
+            }),
+        )
+    }
+    fn required_mm(&self, session: &Session) -> Result<f64, String> {
+        let value = self
+            .required
+            .value_in(Unit::Millimeter, Some(session.parameters()))?;
+        if !value.is_finite() || value < 0. {
+            return Err("Required minimum clearance must be finite and nonnegative".into());
+        }
+        Ok(value)
+    }
+    pub fn sample_pending(&self) -> bool {
+        self.sample_view
+            .as_ref()
+            .is_some_and(|view| view.pending && Some(view.index) == self.selected_sample)
+    }
+    pub fn display_scene(&self, session: &Session) -> Option<Arc<Scene>> {
+        let AssemblyInspectionReport::Range(report) = self.report.as_ref()? else {
             return None;
         };
-        let index = self.selected?;
-        if report.stamp.document != session.document().id()
-            || report.stamp.revision != session.revision()
-        {
-            return Some(Err(
-                "The document changed after this result; Preview again".into()
-            ));
+        report
+            .stamp
+            .check(session.document(), session.revision())
+            .ok()?;
+        let view = self.sample_view.as_ref()?;
+        if Some(view.index) != self.selected_sample {
+            return None;
         }
-        Some(ClearanceMarker::build(report, index, scene))
+        view.scene.clone()
+    }
+    pub fn sync_sample(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        backend: &mut dyn SceneBackend,
+        generation: &mut u64,
+    ) -> Result<(), String> {
+        let result = self.request_sample_scene(session, resources, backend, generation);
+        if result.is_err() {
+            // A failed submission is retried only after an explicit selection.
+            self.selected_sample = None;
+            self.selected = None;
+            self.sample_view = None;
+        }
+        result
+    }
+    fn request_sample_scene(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        backend: &mut dyn SceneBackend,
+        generation: &mut u64,
+    ) -> Result<(), String> {
+        if std::mem::take(&mut self.reset_sample_backend) {
+            backend.cancel();
+        }
+        if self.selected_sample.is_none() && self.sample_view.is_none() {
+            return Ok(());
+        }
+        if self
+            .sample_view
+            .as_ref()
+            .is_some_and(|view| Some(view.index) == self.selected_sample)
+        {
+            return Ok(());
+        }
+        backend.cancel();
+        self.sample_view = None;
+        let Some(index) = self.selected_sample else {
+            return Ok(());
+        };
+        let Some(AssemblyInspectionReport::Range(report)) = &self.report else {
+            return Err("No sampled inspection is available".into());
+        };
+        report.stamp.check(session.document(), session.revision())?;
+        let sample = report.samples.get(index).ok_or("Sample no longer exists")?;
+        let pair_report = sample.result.as_ref().map_err(|e| e.to_string())?;
+        let candidate = report.query.prepare_sample(session.document(), index)?;
+        let candidate_stamp =
+            InspectionStamp::capture(candidate.prepared.document(), session.revision())?;
+        if Some(candidate_stamp) != sample.candidate_stamp || candidate_stamp != pair_report.stamp {
+            return Err(
+                "Sample display source differs from the inspected pose; Preview again".into(),
+            );
+        }
+        *generation = generation
+            .checked_add(1)
+            .ok_or("Sample preview generation limit reached")?;
+        let stamp = SceneStamp {
+            document: candidate_stamp.document,
+            revision: candidate_stamp.revision,
+            generation: *generation,
+        };
+        backend.request_evaluation(
+            candidate.prepared.document(),
+            resources,
+            stamp,
+            &Default::default(),
+        )?;
+        self.sample_view = Some(SampleView {
+            index,
+            stamp,
+            prepared: candidate.prepared,
+            scene: None,
+            pending: true,
+        });
+        self.error = None;
+        Ok(())
+    }
+    pub fn accept_scene(&mut self, session: &Session, reply: SceneReply) {
+        let Some(view) = &self.sample_view else {
+            return;
+        };
+        if !view.pending || view.stamp != reply.stamp || Some(view.index) != self.selected_sample {
+            return;
+        }
+        let result = (|| {
+            let Some(AssemblyInspectionReport::Range(report)) = &self.report else {
+                return Err("Sample report was cleared".into());
+            };
+            report.stamp.check(session.document(), session.revision())?;
+            let pair = report
+                .samples
+                .get(view.index)
+                .ok_or("Sample no longer exists")?
+                .result
+                .as_ref()
+                .map_err(|e| e.to_string())?;
+            let scene = reply.result?;
+            if scene.stamp() != view.stamp || !clearance_view::scene_matches(&pair.stamp, &scene) {
+                return Err("Native display does not match the selected sampled pose".into());
+            }
+            super::proof::validate(view.prepared.document(), session.revision(), &scene)?;
+            VisibilityFilter::default().apply(&scene, view.prepared.document(), session.revision())
+        })();
+        match result {
+            Ok(scene) => {
+                let view = self.sample_view.as_mut().expect("matching sample");
+                view.pending = false;
+                view.scene = Some(scene);
+            }
+            Err(error) => {
+                self.sample_view = None;
+                self.selected_sample = None;
+                self.selected = None;
+                self.error = Some(error);
+            }
+        }
     }
     pub fn take_fit(&mut self) -> bool {
         std::mem::take(&mut self.fit_requested)
@@ -134,6 +323,9 @@ impl InspectionPanel {
         self.expected = None;
         self.report = None;
         self.selected = None;
+        self.selected_sample = None;
+        self.sample_view = None;
+        self.reset_sample_backend = true;
         self.fit_requested = false;
         self.pending = false;
         self.error = None;
@@ -152,6 +344,7 @@ impl InspectionPanel {
         Ok(())
     }
     fn query(&self, session: &Session) -> Result<AssemblyInspectionQuery, String> {
+        self.required_mm(session)?;
         if let Some(e) = &self.fields.error {
             return Err(e.clone());
         }
@@ -315,6 +508,15 @@ impl InspectionPanel {
             self.pairs.remove(index);
             changed = true;
         }
+        self.fields.dimension(
+            ui,
+            session.document(),
+            "required-clearance",
+            "Required minimum clearance",
+            &mut self.required,
+            "mm",
+        );
+        ui.small("Inspection requirement only · does not move parts or add a relationship");
         controls::inspector_collapsing(ui, "inspection-tolerance", "Contact tolerance", |ui| {
             changed |= ui
                 .add(
@@ -438,10 +640,17 @@ impl InspectionPanel {
             ui.spinner();
             ui.label("Inspecting exact native solids…");
         }
+        let required = self.required_mm(session).unwrap_or(0.);
         if let Some(report) = &self.report {
             match report {
                 AssemblyInspectionReport::Current(report) => {
-                    show_pairs(ui, session.document(), report, Some(&mut self.selected));
+                    show_pairs(
+                        ui,
+                        session.document(),
+                        report,
+                        Some(&mut self.selected),
+                        required,
+                    );
                     if self.selected.is_some() {
                         let hash = report.stamp.source_hash.to_string();
                         ui.small(format!(
@@ -504,7 +713,33 @@ impl InspectionPanel {
                         "{} explicit samples · samples only",
                         report.samples.len()
                     ));
-                    ui.small("Sampled poses are not displayed; viewport witnesses show the current pose only.");
+                    ui.small("Select a sampled pose to display its actual native geometry. The saved assembly is unchanged.");
+                    if let Some(sample) = self
+                        .selected_sample
+                        .and_then(|index| report.samples.get(index))
+                    {
+                        ui.label(format!(
+                            "Sample preview: {} {} · saved pose unchanged",
+                            sample.value,
+                            if report.unit == SampleUnit::Radians {
+                                "rad"
+                            } else {
+                                "mm"
+                            }
+                        ));
+                    }
+                    if self.sample_pending() {
+                        ui.spinner();
+                        ui.label("Generating selected sampled pose…");
+                    }
+                    if self.selected_sample.is_some()
+                        && ui.button("Return to current pose").clicked()
+                    {
+                        self.selected_sample = None;
+                        self.selected = None;
+                    }
+                    let mut next_sample = self.selected_sample;
+                    let mut next_pair = self.selected;
                     ui.small(format!(
                         "Actual intervals: {:?} {}",
                         report.actual_intervals,
@@ -528,7 +763,40 @@ impl InspectionPanel {
                                 }
                             ),
                             |ui| match &sample.result {
-                                Ok(report) => show_pairs(ui, session.document(), report, None),
+                                Ok(report) => {
+                                    if ui
+                                        .selectable_label(
+                                            next_sample == Some(i),
+                                            "View sampled pose",
+                                        )
+                                        .clicked()
+                                    {
+                                        next_sample = Some(i);
+                                        next_pair =
+                                            report.pairs.iter().position(|p| p.result.is_ok());
+                                    }
+                                    let mut selected = if next_sample == Some(i) {
+                                        next_pair
+                                    } else {
+                                        None
+                                    };
+                                    show_pairs(
+                                        ui,
+                                        session.document(),
+                                        report,
+                                        Some(&mut selected),
+                                        required,
+                                    );
+                                    if selected.is_some()
+                                        && (next_sample != Some(i) || selected != next_pair)
+                                    {
+                                        next_sample = Some(i);
+                                        next_pair = selected;
+                                    }
+                                    if next_sample == Some(i) {
+                                        next_pair = selected;
+                                    }
+                                }
                                 Err(error) => {
                                     ui.colored_label(
                                         egui::Color32::LIGHT_RED,
@@ -536,6 +804,19 @@ impl InspectionPanel {
                                     );
                                 }
                             },
+                        );
+                    }
+                    self.selected_sample = next_sample;
+                    self.selected = next_pair;
+                    if self.display_scene(session).is_some() {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Fit result").clicked() {
+                                self.fit_requested = true;
+                            }
+                            ui.checkbox(&mut self.reveal, "Reveal targets");
+                        });
+                        ui.small(
+                            "Sample preview only · close this tool to restore the current pose",
                         );
                     }
                 }
@@ -598,6 +879,7 @@ fn show_pairs(
     document: &Document,
     report: &PairReport,
     mut selected: Option<&mut Option<usize>>,
+    required: f64,
 ) {
     for (index, pair) in report.pairs.iter().enumerate() {
         ui.push_id(index, |ui| {
@@ -626,10 +908,19 @@ fn show_pairs(
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("Unknown: {error}"));
                 }
                 Ok(values) => {
-                    let (label, color) = clearance_view::relation_style(values.relation);
+                    let (label, color) = clearance_view::clearance_status(
+                        values.relation,
+                        values.minimum_clearance_mm,
+                        required,
+                    );
                     ui.colored_label(color, label);
                     ui.label(format!(
-                        "Minimum clearance: {}",
+                        "Required minimum clearance: {}",
+                        crate::preferences::format_mm(required)
+                    ));
+                    ui.small(clearance_view::relation_style(values.relation).0);
+                    ui.label(format!(
+                        "Measured minimum clearance: {}",
                         crate::preferences::format_mm(values.minimum_clearance_mm)
                     ));
                     ui.label(format!(
