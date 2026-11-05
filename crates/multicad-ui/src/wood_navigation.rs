@@ -44,7 +44,11 @@ pub fn tools() -> Vec<Tool> {
         .into_iter()
         .map(|preset| Tool {
             id: preset.id(),
-            label: preset.label(),
+            label: if preset == Preset::Hardware {
+                "Configure screw / hardware"
+            } else {
+                preset.label()
+            },
             icon: preset.tool().icon(),
             action: Command::WoodPreset(preset),
             aliases: match preset {
@@ -55,6 +59,13 @@ pub fn tools() -> Vec<Tool> {
             },
         })
         .chain([
+            Tool {
+                id: "wood-library",
+                label: "Browse Library",
+                icon: Icon::Library,
+                action: Command::Extension("library"),
+                aliases: &[],
+            },
             Tool {
                 id: "wood-joint",
                 label: "Joint",
@@ -77,6 +88,7 @@ pub fn tab_tools() -> Vec<&'static str> {
         "panel",
         "batten",
         "wood-hardware",
+        "wood-library",
         "drill",
         "pocket",
         "wood-joint",
@@ -100,7 +112,15 @@ pub fn groups() -> Vec<Group> {
     .into_iter()
     .map(|(label, tools)| Group {
         label,
-        entries: tools.into_iter().map(Entry::Tool).collect(),
+        entries: tools.into_iter().map(|id| {
+            if id == "wood-hardware" {
+                Entry::Menu {
+                    label: "Screw / Hardware", icon: Icon::Revolve,
+                    tools: vec!["wood-hardware", "wood-library"],
+                    unavailable: Some(("Attach screw connection", "Unavailable in the native editor: attaching a screw to receiving Parts requires a connection workflow.")),
+                }
+            } else { Entry::Tool(id) }
+        }).collect(),
     })
     .collect()
 }
@@ -121,11 +141,14 @@ mod tests {
         let ids = groups
             .iter()
             .flat_map(|group| group.entries.iter())
-            .map(|entry| {
-                let Entry::Tool(id) = entry else {
-                    panic!("Direct Wood command expected")
-                };
-                *id
+            .flat_map(|entry| match entry {
+                Entry::Tool(id) => vec![*id],
+                Entry::Menu {
+                    tools, unavailable, ..
+                } => {
+                    assert!(unavailable.is_some());
+                    tools.clone()
+                }
             })
             .collect::<Vec<_>>();
         assert!(!ids.contains(&"domino"));

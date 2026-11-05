@@ -11,6 +11,7 @@ pub enum Entry {
         label: &'static str,
         icon: Icon,
         tools: Vec<&'static str>,
+        unavailable: Option<(&'static str, &'static str)>,
     },
 }
 pub struct Group {
@@ -53,6 +54,7 @@ fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
                             label,
                             icon: *icon,
                             tools: present,
+                            unavailable: None,
                         }
                     });
                 }
@@ -98,6 +100,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                     label: "Add Primitive",
                     icon: Icon::Box,
                     tools: vec!["box", "cylinder"],
+                    unavailable: None,
                 },
                 Entry::Tool("extrude"),
                 Entry::Tool("revolve"),
@@ -116,6 +119,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                         .into_iter()
                         .chain(["split"])
                         .collect(),
+                    unavailable: None,
                 },
                 Entry::Tool("edge-treatment"),
                 Entry::Tool("shell"),
@@ -129,6 +133,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                     label: "Move / Copy",
                     icon: Icon::Transform,
                     tools: vec!["move", "align"],
+                    unavailable: None,
                 },
                 Entry::Tool("scale"),
             ],
@@ -143,6 +148,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                     "model-linear-pattern",
                     "model-circular-pattern",
                 ],
+                unavailable: None,
             }],
         },
         Group {
@@ -307,6 +313,7 @@ fn menu_button(
     label: &'static str,
     icon: Icon,
     tools: &[&'static str],
+    unavailable: Option<(&'static str, &'static str)>,
     enabled: &impl Fn(Command) -> bool,
     hint: &impl Fn(Command, &str) -> String,
     selected: &impl Fn(Command) -> bool,
@@ -363,6 +370,12 @@ fn menu_button(
                     .data_mut(|data| data.insert_temp(menu_memory(mode, label), id));
                 ui.close();
             }
+        }
+        if let Some((label, reason)) = unavailable {
+            ui.separator();
+            ui.add_enabled(false, egui::Button::new(label))
+                .on_disabled_hover_text(reason);
+            ui.add(egui::Label::new(reason).wrap());
         }
     });
     action
@@ -484,9 +497,22 @@ pub fn show_selectable_with_category(
                                             Entry::Tool(id) => tool_button(
                                                 ui, registry, mode, id, &enabled, &hint, &selected,
                                             ),
-                                            Entry::Menu { label, icon, tools } => menu_button(
-                                                ui, registry, mode, label, *icon, tools, &enabled,
-                                                &hint, &selected,
+                                            Entry::Menu {
+                                                label,
+                                                icon,
+                                                tools,
+                                                unavailable,
+                                            } => menu_button(
+                                                ui,
+                                                registry,
+                                                mode,
+                                                label,
+                                                *icon,
+                                                tools,
+                                                *unavailable,
+                                                &enabled,
+                                                &hint,
+                                                &selected,
                                             ),
                                         };
                                         if chosen.is_some() {
@@ -972,6 +998,74 @@ mod tests {
             chosen = chosen.or(command);
         }
         chosen
+    }
+    #[test]
+    fn wood_hardware_menu_reuses_parts_and_library_and_marks_connections_unavailable() {
+        let registry = Registry::default();
+        let tab = registry
+            .workspace(Mode::Model)
+            .tabs
+            .iter()
+            .find(|tab| tab.title == "Wood")
+            .unwrap();
+        for (label, expected) in [
+            (
+                "Configure screw / hardware",
+                Command::WoodPreset(crate::wood_navigation::Preset::Hardware),
+            ),
+            ("Browse Library", Command::Extension("library")),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            ribbon(&registry, Mode::Model, tab, false, 1360., vec![], &ctx)
+                .0
+                .drop_without_applying_deltas();
+            let output = ribbon(&registry, Mode::Model, tab, false, 1360., vec![], &ctx).0;
+            let pos = text(&output, "Screw / Hardware");
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                ribbon(
+                    &registry,
+                    Mode::Model,
+                    tab,
+                    false,
+                    1360.,
+                    events(pos, pressed),
+                    &ctx,
+                )
+                .0
+                .drop_without_applying_deltas();
+            }
+            let output = ribbon(&registry, Mode::Model, tab, false, 1360., vec![], &ctx).0;
+            assert!(
+                output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Attach screw connection")
+                        && node.is_disabled())
+            );
+            let pos = text(&output, label);
+            output.drop_without_applying_deltas();
+            let mut chosen = None;
+            for pressed in [true, false] {
+                let (output, command) = ribbon(
+                    &registry,
+                    Mode::Model,
+                    tab,
+                    false,
+                    1360.,
+                    events(pos, pressed),
+                    &ctx,
+                );
+                output.drop_without_applying_deltas();
+                chosen = chosen.or(command);
+            }
+            assert_eq!(chosen, Some(expected));
+        }
     }
     #[test]
     fn sketch_creation_is_global_instead_of_duplicated_in_the_model_ribbon() {

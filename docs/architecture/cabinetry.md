@@ -488,9 +488,11 @@ the producer contract for BOM and cut-list exports (CAD-89).
   the same member source and native geometry as Tube / profile; hollow, round
   and angle stock are excluded from Batten creation. An applied member
   reopens in the shared member editor with its existing stock and identity.
-- **Hardware.** Screw / Hardware opens the shared Hardware form with the
-  canonical metric machine-screw preset. Its washer, nut, screw and bearing
-  choices reuse the same definitions as Mechanical; there is no Wood catalog.
+- **Hardware.** Screw / Hardware offers the shared Hardware form with the
+  canonical metric machine-screw preset and Browse Library, which opens the
+  existing global browser. Washer, nut, screw and bearing choices reuse the
+  same definitions as Mechanical; there is no Wood catalog. The menu explicitly
+  identifies attached screw connections as unavailable in the native editor.
 - **Window.** Model → Wood → Create → **Panel**. The form builds a carcass
   or places a rectangular panel; Preview builds the native solids and Apply
   commits them. Opening any carcass panel opens its carcass; opening a
