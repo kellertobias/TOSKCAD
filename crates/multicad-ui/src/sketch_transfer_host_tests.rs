@@ -343,7 +343,14 @@ fn native_transfer_host_picks_local_source_and_frozen_face_then_applies_one_undo
         h.editor.camera, camera,
         "Source inspection restores the physical camera"
     );
-    h.click("Add receiving Part");
+    let output = h.frame(vec![]);
+    assert!(
+        output.shapes.iter().any(
+            |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Receiving Part 1")
+        ),
+        "The receiving row must be available before an explicit Add action"
+    );
+    output.drop_without_applying_deltas();
     h.click("Choose Part occurrence…");
     h.click("Receiving block");
     assert!(
