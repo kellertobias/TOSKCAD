@@ -138,7 +138,11 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
     for family in GearFamily::ALL.into_iter().filter(|f| f.supported()) {
         let mut s = Session::new(Document::new("Framed gear").unwrap()).unwrap();
         let internal = family == GearFamily::InternalRing;
-        let helical = !matches!(family, GearFamily::Spur | GearFamily::InternalRing);
+        let rack = family == GearFamily::Rack;
+        let helical = matches!(
+            family,
+            GearFamily::Helical | GearFamily::Herringbone | GearFamily::DoubleHelical
+        );
         let request = GearRequest::new(
             "Gear",
             GearParameters {
@@ -147,7 +151,10 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
                     value: if internal { 48. } else { 24. },
                     unit: "count".into(),
                 },
-                bore_diameter: length(if internal { 0. } else { 8. }),
+                bore_diameter: length(if internal || rack { 0. } else { 8. }),
+                rack: rack.then(|| model::RackDimensions {
+                    backing_thickness: length(4.),
+                }),
                 outer_diameter: internal.then(|| length(112.)),
                 face_width: length(4.),
                 helix_angle: angle(if helical { 15. } else { 0. }),
@@ -177,6 +184,13 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
         let bounds = solid.bounds().unwrap();
         assert!((bounds.min[0] - 10.).abs() < 1e-6);
         assert!((bounds.max[0] - 14.).abs() < 1e-6);
+        if rack {
+            let half_length = 24. * std::f64::consts::PI;
+            assert!((bounds.min[1] - (20. - half_length)).abs() < 1e-6);
+            assert!((bounds.max[1] - (20. + half_length)).abs() < 1e-6);
+            assert!((bounds.min[2] - 23.5).abs() < 1e-6);
+            assert!((bounds.max[2] - 32.).abs() < 1e-6);
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gear.step");
         solid.write_step(&path).unwrap();
