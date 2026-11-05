@@ -7,6 +7,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepFill_Edge3DLaw.hxx>
@@ -33,6 +34,8 @@
 #include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
+#include <OSD_ThreadPool.hxx>
+#include <exception>
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -146,6 +149,10 @@ struct ThreadFace { TopoDS_Shape face; uint32_t source; uint8_t role; };
 class ThreadRidgeLoss : public std::runtime_error {
 public:
   ThreadRidgeLoss():std::runtime_error("Native Boolean did not retain the requested thread crests and gaps"){}
+};
+class ThreadSweepNotDone : public std::runtime_error {
+public:
+  ThreadSweepNotDone():std::runtime_error("Native continuous helical sweep did not complete"){}
 };
 template<class Operation>
 std::vector<ThreadFace> carry_thread_faces(Operation &operation,
@@ -419,7 +426,11 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
         BRepOffsetAPI_MakePipeShell pipe(spine);
         pipe.SetMode(gp_Dir(0,0,1));pipe.SetTolerance(s.tolerance,s.tolerance,1e-9);
         pipe.Add(profile.Wire(),false,false);pipe.Build();
-        if(!pipe.IsDone()||!pipe.MakeSolid())throw std::runtime_error("Native helical ridge construction failed");
+        if(!pipe.IsDone()) {
+          if(!segmented&&pipe.GetStatus()==BRepBuilderAPI_PipeNotDone)throw ThreadSweepNotDone();
+          throw std::runtime_error("Native helical ridge construction failed");
+        }
+        if(!pipe.MakeSolid())throw std::runtime_error("Native helical ridge construction failed");
         ridge=pipe.Shape();
         for(const auto &edge:edges) {
           generated.emplace_back();
@@ -578,8 +589,12 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   // Probe every quarter-pitch band and the original regression sample. This
   // checks the whole axial extent, rather than accepting one surviving crest.
   const uint32_t bands=static_cast<uint32_t>(std::ceil(4*s.height/s.pitch));
-  BRepClass3d_SolidClassifier classifier(solid);
-  for(uint32_t band=0;band<=bands;++band) {
+  struct ProbeFailure {
+    const char *kind=nullptr;
+    double z=0,angle=0,radius=0;
+    TopAbs_State inside=TopAbs_UNKNOWN,outside=TopAbs_UNKNOWN;
+  };
+  const auto checkBand=[&](BRepClass3d_SolidClassifier &classifier,uint32_t band)->ProbeFailure {
     const double sampleZ=band==bands?s.height*.47:s.height*(band+.5)/bands;
     for(uint32_t start=0;start<s.starts;++start) {
       const double angle=sign*2*pi*sampleZ/lead+2*pi*start/s.starts;
@@ -590,9 +605,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       const auto inside=state(angle);
       const auto outside=inside==TopAbs_IN?state(angle+pi/s.starts):TopAbs_UNKNOWN;
       if(inside!=TopAbs_IN||outside!=TopAbs_OUT) {
-        trace.probe("crest_gap",sampleZ,angle,radius,inside,outside);
-        trace.stage("physical_guards_failed",measured);
-        throw ThreadRidgeLoss();
+        return {"crest_gap",sampleZ,angle,radius,inside,outside};
       }
       if(s.rounding>0) {
         for(double direction:{-1.,1.}) {
@@ -610,8 +623,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
             const auto material=[&](double r){classifier.Perform(gp_Pnt(r*std::cos(phase),r*std::sin(phase),sampleZ),s.tolerance*4);return classifier.State();};
             const auto circleInside=material(boundary-epsilon),circleOutside=material(boundary+epsilon);
             if(circleInside!=TopAbs_IN||circleOutside!=TopAbs_OUT) {
-              trace.probe(valley?"root_circle":"crest_circle",sampleZ,phase,boundary,circleInside,circleOutside);
-              throw ThreadRidgeLoss();
+              return {valley?"root_circle":"crest_circle",sampleZ,phase,boundary,circleInside,circleOutside};
             }
           }
         }
@@ -625,11 +637,74 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
           const auto material=[&](double r){classifier.Perform(gp_Pnt(r*std::cos(phase),r*std::sin(phase),sampleZ),s.tolerance*4);return classifier.State();};
           const auto circleInside=material(boundary-epsilon),circleOutside=material(boundary+epsilon);
           if(circleInside!=TopAbs_IN||circleOutside!=TopAbs_OUT) {
-            trace.probe("asymmetric_root_circle",sampleZ,phase,boundary,circleInside,circleOutside);
-            throw ThreadRidgeLoss();
+            return {"asymmetric_root_circle",sampleZ,phase,boundary,circleInside,circleOutside};
           }
         }
       }
+    }
+    return {};
+  };
+  std::vector<ProbeFailure> failures(bands+1);
+  std::vector<std::exception_ptr> exceptions(bands+1);
+  bool parallel=false;
+  int workers=1;
+  if(bands>=24) {
+    // Bound both CPU participants and copied face count. The pool reserves
+    // available workers without changing global settings; its caller counts
+    // as one participant. Leave nominal headroom for the interactive host.
+    const auto pool=OSD_ThreadPool::DefaultPool();
+    int faceCount=0;for(TopExp_Explorer it(solid,TopAbs_FACE);it.More();it.Next())++faceCount;
+    const int requested=std::min({16,std::max(1,pool->NbThreads()-1),
+      int(bands+1),std::max(1,4096/std::max(1,faceCount))});
+    OSD_ThreadPool::Launcher launcher(*pool,requested);
+    if(launcher.NbThreads()>1) {
+      std::vector<TopoDS_Shape> copies;
+      std::vector<std::unique_ptr<BRepClass3d_SolidClassifier>> classifiers;
+      bool ready=false;
+      try {
+        // Copy surfaces and curves sequentially before any worker starts:
+        // classifiers and their lazy intersection caches never share geometry.
+        for(int worker=0;worker<launcher.NbThreads();++worker) {
+          BRepBuilderAPI_Copy copy(solid,true,false);
+          if(!copy.IsDone())throw std::runtime_error("Thread guard copy failed");
+          copies.push_back(copy.Shape());
+          classifiers.push_back(std::make_unique<BRepClass3d_SolidClassifier>(copies.back()));
+        }
+        ready=true;
+      } catch(...) {
+        // Copy/setup is an optimization. The original complete serial guard
+        // remains the fallback; it does not accept an unchecked result.
+      }
+      if(ready) {
+        workers=launcher.NbThreads();
+        trace.stage("physical_classifier_setup",measured);
+        measured=trace.mark();
+        const auto run=[&](int worker,int band) {
+          try {failures[band]=checkBand(*classifiers[worker],uint32_t(band));}
+          catch(...) {exceptions[band]=std::current_exception();}
+        };
+        launcher.Perform(0,int(bands+1),run);
+        parallel=true;
+      }
+    }
+  }
+  if(!parallel) {
+    BRepClass3d_SolidClassifier classifier(solid);
+    for(uint32_t band=0;band<=bands;++band) {
+      failures[band]=checkBand(classifier,band);
+      if(failures[band].kind)break;
+    }
+  }
+  if(trace.enabled)std::fprintf(stderr,"multicad.native.thread id=%llu mode=%s physical_bands=%u starts=%u workers=%d\n",static_cast<unsigned long long>(trace.id),trace.mode,bands+1,s.starts,workers);
+  // Joining precedes diagnostics and typed exceptions. Preserve the original
+  // earliest band/start/probe failure instead of exposing pool exception wraps.
+  for(uint32_t band=0;band<=bands;++band) {
+    if(exceptions[band])std::rethrow_exception(exceptions[band]);
+    const auto &failure=failures[band];
+    if(failure.kind) {
+      trace.probe(failure.kind,failure.z,failure.angle,failure.radius,failure.inside,failure.outside);
+      trace.stage("physical_guards_failed",measured);
+      throw ThreadRidgeLoss();
     }
   }
   trace.stage("physical_guards",measured);
@@ -698,6 +773,10 @@ static std::unique_ptr<Shape> helical_thread_impl(const ThreadData &s,bool useCa
     volume(*result);
     trace.stage("volume_guard",measured);
     return completed(std::move(result));
+  } catch(const ThreadSweepNotDone &) {
+    trace.retry("continuous_sweep_not_done");
+    // Reconstruct the same authored helix in bounded spans. No approximation
+    // limit or physical, validity, ancestry or convergence guard is relaxed.
   } catch(const ThreadRidgeLoss &) {
     trace.retry("ridge_loss");
     // Retry a proven physical clipping failure on the same authored helix.
