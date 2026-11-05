@@ -233,7 +233,8 @@ pub fn read_gear_pair(
 }
 #[derive(Clone, Debug)]
 pub struct ResolvedGearPair {
-    pub gears: [ResolvedGear; 2],
+    pub gears: [ResolvedGearGeometry; 2],
+    pub rack_travel: Option<ResolvedRackTravel>,
     pub center_distance_mm: f64,
     pub phases_rad: [f64; 2],
     pub mating: [ReferenceFrame; 2],
@@ -260,10 +261,14 @@ impl GearPairParameters {
     ) -> Result<ResolvedGearPair, DocumentError> {
         self.validate()?;
         let gears = [
-            recipes[0].resolve(evaluated)?,
-            recipes[1].resolve(evaluated)?,
+            recipes[0].resolve_geometry(evaluated)?,
+            recipes[1].resolve_geometry(evaluated)?,
         ];
-        let [a, b] = &gears;
+        if gears.iter().any(|gear| gear.family() == GearFamily::Rack) {
+            return self.resolve_rack_pair(gears, evaluated);
+        }
+        let a = gears[0].rotary().expect("rotary pair member");
+        let b = gears[1].rotary().expect("rotary pair member");
         let internal = matches!(
             (a.family, b.family),
             (GearFamily::Spur, GearFamily::InternalRing)
@@ -362,6 +367,7 @@ impl GearPairParameters {
             }
         });
         Ok(ResolvedGearPair {
+            rack_travel: None,
             gears,
             center_distance_mm: center,
             phases_rad: phases,
@@ -382,7 +388,7 @@ pub fn resolve_gear_pair_anchor(
     Ok(match space {
         GearPairSpace::Mating => resolved.mating[index],
         GearPairSpace::Local => {
-            let f = resolved.gears[index].frame;
+            let f = resolved.gears[index].frame();
             ReferenceFrame {
                 origin_mm: f.origin,
                 u: f.u,

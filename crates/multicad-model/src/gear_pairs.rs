@@ -6,7 +6,7 @@ use multicad_core::{
     model::{self, GearPairDefinition},
     parameters::EvaluatedParameters,
 };
-use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform, Solid};
+use multicad_kernel::{BRepSelection, BooleanOperation, GeometryPolicy, RigidTransform, Solid};
 use serde::Serialize;
 use std::{collections::BTreeMap, f64::consts::TAU};
 const SAMPLES: usize = 9;
@@ -112,7 +112,40 @@ fn check_pose(
                 .map_err(|e| error(Some(pair), e))?;
         placed_solids.push(placed(solid, pose, pair)?);
     }
-    overlap(pair, &placed_solids[0], &placed_solids[1], drive, policy)
+    overlap(pair, &placed_solids[0], &placed_solids[1], drive, policy)?;
+    let resolved = model::resolve_gear_pair_parameters(document, evaluated, &source.parameters)
+        .map_err(|e| error(Some(pair), e))?;
+    if let Some(travel) = &resolved.rack_travel {
+        let rack = resolved.gears[travel.rack_member.index()]
+            .rack()
+            .expect("rack member");
+        let pinion = resolved.gears[travel.pinion_member.index()]
+            .rotary()
+            .expect("pinion member");
+        // A no-overlap result alone also accepts separated bodies. Require an
+        // actual native proximity witness bounded by the total authored thinning.
+        // This is sampled engagement evidence, never a contact/load certificate.
+        let clearance = rack.nominal_tooth_thickness_mm - rack.physical_tooth_thickness_mm
+            + pinion.nominal_tooth_thickness_mm
+            - pinion.physical_tooth_thickness_mm;
+        let distance = placed_solids[0]
+            .minimum_distance(
+                BRepSelection::Whole,
+                &placed_solids[1],
+                BRepSelection::Whole,
+            )
+            .map_err(|e| error(Some(pair), e))?;
+        if distance.distance_mm > clearance + policy.linear_tolerance_mm * 10. {
+            return Err(error(
+                Some(pair),
+                format!(
+                    "Rack and pinion have no native engagement proximity: gap {} mm exceeds authored total thinning {} mm",
+                    distance.distance_mm, clearance
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 fn sample_document(
     document: &Document,
@@ -182,11 +215,23 @@ pub(crate) fn validate(
         // Drive is excluded only from the periodic cycle proof; its actual
         // current pose is checked independently below on every compile.
         let key = format!(
-            "gear-pair-cycle/1/{SAMPLES}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}",
+            "gear-pair-cycle/2/{SAMPLES}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}",
             source.parameters.gears,
             source.outputs,
-            resolved.gears.each_ref().map(|g| g.frame)
+            resolved.gears.each_ref().map(|g| g.frame())
         );
+        let key = if let Some(travel) = &resolved.rack_travel {
+            format!(
+                "{key}|{:?}|{:?}|{}|{}|{}",
+                travel.rack_member,
+                travel.pinion_member,
+                travel.min_drive_angle_rad,
+                travel.max_drive_angle_rad,
+                travel.pinion_period_rad
+            )
+        } else {
+            key
+        };
         let previous = cache
             .as_deref()
             .and_then(|c| c.completed.get(&key))
@@ -195,9 +240,19 @@ pub(crate) fn validate(
         let phases = if let Some(phases) = previous {
             phases
         } else {
-            let phases = (0..SAMPLES)
-                .map(|i| TAU / f64::from(resolved.gears[0].teeth) * i as f64 / (SAMPLES - 1) as f64)
-                .collect::<Vec<_>>();
+            let phases = if let Some(travel) = &resolved.rack_travel {
+                let mut phases = (0..SAMPLES)
+                    .map(|i| travel.pinion_period_rad * (i as f64 / (SAMPLES - 1) as f64 - 0.5))
+                    .collect::<Vec<_>>();
+                phases.extend([travel.min_drive_angle_rad, travel.max_drive_angle_rad]);
+                phases
+            } else {
+                (0..SAMPLES)
+                    .map(|i| {
+                        TAU / f64::from(resolved.gears[0].teeth()) * i as f64 / (SAMPLES - 1) as f64
+                    })
+                    .collect::<Vec<_>>()
+            };
             for drive in &phases {
                 checkpoint(interrupt)?;
                 let sample = sample_document(document, pair, &source, *drive)?;
@@ -209,9 +264,13 @@ pub(crate) fn validate(
             phases
         };
         checkpoint(interrupt)?;
-        let current = resolved.phases_rad[0];
+        let current = source
+            .parameters
+            .drive_angle
+            .value_in(multicad_core::parameters::Unit::Radian, Some(evaluated))
+            .map_err(|e| error(Some(pair), e))?;
         check_pose(document, evaluated, &source, pair, [a, b], current, policy)?;
-        reports.insert(pair,GearPairCheck{pair,center_distance_mm:resolved.center_distance_mm,cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:"Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification."});
+        reports.insert(pair,GearPairCheck{pair,center_distance_mm:resolved.center_distance_mm,cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
     }
     Ok(reports)
 }
@@ -320,5 +379,97 @@ mod tests {
                 .outputs,
             request.outputs
         );
+    }
+    #[test]
+    fn separated_rack_and_wrong_phase_cannot_pass_native_pair_validation() {
+        let mut session =
+            Session::new(Document::new("Native rack negative controls").unwrap()).unwrap();
+        let request = GearPairRequest::new(
+            "Rack pair",
+            [
+                GearRequest::new(
+                    "Rack",
+                    GearParameters {
+                        family: GearFamily::Rack,
+                        teeth: Dimension::Literal {
+                            value: 20.,
+                            unit: "count".into(),
+                        },
+                        rack: Some(RackDimensions {
+                            backing_thickness: length(3.),
+                        }),
+                        module: length(1.),
+                        face_width: length(2.),
+                        bore_diameter: length(0.),
+                        ..Default::default()
+                    },
+                ),
+                GearRequest::new(
+                    "Pinion",
+                    GearParameters {
+                        module: length(1.),
+                        face_width: length(2.),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        );
+        session
+            .commit(
+                prepare_gear_pair(&session, 0, Actor::local(Channel::Ui), &request)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let source = read_gear_pair(session.document(), request.pair).unwrap();
+        let policy = GeometryPolicy::default();
+        let solids: Vec<_> = request
+            .parameters
+            .gears
+            .iter()
+            .map(|id| {
+                let recipe = read_gear(session.document(), *id).unwrap();
+                crate::gears::build(*id, &recipe, session.parameters(), policy).unwrap()
+            })
+            .collect();
+        let separated = solids[1]
+            .transformed(RigidTransform {
+                translation_mm: [1000., 0., 0.],
+                rotation: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+            })
+            .unwrap();
+        let failure = check_pose(
+            session.document(),
+            session.parameters(),
+            &source,
+            request.pair,
+            [&solids[0], &separated],
+            0.,
+            policy,
+        )
+        .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("no native engagement proximity")
+        );
+        let wrong_phase = solids[0]
+            .transformed(RigidTransform {
+                translation_mm: [std::f64::consts::PI / 2., 0., 0.],
+                rotation: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+            })
+            .unwrap();
+        let failure = check_pose(
+            session.document(),
+            session.parameters(),
+            &source,
+            request.pair,
+            [&wrong_phase, &solids[1]],
+            0.,
+            policy,
+        )
+        .unwrap_err();
+        assert!(failure.to_string().contains("overlaps by"));
+        assert_eq!(session.revision(), 1);
     }
 }

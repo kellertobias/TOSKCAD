@@ -2,15 +2,39 @@
 use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
-    model::{GearDefinition, GearFamily, ResolvedGear},
+    model::{GearDefinition, GearFamily, ResolvedGearGeometry},
     parameters::EvaluatedParameters,
 };
-use multicad_kernel::{GearSweep, GeometryPolicy, InvoluteGear, RigidTransform, Solid};
+use multicad_kernel::{
+    GearSweep, GeometryPolicy, InvoluteGear, RigidTransform, Solid, StraightRack,
+};
+
+#[derive(Clone, Debug)]
+pub(crate) enum NativeSpecification {
+    Rotary(InvoluteGear),
+    Rack(StraightRack),
+}
 
 pub(crate) fn specification(
     feature: EntityId,
-    r: &ResolvedGear,
-) -> Result<InvoluteGear, ModelError> {
+    geometry: &ResolvedGearGeometry,
+) -> Result<NativeSpecification, ModelError> {
+    let r = match geometry {
+        ResolvedGearGeometry::Rotary(r) => r,
+        ResolvedGearGeometry::Rack(r) => {
+            return Ok(NativeSpecification::Rack(StraightRack {
+                teeth: r.teeth,
+                pitch_mm: r.pitch_mm,
+                pitch_thickness_mm: r.physical_tooth_thickness_mm,
+                pressure_angle_rad: r.pressure_angle_rad,
+                addendum_mm: r.addendum_mm,
+                dedendum_mm: r.dedendum_mm,
+                root_fillet_radius_mm: r.root_fillet_radius_mm,
+                backing_thickness_mm: r.backing_thickness_mm,
+                face_width_mm: r.face_width_mm,
+            }));
+        }
+    };
     let sweep = match r.family {
         GearFamily::Spur => GearSweep::Spur,
         GearFamily::InternalRing => GearSweep::InternalSpur {
@@ -25,7 +49,7 @@ pub(crate) fn specification(
         },
         _ => return Err(error(Some(feature), "Unsupported native gear family")),
     };
-    Ok(InvoluteGear {
+    Ok(NativeSpecification::Rotary(InvoluteGear {
         teeth: r.teeth,
         pitch_radius_mm: r.pitch_radius_mm,
         base_radius_mm: r.base_radius_mm,
@@ -37,7 +61,7 @@ pub(crate) fn specification(
         bore_radius_mm: r.bore_radius_mm,
         twist_rad_per_mm: r.twist_rad_per_mm,
         sweep,
-    })
+    }))
 }
 pub(crate) fn build(
     feature: EntityId,
@@ -47,13 +71,18 @@ pub(crate) fn build(
 ) -> Result<Solid, ModelError> {
     let r = source
         .parameters
-        .resolve(parameters)
+        .resolve_geometry(parameters)
         .map_err(|e| error(Some(feature), e))?;
-    Solid::involute_gear_named(specification(feature, &r)?, feature, policy)
+    let solid = match specification(feature, &r)? {
+        NativeSpecification::Rotary(spec) => Solid::involute_gear_named(spec, feature, policy),
+        NativeSpecification::Rack(spec) => Solid::straight_rack_named(spec, feature, policy),
+    };
+    let frame = r.frame();
+    solid
         .and_then(|solid| {
             solid.transformed(RigidTransform {
-                rotation: std::array::from_fn(|i| [r.frame.u[i], r.frame.v[i], r.frame.n[i]]),
-                translation_mm: r.frame.origin,
+                rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.n[i]]),
+                translation_mm: frame.origin,
             })
         })
         .map_err(|e| error(Some(feature), e))

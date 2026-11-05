@@ -120,7 +120,7 @@ fn painted_internal_pair_roles_feed_native_preview_cancel_apply_history_and_save
         let resolved = command.resolved(s.document(), s.parameters()).unwrap();
         assert_eq!(resolved.center_distance_mm, 12.);
         assert_eq!(
-            resolved.gears[usize::from(!ring_first)].family,
+            resolved.gears[usize::from(!ring_first)].family(),
             model::GearFamily::InternalRing
         );
         let pair = command.pair();
@@ -329,5 +329,225 @@ fn native_pair_preview_requires_both_placed_members_and_preserves_atomic_history
             c.cancel();
             assert_eq!(s.document(), &committed);
         }
+    }
+}
+
+fn painted_pair_drive(
+    ctx: &egui::Context,
+    c: &mut ModelToolController,
+    s: &mut Session,
+    value: &str,
+) {
+    let output = ring_frame(ctx, c, s, vec![]);
+    let label_y = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "Pinion drive angle (deg)" => {
+                Some(text.pos.y)
+            }
+            _ => None,
+        })
+        .expect("painted pinion drive label");
+    let bounds = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| {
+            (node.role() == egui::accesskit::Role::TextInput)
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .filter(|bounds| bounds.y0 > f64::from(label_y))
+        .min_by(|a, b| a.y0.total_cmp(&b.y0))
+        .expect("drive input follows its label");
+    let pos = egui::pos2(
+        ((bounds.x0 + bounds.x1) / 2.) as f32,
+        ((bounds.y0 + bounds.y1) / 2.) as f32,
+    );
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        ring_frame(
+            ctx,
+            c,
+            s,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    ring_frame(
+        ctx,
+        c,
+        s,
+        vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text(value.into()),
+        ],
+    )
+    .drop_without_applying_deltas();
+}
+
+#[test]
+fn painted_rack_roles_use_native_preview_cancel_apply_edit_history_and_independent_reopen() {
+    for rack_first in [true, false] {
+        let mut s = Session::new(Document::new("Painted rack pair").unwrap()).unwrap();
+        let before = s.document().clone();
+        let mut c = controller();
+        let panel = GearPanel::new(
+            model::GearRequest::new(
+                "Rack pair",
+                model::GearParameters {
+                    module: model::length(1.),
+                    face_width: model::length(2.),
+                    ..Default::default()
+                },
+            ),
+            s.parameters().clone(),
+            false,
+        )
+        .unwrap();
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Gear(Box::new(panel)),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        ring_click(&ctx, &mut c, &mut s, "Spur");
+        ring_click(&ctx, &mut c, &mut s, model::GearFamily::Rack.label());
+        let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
+            panic!("gear")
+        };
+        let single = panel.request(s.document(), true).unwrap();
+        assert_eq!(single.parameters.family, model::GearFamily::Rack);
+        assert!(single.parameters.rack.is_some());
+        assert_eq!(single.parameters.bore_diameter, model::length(0.));
+        assert_eq!(s.document(), &before);
+        ring_click(&ctx, &mut c, &mut s, "Create mating pair");
+        let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
+            panic!("pair")
+        };
+        let ModelRequest::GearPair(original) = panel.model_request(s.document(), true).unwrap()
+        else {
+            panic!("pair request")
+        };
+        if !rack_first {
+            ring_click(&ctx, &mut c, &mut s, "Pinion A / Rack B");
+        }
+        let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
+            panic!("pair")
+        };
+        let saved = panel.clone();
+        let ModelRequest::GearPair(command) = panel.model_request(s.document(), true).unwrap()
+        else {
+            panic!("pair request")
+        };
+        assert_eq!(original.pair(), command.pair());
+        let resolved = command.resolved(s.document(), s.parameters()).unwrap();
+        let rack = usize::from(!rack_first);
+        assert_eq!(resolved.gears[rack].family(), model::GearFamily::Rack);
+        assert_eq!(resolved.gears[1 - rack].family(), model::GearFamily::Spur);
+        let travel = resolved.rack_travel.as_ref().unwrap();
+        assert_eq!(travel.rack_member.index(), rack);
+        assert!(travel.min_drive_angle_rad < 0. && travel.max_drive_angle_rad > 0.);
+        assert_eq!(s.document(), &before);
+        ring_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &before);
+        ring_click(&ctx, &mut c, &mut s, "Cancel");
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), 0);
+        c.begin_form(&s, &Default::default(), Channel::Ui, ModelForm::Gear(saved))
+            .unwrap();
+        ring_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        ring_click(&ctx, &mut c, &mut s, "Apply");
+        assert_eq!(s.revision(), 1);
+        let pair = command.pair();
+        let source = model::read_gear_pair(s.document(), pair).unwrap();
+        let committed = s.document().clone();
+        s.undo(1, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &before);
+        s.redo(2, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &committed);
+        let mut bytes = vec![];
+        multicad_core::project_file::write(
+            &multicad_core::project_file::ProjectFile::new(committed.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let opened = multicad_core::project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let mut reopened = Session::new(opened.project.document).unwrap();
+        assert_eq!(reopened.document(), &committed);
+        c.begin_existing(&reopened, &Default::default(), pair, Channel::Ui)
+            .unwrap();
+        painted_pair_drive(&ctx, &mut c, &mut reopened, "5");
+        assert_eq!(reopened.revision(), 0);
+        assert_eq!(reopened.document(), &committed);
+        ring_click(&ctx, &mut c, &mut reopened, "Preview");
+        wait(&mut c, &reopened);
+        assert!(
+            c.can_apply(&reopened, &Default::default()),
+            "{:?}",
+            c.error()
+        );
+        ring_click(&ctx, &mut c, &mut reopened, "Apply");
+        assert_eq!(reopened.revision(), 1);
+        let edited = model::read_gear_pair(reopened.document(), pair).unwrap();
+        assert_eq!(edited.outputs, source.outputs);
+        assert_eq!(edited.parameters.gears, source.parameters.gears);
+        let resolved = model::resolve_gear_pair_parameters(
+            reopened.document(),
+            reopened.parameters(),
+            &edited.parameters,
+        )
+        .unwrap();
+        let radius = resolved.gears[1 - rack].rotary().unwrap().pitch_radius_mm;
+        assert!(
+            (resolved.rack_travel.as_ref().unwrap().translation_mm - radius * 5_f64.to_radians())
+                .abs()
+                < 1e-10
+        );
+        c.begin_existing(&reopened, &Default::default(), pair, Channel::Ui)
+            .unwrap();
+        painted_pair_drive(&ctx, &mut c, &mut reopened, "1000");
+        let edited_document = reopened.document().clone();
+        assert!(
+            c.preview(&reopened, &Default::default(), Channel::Ui)
+                .is_err()
+        );
+        assert!(!c.can_apply(&reopened, &Default::default()));
+        assert!(c.apply(&mut reopened, &Default::default()).is_err());
+        c.cancel();
+        assert_eq!(reopened.document(), &edited_document);
+        assert_eq!(reopened.revision(), 1);
     }
 }

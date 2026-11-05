@@ -580,12 +580,18 @@ retain it; `clear_outer_diameter: true` explicitly clears it when switching to
 an external family. Clearing and replacement together fail. Ring
 `bore_diameter` must be zero; the toothed opening is derived from module and
 count. `inspect_gear` reports outside diameter and remaining radial rim.
-Racks, bevel gears, worms and nonzero profile shift are
-unavailable. The conservative tooth-count policy uses the normal pressure angle
+The [finite straight rack subset](gears.md#finite-straight-rack-subset) uses
+`family: "rack"`, whole pitch-cell `teeth` and rack-only `backing_thickness`.
+Creating or switching to Rack defaults backing to 4 mm and clears inapplicable
+rotary defaults before applying explicit arguments. Explicit unsupported bore,
+helix or outside diameter still refuses. Omitted/null backing edits retain the
+saved value. Inspection reports actual rack pitch, length and backing, with
+no invented rotary diameters. Bevel gears, worms and nonzero profile shift are
+unavailable. The conservative rotary gear/pinion tooth-count policy uses the normal pressure angle
 without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
 or cutter-generation certification follows from a successful preview.
 
-The native profile uses a C1 cubic Hermite approximation to the analytic
+Rotary involute profiles use a C1 cubic Hermite approximation to the analytic
 involute, bounded by the active geometry policy's linear tolerance. Tip and
 root arcs and circular fillets remain native circular curves. Helical flanks
 follow a continuous twist, rather than a linear loft between two end profiles.
@@ -601,13 +607,18 @@ requires a name. The first member defaults to 20 teeth. For external pairs,
 the second inherits the first recipe with 30 teeth and opposite helix hand,
 then applies explicit second-member overrides. An internal-ring first member
 instead defaults its second member to a 24-tooth spur pinion without an
-outside-diameter field. Spur members use hand `none`.
+outside-diameter field. A first rack also defaults its second member to a
+24-tooth spur pinion, without inheriting rack-only backing. Either member may
+be the rack when explicit recipes are supplied. Spur members use hand `none`.
 
 An edit retains omitted fields independently for each member. Supplying both
 recipes changes them atomically, so a shared module change can keep the pair
 compatible. A drive-only edit preserves the gear definitions exactly. Explicit
 `null` has the same effect as omission. Edits retain names and output identities.
 `inspect_gear_pair` reads source and derived center distance, phases and frames;
+for racks, `rack_travel` supplies member roles, allowed translation/drive ranges,
+current translation and the pinion tooth period. Here center distance means
+pitch-line-to-pinion-center distance;
 `evaluate_model` reports actual native pair checks and physical leaf paths.
 
 Pair origin and axes control layout within the Assembly definition. Member
@@ -621,6 +632,9 @@ face width and center gap, with equal helix magnitude and opposite hands where
 applicable. The bounded internal-ring/spur subset requires matching transverse
 module, 20-degree pressure angle and face width, with zero helix/gap. Its centers
 use the pitch-radius difference and its members rotate in the same direction.
+A rack/spur pair requires matching module, pressure and width and zero helix,
+with the finite travel and drive convention defined in the rack reference.
+Rack pairs add both finite endpoints and native proximity checks.
 Their current Part heads must remain the gear generators. Native
 evaluation checks the current pose and nine phases over one pinion tooth cycle.
 Unchanged geometry can reuse a completed cycle check; the current pose is always

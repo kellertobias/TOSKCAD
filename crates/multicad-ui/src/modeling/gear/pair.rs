@@ -92,6 +92,8 @@ pub(super) struct GearPairPanel {
     name: String,
     secondary: [DimensionField; 4],
     secondary_ring: bool,
+    rack_member: Option<usize>,
+    secondary_backing: DimensionField,
     secondary_outside: DimensionField,
     origin: [DimensionField; 3],
     plane: Option<Datum>,
@@ -125,6 +127,8 @@ impl GearPairPanel {
         let mut template =
             GearPairRequest::new(&primary.request.name, [primary.request.clone(), second]);
         template.parameters.frame = frame;
+        let rack_member = (primary.family == GearFamily::Rack).then_some(0);
+        let secondary_backing = primary.rack_backing.clone();
         let secondary = [
             DimensionField::from_dimension(&template.gears[1].parameters.teeth, "count")
                 .expect("preset count"),
@@ -138,6 +142,8 @@ impl GearPairPanel {
             template,
             secondary,
             secondary_ring: false,
+            rack_member,
+            secondary_backing,
             secondary_outside: DimensionField::from_dimension(&model::length(112.), "mm")
                 .expect("ring outside"),
             origin,
@@ -181,6 +187,20 @@ impl GearPairPanel {
         let b = &template.gears[1].parameters;
         Ok(Self {
             secondary_ring: b.family == GearFamily::InternalRing,
+            rack_member: if template.gears[0].parameters.family == GearFamily::Rack {
+                Some(0)
+            } else if b.family == GearFamily::Rack {
+                Some(1)
+            } else {
+                None
+            },
+            secondary_backing: field(
+                b.rack
+                    .as_ref()
+                    .map(|rack| &rack.backing_thickness)
+                    .unwrap_or(&model::length(4.)),
+                "mm",
+            )?,
             secondary_outside: field(
                 b.outer_diameter.as_ref().unwrap_or(&model::length(112.)),
                 "mm",
@@ -233,6 +253,33 @@ impl GearPairPanel {
         p.stamp = FormStamp::new();
         p
     }
+    fn set_rack_member(&mut self, member: Option<usize>) {
+        if self.rack_member == member {
+            return;
+        }
+        if self.rack_member.is_some() && member.is_some() {
+            // Move the role-specific authored fields with the rack/pinion roles,
+            // while retaining the pair's member and output identities.
+            for (primary, secondary) in [(1, 0), (6, 1), (7, 2), (8, 3)] {
+                std::mem::swap(
+                    &mut self.primary.fields[primary],
+                    &mut self.secondary[secondary],
+                );
+            }
+            std::mem::swap(&mut self.primary.rack_backing, &mut self.secondary_backing);
+        }
+        self.rack_member = member;
+        if let Some(index) = member {
+            self.secondary_ring = false;
+            self.primary.select_family(if index == 0 {
+                GearFamily::Rack
+            } else {
+                GearFamily::Spur
+            });
+        } else if self.primary.family == GearFamily::Rack {
+            self.primary.select_family(GearFamily::Spur);
+        }
+    }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<GearPairCommand, String> {
         if !enabled {
             return Err("The native modeling preview provider is unavailable".into());
@@ -261,20 +308,40 @@ impl GearPairPanel {
         } else {
             let first = self.primary.request(document, enabled)?.parameters;
             let second = GearParameters {
-                family: if first.family == GearFamily::InternalRing {
+                family: if let Some(index) = self.rack_member {
+                    if index == 1 {
+                        GearFamily::Rack
+                    } else {
+                        GearFamily::Spur
+                    }
+                } else if first.family == GearFamily::InternalRing {
                     GearFamily::Spur
                 } else if self.secondary_ring && first.family == GearFamily::Spur {
                     GearFamily::InternalRing
                 } else {
                     first.family
                 },
-                outer_diameter: if self.secondary_ring && first.family == GearFamily::Spur {
+                rack: if self.rack_member == Some(1) {
+                    Some(model::RackDimensions {
+                        backing_thickness: self.secondary_backing.resolve(document)?,
+                    })
+                } else {
+                    None
+                },
+                outer_diameter: if self.rack_member.is_none()
+                    && self.secondary_ring
+                    && first.family == GearFamily::Spur
+                {
                     Some(self.secondary_outside.resolve(document)?)
                 } else {
                     None
                 },
                 teeth: self.secondary[0].resolve(document)?,
-                bore_diameter: self.secondary[1].resolve(document)?,
+                bore_diameter: if self.rack_member == Some(1) {
+                    model::length(0.)
+                } else {
+                    self.secondary[1].resolve(document)?
+                },
                 backlash: self.secondary[2].resolve(document)?,
                 fabrication_allowance: self.secondary[3].resolve(document)?,
                 hand: match first.hand {
@@ -306,6 +373,32 @@ impl GearPairPanel {
         command.resolved(document, &self.primary.parameters)?;
         Ok(command)
     }
+    fn show_travel_limits(ui: &mut egui::Ui, travel: &model::ResolvedRackTravel) {
+        ui.small(format!(
+            "Conservative finite travel {:.4} to {:.4} mm · pinion drive {:.4} to {:.4}°",
+            travel.min_translation_mm,
+            travel.max_translation_mm,
+            travel.min_drive_angle_rad.to_degrees(),
+            travel.max_drive_angle_rad.to_degrees()
+        ));
+        ui.small("The full pinion tip-circle projection must stay within the finite rack ends. Out-of-range drive is refused.");
+    }
+    fn show_resolved(ui: &mut egui::Ui, resolved: &ResolvedGearPair) {
+        if let Some(travel) = &resolved.rack_travel {
+            ui.small(format!(
+                "Rack {:?} / pinion {:?} · translation {:.4} mm",
+                travel.rack_member, travel.pinion_member, travel.translation_mm
+            ));
+            Self::show_travel_limits(ui, travel);
+        } else {
+            ui.small(format!(
+                "Center distance {:.4} mm · {} : {} teeth",
+                resolved.center_distance_mm,
+                resolved.gears[0].teeth(),
+                resolved.gears[1].teeth()
+            ));
+        }
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -319,9 +412,6 @@ impl GearPairPanel {
             "Mating gear pair"
         });
         form::preview_status(ui, self.stamp, preview);
-        if let Err(error) = self.request(document, enabled) {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
-        }
         if !self.editing && ui.button("Single gear").clicked() {
             self.single_requested = true;
             return Some(ModelEvent::Changed);
@@ -330,7 +420,9 @@ impl GearPairPanel {
         let mut changed = ui
             .add_enabled(
                 !self.editing,
-                egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
+                egui::TextEdit::singleline(&mut self.name)
+                    .id(ui.make_persistent_id((self.template.pair, "pair-name")))
+                    .desired_width(ui.available_width()),
             )
             .changed();
         if self.editing {
@@ -340,9 +432,54 @@ impl GearPairPanel {
             ui.small("Leave this off to change only the drive or pair layout. Enabling it applies the shared geometry controls to both gears.");
         }
         if self.update_geometry {
+            ui.label("Pair type");
+            let mut rack = self.rack_member.is_some();
+            controls::inspector_combo(ui, "gear-pair-type")
+                .selected_text(if rack {
+                    "Rack and pinion"
+                } else {
+                    "Rotary gears"
+                })
+                .show_ui(ui, |ui| {
+                    changed |= ui
+                        .selectable_value(&mut rack, false, "Rotary gears")
+                        .changed();
+                    changed |= ui
+                        .selectable_value(&mut rack, true, "Rack and pinion")
+                        .changed();
+                });
+            if rack != self.rack_member.is_some() {
+                self.set_rack_member(rack.then_some(0));
+            }
+            if let Some(index) = self.rack_member {
+                let mut member = index;
+                ui.label("Rack member / pinion member");
+                changed |= ui
+                    .radio_value(&mut member, 0, "Rack A / Pinion B")
+                    .changed();
+                changed |= ui
+                    .radio_value(&mut member, 1, "Pinion A / Rack B")
+                    .changed();
+                if member != index {
+                    self.set_rack_member(Some(member));
+                }
+            }
             ui.strong("Shared geometry and first member");
+            if self.rack_member.is_some() {
+                ui.small(if self.rack_member == Some(0) {
+                    "Member A: straight rack"
+                } else {
+                    "Member A: spur pinion"
+                });
+            }
             let previous_family = self.primary.family;
-            changed |= self.primary.geometry_controls(ui);
+            changed |= self
+                .primary
+                .geometry_controls_with_family(ui, self.rack_member.is_none());
+            if self.primary.family == GearFamily::Rack && self.rack_member.is_none() {
+                self.set_rack_member(Some(0));
+                changed = true;
+            }
             if self.primary.family == GearFamily::InternalRing
                 && previous_family != self.primary.family
             {
@@ -357,7 +494,8 @@ impl GearPairPanel {
                 .expect("pinion teeth");
             }
             ui.separator();
-            if self.primary.family == GearFamily::Spur
+            if self.rack_member.is_none()
+                && self.primary.family == GearFamily::Spur
                 && ui
                     .checkbox(&mut self.secondary_ring, "Internal ring as second member")
                     .changed()
@@ -377,37 +515,65 @@ impl GearPairPanel {
                 )
                 .expect("mating bore");
             }
-            let ring = self.primary.family == GearFamily::Spur && self.secondary_ring;
-            ui.strong(if ring {
+            let rack_second = self.rack_member == Some(1);
+            let ring = self.rack_member.is_none()
+                && self.primary.family == GearFamily::Spur
+                && self.secondary_ring;
+            ui.strong(if rack_second {
+                "Mating straight rack"
+            } else if self.rack_member == Some(0) {
+                "Mating spur pinion"
+            } else if ring {
                 "Mating internal ring"
             } else if self.primary.family == GearFamily::InternalRing {
                 "Mating pinion"
             } else {
                 "Mating wheel"
             });
-            for (field, label) in self.secondary.iter_mut().zip([
-                "Wheel teeth",
-                "Wheel bore diameter",
-                "Wheel design backlash",
-                "Wheel fabrication clearance",
-            ]) {
-                if ring && label == "Wheel bore diameter" {
+            for (index, (field, label)) in self
+                .secondary
+                .iter_mut()
+                .zip([
+                    if rack_second {
+                        "Rack pitch cells"
+                    } else if self.rack_member.is_some() {
+                        "Pinion teeth"
+                    } else {
+                        "Wheel teeth"
+                    },
+                    "Wheel bore diameter",
+                    "Wheel design backlash",
+                    "Wheel fabrication clearance",
+                ])
+                .enumerate()
+            {
+                if (ring || rack_second) && label == "Wheel bore diameter" {
                     continue;
                 }
-                changed |= field.show(
+                changed |= field.show_named(
                     ui,
+                    (self.template.gears[1].feature, "gear-secondary", index),
                     label,
                     "Independent wheel value; formulas may reference project parameters",
                 );
             }
-            if ring {
-                changed |= self.secondary_outside.show(
+            if rack_second {
+                changed |= self.secondary_backing.show_named(
                     ui,
+                    (self.template.gears[1].feature, "gear-backing"),
+                    "Rack backing thickness",
+                    "Material below the root line; backing must meet the shared minimum wall",
+                );
+            }
+            if ring {
+                changed |= self.secondary_outside.show_named(
+                    ui,
+                    (self.template.gears[1].feature, "gear-outside"),
                     "Mating ring outside diameter",
                     "Outside rim must meet the shared minimum-wall requirement",
                 );
             }
-            ui.small(if ring || self.primary.family == GearFamily::InternalRing {"Ring/pinion share module, 20° pressure angle and face width. Centers use the radius difference; both rotate in the same direction."} else {"The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite."});
+            ui.small(if self.rack_member.is_some() { "Straight rack and spur pinion share module, pressure angle, face width and custom root ratio. The pinion stays at +Y × pitch radius; the rack translates on local X." } else if ring || self.primary.family == GearFamily::InternalRing {"Ring/pinion share module, 20° pressure angle and face width. Centers use the radius difference; both rotate in the same direction."} else {"The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite."});
         } else {
             for gear in &self.template.gears {
                 ui.small(&gear.name);
@@ -415,7 +581,7 @@ impl GearPairPanel {
         }
         ui.separator();
         ui.strong("Pair layout and drive");
-        changed|=self.drive.show(ui,if self.primary.family == GearFamily::InternalRing {"Ring drive angle"}else{"Pinion drive angle"},"The second member follows the tooth-count ratio; copies share this definition's drive coordinate");
+        changed|=self.drive.show_named(ui, (self.template.pair, "pair-drive"),if self.primary.family == GearFamily::InternalRing {"Ring drive angle"}else{"Pinion drive angle"},if self.rack_member.is_some() { "Pinion angle regardless of member role: rack translation s = pinion pitch radius × angle in radians. Finite-end travel is bounded." } else { "The second member follows the tooth-count ratio; copies share this definition's drive coordinate" });
         controls::inspector_combo(ui, "gear-pair-plane")
             .selected_text(self.plane.map_or("Stored orientation", Datum::label))
             .show_ui(ui, |ui| {
@@ -425,13 +591,15 @@ impl GearPairPanel {
                         .changed();
                 }
             });
-        for (field, label) in
-            self.origin
-                .iter_mut()
-                .zip(["Pair origin X", "Pair origin Y", "Pair origin Z"])
+        for (index, (field, label)) in self
+            .origin
+            .iter_mut()
+            .zip(["Pair origin X", "Pair origin Y", "Pair origin Z"])
+            .enumerate()
         {
-            changed |= field.show(
+            changed |= field.show_named(
                 ui,
+                (self.template.pair, "pair-origin", index),
                 label,
                 "Layout within the reusable pair; use Move/Copy for an independent outer placement",
             );
@@ -439,13 +607,21 @@ impl GearPairPanel {
         let validation = self.request(document, enabled);
         if let Ok(command) = &validation {
             if let Ok(r) = command.resolved(document, &self.primary.parameters) {
-                ui.small(format!(
-                    "Center distance {:.4} mm · {} : {} teeth",
-                    r.center_distance_mm, r.gears[0].teeth, r.gears[1].teeth
-                ));
+                Self::show_resolved(ui, &r);
             }
         } else if let Err(error) = &validation {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
+            if self.rack_member.is_some() {
+                let mut neutral = self.clone();
+                neutral.drive =
+                    DimensionField::from_dimension(&angle(0.), "deg").expect("zero drive");
+                if let Ok(command) = neutral.request(document, enabled)
+                    && let Ok(resolved) = command.resolved(document, &self.primary.parameters)
+                    && let Some(travel) = &resolved.rack_travel
+                {
+                    Self::show_travel_limits(ui, travel);
+                }
+            }
         }
         ui.small("Preview checks the current mating pose and sampled phases. It does not certify continuous motion, strength or physical fit.");
         let action = form::actions(ui, validation.is_ok(), changed, self.stamp, preview);
@@ -472,5 +648,259 @@ impl GearPairPanel {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod rack_roles_tests {
+    use super::*;
+    /// Widget-only status injection exercises layout changes, not native proof.
+    fn typing_frame(
+        ctx: &egui::Context,
+        panel: &mut GearPairPanel,
+        document: &Document,
+        events: Vec<egui::Event>,
+        status: usize,
+    ) -> egui::FullOutput {
+        ctx.run_ui(
+            egui::RawInput {
+                focused: true,
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(650., 2400.),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let preview = match status {
+                    1 => PreviewState::Pending {
+                        stamp: panel.stamp(),
+                    },
+                    2 => PreviewState::Ready {
+                        stamp: panel.stamp(),
+                    },
+                    3 => PreviewState::Failed {
+                        stamp: panel.stamp(),
+                        message: "Test-only preview-status layout change",
+                    },
+                    _ => PreviewState::Idle,
+                };
+                panel.show(ui, document, true, preview);
+            },
+        )
+    }
+    #[test]
+    fn rack_cell_typing_keeps_focus_through_partial_invalid_text_and_preview_status_changes() {
+        for member in [0, 1] {
+            let session = Session::new(Document::new("Typing is source neutral").unwrap()).unwrap();
+            let before = session.document().clone();
+            let mut primary = GearPanel::new(
+                GearRequest::new("Pair", GearParameters::default()),
+                session.parameters().clone(),
+                false,
+            )
+            .unwrap();
+            primary.select_family(GearFamily::Rack);
+            let mut panel = GearPairPanel::from_single(primary);
+            panel.set_rack_member(Some(member));
+            let GearPairCommand::Create(original) =
+                panel.request(session.document(), true).unwrap()
+            else {
+                panic!("create")
+            };
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            typing_frame(&ctx, &mut panel, session.document(), vec![], 0)
+                .drop_without_applying_deltas();
+            let output = typing_frame(&ctx, &mut panel, session.document(), vec![], 0);
+            let label_y = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "Rack pitch cells (count)" => {
+                        Some(text.pos.y)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.role() == egui::accesskit::Role::TextInput)
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .filter(|bounds| bounds.y0 > f64::from(label_y))
+                .min_by(|a, b| a.y0.total_cmp(&b.y0))
+                .unwrap();
+            let pos = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.) as f32,
+                ((bounds.y0 + bounds.y1) / 2.) as f32,
+            );
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                typing_frame(
+                    &ctx,
+                    &mut panel,
+                    session.document(),
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    0,
+                )
+                .drop_without_applying_deltas();
+            }
+            let focused = ctx
+                .memory(|memory| memory.focused())
+                .expect("cell input focused");
+            let key = |key, modifiers| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            };
+            for blank_first in [false, true] {
+                typing_frame(
+                    &ctx,
+                    &mut panel,
+                    session.document(),
+                    vec![key(egui::Key::A, egui::Modifiers::COMMAND)],
+                    0,
+                )
+                .drop_without_applying_deltas();
+                if blank_first {
+                    typing_frame(
+                        &ctx,
+                        &mut panel,
+                        session.document(),
+                        vec![key(egui::Key::Backspace, Default::default())],
+                        0,
+                    )
+                    .drop_without_applying_deltas();
+                    assert!(panel.request(session.document(), true).is_err());
+                    typing_frame(&ctx, &mut panel, session.document(), vec![], 3)
+                        .drop_without_applying_deltas();
+                    assert_eq!(ctx.memory(|memory| memory.focused()), Some(focused));
+                }
+                typing_frame(
+                    &ctx,
+                    &mut panel,
+                    session.document(),
+                    vec![egui::Event::Text("2".into())],
+                    0,
+                )
+                .drop_without_applying_deltas();
+                assert!(panel.request(session.document(), true).is_err());
+                typing_frame(&ctx, &mut panel, session.document(), vec![], 1)
+                    .drop_without_applying_deltas();
+                assert_eq!(ctx.memory(|memory| memory.focused()), Some(focused));
+                typing_frame(
+                    &ctx,
+                    &mut panel,
+                    session.document(),
+                    vec![egui::Event::Text("1".into())],
+                    2,
+                )
+                .drop_without_applying_deltas();
+                assert_eq!(ctx.memory(|memory| memory.focused()), Some(focused));
+                let GearPairCommand::Create(edited) =
+                    panel.request(session.document(), true).unwrap()
+                else {
+                    panic!("create")
+                };
+                assert_eq!(
+                    edited.gears[member].parameters.teeth,
+                    multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 21.,
+                        unit: "count".into()
+                    }
+                );
+                assert_eq!(edited.pair, original.pair);
+                assert_eq!(edited.outputs, original.outputs);
+                assert_eq!(edited.placement, original.placement);
+                assert_eq!(
+                    [edited.gears[0].feature, edited.gears[1].feature],
+                    [original.gears[0].feature, original.gears[1].feature]
+                );
+                assert_eq!(session.document(), &before);
+                assert_eq!(session.revision(), 0);
+            }
+        }
+    }
+    #[test]
+    fn rack_role_switch_keeps_role_dimensions_member_ids_and_reports_finite_drive_refusal() {
+        let session = Session::new(Document::new("Rack roles").unwrap()).unwrap();
+        let mut primary = GearPanel::new(
+            GearRequest::new("Pair", GearParameters::default()),
+            session.parameters().clone(),
+            false,
+        )
+        .unwrap();
+        primary.select_family(GearFamily::Rack);
+        primary.fields[1].set_literal(32., "count");
+        primary.rack_backing.set_literal(5., "mm");
+        let mut panel = GearPairPanel::from_single(primary);
+        let GearPairCommand::Create(a) = panel.request(session.document(), true).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(a.gears[0].parameters.family, GearFamily::Rack);
+        assert_eq!(a.gears[1].parameters.family, GearFamily::Spur);
+        let resolved_a = a
+            .parameters
+            .resolve_recipes(
+                [&a.gears[0].parameters, &a.gears[1].parameters],
+                session.parameters(),
+            )
+            .unwrap();
+        let rack_a = resolved_a.gears[0].rack().unwrap();
+        panel.set_rack_member(Some(1));
+        let GearPairCommand::Create(b) = panel.request(session.document(), true).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(a.pair, b.pair);
+        assert_eq!(a.outputs, b.outputs);
+        assert_eq!(a.placement.instance, b.placement.instance);
+        assert_eq!(
+            [a.gears[0].feature, a.gears[1].feature],
+            [b.gears[0].feature, b.gears[1].feature]
+        );
+        assert_eq!(b.gears[0].parameters.family, GearFamily::Spur);
+        assert_eq!(b.gears[1].parameters.family, GearFamily::Rack);
+        let resolved_b = b
+            .parameters
+            .resolve_recipes(
+                [&b.gears[0].parameters, &b.gears[1].parameters],
+                session.parameters(),
+            )
+            .unwrap();
+        let rack_b = resolved_b.gears[1].rack().unwrap();
+        assert_eq!(rack_a.teeth, rack_b.teeth);
+        assert_eq!(rack_a.length_mm, rack_b.length_mm);
+        assert_eq!(rack_a.backing_thickness_mm, rack_b.backing_thickness_mm);
+        let travel = resolved_b.rack_travel.unwrap();
+        assert_eq!(travel.rack_member, model::GearPairMember::B);
+        assert!(travel.min_translation_mm < 0. && travel.max_translation_mm > 0.);
+        panel.drive.set_literal(1000., "deg");
+        assert!(
+            panel
+                .request(session.document(), true)
+                .unwrap_err()
+                .contains("finite end travel")
+        );
+        assert_eq!(session.revision(), 0);
+        assert!(!session.can_undo());
     }
 }

@@ -43,7 +43,7 @@ fn coverage_source_edit_and_native_geometry_share_one_attributable_transaction()
             .iter()
             .filter(|f| f["supported"] == true)
             .count(),
-        5
+        6
     );
     let before = h.document();
     let created = run(
@@ -94,6 +94,7 @@ fn stale_cancelled_unsupported_and_invalid_requests_leave_no_recipe_or_solid() {
         json!({"expected_revision":0,"name":"Missing hand","family":"helical","helix_angle":scalar(15.,"deg")}),
         json!({"expected_revision":0,"name":"Incompatible basis","plane":"xy","axis_u":[1.,0.,0.],"axis_v":[0.,1.,0.]}),
         json!({"expected_revision":0,"name":"Unproved","accuracy_grade":6}),
+        json!({"expected_revision":0,"name":"Rack outside diameter","family":"rack","outer_diameter":scalar(100.,"mm")}),
     ] {
         assert!(dispatch(&h, &call(false), "set_gear", args).is_err());
         assert_eq!(h.document(), before);
@@ -108,4 +109,52 @@ fn stale_cancelled_unsupported_and_invalid_requests_leave_no_recipe_or_solid() {
         .is_err()
     );
     assert_eq!(h.document(), before);
+}
+
+#[test]
+fn rack_dimensions_edit_history_and_invalid_requests_share_native_preflight() {
+    let h = host();
+    let created = run(
+        &h,
+        "set_gear",
+        json!({"expected_revision":0,"name":"Finite rack",
+        "family":"rack","teeth":scalar(25.,"count"),"module":scalar(2.,"mm"),
+        "backing_thickness":scalar(4.,"mm"),"face_width":scalar(4.,"mm")}),
+    );
+    let gear = created["gear"].clone();
+    let info = run(&h, "inspect_gear", json!({"gear":gear}));
+    assert!(
+        (info["resolved"]["length_mm"].as_f64().unwrap() - 50. * std::f64::consts::PI).abs()
+            < 1e-10
+    );
+    assert!(info["resolved"]["pitch_diameter_mm"].is_null());
+    assert_eq!(info["resolved"]["backing_thickness_mm"], 4.);
+    let before = h.document();
+    for args in [
+        json!({"expected_revision":1,"gear":gear,"teeth":scalar(25.5,"count")}),
+        json!({"expected_revision":1,"gear":gear,"backing_thickness":scalar(-1.,"mm")}),
+        json!({"expected_revision":1,"gear":gear,"bore_diameter":scalar(8.,"mm")}),
+        json!({"expected_revision":1,"gear":gear,"helix_angle":scalar(15.,"deg"),"hand":"left"}),
+        json!({"expected_revision":1,"gear":gear,"outer_diameter":scalar(100.,"mm")}),
+    ] {
+        assert!(dispatch(&h, &call(false), "set_gear", args).is_err());
+        assert_eq!(h.document(), before);
+    }
+    let edit = run(
+        &h,
+        "set_gear",
+        json!({"expected_revision":1,"gear":gear,"backing_thickness":scalar(5.,"mm")}),
+    );
+    assert_eq!(edit["part"], created["part"]);
+    assert_eq!(
+        run(&h, "inspect_gear", json!({"gear":gear}))["resolved"]["backing_thickness_mm"],
+        5.
+    );
+    run(&h, "undo", json!({"expected_revision":2}));
+    assert_eq!(h.document(), before);
+    run(&h, "redo", json!({"expected_revision":3}));
+    assert_eq!(
+        run(&h, "inspect_gear", json!({"gear":gear}))["resolved"]["backing_thickness_mm"],
+        5.
+    );
 }

@@ -139,3 +139,61 @@ fn stale_cancelled_incompatible_and_unknown_pair_requests_leave_the_document_unc
     );
     assert_eq!(h.document(), before);
 }
+
+#[test]
+fn rack_pair_roles_derived_motion_and_finite_end_refusal_are_canonical() {
+    for rack_first in [true, false] {
+        let h = host(None);
+        let rack = json!({"family":"rack","teeth":scalar(25.,"count"),"backing_thickness":scalar(4.,"mm"),"face_width":scalar(4.,"mm")});
+        let pinion =
+            json!({"family":"spur","teeth":scalar(24.,"count"),"face_width":scalar(4.,"mm")});
+        let created = run(
+            &h,
+            "set_gear_pair",
+            json!({"expected_revision":0,"name":"Rack pair",
+            "first":if rack_first { &rack } else { &pinion },"second":if rack_first { &pinion } else { &rack }}),
+        );
+        let pair = created["pair"].clone();
+        let inspected = run(&h, "inspect_gear_pair", json!({"pair":pair}));
+        let travel = &inspected["resolved"]["rack_travel"];
+        assert_eq!(travel["translation_mm"], 0.);
+        assert!(travel["max_translation_mm"].as_f64().unwrap() > 40.);
+        let before = h.document();
+        assert!(
+            dispatch(
+                &h,
+                &call(false),
+                "set_gear_pair",
+                json!({"expected_revision":1,"pair":pair,"drive_angle":scalar(1000.,"deg")})
+            )
+            .is_err()
+        );
+        assert_eq!(h.document(), before);
+        run(
+            &h,
+            "set_gear_pair",
+            json!({"expected_revision":1,"pair":pair,"drive_angle":scalar(10.,"deg")}),
+        );
+        let driven = run(&h, "inspect_gear_pair", json!({"pair":pair}));
+        assert!(
+            (driven["resolved"]["rack_travel"]["translation_mm"]
+                .as_f64()
+                .unwrap()
+                - 24. * 10_f64.to_radians())
+            .abs()
+                < 1e-10
+        );
+        let native = run(&h, "evaluate_model", json!({}));
+        assert_eq!(native["physical_leaves"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            native["gear_pairs"][0]["cycle_drive_angles_rad"]
+                .as_array()
+                .unwrap()
+                .len(),
+            11
+        );
+        assert_eq!(native["gear_pairs"][0]["current_pose_checked"], true);
+        run(&h, "undo", json!({"expected_revision":2}));
+        assert_eq!(h.document(), before);
+    }
+}

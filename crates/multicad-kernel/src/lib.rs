@@ -584,6 +584,8 @@ pub use threads::{
 };
 mod gears;
 pub use gears::{GearSweep, InvoluteGear};
+mod rack;
+pub use rack::StraightRack;
 mod edge_treatment;
 pub use edge_treatment::{EdgeTreatment, SidedChamfer, SidedTreatmentEdge, TreatmentEdge};
 mod drawing;

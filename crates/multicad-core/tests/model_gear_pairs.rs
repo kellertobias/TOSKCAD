@@ -273,8 +273,8 @@ fn all_supported_parallel_families_keep_opposite_hand_and_gap_semantics() {
             },
         );
         if family != GearFamily::Spur {
-            assert!(resolved.gears[0].twist_rad_per_mm < 0.);
-            assert!(resolved.gears[1].twist_rad_per_mm > 0.);
+            assert!(resolved.gears[0].rotary().unwrap().twist_rad_per_mm < 0.);
+            assert!(resolved.gears[1].rotary().unwrap().twist_rad_per_mm > 0.);
         }
     }
 }

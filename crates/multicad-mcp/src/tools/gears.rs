@@ -125,6 +125,9 @@ pub struct GearRecipeArgs {
     pub center_gap: Option<Quantity>,
     #[serde(default)]
     pub bore_diameter: Option<Quantity>,
+    /// Rack-only connected backing below the root line; omission retains edits.
+    #[serde(default)]
+    pub backing_thickness: Option<Quantity>,
     /// Explicit outside diameter for an internal ring; omitted edits retain it.
     #[serde(default)]
     pub outer_diameter: Option<Quantity>,
@@ -173,11 +176,37 @@ pub(super) fn parameters(
     if args.clear_outer_diameter {
         p.outer_diameter = None;
     }
+    if let Some(value) = args.family {
+        let family = GearFamily::from(value);
+        if family != p.family {
+            if family == GearFamily::Rack {
+                p.bore_diameter = model::length(0.);
+                p.helix_angle = Dimension::Literal {
+                    value: 0.,
+                    unit: "deg".into(),
+                };
+                p.hand = GearHand::None;
+                p.center_gap = model::length(0.);
+                p.outer_diameter = None;
+                p.rack = Some(model::RackDimensions {
+                    backing_thickness: model::length(4.),
+                });
+            } else {
+                p.rack = None;
+            }
+        }
+        p.family = family;
+    }
     if let Some(outer) = &args.outer_diameter {
         p.outer_diameter = Some(outer.dimension(document, evaluated)?.0);
     }
-    if let Some(value) = args.family {
-        p.family = value.into();
+    if let Some(backing) = &args.backing_thickness {
+        if p.family != GearFamily::Rack {
+            return Err(ToolError::invalid("Backing thickness belongs to a rack"));
+        }
+        p.rack = Some(model::RackDimensions {
+            backing_thickness: backing.dimension(document, evaluated)?.0,
+        });
     }
     if let Some(value) = args.module_system {
         p.module_system = value.into();
@@ -242,7 +271,7 @@ pub(super) fn parameters(
             ));
         }
     }
-    p.resolve(evaluated)?;
+    p.resolve_geometry(evaluated)?;
     Ok(p)
 }
 pub(super) fn gear_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
@@ -250,7 +279,8 @@ pub(super) fn gear_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult 
         json!({"families":GearFamily::ALL.map(|f| json!({"family":f,"label":f.label(),"supported":f.supported(),"source":f.source()})),
         "sources":[model::GEAR_DIMENSIONS_SOURCE_URL,model::GEAR_PROFILE_SOURCE_URL,model::GEAR_FILLET_SOURCE_URL],
         "internal_ring":{"teeth":[48,60],"pressure_angle_degrees":20,"pinion_teeth":24,"helix":false,"profile_shift":0,"outer_diameter":"Explicit; rim beyond root must meet minimum_wall","bore_diameter":"Zero; inward toothed opening is derived","root":"Custom circular fillet, not a simulated cutter trochoid"},
-        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family or bounded internal ring/spur pinion; matching transverse module/pressure angle and width; external helical hands opposite. Internal centers use radius difference and same-direction rotation. Unmodified periodic generator Parts only"},
+        "rack":{"teeth":[4,64],"length":"Derived as teeth*pi*module; whole centered pitch cells","backing_thickness":"Explicit connected base below root line","root":"Custom tangent circular fillet, not a cutter trochoid","pair":"One rack and one matching unshifted non-undercut spur pinion; conservative finite travel keeps full pinion tip-circle projection within rack ends","drive":"Positive pinion CCW advances rack along positive local X"},
+        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family, bounded internal ring/spur pinion, or finite straight rack/spur pinion; matching transverse module/pressure angle and width; external helical hands opposite. Internal centers use radius difference and same-direction rotation. Unmodified periodic generator Parts only"},
         "scope":"Bounded unshifted involute gears and parallel-axis pairs, custom circular root fillets; no strength, fit or accuracy certification. Unsupported families/combinations fail closed."}),
     )
 }
@@ -258,7 +288,22 @@ pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) 
     let (document, revision, evaluated) = snapshot(host)?;
     let feature = id(&args.gear)?;
     let source = model::read_gear(&document, feature)?;
-    let r = source.parameters.resolve(&evaluated)?;
+    let geometry = source.parameters.resolve_geometry(&evaluated)?;
+    if let model::ResolvedGearGeometry::Rack(r) = &geometry {
+        return Ok(
+            json!({"revision":revision,"gear":feature,"part":source.output.body,"source":source,
+            "resolved":{"teeth":r.teeth,"module_mm":r.module_mm,"pitch_mm":r.pitch_mm,
+                "pressure_angle_rad":r.pressure_angle_rad,"length_mm":r.length_mm,
+                "face_width_mm":r.face_width_mm,"backing_thickness_mm":r.backing_thickness_mm,
+                "addendum_mm":r.addendum_mm,"dedendum_mm":r.dedendum_mm,
+                "root_fillet_radius_mm":r.root_fillet_radius_mm,
+                "nominal_tooth_thickness_mm":r.nominal_tooth_thickness_mm,
+                "design_tooth_thickness_mm":r.design_tooth_thickness_mm,
+                "physical_tooth_thickness_mm":r.physical_tooth_thickness_mm},
+            "scope":"Whole pitch cells, straight flanks and custom tangent circular root fillets; canonical dimensions, use evaluate_model for native geometry"}),
+        );
+    }
+    let r = geometry.rotary().expect("rotary geometry");
     Ok(
         json!({"revision":revision,"gear":feature,"part":source.output.body,"source":source,
         "resolved":{"normal_module_mm":r.normal_module_mm,"transverse_module_mm":r.transverse_module_mm,"teeth":r.teeth,

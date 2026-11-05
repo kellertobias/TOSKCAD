@@ -33,7 +33,7 @@ impl GearFamily {
             Self::Herringbone => "Herringbone (continuous center)",
             Self::DoubleHelical => "Double-helical (center gap)",
             Self::InternalRing => "Internal ring",
-            Self::Rack => "Rack and pinion",
+            Self::Rack => "Rack",
             Self::Bevel => "Bevel",
             Self::Worm => "Worm and wheel",
         }
@@ -46,10 +46,13 @@ impl GearFamily {
                 | Self::Herringbone
                 | Self::DoubleHelical
                 | Self::InternalRing
+                | Self::Rack
         )
     }
     pub fn source(self) -> &'static str {
-        if self == Self::InternalRing {
+        if self == Self::Rack {
+            super::RACK_PROFILE_SOURCE
+        } else if self == Self::InternalRing {
             "KHK unshifted 20-degree internal spur geometry; 48/60 teeth, custom circular root fillets; source revision 1"
         } else if self.supported() {
             "KHK unshifted full-depth involute dimensions; custom circular root fillet; source revision 1"

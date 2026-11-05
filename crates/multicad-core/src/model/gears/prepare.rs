@@ -52,7 +52,7 @@ pub(super) fn prepare_gears(
     let drafts = requests
         .iter()
         .map(|request| {
-            request.parameters.resolve(session.parameters())?;
+            request.parameters.resolve_geometry(session.parameters())?;
             let source = GearDefinition {
                 output: BodyOutput { body: request.body },
                 parameters: request.parameters.clone(),
@@ -78,7 +78,7 @@ pub fn prepare_gear_edit(
     revision(session, expected_revision)?;
     super::super::extrude_group::reject_individual_edit(session.document(), feature)?;
     let mut source = read_gear(session.document(), feature)?;
-    parameters.resolve(session.parameters())?;
+    parameters.resolve_geometry(session.parameters())?;
     source.parameters = parameters.clone();
     prepare_edit(
         session,

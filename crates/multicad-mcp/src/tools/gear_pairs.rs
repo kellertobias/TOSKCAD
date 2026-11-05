@@ -112,7 +112,7 @@ pub(super) fn inspect_gear_pair(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(
         json!({"revision":revision,"pair":pair,"source":source,"members":members,
-        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating},
+        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel},
         "scope":"Canonical source and resolved placement only. evaluate_model reports actual native pair checks and physical leaves."}),
     )
 }
@@ -161,7 +161,11 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
         &evaluated,
     )?;
     let default_second = GearParameters {
-        family: if first.family == model::GearFamily::InternalRing {
+        rack: None,
+        family: if matches!(
+            first.family,
+            model::GearFamily::InternalRing | model::GearFamily::Rack
+        ) {
             model::GearFamily::Spur
         } else {
             first.family
@@ -173,7 +177,10 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
             first.bore_diameter.clone()
         },
         teeth: Dimension::Literal {
-            value: if first.family == model::GearFamily::InternalRing {
+            value: if matches!(
+                first.family,
+                model::GearFamily::InternalRing | model::GearFamily::Rack
+            ) {
                 24.
             } else {
                 30.

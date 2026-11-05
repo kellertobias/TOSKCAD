@@ -23,7 +23,7 @@ inspector and refused by canonical preparation and MCP.
 | Herringbone | Continuous center, opposite-handed tooth bands | Matching external family and width | Hand names the lower band; no center groove |
 | Double-helical | Two tooth bands separated by a root-core center gap | Matching external family, width and gap | Distinct from continuous-center herringbone |
 | Internal ring | Native inward involute teeth and connected outer rim | 24-tooth spur pinion with 48/60-tooth ring; either member order | Unshifted 20-degree spur subset; explicit outside diameter |
-| Rack and pinion | Unavailable | Unavailable | [CAD-228](https://plans.tokenet.de/CAD/228) |
+| Rack | Native straight flanks, circular root transitions and connected backing | One matching unshifted spur pinion; either member order | 4-64 whole centered pitch cells, zero helix, conservative finite travel |
 | Bevel | Unavailable | Unavailable | [CAD-229](https://plans.tokenet.de/CAD/229) |
 | Worm and wheel | Unavailable | Unavailable | [CAD-230](https://plans.tokenet.de/CAD/230) |
 
@@ -35,10 +35,10 @@ root wall and two separate tangential thinning inputs. Design backlash applies
 per gear at its reference circle; fabrication allowance adds further thinning.
 Neither is a strength, standardized fit or printer calibration setting.
 
-The canonical policy bounds module to at least 0.01 mm, count to 4–128 whole
-teeth, the selected pressure angle to 14.5–35 degrees and helix magnitude to
+The canonical policy bounds module to at least 0.01 mm, rotary count to 4–128 whole
+teeth (rack count is 4-64 cells), the selected pressure angle to 14.5–35 degrees and helix magnitude to
 0–45 degrees. Additional resolved geometry checks can refuse a recipe within
-those input ranges. In particular, the conservative unshifted tooth-count
+those input ranges. In particular, the conservative unshifted rotary gear/pinion tooth-count
 policy uses `ceil(2 / sin(normal_pressure_angle)^2)` without virtual-tooth
 credit for a helix. This is the supported envelope, not a universal cutting or
 undercut theorem. Root fillets are circular arcs rather than cutter trochoids.
@@ -70,7 +70,7 @@ component Move/Copy controls outer placement; copies share the pair definition's
 internal drive coordinate.
 
 The native pair guard accepts matching external families or the bounded
-internal-ring/spur combination described below. It requires matching transverse module and
+internal-ring/spur or finite rack/spur combinations described below. It requires matching transverse module and
 pressure angle, face width, gap and applicable helix magnitude/opposite hands.
 The Part heads must remain the gear generators. It checks actual B-reps at
 nine phases over one pinion tooth cycle and at the current pose. Completed cycle
@@ -124,6 +124,58 @@ volume and STEP. The [model matrix](../../crates/multicad-model/tests/internal_g
 checks both sizes/orders, known wrong-phase overlap, native sampled clearance,
 associative edits, history and saved reopen. Samples do not prove continuous
 collision-free motion, physical fit, load capacity or manufacturing conformity.
+
+## Finite straight rack subset
+
+The [rack recipe](../../crates/multicad-core/src/model/gears/rack.rs) stores
+an optional `rack.backing_thickness` alongside the shared module, pressure,
+width, count and thinning dimensions. Rotary recipes omit this field. A rack
+has no bore, outside diameter, helix, hand, center gap or profile shift.
+Its 4-64 tooth count denotes whole centered pitch cells: length is `L=N*pi*m`,
+tooth centers are `(i+0.5-N/2)*pi*m`, pitch line is local Y=0 and width occupies
+Z=0 through the authored face width. Ends lie at X=±L/2. The count bound retains
+complete per-tooth native ancestry within the existing provenance budget.
+
+[KHK Basic Guide B](https://khkgears.us/media/fqrlut1m/abcs-of-gearing-b.pdf),
+printed pages 6-7 and 14-15, supplies straight rack geometry and the full-depth
+convention. The [KG standard spur table](https://www.kggear.co.jp/en/wp-content/themes/bizvektor-global-edition/pdf/9.1_Calculation-for-Standard-spur-gear_TechnicalData_KGSTOCKGEARS.pdf),
+printed page 107, corroborates pitch `p=pi*m`, nominal thickness `p/2` and
+addendum `ha=m`. The implementation chooses dedendum `hf=1.25*m`.
+Physical pitch-line thickness is `t=p/2-backlash-fabrication_allowance`,
+with both reductions authored per member. At height y, the right flank relative
+to a tooth center is `x=t/2-y*tan(alpha)`; the left flank is its mirror.
+
+Root transitions are custom tangent circles, not simulated cutter trochoids.
+For fillet radius f, the right circle center is
+`yc=-hf+f`, `xc=t/2+f/cos(alpha)-yc*tan(alpha)`.
+Its flank tangent is `(xc-f*cos(alpha),yc-f*sin(alpha))` and root tangent is
+`(xc,-hf)`. Positive tip width, surviving straight flank, root/end flats and
+connected backing are required. The [native adapter](../../crates/multicad-kernel/src/rack.rs)
+extrudes exact line/circular edges; the backing bottom is Y=`-hf-backing`.
+
+A pair contains exactly one rack and one matching unshifted spur pinion.
+The pinion must meet the existing conservative unshifted count policy. Module,
+pressure and width must match. For pitch radius rp and authored drive theta,
+the rack moves `s=rp*theta` along the pair frame's positive X while the pinion
+rotates positively about Z at center `(0,rp,0)`. Its zero phase places a gap
+above an odd-count rack's central tooth and a tooth above an even-count central
+valley. Existing derived assembly anchors cancel each member's local frame;
+source edits recompute pose without saved copied transforms.
+
+The conservative travel envelope is `|s|<=L/2-pinion_tip_radius`. It keeps the
+full pinion tip-circle projection inside the rack ends and requires room for
+one whole pitch cycle. It is not maximum theoretical engagement travel.
+Every resolve checks it, including source and drive edits. Native evaluation
+checks nine phases over a pinion tooth period, both finite endpoints and the
+current pose. No-overlap and actual native proximity within the sum of authored
+thinning provide sampled engagement evidence. They do not certify continuous
+motion, tooth contact, load capacity or physical fit.
+
+`model.gear.rack.1` gates direct, suppressed and template-only saved source.
+The [core tests](../../crates/multicad-core/tests/model_rack_gears.rs),
+[kernel section/STEP matrix](../../crates/multicad-kernel/tests/straight_rack.rs)
+and [native pair/export tests](../../crates/multicad-model/tests/rack_gears.rs)
+own the corresponding executable checks.
 
 ## Editing and verification boundaries
 

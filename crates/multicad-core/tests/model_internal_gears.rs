@@ -166,7 +166,7 @@ fn both_pair_orders_derive_difference_centers_and_same_direction_phase() {
                     s.parameters(),
                 )
                 .unwrap();
-            let ratio = f64::from(base.gears[0].teeth) / f64::from(base.gears[1].teeth);
+            let ratio = f64::from(base.gears[0].teeth()) / f64::from(base.gears[1].teeth());
             close(
                 driven.phases_rad[1] - base.phases_rad[1],
                 13_f64.to_radians() * ratio,

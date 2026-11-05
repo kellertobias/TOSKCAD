@@ -3,6 +3,7 @@ mod pair;
 mod pair_prepare;
 mod prepare;
 mod profiles;
+mod rack;
 use super::{
     BodyOutput, PrimitiveFrame, angle,
     common::*,
@@ -19,6 +20,7 @@ pub use pair::*;
 pub use pair_prepare::*;
 pub use prepare::*;
 pub use profiles::*;
+pub use rack::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
@@ -43,6 +45,8 @@ pub enum GearHand {
 #[serde(deny_unknown_fields)]
 pub struct GearParameters {
     pub family: GearFamily,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rack: Option<RackDimensions>,
     pub module_system: GearModuleSystem,
     pub module: Dimension,
     pub teeth: Dimension,
@@ -73,6 +77,7 @@ impl Default for GearParameters {
     fn default() -> Self {
         Self {
             family: GearFamily::Spur,
+            rack: None,
             module_system: GearModuleSystem::Normal,
             module: length(2.),
             teeth: Dimension::Literal {
@@ -146,6 +151,9 @@ impl GearParameters {
         if let Some(outer) = &self.outer_diameter {
             dimensions.push((outer, Unit::Millimeter));
         }
+        if let Some(rack) = &self.rack {
+            dimensions.push((&rack.backing_thickness, Unit::Millimeter));
+        }
         dimensions.extend(self.frame.origin.iter().map(|d| (d, Unit::Millimeter)));
         dimensions
     }
@@ -160,6 +168,11 @@ impl GearParameters {
                 self.family.label()
             )));
         }
+        if (self.family == GearFamily::Rack) != self.rack.is_some() {
+            return Err(invalid(
+                "Rack recipes require backing dimensions; rotary gear recipes must omit rack dimensions",
+            ));
+        }
         if (self.family == GearFamily::InternalRing) != self.outer_diameter.is_some() {
             return Err(invalid(
                 "Internal rings require an outside diameter; external gear recipes must omit it",
@@ -169,6 +182,11 @@ impl GearParameters {
     }
     pub fn resolve(&self, parameters: &EvaluatedParameters) -> Result<ResolvedGear, DocumentError> {
         self.validate()?;
+        if self.family == GearFamily::Rack {
+            return Err(invalid(
+                "Rack geometry has no rotary radii; use resolve_geometry",
+            ));
+        }
         let module = number(&self.module, Unit::Millimeter, parameters)?;
         let count = number(&self.teeth, Unit::Count, parameters)?;
         let pressure = number(&self.pressure_angle, Unit::Radian, parameters)?;

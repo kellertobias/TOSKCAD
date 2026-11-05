@@ -100,6 +100,26 @@ impl DimensionField {
         .on_hover_text(help)
         .changed()
     }
+    /// Stable identity for forms whose validation or preview messages can insert
+    /// widgets before an active edit. Other tools keep the existing auto-ID path.
+    pub fn show_named(
+        &mut self,
+        ui: &mut egui::Ui,
+        id_salt: impl egui::AsIdSalt,
+        label: &str,
+        help: &str,
+    ) -> bool {
+        let id = ui.make_persistent_id(id_salt);
+        ui.label(format!("{label} ({})", self.unit));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.text)
+                .id(id)
+                .desired_width(crate::controls::inspector_width(ui))
+                .hint_text(format!("Value or =$parameter · {}", self.unit)),
+        )
+        .on_hover_text(help)
+        .changed()
+    }
     /// Two-column Inspector grids reserve room for their label instead of
     /// requesting the entire row for the value. The caller supplies an
     /// owner/field identity, independent of validation text or preceding widgets.

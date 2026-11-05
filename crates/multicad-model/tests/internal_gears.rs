@@ -85,7 +85,7 @@ fn both_ring_sizes_and_member_orders_have_real_sampled_clearance_step_and_bad_ph
             let b = native.solid(req.gears[1].feature).unwrap();
             let a = placed(
                 a,
-                resolved.phases_rad[0] + PI / f64::from(resolved.gears[0].teeth),
+                resolved.phases_rad[0] + PI / f64::from(resolved.gears[0].teeth()),
                 0.,
             );
             let b = placed(b, resolved.phases_rad[1], resolved.center_distance_mm);
