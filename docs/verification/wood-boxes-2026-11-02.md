@@ -1,5 +1,9 @@
 # Editable optional-face wood boxes: verification, 2026-11-02
 
+Historical implementation evidence. The
+[2026-11-05 native-window report](wood-boxes-2026-11-05.md) closes the macOS
+interaction gap below with actual creation, downstream editing and reopen.
+
 CAD-249 adds Model → Wood → Box and shared typed MCP tools for a canonical,
 editable six-face recipe. Implementation, targeted native/offscreen checks, required workspace checks
 and the application build passed. Actual macOS OS-window interaction remains
