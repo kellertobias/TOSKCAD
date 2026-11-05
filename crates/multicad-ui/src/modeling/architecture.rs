@@ -474,7 +474,8 @@ impl ArchitecturePanel {
             .ok_or("Choose the room whose boundary the floor follows")?;
         let points = room_boundary(document, wall, self.room_boundary)?;
         self.outline.set_dimensions(&points, true)?;
-        if let Ok(source) = model::read_wall(document, wall)
+        if self.level.is_none()
+            && let Ok(source) = model::read_wall(document, wall)
             && source.level.is_some()
         {
             self.level = source.level;
@@ -1353,6 +1354,58 @@ mod tests {
             session.commit(prepared.prepared).unwrap();
         }
         walls
+    }
+
+    #[test]
+    fn room_footprint_preserves_the_selected_slab_level_and_native_elevation() {
+        let (mut session, levels, _, _) = crate::architecture_view::tests::building();
+        let [first, second] = two_rooms(&mut session, levels[0]);
+        let before = session.document().clone();
+        let mut floor = ArchitecturePanel::new(session.document(), "Upper floor".into()).unwrap();
+        floor.seed_new_level(session.document(), Some(levels[1]));
+        floor.room = Some(second);
+        floor.use_room(session.document()).unwrap();
+        assert_eq!(
+            floor.level,
+            Some(levels[1]),
+            "copying a footprint must not change the selected level"
+        );
+        let prepared = apply(&mut session, &floor);
+        let feature = prepared.outputs[0].feature;
+        let body = prepared.outputs[0].body;
+        let slab = model::read_slab(prepared.prepared.document(), feature).unwrap();
+        assert_eq!(slab.level, levels[1]);
+        let native = Compiler::default()
+            .compile(prepared.prepared.document(), session.revision())
+            .unwrap();
+        let shape = &native.snapshot().shapes[&feature];
+        assert!((shape.bounds.min[2] - 2800.).abs() < 1e-6);
+        assert!((shape.bounds.max[2] - 3000.).abs() < 1e-6);
+        assert!((shape.volume_mm3 - 3800. * 2800. * 200.).abs() < 1e-3);
+        assert_eq!(session.document(), &before);
+        session.commit(prepared.prepared).unwrap();
+
+        let mut edit =
+            ArchitecturePanel::existing(session.document(), feature, String::new()).unwrap();
+        edit.room = Some(first);
+        edit.use_room(session.document()).unwrap();
+        let changed = apply(&mut session, &edit);
+        assert_eq!(changed.outputs[0].feature, feature);
+        assert_eq!(changed.outputs[0].body, body);
+        assert_eq!(
+            model::read_slab(changed.prepared.document(), feature)
+                .unwrap()
+                .level,
+            levels[1]
+        );
+
+        floor.level = None;
+        floor.use_room(session.document()).unwrap();
+        assert_eq!(
+            floor.level,
+            Some(levels[0]),
+            "an unassigned slab can inherit the room level"
+        );
     }
 
     #[test]
