@@ -1,5 +1,8 @@
 # Architecture navigation verification, 2026-11-02
 
+> Historical evidence. The [native review of 2026-11-05](architecture-navigation-2026-11-05.md)
+> records actual macOS interaction and the subsequent Library highlight correction.
+
 CAD-223 reorganizes Architecture commands and placement categories on `main`.
 The canonical Junction box foundation is `35802e0`; navigation and typed forms
 are `7d3b5a2`; the visual corrections are `b81dbf8`; native offscreen review and
