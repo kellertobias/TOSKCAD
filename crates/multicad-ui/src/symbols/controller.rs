@@ -97,6 +97,11 @@ impl SymbolController {
     pub fn active(&self) -> bool {
         self.form.is_some()
     }
+    pub(crate) fn library_active(&self) -> bool {
+        self.form
+            .as_ref()
+            .is_some_and(|form| form.tool == SymbolTool::Library)
+    }
     pub fn dirty(&self) -> bool {
         self.form.as_ref().is_some_and(Form::authoring)
     }

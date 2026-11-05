@@ -448,6 +448,9 @@ impl Application {
     }
     /// Ribbon highlight for the specialized tool whose form is open.
     fn tool_active(&self, command: Command) -> bool {
+        if command == Command::Extension("library") {
+            return self.current().sketch.symbol_library_active();
+        }
         if let Command::Modeling(tool) = command
             && let Some(kind) = tool.fdm_kind()
         {
@@ -456,7 +459,7 @@ impl Application {
         self.active_tool == Some((self.active, command))
             && match command {
                 Command::Modeling(_) | Command::EquipmentPreset(_) => {
-                    self.current().sketch.model_active()
+                    self.current().sketch.model_form_active()
                 }
                 Command::Drawing(_) => {
                     let drawings = &self.current().drawings;

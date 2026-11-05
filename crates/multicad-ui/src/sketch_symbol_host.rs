@@ -53,6 +53,9 @@ impl SketchEditor {
     pub fn symbol_active(&self) -> bool {
         self.symbols.active()
     }
+    pub(crate) fn symbol_library_active(&self) -> bool {
+        self.symbols.library_active()
+    }
     pub fn close_symbol_browser(&mut self) {
         if self.symbols.active() && !self.symbols.dirty() {
             self.symbols.cancel();

@@ -634,6 +634,9 @@ impl SketchEditor {
             || self.symbols.pending()
             || external_pending
     }
+    pub(crate) fn model_form_active(&self) -> bool {
+        self.model.active()
+    }
     pub fn model_active(&self) -> bool {
         self.model.active()
             || self.assembly.active()

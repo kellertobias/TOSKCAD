@@ -536,3 +536,69 @@ fn preset_commands_open_the_chosen_native_form_and_navigation_preserves_it_until
     app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
     assert_eq!(app.current().session.document(), &before);
 }
+
+#[test]
+fn library_browser_highlight_does_not_revive_a_cancelled_equipment_preset() {
+    use crate::modeling::native_fixture::NativeBackend;
+    use multicad_core::equipment::Kind;
+    let mut app = app();
+    app.set_model_backends(std::sync::Arc::new(|| Box::new(NativeBackend::new())));
+    let ctx = context(1.);
+    let size = egui::vec2(1360., 860.);
+    let before = app.current().session.document().clone();
+    let dishwasher = Command::EquipmentPreset(Kind::Dishwasher);
+    let library = Command::Extension("library");
+    let assert_selected = |out: &egui::FullOutput, label: &str, selected: bool| {
+        let nodes = &out.platform_output.accesskit_update.as_ref().unwrap().nodes;
+        let actual = nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.toggled())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("Missing selectable ribbon control {label}"));
+        assert_eq!(actual, egui::accesskit::Toggled::from(selected), "{label}");
+    };
+    app.invoke(dishwasher, &[], Channel::Ui).unwrap();
+    for _ in 0..3 {
+        paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+    }
+    let out = paint(&mut app, &ctx, size, vec![]);
+    assert_selected(&out, "Dishwasher", true);
+    out.drop_without_applying_deltas();
+    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    app.invoke(library, &[], Channel::Ui).unwrap();
+    for _ in 0..2 {
+        paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+    }
+    let out = paint(&mut app, &ctx, size, vec![]);
+    assert_selected(&out, "Dishwasher", false);
+    assert_selected(&out, "Symbol library", true);
+    out.drop_without_applying_deltas();
+    assert_eq!(app.current().session.document(), &before);
+    assert_eq!(app.current().session.revision(), 0);
+    app.invoke(
+        Command::ArchitectureCategory(Category::Water),
+        &[],
+        Channel::Ui,
+    )
+    .unwrap();
+    let out = paint(&mut app, &ctx, size, vec![]);
+    assert_selected(&out, "Symbol library", true);
+    out.drop_without_applying_deltas();
+    app.invoke(library, &[], Channel::Ui).unwrap();
+    let out = paint(&mut app, &ctx, size, vec![]);
+    assert_selected(&out, "Symbol library", false);
+    out.drop_without_applying_deltas();
+    assert!(!app.tool_active(dishwasher));
+    assert!(!app.current().sketch.symbol_active());
+    app.invoke(dishwasher, &[], Channel::Ui).unwrap();
+    let out = paint(&mut app, &ctx, size, vec![]);
+    assert_selected(&out, "Dishwasher", true);
+    assert_selected(&out, "Symbol library", false);
+    out.drop_without_applying_deltas();
+    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    assert_eq!(app.current().session.document(), &before);
+    assert_eq!(app.current().session.revision(), 0);
+}
