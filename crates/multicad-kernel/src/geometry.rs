@@ -730,6 +730,59 @@ impl Solid {
         );
         Ok(mesh)
     }
+    /// Manufacturing-only triangulation with native-topology seam identity.
+    /// Display meshes and their cache remain unchanged. No proximity welds.
+    pub fn manufacturing_mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
+        Ok(self.manufacturing_mesh_with_receipt(options)?.mesh)
+    }
+    pub fn manufacturing_mesh_with_receipt(
+        &self,
+        options: MeshOptions,
+    ) -> Result<crate::ManufacturingMesh, GeometryError> {
+        if !options.linear_deflection_mm.is_finite()
+            || options.linear_deflection_mm < self.policy.linear_tolerance_mm.max(0.001)
+            || options.linear_deflection_mm > self.policy.maximum_coordinate_mm
+            || !options.angular_deflection_rad.is_finite()
+            || !(0.01..=1.).contains(&options.angular_deflection_rad)
+            || options.maximum_triangles == 0
+            || options.maximum_triangles > 5_000_000
+        {
+            return Err(input("Invalid manufacturing tessellation settings/budget"));
+        }
+        let tolerance = self
+            .policy
+            .linear_tolerance_mm
+            .min(options.linear_deflection_mm / 16.);
+        let receipt = ffi::tessellate_manufacturing(
+            &self.native.0,
+            options.linear_deflection_mm,
+            options.angular_deflection_rad,
+            options.maximum_triangles,
+            tolerance,
+        )
+        .map_err(|e| native("manufacturing mesh", e))?;
+        let mesh = &receipt.mesh;
+        if mesh.vertices.is_empty()
+            || !mesh.vertices.len().is_multiple_of(3)
+            || !mesh.indices.len().is_multiple_of(3)
+            || mesh.face_indices.len() != mesh.indices.len() / 3
+            || mesh.vertices.iter().any(|v| !v.is_finite())
+            || mesh
+                .indices
+                .iter()
+                .any(|i| *i as usize >= mesh.vertices.len() / 3)
+            || !receipt.maximum_displacement_mm.is_finite()
+            || receipt.maximum_displacement_mm < 0.
+            || receipt.maximum_displacement_mm > tolerance
+        {
+            return Err(error(
+                "manufacturing mesh",
+                GeometryErrorKind::InvalidResult,
+                "Invalid native manufacturing mesh or seam receipt",
+            ));
+        }
+        Ok(receipt)
+    }
     pub fn display_edges(&self, deflection_mm: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
         if !deflection_mm.is_finite()
             || deflection_mm < 0.001

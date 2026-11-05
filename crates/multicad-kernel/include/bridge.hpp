@@ -16,6 +16,7 @@ public:
   VolumeIntegrationFailure():std::runtime_error("Native volume integration did not converge"){}
 };
 struct Mesh;
+struct ManufacturingMesh;
 struct MeshCacheStats;
 struct Point3;
 struct Frame3;
@@ -158,6 +159,7 @@ bool bounds_cache_concurrent_probe(const Shape &);
 rust::Vec<FaceInfo> faces(const Shape &);
 uint32_t solid_count(const Shape &);
 Mesh tessellate(const Shape &,double deflection,double angle,uint32_t max_triangles);
+ManufacturingMesh tessellate_manufacturing(const Shape &,double,double,uint32_t,double);
 rust::Vec<TopologyNode> topology(const Shape &);
 rust::Vec<Ancestry> ancestry(const Shape &);
 rust::Vec<Seed> seeds(const Shape &);

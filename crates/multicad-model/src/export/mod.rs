@@ -491,8 +491,12 @@ fn mesh_output(
                 let object = match definitions.get(&definition) {
                     Some(object) => *object,
                     None => {
-                        let mesh = mesh::tessellate(local, quality, &name)
-                            .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?;
+                        let mesh = if *format == MeshFormat::ThreeMf {
+                            mesh::tessellate_manufacturing(local, quality, &name)
+                        } else {
+                            mesh::tessellate(local, quality, &name)
+                        }
+                        .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?;
                         objects.push(mesh);
                         definitions.insert(definition, objects.len() - 1);
                         objects.len() - 1
@@ -507,8 +511,12 @@ fn mesh_output(
             None => {
                 let world = subject_solid(model, part, solid)?;
                 objects.push(
-                    mesh::tessellate(world, quality, &name)
-                        .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?,
+                    if *format == MeshFormat::ThreeMf {
+                        mesh::tessellate_manufacturing(world, quality, &name)
+                    } else {
+                        mesh::tessellate(world, quality, &name)
+                    }
+                    .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?,
                 );
                 items.push(mesh::BuildItem::identity(objects.len() - 1));
             }

@@ -58,13 +58,37 @@ fn unit_name(unit: LengthUnit) -> &'static str {
 
 /// Tessellate an exact solid at the recipe's chord and angular deviation.
 pub fn tessellate(solid: &Solid, quality: &MeshQuality, name: &str) -> Result<MeshObject, String> {
-    let mesh = solid
-        .mesh(MeshOptions {
-            linear_deflection_mm: quality.chord_deviation_mm,
-            angular_deflection_rad: quality.angular_deviation_deg.to_radians(),
-            maximum_triangles: 2_000_000,
-        })
-        .map_err(|e| e.to_string())?;
+    tessellate_with_connectivity(solid, quality, name, false)
+}
+
+/// Tessellate with shared-edge connectivity from the native solid. Stored
+/// 3MF indices must describe a closed surface, including face seams whose
+/// independently evaluated coordinates differ by numerical roundoff.
+pub fn tessellate_manufacturing(
+    solid: &Solid,
+    quality: &MeshQuality,
+    name: &str,
+) -> Result<MeshObject, String> {
+    tessellate_with_connectivity(solid, quality, name, true)
+}
+
+fn tessellate_with_connectivity(
+    solid: &Solid,
+    quality: &MeshQuality,
+    name: &str,
+    manufacturing: bool,
+) -> Result<MeshObject, String> {
+    let options = MeshOptions {
+        linear_deflection_mm: quality.chord_deviation_mm,
+        angular_deflection_rad: quality.angular_deviation_deg.to_radians(),
+        maximum_triangles: 2_000_000,
+    };
+    let mesh = if manufacturing {
+        solid.manufacturing_mesh(options)
+    } else {
+        solid.mesh(options)
+    }
+    .map_err(|e| e.to_string())?;
     if mesh.vertices.len() % 3 != 0 || mesh.indices.len() % 3 != 0 || mesh.indices.is_empty() {
         return Err("Native tessellation returned an invalid mesh".into());
     }

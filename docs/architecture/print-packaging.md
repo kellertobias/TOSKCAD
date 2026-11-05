@@ -69,12 +69,12 @@ An empty package cannot be written. The preview says why: nothing was chosen in 
 
 - **3MF.** One file with one build item per packaged object. A world Part has an identity build item. A placed occurrence has a build item carrying its world pose. A world Part and its placed copies share one mesh object, as do several copies of one Part. Each copy is still its own build item. Coordinates stay in world millimeters, so +Z remains the build direction the aids assume. The model declares `unit="millimeter"`, and mesh objects use Part names. The ZIP layout is the same deterministic layout as the [Export mesh writer](export-sets.md#mesh-output).
 - **STL per object** (optional). One binary STL per packaged world Part or placed occurrence, beside the 3MF. Each is in world millimeters at its placement. STL has no unit field; the header states the unit. A label is cleaned of path separators and reserved characters, and repeated names get `-2`, `-3` and so on.
-- **Tessellation.** Meshes come from current exact solids at the chosen chord deviation (default 0.1 mm, angular 15°). Display meshes are never used.
+- **Tessellation.** Meshes come from current exact solids at the chosen chord deviation (default 0.1 mm, angular 15°), with native topological connectivity and bounded seam transport as described in [mesh output](export-sets.md#mesh-output). Both 3MF and the accompanying STLs use these manufacturing meshes. Display meshes are never used.
 
 3MF files use the shared writer's
 [indexed mesh validation](export-sets.md#mesh-output). Equal seam coordinates
 share indices where needed for closed adjacency; valid coincident components
-keep their own connectivity. No distance-based position repair is applied.
+keep their own connectivity. No distance-based search chooses which faces join.
 Invalid indexed topology stops writing before existing targets are replaced.
 
 ## Writing

@@ -38,6 +38,11 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Shell.hxx>
 #include <Poly_Triangulation.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
+#include <map>
+#include <sstream>
+#include <iomanip>
+#include <unordered_map>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <BRepGProp.hxx>
@@ -507,14 +512,133 @@ Mesh detached_mesh(const MeshBuffer &buffer) {
   return result;
 }
 }
-static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_t limit,bool cached) {
+// Canonicalize only detached native-topology seams. Distinct native edges or
+// vertices are never paired by position. Display tessellation stays face-local.
+static void manufacturing_connectivity(const TopoDS_Shape &display,
+    const TopTools_IndexedMapOfShape &exactFaces,BRepBuilderAPI_Copy &copy,
+    Mesh &mesh,double tolerance,ManufacturingMesh &receipt) {
+  if(!std::isfinite(tolerance)||tolerance<=0)
+    throw std::runtime_error("Invalid manufacturing seam tolerance");
+  if(mesh.vertices.size()%3||mesh.indices.size()%3||mesh.face_indices.size()!=mesh.indices.size()/3)throw std::runtime_error("Malformed native manufacturing mesh arrays");
+  const size_t count=mesh.vertices.size()/3;
+  for(auto index:mesh.indices)if(index>=count)throw std::runtime_error("Native manufacturing triangle references an absent node");
+  std::vector<bool> nativePole(count,false);
+  std::vector<uint32_t> parent(count);for(size_t i=0;i<count;++i)parent[i]=static_cast<uint32_t>(i);
+  auto root=[&](uint32_t node){uint32_t result=node;while(parent[result]!=result)result=parent[result];while(parent[node]!=node){const auto next=parent[node];parent[node]=result;node=next;}return result;};
+  auto point=[&](uint32_t node){return gp_Pnt(mesh.vertices[3*node],mesh.vertices[3*node+1],mesh.vertices[3*node+2]);};
+  auto join=[&](uint32_t a,uint32_t b){
+    if(a>=count||b>=count)throw std::runtime_error("Native seam names an absent mesh node");
+    const double distance=point(a).Distance(point(b));
+    if(!std::isfinite(distance)||distance>tolerance){std::ostringstream message;message<<std::setprecision(17)<<"Native topology seam discrepancy "<<distance<<" mm exceeds manufacturing tolerance "<<tolerance<<" mm";throw std::runtime_error(message.str());}
+    a=root(a);b=root(b);parent[std::max(a,b)]=std::min(a,b);
+  };
+  TopTools_IndexedMapOfShape edges,vertices;TopExp::MapShapes(display,TopAbs_EDGE,edges);TopExp::MapShapes(display,TopAbs_VERTEX,vertices);
+  struct Boundary {std::vector<uint32_t> nodes;std::vector<double> parameters;};
+  std::vector<std::vector<Boundary>> boundaries(edges.Extent());
+  const uint32_t absent=std::numeric_limits<uint32_t>::max();
+  std::vector<uint32_t> endpoint(vertices.Extent(),absent);
+  auto link_vertex=[&](const TopoDS_Vertex &vertex,uint32_t node){
+    const int index=vertices.FindIndex(vertex);
+    if(index<=0)throw std::runtime_error("Native seam endpoint has no topology vertex");
+    auto &known=endpoint[index-1];if(known==absent)known=node;else{join(known,node);++receipt.vertex_links;}
+  };
+  uint32_t offset=0;
+  for(int f=1;f<=exactFaces.Extent();++f){
+    const auto face=TopoDS::Face(copy.ModifiedShape(exactFaces(f)));
+    TopLoc_Location location;const auto tri=BRep_Tool::Triangulation(face,location);
+    if(tri.IsNull())throw std::runtime_error("Manufacturing face lacks triangulation");
+    for(TopExp_Explorer it(face,TopAbs_EDGE);it.More();it.Next()){
+      const auto edge=TopoDS::Edge(it.Current());const int index=edges.FindIndex(edge);
+      if(index<=0)throw std::runtime_error("Manufacturing boundary lacks native edge identity");
+      // Passing the actual coedge orientation selects the second polygon for
+      // reversed periodic seams (BRep_Tool.cxx638), not a nearest-node guess.
+      const bool degenerate=BRep_Tool::Degenerated(edge);
+      if(!degenerate&&!BRep_Tool::SameParameter(edge))throw std::runtime_error("Manufacturing seam requires native SameParameter correspondence");
+      const auto polygon=BRep_Tool::PolygonOnTriangulation(edge,tri,location);
+      if(polygon.IsNull()||polygon->NbNodes()<1||(!degenerate&&(polygon->NbNodes()<2||!polygon->HasParameters())))
+        throw std::runtime_error("Manufacturing edge lacks a bounded parameterized polygon");
+      Boundary boundary;
+      for(int j=1;j<=polygon->NbNodes();++j){const int node=polygon->Node(j);const double parameter=polygon->HasParameters()?polygon->Parameter(j):0.;
+        if(node<1||node>tri->NbNodes()||!std::isfinite(parameter))throw std::runtime_error("Invalid native seam polygon");
+        boundary.nodes.push_back(offset+node-1);boundary.parameters.push_back(parameter);
+      }
+      TopoDS_Vertex first,last;TopExp::Vertices(TopoDS::Edge(edge.Oriented(TopAbs_FORWARD)),first,last);
+      if(first.IsNull()||last.IsNull())throw std::runtime_error("Manufacturing edge has no bounded endpoints");
+      if(degenerate){
+        if(!first.IsSame(last))throw std::runtime_error("Degenerate native edge has distinct endpoints");
+        for(auto node:boundary.nodes){link_vertex(first,node);nativePole[node]=true;}
+        continue;
+      }
+      double rangeFirst,rangeLast;BRep_Tool::Range(edge,rangeFirst,rangeLast);
+      const bool increasing=boundary.parameters.front()==rangeFirst&&boundary.parameters.back()==rangeLast;
+      const bool decreasing=boundary.parameters.front()==rangeLast&&boundary.parameters.back()==rangeFirst;
+      if(increasing==decreasing)throw std::runtime_error("Manufacturing seam does not match native parameter endpoints");
+      for(size_t j=1;j<boundary.parameters.size();++j)if(increasing?boundary.parameters[j]<=boundary.parameters[j-1]:boundary.parameters[j]>=boundary.parameters[j-1])throw std::runtime_error("Manufacturing seam parameters are not strictly monotone");
+      link_vertex(first,increasing?boundary.nodes.front():boundary.nodes.back());link_vertex(last,increasing?boundary.nodes.back():boundary.nodes.front());
+      boundaries[index-1].push_back(std::move(boundary));
+    }
+    offset+=tri->NbNodes();
+  }
+  if(offset!=count)throw std::runtime_error("Manufacturing triangulation node layout changed");
+  for(const auto &uses:boundaries){
+    if(uses.empty())continue;
+    if(uses.size()!=2||uses[0].nodes.size()!=uses[1].nodes.size())
+      throw std::runtime_error("Native seam has unmatched edge incidence or node counts");
+    const auto &a=uses[0];const auto &b=uses[1];const size_t n=a.nodes.size();
+    const bool forward=a.parameters.front()==b.parameters.front()&&a.parameters.back()==b.parameters.back();
+    const bool reverse=a.parameters.front()==b.parameters.back()&&a.parameters.back()==b.parameters.front();
+    if(forward==reverse)throw std::runtime_error("Native seam parameter direction is ambiguous");
+    for(size_t i=0;i<n;++i){const size_t j=forward?i:n-1-i;
+      if(a.parameters[i]!=b.parameters[j])throw std::runtime_error("Native seam parameters differ");
+      join(a.nodes[i],b.nodes[j]);++receipt.edge_pairs;
+    }
+  }
+  // Check every transported node against the FINAL deterministic representative,
+  // so transitive endpoint joins cannot accumulate an unbounded displacement.
+  std::vector<bool> poleGroup(count,false);
+  for(size_t i=0;i<count;++i)if(nativePole[i])poleGroup[root(static_cast<uint32_t>(i))]=true;
+  std::vector<uint32_t> remap(count,absent);rust::Vec<double> shared;
+  for(size_t i=0;i<count;++i){const auto representative=root(static_cast<uint32_t>(i));
+    const double distance=point(static_cast<uint32_t>(i)).Distance(point(representative));
+    if(!std::isfinite(distance)||distance>tolerance)throw std::runtime_error("Transitive native seam exceeds manufacturing tolerance");
+    receipt.maximum_displacement_mm=std::max(receipt.maximum_displacement_mm,distance);
+    if(remap[representative]==absent){remap[representative]=static_cast<uint32_t>(shared.size()/3);const auto p=point(representative);shared.push_back(p.X());shared.push_back(p.Y());shared.push_back(p.Z());}
+    remap[i]=remap[representative];
+  }
+  // A mesher can emit a triangle along an analytically zero-length pole
+  // boundary using separately evaluated coordinates. Remove it ONLY when
+  // every collapsed pair belongs to a native DEGENERATED-edge vertex group.
+  // There is no area threshold, spatial search, winding change or other drop.
+  rust::Vec<uint32_t> retained,retainedFaces;
+  std::vector<bool> represented(exactFaces.Extent(),false);
+  for(size_t i=0;i<mesh.indices.size();i+=3){
+    const uint32_t original[3]={mesh.indices[i],mesh.indices[i+1],mesh.indices[i+2]};
+    const uint32_t t[3]={remap[original[0]],remap[original[1]],remap[original[2]]};bool collapsed=false;
+    for(int j=0;j<3;++j)if(t[j]==t[(j+1)%3]){
+      collapsed=true;if(!poleGroup[root(original[j])])throw std::runtime_error("Native seam transport collapses a non-pole triangle");
+    }
+    const auto face=mesh.face_indices[i/3];if(face>=represented.size())throw std::runtime_error("Manufacturing triangle has absent face ancestry");
+    if(collapsed){++receipt.removed_native_pole_triangles;continue;}
+    represented[face]=true;for(auto index:t)retained.push_back(index);retainedFaces.push_back(face);
+  }
+  if(std::any_of(represented.begin(),represented.end(),[](bool value){return !value;}))throw std::runtime_error("Native pole transport removed an entire manufacturing face");
+  mesh.vertices=std::move(shared);mesh.indices=std::move(retained);mesh.face_indices=std::move(retainedFaces);
+  struct Uses{uint32_t count=0;int orientation=0;};std::unordered_map<uint64_t,Uses> incidence;
+  for(size_t i=0;i<mesh.indices.size();i+=3){const uint32_t t[3]={mesh.indices[i],mesh.indices[i+1],mesh.indices[i+2]};
+    for(int j=0;j<3;++j){const auto a=t[j],b=t[(j+1)%3];auto &use=incidence[(uint64_t(std::min(a,b))<<32)|std::max(a,b)];++use.count;use.orientation+=a<b?1:-1;}
+  }
+  for(const auto &entry:incidence)if(entry.second.count!=2||entry.second.orientation!=0)
+    throw std::runtime_error("Manufacturing native topology is not a closed oriented indexed mesh");
+}
+
+static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_t limit,bool cached,ManufacturingMesh *manufacturing=nullptr,double seamTolerance=0) {
   return guard([&] {
-    auto &memo=mesh_memo();++memo.stats.requests;purge_meshes(memo);
+    auto &memo=mesh_memo();if(!manufacturing){++memo.stats.requests;purge_meshes(memo);}
     const auto key=mesh_key(tolerance,angle,limit);
     if(cached)for(auto &entry:memo.entries)if(entry.identity.lock()==s.mesh_identity&&entry.key==key) {
       auto result=detached_mesh(*entry.data);entry.used=++memo.clock;++memo.stats.hits;return result;
     }
-    ++memo.stats.builds;
+    if(!manufacturing)++memo.stats.builds;
     // Meshing mutates triangulations. Detach geometry so a display request
     // cannot modify a cached modeling operand or its manufacturing geometry.
     BRepBuilderAPI_Copy copy(s.value, true, false);
@@ -575,8 +699,13 @@ static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_
         out.face_indices.push_back(static_cast<uint32_t>(faceIndex - 1));
       }
     }
+    if(manufacturing)manufacturing_connectivity(display,exactFaces,copy,out,seamTolerance,*manufacturing);
     return out;
   });
+}
+ManufacturingMesh tessellate_manufacturing(const Shape &s,double tolerance,double angle,uint32_t limit,double seamTolerance) {
+  if(!std::isfinite(seamTolerance)||seamTolerance<=0||seamTolerance>tolerance/16)throw std::runtime_error("Invalid manufacturing seam budget");
+  ManufacturingMesh result;result.mesh=tessellate_impl(s,tolerance,angle,limit,false,&result,seamTolerance);return result;
 }
 Mesh tessellate(const Shape &s,double tolerance,double angle,uint32_t limit) {return tessellate_impl(s,tolerance,angle,limit,true);}
 Mesh tessellate_fresh(const Shape &s,double tolerance,double angle,uint32_t limit) {return tessellate_impl(s,tolerance,angle,limit,false);}

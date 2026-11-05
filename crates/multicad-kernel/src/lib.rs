@@ -12,6 +12,14 @@ mod ffi {
         /// One evaluation-local B-rep face index per display triangle.
         pub face_indices: Vec<u32>,
     }
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ManufacturingMesh {
+        pub mesh: Mesh,
+        pub maximum_displacement_mm: f64,
+        pub edge_pairs: u32,
+        pub vertex_links: u32,
+        pub removed_native_pole_triangles: u32,
+    }
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct MeshCacheStats {
         pub requests: u64,
@@ -566,6 +574,13 @@ mod ffi {
             max_triangles: u32,
             mesh: &Mesh,
         ) -> Result<bool>;
+        fn tessellate_manufacturing(
+            shape: &Shape,
+            deflection: f64,
+            angle: f64,
+            max_triangles: u32,
+            seam_tolerance: f64,
+        ) -> Result<ManufacturingMesh>;
         #[allow(dead_code)] // Private bounded detached display receipt regressions.
         fn tessellate_fresh(
             shape: &Shape,
@@ -590,7 +605,7 @@ mod ffi {
         ) -> Result<Mesh>;
     }
 }
-pub use ffi::Mesh;
+pub use ffi::{ManufacturingMesh, Mesh};
 pub struct Shape(cxx::UniquePtr<ffi::Shape>);
 pub type Error = Box<dyn std::error::Error>;
 mod distance;

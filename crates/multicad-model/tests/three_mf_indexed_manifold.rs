@@ -333,6 +333,19 @@ fn actual_za_worm_and_generated_wheel_keep_all_native_triangles_and_indexed_clos
         assert_preserved(source, stored);
         assert!(stored.triangles.len() > 1000);
     }
+    let manufacturing = [
+        mesh::tessellate_manufacturing(&worm, &MeshQuality::default(), "ZA worm").unwrap(),
+        mesh::tessellate_manufacturing(&wheel, &MeshQuality::default(), "Generated ZA wheel")
+            .unwrap(),
+    ];
+    let stored = parse(&write(
+        &manufacturing,
+        &[BuildItem::identity(0), BuildItem::identity(1)],
+    ));
+    for (source, stored) in source.iter().zip(&stored.objects) {
+        assert_eq!(manifold(stored), 1);
+        assert_preserved(source, stored);
+    }
 }
 fn tetra(vertices: [[f64; 3]; 4]) -> MeshObject {
     MeshObject {
@@ -400,4 +413,125 @@ fn coincident_point_keeps_distinct_vertex_fans_and_ambiguous_shared_edge_is_refu
         )
         .is_err()
     );
+}
+
+#[test]
+fn transformed_fused_plate_and_blind_cross_holes_use_proven_native_seams_without_moving_the_solid()
+{
+    use multicad_kernel::{
+        BooleanOperation, GeometryPolicy, MeshOptions, PlaneFrame, RigidTransform,
+    };
+    let policy = GeometryPolicy::default();
+    // Independent native construction from the shipped front-panel dimensions:
+    // a 4mm plate, its 16mm plug and two 8mm-deep transverse insert pilots.
+    let plate = Solid::box_solid([43., 86., 4.], policy).unwrap();
+    let plug = Solid::box_solid([39.7, 82.4, 16.], policy)
+        .unwrap()
+        .transformed(RigidTransform {
+            translation_mm: [3.3, 1.8, 4.],
+            ..Default::default()
+        })
+        .unwrap();
+    let mut body = plate
+        .boolean(&plug, BooleanOperation::Union, policy)
+        .unwrap()
+        .unwrap();
+    for y in [0.8, 76.2] {
+        let hole = Solid::cylinder(
+            PlaneFrame {
+                origin: [23., y, 12.],
+                u: [0., 0., 1.],
+                v: [1., 0., 0.],
+            },
+            2.,
+            9.,
+            policy,
+        )
+        .unwrap();
+        body = body
+            .boolean(&hole, BooleanOperation::Subtract, policy)
+            .unwrap()
+            .unwrap();
+    }
+    let pose = RigidTransform {
+        rotation: [[0.36, -0.8, 0.48], [0.48, 0.6, 0.64], [-0.8, 0., 0.6]],
+        translation_mm: [19., -23., 41.],
+    };
+    let body = body.transformed(pose).unwrap();
+    assert_eq!(body.solid_count().unwrap(), 1);
+    let owner = EntityId::new();
+    let before = body.topology_snapshot(owner, 9).unwrap();
+    let bounds = body.bounds().unwrap();
+    let volume = body.volume_mm3().unwrap();
+    let area: f64 = body.faces().unwrap().iter().map(|f| f.area_mm2).sum();
+    let analytic =
+        43. * 86. * 4. + 39.7 * 82.4 * 16. - 2. * std::f64::consts::PI * 2_f64.powi(2) * 8.;
+    assert!((volume - analytic).abs() <= policy.linear_tolerance_mm * area + 1e-7 * analytic);
+    let quality = MeshQuality::default();
+    let options = MeshOptions {
+        linear_deflection_mm: quality.chord_deviation_mm,
+        angular_deflection_rad: quality.angular_deviation_deg.to_radians(),
+        maximum_triangles: 2_000_000,
+    };
+    let raw = mesh::tessellate(&body, &quality, "Raw face-seam fixture").unwrap();
+    assert!(
+        mesh::three_mf(
+            std::slice::from_ref(&raw),
+            &[BuildItem::identity(0)],
+            LengthUnit::Millimeter
+        )
+        .is_err(),
+        "fixture must reproduce the exact-coordinate-only writer refusal"
+    );
+    let native = body.manufacturing_mesh_with_receipt(options).unwrap();
+    assert!(native.edge_pairs > 0);
+    assert!(native.vertex_links > 0);
+    assert!(
+        native.maximum_displacement_mm > 0.,
+        "fixture must contain non-exact native face seams"
+    );
+    assert!(
+        native.maximum_displacement_mm
+            <= policy
+                .linear_tolerance_mm
+                .min(quality.chord_deviation_mm / 16.)
+    );
+    let corrected =
+        mesh::tessellate_manufacturing(&body, &quality, "Native seam-proven print").unwrap();
+    let package = parse(&write(
+        std::slice::from_ref(&corrected),
+        &[BuildItem::identity(0)],
+    ));
+    let stored = &package.objects[0];
+    assert_eq!(manifold(stored), 1);
+    assert_preserved(&corrected, stored);
+    assert_eq!(stored.triangles.len(), raw.triangles.len());
+    // Geometry correction is bounded by the explicit native receipt, never a
+    // spatial weld chosen by the file writer. Triangle order and winding stay.
+    for (a, b) in raw.triangles.iter().zip(&corrected.triangles) {
+        for (&a, &b) in a.iter().zip(b) {
+            let pa = raw.vertices[a as usize];
+            let pb = corrected.vertices[b as usize];
+            let displacement = (0..3).map(|i| (pa[i] - pb[i]).powi(2)).sum::<f64>().sqrt();
+            assert!(displacement <= native.maximum_displacement_mm + f64::EPSILON * 128.);
+        }
+    }
+    let signed_volume: f64 = stored
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| stored.vertices[i as usize]);
+            (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                / 6.
+        })
+        .sum();
+    assert!(signed_volume > 0.);
+    assert!((signed_volume - volume).abs() <= quality.chord_deviation_mm * area + 1e-7 * volume);
+    assert_eq!(body.topology_snapshot(owner, 9).unwrap(), before);
+    assert_eq!(body.bounds().unwrap(), bounds);
+    assert_eq!(body.volume_mm3().unwrap(), volume);
+    let (object, transform) = package.items[0];
+    assert_eq!(object, 0);
+    assert_eq!(transform, [1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0.]);
 }

@@ -55,6 +55,18 @@ The [mesh writers](../../crates/multicad-model/src/export/mesh.rs) tessellate ex
 
 3MF adjacency uses shared vertex indices, as required by
 [Core 1.3, section 4.1](https://3mf.io/wp-content/uploads/sites/106/2025/02/3MF_Core_Specification_v1.3.0.pdf).
+Production 3MF tessellation first derives connectivity from the detached native
+body's shared edges and vertices. It pairs edge polygons only with matching
+native identities and parameter samples, including periodic seam occurrences.
+Every coordinate transported to its deterministic representative must remain
+within `min(chord deviation / 16, native linear policy tolerance)`. No spatial
+neighbor search chooses connectivity. A receipt records the maximum transport
+and any removed pole triangles. Removal is permitted only for a triangle
+collapsed by a proven native degenerate-edge vertex group; all other triangle
+collapses fail. Every original face must still contribute triangles, and every
+resulting indexed edge must have two opposite uses. Display meshes and the
+ordinary OBJ, STL and GLB tessellation path are unchanged.
+
 The shared writer preserves an already closed, consistently oriented index
 graph, including separately indexed coincident closed components. For native
 face meshes with duplicated seam vertices, it reuses exactly equal coordinates
@@ -67,7 +79,8 @@ ambiguous shared-edge input fails before publication; the writer does not guess
 which faces to pair. Vertex identity remains local to each mesh object. The
 [indexed-mesh regressions](../../crates/multicad-model/tests/three_mf_indexed_manifold.rs)
 parse stored XML independently of the production reader and cover native boxes,
-ZA worm gearing, rigid instances, point-touching fans and coincident components.
+ZA worm gearing, transformed blind-hole seams, rigid instances, point-touching
+fans and coincident components.
 - **Evidence.** Each artifact records objects, build items, triangles, chord deviation and the placed tessellated volume.
 - **Readback.** Publication reads every OBJ, 3MF, STL and GLB back and requires:
   - the same bytes as generated, and the same objects, build items and triangles (STL keeps no objects, so only its triangles are compared);

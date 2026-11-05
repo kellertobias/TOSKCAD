@@ -387,7 +387,8 @@ impl Exporter {
                             .get(part.part)
                             .map_or_else(|| part.name.clone(), |e| e.name.clone());
                         meshes.push(
-                            mesh::tessellate(local, &request.quality, &name).map_err(invalid)?,
+                            mesh::tessellate_manufacturing(local, &request.quality, &name)
+                                .map_err(invalid)?,
                         );
                         shared.insert(producer, meshes.len() - 1);
                         meshes.len() - 1
