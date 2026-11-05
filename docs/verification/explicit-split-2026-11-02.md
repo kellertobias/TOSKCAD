@@ -1,5 +1,9 @@
 # Explicit Split verification, 2026-11-02
 
+> Historical report: the [2026-11-05 native review](explicit-split-2026-11-05.md)
+> records actual macOS interaction and the subsequent Return-focus correction.
+
+
 CAD-222 groups Split inside Boolean and Align inside Move / Copy. Common/Create
 keeps Add Primitive, Extrude, Revolve, Sweep and Loft. Primitive popup rows use
 the shared icon-and-label control. Fillet/Chamfer and Shell/Thickness remain.
