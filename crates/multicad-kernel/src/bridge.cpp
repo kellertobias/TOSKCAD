@@ -2,6 +2,8 @@
 #include "measure.hpp"
 #include <tuple>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include "multicad-kernel/src/lib.rs.h"
 #include <BRepAlgoAPI_Cut.hxx>
@@ -381,9 +383,21 @@ double volume(const Shape &s) {
     // the actual trimmed boundary has a small residual directional flux.
     // Requested tolerance, spline spans and the accepted error remain fixed.
     const auto measured=point_equivalent_volume(s.value);
-    const double mass=measured.first,relativeError=measured.second;
-    if (!std::isfinite(relativeError) || relativeError < 0. || relativeError > 1e-7)
+    double mass=measured.first,relativeError=measured.second;
+    if (!std::isfinite(relativeError) || relativeError < 0.)
       throw VolumeIntegrationFailure();
+    if(relativeError>1e-7) {
+      // Independent directional solves can report a larger quadrature error
+      // than the original point formulation on the same closed native solid.
+      // Retry that original integration, never the rejected mass or its guard.
+      GProp_GProps properties;
+      const double pointError=BRepGProp::VolumePropertiesGK(s.value,properties,1e-10,true,true);
+      if(const auto *profile=std::getenv("MULTICAD_PROFILE_NATIVE_VOLUME");profile&&std::strcmp(profile,"0")!=0)
+        std::fprintf(stderr,"multicad.native.volume method=point_retry basis_error=%.17g point_error=%.17g\n",relativeError,pointError);
+      mass=properties.Mass();relativeError=pointError;
+      if(!std::isfinite(mass)||mass<=0.||!std::isfinite(relativeError)||relativeError<0.||relativeError>1e-7)
+        throw VolumeIntegrationFailure();
+    }
     if(std::isfinite(mass)&&mass>0.)s.volume_cache->certificate=VolumeCertificate{mass,relativeError};
     return mass;
   });

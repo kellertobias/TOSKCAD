@@ -57,6 +57,22 @@ its mass exceeds `Epsilon(1.)`; otherwise its estimate is absolute, including
 for negative cavity contributions. Convert each estimate accordingly before
 aggregation, then divide the aggregate absolute error by the final positive mass.
 
+If this finite, positive closed-shell evaluation exceeds the existing relative
+error limit, retry the original public point overload on the same native solid.
+Require its own `1e-10` request, closed-shell/span flags, finite positive mass and
+relative error at most `1e-7` before caching. Never use the rejected basis mass.
+Absent closed shells, invalid/nonpositive mass and nonfinite estimates do not
+enter this retry. Opt-in `MULTICAD_PROFILE_NATIVE_VOLUME` records both estimates.
+
+Independent directional solves can choose different quadrature partitions and
+error estimates despite the algebraically identical summed integrand. The
+[retained M6 cutter comparison](../../artifacts/bevel-review-20261105/volume-diagnostics/legacy-m6-nut-analysis.json)
+measures basis error `1.1818e-7` and point error `4.5495e-8` on the same continuous
+cutter. Rejecting that cutter selected a different bounded construction whose
+nut missed its existing analytic accuracy test. The point retry preserves the
+preferred construction through an independently passing native estimate;
+it does not widen the acceptance guard.
+
 Keep the mass cache and its concurrency ownership unchanged. Regenerate cached
 thread receipts when the adapter fingerprint changes, and compare the resulting
 manufacturing geometry independently of receipt metadata.
@@ -71,9 +87,13 @@ Negative: each uncached shell requires three native integrals. A basis direction
 can still align with a face after rotation, so finite tests do not guarantee
 convergence for every solid. Translated and scaled cases require regression
 coverage, and the reported native error estimate remains an estimate.
+The point retry has no public global work/cancellation budget; arbitrary-input
+latency is not bounded. Passing zero-bore basis evaluations avoid that retry.
 
 Neutral: the choice does not alter the solid, its manufacturing geometry or
-display tessellation. Mass tests do not establish centroid or inertia accuracy.
+display tessellation directly. Its convergence result can affect a constructor's
+existing representation retry, as the M6 cutter demonstrates. Mass tests do not
+establish centroid or inertia accuracy.
 
 ## Alternatives considered
 

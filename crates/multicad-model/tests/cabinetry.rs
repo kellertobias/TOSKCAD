@@ -26,6 +26,21 @@ fn actor() -> Actor {
 fn near(a: f64, b: f64) {
     assert!((a - b).abs() <= 1e-6, "{a} != {b}");
 }
+fn same_cut_record(actual: &CutRecord, expected: &CutRecord) {
+    // Native integration can differ in its last bits after recompilation.
+    near(actual.volume_mm3, expected.volume_mm3);
+    let metadata = CutRecord {
+        volume_mm3: expected.volume_mm3,
+        ..actual.clone()
+    };
+    assert_eq!(&metadata, expected);
+}
+fn same_cut_records(actual: &[CutRecord], expected: &[CutRecord]) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        same_cut_record(actual, expected);
+    }
+}
 fn pair(a: [f64; 2], b: [f64; 2]) {
     near(a[0], b[0]);
     near(a[1], b[1]);
@@ -247,9 +262,9 @@ fn explicit_cabinet_floor_datum_independent_shelves_and_stable_rows_are_native()
     near(bounds(&result, &f.s, bottom.part).min[2], 150.);
     assert_eq!(changed.len(), 5);
     f.s.undo(f.s.revision(), actor()).unwrap();
-    assert_eq!(compile(&f.s).cut_list(f.s.document()).unwrap(), cuts);
+    same_cut_records(&compile(&f.s).cut_list(f.s.document()).unwrap(), &cuts);
     f.s.redo(f.s.revision(), actor()).unwrap();
-    assert_eq!(compile(&f.s).cut_list(f.s.document()).unwrap(), changed);
+    same_cut_records(&compile(&f.s).cut_list(f.s.document()).unwrap(), &changed);
 
     let project = ProjectFile::new(f.s.document().clone()).unwrap();
     assert!(project.capabilities().contains(model::CABINET_CAPABILITY));
@@ -266,13 +281,13 @@ fn explicit_cabinet_floor_datum_independent_shelves_and_stable_rows_are_native()
     .unwrap()
     .project;
     assert_eq!(&opened.document, f.s.document());
-    assert_eq!(
-        Compiler::default()
+    same_cut_records(
+        &Compiler::default()
             .compile(&opened.document, 0)
             .unwrap()
             .cut_list(&opened.document)
             .unwrap(),
-        changed
+        &changed,
     );
 }
 
@@ -355,14 +370,9 @@ fn explicit_cabinet_default_stock_updates_inheriting_shelves_only() {
         record(&after, "Stock cabinet shelf 1").cut.thickness_mm,
         24.,
     );
-    assert_eq!(
-        record(&after, "Stock cabinet shelf 4"),
-        record(&before, "Stock cabinet shelf 4")
-    );
-    assert_eq!(
-        record(&after, "Stock cabinet left side"),
-        record(&before, "Stock cabinet left side")
-    );
+    for name in ["Stock cabinet shelf 4", "Stock cabinet left side"] {
+        same_cut_record(record(&after, name), record(&before, name));
+    }
 }
 
 #[test]
@@ -823,7 +833,7 @@ fn carcass_generates_named_panels_with_finished_and_core_sizes() {
         .unwrap()
         .cut_list(&opened.document)
         .unwrap();
-    assert_eq!(reopened, list);
+    same_cut_records(&reopened, &list);
 
     // Sizes that cannot be built are refused before anything is staged.
     let mut crowded = cabinet(&f);
