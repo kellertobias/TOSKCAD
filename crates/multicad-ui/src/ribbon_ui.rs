@@ -63,6 +63,9 @@ fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
     entries
 }
 pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
+    if mode == Mode::Model && tab.title == "Wood" {
+        return crate::wood_navigation::groups();
+    }
     if mode == Mode::Model && tab.title == "Other" {
         return vec![Group {
             label: "FDM design aids",
@@ -782,12 +785,18 @@ mod tests {
                 );
                 let expected: &[&str] = match (workspace.mode, tab.title) {
                     (Mode::Model, "Wood") => &[
-                        "Add Cabinet",
+                        "Create",
+                        "Modify",
+                        "Assistants",
+                        "Cabinet",
                         "Panel",
-                        "Drill / pocket",
+                        "Batten",
+                        "Screw / Hardware",
+                        "Drill",
+                        "Pocket",
+                        "Box",
                         "System 32 shelf pins",
-                        "Panel joint",
-                        "Domino joint",
+                        "Joint",
                     ],
                     (Mode::Model, "Sheet metal") => &["Sheet part / flanges"],
                     (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],

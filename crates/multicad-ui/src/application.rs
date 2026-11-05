@@ -448,6 +448,9 @@ impl Application {
     }
     /// Ribbon highlight for the specialized tool whose form is open.
     fn tool_active(&self, command: Command) -> bool {
+        if let Command::WoodPreset(preset) = command {
+            return self.current().sketch.wood_preset() == Some(preset);
+        }
         if command == Command::Extension("library") {
             return self.current().sketch.symbol_library_active();
         }
@@ -458,7 +461,7 @@ impl Application {
         }
         self.active_tool == Some((self.active, command))
             && match command {
-                Command::Modeling(_) | Command::EquipmentPreset(_) => {
+                Command::Modeling(_) | Command::EquipmentPreset(_) | Command::WoodPreset(_) => {
                     self.current().sketch.model_creation_form_active()
                 }
                 Command::Drawing(_) => {
@@ -581,9 +584,14 @@ impl Application {
             Command::EquipmentPreset(kind) => Some(kind),
             _ => None,
         };
+        let wood_preset = match command {
+            Command::WoodPreset(preset) => Some(preset),
+            _ => None,
+        };
         // Boolean menu entries are the Boolean tool with a preset operation;
         // the plain Boolean command restores the default.
         let command = match command {
+            Command::WoodPreset(preset) => Command::Modeling(preset.tool()),
             Command::EquipmentPreset(_) => {
                 Command::Modeling(crate::modeling::ModelingTool::Equipment)
             }
@@ -704,7 +712,7 @@ impl Application {
             return Err("This command does not accept arguments yet".into());
         }
         match command {
-            Command::BooleanOperation(_) | Command::EquipmentPreset(_) => {
+            Command::BooleanOperation(_) | Command::EquipmentPreset(_) | Command::WoodPreset(_) => {
                 unreachable!("normalized to a modeling tool above")
             }
             Command::ArchitectureCategory(_) | Command::ArchitectureParent => {
@@ -1327,7 +1335,14 @@ impl Application {
                     return Err("Open Sketch or Model before starting a modeling tool".into());
                 }
                 let project = self.current_mut();
-                if let Some(kind) = equipment_preset {
+                if let Some(preset) = wood_preset {
+                    project.sketch.begin_wood_preset(
+                        &project.session,
+                        &project.resources,
+                        channel,
+                        preset,
+                    )?;
+                } else if let Some(kind) = equipment_preset {
                     project.sketch.begin_equipment_preset(
                         &project.session,
                         &project.resources,
@@ -1343,14 +1358,17 @@ impl Application {
                         channel,
                     )?;
                 }
-                let origin = equipment_preset.map_or(command, Command::EquipmentPreset);
+                let origin = wood_preset.map_or_else(
+                    || equipment_preset.map_or(command, Command::EquipmentPreset),
+                    Command::WoodPreset,
+                );
                 self.tab = self.workbench_tab(Mode::Model, origin);
                 self.mode = Mode::Model;
                 self.route_architecture_tool(tool, equipment_preset);
                 self.active_tool = Some((self.active, origin));
                 self.message = format!(
                     "{} · choose controls in the Inspector, then Preview",
-                    tool.label()
+                    wood_preset.map_or(tool.label(), |preset| preset.label())
                 );
             }
             Command::Assembly(tool) => {
@@ -1435,6 +1453,7 @@ impl Application {
     }
     fn enabled(&self, command: Command) -> bool {
         let command = match command {
+            Command::WoodPreset(preset) => Command::Modeling(preset.tool()),
             Command::EquipmentPreset(_) => {
                 Command::Modeling(crate::modeling::ModelingTool::Equipment)
             }

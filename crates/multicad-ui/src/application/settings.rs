@@ -322,11 +322,21 @@ mod tests {
         assert!(!titles(&app).contains(&"Wood"));
         // Routing a Wood tool through command entry still works and shows
         // the hidden workbench while it is active.
-        let panel = app.registry.tool("panel").unwrap().action;
-        app.invoke(panel, &[], Channel::CommandLine).unwrap();
-        assert_eq!(app.tab, wood);
-        assert!(app.ribbon_tabs().contains(&(wood, true)));
-        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        for id in [
+            "panel",
+            "batten",
+            "drill",
+            "pocket",
+            "wood-joint",
+            "domino",
+            "wood-hardware",
+        ] {
+            let command = app.registry.tool(id).unwrap().action;
+            app.invoke(command, &[], Channel::CommandLine).unwrap();
+            assert_eq!(app.tab, wood, "{id}");
+            assert!(app.ribbon_tabs().contains(&(wood, true)), "{id}");
+            app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        }
         // Showing it again restores it in the chosen position.
         let mut shown = app.preferences().clone();
         shown.set_visible(Mode::Model, "Wood", true).unwrap();

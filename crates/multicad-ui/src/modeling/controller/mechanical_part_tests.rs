@@ -16,6 +16,38 @@ fn wait(c: &mut ModelToolController, s: &Session) {
     }
 }
 #[test]
+fn wood_hardware_opens_the_shared_metric_screw_recipe_source_neutrally() {
+    let session = Session::new(Document::new("Wood hardware").unwrap()).unwrap();
+    let before = session.document().clone();
+    let mut controller = controller();
+    controller
+        .begin_wood_preset(
+            &session,
+            &Default::default(),
+            vec![],
+            Channel::Ui,
+            crate::wood_navigation::Preset::Hardware,
+        )
+        .unwrap();
+    let ModelRequest::MechanicalPart(request) = controller
+        .form
+        .as_ref()
+        .unwrap()
+        .request(session.document(), controller.capabilities())
+        .unwrap()
+    else {
+        panic!("Shared hardware recipe")
+    };
+    assert_eq!(request.parameters, model::default_machine_screw());
+    assert!(matches!(
+        request.parameters,
+        model::MechanicalPartParameters::MachineScrew { .. }
+    ));
+    assert_eq!(session.document(), &before);
+    controller.cancel();
+    assert_eq!(session.document(), &before);
+}
+#[test]
 fn all_three_hardware_forms_use_real_native_preview_cancel_apply_history_and_reopen() {
     let recipes = [
         model::MechanicalPartParameters::Washer {

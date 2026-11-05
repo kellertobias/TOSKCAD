@@ -781,6 +781,15 @@ impl ModelToolController {
             _ => None,
         }
     }
+    pub fn wood_preset(&self) -> Option<crate::wood_navigation::Preset> {
+        use crate::wood_navigation::Preset;
+        match &self.form {
+            Some(ModelForm::Machining(panel)) => panel.wood_preset(),
+            Some(ModelForm::Weldment(panel)) if panel.is_batten() => Some(Preset::Batten),
+            Some(ModelForm::MechanicalPart(_)) => Some(Preset::Hardware),
+            _ => None,
+        }
+    }
     /// A joint form picks its panel pairs in the viewport.
     pub fn joint_picking(&self) -> bool {
         matches!(&self.form, Some(ModelForm::Joint(panel)) if panel.picking())
@@ -895,6 +904,41 @@ impl ModelToolController {
                 name,
             ))),
         )
+    }
+    pub fn begin_wood_preset(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        targets: Vec<EntityId>,
+        channel: Channel,
+        preset: crate::wood_navigation::Preset,
+    ) -> Result<(), String> {
+        use crate::wood_navigation::Preset;
+        let mut names = GeneratedNames::new(session.document());
+        let form = match preset {
+            Preset::Hardware => ModelForm::MechanicalPart(Box::new(MechanicalPartPanel::new(
+                model::MechanicalPartRequest::new(
+                    names.numbered("Hardware", " feature"),
+                    model::default_machine_screw(),
+                ),
+                session.parameters().clone(),
+                false,
+            )?)),
+            Preset::Batten => {
+                ModelForm::Weldment(Box::new(super::weldment::WeldmentPanel::batten(
+                    session.document(),
+                    names.numbered("Batten", ""),
+                )))
+            }
+            Preset::Drill | Preset::Pocket => ModelForm::Machining(Box::new(
+                super::machining::MachiningPanel::preset(
+                    names.numbered(preset.label(), ""),
+                    preset,
+                )
+                .with_targets(targets),
+            )),
+        };
+        self.begin_form(session, resources, channel, form)
     }
     /// Drill / pocket, with its targets seeded (for example from the
     /// selected panels).

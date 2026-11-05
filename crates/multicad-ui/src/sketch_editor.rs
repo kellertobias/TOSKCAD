@@ -637,6 +637,11 @@ impl SketchEditor {
     pub(crate) fn model_creation_form_active(&self) -> bool {
         self.model.active() && !self.model.editing()
     }
+    pub(crate) fn wood_preset(&self) -> Option<crate::wood_navigation::Preset> {
+        self.model_creation_form_active()
+            .then(|| self.model.wood_preset())
+            .flatten()
+    }
     pub fn model_active(&self) -> bool {
         self.model.active()
             || self.assembly.active()
@@ -1185,6 +1190,32 @@ impl SketchEditor {
         self.message =
             "Wall · choose a type, draw the path in the viewport or enter corners and openings in the Inspector, then Preview"
                 .into();
+        Ok(())
+    }
+    pub fn begin_wood_preset(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        channel: Channel,
+        preset: crate::wood_navigation::Preset,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Apply or cancel pending edits before starting a Wood tool".into());
+        }
+        let (targets, refused) = crate::modeling::selected_panels(
+            session.document(),
+            self.tree_selection.iter().copied(),
+        );
+        self.finish()?;
+        self.model
+            .begin_wood_preset(session, resources, targets.clone(), channel, preset)?;
+        self.message = crate::modeling::seeded_message(
+            preset.label(),
+            session.document(),
+            &targets,
+            &refused,
+            "choose the inputs in the Inspector, then Preview and Apply",
+        );
         Ok(())
     }
     pub fn begin_machining(

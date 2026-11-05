@@ -95,6 +95,7 @@ pub enum Command {
     External(crate::external_references::ExternalTool),
     Modeling(ModelingTool),
     EquipmentPreset(multicad_core::equipment::Kind),
+    WoodPreset(crate::wood_navigation::Preset),
     ArchitectureCategory(crate::architecture_navigation::Category),
     ArchitectureParent,
     /// Boolean form preset to Join, Subtract (Cut) or Intersect.
@@ -150,9 +151,16 @@ fn command_home(command: Command) -> Option<(Mode, &'static str)> {
     match command {
         Command::Extension("materials") => Some((Mode::Parameters, "Materials")),
         Command::Extension("drawing-pdf") => Some((Mode::Drawings, "Common")),
-        Command::Modeling(ModelingTool::Panel | ModelingTool::Cabinet | ModelingTool::WoodBox) => {
-            Some((Mode::Model, "Wood"))
-        }
+        Command::WoodPreset(_)
+        | Command::Modeling(
+            ModelingTool::Panel
+            | ModelingTool::Cabinet
+            | ModelingTool::WoodBox
+            | ModelingTool::Machining
+            | ModelingTool::Joint
+            | ModelingTool::LooseTenon
+            | ModelingTool::ShelfPins,
+        ) => Some((Mode::Model, "Wood")),
         Command::EquipmentPreset(_)
         | Command::ArchitectureCategory(_)
         | Command::ArchitectureParent
@@ -520,6 +528,7 @@ impl Default for Registry {
         registry
             .tools
             .extend(crate::architecture_navigation::tools());
+        registry.tools.extend(crate::wood_navigation::tools());
         registry.workspaces = vec![
             Workspace {
                 mode: Mode::Parameters,
@@ -619,13 +628,11 @@ impl Default for Registry {
                         tools: crate::architecture_navigation::tab_tools(),
                         requires_active_sketch: false,
                     },
-                    tab(
-                        "Wood",
-                        &[
-                            "wood-box", "cabinet", "panel", "drill", "system32", "joint", "domino",
-                            "cut-list",
-                        ],
-                    ),
+                    RibbonTab {
+                        title: "Wood",
+                        tools: crate::wood_navigation::tab_tools(),
+                        requires_active_sketch: false,
+                    },
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     tab("Other", &["fdm-aid", "fdm-bridge", "fdm-support"]),

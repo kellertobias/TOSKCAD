@@ -167,6 +167,15 @@ impl MachiningPanel {
     }
     /// The System 32 shelf-pin tool: rows on the inside faces of the chosen
     /// panels with the example settings above.
+    pub fn preset(name: String, preset: crate::wood_navigation::Preset) -> Self {
+        let mut form = Self::new(name);
+        form.kind = match preset {
+            crate::wood_navigation::Preset::Drill => Kind::Drill,
+            crate::wood_navigation::Preset::Pocket => Kind::Pocket,
+            _ => unreachable!("Machining presets are Drill or Pocket"),
+        };
+        form
+    }
     pub fn system32(name: String) -> Self {
         let mut form = Self::new(name);
         form.kind = Kind::ShelfPins;
@@ -289,6 +298,13 @@ impl MachiningPanel {
     }
     pub fn stamp(&self) -> FormStamp {
         self.stamp
+    }
+    pub fn wood_preset(&self) -> Option<crate::wood_navigation::Preset> {
+        match self.kind {
+            Kind::Drill => Some(crate::wood_navigation::Preset::Drill),
+            Kind::Pocket => Some(crate::wood_navigation::Preset::Pocket),
+            _ => None,
+        }
     }
     pub fn label(&self) -> &'static str {
         if self.kind == Kind::ShelfPins {
@@ -615,6 +631,34 @@ impl MachiningPanel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wood_drill_and_pocket_presets_retain_the_selected_panel_and_exact_intent() {
+        use crate::wood_navigation::Preset;
+        let (session, left, _) = crate::modeling::panel_fixture::carcass();
+        for preset in [Preset::Drill, Preset::Pocket] {
+            let form = super::MachiningPanel::preset("Cut".into(), preset).with_targets(vec![left]);
+            let request = form.request(session.document(), true).unwrap();
+            assert_eq!(request.machining.targets, [left]);
+            match preset {
+                Preset::Drill => assert!(matches!(
+                    request.machining.kind,
+                    multicad_core::model::MachiningKind::Drill { .. }
+                )),
+                Preset::Pocket => assert!(matches!(
+                    request.machining.kind,
+                    multicad_core::model::MachiningKind::Pocket { .. }
+                )),
+                _ => unreachable!(),
+            }
+            let empty = super::MachiningPanel::preset("Cut".into(), preset);
+            assert!(
+                empty
+                    .request(session.document(), true)
+                    .unwrap_err()
+                    .contains("target panel")
+            );
+        }
+    }
     use super::*;
     use multicad_core::{
         commands::{Actor, Channel},

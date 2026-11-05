@@ -137,6 +137,112 @@ fn search_or_command_entry_opens_the_tools_workbench_instead_of_common() {
     assert_eq!(app.tab, 0);
 }
 #[test]
+fn wood_presets_route_and_cancel_without_committing_or_replacing_pending_inputs() {
+    use crate::wood_navigation::Preset;
+    for preset in Preset::ALL {
+        let mut app = app();
+        app.mode = Mode::Model;
+        let before = app.current().session.document().clone();
+        let command = action(&app, preset.id());
+        app.invoke(command, &[], Channel::CommandLine).unwrap();
+        assert_eq!(app.tab, tab_index(&app, Mode::Model, "Wood"));
+        assert!(app.tool_active(command));
+        assert!(app.invoke(action(&app, "panel"), &[], Channel::Ui).is_err());
+        assert!(app.tool_active(command));
+        assert_eq!(app.current().session.document(), &before);
+        app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+        assert!(!app.tool_active(command));
+        assert_eq!(app.current().session.document(), &before);
+        assert_eq!(app.current().session.revision(), 0);
+    }
+}
+#[test]
+fn wood_machining_highlight_follows_painted_kind_changes_and_cancel() {
+    use crate::wood_navigation::Preset;
+    fn frame(
+        app: &mut Application,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                focused: true,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1360., 860.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| app.show(ui),
+        );
+        output.textures_delta.clear();
+        output
+    }
+    let mut app = app();
+    app.mode = Mode::Model;
+    let before = app.current().session.document().clone();
+    app.invoke(Command::WoodPreset(Preset::Drill), &[], Channel::Ui)
+        .unwrap();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    frame(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    assert!(app.tool_active(Command::WoodPreset(Preset::Drill)));
+    for (label, expected) in [
+        ("Pocket", Some(Preset::Pocket)),
+        ("Groove", None),
+        ("Drill", Some(Preset::Drill)),
+    ] {
+        let output = frame(&mut app, &ctx, vec![]);
+        let rect = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label) && node.role() == egui::accesskit::Role::RadioButton)
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("Painted machining radio {label}"));
+        let pos = egui::pos2(
+            (rect.x0 + rect.x1) as f32 / 2.,
+            (rect.y0 + rect.y1) as f32 / 2.,
+        );
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+        for preset in [Preset::Drill, Preset::Pocket] {
+            assert_eq!(
+                app.tool_active(Command::WoodPreset(preset)),
+                expected == Some(preset),
+                "{label} -> {preset:?}"
+            );
+        }
+        assert_eq!(app.current().session.document(), &before);
+    }
+    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    assert!(!app.tool_active(Command::WoodPreset(Preset::Drill)));
+    assert!(!app.tool_active(Command::WoodPreset(Preset::Pocket)));
+    assert_eq!(app.current().session.document(), &before);
+}
+#[test]
 fn drawing_annotate_and_drafting_tools_keep_their_workbench() {
     let mut app = app();
     app.invoke(Command::Mode(Mode::Drawings), &[], Channel::Ui)

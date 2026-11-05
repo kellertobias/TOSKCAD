@@ -11,7 +11,7 @@ use multicad_core::{
     commands::{Actor, Session},
     constraint_sketch::Dimension,
     document::{Document, EntityData, EntityId},
-    materials::{self, LibraryDefinition, StockKind},
+    materials::{self, LibraryDefinition, ProfileShape, StockKind},
     model::{
         self, AxisAnchor, BodyOutput, ConnectionDefinition, CreatedBody, MemberDefinition,
         MemberPath, MemberRequest, ModelPrepared, SequenceDefinition, WeldDefinition, angle,
@@ -140,15 +140,19 @@ fn of(d: &Dimension, unit: &'static str) -> Result<DimensionField, String> {
     DimensionField::from_dimension(d, unit)
 }
 /// Profile stock entries: (stock, label).
-fn profile_stocks(document: &Document) -> Vec<(EntityId, String)> {
+fn profile_stocks(document: &Document, batten: bool) -> Vec<(EntityId, String)> {
     document
         .entities()
         .filter_map(|e| match materials::read(e).ok().flatten() {
             Some(LibraryDefinition::Stock(s)) => match s.specification {
-                StockKind::Profile { shape, .. } => Some((
-                    e.id,
-                    format!("{} · {}", e.name, format!("{shape:?}").to_lowercase()),
-                )),
+                StockKind::Profile { shape, wall_mm, .. }
+                    if !batten || (shape == ProfileShape::Rectangular && wall_mm.is_none()) =>
+                {
+                    Some((
+                        e.id,
+                        format!("{} · {}", e.name, format!("{shape:?}").to_lowercase()),
+                    ))
+                }
                 _ => None,
             },
             _ => None,
@@ -216,6 +220,7 @@ pub(super) struct WeldmentPanel {
     extend_end: DimensionField,
     group: bool,
     error: Option<String>,
+    batten: bool,
 }
 impl WeldmentPanel {
     pub fn new(document: &Document, name: String) -> Self {
@@ -225,7 +230,7 @@ impl WeldmentPanel {
             existing: None,
             body: EntityId::new(),
             name,
-            stock: profile_stocks(document).first().map(|s| s.0),
+            stock: profile_stocks(document, false).first().map(|s| s.0),
             path_kind: if sketch.is_some() {
                 PathKind::Sketch
             } else {
@@ -241,6 +246,7 @@ impl WeldmentPanel {
             extend_end: field(0., "mm"),
             group: true,
             error: None,
+            batten: false,
         }
     }
     /// Open an applied member for editing in place.
@@ -283,8 +289,21 @@ impl WeldmentPanel {
     pub fn stamp(&self) -> FormStamp {
         self.stamp
     }
+    pub fn batten(document: &Document, name: String) -> Self {
+        let mut form = Self::new(document, name);
+        form.batten = true;
+        form.stock = profile_stocks(document, true).first().map(|s| s.0);
+        form
+    }
+    pub fn is_batten(&self) -> bool {
+        self.batten
+    }
     pub fn label(&self) -> &'static str {
-        "Tube / profile member"
+        if self.batten {
+            "Batten"
+        } else {
+            "Tube / profile member"
+        }
     }
     fn optional(field: &DimensionField, document: &Document) -> Result<Option<Dimension>, String> {
         let d = field.resolve(document)?;
@@ -299,7 +318,18 @@ impl WeldmentPanel {
         }
         let stock = self
             .stock
-            .ok_or("Choose profile stock; define it in Project → Materials")?;
+            .ok_or(if self.batten {
+                "Define solid rectangular profile stock for your timber in Project → Materials, then choose it here"
+            } else {
+                "Choose profile stock; define it in Project → Materials"
+            })?;
+        if self.batten
+            && !profile_stocks(document, true)
+                .iter()
+                .any(|(id, _)| *id == stock)
+        {
+            return Err("Batten requires solid rectangular profile stock; choose or repair its shared stock definition".into());
+        }
         let points = || -> Result<MemberPath, String> {
             let p = |f: &[DimensionField; 3]| -> Result<[Dimension; 3], String> {
                 Ok([
@@ -386,11 +416,18 @@ impl WeldmentPanel {
                 egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
             )
             .changed();
-        let stocks = profile_stocks(document);
+        if self.batten {
+            ui.small("Choose solid rectangular profile stock linked to your timber material in Project → Materials.");
+        }
+        let stocks = profile_stocks(document, self.batten);
         if stocks.is_empty() {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,
-                "No profile stock yet. Define tube, bar or angle stock in Project → Materials.",
+                if self.batten {
+                    "No solid rectangular stock yet. Define profile stock without a wall thickness in Project → Materials."
+                } else {
+                    "No profile stock yet. Define tube, bar or angle stock in Project → Materials."
+                },
             );
         }
         ui.label("Profile stock");
@@ -570,6 +607,83 @@ mod tests {
         (s, sketch)
     }
 
+    #[test]
+    fn batten_requires_solid_rectangular_stock_and_keeps_the_shared_member_source() {
+        let (mut session, _) = session();
+        let before = session.document().clone();
+        let empty = WeldmentPanel::batten(session.document(), "Timber".into());
+        assert!(
+            empty
+                .request(session.document(), true)
+                .unwrap_err()
+                .contains("solid rectangular")
+        );
+        assert_eq!(session.document(), &before);
+        assert!(
+            !profile_stocks(session.document(), false).is_empty(),
+            "Generic member still offers hollow stock"
+        );
+        let material = Entity::new(
+            "Timber",
+            EntityData::Material {
+                density_kg_m3: None,
+                color_rgba: [160, 120, 80, 255],
+                section_hatch: None,
+            },
+        );
+        let stock = LibraryDefinition::Stock(Stock {
+            material: material.id,
+            specification: StockKind::Profile {
+                designation: "20 × 40".into(),
+                length_mm: 3000.,
+                width_mm: 20.,
+                height_mm: 40.,
+                wall_mm: None,
+                shape: ProfileShape::Rectangular,
+            },
+        })
+        .entity(EntityId::new(), "Timber 20 × 40")
+        .unwrap();
+        let stock_id = stock.id;
+        session
+            .commit(
+                prepare_library(
+                    &session,
+                    session.revision(),
+                    Actor::local(Channel::Ui),
+                    &[material, stock],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut form = WeldmentPanel::batten(session.document(), "Timber".into());
+        form.path_kind = PathKind::Points;
+        let command = form.request(session.document(), true).unwrap();
+        let WeldmentCommand::Members { requests, .. } = &command else {
+            panic!("Canonical member request")
+        };
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].member.stock, stock_id);
+        let before = session.document().clone();
+        let prepared = command
+            .prepare(&session, Actor::local(Channel::Ui))
+            .unwrap();
+        assert_eq!(prepared.outputs.len(), 1);
+        assert_eq!(
+            session.document(),
+            &before,
+            "Preview preparation stays neutral"
+        );
+        form.stock = profile_stocks(session.document(), false)
+            .into_iter()
+            .find(|(id, _)| *id != stock_id)
+            .map(|(id, _)| id);
+        assert!(
+            form.request(session.document(), true)
+                .unwrap_err()
+                .contains("requires solid rectangular")
+        );
+    }
     #[test]
     fn form_turns_sketch_lines_into_members_and_edits_one_in_place() {
         let (mut s, sketch) = session();

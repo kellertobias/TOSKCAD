@@ -209,7 +209,7 @@ impl ModelingTool {
             Self::Cabinet => "cabinet",
             Self::Panel => "panel",
             Self::Joint => "joint",
-            Self::Machining => "drill",
+            Self::Machining => "machining",
             Self::ShelfPins => "system32",
             Self::LooseTenon => "domino",
             Self::FdmAid => "fdm-aid",
@@ -259,7 +259,7 @@ impl ModelingTool {
             Self::Cabinet => "Add Cabinet",
             Self::Panel => "Panel",
             Self::Joint => "Panel joint",
-            Self::Machining => "Drill / pocket",
+            Self::Machining => "Machining",
             Self::ShelfPins => "System 32 shelf pins",
             Self::LooseTenon => "Domino joint",
             Self::FdmAid => "Breakaway tab",
@@ -354,7 +354,7 @@ impl ModelingTool {
             Self::Cabinet => &["carcass", "shelf", "add cabinet", "cabinet generator"],
             Self::Panel => &["board", "edge-banding"],
             Self::Joint => &["finger-joint", "box-joint", "miter-joint", "butt-joint"],
-            Self::Machining => &["groove", "dado", "rabbet", "pocket", "hardware-holes"],
+            Self::Machining => &["groove", "dado", "rabbet", "hardware-holes"],
             Self::ShelfPins => &["shelf-pins", "shelf-pin-holes", "system-32", "line-boring"],
             Self::LooseTenon => &["loose-tenon", "domino-joint", "floating-tenon", "mortise"],
             Self::FdmAid => &["tab", "breakaway-tab", "fdm-tab", "fdm"],
@@ -410,7 +410,7 @@ impl ModelingTool {
                 "Usage: level (define a level, then place floor slabs, pedestals, stairs or service envelopes in the Inspector; Preview and Apply)"
             }
             Self::Machining => {
-                "Usage: drill (choose a groove, rabbet, pocket, drilling or hardware pattern, click target panel faces in the viewport or tick them in the Inspector, then Preview and Apply)"
+                "Usage: machining (choose a groove, rabbet, pocket, drilling or hardware pattern, click target panel faces in the viewport or tick them in the Inspector, then Preview and Apply)"
             }
             Self::ShelfPins => {
                 "Usage: system32 (select cabinet sides or click their inside faces, set rows, pitch, limits, diameter and depth in the Inspector, then Preview and Apply)"

@@ -37,6 +37,7 @@ pub mod storage;
 pub mod svg_icon;
 pub mod symbols;
 pub mod transfer;
+pub mod wood_navigation;
 // Native host and reusable interaction controls. Domain and kernel ownership
 // remain outside the UI.
 pub use eframe::{

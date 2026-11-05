@@ -480,14 +480,26 @@ the producer contract for BOM and cut-list exports (CAD-89).
 
 ## Access
 
-- **Window.** Model → Wood → **Panel / carcass**. The form builds a carcass
+- **Wood groups.** Create offers Panel, Batten and Screw / Hardware. Modify
+  offers Drill, Pocket and Joint. Assistants offers System 32 shelf pins,
+  Cabinet and Box. These commands open the existing configuration forms.
+- **Batten.** The member form offers solid rectangular profile stock, defined
+  in Project → Materials and linked to the chosen timber material. It uses
+  the same member source and native geometry as Tube / profile; hollow, round
+  and angle stock are excluded from Batten creation. An applied member
+  reopens in the shared member editor with its existing stock and identity.
+- **Hardware.** Screw / Hardware opens the shared Hardware form with the
+  canonical metric machine-screw preset. Its washer, nut, screw and bearing
+  choices reuse the same definitions as Mechanical; there is no Wood catalog.
+- **Window.** Model → Wood → Create → **Panel**. The form builds a carcass
   or places a rectangular panel; Preview builds the native solids and Apply
   commits them. Opening any carcass panel opens its carcass; opening a
   rectangle panel edits it in place.
-- **Joints in the window.** Model → Wood → **Panel joint** joins panel
+- **Joints in the window.** Model → Wood → Modify → **Joint** joins panel
   pairs. Opening a joint cut reopens its joint to change the kind, count or
-  fit. Model → Wood → **Domino joint** opens the same form preset to loose
-  tenons, seeded with up to two selected panels. In both, clicking panels
+  fit. Its kind selector includes butt, miter, fingers, loose tenons (Domino)
+  and paired dowels. The retained `domino` command opens the same form preset
+  to loose tenons, seeded with up to two selected panels. Clicking panels
   on their visible faces fills panel A, then panel B, of the next pair; for
   loose tenons the viewport draws both panels, every mortise outline and
   each tenon's insertion direction, or the reason the values are refused.
@@ -495,11 +507,14 @@ the producer contract for BOM and cut-list exports (CAD-89).
   `create_panel_stack`, `set_panel_joint`, `delete_panel_joint`,
   `set_hardware_pattern`, `set_machining`, `delete_machining` and
   `cut_list`.
-- **Machining in the window.** Model → Wood → **Drill / pocket**, and
-  Model → Wood → **System 32 shelf pins**, which opens the same form preset
+- **Machining in the window.** Model → Wood → Modify → **Drill** or **Pocket**
+  opens that operation in the shared machining form. Groove, rabbet and hardware
+  patterns remain selectable there; `machining`, `groove`, `dado`, `rabbet` and
+  `hardware-holes` retain generic form access. Model → Wood → Assistants →
+  **System 32 shelf pins** opens the same form preset
   to shelf-pin rows on the inside faces. Hardware patterns are created
   through MCP for now.
-- **Targets from the selection.** Drill / pocket starts with the selected
+- **Targets from the selection.** Drill and Pocket start with the selected
   rectangular panels as targets (a selected panel feature counts for its
   Part), Panel joint and Domino joint with the first two as panel A and B,
   and System 32 shelf pins with both sides of a selected carcass side. The

@@ -51,6 +51,26 @@ fn add_box(session: &mut Session, name: &str, x: f64) -> EntityId {
 }
 
 #[test]
+fn wood_presets_seed_the_selected_feature_panel_and_cancel_source_neutrally() {
+    use crate::wood_navigation::Preset;
+    let (session, left, _) = panel_fixture::carcass();
+    let before = session.document().clone();
+    let feature = model::panel_feature(&before, left).unwrap();
+    let mut editor = editor();
+    for preset in [Preset::Drill, Preset::Pocket] {
+        editor.tree_selection = BTreeSet::from([feature]);
+        editor
+            .begin_wood_preset(&session, &Default::default(), Channel::Ui, preset)
+            .unwrap();
+        assert_eq!(editor.model.form_targets(), Some(vec![left]));
+        assert_eq!(editor.wood_preset(), Some(preset));
+        assert!(editor.message.contains("Cabinet left side"));
+        editor.cancel_model();
+        assert_eq!(editor.wood_preset(), None);
+        assert_eq!(session.document(), &before);
+    }
+}
+#[test]
 fn a_selected_panel_seeds_drill_pocket_and_joint_targets() {
     let (session, left, right) = panel_fixture::carcass();
     let mut editor = editor();
