@@ -31,7 +31,7 @@ pub struct GearPairArgs {
     /// First member recipe. Frames here describe the local Part definition.
     #[serde(default)]
     pub first: Option<GearRecipeArgs>,
-    /// Creation inherits the first member settings with 30 teeth (24 for ring/rack mates) and opposite hand. First bevel defaults to 24 teeth. Edits preserve omitted member fields; bevel mate counts follow opposite typed tooth sources.
+    /// Creation inherits the first member settings with 30 teeth (24 for ring/rack mates) and opposite hand. Worm pairs use opposite roles with independent axial widths; right hand is shared. Edits preserve omitted fields and mate counts follow opposite original typed teeth.
     #[serde(default)]
     pub second: Option<GearRecipeArgs>,
     #[serde(default)]
@@ -112,7 +112,7 @@ pub(super) fn inspect_gear_pair(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(
         json!({"revision":revision,"pair":pair,"source":source,"members":members,
-        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel,"bevel":r.bevel},
+        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel,"bevel":r.bevel,"worm":r.worm},
         "scope":"Canonical source and resolved placement only. evaluate_model reports actual native pair checks and physical leaves."}),
     )
 }
@@ -172,6 +172,55 @@ fn couple_bevel_intent(
     model::couple_bevel_pair_recipes(&recipes, shaft).map_err(Into::into)
 }
 
+fn couple_worm_intent(
+    recipes: [GearParameters; 2],
+    supplied: [Option<&GearRecipeArgs>; 2],
+) -> Result<[GearParameters; 2], ToolError> {
+    if !recipes.iter().any(|p| p.family == model::GearFamily::Worm) {
+        return Ok(recipes);
+    }
+    if recipes
+        .iter()
+        .any(|p| p.family != model::GearFamily::Worm || p.worm.is_none())
+    {
+        return Err(ToolError::invalid(
+            "A worm pair needs one ZA worm and one ZA generated wheel",
+        ));
+    }
+    let w = [
+        recipes[0].worm.as_ref().expect("checked worm"),
+        recipes[1].worm.as_ref().expect("checked worm"),
+    ];
+    if w[0].role == w[1].role {
+        return Err(ToolError::invalid(
+            "Worm pair member roles must be opposite",
+        ));
+    }
+    for i in 0..2 {
+        if supplied[i].is_some_and(|a| a.mate_teeth.is_some())
+            && w[i].mate_teeth != recipes[1 - i].teeth
+        {
+            return Err(ToolError::invalid(
+                "Explicit worm mate_teeth must match the opposite original typed teeth source; omit it to derive",
+            ));
+        }
+    }
+    let worm = if w[0].role == model::WormMember::Worm {
+        0
+    } else {
+        1
+    };
+    let wheel = 1 - worm;
+    if supplied[wheel].is_some_and(|a| a.diameter_quotient.is_some())
+        && w[wheel].diameter_quotient != w[worm].diameter_quotient
+    {
+        return Err(ToolError::invalid(
+            "Explicit wheel diameter_quotient must match the worm's original typed quotient; omit to derive",
+        ));
+    }
+    model::couple_worm_pair_recipes(&recipes).map_err(Into::into)
+}
+
 pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs) -> ToolResult {
     let (document, revision, evaluated) = snapshot(host)?;
     if revision != args.expected_revision {
@@ -225,7 +274,40 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
         &document,
         &evaluated,
     )?;
+    if edit.is_none()
+        && first.family == model::GearFamily::Worm
+        && args.first.as_ref().is_none_or(|a| a.worm_role.is_none())
+    {
+        return Err(ToolError::invalid(
+            "A new worm pair needs explicit first.worm_role; second defaults to the opposite role",
+        ));
+    }
     let default_second = GearParameters {
+        worm: first.worm.as_ref().map(|w| model::WormDimensions {
+            role: if w.role == model::WormMember::Worm {
+                model::WormMember::Wheel
+            } else {
+                model::WormMember::Worm
+            },
+            tooth_system: w.tooth_system,
+            mate_teeth: first.teeth.clone(),
+            diameter_quotient: w.diameter_quotient.clone(),
+        }),
+        face_width: if first.family == model::GearFamily::Worm {
+            model::length(
+                if first
+                    .worm
+                    .as_ref()
+                    .is_some_and(|w| w.role == model::WormMember::Worm)
+                {
+                    1.
+                } else {
+                    24.
+                },
+            )
+        } else {
+            first.face_width.clone()
+        },
         rack: None,
         family: if matches!(
             first.family,
@@ -242,7 +324,17 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
             first.bore_diameter.clone()
         },
         teeth: Dimension::Literal {
-            value: if matches!(
+            value: if first.family == model::GearFamily::Worm {
+                if first
+                    .worm
+                    .as_ref()
+                    .is_some_and(|w| w.role == model::WormMember::Worm)
+                {
+                    32.
+                } else {
+                    1.
+                }
+            } else if matches!(
                 first.family,
                 model::GearFamily::InternalRing | model::GearFamily::Rack
             ) {
@@ -252,10 +344,14 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
             },
             unit: "count".into(),
         },
-        hand: match first.hand {
-            GearHand::None => GearHand::None,
-            GearHand::Left => GearHand::Right,
-            GearHand::Right => GearHand::Left,
+        hand: if first.family == model::GearFamily::Worm {
+            GearHand::Right
+        } else {
+            match first.hand {
+                GearHand::None => GearHand::None,
+                GearHand::Left => GearHand::Right,
+                GearHand::Right => GearHand::Left,
+            }
         },
         ..first.clone()
     };
@@ -271,6 +367,8 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
     )?;
     let [first, second] =
         couple_bevel_intent([first, second], [args.first.as_ref(), args.second.as_ref()])?;
+    let [first, second] =
+        couple_worm_intent([first, second], [args.first.as_ref(), args.second.as_ref()])?;
     let request = if edit.is_none() {
         let name = args
             .name
@@ -343,4 +441,66 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
     let committed = with(host, move |target| commit(target, &owned, prepared))??;
     result["revision"] = json!(committed);
     Ok(result)
+}
+
+#[cfg(test)]
+mod worm_coupling_tests {
+    use super::*;
+    use multicad_core::{
+        document::{Entity, EntityData, Mutation},
+        parameters::BoundExpression,
+    };
+    #[test]
+    fn worm_pair_couples_original_typed_sources_and_refuses_equal_value_conflicts() {
+        let d = Document::new("Typed worm pair")
+            .unwrap()
+            .edited(&[
+                Mutation::Insert(Entity::new(
+                    "wheel_count",
+                    EntityData::Parameter {
+                        expression: "40".into(),
+                        unit: "count".into(),
+                        exposed: false,
+                        inputs: vec![],
+                    },
+                )),
+                Mutation::Insert(Entity::new(
+                    "worm_q",
+                    EntityData::Parameter {
+                        expression: "10".into(),
+                        unit: "ratio".into(),
+                        exposed: false,
+                        inputs: vec![],
+                    },
+                )),
+            ])
+            .unwrap();
+        let s = multicad_core::commands::Session::new(d.clone()).unwrap();
+        let parse = |v| serde_json::from_value::<GearRecipeArgs>(v).unwrap();
+        let a=gear_parameters(&parse(json!({"family":"worm","worm_role":"worm","diameter_quotient":{"expression":"=$worm_q","unit":"ratio"}})),None,&d,s.parameters()).unwrap();
+        let mut b = a.clone();
+        b.worm.as_mut().unwrap().role = model::WormMember::Wheel;
+        b.teeth = Dimension::Expression {
+            expression: BoundExpression::bind(&d, "=$wheel_count", "count", None).unwrap(),
+        };
+        b.face_width = model::length(1.);
+        let coupled = couple_worm_intent([a.clone(), b.clone()], [None, None]).unwrap();
+        assert_eq!(coupled[0].worm.as_ref().unwrap().mate_teeth, b.teeth);
+        assert_eq!(
+            coupled[1].worm.as_ref().unwrap().diameter_quotient,
+            a.worm.as_ref().unwrap().diameter_quotient
+        );
+        let explicit_mate = parse(json!({"mate_teeth":{"value":40.,"unit":"count"}}));
+        let mut bad_a = a.clone();
+        bad_a.worm.as_mut().unwrap().mate_teeth = Dimension::Literal {
+            value: 40.,
+            unit: "count".into(),
+        };
+        assert!(couple_worm_intent([bad_a, b.clone()], [Some(&explicit_mate), None]).is_err());
+        let explicit_q = parse(json!({"diameter_quotient":{"value":10.,"unit":"ratio"}}));
+        b.worm.as_mut().unwrap().diameter_quotient = model::ratio(10.);
+        assert!(couple_worm_intent([a, b], [None, Some(&explicit_q)]).is_err());
+        assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo());
+    }
 }

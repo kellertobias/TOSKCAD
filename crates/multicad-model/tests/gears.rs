@@ -140,6 +140,7 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
         let internal = family == GearFamily::InternalRing;
         let rack = family == GearFamily::Rack;
         let bevel = family == GearFamily::Bevel;
+        let worm = family == GearFamily::Worm;
         let helical = matches!(
             family,
             GearFamily::Helical | GearFamily::Herringbone | GearFamily::DoubleHelical
@@ -149,10 +150,35 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
             GearParameters {
                 family,
                 teeth: multicad_core::constraint_sketch::Dimension::Literal {
-                    value: if internal { 48. } else { 24. },
+                    value: if worm {
+                        1.
+                    } else if internal {
+                        48.
+                    } else {
+                        24.
+                    },
                     unit: "count".into(),
                 },
-                bore_diameter: length(if internal || rack || bevel { 0. } else { 8. }),
+                bore_diameter: length(if internal || rack || bevel || worm {
+                    0.
+                } else {
+                    8.
+                }),
+                module_system: if worm {
+                    model::GearModuleSystem::Axial
+                } else {
+                    model::GearModuleSystem::Normal
+                },
+                worm: worm.then(|| model::WormDimensions {
+                    role: model::WormMember::Worm,
+                    tooth_system: model::WormToothSystem::ZaAxialStraight,
+                    mate_teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 32.,
+                        unit: "count".into(),
+                    },
+                    diameter_quotient: model::ratio(10.),
+                }),
+                root_fillet_ratio: model::ratio(if worm { 0. } else { 0.2 }),
                 bevel: bevel.then(|| model::BevelDimensions {
                     tooth_system: model::BevelToothSystem::SphericalInvoluteStraight,
                     mate_teeth: multicad_core::constraint_sketch::Dimension::Literal {
@@ -165,9 +191,11 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
                     backing_thickness: length(4.),
                 }),
                 outer_diameter: internal.then(|| length(112.)),
-                face_width: length(4.),
+                face_width: length(if worm { 32. } else { 4. }),
                 helix_angle: angle(if helical { 15. } else { 0. }),
-                hand: if helical {
+                hand: if worm {
+                    GearHand::Right
+                } else if helical {
                     GearHand::Left
                 } else {
                     GearHand::None
@@ -204,6 +232,9 @@ fn every_supported_family_builds_in_its_canonical_frame_and_survives_step_readba
                     < 1e-4
             );
             assert!((bounds.max[1] - (20. + cone.heel_tip_radius_mm)).abs() < 1e-4);
+        } else if worm {
+            assert!((bounds.min[0] - (10. - 16.)).abs() < 2e-6);
+            assert!((bounds.max[0] - (10. + 16.)).abs() < 2e-6);
         } else {
             assert!((bounds.min[0] - 10.).abs() < 1e-6);
             assert!((bounds.max[0] - 14.).abs() < 1e-6);

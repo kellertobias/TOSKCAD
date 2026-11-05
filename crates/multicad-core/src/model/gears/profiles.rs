@@ -35,7 +35,7 @@ impl GearFamily {
             Self::InternalRing => "Internal ring",
             Self::Rack => "Rack",
             Self::Bevel => "Bevel",
-            Self::Worm => "Worm and wheel",
+            Self::Worm => "Worm gearing",
         }
     }
     pub fn supported(self) -> bool {
@@ -48,10 +48,13 @@ impl GearFamily {
                 | Self::InternalRing
                 | Self::Rack
                 | Self::Bevel
+                | Self::Worm
         )
     }
     pub fn source(self) -> &'static str {
-        if self == Self::Bevel {
+        if self == Self::Worm {
+            super::WORM_PROFILE_SOURCE
+        } else if self == Self::Bevel {
             super::BEVEL_PROFILE_SOURCE
         } else if self == Self::Rack {
             super::RACK_PROFILE_SOURCE

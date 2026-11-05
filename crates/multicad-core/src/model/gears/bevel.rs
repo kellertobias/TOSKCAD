@@ -403,6 +403,7 @@ impl GearPairParameters {
             gears,
             rack_travel: None,
             bevel: Some(context),
+            worm: None,
             center_distance_mm: 0.,
             phases_rad: phases,
             mating,

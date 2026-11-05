@@ -54,6 +54,8 @@ pub struct GearPairCheck {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bevel: Option<model::ResolvedBevelPair>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub worm: Option<model::ResolvedWormPair>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current_engagement: Option<GearEngagementWitness>,
     pub cycle_drive_angles_rad: Vec<f64>,
     pub cycle_reused: bool,
@@ -92,15 +94,27 @@ fn overlap(
     drive: f64,
     policy: GeometryPolicy,
 ) -> Result<(), ModelError> {
-    if let Some(common) = a
-        .boolean(b, BooleanOperation::Intersect, policy)
-        .map_err(|e| {
-            error(
-                Some(pair),
-                format!("Native gear-pair interference check: {e}"),
-            )
-        })?
-    {
+    overlap_checked(pair, a, b, drive, policy, false)
+}
+fn overlap_checked(
+    pair: EntityId,
+    a: &Solid,
+    b: &Solid,
+    drive: f64,
+    policy: GeometryPolicy,
+    parallel: bool,
+) -> Result<(), ModelError> {
+    if let Some(common) = (if parallel {
+        a.intersect_parallel(b, policy)
+    } else {
+        a.boolean(b, BooleanOperation::Intersect, policy)
+    })
+    .map_err(|e| {
+        error(
+            Some(pair),
+            format!("Native gear-pair interference check: {e}"),
+        )
+    })? {
         let volume = common.volume_mm3().map_err(|e| error(Some(pair), e))?;
         return Err(error(
             Some(pair),
@@ -230,6 +244,113 @@ fn bevel_engagement(
         ),
     ))
 }
+fn worm_engagement(
+    pair: EntityId,
+    features: [EntityId; 2],
+    resolved: &model::ResolvedGearPair,
+    solids: [&Solid; 2],
+    policy: GeometryPolicy,
+) -> Result<GearEngagementWitness, ModelError> {
+    let context = resolved.worm.as_ref().expect("resolved worm pair");
+    let wi = context.worm_member.index();
+    let gi = context.wheel_member.index();
+    let clearance = resolved
+        .gears
+        .iter()
+        .map(|g| g.worm().expect("worm member").thinning_mm)
+        .sum::<f64>();
+    let mut selected = [Vec::new(), Vec::new()];
+    let worm_topology = solids[wi]
+        .topology_snapshot(features[wi], 0)
+        .map_err(|e| error(Some(pair), e))?;
+    for face in &worm_topology.elements {
+        if face.key.kind == TopologyKind::Face
+            && face.origins.iter().any(|o| {
+                o.source == features[wi]
+                    && matches!(o.role.as_str(), "worm/flank.lower" | "worm/flank.upper")
+            })
+        {
+            selected[wi].push(face.key.ordinal);
+        }
+    }
+    let wheel_topology = solids[gi]
+        .topology_snapshot(features[gi], 0)
+        .map_err(|e| error(Some(pair), e))?;
+    let teeth = i64::from(context.wheel_teeth);
+    let center = (-resolved.phases_rad[gi] * teeth as f64 / TAU).round() as i64;
+    for offset in [0, -1, 1, -2, 2] {
+        let sector = (center + offset).rem_euclid(teeth);
+        for face in &wheel_topology.elements {
+            if face.key.kind == TopologyKind::Face
+                && face.origins.iter().any(|o| {
+                    o.source == features[gi]
+                        && (o.role == format!("worm_wheel/sector/{sector}/flank.minus")
+                            || o.role == format!("worm_wheel/sector/{sector}/flank.plus"))
+                })
+                && !selected[gi].contains(&face.key.ordinal)
+            {
+                selected[gi].push(face.key.ordinal);
+            }
+        }
+    }
+    // Prioritize screw faces near the central contact section. Numeric face
+    // ordinals and distances remain evaluation-local, never persistent IDs.
+    let centers = solids[wi]
+        .faces()
+        .map_err(|e| error(Some(pair), e))?
+        .into_iter()
+        .map(|f| (f.index, f.center_mm))
+        .collect::<BTreeMap<_, _>>();
+    let origin = resolved.mating[wi].origin_mm;
+    selected[wi].sort_by(|a, b| {
+        let score = |id| {
+            centers.get(id).map_or(f64::INFINITY, |p| {
+                (0..3).map(|j| (p[j] - origin[j]).powi(2)).sum::<f64>()
+            })
+        };
+        score(a).total_cmp(&score(b))
+    });
+    // The whole-solid overlap check has already passed. These actual named
+    // faces provide only an existence witness within the declared clearance;
+    // a candidate miss always runs the unchanged whole-solid distance query.
+    if selected[wi].len() <= 256 && selected[gi].len() <= 32 {
+        for &a in &selected[0] {
+            for &b in &selected[1] {
+                let distance = solids[0]
+                    .minimum_distance(BRepSelection::Face(a), solids[1], BRepSelection::Face(b))
+                    .map_err(|e| error(Some(pair), e))?;
+                if distance.distance_mm <= clearance + policy.linear_tolerance_mm * 10. {
+                    let witness = &distance.witnesses[0];
+                    return Ok(GearEngagementWitness {
+                        distance_mm: distance.distance_mm,
+                        kind: "worm_flank_faces",
+                        faces: Some([a, b]),
+                        points_mm: [witness.a_mm, witness.b_mm],
+                    });
+                }
+            }
+        }
+    }
+    let distance = solids[0]
+        .minimum_distance(BRepSelection::Whole, solids[1], BRepSelection::Whole)
+        .map_err(|e| error(Some(pair), e))?;
+    if distance.distance_mm > clearance + policy.linear_tolerance_mm * 10. {
+        return Err(error(
+            Some(pair),
+            format!(
+                "Gear members have no native engagement proximity: gap {} mm exceeds authored total thinning {clearance} mm",
+                distance.distance_mm
+            ),
+        ));
+    }
+    let witness = &distance.witnesses[0];
+    Ok(GearEngagementWitness {
+        distance_mm: distance.distance_mm,
+        kind: "whole_solid_fallback",
+        faces: None,
+        points_mm: [witness.a_mm, witness.b_mm],
+    })
+}
 fn check_pose(
     document: &Document,
     evaluated: &EvaluatedParameters,
@@ -246,11 +367,32 @@ fn check_pose(
                 .map_err(|e| error(Some(pair), e))?;
         placed_solids.push(placed(solid, pose, pair)?);
     }
-    overlap(pair, &placed_solids[0], &placed_solids[1], drive, policy)?;
     let resolved = model::resolve_gear_pair_parameters(document, evaluated, &source.parameters)
         .map_err(|e| error(Some(pair), e))?;
+    if resolved.worm.is_some() {
+        overlap_checked(
+            pair,
+            &placed_solids[0],
+            &placed_solids[1],
+            drive,
+            policy,
+            true,
+        )?;
+    } else {
+        overlap(pair, &placed_solids[0], &placed_solids[1], drive, policy)?;
+    }
     if resolved.bevel.is_some() {
         return bevel_engagement(
+            pair,
+            source.parameters.gears,
+            &resolved,
+            [&placed_solids[0], &placed_solids[1]],
+            policy,
+        )
+        .map(Some);
+    }
+    if resolved.worm.is_some() {
+        return worm_engagement(
             pair,
             source.parameters.gears,
             &resolved,
@@ -370,7 +512,9 @@ pub(crate) fn validate(
             source.outputs,
             resolved.gears.each_ref().map(|g| g.frame())
         );
-        let key = if let Some(travel) = &resolved.rack_travel {
+        let key = if let Some(worm) = &resolved.worm {
+            format!("{key}|{worm:?}")
+        } else if let Some(travel) = &resolved.rack_travel {
             format!(
                 "{key}|{:?}|{:?}|{}|{}|{}",
                 travel.rack_member,
@@ -396,6 +540,10 @@ pub(crate) fn validate(
                     .collect::<Vec<_>>();
                 phases.extend([travel.min_drive_angle_rad, travel.max_drive_angle_rad]);
                 phases
+            } else if let Some(worm) = &resolved.worm {
+                (0..SAMPLES)
+                    .map(|i| worm.worm_period_rad * i as f64 / (SAMPLES - 1) as f64)
+                    .collect::<Vec<_>>()
             } else {
                 (0..SAMPLES)
                     .map(|i| {
@@ -421,7 +569,7 @@ pub(crate) fn validate(
             .map_err(|e| error(Some(pair), e))?;
         let current_engagement =
             check_pose(document, evaluated, &source, pair, [a, b], current, policy)?;
-        reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
+        reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),worm:resolved.worm.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.worm.is_some() { "Native current pose and nine sampled phases over one full ZA worm turn with native no-overlap and engagement proximity witnesses for its generated wheel. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
     }
     Ok(reports)
 }

@@ -106,12 +106,17 @@ fn prepare_gear_edit_impl(
     let mut source = read_gear(session.document(), feature)?;
     parameters.resolve_geometry(session.parameters())?;
     if !pair_edit
-        && (source.parameters.family == GearFamily::Bevel || parameters.family == GearFamily::Bevel)
+        && (matches!(
+            source.parameters.family,
+            GearFamily::Bevel | GearFamily::Worm
+        ) || matches!(parameters.family, GearFamily::Bevel | GearFamily::Worm))
     {
         let old = &source.parameters;
         let coupled_changed = old.family != parameters.family
             || old.teeth != parameters.teeth
             || old.bevel != parameters.bevel
+            || old.worm != parameters.worm
+            || old.module_system != parameters.module_system
             || old.module != parameters.module
             || old.pressure_angle != parameters.pressure_angle
             || old.face_width != parameters.face_width;
@@ -119,7 +124,7 @@ fn prepare_gear_edit_impl(
             matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == GEAR_PAIR_TYPE)
                 && read_gear_pair(session.document(), entity.id).is_ok_and(|pair| pair.parameters.gears.contains(&feature))
         }) {
-            return Err(crate::model::common::error("Edit coupled bevel dimensions through the complete pair so both recipes and cone placements update atomically"));
+            return Err(crate::model::common::error("Edit coupled bevel or worm dimensions through the complete pair so both recipes and placements update atomically"));
         }
     }
     source.parameters = parameters.clone();

@@ -563,7 +563,9 @@ Linear dimensions, tooth count, angles and ratios accept unit-bearing literals
 or formulas. A frame accepts a principal plane or both explicit basis vectors;
 mixed or incomplete frame choices fail.
 
-The module system selects the convention for both module and pressure angle.
+For rotary gears, the module system selects the convention for both module and
+pressure angle. Worm recipes use axial module with a normal pressure angle, as
+defined below.
 Helix angle is a positive magnitude with separate handedness. Design backlash
 is tangential tooth-thickness reduction **per gear** at its reference circle.
 Fabrication allowance adds further tangential thinning; neither changes the
@@ -586,7 +588,9 @@ Creating or switching to Rack defaults backing to 4 mm and clears inapplicable
 rotary defaults before applying explicit arguments. Explicit unsupported bore,
 helix or outside diameter still refuses. Omitted/null backing edits retain the
 saved value. Inspection reports actual rack pitch, length and backing, with
-no invented rotary diameters. Worms and nonzero profile shift remain unavailable.
+no invented rotary diameters. Nonzero profile shift remains unavailable.
+The worm recipe contract below does not establish product availability;
+`gear_profiles.families[].supported` reports the current family gate.
 The conservative rotary gear/pinion tooth-count policy uses the normal pressure
 angle without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
 or cutter-generation certification follows from a successful preview.
@@ -601,6 +605,36 @@ It does not synthesize cylindrical spur base or tip diameters.
 The architecture reference owns the bounded envelope and primary source pages;
 Gleason/octoid, spiral and Zerol values are rejected.
 
+The [generated ZA worm-wheel construction](0034-generated-za-worm-wheel.md)
+uses `family: "worm"` for both members. `worm_role` selects `"worm"` or
+`"wheel"`; `worm_system` selects `"za_axial_straight"`. Standalone creation
+requires explicit `worm_role` and `mate_teeth`. ZI, ZN and ZK enum values are
+recognized but refused. Creating or switching to the family establishes the
+bounded defaults before applying explicit arguments. Explicit unsupported
+arguments still fail. Same-family edits retain omitted or null fields, including
+member role, mate source, quotient and axial dimensions.
+
+`module_system: "axial"` means axial `module` with **normal** `pressure_angle`
+of 20 degrees. Axial pressure and lead angle are derived; the authored
+`helix_angle` remains zero. The recipe requires one right-hand worm start,
+`diameter_quotient` 10 and axial module 0.5-2 mm. `teeth` is the member's own
+count: one for the worm or 32-64 for the wheel. `mate_teeth` holds the opposite
+count. `face_width` independently denotes worm threaded length, bounded to
+16-32 times module, or wheel axial width, bounded to 0.5-2 times module. Each
+member's `backlash` plus `fabrication_allowance` is nonnegative and no greater
+than 0.1 times module. Nonzero center gap, profile shift or authored root-fillet
+ratio is refused, as are unrelated rack, bevel or outside-diameter inputs. A bore must
+leave the requested positive minimum wall at the minimum root. The member
+origin is its axial center, with local Z along its shaft.
+
+Worm inspection reports the declared member and system, axial pitch and lead,
+normal and derived axial pressure angles, derived lead angle, reference/tip
+radii and minimum root radius. It preserves nominal, design and physical
+thickness evidence and reports generating-hob pitch-space thickness for the
+wheel. It does not invent a cylindrical involute base radius. The construction
+reference owns the surface equations and source limitations; no efficiency,
+load, accuracy grade or physical contact certification follows from a preview.
+
 Rotary involute profiles use a C1 cubic Hermite approximation to the analytic
 involute, bounded by the active geometry policy's linear tolerance. Tip and
 root arcs and circular fillets remain native circular curves. Helical flanks
@@ -613,13 +647,19 @@ native failures, cancellation and stale revisions leave the document unchanged.
 
 `set_gear_pair` creates two named gear Parts, a reusable Assembly, its internal
 relationships and one placed occurrence in a single transaction. Creation
-requires a name. The first member defaults to 20 teeth, or 24 when its requested
-family is bevel. For external pairs, the second inherits the first recipe with 30 teeth and opposite helix hand,
+requires a name. A rotary first member defaults to 20 teeth, or 24 when its
+requested family is bevel. For external pairs, the second inherits the first recipe with 30 teeth and opposite helix hand,
 then applies explicit second-member overrides. An internal-ring first member
 instead defaults its second member to a 24-tooth spur pinion without an
 outside-diameter field. A first rack also defaults its second member to a
 24-tooth spur pinion, without inheriting rack-only backing. Either member may
 be the rack when explicit recipes are supplied. Spur members use hand `none`.
+A worm-family first member requires explicit `first.worm_role` and defaults its
+own count to one worm start or 32 wheel teeth. Its second
+member defaults to the opposite role, with 32 wheel teeth and 1 mm wheel width,
+or one worm start and 24 mm threaded length. These are module-1 creation
+defaults; a different module may require explicit axial dimensions. Both use
+right hand. Member-specific `face_width` values remain independent.
 
 An edit retains omitted fields independently for each member. Supplying both
 recipes changes them atomically, so a shared module change can keep the pair
@@ -632,6 +672,8 @@ pitch-line-to-pinion-center distance.
 For bevels, `resolved.bevel` reports the shared shaft angle, cone distance,
 cone face width and both pitch-cone angles. Their shared apex makes
 `center_distance_mm` zero.
+For worm pairs, `resolved.worm` identifies the worm and wheel members,
+wheel count, center distance, crossed shaft angle and full worm-turn period.
 `evaluate_model` reports actual native pair checks and physical leaf paths.
 
 Bevel pairs derive each member's `mate_teeth` from the opposite original typed
@@ -649,6 +691,17 @@ recipes and validates them before native work. A conflict leaves source,
 transaction history and Undo state unchanged. Unsupported systems and mixed
 bevel/non-bevel pairs also fail without a partial update.
 
+The [pair tool](../../crates/multicad-mcp/src/tools/gear_pairs.rs) derives each
+worm member's `mate_teeth` from the opposite original typed
+`teeth`, and both diameter quotients from the declared worm's original typed
+`diameter_quotient`. Explicit mate sources must match the opposite typed count
+exactly. An explicit wheel quotient must match the worm's typed quotient,
+including its expression binding; equal evaluated values alone do not match.
+Omitting or passing null for these coupled dimensions derives them again after
+a count or quotient edit. Other omitted member fields retain their independent
+saved values. A conflicting source, identical member roles or mixed worm/non-worm
+recipes fails before native work without changing source or history.
+
 Pair origin and axes control layout within the Assembly definition. Member
 frames describe their local Part definitions; derived anchors maintain mating
 placement when those local frames change. The returned occurrence supports
@@ -665,21 +718,28 @@ with the finite travel and drive convention defined in the rack reference.
 Rack pairs add both finite endpoints and native proximity checks. Bevel pairs
 share their pitch apex and use the shaft/ratio convention in the bevel reference.
 They retain no-overlap and engagement proximity checks at every sample.
-Their current Part heads must remain the gear generators. Native
-evaluation checks the current pose and nine phases over one pinion tooth cycle.
+Worm pairs use matching axial module and normal pressure, opposite member roles
+and a shared generating recipe. `drive_angle` always rotates the worm, regardless
+of member order; the wheel follows the one-start ratio. The drive coordinate is
+bounded to plus or minus 1000 worm turns. Worm evaluation checks the current pose
+and nine phases over one full worm turn, retaining whole-solid no-overlap and
+engagement proximity checks.
+Their current Part heads must remain the gear generators. For non-worm pairs,
+native evaluation checks the current pose and nine phases over one pinion tooth cycle.
 Unchanged geometry can reuse a completed cycle check; the current pose is always
 checked. These samples do not establish continuous collision-free motion, load
 capacity or manufacturing fit.
 
-For bevel checks, `current_engagement` records an actual native witness with
-`distance_mm`, `kind`, `faces` and `points_mm`. The usual `bevel_flank_faces`
-kind identifies a close pair of named flank faces after whole-solid no-overlap.
+For bevel and worm checks, `current_engagement` records an actual native witness with
+`distance_mm`, `kind`, `faces` and `points_mm`. The `bevel_flank_faces`
+and `worm_flank_faces` kinds identify a close pair of named flank faces after
+whole-solid no-overlap.
 This is an existence witness within total authored thinning plus ten linear
 tolerances; it does not report the global minimum distance. A candidate-face miss invokes `whole_solid_fallback`, whose `faces`
 field is null. Face ordinals are evaluation-local; persistent references use
 source ancestry instead. The two points use the evaluated pair layout frame
 before independent outer occurrence placement. These witnesses retain the
-same nine sampled phases and current-pose checks; they do not establish
+same sampled cycle and current-pose checks; they do not establish
 continuous contact, loaded behavior or manufacturing fit.
 
 Direct `export_step` accepts an Assembly's definition-only gear Part as well as

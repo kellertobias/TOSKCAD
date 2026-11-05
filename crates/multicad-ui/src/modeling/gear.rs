@@ -10,7 +10,7 @@ use multicad_core::{
     document::Document,
     model::{
         BevelDimensions, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearRequest,
-        PrimitiveFrame, angle,
+        PrimitiveFrame, WormDimensions, WormMember, WormToothSystem, angle,
     },
     parameters::EvaluatedParameters,
     sketch::Datum,
@@ -58,6 +58,10 @@ pub(super) struct GearPanel {
     bevel_mate: DimensionField,
     bevel_shaft: DimensionField,
     bevel_system: BevelToothSystem,
+    worm_role: WormMember,
+    worm_system: WormToothSystem,
+    worm_mate: DimensionField,
+    worm_quotient: DimensionField,
     origin: [DimensionField; 3],
     family: GearFamily,
     system: GearModuleSystem,
@@ -76,6 +80,27 @@ impl GearPanel {
         let p = &request.parameters;
         let field = DimensionField::from_dimension;
         Ok(Self {
+            worm_role: p.worm.as_ref().map_or(WormMember::Worm, |w| w.role),
+            worm_system: p
+                .worm
+                .as_ref()
+                .map_or(WormToothSystem::ZaAxialStraight, |w| w.tooth_system),
+            worm_mate: field(
+                p.worm.as_ref().map(|w| &w.mate_teeth).unwrap_or(
+                    &multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 32.,
+                        unit: "count".into(),
+                    },
+                ),
+                "count",
+            )?,
+            worm_quotient: field(
+                p.worm
+                    .as_ref()
+                    .map(|w| &w.diameter_quotient)
+                    .unwrap_or(&multicad_core::model::ratio(10.)),
+                "ratio",
+            )?,
             bevel_mate: field(
                 p.bevel.as_ref().map(|b| &b.mate_teeth).unwrap_or(&p.teeth),
                 "count",
@@ -229,6 +254,16 @@ impl GearPanel {
         } else {
             None
         };
+        p.worm = if self.family == GearFamily::Worm {
+            Some(WormDimensions {
+                role: self.worm_role,
+                tooth_system: self.worm_system,
+                mate_teeth: self.worm_mate.resolve(document)?,
+                diameter_quotient: self.worm_quotient.resolve(document)?,
+            })
+        } else {
+            None
+        };
         let basis = self.plane.map(Datum::frame);
         p.frame = PrimitiveFrame {
             origin: [
@@ -245,7 +280,34 @@ impl GearPanel {
         if self.family == family {
             return;
         }
+        if self.family == GearFamily::Worm && family != GearFamily::Worm {
+            self.system = GearModuleSystem::Normal;
+            self.fields[9].set_literal(0.2, "ratio");
+            if self.worm_role == WormMember::Worm {
+                self.fields[1].set_literal(24., "count");
+            }
+        }
         self.family = family;
+        if family == GearFamily::Worm {
+            self.system = GearModuleSystem::Axial;
+            self.hand = GearHand::Right;
+            self.worm_role = WormMember::Worm;
+            self.worm_system = WormToothSystem::ZaAxialStraight;
+            self.fields[0].set_literal(1., "mm");
+            self.fields[1].set_literal(1., "count");
+            self.fields[2].set_literal(20., "deg");
+            self.fields[3].set_literal(24., "mm");
+            self.fields[4].set_literal(0., "deg");
+            self.fields[5].set_literal(0., "mm");
+            self.fields[6].set_literal(0., "mm");
+            self.fields[7].set_literal(0.05, "mm");
+            self.fields[8].set_literal(0., "mm");
+            self.fields[9].set_literal(0., "ratio");
+            self.worm_mate.set_literal(32., "count");
+            self.worm_quotient.set_literal(10., "ratio");
+            self.request.parameters.profile_shift = multicad_core::model::ratio(0.);
+            return;
+        }
         if matches!(
             family,
             GearFamily::Spur | GearFamily::InternalRing | GearFamily::Rack | GearFamily::Bevel
@@ -322,7 +384,83 @@ impl GearPanel {
                     }
                 });
         }
-        if self.family == GearFamily::Bevel {
+        if self.family == GearFamily::Worm {
+            ui.small("ZA axial-straight worm / generated wheel · axial module 0.5–2 mm · NORMAL pressure 20° · one right-hand start · diameter quotient 10.");
+            ui.small("Worm length 16–32 × module; wheel face width 0.5–2 × module; wheel 32–64 teeth. Total thinning ≤ 0.1 × module. No load, fit or accuracy certification.");
+            if !paired {
+                let old = self.worm_role;
+                controls::inspector_combo(ui, (self.request.feature, "worm-role"))
+                    .selected_text(if old == WormMember::Worm {
+                        "Worm"
+                    } else {
+                        "Worm wheel"
+                    })
+                    .show_ui(ui, |ui| {
+                        changed |= ui
+                            .selectable_value(&mut self.worm_role, WormMember::Worm, "Worm")
+                            .changed();
+                        changed |= ui
+                            .selectable_value(&mut self.worm_role, WormMember::Wheel, "Worm wheel")
+                            .changed();
+                    });
+                if old != self.worm_role {
+                    self.fields[1].set_literal(
+                        if self.worm_role == WormMember::Worm {
+                            1.
+                        } else {
+                            32.
+                        },
+                        "count",
+                    );
+                    self.fields[3].set_literal(
+                        if self.worm_role == WormMember::Worm {
+                            24.
+                        } else {
+                            1.
+                        },
+                        "mm",
+                    );
+                    self.worm_mate.set_literal(
+                        if self.worm_role == WormMember::Worm {
+                            32.
+                        } else {
+                            1.
+                        },
+                        "count",
+                    );
+                }
+            }
+            controls::inspector_combo(ui, (self.request.feature, "worm-system"))
+                .selected_text(self.worm_system.label())
+                .show_ui(ui, |ui| {
+                    for system in WormToothSystem::ALL {
+                        let old_system = self.worm_system;
+                        changed |= ui
+                            .add_enabled(
+                                system.supported(),
+                                egui::Button::selectable(
+                                    self.worm_system == system,
+                                    system.label(),
+                                ),
+                            )
+                            .clicked()
+                            && old_system != system
+                            && {
+                                self.worm_system = system;
+                                true
+                            };
+                    }
+                });
+            if !paired {
+                changed|=self.worm_mate.show_named(ui,(self.request.feature,"worm-mate"),if self.worm_role==WormMember::Worm {"Mating wheel teeth"} else {"Mating worm starts"},"Original typed mate count; the supported worm has one start and its wheel has 32–64 teeth");
+            }
+            changed |= self.worm_quotient.show_named(
+                ui,
+                (self.request.feature, "worm-quotient"),
+                "Diameter quotient",
+                "Only 10 is supported; pitch diameter = quotient × axial module",
+            );
+        } else if self.family == GearFamily::Bevel {
             ui.small("Spherical-involute straight bevel · KG/KHK back-cone boundaries · custom tangent spherical-circle roots. No Gleason, octoid, spiral, Zerol, cutter or strength certification.");
             ui.small("20° pressure · 90° intersecting shafts · 24–64 teeth per member · face width along the pitch cone, at most min(R/3, 10 × module).");
             controls::inspector_combo(ui, (self.request.feature, "bevel-tooth-system"))
@@ -344,15 +482,22 @@ impl GearPanel {
             ui.small("Unshifted involute profile with circular root fillets. No accuracy, strength or cutter-generation certification.");
         }
         controls::inspector_combo(ui, "gear-module-system")
-            .selected_text(if self.family == GearFamily::Bevel {
+            .selected_text(if self.family == GearFamily::Worm {
+                "Axial module; normal pressure angle"
+            } else if self.family == GearFamily::Bevel {
                 "Outer module (normal = transverse)"
             } else {
                 match self.system {
                     GearModuleSystem::Normal => "Normal module and pressure angle",
                     GearModuleSystem::Transverse => "Transverse module and pressure angle",
+                    GearModuleSystem::Axial => "Axial module; normal pressure angle",
                 }
             })
             .show_ui(ui, |ui| {
+                if self.family == GearFamily::Worm {
+                    ui.label("Axial module with normal pressure angle");
+                    return;
+                }
                 changed |= ui
                     .selectable_value(&mut self.system, GearModuleSystem::Normal, "Normal")
                     .changed();
@@ -363,7 +508,9 @@ impl GearPanel {
         for (i, label, help) in [
             (
                 0,
-                if self.family == GearFamily::Bevel {
+                if self.family == GearFamily::Worm {
+                    "Axial module"
+                } else if self.family == GearFamily::Bevel {
                     "Outer module"
                 } else {
                     "Module"
@@ -372,7 +519,13 @@ impl GearPanel {
             ),
             (
                 1,
-                if self.family == GearFamily::Rack {
+                if self.family == GearFamily::Worm {
+                    if self.worm_role == WormMember::Worm {
+                        "Worm starts"
+                    } else {
+                        "Wheel teeth"
+                    }
+                } else if self.family == GearFamily::Rack {
                     "Rack pitch cells"
                 } else {
                     "Teeth"
@@ -385,12 +538,26 @@ impl GearPanel {
             ),
             (
                 2,
-                "Pressure angle",
-                "Angle in the selected normal/transverse system",
+                if self.family == GearFamily::Worm {
+                    "Normal pressure angle"
+                } else {
+                    "Pressure angle"
+                },
+                if self.family == GearFamily::Worm {
+                    "Only normal 20°; axial pressure is derived from lead angle"
+                } else {
+                    "Angle in the selected normal/transverse system"
+                },
             ),
             (
                 3,
-                if self.family == GearFamily::Bevel {
+                if self.family == GearFamily::Worm {
+                    if self.worm_role == WormMember::Worm {
+                        "Threaded worm length"
+                    } else {
+                        "Wheel face width"
+                    }
+                } else if self.family == GearFamily::Bevel {
                     "Pitch-cone face width"
                 } else {
                     "Face width"
@@ -411,7 +578,11 @@ impl GearPanel {
         }
         if !matches!(
             self.family,
-            GearFamily::Spur | GearFamily::InternalRing | GearFamily::Rack | GearFamily::Bevel
+            GearFamily::Spur
+                | GearFamily::InternalRing
+                | GearFamily::Rack
+                | GearFamily::Bevel
+                | GearFamily::Worm
         ) {
             changed |= self.fields[4].show_named(
                 ui,
@@ -479,6 +650,9 @@ impl GearPanel {
                 },
             ),
         ] {
+            if i == 9 && self.family == GearFamily::Worm {
+                continue;
+            }
             if i == 6 && matches!(self.family, GearFamily::InternalRing | GearFamily::Rack) {
                 continue;
             }
@@ -564,7 +738,11 @@ impl GearPanel {
             .zip(if self.family == GearFamily::Bevel {
                 ["Pitch apex X", "Pitch apex Y", "Pitch apex Z"]
             } else {
-                ["Base center X", "Base center Y", "Base center Z"]
+                if self.family == GearFamily::Worm {
+                    ["Axial center X", "Axial center Y", "Axial center Z"]
+                } else {
+                    ["Base center X", "Base center Y", "Base center Z"]
+                }
             })
             .enumerate()
         {
@@ -595,6 +773,10 @@ impl GearPanel {
                         "Rack pitch {:.4} mm · finite length {:.4} mm · {} complete cells",
                         r.pitch_mm, r.length_mm, r.teeth
                     ));
+                }
+                Ok(multicad_core::model::ResolvedGearGeometry::Worm(r)) => {
+                    ui.small(format!("{:?} · axial pitch {:.4} mm · lead {:.4} mm · derived lead angle {:.4}° / axial pressure {:.4}°",r.role,r.pitch_mm,r.lead_mm,r.lead_angle_rad.to_degrees(),r.axial_pressure_angle_rad.to_degrees()));
+                    ui.small(format!("Reference Ø {:.4} mm · tip Ø {:.4} mm · minimum root radius {:.4} mm · centered axial extent {:.4} mm",2.*r.pitch_radius_mm,2.*r.tip_radius_mm,r.minimum_root_radius_mm,r.face_width_mm));
                 }
                 Ok(multicad_core::model::ResolvedGearGeometry::Bevel(r)) => {
                     show_bevel_summary(ui, &r)

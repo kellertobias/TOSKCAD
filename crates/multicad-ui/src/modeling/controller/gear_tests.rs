@@ -763,3 +763,125 @@ fn painted_bevel_typing_preview_cancel_apply_history_and_reopen_use_native_gate(
         controller.cancel();
     }
 }
+
+#[test]
+fn painted_za_worm_roles_preview_cancel_apply_history_and_reopen_keep_independent_widths() {
+    for worm_a in [true, false] {
+        let mut s = Session::new(Document::new("Painted ZA worm pair").unwrap()).unwrap();
+        let before = s.document().clone();
+        let mut c = controller();
+        let request = model::GearRequest::new(
+            "ZA pair",
+            model::GearParameters {
+                family: model::GearFamily::Worm,
+                module_system: model::GearModuleSystem::Axial,
+                module: model::length(1.),
+                pressure_angle: model::angle(20.),
+                face_width: model::length(20.),
+                teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                    value: 1.,
+                    unit: "count".into(),
+                },
+                hand: model::GearHand::Right,
+                helix_angle: model::angle(0.),
+                center_gap: model::length(0.),
+                bore_diameter: model::length(0.),
+                root_fillet_ratio: model::ratio(0.),
+                worm: Some(model::WormDimensions {
+                    role: model::WormMember::Worm,
+                    tooth_system: model::WormToothSystem::ZaAxialStraight,
+                    mate_teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 32.,
+                        unit: "count".into(),
+                    },
+                    diameter_quotient: model::ratio(10.),
+                }),
+                ..Default::default()
+            },
+        );
+        let panel = GearPanel::new(request, s.parameters().clone(), false).unwrap();
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::Gear(Box::new(panel)),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        ring_click(&ctx, &mut c, &mut s, "Create mating pair");
+        if !worm_a {
+            ring_click(&ctx, &mut c, &mut s, "Wheel A / Worm B");
+        }
+        let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
+            panic!("gear form")
+        };
+        let saved = panel.clone();
+        let ModelRequest::GearPair(command) = panel.model_request(s.document(), true).unwrap()
+        else {
+            panic!("pair")
+        };
+        let r = command.resolved(s.document(), s.parameters()).unwrap();
+        let worm = usize::from(!worm_a);
+        assert_eq!(r.gears[worm].worm().unwrap().face_width_mm, 20.);
+        assert_eq!(r.gears[1 - worm].worm().unwrap().face_width_mm, 1.);
+        let pair = command.pair();
+        ring_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &before);
+        ring_click(&ctx, &mut c, &mut s, "Cancel");
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), 0);
+        c.begin_form(&s, &Default::default(), Channel::Ui, ModelForm::Gear(saved))
+            .unwrap();
+        ring_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        ring_click(&ctx, &mut c, &mut s, "Apply");
+        assert_eq!(s.revision(), 1);
+        let source = model::read_gear_pair(s.document(), pair).unwrap();
+        let committed = s.document().clone();
+        s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &before);
+        s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(s.document(), &committed);
+        let mut bytes = vec![];
+        multicad_core::project_file::write(
+            &multicad_core::project_file::ProjectFile::new(committed.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let read = multicad_core::project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let reopened = Session::new(read.project.document).unwrap();
+        assert_eq!(reopened.document(), &committed);
+        c.begin_existing(&reopened, &Default::default(), pair, Channel::Ui)
+            .unwrap();
+        let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
+            panic!("reopened gear pair")
+        };
+        let ModelRequest::GearPair(edit) = panel.model_request(reopened.document(), true).unwrap()
+        else {
+            panic!("reopened pair")
+        };
+        let resolved = edit
+            .resolved(reopened.document(), reopened.parameters())
+            .unwrap();
+        assert_eq!(resolved.gears[worm].worm().unwrap().face_width_mm, 20.);
+        assert_eq!(
+            source.parameters.gears,
+            model::read_gear_pair(reopened.document(), pair)
+                .unwrap()
+                .parameters
+                .gears
+        );
+        c.cancel();
+        assert_eq!(reopened.revision(), 0);
+    }
+}

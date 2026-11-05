@@ -37,6 +37,7 @@ pub enum ResolvedGearGeometry {
     Rotary(ResolvedGear),
     Rack(ResolvedRack),
     Bevel(ResolvedBevel),
+    Worm(ResolvedWormGeometry),
 }
 impl ResolvedGearGeometry {
     pub fn frame(&self) -> Frame {
@@ -44,6 +45,7 @@ impl ResolvedGearGeometry {
             Self::Rotary(r) => r.frame,
             Self::Rack(r) => r.frame,
             Self::Bevel(r) => r.frame,
+            Self::Worm(r) => r.frame,
         }
     }
     pub fn teeth(&self) -> u32 {
@@ -51,6 +53,7 @@ impl ResolvedGearGeometry {
             Self::Rotary(r) => r.teeth,
             Self::Rack(r) => r.teeth,
             Self::Bevel(r) => r.teeth,
+            Self::Worm(r) => r.teeth,
         }
     }
     pub fn family(&self) -> GearFamily {
@@ -58,12 +61,19 @@ impl ResolvedGearGeometry {
             Self::Rotary(r) => r.family,
             Self::Rack(_) => GearFamily::Rack,
             Self::Bevel(_) => GearFamily::Bevel,
+            Self::Worm(_) => GearFamily::Worm,
         }
     }
     pub fn rotary(&self) -> Option<&ResolvedGear> {
         match self {
             Self::Rotary(r) => Some(r),
-            Self::Rack(_) | Self::Bevel(_) => None,
+            Self::Rack(_) | Self::Bevel(_) | Self::Worm(_) => None,
+        }
+    }
+    pub fn worm(&self) -> Option<&ResolvedWormGeometry> {
+        match self {
+            Self::Worm(r) => Some(r),
+            _ => None,
         }
     }
     pub fn bevel(&self) -> Option<&ResolvedBevel> {
@@ -75,7 +85,7 @@ impl ResolvedGearGeometry {
     pub fn rack(&self) -> Option<&ResolvedRack> {
         match self {
             Self::Rack(r) => Some(r),
-            Self::Rotary(_) | Self::Bevel(_) => None,
+            Self::Rotary(_) | Self::Bevel(_) | Self::Worm(_) => None,
         }
     }
 }
@@ -84,6 +94,11 @@ impl GearParameters {
         &self,
         parameters: &EvaluatedParameters,
     ) -> Result<ResolvedGearGeometry, DocumentError> {
+        if self.family == GearFamily::Worm {
+            return self
+                .resolve_worm(parameters)
+                .map(ResolvedGearGeometry::Worm);
+        }
         if self.family == GearFamily::Bevel {
             return self
                 .resolve_bevel(parameters)
@@ -297,6 +312,7 @@ impl GearPairParameters {
             mating,
             rack_travel: Some(travel),
             bevel: None,
+            worm: None,
         })
     }
 }

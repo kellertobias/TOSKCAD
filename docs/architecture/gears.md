@@ -25,18 +25,19 @@ inspector and refused by canonical preparation and MCP.
 | Internal ring | Native inward involute teeth and connected outer rim | 24-tooth spur pinion with 48/60-tooth ring; either member order | Unshifted 20-degree spur subset; explicit outside diameter |
 | Rack | Native straight flanks, circular root transitions and connected backing | One matching unshifted spur pinion; either member order | 4-64 whole centered pitch cells, zero helix, conservative finite travel |
 | Straight bevel | Spherical-involute flanks, back-cone heel/toe boundaries and custom spherical-circle root transitions | Intersecting 90-degree shafts with a shared pitch apex and derived tooth-count ratio | Declared 20-degree, zero-shift subset; 24-64 teeth per member; availability follows the registry |
-| Worm and wheel | Unavailable | Unavailable | [CAD-230](https://plans.tokenet.de/CAD/230) |
+| Worm and wheel | ZA axial-straight worm or generated single-envelope wheel | One right-hand start, perpendicular shafts, derived center and worm-owned drive | Axial module 0.5–2 mm, normal pressure 20°, quotient 10 and 32–64 wheel teeth; see the declared subset below |
 
 Intrinsic hubs, nonzero profile shift and explicit diametral-pitch input remain
-[CAD-231](https://plans.tokenet.de/CAD/231). Existing recipes use normal or
-transverse module and pressure angle. They retain tooth count, face width,
+[CAD-231](https://plans.tokenet.de/CAD/231). Rotary, rack and bevel recipes use
+normal or transverse module and pressure angle. Worm gearing uses axial module
+with normal pressure angle, as declared below. Recipes retain tooth count, face width,
 helix magnitude/hand, bore, center gap, circular-root-fillet ratio, minimum
 root wall and two separate tangential thinning inputs. Design backlash applies
 per gear at its reference circle; fabrication allowance adds further thinning.
 Neither is a strength, standardized fit or printer calibration setting.
 
 The canonical policy bounds module to at least 0.01 mm, rotary count to 4-128 whole
-teeth (rack count is 4-64 cells; the bevel subset has separate limits below), the selected pressure angle to 14.5-35 degrees and helix magnitude to
+teeth (rack count is 4-64 cells; bevel and worm subsets have separate limits below), the selected pressure angle to 14.5-35 degrees and helix magnitude to
 0-45 degrees. Additional resolved geometry checks can refuse a recipe within
 those input ranges. In particular, the conservative unshifted rotary gear/pinion tooth-count
 policy uses `ceil(2 / sin(normal_pressure_angle)^2)` without virtual-tooth
@@ -273,6 +274,49 @@ project instead of interpreting it as a spur gear. The
 [native adapter tests](../../crates/multicad-kernel/tests/spherical_bevel.rs) and
 [model pair tests](../../crates/multicad-model/tests/bevel_gears.rs) define the
 executable checks; their presence alone does not record a passing run.
+
+## ZA worm and generated wheel subset
+
+[ADR-0034](0034-generated-za-worm-wheel.md) owns the construction equations,
+primary sources, approximation proof and limits. This system is explicitly ZA;
+it does not relabel KHK's stock Type III worm. The custom cylindrical wheel
+blank has radius `zm/2+m`. Actual generating-hob flanks, swept sharp-tip root
+transitions and a torus root form its cutting space.
+
+Both members use `GearFamily::Worm` with an explicit `WormMember` role.
+`teeth` is the member's own count: one start for Worm, 32–64 teeth for Wheel.
+`WormDimensions` retains tooth system, the opposite original typed count and
+the shared typed diameter quotient. Coupling clones the opposite source
+dimension; it does not replace a parameter reference or expression with its
+evaluated number. Conflicting explicit source dimensions are refused.
+
+Module is axial, while the pressure-angle input is normal 20°. The derived
+axial pressure and lead angle are displayed separately. Worm face width means
+threaded length `16m–32m`; Wheel face width means axial width `0.5m–2m`.
+Each member's backlash plus fabrication allowance lies within `0–0.1m`.
+The generated wheel uses an enlarged hob tip for `0.25m` root clearance and
+its own pitch-space allowance. Bore checks retain the requested minimum wall
+at the actual minimum root radius. Other tooth systems, starts, hands,
+quotients, shifts and fillets are refused.
+
+Pair drive always belongs to the worm, including when it is member B. Existing
+assembly relationships derive center distance and perpendicular axes. Native
+validation checks the current pose and nine phases over one full worm turn,
+requiring no intersection solid and an actual proximity witness within the
+authored allowance. Selected named flank faces may supply that existence
+witness; a miss falls back to the whole native bodies. It is not a claim that
+the selected distance is the global minimum. Worm intersection checks opt into
+OCCT's internal parallel workers with the same validity and error guards.
+
+Reader capability `model.gear.worm.1` is required for retained direct,
+suppressed or template-only worm recipes. Unsupported readers refuse these
+documents. The focused [core](../../crates/multicad-core/tests/model_worm_gears.rs),
+[kernel](../../crates/multicad-kernel/tests/worm_gears.rs),
+[model](../../crates/multicad-model/tests/worm_gears.rs) and
+[MCP](../../crates/multicad-mcp/tests/worm_gears.rs) tests define the checks;
+passing runs and actual macOS workflows belong in the verification record.
+Finite phase samples do not establish continuous contact or clearance,
+self-locking, efficiency, load capacity, standards compliance or physical fit.
 
 ## Editing and verification boundaries
 

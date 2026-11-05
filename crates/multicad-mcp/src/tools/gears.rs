@@ -9,7 +9,10 @@ use crate::{
 use multicad_core::{
     constraint_sketch::Dimension,
     document::Document,
-    model::{self, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearParameters},
+    model::{
+        self, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearParameters, WormMember,
+        WormToothSystem,
+    },
     parameters::{BoundExpression, EvaluatedParameters, Unit},
     sketch::Datum,
 };
@@ -47,7 +50,17 @@ argument_enum!(
     BevelToothSystem,
     [SphericalInvoluteStraight, GleasonOctoid, Spiral, Zerol]
 );
-argument_enum!(GearModuleSystemArg, GearModuleSystem, [Normal, Transverse]);
+argument_enum!(
+    GearModuleSystemArg,
+    GearModuleSystem,
+    [Normal, Transverse, Axial]
+);
+argument_enum!(WormMemberArg, WormMember, [Worm, Wheel]);
+argument_enum!(
+    WormToothSystemArg,
+    WormToothSystem,
+    [ZaAxialStraight, Zi, Zn, Zk]
+);
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -110,7 +123,8 @@ pub struct GearArgs {
 pub struct GearRecipeArgs {
     #[serde(default)]
     pub family: Option<GearFamilyArg>,
-    /// Selects the convention for both module and pressure_angle.
+    /// Normal/transverse conventions apply to rotary gears. Worm Axial module
+    /// retains a NORMAL pressure_angle of 20 degrees; axial pressure is derived.
     #[serde(default)]
     pub module_system: Option<GearModuleSystemArg>,
     #[serde(default)]
@@ -136,7 +150,16 @@ pub struct GearRecipeArgs {
     /// Bevel tooth system; only spherical_involute_straight is implemented.
     #[serde(default)]
     pub bevel_system: Option<BevelToothSystemArg>,
-    /// Standalone bevel creation requires the intended mate count. Pairs derive
+    /// Explicit standalone worm member; paired members must have opposite roles.
+    #[serde(default)]
+    pub worm_role: Option<WormMemberArg>,
+    /// Only za_axial_straight is available; zi/zn/zk fail closed.
+    #[serde(default)]
+    pub worm_system: Option<WormToothSystemArg>,
+    /// Worm pitch diameter / axial module; only q=10 is supported.
+    #[serde(default)]
+    pub diameter_quotient: Option<GearScalarArg>,
+    /// Standalone bevel or worm creation requires the intended mate count. Pairs derive
     /// this from the opposite member's original typed tooth-count source.
     #[serde(default)]
     pub mate_teeth: Option<GearScalarArg>,
@@ -195,7 +218,45 @@ pub(super) fn patched_parameters(
         let family = GearFamily::from(value);
         if family != p.family {
             p.bevel = None;
-            if family == GearFamily::Bevel {
+            if p.family == GearFamily::Worm {
+                p.module_system = GearModuleSystem::Normal;
+                p.root_fillet_ratio = model::ratio(0.2);
+                p.teeth = Dimension::Literal {
+                    value: 24.,
+                    unit: "count".into(),
+                };
+            }
+            p.worm = None;
+            if family == GearFamily::Worm {
+                let role = args.worm_role.map(Into::into).unwrap_or(WormMember::Worm);
+                p.rack = None;
+                p.module_system = GearModuleSystem::Axial;
+                p.hand = GearHand::Right;
+                p.module = model::length(1.);
+                p.teeth = Dimension::Literal {
+                    value: if role == WormMember::Worm { 1. } else { 32. },
+                    unit: "count".into(),
+                };
+                p.pressure_angle = model::angle(20.);
+                p.face_width = model::length(if role == WormMember::Worm { 24. } else { 1. });
+                p.helix_angle = model::angle(0.);
+                p.center_gap = model::length(0.);
+                p.profile_shift = model::ratio(0.);
+                p.root_fillet_ratio = model::ratio(0.);
+                p.outer_diameter = None;
+                p.bore_diameter = model::length(0.);
+                p.backlash = model::length(0.05);
+                p.fabrication_allowance = model::length(0.);
+                p.worm = Some(model::WormDimensions {
+                    role,
+                    tooth_system: WormToothSystem::ZaAxialStraight,
+                    mate_teeth: Dimension::Literal {
+                        value: if role == WormMember::Worm { 32. } else { 1. },
+                        unit: "count".into(),
+                    },
+                    diameter_quotient: model::ratio(10.),
+                });
+            } else if family == GearFamily::Bevel {
                 p.rack = None;
                 p.helix_angle = model::angle(0.);
                 p.hand = GearHand::None;
@@ -293,8 +354,37 @@ pub(super) fn patched_parameters(
             ));
         }
     }
-    let has_bevel_args =
-        args.bevel_system.is_some() || args.mate_teeth.is_some() || args.shaft_angle.is_some();
+    let has_bevel_args = args.bevel_system.is_some() || args.shaft_angle.is_some();
+    let has_worm_args =
+        args.worm_role.is_some() || args.worm_system.is_some() || args.diameter_quotient.is_some();
+    if p.family == GearFamily::Worm {
+        if has_bevel_args {
+            return Err(ToolError::invalid(
+                "Bevel system and shaft angle do not belong to a worm recipe",
+            ));
+        }
+        let mut worm = p
+            .worm
+            .take()
+            .ok_or_else(|| ToolError::invalid("Worm dimensions are missing"))?;
+        if let Some(role) = args.worm_role {
+            worm.role = role.into();
+        }
+        if let Some(system) = args.worm_system {
+            worm.tooth_system = system.into();
+        }
+        if let Some(value) = &args.mate_teeth {
+            worm.mate_teeth = value.dimension(document, evaluated, Unit::Count)?;
+        }
+        if let Some(value) = &args.diameter_quotient {
+            worm.diameter_quotient = value.dimension(document, evaluated, Unit::Ratio)?;
+        }
+        p.worm = Some(worm);
+    } else if has_worm_args {
+        return Err(ToolError::invalid(
+            "Worm role, system and diameter quotient belong only to a worm recipe",
+        ));
+    }
     if p.family == GearFamily::Bevel {
         let mut bevel = p.bevel.take().unwrap_or(model::BevelDimensions {
             tooth_system: BevelToothSystem::SphericalInvoluteStraight,
@@ -311,7 +401,7 @@ pub(super) fn patched_parameters(
             bevel.shaft_angle = value.dimension(document, evaluated, Unit::Degree)?;
         }
         p.bevel = Some(bevel);
-    } else if has_bevel_args {
+    } else if has_bevel_args || (args.mate_teeth.is_some() && p.family != GearFamily::Worm) {
         return Err(ToolError::invalid(
             "Bevel system, mate teeth and shaft angle belong to a bevel recipe",
         ));
@@ -333,6 +423,14 @@ pub(super) fn parameters(
             "A standalone bevel needs explicit mate_teeth and shaft_angle; set_gear_pair derives paired mate counts",
         ));
     }
+    if p.family == GearFamily::Worm
+        && previous.is_none_or(|old| old.family != GearFamily::Worm)
+        && (args.worm_role.is_none() || args.mate_teeth.is_none())
+    {
+        return Err(ToolError::invalid(
+            "A standalone worm needs explicit worm_role and mate_teeth; set_gear_pair derives paired mate counts",
+        ));
+    }
     p.resolve_geometry(evaluated)?;
     Ok(p)
 }
@@ -340,14 +438,15 @@ pub(super) fn gear_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult 
     Ok(
         json!({"families":GearFamily::ALL.map(|f| json!({"family":f,"label":f.label(),"supported":f.supported(),"source":f.source()})),
         "sources":[model::GEAR_DIMENSIONS_SOURCE_URL,model::GEAR_PROFILE_SOURCE_URL,model::GEAR_FILLET_SOURCE_URL,model::BEVEL_PROFILE_SOURCE_URL,model::BEVEL_DIMENSIONS_SOURCE_URL],
+        "worm":{"source":model::WORM_PROFILE_SOURCE,"tooth_system":"za_axial_straight","module_system":"axial","normal_pressure_angle_degrees":20,"axial_module_mm":[0.5,2.0],"diameter_quotient":10,"worm_starts":1,"hand":"right","wheel_teeth":[32,64],"worm_length":"Independent face_width, 16–32 times module","wheel_face_width":"Independent face_width, 0.5–2 times module","thinning":"Backlash plus fabrication allowance at most 0.1 times module","datum":"Members centered on their own axial Z=0; wheel axis crossed 90 degrees","unsupported_systems":["zi","zn","zk"],"limits":"No load, contact, efficiency or manufacturing certification"},
         "internal_ring":{"teeth":[48,60],"pressure_angle_degrees":20,"pinion_teeth":24,"helix":false,"profile_shift":0,"outer_diameter":"Explicit; rim beyond root must meet minimum_wall","bore_diameter":"Zero; inward toothed opening is derived","root":"Custom circular fillet, not a simulated cutter trochoid"},
         "rack":{"teeth":[4,64],"length":"Derived as teeth*pi*module; whole centered pitch cells","backing_thickness":"Explicit connected base below root line","root":"Custom tangent circular fillet, not a cutter trochoid","pair":"One rack and one matching unshifted non-undercut spur pinion; conservative finite travel keeps full pinion tip-circle projection within rack ends","drive":"Positive pinion CCW advances rack along positive local X"},
         "bevel":{"tooth_system":"spherical_involute_straight","teeth":[24,64],"pressure_angle_degrees":20,"shaft_angle_degrees":90,
         "face_width":"Along pitch cone; at most min(outer cone distance/3,10*module)","datum":"Source frame origin is the pitch apex; paired axes intersect there",
         "blank":"KG standard heel/toe backcones","root":"Custom tangent small circle on the outer reference sphere; not a cutter-generated root",
         "unavailable_systems":["gleason_octoid","spiral","zerol"],"limits":"No hubs, helix, profile shift, load or fit certification; bore and wall checked at toe root"},
-        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family, bounded internal ring/spur pinion, finite straight rack/spur pinion, or bounded intersecting-axis spherical-involute bevels; matching transverse module/pressure angle and width; external helical hands opposite. Internal centers use radius difference and same-direction rotation. Unmodified periodic generator Parts only"},
-        "scope":"Bounded rotary involute gears, finite straight racks and compatible parallel/intersecting-axis pairs, with declared custom root blends; no strength, fit or accuracy certification. Unsupported families/combinations fail closed."}),
+        "pair_placement":{"supported":true,"tool":"set_gear_pair","limits":"Matching external family, bounded internal ring/spur pinion, finite straight rack/spur pinion, bounded intersecting-axis spherical-involute bevels, or explicit ZA worm/wheel roles with independent axial widths. Rotary pairs match transverse module/pressure angle and width; external helical hands opposite. Internal centers use radius difference and same-direction rotation. Unmodified periodic generator Parts only"},
+        "scope":"Bounded rotary involute gears, finite straight racks, ZA worms/generated wheels and compatible parallel/intersecting/crossed-axis pairs, with declared custom root blends; no strength, fit or accuracy certification. Unsupported families/combinations fail closed."}),
     )
 }
 pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) -> ToolResult {
@@ -355,6 +454,19 @@ pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) 
     let feature = id(&args.gear)?;
     let source = model::read_gear(&document, feature)?;
     let geometry = source.parameters.resolve_geometry(&evaluated)?;
+    if let Some(r) = geometry.worm() {
+        return Ok(
+            json!({"revision":revision,"gear":feature,"part":source.output.body,"source":source,
+            "resolved":{"role":r.role,"tooth_system":r.tooth_system,"teeth":r.teeth,"starts":r.starts,"wheel_teeth":r.wheel_teeth,
+            "axial_module_mm":r.axial_module_mm,"diameter_quotient":r.diameter_quotient,"normal_pressure_angle_rad":r.normal_pressure_angle_rad,
+            "axial_pressure_angle_rad":r.axial_pressure_angle_rad,"lead_angle_rad":r.lead_angle_rad,"pitch_mm":r.pitch_mm,"lead_mm":r.lead_mm,
+            "pitch_radius_mm":r.pitch_radius_mm,"tip_radius_mm":r.tip_radius_mm,"minimum_root_radius_mm":r.minimum_root_radius_mm,
+            "bore_radius_mm":r.bore_radius_mm,"face_width_mm":r.face_width_mm,"nominal_tooth_thickness_mm":r.nominal_tooth_thickness_mm,
+            "design_tooth_thickness_mm":r.design_tooth_thickness_mm,"physical_tooth_thickness_mm":r.physical_tooth_thickness_mm,
+            "thinning_mm":r.thinning_mm,"hob_pitch_space_thickness_mm":r.hob_pitch_space_thickness_mm},
+            "scope":"ZA axial-straight bounded worm or generated wheel; normal20 pressure, axial module; no load/contact/efficiency certification. evaluate_model supplies actual native evidence."}),
+        );
+    }
     if let model::ResolvedGearGeometry::Rack(r) = &geometry {
         return Ok(
             json!({"revision":revision,"gear":feature,"part":source.output.body,"source":source,
@@ -475,5 +587,67 @@ mod wire_tests {
         assert!(schema["properties"]["module"].is_object());
         assert!(schema["properties"]["family"].is_object());
         assert!(schema["properties"].get("recipe").is_none());
+    }
+}
+
+#[cfg(test)]
+mod worm_recipe_tests {
+    use super::*;
+    fn recipe(value: serde_json::Value) -> GearRecipeArgs {
+        serde_json::from_value(value).unwrap()
+    }
+    #[test]
+    fn worm_wire_uses_axial_module_normal_pressure_and_preserves_omitted_edits() {
+        let session =
+            multicad_core::commands::Session::new(Document::new("Worm wire").unwrap()).unwrap();
+        let args = recipe(
+            json!({"family":"worm","worm_role":"worm","mate_teeth":{"value":40.,"unit":"count"}}),
+        );
+        let a = parameters(&args, None, session.document(), session.parameters()).unwrap();
+        let r = a.resolve_geometry(session.parameters()).unwrap();
+        let r = r.worm().unwrap();
+        assert_eq!(r.teeth, 1);
+        assert_eq!(r.wheel_teeth, 40);
+        assert_eq!(a.module_system, GearModuleSystem::Axial);
+        assert!((r.normal_pressure_angle_rad.to_degrees() - 20.).abs() < 1e-12);
+        assert!((r.axial_pressure_angle_rad - r.normal_pressure_angle_rad).abs() > 1e-4);
+        let b = parameters(
+            &recipe(json!({"face_width":{"value":20.,"unit":"mm"}})),
+            Some(&a),
+            session.document(),
+            session.parameters(),
+        )
+        .unwrap();
+        assert_eq!(b.worm, a.worm);
+        assert_eq!(b.teeth, a.teeth);
+        assert_eq!(b.face_width, model::length(20.));
+        for bad in [
+            json!({"worm_system":"zi"}),
+            json!({"hand":"left"}),
+            json!({"module_system":"normal"}),
+            json!({"diameter_quotient":{"value":11.,"unit":"ratio"}}),
+            json!({"teeth":{"value":2.,"unit":"count"}}),
+            json!({"outer_diameter":{"value":20.,"unit":"mm"}}),
+        ] {
+            assert!(
+                parameters(
+                    &recipe(bad),
+                    Some(&a),
+                    session.document(),
+                    session.parameters()
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            parameters(
+                &recipe(json!({"family":"worm","mate_teeth":{"value":40.,"unit":"count"}})),
+                None,
+                session.document(),
+                session.parameters()
+            )
+            .is_err()
+        );
+        assert_eq!(session.revision(), 0);
     }
 }

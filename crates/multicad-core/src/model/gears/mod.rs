@@ -5,6 +5,7 @@ mod pair_prepare;
 mod prepare;
 mod profiles;
 mod rack;
+mod worm;
 use super::{
     BodyOutput, PrimitiveFrame, angle,
     common::*,
@@ -25,6 +26,7 @@ pub use profiles::*;
 pub use rack::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
+pub use worm::*;
 
 pub const GEAR_TYPE: &str = "model.gear";
 pub const GEAR_SCHEMA: u32 = 1;
@@ -35,6 +37,7 @@ pub const INTERNAL_GEAR_CAPABILITY: &str = "model.gear.internal.1";
 pub enum GearModuleSystem {
     Normal,
     Transverse,
+    Axial,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,10 +54,12 @@ pub struct GearParameters {
     pub rack: Option<RackDimensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bevel: Option<BevelDimensions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worm: Option<WormDimensions>,
     pub module_system: GearModuleSystem,
     pub module: Dimension,
     pub teeth: Dimension,
-    /// Normal or transverse according to module_system.
+    /// Normal or transverse according to module_system; Worm always uses normal pressure with axial module.
     pub pressure_angle: Dimension,
     pub face_width: Dimension,
     /// Positive magnitude; hand is stored separately. Zero for Spur.
@@ -83,6 +88,7 @@ impl Default for GearParameters {
             family: GearFamily::Spur,
             rack: None,
             bevel: None,
+            worm: None,
             module_system: GearModuleSystem::Normal,
             module: length(2.),
             teeth: Dimension::Literal {
@@ -163,6 +169,10 @@ impl GearParameters {
             dimensions.push((&bevel.mate_teeth, Unit::Count));
             dimensions.push((&bevel.shaft_angle, Unit::Degree));
         }
+        if let Some(worm) = &self.worm {
+            dimensions.push((&worm.mate_teeth, Unit::Count));
+            dimensions.push((&worm.diameter_quotient, Unit::Ratio));
+        }
         dimensions.extend(self.frame.origin.iter().map(|d| (d, Unit::Millimeter)));
         dimensions
     }
@@ -171,13 +181,30 @@ impl GearParameters {
         for (dimension, unit) in self.dimensions() {
             check_dimension(dimension, unit)?;
         }
-        // Native support is advertised only after its verification gate. The
-        // canonical Bevel path may prepare candidates while that gate runs.
-        if !self.family.supported() && self.family != GearFamily::Bevel {
+        if !self.family.supported() {
             return Err(invalid(format!(
                 "{} is not implemented",
                 self.family.label()
             )));
+        }
+        if (self.family == GearFamily::Worm) != self.worm.is_some() {
+            return Err(invalid(
+                "Worm gearing requires declared role/generating dimensions; other families must omit them",
+            ));
+        }
+        if (self.module_system == GearModuleSystem::Axial) != (self.family == GearFamily::Worm) {
+            return Err(invalid(
+                "Axial module is required exclusively for worm gearing",
+            ));
+        }
+        if self
+            .worm
+            .as_ref()
+            .is_some_and(|w| !w.tooth_system.supported())
+        {
+            return Err(invalid(
+                "Only bounded ZA axial-straight worm gearing is implemented; ZI, ZN and ZK are unavailable",
+            ));
         }
         if (self.family == GearFamily::Bevel) != self.bevel.is_some() {
             return Err(invalid(
@@ -207,6 +234,11 @@ impl GearParameters {
     }
     pub fn resolve(&self, parameters: &EvaluatedParameters) -> Result<ResolvedGear, DocumentError> {
         self.validate()?;
+        if self.family == GearFamily::Worm {
+            return Err(invalid(
+                "Worm gearing has distinct generated geometry; use resolve_geometry",
+            ));
+        }
         if self.family == GearFamily::Rack {
             return Err(invalid(
                 "Rack geometry has no rotary radii; use resolve_geometry",
@@ -274,6 +306,11 @@ impl GearParameters {
             ));
         }
         let (mn, mt, an, at) = match self.module_system {
+            GearModuleSystem::Axial => {
+                return Err(invalid(
+                    "Axial module belongs only to resolved worm geometry",
+                ));
+            }
             GearModuleSystem::Normal => (
                 module,
                 module / beta.cos(),

@@ -1,13 +1,13 @@
-//! Native involute bodies are derived from the canonical, resolved gear recipe.
+//! Native gear bodies are derived from the canonical, resolved gear recipe.
 use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
-    model::{GearDefinition, GearFamily, ResolvedGearGeometry},
+    model::{GearDefinition, GearFamily, ResolvedGearGeometry, WormMember},
     parameters::EvaluatedParameters,
 };
 use multicad_kernel::{
-    GearSweep, GeometryPolicy, InvoluteGear, RigidTransform, Solid, SphericalBevelGear,
-    StraightRack,
+    GearSweep, GeneratedZaWormWheel, GeometryPolicy, InvoluteGear, RigidTransform, Solid,
+    SphericalBevelGear, StraightRack, ZaWorm,
 };
 
 #[derive(Clone, Debug)]
@@ -15,6 +15,8 @@ pub(crate) enum NativeSpecification {
     Rotary(InvoluteGear),
     Rack(StraightRack),
     Bevel(SphericalBevelGear),
+    Worm(ZaWorm),
+    WormWheel(GeneratedZaWormWheel),
 }
 
 pub(crate) fn specification(
@@ -49,6 +51,23 @@ pub(crate) fn specification(
                 half_base_tooth_angle_rad: r.half_base_angle_rad,
                 root_fillet_radius_mm: r.root_fillet_radius_mm,
             }));
+        }
+        ResolvedGearGeometry::Worm(r) => {
+            return Ok(match r.role {
+                WormMember::Worm => NativeSpecification::Worm(ZaWorm {
+                    axial_module_mm: r.axial_module_mm,
+                    threaded_length_mm: r.face_width_mm,
+                    bore_radius_mm: r.bore_radius_mm,
+                    axial_thinning_mm: r.thinning_mm,
+                }),
+                WormMember::Wheel => NativeSpecification::WormWheel(GeneratedZaWormWheel {
+                    teeth: r.wheel_teeth,
+                    axial_module_mm: r.axial_module_mm,
+                    face_width_mm: r.face_width_mm,
+                    bore_radius_mm: r.bore_radius_mm,
+                    pitch_thinning_mm: r.thinning_mm,
+                }),
+            });
         }
     };
     let sweep = match r.family {
@@ -94,6 +113,10 @@ pub(crate) fn build(
         NativeSpecification::Rack(spec) => Solid::straight_rack_named(spec, feature, policy),
         NativeSpecification::Bevel(spec) => {
             Solid::spherical_bevel_gear_named(spec, feature, policy)
+        }
+        NativeSpecification::Worm(spec) => Solid::za_worm_named(spec, feature, policy),
+        NativeSpecification::WormWheel(spec) => {
+            Solid::generated_za_worm_wheel_named(spec, feature, policy)
         }
     };
     let frame = r.frame();

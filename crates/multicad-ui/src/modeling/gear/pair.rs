@@ -93,6 +93,8 @@ pub(super) struct GearPairPanel {
     secondary: [DimensionField; 4],
     secondary_ring: bool,
     rack_member: Option<usize>,
+    worm_member: Option<usize>,
+    secondary_width: DimensionField,
     secondary_backing: DimensionField,
     secondary_outside: DimensionField,
     origin: [DimensionField; 3],
@@ -128,9 +130,23 @@ impl GearPairPanel {
             GearPairRequest::new(&primary.request.name, [primary.request.clone(), second]);
         template.parameters.frame = frame;
         let rack_member = (primary.family == GearFamily::Rack).then_some(0);
+        let worm_member = (primary.family == GearFamily::Worm).then_some(
+            if primary.worm_role == WormMember::Worm {
+                0
+            } else {
+                1
+            },
+        );
+        let secondary_width = DimensionField::from_dimension(
+            &model::length(if worm_member == Some(1) { 24. } else { 1. }),
+            "mm",
+        )
+        .expect("worm pair width");
         let secondary_backing = primary.rack_backing.clone();
         let secondary = [
-            if primary.family == GearFamily::Bevel {
+            if primary.family == GearFamily::Worm {
+                primary.worm_mate.clone()
+            } else if primary.family == GearFamily::Bevel {
                 primary.bevel_mate.clone()
             } else {
                 DimensionField::from_dimension(&template.gears[1].parameters.teeth, "count")
@@ -147,6 +163,8 @@ impl GearPairPanel {
             secondary,
             secondary_ring: false,
             rack_member,
+            worm_member,
+            secondary_width,
             secondary_backing,
             secondary_outside: DimensionField::from_dimension(&model::length(112.), "mm")
                 .expect("ring outside"),
@@ -191,6 +209,12 @@ impl GearPairPanel {
         let b = &template.gears[1].parameters;
         Ok(Self {
             secondary_ring: b.family == GearFamily::InternalRing,
+            worm_member: template.gears[0]
+                .parameters
+                .worm
+                .as_ref()
+                .map(|w| if w.role == WormMember::Worm { 0 } else { 1 }),
+            secondary_width: field(&b.face_width, "mm")?,
             rack_member: if template.gears[0].parameters.family == GearFamily::Rack {
                 Some(0)
             } else if b.family == GearFamily::Rack {
@@ -254,11 +278,47 @@ impl GearPairPanel {
         p.request.parameters.frame = self.template.parameters.frame.clone();
         p.origin = self.origin.clone();
         p.plane = self.plane;
+        if p.family == GearFamily::Worm {
+            p.worm_mate = self.secondary[0].clone();
+        }
         if p.family == GearFamily::Bevel {
             p.bevel_mate = self.secondary[0].clone();
         }
         p.stamp = FormStamp::new();
         p
+    }
+    fn set_worm_member(&mut self, member: Option<usize>) {
+        if self.worm_member == member {
+            return;
+        }
+        if self.worm_member.is_some() && member.is_some() {
+            for (a, b) in [(1, 0), (6, 1), (7, 2), (8, 3)] {
+                std::mem::swap(&mut self.primary.fields[a], &mut self.secondary[b]);
+            }
+            std::mem::swap(&mut self.primary.fields[3], &mut self.secondary_width);
+        } else if let Some(index) = member {
+            self.rack_member = None;
+            self.secondary_ring = false;
+            self.primary.select_family(GearFamily::Worm);
+            self.primary.fields[1].set_literal(if index == 0 { 1. } else { 32. }, "count");
+            self.primary.fields[3].set_literal(if index == 0 { 24. } else { 1. }, "mm");
+            self.secondary[0].set_literal(if index == 0 { 32. } else { 1. }, "count");
+            self.secondary[1].set_literal(0., "mm");
+            self.secondary[2].set_literal(0.05, "mm");
+            self.secondary[3].set_literal(0., "mm");
+            self.secondary_width
+                .set_literal(if index == 0 { 1. } else { 24. }, "mm");
+        }
+        self.worm_member = member;
+        if let Some(index) = member {
+            self.primary.worm_role = if index == 0 {
+                WormMember::Worm
+            } else {
+                WormMember::Wheel
+            };
+        } else if self.primary.family == GearFamily::Worm {
+            self.primary.select_family(GearFamily::Spur);
+        }
     }
     fn set_rack_member(&mut self, member: Option<usize>) {
         if self.rack_member == member {
@@ -315,6 +375,30 @@ impl GearPairPanel {
         } else {
             let first = self.primary.authored_request(document, enabled)?.parameters;
             let second = GearParameters {
+                worm: if first.family == GearFamily::Worm {
+                    Some(WormDimensions {
+                        role: if self.worm_member == Some(0) {
+                            WormMember::Wheel
+                        } else {
+                            WormMember::Worm
+                        },
+                        tooth_system: self.primary.worm_system,
+                        mate_teeth: first.teeth.clone(),
+                        diameter_quotient: first
+                            .worm
+                            .as_ref()
+                            .ok_or("Worm dimensions are missing")?
+                            .diameter_quotient
+                            .clone(),
+                    })
+                } else {
+                    None
+                },
+                face_width: if first.family == GearFamily::Worm {
+                    self.secondary_width.resolve(document)?
+                } else {
+                    first.face_width.clone()
+                },
                 family: if let Some(index) = self.rack_member {
                     if index == 1 {
                         GearFamily::Rack
@@ -351,15 +435,21 @@ impl GearPairPanel {
                 },
                 backlash: self.secondary[2].resolve(document)?,
                 fabrication_allowance: self.secondary[3].resolve(document)?,
-                hand: match first.hand {
-                    GearHand::None => GearHand::None,
-                    GearHand::Left => GearHand::Right,
-                    GearHand::Right => GearHand::Left,
+                hand: if first.family == GearFamily::Worm {
+                    GearHand::Right
+                } else {
+                    match first.hand {
+                        GearHand::None => GearHand::None,
+                        GearHand::Left => GearHand::Right,
+                        GearHand::Right => GearHand::Left,
+                    }
                 },
                 frame: self.template.gears[1].parameters.frame.clone(),
                 ..first.clone()
             };
-            let [first, second] = if first.family == GearFamily::Bevel {
+            let [first, second] = if first.family == GearFamily::Worm {
+                model::couple_worm_pair_recipes(&[first, second]).map_err(|e| e.to_string())?
+            } else if first.family == GearFamily::Bevel {
                 model::couple_bevel_pair_recipes(
                     &[first, second],
                     &self.primary.bevel_shaft.resolve(document)?,
@@ -400,7 +490,10 @@ impl GearPairPanel {
         ui.small("The full pinion tip-circle projection must stay within the finite rack ends. Out-of-range drive is refused.");
     }
     fn show_resolved(ui: &mut egui::Ui, resolved: &ResolvedGearPair) {
-        if let Some(travel) = &resolved.rack_travel {
+        if let Some(worm) = &resolved.worm {
+            ui.small(format!("ZA worm {:?} / wheel {:?} · crossed axes 90° · center distance {:.4} mm · one start : {} wheel teeth",worm.worm_member,worm.wheel_member,worm.center_distance_mm,worm.wheel_teeth));
+            ui.small("Drive is the worm angle for either member order. Native proximity is a geometry witness, not a load or manufactured-contact certificate.");
+        } else if let Some(travel) = &resolved.rack_travel {
             ui.small(format!(
                 "Rack {:?} / pinion {:?} · translation {:.4} mm",
                 travel.rack_member, travel.pinion_member, travel.translation_mm
@@ -462,23 +555,53 @@ impl GearPairPanel {
         }
         if self.update_geometry {
             ui.label("Pair type");
-            let mut rack = self.rack_member.is_some();
+            let old_kind = if self.worm_member.is_some() {
+                2
+            } else if self.rack_member.is_some() {
+                1
+            } else {
+                0
+            };
+            let mut kind = old_kind;
             controls::inspector_combo(ui, "gear-pair-type")
-                .selected_text(if rack {
-                    "Rack and pinion"
-                } else {
-                    "Rotary gears"
+                .selected_text(match kind {
+                    2 => "ZA worm and wheel",
+                    1 => "Rack and pinion",
+                    _ => "Rotary gears",
                 })
                 .show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut kind, 0, "Rotary gears").changed();
                     changed |= ui
-                        .selectable_value(&mut rack, false, "Rotary gears")
+                        .selectable_value(&mut kind, 1, "Rack and pinion")
                         .changed();
-                    changed |= ui
-                        .selectable_value(&mut rack, true, "Rack and pinion")
-                        .changed();
+                    if ui
+                        .add_enabled(
+                            GearFamily::Worm.supported(),
+                            egui::Button::selectable(kind == 2, "ZA worm and wheel"),
+                        )
+                        .clicked()
+                    {
+                        kind = 2;
+                        changed = true;
+                    }
                 });
-            if rack != self.rack_member.is_some() {
-                self.set_rack_member(rack.then_some(0));
+            if kind != old_kind {
+                self.set_worm_member(None);
+                self.set_rack_member(None);
+                if kind == 2 {
+                    self.set_worm_member(Some(0));
+                } else if kind == 1 {
+                    self.set_rack_member(Some(0));
+                }
+            }
+            if let Some(index) = self.worm_member {
+                let mut member = index;
+                ui.label("Worm member / wheel member");
+                changed |= ui.radio_value(&mut member, 0, "Worm A / Wheel B").changed();
+                changed |= ui.radio_value(&mut member, 1, "Wheel A / Worm B").changed();
+                if member != index {
+                    self.set_worm_member(Some(member));
+                }
             }
             if let Some(index) = self.rack_member {
                 let mut member = index;
@@ -505,6 +628,13 @@ impl GearPairPanel {
             changed |=
                 self.primary
                     .geometry_controls_with_family(ui, self.rack_member.is_none(), true);
+            if self.primary.family == GearFamily::Worm && self.worm_member.is_none() {
+                self.set_worm_member(Some(0));
+                changed = true;
+            }
+            if self.primary.family != GearFamily::Worm {
+                self.worm_member = None;
+            }
             if self.primary.family == GearFamily::Rack && self.rack_member.is_none() {
                 self.set_rack_member(Some(0));
                 changed = true;
@@ -548,7 +678,11 @@ impl GearPairPanel {
             let ring = self.rack_member.is_none()
                 && self.primary.family == GearFamily::Spur
                 && self.secondary_ring;
-            ui.strong(if rack_second {
+            ui.strong(if self.worm_member == Some(1) {
+                "Mating ZA worm"
+            } else if self.worm_member == Some(0) {
+                "Mating generated worm wheel"
+            } else if rack_second {
                 "Mating straight rack"
             } else if self.rack_member == Some(0) {
                 "Mating spur pinion"
@@ -563,16 +697,30 @@ impl GearPairPanel {
                 .secondary
                 .iter_mut()
                 .zip([
-                    if rack_second {
+                    if self.worm_member == Some(1) {
+                        "Worm starts"
+                    } else if rack_second {
                         "Rack pitch cells"
                     } else if self.rack_member.is_some() {
                         "Pinion teeth"
                     } else {
                         "Wheel teeth"
                     },
-                    "Wheel bore diameter",
-                    "Wheel design backlash",
-                    "Wheel fabrication clearance",
+                    if self.worm_member == Some(1) {
+                        "Worm bore diameter"
+                    } else {
+                        "Wheel bore diameter"
+                    },
+                    if self.worm_member == Some(1) {
+                        "Worm design backlash"
+                    } else {
+                        "Wheel design backlash"
+                    },
+                    if self.worm_member == Some(1) {
+                        "Worm fabrication clearance"
+                    } else {
+                        "Wheel fabrication clearance"
+                    },
                 ])
                 .enumerate()
             {
@@ -584,6 +732,18 @@ impl GearPairPanel {
                     (self.template.gears[1].feature, "gear-secondary", index),
                     label,
                     "Independent wheel value; formulas may reference project parameters",
+                );
+            }
+            if self.worm_member.is_some() {
+                changed |= self.secondary_width.show_named(
+                    ui,
+                    (self.template.gears[1].feature, "worm-width"),
+                    if self.worm_member == Some(0) {
+                        "Wheel face width"
+                    } else {
+                        "Threaded worm length"
+                    },
+                    "Independent axial dimension: wheel 0.5–2 × module; worm 16–32 × module",
                 );
             }
             if rack_second {
@@ -602,7 +762,7 @@ impl GearPairPanel {
                     "Outside rim must meet the shared minimum-wall requirement",
                 );
             }
-            ui.small(if self.primary.family == GearFamily::Bevel { "Both spherical-involute members share the pitch apex and typed shaft angle. Each mate count follows the opposite authored tooth-count dimension; source geometry updates atomically." } else if self.rack_member.is_some() { "Straight rack and spur pinion share module, pressure angle, face width and custom root ratio. The pinion stays at +Y × pitch radius; the rack translates on local X." } else if ring || self.primary.family == GearFamily::InternalRing {"Ring/pinion share module, 20° pressure angle and face width. Centers use the radius difference; both rotate in the same direction."} else {"The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite."});
+            ui.small(if self.primary.family==GearFamily::Worm {"ZA axial-straight pair: shared axial module, normal20° pressure angle, q10 and right hand. Worm length and wheel face width remain independent. Mate counts follow original opposite typed counts."}else if self.primary.family == GearFamily::Bevel { "Both spherical-involute members share the pitch apex and typed shaft angle. Each mate count follows the opposite authored tooth-count dimension; source geometry updates atomically." } else if self.rack_member.is_some() { "Straight rack and spur pinion share module, pressure angle, face width and custom root ratio. The pinion stays at +Y × pitch radius; the rack translates on local X." } else if ring || self.primary.family == GearFamily::InternalRing {"Ring/pinion share module, 20° pressure angle and face width. Centers use the radius difference; both rotate in the same direction."} else {"The wheel shares the module convention, pressure angle, face width, root profile and center gap. Helix hand is opposite."});
         } else {
             for gear in &self.template.gears {
                 ui.small(&gear.name);
@@ -610,7 +770,7 @@ impl GearPairPanel {
         }
         ui.separator();
         ui.strong("Pair layout and drive");
-        changed|=self.drive.show_named(ui, (self.template.pair, "pair-drive"),if self.primary.family == GearFamily::InternalRing {"Ring drive angle"}else{"Pinion drive angle"},if self.rack_member.is_some() { "Pinion angle regardless of member role: rack translation s = pinion pitch radius × angle in radians. Finite-end travel is bounded." } else { "The second member follows the tooth-count ratio; copies share this definition's drive coordinate" });
+        changed|=self.drive.show_named(ui, (self.template.pair, "pair-drive"),if self.primary.family==GearFamily::Worm {"Worm drive angle"}else if self.primary.family == GearFamily::InternalRing {"Ring drive angle"}else{"Pinion drive angle"},if self.primary.family==GearFamily::Worm {"Worm rotation regardless of member order; wheel follows the signed one-start tooth-count ratio"}else if self.rack_member.is_some() { "Pinion angle regardless of member role: rack translation s = pinion pitch radius × angle in radians. Finite-end travel is bounded." } else { "The second member follows the tooth-count ratio; copies share this definition's drive coordinate" });
         controls::inspector_combo(ui, "gear-pair-plane")
             .selected_text(self.plane.map_or("Stored orientation", Datum::label))
             .show_ui(ui, |ui| {
@@ -1060,5 +1220,87 @@ mod bevel_pair_fields_tests {
         assert_eq!(session.document(), &document);
         assert_eq!(session.revision(), 0);
         assert!(!session.can_undo());
+    }
+}
+
+#[cfg(test)]
+mod worm_pair_fields_tests {
+    use super::*;
+    #[test]
+    fn worm_roles_keep_independent_lengths_and_original_ids_without_source_edits() {
+        let s = Session::new(Document::new("Worm roles").unwrap()).unwrap();
+        let mut primary = GearPanel::new(
+            GearRequest::new("ZA", Default::default()),
+            s.parameters().clone(),
+            false,
+        )
+        .unwrap();
+        primary.select_family(GearFamily::Worm);
+        let mut p = GearPairPanel::from_single(primary);
+        p.secondary[0].set_literal(40., "count");
+        p.primary.fields[3].set_literal(20., "mm");
+        p.secondary_width.set_literal(1.5, "mm");
+        let GearPairCommand::Create(a) = p.request(s.document(), true).unwrap() else {
+            panic!("create")
+        };
+        let resolved = a
+            .parameters
+            .resolve_recipes(
+                [&a.gears[0].parameters, &a.gears[1].parameters],
+                s.parameters(),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.worm.as_ref().unwrap().worm_member,
+            model::GearPairMember::A
+        );
+        assert_eq!(resolved.gears[0].worm().unwrap().face_width_mm, 20.);
+        assert_eq!(resolved.gears[1].worm().unwrap().face_width_mm, 1.5);
+        p.set_worm_member(Some(1));
+        let GearPairCommand::Create(b) = p.request(s.document(), true).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(a.pair, b.pair);
+        assert_eq!(a.outputs, b.outputs);
+        assert_eq!(a.placement, b.placement);
+        assert_eq!(
+            a.gears.each_ref().map(|g| g.feature),
+            b.gears.each_ref().map(|g| g.feature)
+        );
+        let resolved = b
+            .parameters
+            .resolve_recipes(
+                [&b.gears[0].parameters, &b.gears[1].parameters],
+                s.parameters(),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.worm.as_ref().unwrap().worm_member,
+            model::GearPairMember::B
+        );
+        assert_eq!(resolved.gears[1].worm().unwrap().face_width_mm, 20.);
+        assert_eq!(resolved.gears[0].worm().unwrap().face_width_mm, 1.5);
+        assert_eq!(resolved.gears[0].teeth(), 40);
+        assert_eq!(resolved.gears[1].teeth(), 1);
+        assert_eq!(
+            b.gears[0].parameters.worm.as_ref().unwrap().mate_teeth,
+            b.gears[1].parameters.teeth
+        );
+        assert_eq!(
+            b.gears[1].parameters.worm.as_ref().unwrap().mate_teeth,
+            b.gears[0].parameters.teeth
+        );
+        let single = p.as_single().request(s.document(), true).unwrap();
+        assert_eq!(
+            single.parameters.worm.as_ref().unwrap().mate_teeth,
+            b.gears[1].parameters.teeth
+        );
+        p.primary.worm_system = WormToothSystem::Zi;
+        assert!(p.request(s.document(), true).is_err());
+        p.primary.worm_system = WormToothSystem::ZaAxialStraight;
+        p.secondary_width.set_literal(15., "mm");
+        assert!(p.request(s.document(), true).is_err());
+        assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo());
     }
 }
